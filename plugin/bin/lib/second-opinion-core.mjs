@@ -5,7 +5,7 @@ import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { withRepositoryGuide } from './sdk-role-profile.mjs'
 import { announceUnsandboxedLane, LaneSandboxRefusal, resolveLaneSandbox } from './host/lane-sandbox.mjs'
-import { requestNamedPaths, requestPathRefusal, unreadEscape } from './host/second-opinion-request-paths.mjs'
+import { requestNamedPaths, requestDirectoryNote, requestPathRefusal, unreadEscape } from './host/second-opinion-request-paths.mjs'
 import { classifyProviderRefusal, createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
 
@@ -80,6 +80,7 @@ function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signa
   process.once('exit', onExit)
   signal?.addEventListener('abort', onAbort, { once: true })
   let sandbox
+  let directoryNote = null
   let child
   try {
     // second-opinion only reads the repository: it is bound read-only (H5).
@@ -90,7 +91,10 @@ function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signa
         refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
         return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot check request paths.\n', cleanup: [], sandbox: sandbox.line })
       }
-      const missing = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, ownership.env.HOME ?? env.HOME ?? '') })
+      const unseen = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, ownership.env.HOME ?? env.HOME ?? '') })
+      // Only files refuse; an unreadable named directory is reported and the review runs.
+      const missing = unseen.filter((item) => typeof item === 'string' || !item.directory)
+      directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path))
       if (missing.length) {
         refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
         return Promise.resolve({ status: 2, stdout: '', stderr: requestPathRefusal(missing, cwd, ownership.env.HOME ?? env.HOME ?? '', env), cleanup: [], sandbox: sandbox.line })
@@ -170,7 +174,7 @@ function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signa
       clearInterval(captureTimer)
       process.removeListener('exit', onExit)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ ...result, interrupted, sandbox: sandbox.line })
+      resolve({ ...result, interrupted, sandbox: sandbox.line, notes: directoryNote ? [directoryNote] : [] })
     }
     child.once('error', (error) => {
       stopEverything()
@@ -285,6 +289,8 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
         signal: options.signal,
       })
       if (result.sandbox) appendLine(options.out, result.sandbox)
+      // Each note on its own line right under the sandbox line, before the answer.
+      for (const note of result.notes ?? []) appendLine(options.out, note)
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)
       for (const line of result.cleanup ?? []) appendLine(options.out, line)

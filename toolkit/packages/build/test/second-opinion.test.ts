@@ -13,6 +13,8 @@ import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 import { LaneSandboxRefusal } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { requestPathRefusal } from '../../../../plugin/bin/lib/host/second-opinion-request-paths.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -197,6 +199,18 @@ describe('second-opinion advisor', () => {
     expect(process.listenerCount('exit')).toBe(baseline)
   })
 
+  // A READ remedy names exactly the path the request named: its parent directory could be the whole
+  // suite root or all of ~/.ssh. A path with ':' cannot be one entry of a ':' list, and a forbidden
+  // path ($HOME or an ancestor of it) is never offered.
+  it('suggests the exact named path as the READ remedy, never its directory, and only allowed entries', () => {
+    const env = { HOME: '/home/reader', PATH: '/usr/bin' }
+    const message = requestPathRefusal([{ path: '/outside/notes/a.md', reason: null }, { path: '/odd:name.md', reason: null }, { path: '/home', reason: null }], '/repo', '/home/reader', env)
+    expect(message).toContain(`WT_LANE_SANDBOX_READ=${quoteRemedyWord('/outside/notes/a.md', true)} `)
+    expect(message).not.toMatch(/WT_LANE_SANDBOX_READ=\S*\/outside\/notes[^/]/)
+    expect(message).not.toMatch(/WT_LANE_SANDBOX_READ=\S*(odd|:\/home)/)
+    expect(requestPathRefusal([{ path: '/home', reason: null }], '/repo', '/home/reader', env)).not.toContain('WT_LANE_SANDBOX_READ=')
+  })
+
   it('refuses a bwrap plan lacking a path checker before the reviewer runs', async () => {
     const f = fixture(true)
     const outside = join(resolve(f.repo, '..'), 'outside.md')
@@ -268,6 +282,34 @@ describe('second-opinion advisor', () => {
     expect(unreadable.mock.calls[0]![1].exempt).toEqual([named.slice(0, -1)])
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, { ...f.env, WT_SECOND_OPINION_UNREAD: JSON.stringify([named]) })).toBe(0)
     expect(unreadable.mock.calls[1]![1].exempt).toEqual([named])
+  })
+
+  // Replay of 191 archived requests: every directory the check refused was named as context
+  // (`~/.claude-work`, `/var`, `~/.claude/rules`), never as the file to review. A named directory the
+  // sandbox cannot see is therefore REPORTED in the output and the review runs; only files refuse.
+  it('reports an unreadable named directory in the output and still runs; an unreadable file in the same request still refuses', async () => {
+    const f = fixture(true)
+    const dir = join(resolve(f.repo, '..'), 'context-dir')
+    const file = join(resolve(f.repo, '..'), 'outside.md')
+    mkdirSync(dir); writeFileSync(file, 'x')
+    writeFileSync(f.request, `State lives in ${dir}. Review the code.`)
+    const unreadable = vi.fn((candidates: string[][]) => candidates.flatMap((group) => [dir, file].filter((p) => group.includes(p)).map((p) => (p === dir ? { path: p, reason: null, directory: true } : { path: p, reason: null }))))
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
+    const wrap = vi.fn(() => [process.execPath, ['-e', "process.stdout.write('ran\\n')"]])
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(0)
+    const text = lines(f.out).join('\n')
+    // Its own line, right under the sandbox line near the top of the file the caller reads: a
+    // missing directory must never hide at the end of the long sandbox line.
+    expect(lines(f.out).findIndex((line: string) => line.startsWith(`NOTE: the request names ${dir}`))).toBe(2)
+    expect(lines(f.out)[1]).toBe('sandbox')
+    expect(text).toContain('ran')
+    expect(wrap).toHaveBeenCalledOnce()
+    writeFileSync(f.request, `State lives in ${dir}. Review ${file}.`)
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
+    expect(lines(f.out).join('\n')).toContain(`REFUSED: the request names ${file} outside`)
+    expect(lines(f.out).join('\n')).not.toContain(`REFUSED: the request names ${dir}`)
   })
 
   it('reports probe failures as a refusal with EXIT=1 and releases ownership and listeners', async () => {

@@ -1,4 +1,3 @@
-import path from 'node:path'
 import { quoteRemedyWord } from '../remedy-quote.mjs'
 import { laneSandboxReadRemedyAllowed } from './lane-sandbox.mjs'
 
@@ -65,12 +64,18 @@ export function unreadEscape(value, home) {
   return Array.isArray(paths) ? paths.filter((p) => typeof p === 'string' && p.length > 0).map((p) => expandHome(p, home)) : []
 }
 
+export function requestDirectoryNote(directories) {
+  if (!directories.length) return null
+  return `NOTE: the request names ${directories.join(', ')}, a directory the reviewer cannot read inside the sandbox; the review runs without it. If its contents are needed, copy them under --repo or re-run with WT_LANE_SANDBOX_READ=${quoteRemedyWord(directories.join(':'), true)}.`
+}
+
 export function requestPathRefusal(missing, repo, home, env) {
   const paths = missing.map((item) => typeof item === 'string' ? item : item.path)
   const reasons = missing.filter((item) => item.reason).map(({ path: named, reason }) => `${named}: ${reason}`)
-  const dirs = [...new Set(paths.filter((named) => !named.includes(':')).map((named) => path.dirname(named)))]
-    .filter((dir) => laneSandboxReadRemedyAllowed(dir, { ...env, HOME: home }))
-  const read = dirs.length ? `; or re-run with WT_LANE_SANDBOX_READ=${quoteRemedyWord(dirs.join(':'), true)} (may make them readable; the check re-runs)` : ''
+  // The exact named path, never its directory: a parent can be the suite root or all of ~/.ssh, and a
+  // file is a valid READ entry.
+  const entries = [...new Set(paths)].filter((named) => laneSandboxReadRemedyAllowed(named, { ...env, HOME: home }))
+  const read = entries.length ? `; or re-run with WT_LANE_SANDBOX_READ=${quoteRemedyWord(entries.join(':'), true)} (may make them readable; the check re-runs)` : ''
   const reasonNote = reasons.length ? ` (${reasons.join(', ')})` : ''
   return `REFUSED: the request names ${paths.join(', ')} outside the sandbox's readable set${reasonNote}. Copy them under --repo (${repo}) and change the request to name the copy${read}; or, if a path is only mentioned and not needed, WT_SECOND_OPINION_UNREAD=${quoteRemedyWord(JSON.stringify(paths))}.\n`
 }

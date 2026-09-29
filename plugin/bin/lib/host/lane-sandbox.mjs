@@ -490,7 +490,7 @@ function unsandboxed(reason) {
 
 const REQUEST_PATH_PROBE = `const fs=require('node:fs');let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>data+=s);process.stdin.on('end',()=>{const answer={};for(const p of JSON.parse(data)){try{const info=fs.statSync(p);fs.accessSync(p,fs.constants.R_OK|(info.isDirectory()?fs.constants.X_OK:0));answer[p]=info.dev+':'+info.ino}catch{answer[p]=null}}process.stdout.write(JSON.stringify(answer))})`
 
-function probeRequestPaths(paths, { wrap, execPath, env }) {
+export function probeRequestPaths(paths, { wrap, execPath, env }) {
   const [command, args] = wrap(execPath, ['-e', REQUEST_PATH_PROBE])
   const result = spawnSync(command, args, { env, input: JSON.stringify(paths), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000 })
   if (result.error || result.signal || result.status !== 0) throw new Error(result.error?.message ?? String(result.stderr ?? result.signal ?? `exit ${result.status}`).trim())
@@ -516,6 +516,16 @@ function firstExistingSpelling(variants, fs) {
   return null
 }
 
+// The sandbox supplies its own /proc, /dev, tmpfs /tmp, empty $HOME and the ancestor directories of
+// every bind, so such a path exists inside under a different identity. Naming one is not asking the
+// reviewer for host content: accept a directory, or a /proc or /dev entry, that exists inside. A
+// regular file must still be the SAME file, and a directory absent inside is still refused.
+const SANDBOX_OWNED_ROOTS = ['/proc', '/dev']
+function replacedBySandbox(candidate, insideIdentity, fs) {
+  if (typeof insideIdentity !== 'string') return false
+  return fs.isDir(candidate) || SANDBOX_OWNED_ROOTS.some((root) => within(candidate, root))
+}
+
 function unreadableRequestPaths(candidates, { fs, wrap, execPath, env, probe, exempt = [] }) {
   const chosen = candidates.map((variants) => firstExistingSpelling(variants, fs)).filter(Boolean)
     .filter(({ path }) => !exempt.includes(path))
@@ -527,8 +537,10 @@ function unreadableRequestPaths(candidates, { fs, wrap, execPath, env, probe, ex
       if (!inside || typeof inside !== 'object' || Array.isArray(inside) || lookup.some(({ path }) => !Object.hasOwn(inside, path) || (inside[path] !== null && typeof inside[path] !== 'string'))) throw new Error('invalid probe response')
     } catch (error) { throw new LaneSandboxRefusal(`could not check the request's paths inside the sandbox: ${error.message}`) }
   }
-  return chosen.filter(({ path, identity }) => typeof identity !== 'string' || inside[path] !== identity)
-    .map(({ path, identity }) => ({ path, reason: typeof identity === 'object' ? identity.error : null }))
+  // A directory is marked so the caller can REPORT it rather than refuse: a named directory is
+  // usually context, and its contents are never checked anyway.
+  return chosen.filter(({ path, identity }) => typeof identity !== 'string' || !(inside[path] === identity || replacedBySandbox(path, inside[path], fs)))
+    .map(({ path, identity }) => ({ path, reason: typeof identity === 'object' ? identity.error : null, ...(typeof identity === 'string' && fs.isDir(path) ? { directory: true } : {}) }))
 }
 
 // Returns { ok } to sandbox, { none: reason } to run unsandboxed with that reason, or
