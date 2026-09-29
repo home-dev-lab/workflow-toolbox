@@ -52,7 +52,10 @@ entirely.
 MECHANICAL escalation trigger, never "use judgment": escalate after two failed attempts at same
 fix, one repeated diagnosis, or ~15–20 min without narrowing problem. Judgment-based clause is
 unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy, not stuck, so
-only a counting rule fires regardless.
+only a counting rule fires regardless. The escalation is a step-back (`wt-step-back-architectural.md`),
+never to the owner: list the routes, the current route included while its attempts still narrow the problem,
+then take the best one or another tier. Retries on a route are normal; a BLOCKED goes up only when no
+route is left.
 
 Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before
 committing. Arc complete → LEAVE the agent idle; do not send it a shutdown request. ⚠ Observed twice out of twice on one
