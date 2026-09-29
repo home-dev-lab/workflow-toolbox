@@ -61,7 +61,12 @@ const initMessage = (model?: string) => ({
 })
 const roots: string[] = []
 // All pilot fixtures must keep the parent-owned decision store inside their disposable parent directory.
+// The run timeout is a real wall-clock timer by default; fixtures spawn real launcher processes, so on a
+// slow host it fired mid-run and ended the lifecycle early. Every test gets a timer that never fires
+// unless it passes its own setTimer/clearTimer to drive the timeout itself.
+const neverFiringTimer = { setTimer: () => 0, clearTimer: () => {} }
 const runPilot = (options: { dir: string; [key: string]: unknown }, dependencies: { decisionStateRoot?: string; [key: string]: unknown }) => rawRunPilot(options, {
+  ...neverFiringTimer,
   ...dependencies,
   decisionStateRoot: dependencies.decisionStateRoot ?? join(options.dir, '..', 'decision-state'),
 })
