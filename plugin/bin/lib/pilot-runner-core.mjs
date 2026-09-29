@@ -22,6 +22,7 @@ import { laneUnsandboxedAtStart } from './host/lane-sandbox.mjs'
 import { sandboxWritablePaths } from './host/sandbox-extra-paths.mjs'
 import { pathWithin } from './host/path-within.mjs'
 import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
+import { createAccountGate } from './sdk-account-check.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -52,13 +53,17 @@ const PLANKA_TOOLS = new Set([
 ])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
     else if (arg === '--card-file') options.cardFile = argv[++i] ?? null
     else if (arg === '--dir') options.dir = argv[++i] ?? null
     else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
+    else if (arg === '--expect-account') {
+      options.expectAccount = argv[++i] ?? null
+      if (!options.expectAccount?.trim() || options.expectAccount.startsWith('--')) return { error: '--expect-account requires an e-mail' }
+    }
     else if (arg === '--contract') options.contract = argv[++i] ?? null
     else if (arg === '--board-contract') options.boardContract = argv[++i] ?? null
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
@@ -387,6 +392,7 @@ export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
   assertPluginDirs(options.pluginDirs)
+  const account = createAccountGate({ expectAccount: options.expectAccount, launchEnv: env, profileEnv, log, timers: { setTimer, clearTimer } })
   const effectiveEnv = { ...env, ...profileEnv }
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
@@ -567,7 +573,7 @@ export async function runPilot(options, dependencies) {
       env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
       abortController,
     }, sdkRole)
-    const stream = query({ prompt: prompt(), options: queryOptions })
+    const stream = await account.open(() => query({ prompt: account.gatePrompt(prompt()), options: queryOptions }), abortController)
     for await (const message of stream) {
       modelTracker.observe(message)
       transcript.push(message)
@@ -628,8 +634,8 @@ export async function runPilot(options, dependencies) {
     if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   } catch (error) {
     if (!timeoutBoundary) {
-      streamError = error
-      if (initReceiptSeen) incompleteReason = `sdk stream error: ${error instanceof Error ? error.message : String(error)}`
+      streamError = account.errorToRethrow(error)
+      incompleteReason = await account.reasonAfterError(error, { initReceiptSeen, incompleteReason })
     }
   } finally {
     for (const warning of modelWarnings(modelTracker.result(), { name: 'pilot' })) log(warning)
@@ -650,7 +656,7 @@ export async function runPilot(options, dependencies) {
   const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
-  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }, executorProfile.executor), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }, executorProfile.executor), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, account: account.summary(), report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)

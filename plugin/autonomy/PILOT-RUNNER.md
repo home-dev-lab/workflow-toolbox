@@ -220,6 +220,33 @@ process that creates its own session escapes the lane process group and remains 
 
 ## Completion and CLI
 
+### Which account the SDK child uses
+
+The SDK child inherits the runner's environment (`pilot-runner-core.mjs`, `effectiveEnv` and
+`queryOptions.env`). Without `CLAUDE_CODE_OAUTH_TOKEN`, it can authenticate using the config dir's
+saved login, which may belong to a different account. Claude Code sessions started with
+`CLAUDE_CODE_OAUTH_TOKEN` do not pass that variable to their Bash tool's subprocesses (observed on
+Claude Code 2.1.284; undocumented). For a runner launched from an agent's Bash tool, supply the
+intended account's token in the **runner launch environment** and pass
+`--expect-account owner@example.com` (or set `WT_PILOT_EXPECT_ACCOUNT` in that launch environment).
+Do not put the expected account or authentication variables in `--profile-env`.
+
+The runner checks SDK `Query.accountInfo()` before sending the first user prompt, logs the account
+line, and writes `summary.json` `account` with verdict, e-mail (if exposed), token source and expected
+e-mail. `email_matched` means the SDK reported the expected e-mail (case-insensitive),
+`apiProvider` is `firstParty`, and both `tokenSource` and `apiKeySource` are absent or `none`:
+the stored login is the credential in use. `mismatch` requires the same stored-login evidence
+with a different e-mail. `launcher_asserted` requires `tokenSource=CLAUDE_CODE_OAUTH_TOKEN`,
+`apiProvider=firstParty`, and `apiKeySource` absent or `none`: the owner is **not independently
+verified**; this verdict trusts the launcher's token-to-account mapping. An e-mail reported
+alongside an environment token comes from the config and does not identify the token's owner.
+`not_enforced` means no expected account was supplied; it logs the reported account or an unknown
+reason and permits the run. `unverifiable` means the receipt fits neither trusted stored-login
+nor launcher-token conditions; `unavailable` means `accountInfo()` could not return a receipt;
+`profile_override` means `--profile-env` supplied an account or credential selector. These and
+`mismatch` refuse before any user prompt and fail the run. The check is pure JavaScript over SDK account fields and
+works the same way on Linux, macOS and Windows.
+
 ### SDK installation
 
 The runner and orchestrator resolve `@anthropic-ai/claude-agent-sdk` in this order: the plugin's
@@ -343,7 +370,7 @@ and enter totals only with `--include-partial`. Mirrored receipts deduplicate by
 start, never by archive path. Malformed usage exits 2.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--board-contract <json file>`, `--knowledge-base-index`, repeatable
-`--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,
+`--plugin-dir <absolute-path>`, `--profile-env`, `--expect-account <email>`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout <seconds>`; `--lane-silence` is not accepted. The runner uses Node path semantics on
 Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.
