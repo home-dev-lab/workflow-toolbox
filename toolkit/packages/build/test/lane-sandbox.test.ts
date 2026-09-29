@@ -18,7 +18,7 @@ import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../.
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')
 
-interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
+interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
@@ -171,6 +171,76 @@ function plan(overrides: Record<string, unknown> = {}): SandboxPlan {
 }
 
 describe('lane sandbox plan — availability and pass-through', () => {
+  it('checks host identities against inside identities, ignoring nonexistent variants and refusing a failed probe', () => {
+    const fs = Object.assign(fakeFs({ '/outside/a.md': 'a', '/outside/b.md': 'b' }, [HOME, '/work/tree']), {
+      identity: (file: string) => ({ '/outside/a.md': '1:2', '/outside/b.md': '1:3' })[file as '/outside/a.md' | '/outside/b.md'] ?? null,
+    })
+    const p = plan({ fs })
+    try {
+      const candidates = [['/missing', '/outside/a.md'], ['/outside/b.md']]
+      const probe = vi.fn(() => ({ '/outside/a.md': '1:2', '/outside/b.md': null }))
+      expect(p.unreadable(candidates, { probe })).toEqual([{ path: '/outside/b.md', reason: null }])
+      expect(probe).toHaveBeenCalledWith(['/outside/a.md', '/outside/b.md'], expect.any(Object))
+      expect(p.unreadable([['/outside/a.md']], { probe: () => ({ '/outside/a.md': '9:9' }) })).toEqual([{ path: '/outside/a.md', reason: null }])
+      expect(p.unreadable([['/missing']], { probe })).toEqual([])
+      expect(probe).toHaveBeenCalledOnce()
+      expect(p.unreadable([['/outside/a.md']], { env: { PATH: '/trusted' }, probe: (_paths: string[], options: { env: Record<string, string> }) => {
+        expect(options.env).toEqual({ PATH: '/trusted' })
+        return { '/outside/a.md': '1:2' }
+      } })).toEqual([])
+      expect(() => p.unreadable(candidates, { probe: () => { throw new Error('probe failed') } })).toThrow(sandbox.LaneSandboxRefusal)
+      expect(() => p.unreadable(candidates, { probe: () => 'garbage' })).toThrow(sandbox.LaneSandboxRefusal)
+    } finally { p.dispose() }
+  })
+  it('exempts only the selected existing spelling, in the production selector', () => {
+    const fs = Object.assign(fakeFs({ '/outside/report.md!': 'x', '/outside/report.md': 'y' }, [HOME, '/work/tree']), {
+      identity: (file: string) => ({ '/outside/report.md!': '1:2', '/outside/report.md': '1:3' })[file as '/outside/report.md!'] ?? null,
+    })
+    const p = plan({ fs })
+    try {
+      const candidates = [['/outside/report.md!', '/outside/report.md']]
+      const probe = () => ({ '/outside/report.md!': null, '/outside/report.md': null })
+      expect(p.unreadable(candidates, { probe, exempt: ['/outside/report.md'] })).toEqual([{ path: '/outside/report.md!', reason: null }])
+      expect(p.unreadable(candidates, { probe, exempt: ['/outside/report.md!'] })).toEqual([])
+    } finally { p.dispose() }
+  })
+  it('skips a spelling too long for the filesystem and stops looking once a spelling exists', () => {
+    const identity = vi.fn((file: string) => {
+      if (file.length > 20) throw Object.assign(new Error('name too long'), { code: 'ENAMETOOLONG' })
+      if (file === '/etc/hosts') return '1:2'
+      if (file === '/etc') return '1:1'
+      return null
+    })
+    const p = plan({ fs: Object.assign(fakeFs({}, [HOME, '/work/tree']), { identity }) })
+    try {
+      const probe = vi.fn(() => ({ '/etc/hosts': '1:2' }))
+      expect(p.unreadable([['/etc/hosts ééééééééééééééé', '/etc/hosts', '/etc']], { probe })).toEqual([])
+      expect(probe).toHaveBeenCalledWith(['/etc/hosts'], expect.any(Object))
+      expect(identity.mock.calls.map(([file]) => file)).toEqual(['/etc/hosts ééééééééééééééé', '/etc/hosts'])
+    } finally { p.dispose() }
+  })
+  it('refuses host lookup errors rather than calling the probe for those paths', () => {
+    const fs = Object.assign(fakeFs(), { identity: () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }) } })
+    const p = plan({ fs })
+    try {
+      const probe = vi.fn()
+      expect(p.unreadable([['/outside/secret']], { probe })).toEqual([{ path: '/outside/secret', reason: 'EACCES' }])
+      expect(probe).not.toHaveBeenCalled()
+    } finally { p.dispose() }
+  })
+  it.skipIf(!BWRAP_WORKS)('real bwrap checks identity and readability for repo, sibling, symlink and host /tmp (requires usable root-owned bwrap)', () => {
+    const root = tempRoot('request-paths'); const home = join(root, 'home'); const repo = join(root, 'repo'); const sibling = join(root, 'sibling'); const run = join(root, 'run')
+    for (const dir of [home, repo, sibling, run]) mkdirSync(dir)
+    const inside = join(repo, 'inside.md'); const outside = join(sibling, 'outside.md'); const alias = join(repo, 'alias.md'); const hostTmp = join(root, 'host.md')
+    for (const file of [inside, outside, hostTmp]) writeFileSync(file, 'content')
+    symlinkSync(outside, alias)
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: process.execPath, cwd: repo, env: { HOME: home, PATH: process.env.PATH }, optionEnv: {}, paths: {}, bwrap: '/usr/bin/bwrap', socat: null, probe: okProbe, runtimeParent: run, readonlyCwd: true })
+    try {
+      expect(p.unreadable([[inside], [outside], [alias], [hostTmp]], { env: { HOME: home, PATH: process.env.PATH } })).toEqual([
+        { path: outside, reason: null }, { path: alias, reason: null }, { path: hostTmp, reason: null },
+      ])
+    } finally { p.dispose() }
+  })
   it.skipIf(process.platform !== 'linux')('refuses an untrusted bwrap on a writable PATH and names it', () => {
     const root = tempRoot('fake-bwrap')
     const bin = join(root, 'bwrap')

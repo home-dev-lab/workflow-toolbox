@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 
-const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]'
+const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox checks each named path in the request at launch (not recursive directory contents).'
 
 function parseArgs(argv) {
   const options = { effort: 'medium', route: 'auto', repo: process.cwd() }

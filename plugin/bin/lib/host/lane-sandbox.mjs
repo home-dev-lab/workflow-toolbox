@@ -88,6 +88,7 @@ function trustedSystemExecutable(name, searchPath) {
 export class LaneSandboxRefusal extends Error {}
 
 const realFs = {
+  identity: (file) => { const info = statSync(file); return `${info.dev}:${info.ino}` },
   exists: (file) => existsSync(file),
   realpath: (file) => { try { return realpathSync.native(file) } catch { return null } },
   isFile: (file) => { try { return statSync(file).isFile() } catch { return false } },
@@ -164,6 +165,10 @@ function isForbiddenPath(candidate, env, fs) {
   // ancestor that would contain it, or anything beneath it.
   const hostRoot = hostStateRootOf(env, fs)
   return hostRoot !== null && (within(target, hostRoot) || within(hostRoot, target))
+}
+
+export function laneSandboxReadRemedyAllowed(directory, env) {
+  return !directory.includes(':') && !isForbiddenPath(directory, env, realFs)
 }
 
 function hostStateRootOf(env, fs) {
@@ -480,7 +485,50 @@ function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays,
 }
 
 function unsandboxed(reason) {
-  return { kind: 'none', reason, line: `lane sandbox: none (${reason}); running with the environment allow-list only`, wrap: (bin, args) => [bin, args], dispose: () => {} }
+  return { kind: 'none', reason, line: `lane sandbox: none (${reason}); running with the environment allow-list only`, wrap: (bin, args) => [bin, args], unreadable: () => [], dispose: () => {} }
+}
+
+const REQUEST_PATH_PROBE = `const fs=require('node:fs');let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>data+=s);process.stdin.on('end',()=>{const answer={};for(const p of JSON.parse(data)){try{const info=fs.statSync(p);fs.accessSync(p,fs.constants.R_OK|(info.isDirectory()?fs.constants.X_OK:0));answer[p]=info.dev+':'+info.ino}catch{answer[p]=null}}process.stdout.write(JSON.stringify(answer))})`
+
+function probeRequestPaths(paths, { wrap, execPath, env }) {
+  const [command, args] = wrap(execPath, ['-e', REQUEST_PATH_PROBE])
+  const result = spawnSync(command, args, { env, input: JSON.stringify(paths), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000 })
+  if (result.error || result.signal || result.status !== 0) throw new Error(result.error?.message ?? String(result.stderr ?? result.signal ?? `exit ${result.status}`).trim())
+  return JSON.parse(result.stdout)
+}
+
+function checkedHostIdentity(fs, candidate) {
+  try { return fs.identity(candidate) } catch (error) {
+    // A spelling that cannot name a file (missing, a file used as a directory, or too long for the
+    // filesystem — a prose tail after a real path) is not a lookup failure: try the next spelling.
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'ENAMETOOLONG') return null
+    return { error: error.code ?? error.message }
+  }
+}
+
+// Longest spelling first; stop at the first one the host can answer for, so a long prose tail costs
+// one failed lookup per shorter spelling only until the real path is reached.
+function firstExistingSpelling(variants, fs) {
+  for (const candidate of variants) {
+    const identity = checkedHostIdentity(fs, candidate)
+    if (identity !== null) return { path: candidate, identity }
+  }
+  return null
+}
+
+function unreadableRequestPaths(candidates, { fs, wrap, execPath, env, probe, exempt = [] }) {
+  const chosen = candidates.map((variants) => firstExistingSpelling(variants, fs)).filter(Boolean)
+    .filter(({ path }) => !exempt.includes(path))
+  const lookup = chosen.filter(({ identity }) => typeof identity === 'string')
+  let inside = {}
+  if (lookup.length) {
+    try {
+      inside = (probe ?? probeRequestPaths)([...new Set(lookup.map(({ path }) => path))], { wrap, execPath, env })
+      if (!inside || typeof inside !== 'object' || Array.isArray(inside) || lookup.some(({ path }) => !Object.hasOwn(inside, path) || (inside[path] !== null && typeof inside[path] !== 'string'))) throw new Error('invalid probe response')
+    } catch (error) { throw new LaneSandboxRefusal(`could not check the request's paths inside the sandbox: ${error.message}`) }
+  }
+  return chosen.filter(({ path, identity }) => typeof identity !== 'string' || inside[path] !== identity)
+    .map(({ path, identity }) => ({ path, reason: typeof identity === 'object' ? identity.error : null }))
 }
 
 // Returns { ok } to sandbox, { none: reason } to run unsandboxed with that reason, or
@@ -996,7 +1044,8 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
     return [bwrapPath, [...prefix, '--', '/bin/sh', '-c', bootstrap, 'wt-lane-net', command, ...commandArgs]]
   }
 
-   return { kind: 'bwrap', line, readable, writable, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, dispose }
+    const unreadable = (candidates, { probe, env: probeEnv = env, exempt = [] } = {}) => unreadableRequestPaths(candidates, { fs, wrap, execPath, env: probeEnv, probe, exempt })
+    return { kind: 'bwrap', line, readable, writable, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
   } catch (error) {
     bridgeState.disposed = true
     for (const relay of bridge?.relays ?? []) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }
