@@ -374,32 +374,46 @@ async function safeVerdict($, pending, loop, value, evidence, reason) {
   try { await verdict($, pending, loop, value, evidence, reason); }
   catch (error) { await notice($, `verdict write failed: ${error.message}`).catch(() => {}); }
 }
-async function evaluate($, ctx, e, loop, measured) {
+// Claim every window synchronously before verdict I/O can interleave with another call.
+function decideEvaluate(ctx, e, measured) {
   const remaining = [];
+  const actions = [];
   for (const pending of ctx.pending) {
     const c = pending.rule.compliance;
     pending.remaining--;
-      pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
-      if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
-        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, bashCommandVerdict(c, e.command ?? ''), summary(e));
-        measured.add(pending.rule.name);
+    pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
+    if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
+      if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value: bashCommandVerdict(c, e.command ?? ''), evidence: summary(e) });
+      measured.add(pending.rule.name);
+    }
+    else if (c.kind === 'tool-input') {
+      const { verdict: value, matchError } = toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
+      if (value === null) {
+        if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+        else remaining.push(pending);
+        continue;
       }
-      else if (c.kind === 'tool-input') {
-        const { verdict: value, matchError } = toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
-        if (value === null) {
-          if (pending.remaining <= 0) await close($, pending, loop);
-          else remaining.push(pending);
-          continue;
-        }
-        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, value, summary(e), matchError);
-        measured.add(pending.rule.name);
-      }
-     else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) { pending.testSeen = true; if (pending.remaining <= 0) await close($, pending, loop); else remaining.push(pending); }
-      else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) await safeVerdict($, pending, loop, pending.testSeen ? 'followed' : 'not followed', summary(e));
-    else if (pending.remaining <= 0) await close($, pending, loop);
+      if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value, evidence: summary(e), reason: matchError });
+      measured.add(pending.rule.name);
+    }
+    else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) {
+      pending.testSeen = true;
+      if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+      else remaining.push(pending);
+    }
+    else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) actions.push({ type: 'verdict', pending, value: pending.testSeen ? 'followed' : 'not followed', evidence: summary(e) });
+    else if (pending.remaining <= 0) actions.push({ type: 'close', pending });
     else remaining.push(pending);
   }
   ctx.pending = remaining;
+  return actions;
+}
+async function evaluate($, ctx, e, loop, measured) {
+  const actions = decideEvaluate(ctx, e, measured);
+  for (const action of actions) {
+    if (action.type === 'verdict') await safeVerdict($, action.pending, loop, action.value, action.evidence, action.reason);
+    else await close($, action.pending, loop);
+  }
 }
 // Claim every window at call start before any verdict I/O can interleave with another call.
 function decideNext(ctx, e) {
