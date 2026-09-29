@@ -30,7 +30,10 @@ function copyFixture(name: string): string {
 }
 
 function runGit(root: string, args: string[]): string {
-  return execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  // The fixture repository must not inherit the machine's commit signing: a signing agent that
+  // cannot answer at that instant would fail the fixture commit, not the code under test.
+  const unsigned = ['-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false']
+  return execFileSync('git', ['-C', root, ...unsigned, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 function commitAll(root: string, message: string): void {
