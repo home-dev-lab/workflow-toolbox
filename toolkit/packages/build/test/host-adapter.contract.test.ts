@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
@@ -172,6 +172,45 @@ describe('host adapter evidence contract', () => {
       processes: [{ pid: 1, ppid: 0, elapsedMs: 12_000, command: '/sbin/init' }],
     })
     expect(run).toHaveBeenCalledWith('ps', ['-eo', 'pid=,ppid=,etimes=,args='])
+  })
+
+  // A busy host's process table can exceed the 1 MiB child-process output default; the real invocation must
+  // still read it whole instead of failing with ENOBUFS and reporting discovery as unavailable.
+  const largeTableRows = 12_000
+  const largeTableLine = (platform: 'darwin' | 'freebsd', pid: number) => platform === 'darwin'
+    ? `${pid} 1 Tue Nov 14 22:13:20 2023 01:00 /usr/local/bin/long-running-service --flag ${'x'.repeat(120)}`
+    : `${pid} 1 60 /usr/local/bin/long-running-service --flag ${'x'.repeat(120)}`
+  it.skipIf(process.platform === 'win32').each(['darwin', 'freebsd'] as const)('reads a process table larger than 1 MiB through the real invocation on %s', (platform) => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-host-large-ps-'))
+    try {
+      const table = join(root, 'table.txt')
+      const lines = Array.from({ length: largeTableRows }, (_, index) => largeTableLine(platform, index + 2))
+      writeFileSync(table, `${lines.join('\n')}\n`)
+      expect(statSync(table).size).toBeGreaterThan(1024 * 1024)
+      const fakePs = join(root, 'ps')
+      writeFileSync(fakePs, '#!/bin/sh\nexec cat "$WT_FAKE_PS_TABLE"\n')
+      chmodSync(fakePs, 0o755)
+      vi.stubEnv('WT_FAKE_PS_TABLE', table)
+      vi.stubEnv('PATH', `${root}${delimiter}${process.env.PATH ?? ''}`)
+      const snapshot = createHostAdapter({ platform }).readProcessSnapshot()
+      expect(snapshot.supported, snapshot.reason).toBe(true)
+      expect(snapshot.processes).toHaveLength(largeTableRows)
+    } finally {
+      vi.unstubAllEnvs()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // A failed read names its command and cause; a zero exit that still carries an invocation error (an output
+  // overflow can truncate the table) is a failed read, never a complete table.
+  const failedReads = [
+    ['darwin', 'ps', { status: null, stdout: '', stderr: '', error: { code: 'ENOBUFS' } }, 'ENOBUFS'],
+    ['freebsd', 'ps', { status: 0, stdout: '1 0 12 /sbin/init\n', stderr: '', error: { code: 'ENOBUFS' } }, 'ENOBUFS'],
+    ['win32', 'powershell.exe', { status: 1, stdout: '', stderr: '', error: null }, 'exited 1'],
+  ] as const
+  it.each(failedReads)('names the command and cause of a failed process snapshot on %s', (platform, command, result, cause) => {
+    const host = createHostAdapter({ platform, invoke: { run: vi.fn(() => result) } })
+    expect(host.readProcessSnapshot()).toEqual({ supported: false, processes: [], reason: `process discovery failed: ${command} ${cause}` })
   })
 
   contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {

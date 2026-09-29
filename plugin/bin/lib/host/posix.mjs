@@ -1,3 +1,5 @@
+import { processSnapshotFailure } from './process-snapshot-failure.mjs'
+
 const PROCESS_TABLE_ARGS = ['-axo', 'pid=,ppid=,pgid=,state=,etime=,comm=']
 const PROCESS_SNAPSHOT_ARGS = ['-eo', 'pid=,ppid=,etimes=,args=']
 export const processRelationshipOperation = { command: 'ps', args: PROCESS_TABLE_ARGS }
@@ -28,7 +30,8 @@ export function readProcessRelationships(invoke) {
 
 export function readProcessSnapshot(invoke) {
   const result = invoke.run(processSnapshotOperation.command, processSnapshotOperation.args)
-  if (result.status !== 0) return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
+  const failure = processSnapshotFailure(result, processSnapshotOperation.command)
+  if (failure) return failure
   const processes = String(result.stdout ?? '').split(/\r?\n/).flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line)
     return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: Number(match[3]) * 1000, command: match[4] }] : []
