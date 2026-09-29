@@ -50,7 +50,9 @@ Omit `--knowledge-base-index` when no prompt-level value is available. Omit eith
 runner refuses an initialization receipt that omits it. Other optional flags include `--profile-env`,
 `--contract`, `--hard`, `--mailbox`, and `--timeout`. Without `--timeout`, LITE runs use 90 minutes
 and FULL runs use 6 hours. A shorter explicit value is allowed and prints the route-specific warning;
-expiry stops at the next completed lifecycle phase boundary rather than killing work in flight.
+expiry requests a stop at the next completed lifecycle phase boundary; after ten minutes without
+a boundary, the runner aborts the SDK stream and records a timeout even if the SDK describes it
+as a user abort.
 
 On Windows, launch the same Node command with `Start-Process` rather than `setsid nohup`.
 
@@ -68,6 +70,12 @@ Inspect the .lane/summary.json, .lane/usage.json, .lane/cost.json, .lane/sdk-tra
 .lane/pilot-report.md files. Exit 0 is a completed full run, exit 2 is a completed partial run, and exit 1
 is incomplete or failed. Do not infer completion from model prose: the runner requires its correlated
 `accepted phase=awaiting_fidelity` lifecycle receipt and a pilot report.
+The summary's `budget.delta_seconds` reconciles actual and declared time (including boundary grace).
+`longest_tool_call` identifies the completed call behind its duration; `unfinished_tool_calls` lists
+calls still open at run end. If assistant messages arrived after the last result, `fresh_tokens` and
+`turns` read `unavailable`, with a message-usage lower bound and completed-turn count alongside.
+`cost.coverage` separates attributed, inferred and unmatched dollars and marks a lower bound when
+sources or model prices are missing; the same breakdown is printed on the report's `Run total:` line.
 While the run is active, watch the log for a line starting `decision request:`. Open the
 `dod-decision-request.md` it names and read the disputed criterion, the plan's reading and the
 critic's reading. Decide the reading yourself, as the run's parent, and invoke the exact
