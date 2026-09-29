@@ -36,6 +36,10 @@ function lifecycleRound(state, phase) {
 }
 
 export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'report']
+// Pilot rule triggers fired on a phase transition. critic->plan fires ONLY its own trigger: the plan
+// sections were delivered at discovery->plan and stay in context, and the step-back rule injected on
+// a revision round was measured to make the pilot rewrite its plan instead of fixing the finding.
+export const phaseTransitionTriggers = (from, next) => (from === 'critic' && next === 'plan' ? ['critic->plan'] : [`phase:${next}`])
 export { PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation'])
 const GATES = new Set(['typecheck', 'lint', 'test'])
@@ -1094,7 +1098,7 @@ export function createLifecycleStateMachine({
       ? ''
       : composeRules(activeRules, {
           recipient: 'pilot',
-          triggers: [`phase:${next}`, ...(state.phase === 'critic' && next === 'plan' ? ['critic->plan'] : [])],
+          triggers: phaseTransitionTriggers(state.phase, next),
         })
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT

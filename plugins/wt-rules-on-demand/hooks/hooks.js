@@ -22,6 +22,9 @@ let enabled = false;
 let counter = 0;
 let currentMain = 0;
 const logged = new Set();
+const emptyHealth = () => ({ days: {}, lastErrors: [], calls: 0 });
+let pendingHealth = emptyHealth();
+let lastHealthFlush = Date.now();
 
 // The host lists every variable a module reads, so each environment read names its variable literally.
 async function detectorEnv($, name) {
@@ -102,7 +105,56 @@ async function rulesFor($, ctx, cwd) {
   return ctx.rules;
 }
 async function notice($, message) {
+  if (/failed|skipped|unavailable|dangling|cannot|exhausted/i.test(message)) void recordHealth($, null, message).catch(() => {});
   if (!logged.has(message)) { logged.add(message); await $.ui.log(`wt-rules-on-demand: ${message}`); }
+}
+function mergeHealth(target, batch) {
+  for (const [day, counts] of Object.entries(batch.days)) {
+    const entry = target.days[day] ?? { calls: 0, errors: 0, totalMs: 0, maxMs: 0, slow: 0 };
+    for (const field of ['calls', 'errors', 'totalMs', 'slow']) entry[field] += counts[field];
+    entry.maxMs = Math.max(entry.maxMs, counts.maxMs);
+    target.days[day] = entry;
+  }
+  target.lastErrors.push(...batch.lastErrors);
+  target.lastErrors = target.lastErrors.sort((a, b) => a.at.localeCompare(b.at)).slice(-20);
+  if (Object.hasOwn(target, 'calls')) target.calls += batch.calls;
+}
+async function flushHealth($) {
+  const turn = writeTurn();
+  await turn.previous.catch(() => {});
+  try {
+    if (!pendingHealth.calls && !pendingHealth.lastErrors.length) return;
+    const batch = pendingHealth;
+    pendingHealth = emptyHealth();
+    try {
+      const stored = await $.store.get('health');
+      const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, { ...counts }])),
+        lastErrors: [...stored?.lastErrors ?? []] };
+      mergeHealth(health, batch);
+      health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
+      health.lastErrors = health.lastErrors.slice(-20);
+      await $.store.set('health', health);
+      lastHealthFlush = Date.now();
+    } catch (error) {
+      mergeHealth(pendingHealth, batch);
+      throw error;
+    }
+  } finally { turn.release(); }
+}
+function recordHealth($, elapsed, error = null, work = '') {
+  const at = new Date().toISOString(), day = at.slice(0, 10);
+  const entry = pendingHealth.days[day] ?? { calls: 0, errors: 0, totalMs: 0, maxMs: 0, slow: 0 };
+  if (elapsed !== null) {
+    entry.calls++;
+    pendingHealth.calls++;
+    entry.totalMs += elapsed;
+    entry.maxMs = Math.max(entry.maxMs, elapsed);
+    if (elapsed >= 100) entry.slow++;
+  }
+  if (error) { entry.errors++; pendingHealth.lastErrors.push({ at, message: String(error).slice(0, 160) }); pendingHealth.lastErrors = pendingHealth.lastErrors.slice(-20); }
+  pendingHealth.days[day] = entry;
+  if (work === 'turn.complete' || error || pendingHealth.calls >= 50 || Date.now() - lastHealthFlush >= 60_000) return flushHealth($);
+  return Promise.resolve();
 }
 async function list($, dir) {
   try { return await $.fs.list(dir); } catch { return []; }
@@ -428,6 +480,7 @@ function claim(ctx, rules) {
 
 /** @type {import('claude-code').Register} */
 export const register = (on, options, clock = Date.now) => {
+  triggerClock = clock;
   enabled = options?.enabled === true;
   reserve = options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
   // Host userConfig defaults arrive as explicit options: max_per_context only applies with time_reserve.
@@ -440,14 +493,55 @@ export const register = (on, options, clock = Date.now) => {
     if (Number.isInteger(envLimit) && envLimit > 0) limit = envLimit;
   }
   contexts = new Map();
-  on('prompt.context', async ($, e, next) => {
+  pendingHealth = emptyHealth();
+  lastHealthFlush = Date.now();
+  on('prompt.context', promptContextEvent);
+  on('session.compact', sessionCompactEvent);
+  on('prompt.submit', promptSubmitEvent);
+  on('turn.complete', turnCompleteEvent);
+  on('tool.call', toolCallEvent);
+};
+
+let triggerClock = Date.now;
+async function trackedEvent($, e, next, work) {
+  if (!enabled) return next(e);
+  const start = Date.now();
+  let downstreamMs = 0, healthMs = 0, downstreamError = false;
+  const timedNext = async (value) => {
+    const began = Date.now();
+    try { return await next(value); }
+    catch (error) { downstreamError = true; throw error; }
+    finally { downstreamMs += Date.now() - began; }
+  };
+  try {
+    if (work === 'prompt.context') return await promptContextWork($, e, timedNext);
+    if (work === 'session.compact') return await sessionCompactWork($, e, timedNext);
+    if (work === 'prompt.submit') return await promptSubmitWork($, e, timedNext);
+    if (work === 'turn.complete') return await turnCompleteWork($, e, timedNext);
+    return await toolCallWork($, e, timedNext);
+  } catch (error) {
+    if (!downstreamError) {
+      const began = Date.now();
+      try { await recordHealth($, null, error.message).catch(() => {}); }
+      finally { healthMs += Date.now() - began; }
+    }
+    throw error;
+  } finally { await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {}); }
+}
+async function promptContextEvent($, e, next) { return trackedEvent($, e, next, 'prompt.context'); }
+async function sessionCompactEvent($, e, next) { return trackedEvent($, e, next, 'session.compact'); }
+async function promptSubmitEvent($, e, next) { return trackedEvent($, e, next, 'prompt.submit'); }
+async function turnCompleteEvent($, e, next) { return trackedEvent($, e, next, 'turn.complete'); }
+async function toolCallEvent($, e, next) { return trackedEvent($, e, next, 'tool.call'); }
+
+async function promptContextWork($, e, next) {
     if (enabled) {
       try { if (!(await $.session.messages()).some((message) => message?.role === 'assistant')) { contexts.delete(MAIN); currentMain++; } } catch { /* Message history may be unavailable at startup. */ }
        await rulesFor($, await context($, MAIN), e.cwd ?? '.');
     }
     return next(e);
-  });
-  on('session.compact', async ($, e, next) => {
+}
+async function sessionCompactWork($, e, next) {
     const result = await next(e);
      if (!result || typeof result !== 'object' || !('skip' in result)) {
        const loop = agentLoop(e.agentId), ctx = contexts.get(loop);
@@ -462,13 +556,13 @@ export const register = (on, options, clock = Date.now) => {
        }
      }
     return result;
-  });
-  on('prompt.submit', async ($, e, next) => {
+}
+async function promptSubmitWork($, e, next) {
     if (!enabled) return next(e);
     const ctx = await context($, MAIN);
      await rulesFor($, ctx, e.cwd ?? '.');
        const triggerErrors = [];
-        const budget = regexCallBudget(clock);
+        const budget = regexCallBudget(triggerClock);
           const candidates = await selected($, ctx, ctx.rules, e, true, { errors: triggerErrors, budget });
         await journal($, [], MAIN, [], [], [], { channel: 'prompt.submit', triggerErrors });
         if (budget.exhausted) await progress($, exhaustionNotice(budget));
@@ -498,8 +592,8 @@ export const register = (on, options, clock = Date.now) => {
         for (const rule of chosen) for (const state of new Set([prompting, ctx.prompting])) if (state.get(rule.name) === reservation) state.delete(rule.name);
         release();
      }
-  });
-  on('turn.complete', async ($, e, next) => {
+}
+async function turnCompleteWork($, e, next) {
     const result = await next(e);
      if (enabled) {
        const loop = agentLoop(e.agentId);
@@ -508,9 +602,9 @@ export const register = (on, options, clock = Date.now) => {
        await closeCorrelation($, ctx, loop);
      }
     return result;
-  });
+}
   // One matcherless tool.call handler: the host permits only one per module.
-  on('tool.call', async ($, e, next) => {
+async function toolCallWork($, e, next) {
     if (!enabled) return next(e);
     const loop = agentLoop(e.agentId);
     const existing = contexts.get(loop);
@@ -522,7 +616,7 @@ export const register = (on, options, clock = Date.now) => {
       const measured = new Set();
      await evaluate($, ctx, e, loop, measured);
       const triggerErrors = [];
-      const budget = regexCallBudget(clock);
+      const budget = regexCallBudget(triggerClock);
        if (textOf(e) === null) for (const rule of rules) {
         if (budget.exhausted) break;
         let failed = false;
@@ -577,7 +671,6 @@ export const register = (on, options, clock = Date.now) => {
      }
     for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
-  });
-};
+}
 
-export function resetForSelftest() { contexts = new Map(); queue = Promise.resolve(); counter = 0; currentMain = 0; logged.clear(); }
+export function resetForSelftest() { contexts = new Map(); queue = Promise.resolve(); counter = 0; currentMain = 0; logged.clear(); pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

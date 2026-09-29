@@ -438,13 +438,13 @@ async function withScopeLock(root, scope, fn) {
 
 export async function migrateRule(root, rule, spec, proof, { scope = 'project', mirrorDirs = [], io } = {}) {
  return withScopeLock(root, scope, async () => {
-    const { paths, rendered } = await migrationPreflight(root, rule, spec, scope);
+     const { paths, body, rendered } = await migrationPreflight(root, rule, spec, scope);
    const mirrorPlans = await planMirrors(root, paths.source, paths.destination, mirrorDirs, scope, 'migrate', paths.name);
     await transaction(root, scope, paths.source, paths.destination, rendered, mirrorPlans, { entry: {
     action: 'migrate', scope, rule: paths.name,
     from: ledgerPath(root, paths.source), to: ledgerPath(root, paths.destination),
     mirrors: mirrorPlans.map((plan) => ({ from: plan.from, to: plan.to })),
-    triggersHash: triggersHash(spec.triggers), ...proof,
+     triggersHash: triggersHash(spec.triggers), ...proof, bodyHash: createHash('sha256').update(body).digest('hex'),
      }, io });
    return paths;
  });

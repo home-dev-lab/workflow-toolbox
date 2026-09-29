@@ -39,8 +39,39 @@ classifier is measurement-only and often answers “not applicable”. The
 even when an agent definition pins it.
 `gate-background` recognises a fixed build-command vocabulary. A refusal on an
 Agent spawn inside a subagent was missed in one real session (under investigation).
-Store writes serialize within one process; concurrent sessions sharing a store
- may lose a measurement.
+Store writes serialize within one process. Health counters accumulate in memory
+and flush per turn (also after 60 seconds, 50 calls, or an error); at most one
+turn of counters may be lost if the process dies before a flush. Concurrent
+sessions sharing a store may lose a measurement: health and served counters
+remain **lower bounds** under concurrent sessions.
+
+`quality-check.mjs` adds reporting-only continuous measures to `quality-DATE.json`
+and `latest.json`: per-rule trigger misses (unmatched/engine/unattributable),
+delivery noise, served versus static bytes (tokens estimated as bytes/4),
+scanner-check coverage, migration and adopted-copy drift, unserved follow-through
+(delete candidate), served violations (guard candidate), and a volume-based
+recheck. Global coverage separates governed acts lacking a scanner check from
+unmatched act candidates; engine health includes daily errors, slow calls and
+store growth. Suggestions are proposals, never file operations. Each result
+uses rule identity `scope:rulesDir:rule`. The raw scan evidence is archived in
+`measure-rows-DATE.jsonl` alongside verdicts (14 dated files retained per kind);
+`measures-state.json` keeps the stable act IDs seen in the current scan window,
+pending new acts, and last run/evaluation times per rule. First run evaluates
+all rules; later runs re-evaluate after `--volume N` new observable acts (default
+20). A run gap longer than the scan window is reported without stopping accumulation.
+Static cost includes only contexts with a timestamp inside that window; undated
+contexts are reported separately. Health windows are whole UTC days, include
+today, and flag requests beyond the 31-day retained history. Missing health from
+any scanned config directory is listed as unrecorded. Conflicting shipped
+fingerprints across applicable plugin installs make adopted drift unknown.
+
+Rule verdicts are `OK`, `watch`, `problem`, or `unknown`: `watch` has 1–4
+cases and prints **counts only**, never a rate; `unknown` means evidence cannot
+decide (including missing health, source or migration history). A rule without a
+scanner check reports unmeasurable misses/noise. `--strict-measures` makes the
+quality-check CLI exit **3** on incomplete/unknown/watch measures or **4** when
+any rule or engine health is a problem (4 takes precedence). Without the option
+the daily job retains its previous exit behavior.
 
 The first quality run reports "never" until a check finishes. Later startup
 messages name incomplete coverage, unchecked scopes and dry-run rollback reasons.

@@ -108,7 +108,7 @@ function parseCompliance(lines, complianceAt, name) {
   throw new Error(`unknown compliance kind: ${data.kind ?? '(missing)'}`);
 }
 
-export function parseRuntimeRule(name, text) {
+export function parseRuntimeRule(name, text, { rawTriggers = false } = {}) {
   if (new TextEncoder().encode(text).length > RULE_CAP) throw new Error(`${name}: rule exceeds ${RULE_CAP} bytes`);
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
   if (!match) throw new Error('missing YAML frontmatter');
@@ -164,5 +164,6 @@ export function parseRuntimeRule(name, text) {
        commandHead: entry['command-head'] === 'true',
     };
   });
-  return { name, content: text.slice(match[0].length), triggers, compliance: parseCompliance(lines, complianceAt, name) };
+  return { name, content: text.slice(match[0].length), triggers, compliance: parseCompliance(lines, complianceAt, name),
+    ...(rawTriggers ? { rawTriggers: records } : {}) };
 }
