@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Release certification (`pnpm certify`) holds one exclusive FIFO suite lease through all gates and the on-disk receipt, recording load admission and gate results. Package scripts and non-watch Vitest runs also take exclusive leases; the lease ends after the direct child exits (or Vitest itself exits), and background descendants are outside coverage. Interactive commands keep their controlling terminal. Nested commands use one inherited domain marker and never queue behind their own holder. The lane broker proxies through the same filesystem mutex, answers status without acquiring (an older broker's status is reported as unavailable, never guessed), and signals readiness only after listen completes. A saturated broker's refusal exits 75 with the holder named, like a timeout.
 - wt-rules-on-demand tool triggers can use the registered `lsp-symbol-grep` detector to serve rules only for symbol searches in code covered by an enabled, resolvable language server, respecting profile extension mutes. `next-call` compliance records whether the first later matching tool call used the required tool at call start, including calls subsequently refused or denied; transcript tooling marks environment-dependent trigger proof unknown and uses live store verdicts for this kind.
 
 ### Fixed

@@ -579,7 +579,7 @@ function laneWritablePredicate(roots, fs, hostPath = path) {
 
 // The host suite lock root is never a lane-writable root on Linux: a sandboxed lane takes the lock through the
 // host broker. Only the Windows preflight (no sandbox) names it, as a location an unsandboxed lane can write.
-function effectiveWritableRoots({ workdir, selected, git, env, paths, extras, runtimeDir, readonlyCwd, suiteLock = null }) {
+function effectiveWritableRoots({ workdir, selected, git, paths, extras, runtimeDir, readonlyCwd, suiteLock = null }) {
   return [...(readonlyCwd ? [] : workdir), ...(selected.writable ?? []), ...git.writable, ...(suiteLock ? [suiteLock] : []), ...(paths.writable ?? []), ...extras.writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), runtimeDir]
 }
 
@@ -775,7 +775,7 @@ function networkBridges({ network, socketDir, execPath, egressLog }) {
   return bridges
 }
 
-// Starts every host bridge and waits for its socket. A bridge whose socket never appears REFUSES
+// Starts every host bridge and waits for its socket (or, for the broker, its listen acknowledgement). A bridge whose socket never appears REFUSES
 // the launch (the lane would otherwise start with a launch line claiming a route that does not
 // exist); a bridge that dies later says so on the lane's diagnostics stream (its run log).
 function bridgeName(bridge) {
@@ -799,10 +799,12 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
   // A host bridge's unix socket appears asynchronously. Wait for it BEFORE the sandbox starts, or
   // the lane's first connection races the socket into existence and is refused (measured).
     const deadline = Date.now() + 3_000
-    for (const { sock } of bridges) {
-      while (!fs.exists(sock) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    // Synthetic filesystem plans do not launch runLaneHelper and cannot publish its acknowledgement.
+    const readyPath = (bridge) => bridge.hostOnly && fs === realFs && spawnFn === spawn ? `${bridge.sock}.ready` : bridge.sock
+    for (const bridge of bridges) {
+      while (!fs.exists(readyPath(bridge)) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
     }
-    const missing = bridges.filter(({ sock }) => !fs.exists(sock))
+    const missing = bridges.filter((bridge) => !fs.exists(readyPath(bridge)))
     if (missing.length) {
       const names = missing.map(bridgeName).join(', ')
       throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)

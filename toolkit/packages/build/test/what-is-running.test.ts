@@ -17,10 +17,11 @@ const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtur
 const PHASE_COST_FIXTURE = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'phase-cost.json')
 const SNAPSHOT_CLI = join(REPO_ROOT, 'plugin', 'hooks', 'snapshot-cli')
 
-function runSelftest(filter?: string) {
+function runSelftest(filter?: string, timeout?: number) {
   return spawnSync(process.execPath, [SELFTEST], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    timeout,
     env: { ...process.env, ...(filter ? { WT_WIR_SELFTEST_FILTER: filter } : {}), NODE_NO_WARNINGS: '1' },
   })
 }
@@ -1050,10 +1051,20 @@ describe('What is running collector seam', () => {
   })
 
   it.skipIf(process.platform !== 'linux')('runs every assertion from the ported hardened selftest (requires /proc)', () => {
-    const result = runSelftest()
+    // This enumerates real /proc and launches many subprocesses. Under host load the
+    // synchronous selftest can exceed the ordinary 60 s bound; give this one workload a
+    // bounded 150 s child budget, and report its own timeout rather than a Vitest hang.
+    const result = runSelftest(undefined, 150_000)
+    expect(result.error, result.stderr || result.stdout).toBeUndefined()
     expect(result.status, result.stderr || result.stdout).toBe(0)
     expect(result.stdout).toContain('tests: ')
-  }, 60_000)
+  }, 180_000)
+
+  it('counts completed collections rather than scheduled ticks under deterministic collector delay', () => {
+    const result = runSelftest('polling is 2 seconds', 30_000)
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 1/1')
+  }, 40_000)
 
   it('keeps pane-open state local to one session registration', () => {
     const result = runSelftest('[per-session pane state] one registration')

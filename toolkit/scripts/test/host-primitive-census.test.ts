@@ -109,7 +109,8 @@ describe('raw host primitive quality ratchet', () => {
     }
 
     expect(manifest.scripts['quality:host']).toBe('node scripts/host-primitive-census.mjs')
-    expect(manifest.scripts.quality).toContain('pnpm run quality:host')
+    expect(manifest.scripts.quality).toContain('script-gates.mjs quality')
+    expect(readFileSync(join(TOOLKIT_ROOT, 'scripts/script-gates.mjs'), 'utf8')).toContain("'quality:host'")
     expect(manifest.scripts.lint).not.toContain('host-primitive-census')
   })
 })
