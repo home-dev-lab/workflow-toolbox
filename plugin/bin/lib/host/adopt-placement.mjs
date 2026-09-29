@@ -13,3 +13,11 @@ export function isOnDemandDir(dir) {
     ? name.toLowerCase() === 'rules-on-demand'
     : name === 'rules-on-demand'
 }
+
+export function readRuleText(file) {
+  try {
+    return fs.readFileSync(file, 'utf8')
+  } catch {
+    return ''
+  }
+}

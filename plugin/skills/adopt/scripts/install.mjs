@@ -69,7 +69,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { isOnDemandDir } from '../../../bin/lib/host/adopt-placement.mjs'
+import { isOnDemandDir, readRuleText } from '../../../bin/lib/host/adopt-placement.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -2288,7 +2288,7 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
       try {
         const target = path.join(dir, item.file)
         const status = classify(target, set).state
-        if (status !== 'absent' && onDemandFrontmatter(fs.readFileSync(target, 'utf8'))) {
+        if (status !== 'absent' && onDemandFrontmatter(readRuleText(target))) {
           // Its own on-demand head is what the engine serves by: a deliberate migration.
           process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
         } else if (status !== 'absent') {
