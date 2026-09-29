@@ -25,7 +25,7 @@ import {
   renameSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterAll, afterEach, describe, it, expect } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
@@ -67,6 +67,8 @@ function copiedPlugin(): { script: string; spec: string } {
   }
   mkdirSync(join(plugin, 'bin/lib'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(plugin, 'bin/lib/remedy-quote.mjs'))
+  mkdirSync(join(plugin, 'bin/lib/host'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(plugin, 'bin/lib/host/adopt-placement.mjs'))
   return { script: join(plugin, 'skills/adopt/scripts/install.mjs'), spec: join(plugin, 'rules/wt-task-tracking-at-act.spec.json') }
 }
 function runCopied(script: string, args: string[], dir: string) {
@@ -112,7 +114,7 @@ const autonomyPath = (dir: string) => join(dir, '.claude', AUTONOMY)
 // that only lowered the version number would describe a copy that is legitimately up to
 // date, and could no longer exercise staleness at all.
 function ageRuleCopy(file: string, version = '0.0.1'): void {
-  const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+  const body = readFileSync(join(REPO_ROOT, 'plugin/rules', basename(file)), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
   const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
   writeFileSync(file, `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt skill -->\n\n${body}`)
 }
@@ -125,6 +127,56 @@ function addOnDemandFrontmatter(dir: string): void {
 }
 
 describe('adopt installer — edit-safety contract (committed drift lock)', () => {
+  it('installs and refreshes only spec-backed rules in an on-demand directory, preserving misplaced static copies', () => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    const first = runResult(['--set', 'rules', '--install'], dir)
+    expect(first.status, first.out).toBe(0)
+    expect(existsSync(join(dir, ACT))).toBe(true)
+    const writtenRules = readdirSync(dir).filter((name) => name.endsWith('.md'))
+    expect(writtenRules.length).toBeGreaterThan(0)
+    for (const file of writtenRules) {
+      expect(existsSync(join(REPO_ROOT, 'plugin/rules', file.replace(/\.md$/, '.spec.json'))), file).toBe(true)
+    }
+    const misplaced = join(dir, RULE)
+    writeFileSync(misplaced, 'local static rule\n')
+    const checked = run(['--set', 'rules', '--check'], dir)
+    expect(checked).toContain(`${RULE}: MISPLACED`)
+    run(['--set', 'rules', '--install', '--force'], dir)
+    expect(readFileSync(misplaced, 'utf8')).toBe('local static rule\n')
+    expect(existsSync(join(dir, ACT))).toBe(true)
+  })
+
+  it('filters rules through a differently named symlink to an on-demand directory', () => {
+    const root = mkDir()
+    const demand = join(root, 'rules-on-demand')
+    const alias = join(root, 'demand-alias')
+    mkdirSync(demand)
+    symlinkSync(demand, alias, 'dir')
+    const result = runResult(['--set', 'rules', '--install'], alias)
+    expect(result.status, result.out).toBe(0)
+    const writtenRules = readdirSync(demand).filter((name) => name.endsWith('.md'))
+    expect(writtenRules.length).toBeGreaterThan(0)
+    for (const file of writtenRules) {
+      expect(existsSync(join(REPO_ROOT, 'plugin/rules', file.replace(/\.md$/, '.spec.json'))), file).toBe(true)
+    }
+    expect(existsSync(join(demand, RULE))).toBe(false)
+  })
+
+  it.each(['win32', 'darwin'])('recognizes case-folded on-demand target on %s', (platform) => {
+    const dir = join(mkDir(), 'RULES-ON-DEMAND')
+    const source = `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} }); process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, '--set', 'rules', '--install', '--dir', ${JSON.stringify(dir)}]; await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(result.status, result.stderr).toBe(0)
+    expect(existsSync(join(dir, ACT))).toBe(true)
+    expect(existsSync(join(dir, RULE))).toBe(false)
+  })
+
+  it('keeps the static target able to install both rule halves without an on-demand engine', () => {
+    const dir = join(mkDir(), 'rules', 'wt')
+    expect(runResult(['--set', 'rules', '--install'], dir).status).toBe(0)
+    expect(existsSync(join(dir, RULE))).toBe(true)
+    expect(existsSync(join(dir, ACT))).toBe(true)
+  })
   it.each(['win32', 'linux'])('quotes printed trigger remedies for injected %s', (platform) => {
     const { dir, file } = actFixture()
     writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
@@ -274,7 +326,7 @@ describe('adopt installer — rules-on-demand copies', () => {
     ['trailing comment', '---\non-demand: # engine\n---\n'],
     ['inline map', '---\non-demand: {triggers: [Edit]}\n---\n'],
   ])('recognizes the top-level on-demand key with a %s', (_label, frontmatter) => {
-    const dir = join(mkDir(), 'rules-on-demand')
+    const dir = join(mkDir(), 'rules', 'wt')
     run(['--set', 'rules', '--install'], dir)
     for (const file of readdirSync(dir).filter((name) => name.endsWith('.md'))) {
       const target = join(dir, file)
@@ -287,7 +339,7 @@ describe('adopt installer — rules-on-demand copies', () => {
   })
 
   it('classifies the adopted BODY behind on-demand frontmatter and detects a real body edit', () => {
-    const dir = join(mkDir(), 'rules-on-demand')
+    const dir = join(mkDir(), 'rules', 'wt')
     run(['--set', 'rules', '--install'], dir)
     addOnDemandFrontmatter(dir)
 
@@ -297,7 +349,7 @@ describe('adopt installer — rules-on-demand copies', () => {
   })
 
   it('refreshes a stale on-demand copy in place and preserves its frontmatter byte for byte', () => {
-    const dir = join(mkDir(), 'rules-on-demand')
+    const dir = join(mkDir(), 'rules', 'wt')
     run(['--set', 'rules', '--install'], dir)
     addOnDemandFrontmatter(dir)
     ageRuleCopy(rulePath(dir))
@@ -319,14 +371,14 @@ describe('adopt installer — rules-on-demand copies', () => {
     mkdirSync(project, { recursive: true })
     run(['--set', 'rules', '--install'], target)
     addOnDemandFrontmatter(target)
-    ageRuleCopy(rulePath(target))
-    writeFileSync(rulePath(target), ON_DEMAND_FRONTMATTER + readFileSync(rulePath(target), 'utf8'))
+    ageRuleCopy(join(target, ACT))
+    writeFileSync(join(target, ACT), specHead() + readFileSync(join(target, ACT), 'utf8'))
     const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
 
     const result = runInCwdResult(['--set', 'rules', '--install'], project, env)
     expect(result.status).toBe(0)
     expect(result.out).toContain(`[rules] target=${target}`)
-    expect(result.out).toContain(`${RULE}: REFRESHED`)
+    expect(result.out).toContain(`${ACT}: REFRESHED`)
     expect(existsSync(join(config, 'rules', 'wt', RULE))).toBe(false)
   })
 
@@ -371,7 +423,7 @@ describe('adopt installer — rules-on-demand copies', () => {
     const config = join(root, 'config')
     const staticDir = join(config, 'rules', 'wt')
     const onDemandDir = join(config, 'rules-on-demand')
-    const moved = 'wt-memory-hygiene.md'
+    const moved = 'wt-memory-hygiene-at-act.md'
     run(['--set', 'rules', '--install'], staticDir)
     mkdirSync(onDemandDir, { recursive: true })
     renameSync(join(staticDir, moved), join(onDemandDir, moved))
@@ -390,7 +442,7 @@ describe('adopt installer — rules-on-demand copies', () => {
     const config = join(root, 'config')
     const staticDir = join(config, 'rules', 'wt')
     const onDemandDir = join(config, 'rules-on-demand')
-    const moved = 'wt-memory-hygiene.md'
+    const moved = 'wt-memory-hygiene-at-act.md'
     mkdirSync(project, { recursive: true })
     run(['--set', 'rules', '--install'], staticDir)
     mkdirSync(onDemandDir, { recursive: true })
@@ -1802,6 +1854,8 @@ function makePluginCopy(version = '0.0.1'): { pluginRoot: string; script: string
   cpSync(SCRIPT, join(scriptDir, 'install.mjs'))
   mkdirSync(join(pluginRoot, 'bin/lib'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(pluginRoot, 'bin/lib/remedy-quote.mjs'))
+  mkdirSync(join(pluginRoot, 'bin/lib/host'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(pluginRoot, 'bin/lib/host/adopt-placement.mjs'))
   return { pluginRoot, script: join(scriptDir, 'install.mjs'), agentsDir: join(pluginRoot, 'agents') }
 }
 

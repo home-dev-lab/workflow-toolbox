@@ -161,6 +161,91 @@ function runPostToolUsePushHook(
 }
 
 describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
+  it('reports an old static copy in the on-demand directory with an exact removal remedy', () => {
+    const f = fixture('misplaced-static')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    mkdirSync(demandDir, { recursive: true })
+    writeFileSync(join(demandDir, RULE), readFileSync(join(staticDir, RULE), 'utf8'))
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain(`${RULE}: MISPLACED`)
+    expect(context).toContain('DOUBLE-LOAD')
+    expect(context).toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
+    expect(context).not.toContain(`--install --dir ${remedyWord(demandDir)}`)
+  })
+
+  it('names a file symlink for inspection without a removal command', () => {
+    const f = fixture('misplaced-file-link')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    mkdirSync(demandDir)
+    symlinkSync(join(staticDir, RULE), join(demandDir, RULE))
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain(`${RULE}: MISPLACED`)
+    expect(context).toContain('Inspect')
+    expect(context).not.toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
+  })
+
+  it('does not recommend removing a misplaced file backing a checked static symlink', () => {
+    const f = fixture('static-file-link')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    mkdirSync(demandDir)
+    const misplaced = join(demandDir, RULE)
+    writeFileSync(misplaced, readFileSync(join(staticDir, RULE), 'utf8'))
+    rmSync(join(staticDir, RULE))
+    symlinkSync(misplaced, join(staticDir, RULE))
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain(`${RULE}: MISPLACED`)
+    expect(context).toContain('Inspect')
+    expect(context).not.toContain(`rm -- ${remedyWord(misplaced)}`)
+  })
+
+  it('requires preserving local edits before removing an edited misplaced copy', () => {
+    const f = fixture('misplaced-edited')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    mkdirSync(demandDir)
+    writeFileSync(join(demandDir, RULE), readFileSync(join(staticDir, RULE), 'utf8') + '\nMY LOCAL EDIT\n')
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain(`${RULE}: MISPLACED`)
+    expect(context).toMatch(/carry .*edits.*static copy.*before.*remov/i)
+  })
+
+  it('never suggests installing static rules through a directory alias to on-demand', () => {
+    const f = fixture('static-alias-to-demand')
+    const staticAlias = join(f.proj, '.claude', 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(demandDir)
+    mkdirSync(join(f.proj, '.claude', 'rules'), { recursive: true })
+    symlinkSync(demandDir, staticAlias, 'dir')
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain('NOT installed')
+    expect(context).not.toContain(`--install --dir ${remedyWord(staticAlias)}`)
+    expect(context).toContain(`--install --dir ${remedyWord(join(f.proj, '.claude', 'rules'))}`)
+  })
+
+  it('suggests only location-correct installs for stale static and on-demand copies', () => {
+    const f = fixture('remedy-placement')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    installInto(demandDir)
+    writeFileSync(join(demandDir, RULE), readFileSync(join(staticDir, RULE), 'utf8'))
+    ageManagedRule(join(staticDir, RULE))
+    rmSync(join(staticDir, ACT))
+    const older = readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8') + '\nOLDER SHIPPED BODY\n'
+    writeManagedRule(join(demandDir, ACT), older, '0.0.1')
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain(`--install --dir ${remedyWord(staticDir)}`)
+    expect(context).toContain(`--install --dir ${remedyWord(demandDir)}`)
+    expect(context).toContain(`${ACT} (${demandDir})`)
+    expect(context).toContain(`${RULE}: MISPLACED`)
+  })
   it.each(['win32', 'linux'])('quotes printed remedies for injected %s', (platform) => {
     const f = fixture('platform remedy')
     const dir = join(f.cfg, 'rules-on-demand')
@@ -339,24 +424,26 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
   it.each([
     ['project', (f: ReturnType<typeof fixture>) => join(f.proj, '.claude', 'rules-on-demand')],
     ['global', (f: ReturnType<typeof fixture>) => join(f.cfg, 'rules-on-demand')],
-  ])('is SILENT when adopted on demand at the %s level', (_label, locate) => {
+  ])('reports missing static halves when adopted only on demand at the %s level', (_label, locate) => {
     const f = fixture('on-demand-current')
     installOnDemand(locate(f))
 
-    expect(runHook(f.proj, f.env).stdout).toBe('')
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain('rules NOT installed here:')
+    expect(context).toContain(RULE)
   })
 
   it('reports stale on-demand content at its real location without calling it absent', () => {
     const f = fixture('on-demand-stale')
     const dir = join(f.cfg, 'rules-on-demand')
     installOnDemand(dir)
-    ageManagedRule(join(dir, RULE))
-    writeFileSync(join(dir, RULE), ON_DEMAND_FRONTMATTER + readFileSync(join(dir, RULE), 'utf8'))
+    const body = readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8') + '\nOLDER SHIPPED BODY\n'
+    writeManagedRule(join(dir, ACT), body, '0.0.1')
 
     const result = runHook(f.proj, f.env)
-    expect(result.context).toContain(`${RULE} (${dir})`)
+    expect(result.context).toContain(`${ACT} (${dir})`)
     expect(result.context).toContain(`--set rules --install --dir ${remedyWord(dir)}`)
-    expect(result.context).not.toContain('NOT installed')
+    expect(result.context).toContain('NOT installed')
   })
 
   it('reports a static plus on-demand copy as a double load', () => {

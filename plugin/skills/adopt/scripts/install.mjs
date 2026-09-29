@@ -69,6 +69,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
+import { isOnDemandDir } from '../../../bin/lib/host/adopt-placement.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -329,6 +330,16 @@ function discoverRuleItems(root) {
     .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
     .sort()
     .map((file) => ({ file }))
+}
+
+function ruleSpecPath(root, file) {
+  return path.join(root, 'rules', file.replace(/\.md$/, '.spec.json'))
+}
+
+// A shipped rule with an on-demand spec is the on-demand half. The same spec
+// supplies its trigger head below; no filename-only second classification.
+function isOnDemandRule(root, item) {
+  return readJsonObject(ruleSpecPath(root, item.file), 'on-demand spec').kind !== 'missing'
 }
 
 /** The pilot delegation suite, installed as editable project copies. Content is NOT
@@ -599,7 +610,7 @@ function renderSpecHead(spec) {
 
 function shippedSpecHead(set, item, root, installedHead) {
   if (set.kind !== 'rules' || !installedHead) return null
-  const specFile = path.join(root, 'rules', item.file.replace(/\.md$/, '.spec.json'))
+  const specFile = ruleSpecPath(root, item.file)
   const read = readJsonObject(specFile, 'on-demand spec')
   if (read.kind === 'missing') return null
   if (read.kind !== 'ok') fail(`invalid shipped on-demand spec: ${specFile}`)
@@ -1136,6 +1147,7 @@ function adoptionDirectoryInfo(dir) {
 function adoptedFiles(set, dir, root) {
   return new Set(
     set.resolveItems(root)
+      .filter((item) => set.kind !== 'rules' || !isOnDemandDir(dir) || isOnDemandRule(root, item))
       .filter((item) => hasAdoptionBanner(set, path.join(dir, item.file)))
       .map((item) => item.file),
   )
@@ -2252,7 +2264,9 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   const nestedDir = explicitNestedTarget(set, dir, args)
   const onDemandDir = siblingOnDemandDir(set, dir, args)
   const alternateDirs = { nested: nestedDir, onDemand: onDemandDir }
-  const items = set.resolveItems(root)
+  const allItems = set.resolveItems(root)
+  const demand = set.kind === 'rules' && isOnDemandDir(dir)
+  const items = demand ? allItems.filter((item) => isOnDemandRule(root, item)) : allItems
   if (args.file && !items.some((item) => item.file === args.file)) {
     fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
   }
@@ -2268,6 +2282,18 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   for (const item of items.filter((candidate) =>
     (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
     mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, alternateDirs))
+  }
+  if (demand && args.mode === 'check' && !args.file) {
+    for (const item of allItems.filter((candidate) => !isOnDemandRule(root, candidate))) {
+      try {
+        const status = classify(path.join(dir, item.file), set).state
+        if (status !== 'absent') {
+          process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
+        }
+      } catch {
+        // An unreadable/non-file candidate cannot be diagnosed as a rule.
+      }
+    }
   }
   return state
 }
@@ -2862,7 +2888,8 @@ function mergeSetState(state, result) {
 
 function managedSetGroups(set, fallbackDir, resolution, root) {
   if (!resolution) return new Map([[fallbackDir, null]])
-  const defaultDir = resolution.defaultDir || fallbackDir
+  const candidate = resolution.defaultDir
+  const defaultDir = candidate && !(set.kind === 'rules' && isOnDemandDir(candidate)) ? candidate : fallbackDir
   const groups = new Map()
   for (const item of set.resolveItems(root)) {
     const dir = resolution.itemDirs.get(item.file) || defaultDir
