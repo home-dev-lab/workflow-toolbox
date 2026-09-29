@@ -98,7 +98,7 @@ describe('raw host primitive quality ratchet', () => {
     // The model-fallback CLI, tracker and hook add three files but no raw host primitives.
     // The TypeScript pack adds a protocol-only entry; its host reads and spawn remain under bin/lib/host.
     // The push-guard installer is another CLI; its host operations stay in bin/lib/host.
-    // The remedy-quote helper adds one; it defaults to process.platform and performs no host operation.
+    // The remedy-quote helper adds one; its POSIX-style quoting performs no host operation.
     expect(result.perimeterFiles).toBe(249)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })

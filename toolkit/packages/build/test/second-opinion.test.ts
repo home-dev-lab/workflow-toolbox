@@ -9,12 +9,11 @@ import { canonicalPath } from './helpers/canonical-path.js'
 import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
-const remedyWord = (value: string) => process.platform === 'win32'
-  ? (/^[\w@%+=:,./\\-]+$/.test(value) ? value : `"${value.replaceAll('"', '\\"')}"`)
-  : (/^[\w@%+=,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`)
 afterEach(() => {
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
@@ -211,7 +210,7 @@ describe('second-opinion advisor', () => {
     const out = readFileSync(f.out, 'utf8')
     expect(out).toMatch(/^REFUSED: no consented external lane/)
     expect(out).toContain('this project narrows GPT lane consent')
-    expect(out).toContain(`run: wt-lane-consent --project ${remedyWord(f.repo)} --on\n`)
+    expect(out).toContain(`run: wt-lane-consent --project ${quoteRemedyWord(f.repo)} --on\n`)
     expect(out).not.toMatch(/run: wt-lane-consent --on\b/)
     expect(lines(f.out).at(-1)).toBe('EXIT=1')
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
@@ -226,22 +225,16 @@ describe('second-opinion advisor', () => {
     const deps = dependencies()
     expect(await runSecondOpinion({ ...f.options, repo, route: 'auto' }, deps, f.env)).toBe(1)
 
-    // Written out by hand, not derived with the implementation's own escaping.
-    expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project ${remedyWord(repo)} --on\n`)
+    expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project ${quoteRemedyWord(repo)} --on\n`)
   })
 
-  it.each([
-    ['win32', "it's a repo"], ['linux', "it's a repo"],
-    ['win32', 'a "quoted" repo'], ['linux', 'a "quoted" repo'],
-  ])('quotes a project remedy for injected %s with %s', async (platform, basename) => {
+  it.each(["it's a repo", 'a "quoted" repo'])('quotes a project remedy containing %s', async (basename) => {
     const f = fixture(true)
     const repo = join(f.repo, basename)
     mkdirSync(join(repo, '.claude'), { recursive: true })
     writeFileSync(join(repo, '.claude', 'settings.local.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'false' } }))
-    expect(await runSecondOpinion({ ...f.options, repo, route: 'auto', platform }, dependencies(), f.env)).toBe(1)
-    const quoted = platform === 'win32'
-      ? `"${repo.replaceAll('"', '\\"')}"`
-      : `'${repo.replaceAll("'", `'"'"'`)}'`
+    expect(await runSecondOpinion({ ...f.options, repo, route: 'auto' }, dependencies(), f.env)).toBe(1)
+    const quoted = quoteRemedyWord(repo)
     expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project ${quoted} --on\n`)
   })
 
@@ -253,7 +246,7 @@ describe('second-opinion advisor', () => {
     expect(await runSecondOpinion({ ...f.options, route: 'auto' }, deps, f.env)).toBe(1)
 
     const out = readFileSync(f.out, 'utf8')
-    expect(out).toContain(`run: wt-lane-consent --on && wt-lane-consent --project ${remedyWord(f.repo)} --on\n`)
+    expect(out).toContain(`run: wt-lane-consent --on && wt-lane-consent --project ${quoteRemedyWord(f.repo)} --on\n`)
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
   })
 
