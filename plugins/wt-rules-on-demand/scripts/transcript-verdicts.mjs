@@ -90,7 +90,8 @@ async function loadScopes(scopes, migrationDate, lastChange, stats) {
       if (['check', 'bash-command', 'tool-input', 'turn-correlation', 'unregistered'].includes(rule.compliance?.kind)) {
         stats.coverage.checkableRules++;
         if (!migrated) stats.coverage.unknownMigrationDates.push(`${scope.scope} ${name}`);
-      } else stats.coverage.unmeasuredRules.push({ rule: `${scope.scope} ${name}`, reason: `scanner cannot measure ${rule.compliance?.kind ?? 'none'}` });
+       } else stats.coverage.unmeasuredRules.push({ rule: `${scope.scope} ${name}`, reason: rule.compliance?.kind === 'next-call'
+         ? 'next-call is not transcript-measured; use live store verdicts (window and detector state unavailable)' : `scanner cannot measure ${rule.compliance?.kind ?? 'none'}` });
       rules.push({ ...rule, migrated, cutoff: Date.parse(migrated ?? '') || 0, lastChange: Date.parse(await dated(lastChange) ?? '') || 0 });
     }
     return { ...scope, rules };
@@ -98,6 +99,7 @@ async function loadScopes(scopes, migrationDate, lastChange, stats) {
 }
 
 function matches(rule, use) {
+  if (rule.triggers.some((trigger) => trigger.detector)) return 'unknown'; // Host machine state cannot be reconstructed.
   const input = use.input ?? {};
   return rule.triggers.some((trigger) => triggerMatches(trigger, { channel: 'tool', tool: use.name,
      command: input.command, path: input.file_path ?? input.path, input: use.argumentEvidence ?? argumentEvidence(input) }));
@@ -241,7 +243,8 @@ export function judge(context, resolved, path, stats, seen, now, collection) {
        if (rule.migrated && phase === 'before') verdict = 'static baseline';
        else if (rule.migrated && context.start >= rule.cutoff && active) {
           if (served) verdict = evaluated.verdict;
-         else verdict = time < rule.lastChange ? 'trigger miss (superseded)' : 'trigger miss';
+           else if (rule.triggers.some((trigger) => trigger.detector)) verdict = 'trigger unknown (environment-dependent detector)';
+           else verdict = time < rule.lastChange ? 'trigger miss (superseded)' : 'trigger miss';
        }
         rows.push({ rule: rule.name, scope: scope.scope, rulesDir: scope.rulesDir, migrated: rule.migrated, phase,
          checkVerdict: evaluated.verdict, triggerMatched: matches(rule, { name: call.name, input: call.input, argumentEvidence: call.argumentEvidence }), verdict, served,

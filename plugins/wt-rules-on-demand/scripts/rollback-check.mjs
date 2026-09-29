@@ -131,7 +131,8 @@ for (const name of names) {
   const rows = transcriptRows.filter((row) => row.rule === name && row.scope === scope && row.rulesDir && physicalOf.get(row.rulesDir) === realRulesDir);
   // A scan that contains no rows for a rule is still the authoritative window when --verdicts is supplied.
   const kind = /^\s{4}kind:\s*['"]?([^'"\s]+)/m.exec(await readFile(join(rulesDir, name), 'utf8'))?.[1];
-   const measured = options.verdictFiles.length && ['check', 'bash-command', 'tool-input', 'turn-correlation'].includes(kind);
+    // next-call is decided live, not reconstructed from transcripts, including when --verdicts is supplied.
+    const measured = options.verdictFiles.length && ['check', 'bash-command', 'tool-input', 'turn-correlation'].includes(kind);
   // Only transcripts can establish non-delivery. In store-only mode, a governed act without
   // a delivery record for this identity in its context is unknown, regardless of other fields.
   // When transcript verdicts are supplied, the scan window decides independently of old sessions.

@@ -11,9 +11,11 @@ const CAPTURE_STEP_LIMIT = 600000;
 // The wall deadline is authoritative under contention; a clock read every
 // 4096 steps costs less than one thousandth of the scanning work.
 export function regexCallBudget(clock = Date.now) {
-  const deadline = clock() + 2000;
+  let deadline = clock() + 2000;
   return {
     steps: 0, exhausted: false, unresolved: new Set(),
+     pause() { return clock(); },
+     resume(started) { deadline += Math.max(0, clock() - started); },
     check() {
       if (this.exhausted || this.steps >= 64000000 || clock() >= deadline) {
         this.exhausted = true;

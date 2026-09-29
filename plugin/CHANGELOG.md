@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- wt-rules-on-demand tool triggers can use the registered `lsp-symbol-grep` detector to serve rules only for symbol searches in code covered by an enabled, resolvable language server, respecting profile extension mutes. `next-call` compliance records whether the first later matching tool call used the required tool at call start, including calls subsequently refused or denied; transcript tooling marks environment-dependent trigger proof unknown and uses live store verdicts for this kind.
+
 ### Fixed
 - `wt-second-opinion --route auto` no longer falls back to a Claude Opus consult when GPT-lane consent is off or unreadable. A second opinion is meant to come from another model family, so `auto` now refuses with `EXIT=1`, says the second opinion should be asked of the user, and names the remedy for the level that refused: `wt-lane-consent --on` when the account setting is off, `wt-lane-consent --project <repo> --on` when the project narrows consent. `--route opus` still runs the Claude consult when requested explicitly. The `second-opinion` skill now states this purpose and the fallback to the user.
 - Adopt now refreshes unedited on-demand trigger frontmatter from the shipped spec, reports edited or unverifiable heads with per-file take/keep commands, and includes the shipped head under `--force`.

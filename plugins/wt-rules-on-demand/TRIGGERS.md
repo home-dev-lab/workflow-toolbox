@@ -45,7 +45,48 @@ Trigger keys: `kind` chooses bash/prompt/tool/path; `regex` matches the command,
 prompt or path; `tool` matches the tool name; `flags` supplies regular-expression
 flags; `unconditional: true` allows a tool trigger without `input-regex`;
 the JSON boolean is canonical in migration specs; strings `"true"` and `"false"` are also accepted.
-`input-regex` narrows a tool trigger to its argument JSON; `mentions: true`
+`input-regex` narrows a tool trigger to its argument JSON.
+`detector` names a registered, environment-dependent predicate on a tool trigger;
+registered detectors: `lsp-symbol-grep`. The tool regex, optional `input-regex`,
+and detector must all agree. Unknown names and detectors on other trigger kinds
+skip the file with a diagnostic. A detector failure is journaled as a trigger
+error and never causes a refusal, even on regex-budget exhaustion. This detector
+uses Grep's symbol-shaped pattern and the resolved language-server extensions of
+enabled plugins, then removes the extensions in `<config dir>/lsp-hint-skip.json`.
+Its availability scan is shared for identical config, canonical cwd and
+environment inputs within a context, rescanned when those inputs change,
+retried after a failed scan and refreshed after compaction. Unrecognized
+target glob syntax, including exclusions, does not qualify for refusal.
+
+```yaml
+---
+on-demand:
+  triggers:
+    - kind: 'tool'
+      tool: '^Grep$'
+      detector: 'lsp-symbol-grep'
+      before-first-act: true
+  compliance:
+    kind: 'next-call'
+    tool: '^(?:LSP|Grep)$'
+    require-tool: '^LSP$'
+    window: '3'
+    on-close: 'not applicable'
+---
+Use the language server for symbol navigation.
+```
+
+`next-call` judges the first later call whose tool matches `tool` when that
+call starts: `followed` if it also matches `require-tool`, otherwise `not
+followed`. A refusal, denial, drop or error after the start does not undo
+that choice. Every later call consumes one window unit, even if its tool does
+not match. Exhaustion without a match, turn end or compaction records
+`on-close`; a terminal window is recorded only once. The live store is
+authoritative: transcripts cannot reconstruct either the window or detector
+availability. Proof reports detector triggers as environment-dependent and
+unprovable from transcripts, rather than counting apparent Greps as matches.
+
+`mentions: true`
 includes read-only Bash mentions; `before-first-act: true` refuses a matching
 tool call once, delivering the rule text for a retry. Otherwise the rule rides
 along on the result: the call is already complete, though declarative checks
