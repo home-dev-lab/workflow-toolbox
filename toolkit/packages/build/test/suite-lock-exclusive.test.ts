@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 // @ts-expect-error runtime JavaScript under plugin/
 import { acquireSuiteLock, hasSuiteLeaseAsync, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
@@ -10,7 +11,7 @@ import { acquireSuiteLock, hasSuiteLeaseAsync, releaseSuiteLock } from '../../..
 import { runGate, certify } from '../../../scripts/release-certify.mjs'
 import { EventEmitter } from 'node:events'
 
-const ROOT = new URL('../../../..', import.meta.url).pathname
+const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
 const roots: string[] = []
 const root = () => { const name = mkdtempSync(join(tmpdir(), 'wt-exclusive-')); roots.push(name); return name }

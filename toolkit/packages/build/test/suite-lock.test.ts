@@ -443,7 +443,7 @@ describe('wt-suite-lock CLI', () => {
     const script = 'import pty,sys;sys.exit(pty.spawn(sys.argv[1:]))'
     const command = 'require("fs").openSync("/dev/tty","r");process.stdout.write("TTY OK")'
     const result = spawnSync('python3', ['-c', script, process.execPath, CLI, 'run', '--', process.execPath, '-e', command], {
-      encoding: 'utf8', timeout: 5000, env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+      encoding: 'utf8', timeout: 5000, env: { ...process.env, HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
     })
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain('TTY OK')
