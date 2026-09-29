@@ -80,22 +80,27 @@ function writeTurn() {
   return { previous, release };
 }
 const key = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
+// Reserve the new context and detach the victim before any close I/O: a concurrent caller for the
+// same loop then receives the same object, and no second caller can pick the same victim.
 const context = async ($, loop) => {
-  if (!contexts.has(loop)) {
-    if (contexts.size >= MAX_CONTEXTS) {
-      const oldest = [...contexts.keys()].find((name) => name !== MAIN);
-      if (oldest) {
-        const evicted = contexts.get(oldest);
-         const closing = detachNext(evicted);
-         for (const pending of evicted.pending.splice(0)) await close($, pending, oldest, 'context evicted');
-         for (const pending of closing) await close($, pending, oldest, 'context evicted');
-        await closeCorrelation($, evicted, oldest);
-        contexts.delete(oldest);
-      }
+  const existing = contexts.get(loop);
+  if (existing) return existing;
+  let victim = null;
+  if (contexts.size >= MAX_CONTEXTS) {
+    const oldest = [...contexts.keys()].find((name) => name !== MAIN);
+    if (oldest) {
+      const evicted = contexts.get(oldest);
+      contexts.delete(oldest);
+      victim = { loop: oldest, evicted, closing: [...evicted.pending.splice(0), ...detachNext(evicted)] };
     }
-       contexts.set(loop, { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [] });
   }
-  return contexts.get(loop);
+  const created = { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [] };
+  contexts.set(loop, created);
+  if (victim) {
+    for (const pending of victim.closing) await close($, pending, victim.loop, 'context evicted');
+    await closeCorrelation($, victim.evicted, victim.loop);
+  }
+  return created;
 };
 async function rulesFor($, ctx, cwd) {
   if (ctx.rules) return ctx.rules;

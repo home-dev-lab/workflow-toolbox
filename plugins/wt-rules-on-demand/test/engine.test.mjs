@@ -163,6 +163,32 @@ test('full context map closes pending verdicts on eviction', async () => {
   assert.equal(rows[0]?.agentId, 'agent-0');
 });
 
+test('concurrent first calls of a new agent during an eviction share one context and every served window gets a verdict', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'bash-command'\n    window: '100'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'"));
+  for (let i = 0; i < 64; i++) await f.call({ agentId: `agent-${i}` });
+  // Hold the first verdict write, which is the evicted context's window closing.
+  const get = f.$.store.get;
+  let held = false, release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  f.$.store.get = async (name) => {
+    if (name === 'compliance-verdicts-jsonl' && !held) { held = true; await gate; }
+    return get(name);
+  };
+  const one = f.call({ agentId: 'agent-new' });
+  while (!held) await new Promise((resolve) => setTimeout(resolve, 0));
+  const two = f.call({ agentId: 'agent-new' });
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  release();
+  await Promise.all([one, two]);
+  await f.handlers.get('turn.complete')(f.$, { agentId: 'agent-new' }, async () => ({}));
+  const rows = String(f.stored.get('compliance-verdicts-jsonl') ?? '').trim().split('\n').filter(Boolean).map(JSON.parse);
+  const served = f.stored.get('sessions')['sample-session'].contexts['agent:agent-new'].served['sample.md'];
+  assert.equal(served, 1, 'one context for the new agent serves the rule once');
+  assert.equal(rows.filter((row) => row.agentId === 'agent-new').length, served, 'every window served to the new agent is judged');
+  assert.equal(rows.filter((row) => row.agentId === 'agent-0' && row.reason === 'context evicted').length, 1, 'the victim window is closed once');
+});
+
 test('disabled with no files passes through, no journal', async () => {
   const f = fixture({ options: { enabled: false }, userNames: [] });
   let calls = 0;
