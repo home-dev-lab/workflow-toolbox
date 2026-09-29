@@ -256,6 +256,20 @@ for (const [kind, { compliance, judged }] of Object.entries(windowed)) {
   });
 }
 
+test('a window whose decision throws keeps the verdicts decided before it and stays open for the turn end', async () => {
+  const f = fixture({ userNames: ['a-input.md', 'b-test.md'] });
+  f.files.set('/sample-config/rules-on-demand/a-input.md', windowedRule("kind: 'tool-input'\n    tool: '^Bash$'\n    require-input-regex: 'a'\n    window: '100'\n    on-close: 'not applicable'"));
+  // This test regex exhausts the regex work budget on a long run of `a`, so deciding its window throws.
+  f.files.set('/sample-config/rules-on-demand/b-test.md', windowedRule("kind: 'test-before-edit'\n    window: '100'\n    on-close: 'not applicable'\n    test-regex: '(?:[a]{1024}){4}b'\n    path-regex: 'sample\\.js'"));
+  await f.call({ tool: 'Agent' });
+  await f.call({ tool: 'Bash', command: 'a'.repeat(16000) }).catch(() => {});
+  const early = verdictRows(f).filter((row) => row.trigger === 'tool.call:Agent');
+  assert.deepEqual(early.map((row) => [row.rule, row.verdict]), [['a-input.md', 'followed']], JSON.stringify(early));
+  await f.handlers.get('turn.complete')(f.$, {}, async () => ({}));
+  const rows = verdictRows(f).filter((row) => row.trigger === 'tool.call:Agent');
+  assert.deepEqual(rows.map((row) => row.rule).sort(), ['a-input.md', 'b-test.md'], JSON.stringify(rows));
+});
+
 test('disabled with no files passes through, no journal', async () => {
   const f = fixture({ options: { enabled: false }, userNames: [] });
   let calls = 0;

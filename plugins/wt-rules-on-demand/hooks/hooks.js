@@ -114,8 +114,10 @@ async function notice($, message) {
   if (!logged.has(message)) { logged.add(message); await $.ui.log(`wt-rules-on-demand: ${message}`); }
 }
 const HEALTH_FIELDS = ['calls', 'errors', 'totalMs', 'maxMs', 'slow'];
-// A stored day may come from an older shape: every counter missing or non-numeric starts at zero.
-const healthDay = (counts) => Object.fromEntries(HEALTH_FIELDS.map((field) => [field, Number.isFinite(counts?.[field]) ? counts[field] : 0]));
+// A stored day may come from an older shape: every counter missing, non-numeric or negative starts at zero.
+const healthDay = (counts) => Object.fromEntries(HEALTH_FIELDS.map((field) => [field, Number.isFinite(counts?.[field]) && counts[field] >= 0 ? counts[field] : 0]));
+// A stored error entry without a timestamp string cannot be ordered, so it is dropped rather than blocking every flush.
+const healthErrors = (entries) => (Array.isArray(entries) ? entries : []).filter((entry) => typeof entry?.at === 'string');
 function mergeHealth(target, batch) {
   for (const [day, counts] of Object.entries(batch.days)) {
     const entry = target.days[day] ?? healthDay(null);
@@ -137,7 +139,7 @@ async function flushHealth($) {
     try {
       const stored = await $.store.get('health');
       const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, healthDay(counts)])),
-        lastErrors: [...stored?.lastErrors ?? []] };
+        lastErrors: healthErrors(stored?.lastErrors) };
       mergeHealth(health, batch);
       health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
       health.lastErrors = health.lastErrors.slice(-20);
@@ -375,45 +377,55 @@ async function safeVerdict($, pending, loop, value, evidence, reason) {
   catch (error) { await notice($, `verdict write failed: ${error.message}`).catch(() => {}); }
 }
 // Claim every window synchronously before verdict I/O can interleave with another call.
+// A window whose decision throws stays open with every window not yet visited; the decisions taken
+// before it are still written, then the error propagates as it did before the split.
 function decideEvaluate(ctx, e, measured) {
   const remaining = [];
   const actions = [];
-  for (const pending of ctx.pending) {
-    const c = pending.rule.compliance;
-    pending.remaining--;
-    pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
-    if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
-      if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value: bashCommandVerdict(c, e.command ?? ''), evidence: summary(e) });
-      measured.add(pending.rule.name);
-    }
-    else if (c.kind === 'tool-input') {
-      const { verdict: value, matchError } = toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
-      if (value === null) {
-        if (pending.remaining <= 0) actions.push({ type: 'close', pending });
-        else remaining.push(pending);
-        continue;
-      }
-      if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value, evidence: summary(e), reason: matchError });
-      measured.add(pending.rule.name);
-    }
-    else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) {
-      pending.testSeen = true;
-      if (pending.remaining <= 0) actions.push({ type: 'close', pending });
-      else remaining.push(pending);
-    }
-    else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) actions.push({ type: 'verdict', pending, value: pending.testSeen ? 'followed' : 'not followed', evidence: summary(e) });
-    else if (pending.remaining <= 0) actions.push({ type: 'close', pending });
-    else remaining.push(pending);
+  const windows = ctx.pending;
+  let error = null;
+  for (let index = 0; index < windows.length; index++) {
+    const pending = windows[index];
+    try { decideWindow(pending, e, measured, actions, remaining); }
+    catch (failure) { error = failure; remaining.push(...windows.slice(index)); break; }
   }
   ctx.pending = remaining;
-  return actions;
+  return { actions, error };
+}
+function decideWindow(pending, e, measured, actions, remaining) {
+  const c = pending.rule.compliance;
+  pending.remaining--;
+  pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
+  if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
+    if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value: bashCommandVerdict(c, e.command ?? ''), evidence: summary(e) });
+    measured.add(pending.rule.name);
+  }
+  else if (c.kind === 'tool-input') {
+    const { verdict: value, matchError } = toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
+    if (value === null) {
+      if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+      else remaining.push(pending);
+      return;
+    }
+    if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value, evidence: summary(e), reason: matchError });
+    measured.add(pending.rule.name);
+  }
+  else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) {
+    pending.testSeen = true;
+    if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+    else remaining.push(pending);
+  }
+  else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) actions.push({ type: 'verdict', pending, value: pending.testSeen ? 'followed' : 'not followed', evidence: summary(e) });
+  else if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+  else remaining.push(pending);
 }
 async function evaluate($, ctx, e, loop, measured) {
-  const actions = decideEvaluate(ctx, e, measured);
+  const { actions, error } = decideEvaluate(ctx, e, measured);
   for (const action of actions) {
     if (action.type === 'verdict') await safeVerdict($, action.pending, loop, action.value, action.evidence, action.reason);
     else await close($, action.pending, loop);
   }
+  if (error) throw error;
 }
 // Claim every window at call start before any verdict I/O can interleave with another call.
 function decideNext(ctx, e) {

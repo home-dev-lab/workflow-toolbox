@@ -156,3 +156,17 @@ test('a stored day missing a counter field is merged as numbers, not NaN', { ski
   assert.equal(days['2000-01-01'].totalMs, 0);
   assert.doesNotMatch(JSON.stringify(writes[0]), /null/);
 });
+
+test('malformed stored error history and negative counters do not block or skew later flushes', { skip: !!mutation }, async (t) => {
+  const { register } = await hooks(t);
+  const day = new Date().toISOString().slice(0, 10);
+  const { stored, tool, turn } = fixture(register, { initialHealth: {
+    days: { [day]: { calls: 5, errors: 0, totalMs: 10, maxMs: 2, slow: 0 }, '2000-01-01': { calls: -5, errors: 0, totalMs: 0, maxMs: 0, slow: 0 } },
+    lastErrors: [{}, null, { at: '2000-01-01T00:00:00.000Z', message: 'kept' }] } });
+  await tool();
+  await turn();
+  const health = stored.get('health');
+  assert.equal(health.days[day].calls, 7);
+  assert.equal(health.days['2000-01-01'].calls, 0);
+  assert.deepEqual(health.lastErrors, [{ at: '2000-01-01T00:00:00.000Z', message: 'kept' }]);
+});
