@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
 
 // Expectations are written out by hand, never derived from the helper's own escaping.

@@ -7,11 +7,18 @@ export function quoteRemedyWord(value, platform = hostPlatform, quoteSafeOnPosix
   const backslash = String.fromCharCode(92)
   if (platform === 'win32') {
     if (word.length && /^[\w@%+=:,.-]*$/.test(word.replaceAll(slash, '').replaceAll(backslash, ''))) return word
-    // A backslash run is literal unless it precedes a double quote, where it must be doubled:
-    // before an embedded quote (then escaped) and before the closing quote.
-    const escaped = word
-      .replace(/(\\*)"/g, (_match, run) => run + run + backslash + '"')
-      .replace(/(\\+)$/, (_match, run) => run + run)
+    // Double runs before embedded quotes and the closing quote; otherwise leave them literal.
+    let escaped = ''
+    let run = 0
+    for (const char of word) {
+      if (char === backslash) {
+        run++
+        continue
+      }
+      escaped += backslash.repeat(char === '"' ? run * 2 + 1 : run) + char
+      run = 0
+    }
+    escaped += backslash.repeat(run * 2)
     return `"${escaped}"`
   }
   if (!quoteSafeOnPosix && word.length && /^[\w@%+=,.-]*$/.test(word.replaceAll(slash, ''))) return word
