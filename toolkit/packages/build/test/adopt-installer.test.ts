@@ -29,6 +29,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, it, expect } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+// @ts-expect-error read-only JS plugin renderer has no TypeScript declaration
+import { frontmatter } from '../../../../plugins/wt-rules-on-demand/scripts/rule-lifecycle-lib.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -39,6 +41,32 @@ const INSTALLER_ENV: NodeJS.ProcessEnv = sealedPluginCliEnv(ENV_ROOT, {
 const RULE = 'wt-delegation-ladder.md'
 const AUTONOMY = 'AUTONOMY.md'
 const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
+const ACT = 'wt-task-tracking-at-act.md'
+const specPath = join(REPO_ROOT, 'plugin/rules/wt-task-tracking-at-act.spec.json')
+type ShippedSpec = { 'on-demand': { triggers: Record<string, string | boolean | number>[] }; compliance?: Record<string, string | boolean | number> }
+const renderShippedHead = (spec: ShippedSpec) => frontmatter({ ...spec, triggers: spec['on-demand'].triggers })
+const specHead = () => renderShippedHead(JSON.parse(readFileSync(specPath, 'utf8')))
+const headFp = (head: string) => createHash('sha256').update(head.replace(/\r\n/g, '\n')).digest('hex').slice(0, 12)
+const installedHead = (text: string) => /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text)?.[0] ?? ''
+const withoutHeadStamp = (text: string) => text.replace(/ (?:head sha256:[0-9a-f]{12}|kept sha256:[0-9a-f]{12} spec sha256:[0-9a-f]{12})(?= by the adopt skill)/, '')
+function actFixture(): { dir: string; file: string; head: string } {
+  const dir = join(mkDir(), 'rules-on-demand')
+  run(['--set', 'rules', '--install'], dir)
+  const file = join(dir, ACT)
+  const head = specHead()
+  writeFileSync(file, head + readFileSync(file, 'utf8'))
+  return { dir, file, head }
+}
+function copiedPlugin(): { script: string; spec: string } {
+  const plugin = join(mkDir(), 'plugin')
+  for (const dir of ['.claude-plugin', 'rules', 'skills/adopt']) {
+    cpSync(join(REPO_ROOT, 'plugin', dir), join(plugin, dir), { recursive: true })
+  }
+  return { script: join(plugin, 'skills/adopt/scripts/install.mjs'), spec: join(plugin, 'rules/wt-task-tracking-at-act.spec.json') }
+}
+function runCopied(script: string, args: string[], dir: string) {
+  return spawnSync(process.execPath, [script, '--set', 'rules', ...args, '--dir', dir], { encoding: 'utf8', env: INSTALLER_ENV }).stdout
+}
 
 const roots: string[] = []
 afterEach(() => {
@@ -391,6 +419,307 @@ describe('adopt installer — rules-on-demand copies', () => {
     expect(result.status).toBe(0)
     expect(result.out).not.toContain('DUPLICATE')
     expect(existsSync(join(activeConfig, 'rules', 'wt', RULE))).toBe(false)
+  })
+})
+
+describe('adopt installer — spec-backed on-demand trigger heads', () => {
+  it.each([
+    '<!-- installed from workflow-toolbox v0.189.1 · content sha256:f3eafead0d07 head sha256:735fd0df79d7 by the adopt skill kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill — editable copy. -->',
+    ' <!-- installed from workflow-toolbox v0.0.1 · content sha256:d32f269f3009 head sha256:735fd0df79d7 by the adopt skill — editable copy. -->',
+    ' <!-- installed from workflow-toolbox v0.189.1 by the adopt skill — editable copy. -->',
+  ])('rejects the review banner verbatim on check and two plain installs: %s', (banner) => {
+    const { dir, file } = actFixture()
+    const text = readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL')
+    const line = text.slice(installedHead(text).length).split('\n')[0] ?? ''
+    writeFileSync(file, text.replace(line, banner))
+    const head = installedHead(text)
+    expect(run(['--set', 'rules', '--check'], dir)).toContain('on-demand triggers unresolved (unverified)')
+    for (let i = 0; i < 2; i++) {
+      run(['--set', 'rules', '--install', '--file', ACT], dir)
+      expect(installedHead(readFileSync(file, 'utf8'))).toBe(head)
+      expect(run(['--set', 'rules', '--check'], dir)).toContain('on-demand triggers unresolved (unverified)')
+    }
+  })
+
+  it('treats duplicated provenance tokens as unverified and never overwrites a local head', () => {
+    const { dir, file, head } = actFixture()
+    run(['--set', 'rules', '--install', '--file', ACT], dir)
+    const edited = readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL')
+    const bad = edited.replace(`head sha256:${headFp(head)} by the adopt skill`,
+      `kept sha256:${headFp(installedHead(edited))} spec sha256:${headFp(head)} content sha256:f3eafead0d07 head sha256:${headFp(installedHead(edited))} by the adopt skill`)
+    writeFileSync(file, bad)
+    expect(run(['--set', 'rules', '--check'], dir)).toContain('on-demand triggers unresolved (unverified)')
+    run(['--set', 'rules', '--install', '--file', ACT], dir)
+    expect(installedHead(readFileSync(file, 'utf8'))).toBe(installedHead(edited))
+  })
+
+  it.each([
+    ['head plus kept (review #1)', (line: string) => line.replace(' by the adopt skill', ' kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill')],
+    ['leading space (review #2)', (line: string) => ` ${line}`],
+    ['pre-fingerprint leading space (review #3)', (line: string) => ` ${line.replace(/ · content sha256:[0-9a-f]{12}/, '').replace(/ head sha256:[0-9a-f]{12}/, '')}`],
+    ['trailing space', (line: string) => `${line} `],
+    ['duplicate head', (line: string) => line.replace(' by the adopt skill', ' head sha256:735fd0df79d7 by the adopt skill')],
+    ['duplicate content', (line: string) => line.replace(' head sha256:', ' · content sha256:f3eafead0d07 head sha256:')],
+    ['reordered fields', (line: string) => line.replace(/ · content sha256:([0-9a-f]{12}) head sha256:([0-9a-f]{12})/, ' head sha256:$2 · content sha256:$1')],
+    ['head then kept', (line: string) => line.replace(' by the adopt skill', ' kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill')],
+    ['second by the adopt skill', (line: string) => line.replace(' by the adopt skill', ' by the adopt skill kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill')],
+    ['trailing text', (line: string) => `${line} EXTRA`],
+    ['CRLF banner line', (line: string) => `${line}\r`],
+    ['truncated head hash', (line: string) => line.replace(/head sha256:([0-9a-f]{12})/, (_m, h: string) => `head sha256:${h.slice(0, 11)}`)],
+  ])('rejects mutated banner provenance: %s, including after two body refreshes', (_label, mutate) => {
+    const { dir, file } = actFixture()
+    run(['--set', 'rules', '--install', '--file', ACT], dir)
+    const initial = readFileSync(file, 'utf8')
+    const local = initial.replace('  triggers:', '  triggers: # LOCAL')
+    const line = local.slice(installedHead(local).length).split('\n')[0] ?? ''
+    const olderBody = readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8') + '\nOLD BODY\n'
+    const changed = local.replace(line, mutate(line.replace(/head sha256:[0-9a-f]{12}/, `head sha256:${headFp(installedHead(local))}`)))
+      .replace(/content sha256:[0-9a-f]{12}/, `content sha256:${headFp(olderBody)}`)
+      .replace(/v\d+\.\d+\.\d+/, 'v0.0.1')
+      .replace(readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8'), olderBody)
+    writeFileSync(file, changed)
+    const head = installedHead(changed)
+    const args = ['--set', 'rules', '--install', '--file', ACT]
+    expect(run(['--set', 'rules', '--check'], dir)).toContain('on-demand triggers unresolved (unverified)')
+    for (let i = 0; i < 2; i++) {
+      run(args, dir)
+      expect(installedHead(readFileSync(file, 'utf8'))).toBe(head)
+      expect(run(['--set', 'rules', '--check'], dir)).toContain('on-demand triggers unresolved (unverified)')
+    }
+  })
+
+  it('an accepted kept head is visible on an otherwise current or stale body status', () => {
+    const { dir, file } = actFixture()
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    run(['--set', 'rules', '--install', '--keep-triggers', '--file', ACT], dir)
+    const note = ` · on-demand triggers kept locally (against ${ACT.replace('.md', '.spec.json')})`
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${ACT}: UP-TO-DATE`)
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(note)
+    const olderBody = readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8') + '\nOLD BODY\n'
+    writeFileSync(file, readFileSync(file, 'utf8').replace(/content sha256:[0-9a-f]{12}/, `content sha256:${headFp(olderBody)}`)
+      .replace(/v\d+\.\d+\.\d+/, 'v0.0.1').replace(readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8'), olderBody))
+    const checked = run(['--set', 'rules', '--check'], dir)
+    expect(checked).toContain(`${ACT}: STALE`)
+    expect(checked).toContain(note)
+  })
+
+  it('still reports trigger findings on a duplicate and accepts a head-only remedy at that explicit file', () => {
+    const root = mkDir()
+    const flat = join(root, 'rules')
+    const nested = join(flat, 'wt')
+    run(['--set', 'rules', '--install'], flat)
+    const file = join(flat, ACT)
+    writeFileSync(file, specHead() + readFileSync(file, 'utf8'))
+    run(['--set', 'rules', '--install', '--file', ACT], flat)
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    mkdirSync(nested)
+    cpSync(file, join(nested, ACT))
+    const check = run(['--set', 'rules', '--check'], flat)
+    expect(check).toContain(`${ACT}: DUPLICATE`)
+    expect(check).toContain('on-demand triggers unresolved')
+    expect(runResult(['--set', 'rules', '--install', '--refresh-triggers', '--file', ACT], flat).status).toBe(0)
+    expect(installedHead(readFileSync(file, 'utf8'))).toBe(specHead())
+    expect(run(['--set', 'rules', '--check'], nested)).toContain('on-demand triggers unresolved')
+  })
+
+  it('head-only commands work on a pre-fingerprint banner and later spec changes refresh the accepted shipped head', () => {
+    const { dir, file } = actFixture()
+    const copy = copiedPlugin()
+    writeFileSync(file, readFileSync(file, 'utf8').replace(/ · content sha256:[0-9a-f]{12}/, '').replace('  triggers:', '  triggers: # LOCAL'))
+    expect(runCopied(copy.script, ['--install', '--keep-triggers', '--file', ACT], dir)).toContain('TRIGGERS KEPT')
+    expect(runCopied(copy.script, ['--check'], dir)).not.toContain('on-demand triggers unresolved')
+    expect(runCopied(copy.script, ['--install', '--refresh-triggers', '--file', ACT], dir)).toContain('TRIGGERS REFRESHED')
+    const spec = JSON.parse(readFileSync(copy.spec, 'utf8'))
+    spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+    writeFileSync(copy.spec, JSON.stringify(spec))
+    expect(runCopied(copy.script, ['--check'], dir)).toContain('on-demand triggers behind the shipped spec')
+    expect(runCopied(copy.script, ['--install', '--file', ACT], dir)).toContain('TRIGGERS REFRESHED')
+    expect(installedHead(readFileSync(file, 'utf8'))).toBe(renderShippedHead(spec))
+  })
+
+  it('canonicalizes a leading-space pre-fingerprint banner on explicit keep and refresh', () => {
+    const { dir, file } = actFixture()
+    writeFileSync(file, readFileSync(file, 'utf8').replace(/^<!-- installed/m, ' <!-- installed')
+      .replace(/ · content sha256:[0-9a-f]{12}/, '').replace('  triggers:', '  triggers: # LOCAL'))
+    expect(run(['--set', 'rules', '--install', '--keep-triggers', '--file', ACT], dir)).toContain('TRIGGERS KEPT')
+    expect(run(['--set', 'rules', '--check'], dir)).not.toContain('on-demand triggers unresolved')
+    expect(readFileSync(file, 'utf8').slice(installedHead(readFileSync(file, 'utf8')).length)).toMatch(/^<!-- installed/)
+    expect(run(['--set', 'rules', '--install', '--refresh-triggers', '--file', ACT], dir)).toContain('TRIGGERS REFRESHED')
+    expect(run(['--set', 'rules', '--check'], dir)).not.toContain('on-demand triggers unresolved')
+  })
+
+  it('restamps a current head with an old valid stamp before the next spec change', () => {
+    const { dir, file } = actFixture()
+    const copy = copiedPlugin()
+    runCopied(copy.script, ['--install', '--file', ACT], dir)
+    const spec = JSON.parse(readFileSync(copy.spec, 'utf8'))
+    spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+    writeFileSync(copy.spec, JSON.stringify(spec))
+    const before = readFileSync(file, 'utf8')
+    writeFileSync(file, renderShippedHead(spec) + before.slice(installedHead(before).length))
+    expect(runCopied(copy.script, ['--install', '--file', ACT], dir)).toContain('TRIGGERS ENROLLED')
+    spec['on-demand'].triggers.push({ kind: 'tool', tool: '^AnotherTool$' })
+    writeFileSync(copy.spec, JSON.stringify(spec))
+    expect(runCopied(copy.script, ['--install', '--file', ACT], dir)).toContain('TRIGGERS REFRESHED')
+  })
+
+  it('reports resolved status on head-only and body+head writes', () => {
+    const { dir, file } = actFixture()
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    const resolved = run(['--set', 'rules', '--install', '--refresh-triggers', '--file', ACT], dir)
+    expect(resolved).toContain('TRIGGERS REFRESHED')
+    expect(resolved.split('\n').find((line) => line.includes(`${ACT}:`))).not.toContain('on-demand triggers unresolved')
+  })
+  it('reports a resolved head after simultaneous body and head refresh, including keep and automatic refresh', () => {
+    const { dir, file } = actFixture()
+    const copy = copiedPlugin()
+    runCopied(copy.script, ['--install', '--file', ACT], dir)
+    const spec = JSON.parse(readFileSync(copy.spec, 'utf8'))
+    spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+    writeFileSync(copy.spec, JSON.stringify(spec))
+    const olderBody = readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8') + '\nOLD BODY\n'
+    writeFileSync(file, readFileSync(file, 'utf8').replace(/content sha256:[0-9a-f]{12}/, `content sha256:${headFp(olderBody)}`)
+      .replace(/v\d+\.\d+\.\d+/, 'v0.0.1').replace(readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8'), olderBody))
+    const refreshed = runCopied(copy.script, ['--install', '--file', ACT], dir).split('\n').find((line) => line.includes(`${ACT}:`)) ?? ''
+    expect(refreshed).toContain('REFRESHED')
+    expect(refreshed).toContain('on-demand triggers refreshed from shipped spec')
+    expect(refreshed).not.toContain('behind the shipped spec')
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    const kept = runCopied(copy.script, ['--install', '--keep-triggers', '--file', ACT], dir).split('\n').find((line) => line.includes(`${ACT}:`)) ?? ''
+    expect(kept).toContain('TRIGGERS KEPT')
+    expect(kept).toContain('on-demand triggers accepted local head')
+    expect(kept).not.toContain('on-demand triggers unresolved')
+    const afterKeep = runCopied(copy.script, ['--install', '--file', ACT], dir)
+    expect(afterKeep).not.toContain('behind the shipped spec')
+  })
+  it('renders all shipped specs byte-for-byte like the lifecycle renderer', () => {
+    const copy = copiedPlugin()
+    for (const name of readdirSync(join(REPO_ROOT, 'plugin/rules')).filter((n) => n.endsWith('-at-act.spec.json'))) {
+      const spec = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/rules', name), 'utf8'))
+      const dir = join(mkDir(), 'rules-on-demand')
+      run(['--set', 'rules', '--install'], dir)
+      const rule = name.replace('.spec.json', '.md')
+      const file = join(dir, rule)
+      writeFileSync(file, renderShippedHead(spec) + readFileSync(file, 'utf8'))
+      runCopied(copy.script, ['--install', '--file', rule], dir)
+      expect(installedHead(readFileSync(file, 'utf8')), name).toBe(renderShippedHead(spec))
+      spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+      writeFileSync(join(copy.script, '../../../..', 'rules', name), JSON.stringify(spec))
+      runCopied(copy.script, ['--install', '--file', rule], dir)
+      expect(installedHead(readFileSync(file, 'utf8')), `${name} after spec change`).toBe(renderShippedHead(spec))
+    }
+  })
+
+  it('enrolls a matching head and refreshes it after a real shipped spec change, leaving the body and banner fingerprint intact', () => {
+    const { dir, file, head } = actFixture()
+    const copy = copiedPlugin()
+    expect(runCopied(copy.script, ['--install', '--file', ACT], dir)).toContain('TRIGGERS ENROLLED')
+    const before = readFileSync(file, 'utf8')
+    expect(before).toContain(`head sha256:${headFp(head)}`)
+    const spec = JSON.parse(readFileSync(copy.spec, 'utf8'))
+    spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+    writeFileSync(copy.spec, JSON.stringify(spec))
+    expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: STALE (on-demand triggers behind the shipped spec`)
+    expect(runCopied(copy.script, ['--install', '--file', ACT], dir)).toContain('TRIGGERS REFRESHED (head only')
+    const after = readFileSync(file, 'utf8')
+    expect(installedHead(after)).toBe(renderShippedHead(spec))
+    expect(withoutHeadStamp(after.slice(installedHead(after).length))).toBe(withoutHeadStamp(before.slice(head.length)))
+    expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: UP-TO-DATE`)
+  })
+
+  it('refreshes a stale head even with an edited body, without changing the body or its banner version', () => {
+    const { dir, file } = actFixture()
+    const copy = copiedPlugin()
+    runCopied(copy.script, ['--install', '--file', ACT], dir)
+    const spec = JSON.parse(readFileSync(copy.spec, 'utf8'))
+    spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+    writeFileSync(copy.spec, JSON.stringify(spec))
+    writeFileSync(file, readFileSync(file, 'utf8') + '\nLOCAL BODY EDIT\n')
+    const before = readFileSync(file, 'utf8')
+    expect(runCopied(copy.script, ['--install', '--file', ACT], dir)).toContain('TRIGGERS REFRESHED (head only')
+    expect(withoutHeadStamp(readFileSync(file, 'utf8').slice(installedHead(readFileSync(file, 'utf8')).length))).toBe(withoutHeadStamp(before.slice(installedHead(before).length)))
+    expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: EDITED`)
+  })
+
+  it('reports edited and unverified heads with exact remedies and preserves their stamps through a stale-body refresh', () => {
+    for (const stamped of [true, false]) {
+      const { dir, file, head } = actFixture()
+      if (stamped) run(['--set', 'rules', '--install', '--file', ACT], dir)
+      const changed = readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL')
+      writeFileSync(file, changed)
+      const check = run(['--set', 'rules', '--check'], dir)
+      expect(check).toContain('on-demand triggers unresolved')
+      for (const flag of ['refresh', 'keep']) {
+        expect(check).toContain(`node '${SCRIPT}' --set rules --install --${flag}-triggers --file '${ACT}' --dir '${dir}'`)
+      }
+      const oldHead = installedHead(changed)
+      const oldStamp = stamped ? `head sha256:${headFp(head)}` : null
+      const agedBody = readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8') + '\nOLDER TEXT\n'
+      const bodyFp = headFp(agedBody)
+      writeFileSync(file, changed.replace(/content sha256:[0-9a-f]{12}/, `content sha256:${bodyFp}`).replace(/v\d+\.\d+\.\d+/, 'v0.0.1').replace(readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8'), agedBody))
+      expect(run(['--set', 'rules', '--install', '--file', ACT], dir)).toContain('on-demand triggers unresolved')
+      const after = readFileSync(file, 'utf8')
+      expect(installedHead(after)).toBe(oldHead)
+      if (oldStamp) expect(after).toContain(oldStamp)
+      expect(after).not.toContain('OLDER TEXT')
+      expect(run(['--set', 'rules', '--check'], dir)).toContain('on-demand triggers unresolved')
+    }
+  })
+
+  it('explicit refresh and keep are head-only; a changed spec reopens an accepted keep', () => {
+    const { dir, file } = actFixture()
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL') + '\nBODY EDIT\n')
+    const before = readFileSync(file, 'utf8')
+    expect(run(['--set', 'rules', '--install', '--keep-triggers', '--file', ACT], dir)).toContain('TRIGGERS KEPT (head only')
+    expect(installedHead(readFileSync(file, 'utf8'))).toBe(installedHead(before))
+    expect(run(['--set', 'rules', '--check'], dir)).not.toContain('on-demand triggers unresolved')
+    const copy = copiedPlugin()
+    const spec = JSON.parse(readFileSync(copy.spec, 'utf8'))
+    spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+    writeFileSync(copy.spec, JSON.stringify(spec))
+    expect(runCopied(copy.script, ['--check'], dir)).toContain('on-demand triggers unresolved')
+    expect(runCopied(copy.script, ['--install', '--refresh-triggers', '--file', ACT], dir)).toContain('TRIGGERS REFRESHED (head only')
+    const after = readFileSync(file, 'utf8')
+    expect(withoutHeadStamp(after.slice(installedHead(after).length))).toBe(withoutHeadStamp(before.slice(installedHead(before).length)))
+    expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: EDITED`)
+  })
+
+  it('--force takes both shipped body and head; flags refuse invalid combinations or targets', () => {
+    const { dir, file, head } = actFixture()
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL') + '\nBODY EDIT\n')
+    expect(runResult(['--set', 'rules', '--install', '--force', '--keep-triggers', '--file', ACT], dir).status).not.toBe(0)
+    for (const args of [
+      ['--install', '--refresh-triggers'], ['--check', '--refresh-triggers', '--file', ACT],
+      ['--install', '--refresh-triggers', '--file', RULE],
+    ]) expect(runResult(['--set', 'rules', ...args], dir).status).not.toBe(0)
+    expect(run(['--set', 'rules', '--install', '--force', '--file', ACT], dir)).toContain('OVERWROTE')
+    expect(installedHead(readFileSync(file, 'utf8'))).toBe(head)
+    expect(readFileSync(file, 'utf8')).not.toContain('BODY EDIT')
+  })
+
+  it('head-only journal entries cannot replace the previous body baseline for --diff', () => {
+    const { dir, file } = actFixture()
+    run(['--set', 'rules', '--install', '--file', ACT], dir)
+    run(['--set', 'rules', '--install', '--keep-triggers', '--file', ACT], dir)
+    const entries = readFileSync(join(dir, '.workflow-toolbox-adopt-journal.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(entries.at(-1).action).toBe('TRIGGERS KEPT')
+    expect(entries.at(-1)).not.toHaveProperty('adoptedText')
+    entries.at(-1).adoptedText = 'HEAD ONLY SENTINEL MUST NEVER BE BASELINE'
+    writeFileSync(join(dir, '.workflow-toolbox-adopt-journal.jsonl'), entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n')
+    writeFileSync(file, readFileSync(file, 'utf8') + '\nBODY EDIT\n')
+    const adopted = run(['--set', 'rules', '--diff', ACT], dir).split('=== LOCAL')[0]
+    expect(adopted).toContain(readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8'))
+    expect(adopted).not.toContain('[unavailable:')
+    expect(adopted).not.toContain('HEAD ONLY SENTINEL MUST NEVER BE BASELINE')
+  })
+
+  it('treats CRLF-converted heads as current and prints a head diff for divergent heads', () => {
+    const { dir, file } = actFixture()
+    const original = readFileSync(file, 'utf8')
+    writeFileSync(file, installedHead(original).replace(/\n/g, '\r\n') + original.slice(installedHead(original).length))
+    expect(run(['--set', 'rules', '--check'], dir)).not.toContain('on-demand triggers unresolved')
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    expect(run(['--set', 'rules', '--diff', ACT], dir)).toContain('=== SHIPPED TRIGGERS')
   })
 })
 
