@@ -2044,3 +2044,83 @@ describe('adopt installer — registered-agent shadowing note', () => {
     expect(out).not.toContain('adopt: ENOENT')
   })
 })
+
+// Card 1874754605787645076, route C: on-demand identity is decided against the engine-owned roots
+// (by name, case-insensitively, or by filesystem identity), and every rule write goes through one
+// placement chokepoint, migrate included.
+describe('adopt installer — on-demand placement by root identity (one write chokepoint)', () => {
+  function runWith(args: string[], cwd: string, config: string) {
+    const env = sealedPluginCliEnv(join(cwd, '..', 'env'), { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+    const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8', env })
+    return { status: res.status, out: (res.stdout ?? '') + (res.stderr ?? '') }
+  }
+  function expectOnlySpecBacked(dir: string): void {
+    const written = readdirSync(dir).filter((name) => name.endsWith('.md'))
+    for (const file of written) {
+      expect(existsSync(join(REPO_ROOT, 'plugin/rules', file.replace(/\.md$/, '.spec.json'))), file).toBe(true)
+    }
+    expect(existsSync(join(dir, RULE))).toBe(false)
+  }
+  function symlinkedConfigRoot() {
+    const root = mkDir()
+    const project = join(root, 'proj')
+    const config = join(root, 'cfg')
+    const store = join(root, 'store')
+    for (const dir of [project, config, store]) mkdirSync(dir, { recursive: true })
+    symlinkSync(store, join(config, 'rules-on-demand'), 'dir')
+    return { root, project, config, store }
+  }
+
+  it.each(['store', 'config alias'])('A: a symlinked config on-demand root receives only spec-backed rules (--dir = %s)', (via) => {
+    const f = symlinkedConfigRoot()
+    const dir = via === 'store' ? f.store : join(f.config, 'rules-on-demand')
+    const result = runWith(['--set', 'rules', '--install', '--dir', dir], f.project, f.config)
+    expect(result.status, result.out).toBe(0)
+    expectOnlySpecBacked(f.store)
+  })
+
+  it('B: a static-named alias of the on-demand root store receives only spec-backed rules', () => {
+    const f = symlinkedConfigRoot()
+    const alias = join(f.project, '.claude', 'rules', 'wt')
+    mkdirSync(join(f.project, '.claude', 'rules'), { recursive: true })
+    symlinkSync(f.store, alias, 'dir')
+    const result = runWith(['--set', 'rules', '--install', '--dir', alias], f.project, f.config)
+    expect(result.status, result.out).toBe(0)
+    expectOnlySpecBacked(f.store)
+  })
+
+  it('C: migrate refuses, before any move, to move a static rule into an on-demand root', () => {
+    const root = mkDir()
+    const project = join(root, 'proj')
+    const config = join(root, 'cfg')
+    const flat = join(project, '.claude', 'rules')
+    const demand = join(project, '.claude', 'rules-on-demand')
+    mkdirSync(config, { recursive: true })
+    mkdirSync(demand, { recursive: true })
+    expect(runWith(['--set', 'rules', '--install', '--dir', flat], project, config).status).toBe(0)
+    expect(existsSync(join(flat, RULE))).toBe(true)
+    symlinkSync(demand, join(flat, 'wt'), 'dir')
+    const result = runWith(['--set', 'rules', '--migrate', '--execute', '--ignore-secondary', '--dir', join(flat, 'wt')], project, config)
+    expect(result.status, result.out).not.toBe(0)
+    expect(existsSync(join(flat, RULE))).toBe(true)
+    expect(readdirSync(demand).filter((name) => name.endsWith('.md'))).toEqual([])
+  })
+
+  it('D: a case-variant on-demand directory name filters static rules on Linux too', () => {
+    const root = mkDir()
+    const dir = join(root, 'cfg', 'RULES-ON-DEMAND')
+    const result = runResult(['--set', 'rules', '--install'], dir)
+    expect(result.status, result.out).toBe(0)
+    expect(existsSync(join(dir, ACT))).toBe(true)
+    expectOnlySpecBacked(dir)
+  })
+
+  it('F: onDemandRoots mirrors the engine ruleDirectories()', async () => {
+    const engine = await import(pathToFileURL(join(REPO_ROOT, 'plugins/wt-rules-on-demand/paths.js')).href)
+    const placement = await import(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs')).href)
+    for (const [project, config] of [['/p/proj', '/h/.claude'], ['/p/proj//', '/h/cfg/']]) {
+      const expected = engine.ruleDirectories(project, config)
+      expect(placement.onDemandRoots({ project, config })).toEqual({ project: expected.project, user: expected.user })
+    }
+  })
+})

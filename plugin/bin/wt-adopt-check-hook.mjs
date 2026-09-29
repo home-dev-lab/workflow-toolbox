@@ -46,7 +46,7 @@ import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { quoteRemedyWord } from './lib/remedy-quote.mjs'
-import { isOnDemandDir } from './lib/host/adopt-placement.mjs'
+import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -71,13 +71,16 @@ function readInput() {
  *  per-file status lines (`  <file>: <status>`) into a Map<file, {status, location}>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
-function checkDir(dir, set = 'rules', locationKind = 'static') {
+function checkDir(dir, set = 'rules', locationKind = 'static', project = null) {
   const map = new Map()
   let res
   try {
+    // The installer takes its project on-demand root from its cwd: run it from the hook's project.
+    // A project that no longer exists fails the spawn, which reads as nothing checked (silence).
     res = spawnSync(process.execPath, [INSTALL_RULES, '--check', '--set', set, '--dir', dir], {
       encoding: 'utf8',
       timeout: 5_000,
+      ...(project ? { cwd: project } : {}),
     })
   } catch {
     return map
@@ -243,8 +246,8 @@ function contentDirection(file, finding, set) {
 
 const shellQuote = (value) => quoteRemedyWord(value, true)
 
-function installRemedy(installCmd, set, dir, locationKind = 'static') {
-  if (set === 'rules' && locationKind === 'static' && isOnDemandDir(dir)) return null
+function installRemedy(installCmd, set, dir, locationKind = 'static', roots = {}) {
+  if (set === 'rules' && locationKind === 'static' && isOnDemandDir(dir, roots)) return null
   return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`
 }
 
@@ -284,7 +287,7 @@ function triggerLines(file, finding, installCmd, event) {
   return []
 }
 
-function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false) {
+function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
   const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [], misplaced: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
@@ -305,7 +308,7 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
     const duplicate = finding.locations.length > 1 ? ` DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}.` : ''
     lines.push(`${finding.file}: MISPLACED static rule in ${finding.location}.${duplicate} ${PLACEMENT_CONFLICT} This hook proposes no deletion.`)
     if (finding.staticFinding) {
-      const install = installRemedy(installCmd, set, finding.staticFinding.location)
+      const install = installRemedy(installCmd, set, finding.staticFinding.location, 'static', roots)
       const action = install
         ? `refresh with \`${install}\` after reconciling the misplaced copy.`
         : 'inspect the aliased directory before refreshing.'
@@ -317,7 +320,7 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
     for (const locationFinding of finding.findings) lines.push(...triggerLines(finding.file, locationFinding, installCmd, event))
   }
   if (buckets.absent.length) {
-    const install = installRemedy(installCmd, set, remedyDir)
+    const install = installRemedy(installCmd, set, remedyDir, 'static', roots)
     lines.push(
       `workflow-toolbox rules NOT installed here: ${named(buckets.absent)}. ` +
         `Plugin ${set} never load into a session on their own, so what they carry is ` +
@@ -329,7 +332,7 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
     const target = finding.location ? finding.file + ' (' + finding.location + ')' : finding.file
     const install = finding.status.includes(TRIGGERS_STALE) && finding.status.includes('body current')
       ? triggerRemedy(installCmd, finding.file, finding.location, 'refresh')
-      : installRemedy(installCmd, set, finding.location, finding.locationKind)
+      : installRemedy(installCmd, set, finding.location, finding.locationKind, roots)
     const check = checkRemedy(installCmd, set, finding.location)
     let action = noticeOnly
       ? `NOTICE ONLY: hand this to the session that owns this directory: run \`${install}\`, then ` +
@@ -410,6 +413,7 @@ export function main() {
   if (!root) return // no cwd in payload → can't locate the project; stay silent
 
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  const roots = placementRoots({ project: root, config: configDir })
   const noticeOnly = resolveWorkflowToolboxOption('adopt_refresh').value === 'notice-only'
 
   // BOTH managed sets, not just rules. An agent definition goes stale exactly the same way a
@@ -434,8 +438,8 @@ export function main() {
     const maps = []
     for (const subdir of subdirs) {
       const locationKind = subdir === 'rules-on-demand' ? 'on-demand' : 'static'
-      maps.push(checkDir(path.join(root, '.claude', subdir), set, locationKind))
-      maps.push(checkDir(path.join(configDir, subdir), set, locationKind))
+      maps.push(checkDir(path.join(root, '.claude', subdir), set, locationKind, root))
+      maps.push(checkDir(path.join(configDir, subdir), set, locationKind, root))
     }
     if (maps.every((m) => m.size === 0)) continue // couldn't check any location → skip this set
 
@@ -445,8 +449,8 @@ export function main() {
 
     const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
     let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
-    if (set === 'rules') remedyDir = isOnDemandDir(nestedRulesDir) ? path.dirname(nestedRulesDir) : nestedRulesDir
-    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly)
+    if (set === 'rules') remedyDir = isOnDemandDir(nestedRulesDir, roots) ? path.dirname(nestedRulesDir) : nestedRulesDir
+    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
     if (built) sections.push(built)
   }
 

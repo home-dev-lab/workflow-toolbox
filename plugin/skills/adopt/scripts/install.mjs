@@ -69,7 +69,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { isOnDemandDir, readRuleText } from '../../../bin/lib/host/adopt-placement.mjs'
+import { isOnDemandDir, placementRoots as placementRootsFor, readRuleText } from '../../../bin/lib/host/adopt-placement.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -387,6 +387,32 @@ function discoverRegisteredAgents(root) {
 
 function resolvedConfigRoot() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+}
+
+// The engine-owned on-demand and static roots for this run: the project is the cwd, the config dir is the
+// one --global resolves.
+function placementRoots() {
+  return placementRootsFor({ project: process.cwd(), config: resolvedConfigRoot() })
+}
+
+const inOnDemandStorage = (dir) => isOnDemandDir(dir, placementRoots())
+
+/** Why `targetFile` must not be written, or null. A rule `.md` without a shipped on-demand spec
+ *  is a static rule; on-demand storage never receives one. Non-`.md` files (temp files) pass. */
+function placementRefusal(targetFile) {
+  const file = path.basename(targetFile)
+  const dir = path.dirname(targetFile)
+  // Placement first: a static target never needs the plugin bundle to be located.
+  if (!file.endsWith('.md') || !inOnDemandStorage(dir) || isOnDemandRule(pluginRoot(), { file })) return null
+  return `refusing to write ${file} into ${dir}: that directory is on-demand rule storage ` +
+    `(an engine root: rules-on-demand by name or by filesystem identity), and ${file} has no ` +
+    `shipped on-demand spec, so it is a static rule. Target a static rules directory instead.`
+}
+
+/** The single placement chokepoint: every managed write and every verified move passes here. */
+function assertPlacement(targetFile) {
+  const refusal = placementRefusal(targetFile)
+  if (refusal) fail(refusal)
 }
 
 function formatMtime(mtime) {
@@ -1147,7 +1173,7 @@ function adoptionDirectoryInfo(dir) {
 function adoptedFiles(set, dir, root) {
   return new Set(
     set.resolveItems(root)
-      .filter((item) => set.kind !== 'rules' || !isOnDemandDir(dir) || isOnDemandRule(root, item))
+      .filter((item) => set.kind !== 'rules' || !inOnDemandStorage(dir) || isOnDemandRule(root, item))
       .filter((item) => hasAdoptionBanner(set, path.join(dir, item.file)))
       .map((item) => item.file),
   )
@@ -2139,6 +2165,7 @@ function managedWriteVerb(classification, force) {
 }
 
 function writeManagedFile(target, text, exclusive = false) {
+  assertPlacement(target)
   fs.writeFileSync(target, text, exclusive ? { flag: 'wx' } : undefined)
 }
 
@@ -2265,7 +2292,7 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   const onDemandDir = siblingOnDemandDir(set, dir, args)
   const alternateDirs = { nested: nestedDir, onDemand: onDemandDir }
   const allItems = set.resolveItems(root)
-  const demand = set.kind === 'rules' && isOnDemandDir(dir)
+  const demand = set.kind === 'rules' && inOnDemandStorage(dir)
   const items = demand ? allItems.filter((item) => isOnDemandRule(root, item)) : allItems
   if (args.file && !items.some((item) => item.file === args.file)) {
     fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
@@ -2671,6 +2698,7 @@ function migrateDryRun(dir, args) {
  *  filesystem error — the caller stops the whole run rather than continue past an unverified
  *  move. */
 function moveFileVerified(from, to) {
+  assertPlacement(to)
   const before = fs.readFileSync(from) // Buffer — byte-exact, unlike classify()'s 'utf8' read
   fs.mkdirSync(path.dirname(to), { recursive: true })
   try {
@@ -2788,6 +2816,9 @@ function executeMigration(dir, args) {
   }
   process.stdout.write(`[migrate --execute] flat root=${flatDir}  →  new location=${wtDir}\n`)
   const { moves, stays } = planMigrationItems(flatDir, wtDir, SETS.rules)
+  // Every destination is checked before the FIRST move: a refused one refuses the whole run.
+  const refused = moves.map((move) => placementRefusal(move.to)).find(Boolean)
+  if (refused) fail(`migrate --execute: nothing has been moved — ${refused}`)
   if (!migrationPreflight(moves, stays, args) || renderEmptyMigration(wtDir, moves, stays, args)) return
   const result = executeMigrationMoves(moves)
   if (!renderMigrationResult(wtDir, moves, stays, result)) return
@@ -2893,7 +2924,7 @@ function mergeSetState(state, result) {
 function managedSetGroups(set, fallbackDir, resolution, root) {
   if (!resolution) return new Map([[fallbackDir, null]])
   const candidate = resolution.defaultDir
-  const defaultDir = candidate && !(set.kind === 'rules' && isOnDemandDir(candidate)) ? candidate : fallbackDir
+  const defaultDir = candidate && !(set.kind === 'rules' && inOnDemandStorage(candidate)) ? candidate : fallbackDir
   const groups = new Map()
   for (const item of set.resolveItems(root)) {
     const dir = resolution.itemDirs.get(item.file) || defaultDir

@@ -837,3 +837,21 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(res.status).toBe(0)
   })
 })
+
+// Card 1874754605787645076, route C: a static-named alias of the on-demand root store is on-demand
+// storage by filesystem identity, so the hook never proposes installing static rules into it.
+describe('wt-adopt-check-hook — on-demand placement by root identity', () => {
+  it('E: proposes no static install into a directory that shares the on-demand root identity', () => {
+    const f = fixture('identity-alias')
+    const store = join(f.root, 'store')
+    mkdirSync(store, { recursive: true })
+    symlinkSync(store, join(f.cfg, 'rules-on-demand'), 'dir')
+    const alias = join(f.proj, '.claude', 'rules', 'wt')
+    mkdirSync(join(f.proj, '.claude', 'rules'), { recursive: true })
+    symlinkSync(store, alias, 'dir')
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain('NOT installed')
+    expect(context).not.toContain(`--install --dir ${remedyWord(alias)}`)
+    expect(context).not.toContain(`--install --dir ${remedyWord(store)}`)
+  })
+})
