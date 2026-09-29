@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Adopt now refreshes unedited on-demand trigger frontmatter from the shipped spec, reports edited or unverifiable heads with per-file take/keep commands, and includes the shipped head under `--force`.
 - Gate evidence now recognizes the same repository through linked or alternate paths, and staged-file checks stay exact on case-insensitive filesystems.
 - The suite-lock broker no longer answers a lane's suite "busy" while capacity is free: a slot is freed as soon as a request is refused, not when the refused client disconnects. Open sockets, rejected ones included, are now capped at twice the served limit, and connections past that cap are dropped.
 - After a clock change, the commit guard no longer accepts staged content the gate never saw or refuses an untouched file, and lifecycle reports no longer refuse a delivered file written during the run.
