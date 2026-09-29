@@ -75,6 +75,18 @@
       ]
     },
     {
+      "source": "rules/wt-sdlc.md",
+      "heading": "## E2E",
+      "recipients": [
+        "pilot",
+        "tdd"
+      ],
+      "triggers": [
+        "phase:plan",
+        "lane:tdd"
+      ]
+    },
+    {
       "source": "rules/wt-sdlc-at-act.md",
       "heading": "## Independent review and refutation",
       "recipients": [
@@ -125,8 +137,53 @@
       ]
     },
     {
+      "source": "rules/wt-durable-fix-at-the-right-level.md",
+      "heading": "## What this does NOT license",
+      "recipients": [
+        "pilot",
+        "tdd"
+      ],
+      "triggers": [
+        "phase:plan",
+        "lane:tdd"
+      ]
+    },
+    {
       "source": "rules/wt-step-back-architectural.md",
       "heading": "# Step back to the architectural root — and ground \"it doesn't exist\" before a workaround",
+      "recipients": [
+        "tdd"
+      ],
+      "triggers": [
+        "lane:tdd"
+      ]
+    },
+    {
+      "source": "rules/wt-step-back-architectural.md",
+      "heading": "## Stop when the rounds stop teaching",
+      "recipients": [
+        "critic",
+        "review"
+      ],
+      "triggers": [
+        "lane:critic",
+        "lane:review"
+      ]
+    },
+    {
+      "source": "rules/wt-step-back-architectural.md",
+      "heading": "## Persist on the goal, not the route",
+      "recipients": [
+        "pilot"
+      ],
+      "triggers": [
+        "phase:verify",
+        "phase:report"
+      ]
+    },
+    {
+      "source": "rules/wt-proportionate-verification.md",
+      "heading": "### 2. Method diversity — strongest lever on what remain.",
       "recipients": [
         "tdd"
       ],
@@ -166,6 +223,20 @@
       ],
       "triggers": [
         "phase:verify"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Verify claims against their actual evidence",
+      "recipients": [
+        "critic",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "lane:critic",
+        "lane:review",
+        "lane:refutation"
       ]
     },
     {

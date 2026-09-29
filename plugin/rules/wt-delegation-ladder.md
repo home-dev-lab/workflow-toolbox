@@ -33,7 +33,10 @@ Cost-model-neutral PRINCIPLE: which concrete model each rung maps to is your acc
 business — pin at spawn. Edit this file freely; it's yours.
 
 Escalate inline diagnosis after two failed attempts at the same fix, one repeated diagnosis, or
-~15–20 min without narrowing the problem.
+~15–20 min without narrowing the problem, through the step-back in `wt-step-back-architectural.md`:
+list the routes, the current route included while its attempts still narrow the problem, and move
+to the best one or to another tier. Retries on a route are normal; the owner hears only when no
+route is left.
 Every wave/card report names the tier or lane carrying IMPLEMENTATION and the tier or lane carrying
 REVIEW separately.
 

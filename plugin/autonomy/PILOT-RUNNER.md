@@ -106,6 +106,8 @@ optional `<project>/.claude/wt-rules-manifest.json` uses the same schema and add
 The runner validates every role, lifecycle trigger, source path, and exact heading before composition.
 It appends standing pilot sections to the contract system prompt, returns phase sections in the
 transition result for the new phase, and composes role sections into lane briefs before pilot context.
+On a critic-to-plan revision round, only `critic->plan` sections fire: `phase:plan` sections were
+already delivered at the first plan entry.
 Missing files/headings and malformed manifests fail closed. Manifest paths use `/` as a portable stored
 form and Node path APIs for resolution and real-path containment on each host.
 
