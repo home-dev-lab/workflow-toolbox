@@ -103,8 +103,10 @@ export async function qualityCheck({ configDirs, projectsDirs, project, followed
     }
     for (const root of new Set([project, ...followedRoots])) {
       const candidate = ruleDirectories(root, configDirs[0]).project;
-      if ((await readdir(candidate).catch(() => [])).some((name) => name.endsWith('.md'))) {
+      if ((await readdir(candidate).catch((error) => ['ENOENT', 'ENOTDIR'].includes(error.code) ? [] : Promise.reject(error))).some((name) => name.endsWith('.md'))) {
         const resolved = await realpath(candidate);
+        // A home-root project can point to the very same rules as the user config scope.
+        if (physical.has(resolved)) continue;
         scopes.push({ scope: 'project', projectRoot: root, rulesDir: resolved, ledgerRoots: [root] });
       }
     }
