@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - wt-rules-on-demand tool triggers can use the registered `lsp-symbol-grep` detector to serve rules only for symbol searches in code covered by an enabled, resolvable language server, respecting profile extension mutes. `next-call` compliance records whether the first later matching tool call used the required tool at call start, including calls subsequently refused or denied; transcript tooling marks environment-dependent trigger proof unknown and uses live store verdicts for this kind.
 
 ### Fixed
+- Cross-OS dispatch now labels failed tests by step and gating status, keeps diagnostic failures separate from blockers and card drafts, and judges results from job conclusions.
 - `wt-rules-on-demand` daily rollback now reverts a migrated rule only when its on-demand follow rate is significantly lower than static (one-sided Fisher exact test, p < 0.05); a gap within noise is reported, not reverted.
 - `wt-rules-on-demand` daily rollback no longer counts the user config rules a second time as a home-root project when both paths resolve to the same rules directory; unreadable project rule directories still fail closed.
 - Commands printed for you to paste (adopt's check hook and installer remedies, the lane supervisor, `wt-second-opinion`'s consent remedy) now use POSIX-style single-quote escaping on every platform, including Windows paths with backslashes, for Git Bash and PowerShell. Pasting these remedies into cmd.exe is not supported.

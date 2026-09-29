@@ -106,6 +106,18 @@ function fakeGh(f: ReturnType<typeof fixture>, conclusion = 'success', status = 
   }
   return { io, calls }
 }
+function loggedGh(f: ReturnType<typeof fixture>, log: string, failingJob = 'matrix (windows-latest)', conclusion = 'failure') {
+  const fake = fakeGh(f, conclusion)
+  const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program === 'gh' && args.includes('--job')) return { status: 0, stdout: log, stderr: '' }
+    const result = fake.io.run(program, args, opts)
+    if (program !== 'gh' || args[1] !== 'view') return result
+    const run = JSON.parse(result.stdout)
+    run.jobs = run.jobs.map((job: { name: string; conclusion: string }) => ({ ...job, conclusion: conclusion === 'failure' && job.name === failingJob ? 'failure' : 'success' }))
+    return { ...result, stdout: JSON.stringify(run) }
+  } }
+  return io
+}
 
 describe('cross-OS dispatch', () => {
   it('reconciles every primitive and spawning test with a live host-layer glob', () => {
@@ -168,11 +180,102 @@ describe('cross-OS dispatch', () => {
   it('parses a colored prefix before the last log tab', async () => {
     const f = publicFixture(); const fake = fakeGh(f, 'failure'); const out = output()
     const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
-      if (program === 'gh' && args.includes('--job')) return { status: 0, stdout: "job\t\u001b[31mstep\u001b[0m\tdate FAIL packages/build/test/example.test.ts > suite > case", stderr: '' }
+      if (program === 'gh' && args.includes('--job')) return { status: 0, stdout: "job\t\u001b[31mstep\u001b[0m\t2026-09-28T10:00:00Z FAIL packages/build/test/example.test.ts > suite > case", stderr: '' }
       return fake.io.run(program, args, opts)
     } }
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(1)
-    expect(out.lines).toContain('FAILED TEST packages/build/test/example.test.ts > suite > case')
+    expect(out.lines).toContain('FAILED TEST [gating step: step] packages/build/test/example.test.ts > suite > case')
+  })
+
+  it('labels Windows gating tests as blockers and a diagnostic-only test as non-blocking', async () => {
+    const f = publicFixture(); const out = output()
+    const log = [
+      'matrix (windows-latest)\tTest (Windows)\t2026-09-28T10:00:00Z FAIL packages/build/test/launcher.test.ts > suite > first',
+      'matrix (windows-latest)\tTest (Windows)\t2026-09-28T10:00:01Z FAIL packages/build/test/launcher.test.ts > suite > second',
+      'matrix (windows-latest)\tDiagnose artifact-server fork (Windows)\t2026-09-28T10:01:00Z FAIL packages/build/test/artifact-server.test.ts > owner decision > timeout',
+    ].join('\n')
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log), print: out.print })).toBe(1)
+    expect(out.lines.filter((line) => line.startsWith('FAILED TEST [gating'))).toEqual([
+      'FAILED TEST [gating step: Test (Windows)] packages/build/test/launcher.test.ts > suite > first',
+      'FAILED TEST [gating step: Test (Windows)] packages/build/test/launcher.test.ts > suite > second',
+    ])
+    expect(out.lines).toContain('DIAGNOSTIC FAILURES (did not block): matrix (windows-latest)')
+    expect(out.lines).toContain('FAILED TEST [diagnostic step: Diagnose artifact-server fork (Windows)] packages/build/test/artifact-server.test.ts > owner decision > timeout')
+    const blocker = out.lines.find((line) => line.startsWith('BLOCKER:'))
+    expect(blocker).toContain('launcher.test.ts > suite > first')
+    expect(blocker).toContain('launcher.test.ts > suite > second')
+    expect(blocker).not.toContain('artifact-server')
+    const draft = readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')
+    expect(draft.split('Diagnostic failures (did not block):')[0]).toContain('launcher.test.ts > suite > first')
+    expect(draft.split('Diagnostic failures (did not block):')[0]).toContain('launcher.test.ts > suite > second')
+    expect(draft.split('Diagnostic failures (did not block):')[0]).not.toContain('artifact-server.test.ts')
+    expect(draft.split('Diagnostic failures (did not block):')[1]).toContain('artifact-server.test.ts > owner decision > timeout')
+    expect(out.lines.at(-1)).toBe('RESULT: red')
+  })
+
+  it('keeps tabs inside a gating test name in the blocker and card', async () => {
+    const f = publicFixture(); const out = output()
+    const test = 'packages/build/test/launcher.test.ts > suite > accepts\ttabs'
+    const log = `matrix (windows-latest)\tTest (Windows)\t2026-09-28T10:00:00Z FAIL ${test}`
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log), print: out.print })).toBe(1)
+    expect(out.lines).toContain(`FAILED TEST [gating step: Test (Windows)] ${test}`)
+    expect(out.lines.find((line) => line.startsWith('BLOCKER:'))).toContain(test)
+    expect(out.lines.some((line) => line.startsWith('FAILED TEST (none extracted'))).toBe(false)
+    expect(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')).toContain(`- ${test} (gating step: Test (Windows))`)
+  })
+
+  it('keeps tabs inside a diagnostic test name out of the blocker', async () => {
+    const f = publicFixture(); const out = output()
+    const test = 'packages/build/test/artifact-server.test.ts > suite > accepts\ttabs'
+    const log = `matrix (windows-latest)\tDiagnose artifact-server fork (Windows)\t2026-09-28T10:00:00Z FAIL ${test}`
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log), print: out.print })).toBe(1)
+    expect(out.lines).toContain(`FAILED TEST [diagnostic step: Diagnose artifact-server fork (Windows)] ${test}`)
+    expect(out.lines.find((line) => line.startsWith('BLOCKER:'))).not.toContain(test)
+    expect(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')).toContain(`- ${test} (diagnostic step: Diagnose artifact-server fork (Windows))`)
+  })
+
+  it('fails closed when a prefixless failure contains tabs that look like a diagnostic step', async () => {
+    const f = publicFixture(); const out = output()
+    const test = 'packages/build/test/launcher.test.ts > suite > case'
+    const log = `runner output\tDiagnose injected\tFAIL ${test}`
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log), print: out.print })).toBe(1)
+    expect(out.lines).toContain(`FAILED TEST [gating step: (unknown step)] ${test}`)
+    expect(out.lines.find((line) => line.startsWith('BLOCKER:'))).toContain(test)
+    expect(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')).toContain(`- ${test} (gating step: (unknown step))`)
+  })
+
+  it('keeps continue-on-error macOS shard tests blocking when shard results fail the job', async () => {
+    const f = publicFixture(); const out = output()
+    const log = readFileSync(join(fixtureDir, 'sample-job-log-excerpt.txt'), 'utf8')
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log, 'matrix (macos-latest)'), print: out.print })).toBe(1)
+    expect(out.lines).toContain('FAILED TEST [gating step: Test (macOS shard 2/2)] packages/build/test/sdk-pilot-lifecycle-server.test.ts > runner-hosted SDK pilot lifecycle > the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]')
+    expect(out.lines.at(-1)).toBe('RESULT: red')
+  })
+
+  it('fails closed on an unknown step and retains the no-gating-test fallback for diagnostic-only logs', async () => {
+    const f = publicFixture(); const out = output()
+    const unknown = 'matrix (windows-latest)\tNew test step\t2026-09-28T10:00:00Z FAIL packages/build/test/new.test.ts > suite > case'
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, unknown), print: out.print })).toBe(1)
+    expect(out.lines).toContain('FAILED TEST [gating step: New test step] packages/build/test/new.test.ts > suite > case')
+    out.lines.length = 0
+    const diagnostic = 'matrix (windows-latest)\tDiagnose artifact-server fork (Windows)\t2026-09-28T10:00:00Z FAIL packages/build/test/artifact-server.test.ts > suite > case'
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, diagnostic), print: out.print })).toBe(1)
+    expect(out.lines).toContain('FAILED TEST (none extracted — read https://github.com/owner/repo/actions/runs/23/job/44)')
+    expect(out.lines.filter((line) => line.startsWith('FAILED TEST [gating'))).toEqual([])
+    expect(out.lines).toContain('FAILED TEST [diagnostic step: Diagnose artifact-server fork (Windows)] packages/build/test/artifact-server.test.ts > suite > case')
+    expect(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')).toContain('Blocking failed tests (gating steps):\n- None extracted; read the failed job logs.')
+  })
+
+  it('keeps a successful job green despite a diagnostic-step failure in its log', async () => {
+    const f = publicFixture(); const out = output()
+    const diagnostic = 'matrix (windows-latest)\tDiagnose artifact-server fork (Windows)\t2026-09-28T10:00:00Z FAIL packages/build/test/artifact-server.test.ts > suite > case'
+    const io = loggedGh(f, diagnostic, 'matrix (windows-latest)', 'success')
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(0)
+    expect(out.lines).toContain('DIAGNOSTIC FAILURES (did not block): matrix (windows-latest)')
+    expect(out.lines).toContain('FAILED TEST [diagnostic step: Diagnose artifact-server fork (Windows)] packages/build/test/artifact-server.test.ts > suite > case')
+    expect(out.lines.at(-1)).toBe('RESULT: green')
+    expect(out.lines.some((line) => line.startsWith('BLOCKER:'))).toBe(false)
+    expect(existsSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`))).toBe(false)
   })
 
   it('permits replaying an already-public commit with empty authorized commits', async () => {
@@ -303,7 +406,7 @@ describe('cross-OS dispatch', () => {
     const f = publicFixture(); const { io, calls } = fakeGh(f, 'failure'); const out = output()
     const code = await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })
     expect(code, out.lines.join('\n')).toBe(1)
-    expect(out.lines).toContain('FAILED TEST packages/build/test/sdk-pilot-lifecycle-server.test.ts > runner-hosted SDK pilot lifecycle > the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]')
+    expect(out.lines).toContain('FAILED TEST [gating step: Test (macOS shard 2/2)] packages/build/test/sdk-pilot-lifecycle-server.test.ts > runner-hosted SDK pilot lifecycle > the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]')
     expect(out.lines.join('\n')).toContain('BLOCKER: host-layer merge')
     expect(out.lines.at(-1)).toBe('RESULT: red')
     expect(calls.some((args) => args.includes('--job') && args.includes('--log'))).toBe(true)
@@ -362,6 +465,8 @@ describe('cross-OS dispatch', () => {
     expect(workflow).toContain("tags: ['workflow-toolbox--v*']")
     expect(workflow).toContain('group: cross-os-${{ github.ref }}')
     expect(workflow).toContain('cancel-in-progress: false')
+    expect(workflow).toContain('names beginning "Diagnose " are diagnostic and never gate the job')
+    expect(workflow).toContain('- name: Diagnose artifact-server fork (Windows)')
   })
 
   it('refuses a non-public remote before pushing even when it points to the public repository', async () => {
