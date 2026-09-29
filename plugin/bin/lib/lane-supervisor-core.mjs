@@ -2,6 +2,7 @@ import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, 
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { ensureLaneHostDir, laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
+import { quoteRemedyWord } from './remedy-quote.mjs'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 500
@@ -366,7 +367,7 @@ export function laneHardBoundAt(record) {
   return timeoutAt + remaining * (timeoutMs + graceMs) + graceMs + Math.max(0, Number(record?.decisionTransitionBoundMs) || 0)
 }
 
-export const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`
+export const shellQuote = (value) => quoteRemedyWord(value, true)
 
 export function readLogTail(file, maxBytes = 2048) {
   try {

@@ -45,6 +45,8 @@ function fixturePlugin(options: { version?: unknown; copyRules?: boolean; copyAg
   }
   const script = join(root, 'skills/adopt/scripts/install.mjs')
   mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
+  mkdirSync(join(root, 'bin/lib'), { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
   cpSync(SCRIPT, script)
   return { root, script }
 }
@@ -124,7 +126,10 @@ describe('adopt installer characterization - incomplete plugin bundles', () => {
 
   it('fails when no plugin manifest exists above the standalone script', () => {
     const root = tempDir()
-    const script = join(root, 'install.mjs')
+    const script = join(root, 'skills/adopt/scripts/install.mjs')
+    mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
+    mkdirSync(join(root, 'bin/lib'), { recursive: true })
+    cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
     cpSync(SCRIPT, script)
     const result = run(['--check', '--dir', tempDir()], { script })
     expect(result.status).not.toBe(0)

@@ -138,6 +138,12 @@ When adopting into a project that already has rules, reconcile first — see the
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
   use set-wide `--force` when the three-way decision covered only one file.
+- **Resolve an on-demand trigger finding:** run the exact printed `--set rules --install
+  --refresh-triggers --file <file> --dir <dir>` to take the shipped head while leaving the
+  body and its banner version intact. Run `--keep-triggers` instead to accept the local
+  head against the current spec; a later spec change reports it again. Use either flag only
+  with a managed spec-backed on-demand copy. Do not combine `--keep-triggers` with `--force`.
+  `--force` takes the shipped head as well as the shipped body.
 - **Replace a symlinked target (deliberate):** add `--replace-symlinks` to `--install` — a
   symlinked target is otherwise reported and SKIPPED (never written through); this unlinks
   the symlink and writes a managed copy in its place, leaving the former target untouched.
@@ -336,6 +342,12 @@ its real target are one target; a second real config directory is checked and re
 - **UP-TO-DATE** — installed, unedited, version equals the plugin's; `--install` is a no-op
   (use `--force` to reset it to pristine).
 - **STALE** — installed, unedited, version behind; `--install` refreshes it (safe — no edits to lose).
+- **STALE (on-demand triggers behind the shipped spec)** — an installer-stamped head is
+  behind the shipped spec; run plain `--install` to refresh the head, even if the body is
+  edited or ahead. A head-only write keeps the body bytes and banner version unchanged.
+- **EDITED (on-demand triggers unresolved)** — an edited or unverifiable head is preserved.
+  Run either exact per-file `--refresh-triggers` or `--keep-triggers` command from the status.
+  An accepted keep stays quiet until the shipped spec moves or the head is edited again.
 - **EDITED** — installed, but the content no longer matches its stamped fingerprint (the user
   changed it); `--install` SKIPS it, `--install --force` overwrites.
 - **hand-authored / pre-fingerprint banner** — a same-named file with no toolbox banner (never

@@ -109,7 +109,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   chmodSync(join(bin, 'opencode'), 0o755)
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'frontmatter.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'resolved-binary.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'frontmatter.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'remedy-quote.mjs', 'resolved-binary.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', 'vendor'), join(pluginRoot, 'bin', 'lib', 'vendor'), { recursive: true })
@@ -219,6 +219,8 @@ describe('adopted wt-lane consent resolver', () => {
     expect(adopted).not.toContain("from './lib/lane-supervisor-core.mjs'")
   })
 
+  // Three isolated Linux runs: 1.49s, 1.50s, 1.51s; Windows runner's 20s expiry
+  // spans installer + launcher child spawns and worker teardown under much slower CI load.
   it('installs and starts the adopted launcher when the resolved plugin root has every runtime module', () => {
     const f = fixture(undefined, false)
     const install = runChild('adopt installer', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
@@ -227,7 +229,7 @@ describe('adopted wt-lane consent resolver', () => {
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const started = launch(f)
     expect(started.status, started.stderr).toBe(0)
-  })
+  }, CHILD_TIMEOUT_MS + 15_000)
 
   it.each([
     ['hostAdapter export', 'export const unrelated = {}\n'],

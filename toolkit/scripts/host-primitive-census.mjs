@@ -12,9 +12,10 @@ const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 // Lowered by independent reductions: the suite lock's reclaim moved its file operations into
 // host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
 // lane brief and lifecycle reads moved into the host lane directory helper; the launcher
-// also moved its host file-descriptor operations behind that helper.
+// also moved its host file-descriptor operations behind that helper. The clock-independent
+// gate-evidence check replaced its per-path stat calls with a git comparison.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1903
+export const HOST_PRIMITIVE_CEILING = 1899
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

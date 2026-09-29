@@ -45,12 +45,16 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
+import { quoteRemedyWord } from './lib/remedy-quote.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const INSTALL_RULES = path.join(HERE, '..', 'skills', 'adopt', 'scripts', 'install.mjs')
 const SKILL_NAME = 'workflow-toolbox:adopt'
 const VERSION_RE = /installed from workflow-toolbox v(\d+\.\d+\.\d+)/
+// These status markers are emitted by the standalone installer in its ONE line per file.
+const TRIGGERS_STALE = 'on-demand triggers behind the shipped spec'
+const TRIGGERS_UNRESOLVED = 'on-demand triggers unresolved'
 
 /** Read the hook's JSON payload from stdin; tolerate empty/malformed input. */
 function readInput() {
@@ -108,6 +112,7 @@ function checkDir(dir, set = 'rules', locationKind = 'static') {
 function bucket(status) {
   if (/^ABSENT/.test(status)) return 'absent'
   if (/^MIGRATION-PENDING/.test(status)) return 'absent'
+  if (/^DUPLICATE/.test(status)) return 'duplicate'
   if (/^STALE/.test(status)) return 'stale'
   if (/^AHEAD(?:\/FORKED)?/.test(status)) return 'ahead'
   if (/^EDITED/.test(status)) return 'edited'
@@ -129,6 +134,15 @@ function mergeAll(maps, file) {
   const present = maps
     .map((map) => map.get(file))
     .filter((finding) => finding && bucket(finding.status) !== 'absent')
+  const reportedDuplicate = present.find((finding) => bucket(finding.status) === 'duplicate')
+  if (reportedDuplicate) {
+    const extra = /\(also present in ([^)]+)\)/.exec(reportedDuplicate.status)?.[1]
+    return {
+      bucket: 'duplicate', status: 'DUPLICATE', location: null,
+      locations: [...new Set([reportedDuplicate.location, ...(extra ? [path.dirname(extra)] : [])])].sort(),
+      findings: present,
+    }
+  }
   const staticLocations = new Set(present.filter((finding) => finding.locationKind === 'static').map((finding) => finding.realLocation))
   const onDemandLocations = new Set(present.filter((finding) => finding.locationKind === 'on-demand').map((finding) => finding.realLocation))
   if (
@@ -140,6 +154,7 @@ function mergeAll(maps, file) {
       location: null,
       status: 'DUPLICATE',
       locations: [...new Set(present.map((finding) => finding.location))].sort(),
+      findings: present,
     }
   }
   let best = { bucket: 'absent', location: null, status: 'ABSENT' }
@@ -185,6 +200,7 @@ function stripBanner(text) {
 }
 
 function contentDirection(file, finding, set) {
+  if (finding.status.includes(TRIGGERS_STALE) && finding.status.includes('body current')) return TRIGGERS_STALE
   const installedVersion = versionFromStatus(finding.status)
   let currentVersion
   try {
@@ -214,9 +230,7 @@ function contentDirection(file, finding, set) {
   return `differs from v${currentVersion} (direction unknown: content-only comparison)`
 }
 
-function shellQuote(value) {
-  return "'" + value.replaceAll("'", "'\\''") + "'"
-}
+const shellQuote = (value) => quoteRemedyWord(value, true)
 
 function installRemedy(installCmd, set, dir) {
   return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`
@@ -234,6 +248,24 @@ function forceRemedy(installCmd, set, file, dir) {
   return `node ${shellQuote(installCmd)} --set ${set} --install --force --file ${shellQuote(file)} --dir ${shellQuote(dir)}`
 }
 
+function triggerRemedy(installCmd, file, dir, flag) {
+  return `node ${shellQuote(installCmd)} --set rules --install --${flag}-triggers --file ${shellQuote(file)} --dir ${shellQuote(dir)}`
+}
+
+function triggerLines(file, finding, installCmd, event) {
+  if (!finding?.location || !finding.status) return []
+  if (finding.status.includes(TRIGGERS_STALE)) {
+    const body = /^(?:EDITED|AHEAD)/.test(finding.status) || finding.status.includes('body current')
+      ? 'keeping the body as it is' : 'leaving body refresh for a separate normal install if needed'
+    return [`${file} (${finding.location}): ${TRIGGERS_STALE}; run \`${triggerRemedy(installCmd, file, finding.location, 'refresh')}\` to refresh the trigger head, ${body}.`]
+  }
+  // Persistent trigger edits, like body edits, are shown at SessionStart, not after every push.
+  if (finding.status.includes(TRIGGERS_UNRESOLVED) && event !== 'PostToolUse') {
+    return [`${file} (${finding.location}): ${TRIGGERS_UNRESOLVED}; take shipped with \`${triggerRemedy(installCmd, file, finding.location, 'refresh')}\` or keep yours with \`${triggerRemedy(installCmd, file, finding.location, 'keep')}\`.`]
+  }
+  return []
+}
+
 function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false) {
   const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [] }
   for (const [file, finding] of perFile) {
@@ -246,15 +278,14 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
   if (set !== 'rules') buckets.absent = []
   if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length) return null
 
-  const named = (items) =>
-    items
-      .sort((a, b) => a.file.localeCompare(b.file))
-      .map(({ file, location }) => `${file}${location ? ` (${location})` : ''}`)
-      .join(', ')
+  const named = (items) => items.sort((a, b) => a.file.localeCompare(b.file)).map(({ file, location }) => {
+    return location ? `${file} (${location})` : file
+  }).join(', ')
 
   const lines = []
   for (const finding of buckets.duplicate.sort((a, b) => a.file.localeCompare(b.file))) {
     lines.push(`${finding.file}: DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}. Remove one copy; this hook will not choose silently.`)
+    for (const locationFinding of finding.findings) lines.push(...triggerLines(finding.file, locationFinding, installCmd, event))
   }
   if (buckets.absent.length) {
     lines.push(
@@ -266,21 +297,29 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
   }
   for (const finding of buckets.stale.sort((a, b) => a.file.localeCompare(b.file))) {
     const target = finding.location ? finding.file + ' (' + finding.location + ')' : finding.file
-    const install = installRemedy(installCmd, set, finding.location)
+    const install = finding.status.includes(TRIGGERS_STALE) && finding.status.includes('body current')
+      ? triggerRemedy(installCmd, finding.file, finding.location, 'refresh')
+      : installRemedy(installCmd, set, finding.location)
     const check = checkRemedy(installCmd, set, finding.location)
     const action = noticeOnly
       ? `NOTICE ONLY: hand this to the session that owns this directory: run \`${install}\`, then ` +
         `\`${check}\`, and report one line. This read-only hook will not run it.`
       : `SESSION ACTION: run \`${install}\` now, then re-check the same directory with ` +
         `\`${check}\`, and report one line. This read-only hook will not run it.`
-    lines.push(`${target}: ${contentDirection(finding.file, finding, set)}. ${action}`)
+    const headNote = finding.status.includes(TRIGGERS_STALE) && !finding.status.includes('body current')
+      ? `; ${TRIGGERS_STALE}` : ''
+    lines.push(`${target}: ${contentDirection(finding.file, finding, set)}${headNote}. ${action}`)
+    if (!finding.status.includes(TRIGGERS_STALE)) lines.push(...triggerLines(finding.file, finding, installCmd, event))
   }
   // "Locally modified" is a SUPPORTED steady state, not an event. Reporting it at session
   // start is informative; reporting it after every push would fire forever on the same
   // unchanged files — and a guard that is always red is a guard that gets ignored, which
   // manufactures the blind spot it exists to close.
   if (buckets.edited.length && event !== 'PostToolUse') {
-    lines.push(`Locally modified (supported, left untouched by any refresh): ${named(buckets.edited)}.`)
+    const staleHeads = buckets.edited.filter((finding) => finding.status.includes(TRIGGERS_STALE))
+    const ordinary = buckets.edited.filter((finding) => !finding.status.includes(TRIGGERS_STALE))
+    if (ordinary.length) lines.push(`Locally modified (supported, left untouched by any refresh): ${named(ordinary)}.`)
+    if (staleHeads.length) lines.push(`Locally modified (body edit is left untouched; trigger head will be refreshed by --install): ${named(staleHeads)}.`)
     for (const finding of buckets.edited.sort((a, b) => a.file.localeCompare(b.file))) {
       const diff = diffRemedy(installCmd, set, finding.file, finding.location)
       const force = forceRemedy(installCmd, set, finding.file, finding.location)
@@ -293,6 +332,7 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
       )
     }
   }
+  for (const finding of buckets.edited) lines.push(...triggerLines(finding.file, finding, installCmd, event))
   for (const finding of buckets.ahead.sort((a, b) => a.file.localeCompare(b.file))) {
     const target = finding.location ? finding.file + ' (' + finding.location + ')' : finding.file
     const diff = diffRemedy(installCmd, set, finding.file, finding.location)
@@ -300,8 +340,9 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
       (noticeOnly
         ? `NOTICE ONLY: hand this arbitration to the session that owns this directory; start with \`${diff}\`.`
         : `SESSION ACTION: arbitrate this fork; start with \`${diff}\`.`))
+    lines.push(...triggerLines(finding.file, finding, installCmd, event))
   }
-  return lines.join('\n')
+  return lines.length ? lines.join('\n') : null
 }
 
 // This hook fires on a `git push`-shaped COMMAND, not a confirmed push outcome; for Bash

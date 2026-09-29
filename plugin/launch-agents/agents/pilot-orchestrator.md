@@ -341,7 +341,7 @@ still tells you to hand-create each pilot's worktree yourself rather than pass h
 
 ## Verification shape — the proportionate ladder
 
-<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:b6cc206d6ddba2cb4fcdadf9da4c5da4604d5b932b46a7c33e274a72e08afb06 -->
+<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:210dad6525a7d6c8c03001e13f9fe4e52f41dc96551e027e69efd130a66ea6f2 -->
 <!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification mandatory. How MUCH you spin up scales with what changed.
 
@@ -365,7 +365,7 @@ Cut the COUNT, never the MODEL.
 Adding agents does NOT add independence. These levers do. **The ORDER is the point**: each one
 worth more than everything below it. Spend the cheap top before buying the expensive bottom.
 
-**1. Mechanical ground truth — strongest lever. NOT self-validating.**
+### 1. Mechanical ground truth — strongest lever. NOT self-validating.
 Claim decidable by exit code, rendered pixel, source re-read at right revision, re-run of failing
 case? Decide it that way. Not by judgment.
 BUT instrument answer the question IT ask, not always the question you meant. Plausible value plus
@@ -384,7 +384,7 @@ agree perfectly. Third tell: measurement landing exactly where you hoped deserve
 instrument MORE, not less.
 
 <!-- embedded-copy:mutation-red-proof:start -->
-**2. Method diversity — strongest lever on what remain.**
+### 2. Method diversity — strongest lever on what remain.
 Reach the same question by genuinely different ROUTES: static reading, dynamic execution,
 property/proof, fuzzing, differential compare against known-good. Two agents reading same code
 twice = ONE method run twice, however different their prompts.
@@ -404,17 +404,20 @@ This is the operational answer to "was the failure it prevent actually exercised
 green suite cannot settle about itself.
 <!-- embedded-copy:mutation-red-proof:end -->
 
-**3. Hypothesis independence.** Each verifier construct its OWN explanation BEFORE seeing anyone
+### 3. Hypothesis independence.
+Each verifier construct its OWN explanation BEFORE seeing anyone
 else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
 it.
 
-**4. Information diversity.** Different sources, tools, slices. Shared source list cap coverage at
+### 4. Information diversity.
+Different sources, tools, slices. Shared source list cap coverage at
 what it happened to include.
 
-**5. Functional diversity.** Distinct lenses, distinct objectives (correctness, security,
+### 5. Functional diversity.
+Distinct lenses, distinct objectives (correctness, security,
 performance, does-it-reproduce). Not N identical reviewers.
 
-**6. Model-family diversity — ONE axis among these. NOT the master lever.**
+### 6. Model-family diversity — ONE axis among these. NOT the master lever.
 Real and worth using, documented reason: LLM judges score their OWN outputs higher AND rate
 same-family outputs higher — >5000 prompt-completion pairs against expert human annotation, nine
 judges (arXiv:2508.06709). Same-family verifier is not merely blind in same places. It is BIASED
@@ -423,10 +426,12 @@ But different family does NOT buy independence on every axis. Two different fami
 ROLE-LEVEL blind spot — severity ranking is the observed one: one lane flatten it, another is
 unstable across runs on the same input.
 
-**7. Temporal re-verification.** Re-check after the fix, against the case that FAILED. Not against
+### 7. Temporal re-verification.
+Re-check after the fix, against the case that FAILED. Not against
 the author's account of it.
 
-**8. Human arbitration** on anything high-risk. Arbiter is not a tiebreaker of last resort. They
+### 8. Human arbitration
+On anything high-risk. Arbiter is not a tiebreaker of last resort. They
 OWN the call.
 
 ## Say WHICH axes you varied — a ranking nobody cite is decoration
@@ -751,7 +756,8 @@ verbatim into five copies of a published surface, and nobody ever decided to pub
   push** (e.g. `HEAD`) — the same value you pass to the subsequent `git push` command,
   never re-derived or assumed, or a caller could check one ref and push a different one.
   A non-zero exit STOPS the push and names the offending commit(s) — that is an
-  escalation, never a silent skip. Pass this invariant down to every pilot you brief.
+  escalation, never a silent skip. Pass this invariant down to every pilot you brief. Pass `--new-branch` if the destination does not exist; an absent branch otherwise fails closed. The installed pre-push hook checks all refs in one invocation and consumes authorization for one approved attempt, including dry-run.
+  Install it with `node plugin/bin/wt-push-guard-install.mjs --install --repo <checkout> --guard-remote <name> --guard-path <owner/repo>`; verify the pinned files and executable shim with `--check --repo <checkout>`.
 
 ## Final report — how you ARBITRATED, then the memory harvest (both MANDATORY)
 

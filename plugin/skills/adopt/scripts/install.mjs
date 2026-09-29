@@ -68,6 +68,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -86,10 +87,9 @@ const ADOPT_JOURNAL_FILE = '.workflow-toolbox-adopt-journal.jsonl'
 // drift check reads. This installer REPAIRS a missing prerequisite; that hook DETECTS
 // one that went missing later — two mechanisms, one fact.
 //
-// The twin is a real duplication and it is DELIBERATE. This script must stay a single
-// relocatable file: the installer tests copy it alone into a synthetic plugin root, so
-// a runtime import of a sibling module breaks it by construction (measured — the import
-// threw ERR_MODULE_NOT_FOUND across six test files). Self-containment wins here.
+// The twin is a real duplication and it is DELIBERATE. Unlike the shared remedy-quoting
+// library in the same installed plugin tree, these requirements belong to the installer:
+// the SessionStart detector must track them without importing this CLI's side effects.
 //
 // What keeps the two copies honest is therefore a TEST, not an import:
 // packages/build/test/env-prerequisite-drift-hook.test.ts asserts the two declarations
@@ -524,6 +524,9 @@ function legacyRulesDir(dir) {
 // must not be read as a banner.
 const VERSION_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.(\\d+)`)
 const FP_RE = /content sha256:([0-9a-f]{12})/
+const STAMPED_BANNER_RE = /^(?:<!--|\/\/) installed from workflow-toolbox v(\d+\.\d+\.\d+)(?: · content sha256:([0-9a-f]{12}))? (?:(head) sha256:([0-9a-f]{12})|(kept) sha256:([0-9a-f]{12}) spec sha256:([0-9a-f]{12})) by the adopt skill/
+const TRIGGERS_STALE = 'on-demand triggers behind the shipped spec'
+const TRIGGERS_UNRESOLVED = 'on-demand triggers unresolved'
 
 // A DRIFT line reports one divergent line of TEXT, and that line lives on exactly one
 // side — the project copy or the shipped template, never both.
@@ -572,16 +575,107 @@ function fingerprint(body) {
   return crypto.createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
 }
 
+function headFp(text) {
+  return fingerprint(text.replace(/\r\n/g, '\n'))
+}
+
+// Kept local: the installer can be installed independently of wt-rules-on-demand.
+function renderSpecHead(spec) {
+  const yamlValue = (value) => typeof value === 'boolean' || typeof value === 'number'
+    ? String(value)
+    : `'${String(value).replace(/'/g, "''")}'`
+  const lines = ['---', 'on-demand:', '  triggers:']
+  for (const trigger of spec['on-demand'].triggers) {
+    const entries = Object.entries(trigger)
+    lines.push(`    - ${entries[0][0]}: ${yamlValue(entries[0][1])}`)
+    for (const [key, value] of entries.slice(1)) lines.push(`      ${key}: ${yamlValue(value)}`)
+  }
+  lines.push('  compliance:')
+  for (const [key, value] of Object.entries(spec.compliance ?? spec['on-demand'].compliance)) {
+    lines.push(`    ${key}: ${yamlValue(value)}`)
+  }
+  return `${lines.join('\n')}\n---\n`
+}
+
+function shippedSpecHead(set, item, root, installedHead) {
+  if (set.kind !== 'rules' || !installedHead) return null
+  const specFile = path.join(root, 'rules', item.file.replace(/\.md$/, '.spec.json'))
+  const read = readJsonObject(specFile, 'on-demand spec')
+  if (read.kind === 'missing') return null
+  if (read.kind !== 'ok') fail(`invalid shipped on-demand spec: ${specFile}`)
+  const spec = read.value
+  if (!Array.isArray(spec?.['on-demand']?.triggers) || !spec['on-demand'].triggers.length ||
+      !spec['on-demand'].triggers.every((trigger) => isPlainObject(trigger) && Object.keys(trigger).length) ||
+      !isPlainObject(spec.compliance ?? spec['on-demand'].compliance)) {
+    fail(`invalid shipped on-demand spec: ${specFile}`)
+  }
+  return { head: renderSpecHead(spec), name: path.basename(specFile) }
+}
+
+/** A stamp is provenance only if the entire line is in the writer's grammar. */
+function parseBanner(line, file) {
+  const match = STAMPED_BANNER_RE.exec(line)
+  const version = match?.[1] ?? VERSION_RE.exec(line)?.slice(1, 4).join('.') ?? null
+  const contentFp = match?.[2] ?? FP_RE.exec(line)?.[1] ?? null
+  let stamp = null
+  if (match?.[3] === 'head') stamp = { kind: 'head', head: match[4] }
+  else if (match?.[5] === 'kept') stamp = { kind: 'kept', kept: match[6], spec: match[7] }
+  return { version, contentFp, stamp: stamp && renderBanner(version, contentFp, stamp, file) === line ? stamp : null }
+}
+
+function triggerState(classification, spec) {
+  if (!spec) return null
+  const current = headFp(spec.head)
+  const installed = headFp(classification.frontmatter)
+  const stamp = parseBanner(bannerLine(SETS.rules, classification.raw), 'wt-rule.md').stamp
+  let state
+  if (installed === current) state = 'current'
+  else if (stamp?.kind === 'head') state = installed === stamp.head ? 'stale' : 'edited'
+  else if (stamp?.kind === 'kept') {
+    if (installed !== stamp.kept) state = 'edited-after-keep'
+    else state = stamp.spec !== current ? 'kept-spec-moved' : 'kept'
+  }
+  else state = 'unverified'
+  return { state, current, installed, spec, stamp }
+}
+
+const shellQuote = (value) => quoteRemedyWord(value, true)
+
+function triggerRemedy(item, dir, flag) {
+  return `node ${shellQuote(fileURLToPath(import.meta.url))} --set rules --install --${flag}-triggers --file ${shellQuote(item.file)} --dir ${shellQuote(dir)}`
+}
+
+function triggerClause(triggers, item, dir) {
+  if (!triggers || triggers.state === 'current') return ''
+  if (triggers.state === 'kept') return ` · on-demand triggers kept locally (against ${triggers.spec.name})`
+  if (triggers.state === 'stale') return ` · ${TRIGGERS_STALE} ${triggers.spec.name}`
+  return ` · ${TRIGGERS_UNRESOLVED} (${triggers.state}); take shipped: ${triggerRemedy(item, dir, 'refresh')}; keep yours: ${triggerRemedy(item, dir, 'keep')}`
+}
+
+function triggerStatus(status, triggers, item, dir) {
+  if (!triggers) return status
+  const clause = triggerClause(triggers, item, dir)
+  if (status.startsWith('UP-TO-DATE') && triggers.state === 'stale') {
+    return `STALE (${TRIGGERS_STALE} ${triggers.spec.name}; body current)`
+  }
+  if (status.startsWith('UP-TO-DATE') && clause.includes(TRIGGERS_UNRESOLVED)) return `EDITED (${clause.slice(3)})`
+  return status + clause
+}
+
 /** Content comparison ignores trailing whitespace at EOF (including a missing/extra final
  * newline). That formatting carries no rule semantics and must not manufacture drift. */
 function contentFingerprint(body) {
   return fingerprint(body.replace(/[ \t\r\n]+$/u, ''))
 }
 
-function banner(version, fp, file = '') {
-  if (file.endsWith('.mjs')) return `// installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt skill -- editable copy.`
+function renderBanner(version, fp, stamp = null, file = '') {
+  const metadata = `installed from ${BANNER_TOOL} v${version}` + (fp ? ` · content sha256:${fp}` : '')
+  let provenance = ''
+  if (stamp?.kind === 'head') provenance = ` head sha256:${stamp.head}`
+  else if (stamp?.kind === 'kept') provenance = ` kept sha256:${stamp.kept} spec sha256:${stamp.spec}`
+  if (file.endsWith('.mjs')) return `// ${metadata}${provenance} by the adopt skill -- editable copy.`
   return (
-    `<!-- installed from ${BANNER_TOOL} v${version} · content sha256:${fp} by the adopt ` +
+    `<!-- ${metadata}${provenance} by the adopt ` +
     `skill — editable copy. Re-run the ${BANNER_TOOL}:adopt skill to check for updates; ` +
     `--install refreshes only an UNEDITED copy, --force overwrites your local edits. -->`
   )
@@ -838,15 +932,23 @@ function stripScriptBanner(text) {
  *  installer just wrote it from its own template a moment earlier. Returns
  *  `{ text, preserved }`; `preserved` is `[]` when there is nothing local to carry (the common
  *  case, and the only case for the rules/autonomy sets, which pass no `oldContent`). */
-function renderItem(set, item, version, root, oldContent = null) {
+function renderItem(set, item, version, root, oldContent = null, triggers = null, force = false) {
   const rawContent = itemContent(set, item, root)
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
-  const b = banner(version, fingerprint(content), item.file)
   const onDemandHead = set.kind === 'rules' ? onDemandFrontmatter(oldContent ?? '') : null
+  let writtenHead = onDemandHead
+  let stamp = null
+  if (triggers) {
+    writtenHead = force || ['current', 'stale'].includes(triggers.state) ? triggers.spec.head : onDemandHead
+    stamp = writtenHead === triggers.spec.head
+      ? { kind: 'head', head: triggers.current }
+      : triggers.stamp
+  }
+  const b = renderBanner(version, fingerprint(content), stamp, item.file)
   let text
   if (set.kind === 'agents') text = insertAgentBanner(content, b)
-  else if (onDemandHead) text = `${onDemandHead}${b}\n\n${content}`
+  else if (onDemandHead) text = `${writtenHead}${b}\n\n${content}`
   else if (set.kind === 'scripts' && content.startsWith('#!')) {
     text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
   } else text = `${b}\n\n${content}`
@@ -1193,10 +1295,10 @@ function classify(target, set) {
   const fpm = FP_RE.exec(line)
   const body = stripBannerFor(set, content)
   const contentFp = contentFingerprint(body)
-  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp, frontmatter: onDemandFrontmatter(content) }
+  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp, frontmatter: onDemandFrontmatter(content), raw: content }
   const clean = fingerprint(body) === fpm[1] || contentFingerprint(body) === fpm[1]
   // Re-derive this from the body; never trust the banner hash for shipped-content identity.
-  return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body, frontmatter: onDemandFrontmatter(content) }
+  return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body, frontmatter: onDemandFrontmatter(content), raw: content }
 }
 
 function journalPath(dir) {
@@ -1217,7 +1319,7 @@ function adoptedSnapshot(dir, file, version) {
   for (const line of lines) {
     try {
       const entry = JSON.parse(line)
-      if (entry.file === file && entry.afterVersion === version && typeof entry.adoptedText === 'string') {
+      if (entry.file === file && entry.afterVersion === version && !entry.headOnly && typeof entry.adoptedText === 'string') {
         return entry.adoptedText
       }
     } catch {
@@ -1243,6 +1345,10 @@ function printThreeWayDiff(set, dir, file, version, root) {
   process.stdout.write(`=== ADOPTED v${classified.installedVer} ===\n${adoptedText}\n`)
   process.stdout.write(`=== LOCAL ${target} ===\n${stripBannerFor(set, local)}\n`)
   process.stdout.write(`=== SHIPPED v${version} ===\n${itemContent(set, item, root)}\n`)
+  const spec = shippedSpecHead(set, item, root, onDemandFrontmatter(local))
+  if (spec && headFp(onDemandFrontmatter(local)) !== headFp(spec.head)) {
+    process.stdout.write(`=== LOCAL TRIGGERS ===\n${onDemandFrontmatter(local)}=== SHIPPED TRIGGERS (${spec.name}) ===\n${spec.head}`)
+  }
 }
 
 function cmp(a, b) {
@@ -1486,6 +1592,8 @@ const CLI_VALUE_OPTIONS = {
 
 const CLI_BOOLEAN_OPTIONS = {
   '--force': 'force',
+  '--refresh-triggers': 'refreshTriggers',
+  '--keep-triggers': 'keepTriggers',
   '--replace-symlinks': 'replaceSymlinks',
   '--global': 'global',
   '--dry-run': 'dryRun',
@@ -1506,6 +1614,8 @@ function defaultCliArgs() {
     dir: null,
     global: false,
     force: false,
+    refreshTriggers: false,
+    keepTriggers: false,
     set: 'rules',
     replaceSymlinks: false,
     userDir: null,
@@ -1559,6 +1669,8 @@ const FLAG_EFFECTIVE_MODES = {
   dir: { cli: '--dir', modes: ['check', 'install', 'migrate', 'diff'] },
   global: { cli: '--global', modes: ['check', 'install', 'migrate', 'diff'] },
   force: { cli: '--force', modes: ['install'] },
+  refreshTriggers: { cli: '--refresh-triggers', modes: ['install'] },
+  keepTriggers: { cli: '--keep-triggers', modes: ['install'] },
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
   dryRun: { cli: '--dry-run', modes: ['migrate'] },
   secondaryDir: { cli: '--secondary-dir', modes: ['migrate'] },
@@ -1980,11 +2092,20 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
   }
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
+  const spec = ['clean', 'edited', 'edited-unknown'].includes(classification.state)
+    ? shippedSpecHead(set, item, root, classification.frontmatter) : null
+  const triggers = spec ? triggerState(classification, spec) : null
+  if (args.refreshTriggers || args.keepTriggers) {
+    if (!triggers || legacyDecision) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
+  }
+  if (triggers && !legacyDecision) {
+    decision = { ...decision, status: triggerStatus(decision.status, triggers, item, dir) }
+  }
   const stale =
     classification.state === 'clean' &&
     ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
       (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
-  return { target, classification, decision, stale, migrationPending: !!legacyDecision, duplicate }
+  return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate }
 }
 
 function existingContentForRender(set, target, classification) {
@@ -2022,9 +2143,13 @@ function replaceSymlinkAtomically(target, text) {
 }
 
 function writeManagedItem(set, dir, item, args, version, root, planned) {
-  const { target, classification } = planned
+  const { target, classification, triggers } = planned
+  if (!targetUnchanged(target, classification, set)) {
+    process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
+    return
+  }
   const oldContent = existingContentForRender(set, target, classification)
-  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent)
+  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, args.force)
   if (preserved.length > 0) {
     process.stdout.write(
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
@@ -2043,14 +2168,65 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
     adoptedText: stripBannerFor(set, finalText),
   })
   const versions = classification.installedVer ? `v${classification.installedVer} -> v${version}` : `none -> v${version}`
-  process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})\n`)
+  const headReport = triggers && (args.force || decisionRendersHead(planned)) && triggers.state !== 'current'
+    ? ' · on-demand triggers refreshed from shipped spec' : triggerClause(triggers, item, dir)
+  process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})${headReport}\n`)
+}
+
+function decisionRendersHead(planned) {
+  return ['current', 'stale'].includes(planned.triggers?.state)
+}
+
+function targetUnchanged(target, classification, set) {
+  try {
+    const now = classify(target, set)
+    if (classification.state !== now.state) return false
+    if (classification.state === 'symlink') return now.linkTarget === classification.linkTarget
+    if (classification.state === 'absent') return true
+    return now.raw === classification.raw
+  } catch {
+    return false
+  }
+}
+
+function writeTriggerHead(set, dir, item, planned, action) {
+  const { target, classification, triggers } = planned
+  if (!targetUnchanged(target, classification, set)) {
+    process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
+    return
+  }
+  const head = action === 'keep' ? classification.frontmatter : triggers.spec.head
+  const stamp = action === 'keep'
+    ? { kind: 'kept', kept: headFp(head), spec: triggers.current }
+    : { kind: 'head', head: triggers.current }
+  const rest = classification.raw.slice(classification.frontmatter.length)
+  const line = bannerLine(set, classification.raw)
+  const parsed = parseBanner(line, item.file)
+  const stamped = renderBanner(classification.installedVer, parsed.contentFp, stamp, item.file)
+  const text = head + rest.replace(line, () => stamped)
+  if (text === classification.raw) return
+  writeManagedFile(target, text)
+  let verb = 'TRIGGERS REFRESHED'
+  if (action === 'keep') verb = 'TRIGGERS KEPT'
+  else if (triggers.state === 'current') verb = 'TRIGGERS ENROLLED'
+  appendAdoptionJournal(dir, {
+    timestamp: new Date().toISOString(), file: item.file, directory: dir,
+    action: verb, headOnly: true, beforeVersion: classification.installedVer,
+    afterVersion: classification.installedVer,
+  })
+  const outcome = action === 'keep' ? 'accepted local head' : 'current shipped head'
+  process.stdout.write(`  ${item.file}: ${verb} (head only; body left at v${classification.installedVer}) -> ${target} (journal ${journalPath(dir)}) · on-demand triggers ${outcome}\n`)
 }
 
 function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const planned = decideManagedItem(set, dir, item, args, version, root, alternateDirs)
-  const { classification, decision } = planned
+  const { classification, decision, triggers } = planned
   if (args.mode === 'install') {
-    if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
+    if (args.refreshTriggers || args.keepTriggers) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
+    else if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
+    else if (triggers && (triggers.state === 'stale' || (triggers.state === 'current' && (triggers.stamp?.kind !== 'head' || triggers.stamp.head !== triggers.current)))) {
+      writeTriggerHead(set, dir, item, planned, 'refresh')
+    }
     else process.stdout.write(`  ${item.file}: SKIPPED — ${decision.status}\n`)
   } else {
     process.stdout.write(`  ${item.file}: ${decision.status}\n`)
@@ -2060,7 +2236,8 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   }
   return {
     anyAbsent: classification.state === 'absent',
-    anyStale: planned.stale,
+    anyStale: planned.stale || triggers?.state === 'stale',
+    anyTriggersUnresolved: !!triggers && ['edited', 'unverified', 'kept-spec-moved', 'edited-after-keep'].includes(triggers.state),
     anyEdited: ['edited', 'edited-unknown'].includes(classification.state),
     anySymlink: classification.state === 'symlink',
     anyMigrationPending: planned.migrationPending,
@@ -2082,6 +2259,7 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   const state = {
     anyAbsent: false,
     anyStale: false,
+    anyTriggersUnresolved: false,
     anyEdited: false,
     anySymlink: false,
     anyMigrationPending: false,
@@ -2653,6 +2831,7 @@ function renderCheckHints(args, state) {
   if (args.mode !== 'check') return
   if (state.anyAbsent) process.stdout.write('adopt: run with --install to write the ABSENT item(s).\n')
   else if (state.anyStale) process.stdout.write('adopt: run with --install to refresh the STALE item(s).\n')
+  else if (state.anyTriggersUnresolved) process.stdout.write('adopt: on-demand triggers unresolved — use the per-file commands above.\n')
   else if (state.anyEdited) process.stdout.write('adopt: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
   else if (state.anySettingsProblem) process.stdout.write('adopt: account-level settings need manual attention before this tool can manage them safely.\n')
   else process.stdout.write('adopt: nothing to do.\n')
@@ -2676,7 +2855,7 @@ function renderCheckHints(args, state) {
 }
 
 function mergeSetState(state, result) {
-  for (const key of ['anyAbsent', 'anyStale', 'anyEdited', 'anySymlink', 'anyMigrationPending', 'anyDuplicate']) {
+  for (const key of ['anyAbsent', 'anyStale', 'anyTriggersUnresolved', 'anyEdited', 'anySymlink', 'anyMigrationPending', 'anyDuplicate']) {
     state[key] = state[key] || result[key]
   }
 }
@@ -2707,6 +2886,7 @@ function runManagedCommand(args, context) {
   const state = {
     anyAbsent: false,
     anyStale: false,
+    anyTriggersUnresolved: false,
     anyEdited: false,
     anySymlink: false,
     anySettingsProblem: false,
@@ -2723,12 +2903,12 @@ function runManagedCommand(args, context) {
       args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
     )
     for (const [dir, files] of managedSetGroups(set, fallbackDir, implicitInstallDirs.get(name), root)) {
-      refuseExplicitRootInstall(set, dir, args, root)
+      if (!args.refreshTriggers && !args.keepTriggers) refuseExplicitRootInstall(set, dir, args, root)
       mergeSetState(state, processSet(set, dir, args, version, root, files))
     }
   }
 
-  if (state.anyDuplicate) process.exitCode = 1
+  if (state.anyDuplicate && !args.refreshTriggers && !args.keepTriggers) process.exitCode = 1
 
   const settingsResult = processSettings(globalRoot, chosen, args, version)
   state.anyAbsent = state.anyAbsent || settingsResult.anyAbsent
@@ -2744,6 +2924,11 @@ function runManagedCommand(args, context) {
 function main() {
   const args = parseArgs(process.argv.slice(2))
   checkFlagModeAsymmetry(args)
+  if (args.refreshTriggers || args.keepTriggers) {
+    if (!args.file || args.set !== 'rules') fail('--refresh-triggers and --keep-triggers require --set rules --install --file <file>')
+    if (args.refreshTriggers && args.keepTriggers) fail('--refresh-triggers and --keep-triggers are mutually exclusive')
+    if (args.force && args.keepTriggers) fail('--force --keep-triggers is refused; use the commands separately')
+  }
   if (args.mode === 'migrate') return runMigrationCommand(args)
   if (args.mode === 'audit-overlap') return runAuditCommand(args)
   const context = standardCommandContext(args)

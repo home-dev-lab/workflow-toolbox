@@ -131,7 +131,8 @@ for (const name of names) {
   const rows = transcriptRows.filter((row) => row.rule === name && row.scope === scope && row.rulesDir && physicalOf.get(row.rulesDir) === realRulesDir);
   // A scan that contains no rows for a rule is still the authoritative window when --verdicts is supplied.
   const kind = /^\s{4}kind:\s*['"]?([^'"\s]+)/m.exec(await readFile(join(rulesDir, name), 'utf8'))?.[1];
-   const measured = options.verdictFiles.length && ['check', 'bash-command', 'tool-input', 'turn-correlation'].includes(kind);
+    // next-call is decided live, not reconstructed from transcripts, including when --verdicts is supplied.
+    const measured = options.verdictFiles.length && ['check', 'bash-command', 'tool-input', 'turn-correlation'].includes(kind);
   // Only transcripts can establish non-delivery. In store-only mode, a governed act without
   // a delivery record for this identity in its context is unknown, regardless of other fields.
   // When transcript verdicts are supplied, the scan window decides independently of old sessions.
@@ -152,13 +153,13 @@ for (const name of names) {
   const { threshold, minimum } = policy(await readFile(join(rulesDir, name), 'utf8'));
    const evidence = afterRows.filter((row) => row.verdict === 'trigger miss').map((row) => `${row.file}:${row.line}`);
   const before = rows.filter((row) => row.phase === 'before' && ['followed', 'not followed'].includes(row.checkVerdict));
-   const { reason, recommendation, rate, attention, revert } = rollbackDecision({ triggerMiss: false,
+   const { reason, recommendation, rate, pValue, attention, revert } = rollbackDecision({ triggerMiss: false,
      triggerMissUnmatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).length : 0,
      triggerMissMatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched !== false).length : 0,
      triggerMissEvidence: afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
     followed, applicable: applicable.length, beforeFollowed: before.filter((row) => row.checkVerdict === 'followed').length,
     beforeApplicable: before.length, threshold, minimum });
-    const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
+    const result = { rule: name, scope, action: 'none', reason, recommendation, pValue, followed, applicable: applicable.length, triggerMissEvidence: evidence,
       ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
     if (!cutoff) {
       result.action = 'attention'; result.reason = 'migration instant unknown; automatic rollback unavailable';
@@ -183,7 +184,8 @@ for (const name of names) {
     results.push(result);
     continue;
   }
-    if (attention || !revert) { result.action = 'attention'; results.push(result); log(`${name}: attention: ${reason}`); continue; }
+    if (attention) { result.action = 'attention'; results.push(result); log(`${name}: attention: ${reason}`); continue; }
+    if (!revert) { results.push(result); log(`${name}: no rollback: ${reason}`); continue; }
   // A file that physically lives in another profile's directory (a symlinked on-demand directory or file) is not this
   // profile's to revert: the revert would delete the file the other profile serves (HIGH 1).
   const realFile = await realOr(join(rulesDir, name));
@@ -197,13 +199,13 @@ for (const name of names) {
   result.action = options.dryRun ? 'would revert' : 'reverted';
   results.push(result);
   log(`${options.dryRun ? 'would revert' : 'reverted'} ${name}: ${reason}`);
-  if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
+  if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, pValue, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
   if (!options.dryRun) {
     const notification = { ...result, at: new Date().toISOString(), ...(scope === 'project' ? { root: project } : {}) };
     if (options.journal) await appendFile(options.journal, JSON.stringify({ ...notification, state: 'pending' }) + '\n');
     const moved = await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
     if (moved.changed && options.journal) await appendFile(options.journal, JSON.stringify({ ...notification, state: 'reverted' }) + '\n');
-    if (hasRecord && moved.changed) await recordRollback(project, moved.source, { reason, rate, followed, applicable: applicable.length });
+    if (hasRecord && moved.changed) await recordRollback(project, moved.source, { reason, rate, pValue, followed, applicable: applicable.length });
   }
 }
 

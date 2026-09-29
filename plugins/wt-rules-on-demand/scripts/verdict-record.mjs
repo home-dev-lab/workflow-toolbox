@@ -101,10 +101,10 @@ export async function pendingRules(project, record) {
   return pending;
 }
 
-export async function recordRollback(project, destination, { reason, rate, followed, applicable }) {
+export async function recordRollback(project, destination, { reason, rate, pValue, followed, applicable }) {
   const root = join(project, '.claude', 'rules');
   const rule = relative(root, destination).split(sep).join('/');
   if (rule.startsWith('../') || rule === '..' || !rule.endsWith('.md')) throw new Error(`reverted rule outside static rules: ${destination}`);
   const digest = sha256(await readFile(destination));
-  await updateVerdicts(project, (data) => { data.rules[rule] = { sha256: digest, state: 'rolled-back', reason, date: new Date().toISOString(), rate, followed, applicable }; });
+  await updateVerdicts(project, (data) => { data.rules[rule] = { sha256: digest, state: 'rolled-back', reason, date: new Date().toISOString(), rate, pValue, followed, applicable }; });
 }

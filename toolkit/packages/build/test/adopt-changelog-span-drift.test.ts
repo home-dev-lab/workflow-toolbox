@@ -2,11 +2,10 @@
 // plugin/skills/adopt/scripts/changelog-span.mjs and its inlined byte-identical copy in
 // plugin/skills/adopt/scripts/install.mjs.
 //
-// install.mjs must stay a single relocatable script (its own tests copy it alone into a
-// synthetic plugin root — a runtime import of a sibling module breaks it there,
-// ERR_MODULE_NOT_FOUND, measured across six test files by an earlier duplication:
-// UNIVERSAL_ENV_REQUIREMENTS vs plugin/bin/lib/env-prerequisites.mjs, kept honest by
-// env-prerequisite-drift-hook.test.ts's own text-equality check). This test is that same
+// install.mjs must keep this core inlined rather than import a sibling module; its
+// adopted copies use the installed plugin tree for their shared remedy quoting library.
+// UNIVERSAL_ENV_REQUIREMENTS vs plugin/bin/lib/env-prerequisites.mjs is kept honest by
+// env-prerequisite-drift-hook.test.ts's own text-equality check. This test is that same
 // discipline applied to the changelog-span CORE block: both files carry the identical
 // text between the `CHANGELOG-SPAN CORE START`/`END` markers, and this asserts it —
 // so an edit to one copy that forgets the other fails loudly here instead of drifting

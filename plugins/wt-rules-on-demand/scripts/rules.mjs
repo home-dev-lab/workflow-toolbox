@@ -42,23 +42,27 @@ function usage() {
 async function timedPatterns(rule, corpus, boundMs) {
   const patterns = [];
   for (const [index, trigger] of rule.triggers.entries()) for (const [key, regex] of Object.entries(trigger))
-    if (regex instanceof RegExp) patterns.push([`trigger-${index}-${key}`, regex]);
+    if (regex && typeof regex.test === 'function' && typeof regex.source === 'string') patterns.push([`trigger-${index}-${key}`, regex]);
   const compliance = rule.compliance;
   if (compliance) for (const [key, regex] of Object.entries(compliance)) {
-    if (regex instanceof RegExp) patterns.push([`compliance-${key}`, regex]);
-    if (Array.isArray(regex)) for (const [index, part] of regex.entries()) if (part instanceof RegExp) patterns.push([`compliance-${key}-${index}`, part]);
+    if (regex && typeof regex.test === 'function' && typeof regex.source === 'string') patterns.push([`compliance-${key}`, regex]);
+    if (Array.isArray(regex)) for (const [index, part] of regex.entries()) if (part && typeof part.test === 'function' && typeof part.source === 'string') patterns.push([`compliance-${key}-${index}`, part]);
   }
   const slow = [];
   for (const [patternId, regex] of patterns) {
     if (!corpus.length) break;
-    const ms = await new Promise((done) => {
-      const worker = new Worker(new URL('./regex-timing-worker.mjs', import.meta.url), { workerData: { source: regex.source, flags: regex.flags, corpus, boundMs } });
-      const timer = setTimeout(() => { void worker.terminate(); done(boundMs); }, Math.max(500, boundMs * 5, corpus.length / 10));
+    let operation = 'test';
+    if (patternId === 'compliance-id') operation = 'exec';
+    else if (patternId === 'compliance-value' || patternId === 'compliance-matchBlock') operation = 'matchAll';
+    const result = await new Promise((done) => {
+      const worker = new Worker(new URL('./regex-timing-worker.mjs', import.meta.url), { workerData: { source: regex.source, flags: regex.flags, corpus, boundMs, operation } });
+      const timer = setTimeout(() => { void worker.terminate(); done({ error: 'timing worker deadline exceeded' }); }, Math.max(500, boundMs * 5, corpus.length / 10));
       worker.once('message', (value) => { clearTimeout(timer); done(value); });
-      worker.once('error', () => { clearTimeout(timer); void worker.terminate(); done(boundMs); });
-      worker.once('exit', (code) => { if (code !== 0) { clearTimeout(timer); done(boundMs); } });
+      worker.once('error', (error) => { clearTimeout(timer); void worker.terminate(); done({ error: error.message }); });
+      worker.once('exit', (code) => { if (code !== 0) { clearTimeout(timer); done({ error: `timing worker exited ${code}` }); } });
     });
-    if (ms !== null && ms >= boundMs) slow.push({ status: 'slow', patternId, ms });
+    if (result.error) slow.push({ status: 'error', patternId, reason: result.error });
+    else if (result.ms !== null && result.ms >= boundMs) slow.push({ status: 'slow', patternId, ms: result.ms });
   }
   return slow;
 }
@@ -94,7 +98,7 @@ async function checkRules() {
     if (row.status === 'slow') console.log(`slow ${basename(row.file)} ${row.patternId} ${row.ms.toFixed(3)}`);
     else console.log(`${row.status}\t${row.file}${reason}`);
   }
-  if (rows.some((row) => row.status === 'skipped' || row.status === 'slow')) process.exitCode = 1;
+   if (rows.some((row) => ['skipped', 'slow', 'error'].includes(row.status))) process.exitCode = 1;
 }
 
 const textOfPrompt = (row) => {
@@ -124,7 +128,8 @@ async function prove() {
   const spec = await readSpec(resolve(String(options.spec)));
   const { body, rendered: migrationText } = await migrationPreflight(lifecycleRoot, subject, spec, scope);
   const compiled = parseRuntimeRule(basename(subject), migrationText).triggers;
-  const byTrigger = spec.triggers.map((trigger) => ({ trigger, matches: 0 }));
+   const byTrigger = spec.triggers.map((trigger) => ({ trigger, matches: 0,
+     ...(trigger.detector ? { outcome: 'not provable from transcripts (environment-dependent detector)' } : {}) }));
   const examples = [];
   let inspected = 0;
   const skippedLinks = [];
@@ -137,7 +142,8 @@ async function prove() {
       try { row = JSON.parse(line); } catch { continue; }
       for (const item of candidates(row)) {
         inspected += 1;
-        for (let index = 0; index < spec.triggers.length; index += 1) {
+         for (let index = 0; index < spec.triggers.length; index += 1) {
+           if (spec.triggers[index].detector) continue;
            if (!triggerMatches(compiled[index], item)) continue;
           byTrigger[index].matches += 1;
           if (examples.length < 5) examples.push({ file: basename(file), line: lineNumber, channel: item.channel, tool: item.tool || null, sample: (item.text || item.path || item.input || '').slice(0, 160) });
@@ -156,8 +162,8 @@ async function prove() {
   process.stdout.write(rendered);
   // A dangling symlink is never silent: it is counted above AND named on stderr, visible even
   // to a caller that only reads the exit code and stdout summary line, not the full JSON.
-  for (const path of skippedLinks) console.error(`rules: skipped dangling symlink ${path}`);
-  if (!report.matches) process.exitCode = 1;
+  for (const path of skippedLinks) { console.error(`rules: skipped dangling symlink ${path}`); }
+    if (!report.matches && !byTrigger.some((row) => row.outcome)) { process.exitCode = 1; }
 }
 
 async function migrate() {
@@ -169,8 +175,11 @@ async function migrate() {
   let proof;
   if (options.proof) {
     proof = JSON.parse(await readFile(resolve(String(options.proof)), 'utf8'));
-    if (proof.rule !== basename(subject) || proof.triggersHash !== hash || proof.bodyHash !== bodyHash || proof.scopeRoot !== lifecycleRoot) throw new Error('proof does not match this rule body, scope root and trigger spec');
-    const zero = spec.triggers.map((trigger, i) => proof.byTrigger?.[i]?.matches ? null : `${i} (${trigger.kind}: ${trigger.tool ?? trigger.regex})`).filter((item) => item !== null);
+    if (proof.rule !== basename(subject) || proof.triggersHash !== hash || proof.bodyHash !== bodyHash || proof.scopeRoot !== lifecycleRoot) { throw new Error('proof does not match this rule body, scope root and trigger spec'); }
+      const zero = spec.triggers.map((trigger, i) => {
+        const proved = proof.byTrigger?.[i]?.matches || trigger.detector && proof.byTrigger?.[i]?.outcome === 'not provable from transcripts (environment-dependent detector)';
+        return proved ? null : `${i} (${trigger.kind}: ${trigger.tool ?? trigger.regex})`;
+      }).filter((item) => item !== null);
     if (zero.length) throw new Error(`proof has zero matches for triggers: ${zero.join(', ')}`);
     proof = { proof: { matches: proof.matches, transcriptsInspected: proof.inspected, generatedAt: proof.generatedAt } };
   } else if (typeof options['no-proof'] === 'string' && options['no-proof'].trim()) {

@@ -1,4 +1,5 @@
 import { CHECKS } from './act-checks.js';
+import { DETECTORS } from './lsp-symbol.js';
 import { RULE_CAP, safeRegex } from './evidence.js';
 
 function scalar(value) {
@@ -11,8 +12,8 @@ function scalar(value) {
 // Every key a rule may declare. A key outside these lists is REFUSED, never ignored: an
 // ignored predicate fails open — a `tool` trigger whose narrowing key the engine does not know fires on every call.
 // scripts/rule-lifecycle-lib.mjs validates a migration spec against the same lists.
-export const TRIGGER_KEYS = Object.freeze(['kind', 'regex', 'tool', 'flags', 'unconditional', 'before-first-act', 'mentions', 'input-regex', 'command-head']);
-export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex', 'tool', 'require-input-regex', 'require-any-input-regex', 'forbid-input-regex', 'absent-input-key', 'exempt-regex', 'id-regex', 'follow-up-tool', 'value-regex', 'min-distinct', 'input-field', 'mask-code', 'when-input-regex', 'each-line-regex', 'match-block-regex', 'minimum-input-key', 'minimum-input-value', 'forbid-pipe', 'subject-input-key', 'subject-input-regex', 'identity-pair', 'reject-bash-regex',
+export const TRIGGER_KEYS = Object.freeze(['kind', 'regex', 'tool', 'flags', 'unconditional', 'before-first-act', 'mentions', 'input-regex', 'command-head', 'detector']);
+export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex', 'tool', 'require-tool', 'require-input-regex', 'require-any-input-regex', 'forbid-input-regex', 'absent-input-key', 'exempt-regex', 'id-regex', 'follow-up-tool', 'value-regex', 'min-distinct', 'input-field', 'mask-code', 'when-input-regex', 'each-line-regex', 'match-block-regex', 'minimum-input-key', 'minimum-input-value', 'forbid-pipe', 'subject-input-key', 'subject-input-regex', 'identity-pair', 'reject-bash-regex',
    // Not read by the engine: scripts/rollback-check.mjs reads them from the file (TRIGGERS.md, rollback).
   'rollback-threshold', 'rollback-min-samples']);
 
@@ -46,6 +47,10 @@ function parseCompliance(lines, complianceAt, name) {
   const flags = data.flags ?? '';
   if (!/^[imsu]*$/.test(flags)) throw new Error(`unsupported compliance regex flags: ${flags}`);
   if (data.model) return { kind: 'model', model: data.model, prompt: data.prompt ?? '', window, onClose: data['on-close'] };
+  if (data.kind === 'next-call') {
+    if (!data.tool || !data['require-tool']) throw new Error('next-call requires tool and require-tool');
+    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), requireTool: safeRegex(name, data['require-tool'], flags), window, onClose: data['on-close'] };
+  }
   if (data.kind === 'bash-command') {
     if (!data['act-regex'] || (!data['require-regex'] && !data['require-all'])) throw new Error('bash-command compliance requires act-regex and require-regex or require-all');
     if (data['forbid-pipe'] && !['true', 'false'].includes(data['forbid-pipe'])) throw new Error('forbid-pipe must be true or false');
@@ -74,7 +79,7 @@ function parseCompliance(lines, complianceAt, name) {
        inputField: data['input-field'] ?? null, maskCode: data['mask-code'] === 'true',
        when: data['when-input-regex'] ? safeRegex(name, data['when-input-regex'], flags) : null,
        eachLine: data['each-line-regex'] ? safeRegex(name, data['each-line-regex'], flags) : null,
-       matchBlock: data['match-block-regex'] ? safeRegex(name, data['match-block-regex'], flags) : null,
+       matchBlock: data['match-block-regex'] ? safeRegex(name, data['match-block-regex'], flags, { capture: true }) : null,
        minimumKey: data['minimum-input-key'] ?? null,
        minimumValue: data['minimum-input-value'] === undefined ? null : Number(data['minimum-input-value']),
        window, onClose: data['on-close'] };
@@ -83,8 +88,8 @@ function parseCompliance(lines, complianceAt, name) {
     if (!data.tool || !data['id-regex'] || !data['value-regex'] || (!data['follow-up-tool'] && !data['act-regex'])) throw new Error('turn-correlation requires tool, id-regex, value-regex and follow-up-tool or act-regex');
     const minDistinct = Number(data['min-distinct']);
     if (!Number.isInteger(minDistinct) || minDistinct < 1) throw new Error('min-distinct must be a positive integer');
-    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), id: safeRegex(name, data['id-regex'], flags),
-      value: safeRegex(name, data['value-regex'], flags), followUpTool: data['follow-up-tool'] ? safeRegex(name, data['follow-up-tool'], flags) : null,
+    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), id: safeRegex(name, data['id-regex'], flags, { capture: true }),
+      value: safeRegex(name, data['value-regex'], flags, { capture: true }), followUpTool: data['follow-up-tool'] ? safeRegex(name, data['follow-up-tool'], flags) : null,
       act: data['act-regex'] ? safeRegex(name, data['act-regex'], flags) : null,
       subjectInputKey: data['subject-input-key'] ?? null,
       subjectInput: data['subject-input-regex'] ? safeRegex(name, data['subject-input-regex'], flags) : null,
@@ -103,7 +108,7 @@ function parseCompliance(lines, complianceAt, name) {
   throw new Error(`unknown compliance kind: ${data.kind ?? '(missing)'}`);
 }
 
-export function parseRuntimeRule(name, text) {
+export function parseRuntimeRule(name, text, { rawTriggers = false } = {}) {
   if (new TextEncoder().encode(text).length > RULE_CAP) throw new Error(`${name}: rule exceeds ${RULE_CAP} bytes`);
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
   if (!match) throw new Error('missing YAML frontmatter');
@@ -138,7 +143,9 @@ export function parseRuntimeRule(name, text) {
     // (hooks.js toolInputText). It narrows and never widens: no input at runtime means no fire.
     if (entry['input-regex'] !== undefined && entry.kind !== 'tool') throw new Error('input-regex applies to tool triggers only');
     if (entry['input-regex'] !== undefined && !entry['input-regex']) throw new Error('input-regex must not be empty');
-    if (entry.kind === 'tool' && entry.unconditional !== 'true' && !entry['input-regex']) throw new Error('tool trigger requires unconditional: true or input-regex');
+    if (entry.detector !== undefined && entry.kind !== 'tool') throw new Error('detector applies to tool triggers only');
+    if (entry.detector !== undefined && !Object.hasOwn(DETECTORS, entry.detector)) throw new Error(`unknown detector: ${entry.detector}`);
+    if (entry.kind === 'tool' && entry.unconditional !== 'true' && !entry['input-regex'] && !entry.detector) throw new Error('tool trigger requires unconditional: true, input-regex or detector');
     if (entry['before-first-act'] && !['true', 'false'].includes(entry['before-first-act'])) throw new Error('before-first-act must be true or false');
     // `mentions: true` — a `bash` trigger that also fires when a read-only command (grep, cat, echo…) only mentions
     // its match; by default such a mention is blanked before the regex runs (hooks/bash-mention.js).
@@ -150,11 +157,13 @@ export function parseRuntimeRule(name, text) {
       kind: entry.kind,
        regex: entry.regex ? safeRegex(name, entry.regex, flags) : null,
        tool: entry.tool ? safeRegex(name, entry.tool) : null,
-       input: entry['input-regex'] ? safeRegex(name, entry['input-regex'], flags) : null,
+        input: entry['input-regex'] ? safeRegex(name, entry['input-regex'], flags) : null,
+       detector: entry.detector ?? null,
       beforeFirstAct: entry['before-first-act'] === 'true',
        onMention: entry.mentions === 'true',
        commandHead: entry['command-head'] === 'true',
     };
   });
-  return { name, content: text.slice(match[0].length), triggers, compliance: parseCompliance(lines, complianceAt, name) };
+  return { name, content: text.slice(match[0].length), triggers, compliance: parseCompliance(lines, complianceAt, name),
+    ...(rawTriggers ? { rawTriggers: records } : {}) };
 }

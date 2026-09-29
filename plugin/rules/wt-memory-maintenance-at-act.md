@@ -46,9 +46,9 @@
   everywhere" are two separate facts to verify. A corrected rule doesn't refresh an
   already-running context — but IS reloaded whenever REBUILT: a restart **and** a compaction. A
   session that wrote the change can't verify obeying it until one occurs; "needs a fresh session"
-  too strong. ⚠ Scope carefully: covers rule/instruction TEXT. Whether the agent-definition list
-  refreshes on the same event is separate — treat session-start-only until measured, since a
-  newly-written agent type's been observed unspawnable in the session that created it. Must take
+  too strong. ⚠ Scope carefully: covers rule/instruction TEXT. Agent definitions can become
+  spawnable in the same session, immediately or after a few minutes under load; re-probe after
+  an initial refusal rather than declaring the new type unavailable. Must take
   effect immediately → state so in conversation, don't rely on the file edit alone. Leave the
   source note as rationale, pointing at the rule as operative.
 

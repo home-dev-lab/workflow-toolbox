@@ -415,6 +415,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Pilot docs instruct operators to run this push-scope guard before escalation/push.',
   },
   {
+    script: 'plugin/bin/wt-push-guard-install.mjs',
+    status: 'mapped',
+    reason: 'Pilot docs describe the installed pre-push hook and its single-use behavior.',
+  },
+  {
     script: 'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this tracker-agnostic Stop gate and its marker contract under Shipped Hooks, Guards & Monitors.',
@@ -1001,6 +1006,11 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-run-gate.mjs',
       'plugin/bin/wt-report-findings-check.mjs',
       'plugin/bin/wt-push-scope-check.mjs',
+      'plugin/bin/wt-push-guard-install.mjs',
+      'plugin/bin/git-hooks/pre-push',
+      'plugin/bin/lib/host/push-guard-identity.mjs',
+      'plugin/bin/lib/host/push-guard-runtime.mjs',
+      'plugin/bin/lib/host/push-guard-install.mjs',
       'plugin/bin/wt-pilot-guard-hook.mjs',
       'plugin/bin/wt-pilot-card-reconcile.mjs',
       'plugin/bin/wt-lane-probe.mjs',

@@ -3,8 +3,14 @@
     "triggers": [
       {
         "kind": "tool",
-        "tool": "^(?:Agent|SendMessage|Workflow)$",
+        "tool": "^(?:Agent|Workflow)$",
         "unconditional": true,
+        "before-first-act": true
+      },
+      {
+        "kind": "tool",
+        "tool": "^SendMessage$",
+        "input-regex": "\"to\":\"(?!(?:main|team-lead)(?:\"|\\s*\\[))",
         "before-first-act": true
       },
       {

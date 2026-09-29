@@ -6,6 +6,7 @@ import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { withRepositoryGuide } from './sdk-role-profile.mjs'
 import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 import { classifyProviderRefusal, createModelTracker, modelWarnings } from './model-fallback-core.mjs'
+import { quoteRemedyWord } from './remedy-quote.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
@@ -19,6 +20,12 @@ function signalExitCode(reason) {
 }
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
+}
+// Every refusal has the same shape: the whole output is the REFUSED line, then its EXIT marker.
+function refuse(out, message, code) {
+  writeFileSync(out, `REFUSED: ${message}\n`)
+  appendLine(out, `EXIT=${code}`)
+  return code
 }
 
 function appendOutput(out, text) {
@@ -198,25 +205,46 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
 
   // The CLI validates the value; a direct caller gets the same refusal rather than a silent Opus run.
   if (!['auto', 'astra', 'opus'].includes(route)) {
-    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or opus.\n`)
-    appendLine(options.out, 'EXIT=2')
-    return 2
+    return refuse(options.out, `unknown route ${JSON.stringify(route)}; use auto, astra, or opus.`, 2)
   }
 
   if (route === 'astra' && consent.outcome !== 'true') {
-    writeFileSync(options.out, consent.outcome === 'unknown'
-      ? 'REFUSED: Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.\n'
-      : 'REFUSED: Astra requires active GPT lane consent.\n')
-    appendLine(options.out, 'EXIT=1')
-    return 1
+    return refuse(options.out, consent.outcome === 'unknown'
+      ? 'Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.'
+      : 'Astra requires active GPT lane consent.', 1)
   }
 
-  if (route === 'astra' || (route === 'auto' && consent.outcome === 'true')) {
+  // A second opinion exists to escape the session's own model-family biases, so `auto` never
+  // picks a Claude model: without a consented external lane, the second opinion is the user.
+  // Only an explicit `--route opus` runs the Claude consult.
+  if (route === 'auto' && consent.outcome !== 'true') {
+    // The remedy names the level that refused: `wt-lane-consent --on` writes only the account
+    // setting, so a project that narrows consent needs its own `--project <repo> --on`.
+    const accountOff = consent.account.state !== 'true'
+    const projectNarrows = consent.project.state === 'not_true'
+    const reasons = []
+    const remedies = []
+    if (consent.outcome === 'unknown') {
+      reasons.push('the consent setting could not be read (check executor_lane_consent in the plugin settings of this profile and project)')
+    } else {
+      if (accountOff) {
+        reasons.push('GPT lane consent is off for this account')
+        remedies.push('wt-lane-consent --on')
+      }
+      if (projectNarrows) {
+        reasons.push('this project narrows GPT lane consent')
+        remedies.push(`wt-lane-consent --project ${quoteRemedyWord(options.repo)} --on`)
+      }
+    }
+    return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reasons.join(', and ')}. `
+      + 'A same-family consult cannot counter this session\'s own biases, so ask the user for the second opinion instead.'
+      + (remedies.length ? ` To route it to GPT-6 Astra, run: ${remedies.join(' && ')}` : ''), 1)
+  }
+
+  if (route === 'astra' || route === 'auto') {
     const companion = dependencies.resolveCodexCompanion(env)
     if (!companion) {
-      writeFileSync(options.out, 'REFUSED: GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.\n')
-      appendLine(options.out, 'EXIT=1')
-      return 1
+      return refuse(options.out, 'GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.', 1)
     }
 
     writeFileSync(options.out, 'ROUTE=gpt-astra\n')

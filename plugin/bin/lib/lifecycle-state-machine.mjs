@@ -10,7 +10,7 @@ import { splitFrontmatter } from './frontmatter.mjs'
 import { independentBrief, prospectivePatch, snapshotPatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
-import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport } from './lifecycle-report-edge.mjs'
+import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport, artefactIdentitiesAtStart } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
@@ -36,6 +36,10 @@ function lifecycleRound(state, phase) {
 }
 
 export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'report']
+// Pilot rule triggers fired on a phase transition. critic->plan fires ONLY its own trigger: the plan
+// sections were delivered at discovery->plan and stay in context, and the step-back rule injected on
+// a revision round was measured to make the pilot rewrite its plan instead of fixing the finding.
+export const phaseTransitionTriggers = (from, next) => (from === 'critic' && next === 'plan' ? ['critic->plan'] : [`phase:${next}`])
 export { PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation'])
 const GATES = new Set(['typecheck', 'lint', 'test'])
@@ -682,6 +686,8 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle cardId must match [A-Za-z0-9._-]+')
   }
   const root = fs.realpathSync(worktree)
+  // Capture pre-existing files before creating even the first lifecycle receipt or directory.
+  const artefactsAtStart = artefactIdentitiesAtStart(root, git)
   const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
   const rawDodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText, { raw: true }) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
@@ -1068,7 +1074,7 @@ export function createLifecycleStateMachine({
         laneDir,
         cardId,
         sessionTag,
-        startedAt: lifecycleStartedAt,
+        artefactsAtStart,
         route: frozenRoute,
         state,
         evidencePath,
@@ -1092,7 +1098,7 @@ export function createLifecycleStateMachine({
       ? ''
       : composeRules(activeRules, {
           recipient: 'pilot',
-          triggers: [`phase:${next}`, ...(state.phase === 'critic' && next === 'plan' ? ['critic->plan'] : [])],
+          triggers: phaseTransitionTriggers(state.phase, next),
         })
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT
@@ -1291,7 +1297,7 @@ export function createLifecycleStateMachine({
       ),
       tool(
         'write_artifact',
-        'Write a phase-bound lifecycle artifact. For a gitignored pilot-report delivery, add the exact line "- Delivered artefact: `relative/path`" under `## Implemented`; the edge confines and reads each regular file, requires an mtime since the run started, and records path, size, SHA-256, mtime, and `modified_after_started` in the summary and manifest. Mtime bounds recency, not authorship.',
+        'Write a phase-bound lifecycle artifact. For a gitignored pilot-report delivery, add the exact line "- Delivered artefact: `relative/path`" under `## Implemented`; the edge confines and reads each regular file, refuses files unchanged since lifecycle creation, and records path, size, SHA-256, mtime, and `modified_after_started` in the summary and manifest. File identity bounds recency, not authorship.',
         {
           kind: z.string(),
           content: z.string(),

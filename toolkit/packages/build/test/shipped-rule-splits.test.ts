@@ -25,8 +25,10 @@ const ACT_RULES = [
 ] as const
 const SPLIT_LOCKS = {
   'wt-concurrent-sessions-worktree': { lines: 53, union: '94fd849c0f35b3c3e8fea29371ded3ebbad866f15fa59f1367e885ca5f55ada6', core: '8937b8dff80951f1d687e20488e697b41c1976e684871a18dce313212674bc55', act: 'be2414462b4f360d6136234641cdf361171bed524a242dcb0fdfe0970d129ab2' },
-  'wt-delegation-ladder': { lines: 374, union: '26af47781251b147faeff14b05534ead2273224e33be9ee1de20150add956519', core: '3cb91c8722538c7230a62a791bd04c6f2322777711d5c27eda8930e2db0d7aa9', act: 'f4a84344d40bd3fb4de4e42263aa63cd8f33451a824a95b81af4211b12310174' },
-  'wt-proportionate-verification': { lines: 130, union: '2443ca2df2e2b0941211f5b18856dcd580f05dcb3794097659bda5c9b147378e', core: 'fbb5ba1147da091297f9c9b729dabe162b227aff41bc8831ad62542b36280654', act: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+  // Current split-byte inventory moves with the ladder's reviewed new-route escalation wording.
+  'wt-delegation-ladder': { lines: 197, union: '1671de5a14fc2b34b2b97e299e151ffdc7ff8c6387348245b3557220c9858fd6', core: '4855c766802b498b48d963c367987513414d02f8a762282ac01d3b1498d0f524', act: '1460f1a92bd0e061c71b577c882a7b14d2023e1a8aceda3d163f750d7ba42c68' },
+  // Eight inline levers became headings, adding five nonblank lines; subset proof is in .lane/subset.log.
+  'wt-proportionate-verification': { lines: 135, union: 'b958c4324042132d4ea0d7cf095637ec514c7fa7ead583826600f85d51ef6ee8', core: 'e3a38aad95c8bf652fb2bb5e6897c198fca109972e77c24132405699981a0680', act: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
   'wt-sdlc': { lines: 84, union: '5c8f577d28fefb30dd3116818c83b5e4cd4f8690f3c459129d25b39fcfb509b3', core: '00f1aa92edb29e139bb03bf447395c13ea6de192322b7698bb3bda534fac83a9', act: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
   'wt-task-tracking': { lines: 64, union: '4596f598a9972d55a6c821142378883eb5b5d1c64a1956bcb4552e9bd3605931', core: '9bf7869dc1535f99c3380e6a6e29e594fc49796b40991477b9ae00474bed0524', act: '49dce9023c7cc951fd0a1af3e42f8ca055961cfd6f4a79bed954d15ee8f8bdd7' },
   'wt-verify-by-ground-truth': { lines: 185, union: 'ad2b4ff26b08f5fb1df60eb82cea4e85e0aa3befa13314b776f57706dcd1d681', core: 'de00f4263b887b4b4590875ecbb53799370e7b9637064fdb88ac804caa6eb070', act: 'fc3220e0a922017eeadcf5377a8590563e67e79b33e48ee3d2798b804db5fa39' },
@@ -182,7 +184,9 @@ describe('shipped split rules', () => {
       'wt-verify-by-ground-truth': ['ANY surprise', 'first occurrence, mid-flow, off-task', 'Shipping anything requires an explicit CROSS-PLATFORM verdict', 'silently returning a plausible value'],
       'wt-workflows-as-reasoning': ['ANY multi-agent fan-out', 'many fresh-context agents OR a Workflow'],
       'wt-step-back-architectural': ['ANYTHING distributed', 'SOURCE at a named revision', 'never an installed copy'],
-      'wt-delegation-ladder': ['two failed attempts', 'one repeated diagnosis', '~15–20 min', 'IMPLEMENTATION', 'REVIEW separately'],
+      // Card 1874342400453773073 review: the counting trigger opens a step-back that may keep a route still narrowing the problem.
+      'wt-delegation-ladder': ['two failed attempts', 'one repeated diagnosis', '~15–20 min', 'IMPLEMENTATION', 'REVIEW separately', 'the current route included while its attempts still narrow the problem'],
+      'wt-delegation-routing-at-act': ['two failed attempts at same', 'the current route included while its attempts still narrow the problem', 'never to the owner'],
       'wt-task-tracking': ['Periodically sweep the whole Blocked list', 'without waiting for a closure', 'no `Depends-on:` line'],
       'wt-memory-hygiene': ['every disk fact is reachable AND every index/hub reference resolves', 'deliberate', 'operative principle and the invariant', 'no narrative, incident stories'],
       'wt-answer-first-reporting': ["nothing hands control back", "watcher's emission to an idle session", 'watcher IS the engine'],

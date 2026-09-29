@@ -33,7 +33,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
 async function startBroker(parent = process.pid) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lock-broker-')); roots.push(root)
   const socket = join(root, 'broker.sock')
-  const child = spawn(process.execPath, [BROKER, '--socket', socket, '--parent', String(parent), '--label', 'test-lane'], { env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks') }), stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [BROKER, '--socket', socket, '--parent', String(parent), '--label', 'test-lane'], { env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks'), WT_SUITE_LOCK_BROKER: '' }), stdio: ['ignore', 'pipe', 'pipe'] })
   children.push(child)
   await waitFor(() => existsSync(socket))
   return { root, socket, child, lock: join(root, 'locks', 'lock.d', 'holder.json') }
@@ -44,17 +44,46 @@ function connect(socketPath: string, request?: unknown, allowHalfOpen = false) {
   let text = ''
   socket.on('data', (chunk) => { text += String(chunk) })
   if (request !== undefined) socket.write(`${typeof request === 'string' ? request : JSON.stringify(request)}\n`)
-  return { socket, text: () => text }
+  // Patience above the census short-deadline bound; tests that use it run on a 20 s timeout so this wait, not the test, reports.
+  const waitForReply = (predicate: (received: string) => boolean, timeoutMs = 15_000) => new Promise<string>((resolve, reject) => {
+    const deadline = AbortSignal.timeout(timeoutMs)
+    const cleanup = () => {
+      socket.off('data', check)
+      socket.off('close', closed)
+      socket.off('error', failed)
+      deadline.removeEventListener('abort', timedOut)
+    }
+    const fail = (reason: string) => { cleanup(); reject(new Error(`broker reply ${reason}; received ${JSON.stringify(text)}`)) }
+    const check = () => { if (predicate(text)) { cleanup(); resolve(text) } }
+    const closed = () => fail('socket closed before expected text')
+    const failed = (cause: Error) => fail(`socket error: ${String(cause)}`)
+    const timedOut = () => fail(`timed out after ${timeoutMs}ms before expected text`)
+    socket.on('data', check)
+    socket.once('close', closed)
+    socket.once('error', failed)
+    deadline.addEventListener('abort', timedOut, { once: true })
+    check() // The reply may have arrived before this wait began.
+    if (socket.destroyed && !predicate(text)) closed()
+  })
+  return { socket, text: () => text, waitForReply }
 }
+
+const granted = (text: string) => /(?:^|\n)granted [^\n]+\n/.test(text)
+const errorReply = (text: string) => /^error [^\n]*\n/.test(text)
 
 async function localBroker() {
   const root = mkdtempSync(join(tmpdir(), 'wt-lock-local-broker-')); roots.push(root)
   const address = join(root, 'broker.sock')
   const previous = process.env.WT_SUITE_LOCK_DIR
+  const previousBroker = process.env.WT_SUITE_LOCK_BROKER
   process.env.WT_SUITE_LOCK_DIR = join(root, 'locks')
+  process.env.WT_SUITE_LOCK_BROKER = ''
   const server = createSuiteLockBroker() as net.Server
   await new Promise<void>((resolve) => server.listen(address, resolve))
-  return { address, server, restore: () => { if (previous === undefined) delete process.env.WT_SUITE_LOCK_DIR; else process.env.WT_SUITE_LOCK_DIR = previous } }
+  return { address, server, restore: () => {
+    if (previous === undefined) delete process.env.WT_SUITE_LOCK_DIR; else process.env.WT_SUITE_LOCK_DIR = previous
+    if (previousBroker === undefined) delete process.env.WT_SUITE_LOCK_BROKER; else process.env.WT_SUITE_LOCK_BROKER = previousBroker
+  } }
 }
 
 async function connectionCount(server: net.Server): Promise<number> {
@@ -144,14 +173,95 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const { address, server, restore } = await localBroker()
     const rejected = Array.from({ length: 16 }, () => connect(address, '{bad', true))
     try {
-      await waitFor(() => rejected.every((client) => client.text().startsWith('error ')))
+      await Promise.all(rejected.map((client) => client.waitForReply(errorReply)))
       await waitForConnections(server, 0, 1800)
       expect(await connectionCount(server)).toBe(0)
       const next = connect(address, { argv: ['next'], waitS: 1 })
-      await waitFor(() => next.text().includes('granted '))
+      expect(await next.waitForReply(granted)).toContain('granted ')
       next.socket.end()
     } finally { for (const client of rejected) client.socket.destroy(); server.close(); restore() }
-  }, 10_000)
+  }, 20_000)
+
+  it('admits a client after destroying a rejected socket before its close callback', async () => {
+    const { address, server, restore } = await localBroker()
+    const heldCloses: Array<() => void> = []
+    let accepted = 0
+    let next: ReturnType<typeof connect> | undefined
+    let startNext!: (client: ReturnType<typeof connect>) => void
+    const nextStarted = new Promise<ReturnType<typeof connect>>((resolve, reject) => {
+      AbortSignal.timeout(15_000).addEventListener('abort', () => {
+        reject(new Error(`next client received ${JSON.stringify(next?.text() ?? '')} before the broker destroyed a rejection`))
+      }, { once: true })
+      startNext = resolve
+    })
+    server.on('connection', (socket) => {
+      if (++accepted === 17) {
+        // The broker's admission callback runs first; only then deliver the deferred close events.
+        for (const close of heldCloses.splice(0)) close()
+        return
+      }
+      const emit = socket.emit.bind(socket)
+      socket.emit = ((event: string | symbol, ...args: unknown[]) => {
+        if (event === 'close') { heldCloses.push(() => { emit(event, ...args) }); return true }
+        return emit(event, ...args)
+      }) as typeof socket.emit
+      const destroy = socket.destroy.bind(socket)
+      socket.destroy = ((...args: Parameters<net.Socket['destroy']>) => {
+        const result = destroy(...args)
+        if (!next) { next = connect(address, { argv: ['next'], waitS: 1 }); startNext(next) }
+        return result
+      }) as typeof socket.destroy
+    })
+    const rejected = Array.from({ length: 16 }, () => connect(address, '{bad', true))
+    try {
+      await Promise.all(rejected.map(async (client) => {
+        await client.waitForReply(errorReply)
+        expect(client.text()).toMatch(/^error [^\n]*\n/)
+      }))
+      const client = await nextStarted
+      expect(await client.waitForReply(granted)).toContain('granted ')
+    } finally {
+      for (const close of heldCloses.splice(0)) close()
+      next?.socket.destroy()
+      for (const client of rejected) client.socket.destroy()
+      server.close(); restore()
+    }
+  }, 20_000)
+
+  it('frees the admission slot when it answers a rejection, while the rejected client is still open', async () => {
+    // Rejection linger timers are frozen, so the broker keeps all 16 rejected sockets open; only the
+    // accounting done at rejection time can let the next client in.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { address, server, restore } = await localBroker()
+    const rejected = Array.from({ length: 16 }, () => connect(address, '{bad', true))
+    let next: ReturnType<typeof connect> | undefined
+    try {
+      await Promise.all(rejected.map((client) => client.waitForReply(errorReply)))
+      next = connect(address, { argv: ['next'], waitS: 1 })
+      const reply = await next.waitForReply((text) => granted(text) || errorReply(text))
+      expect(await connectionCount(server)).toBe(17)
+      expect(reply).toMatch(/^granted /)
+    } finally { vi.useRealTimers(); next?.socket.destroy(); for (const client of rejected) client.socket.destroy(); server.close(); restore() }
+  }, 20_000)
+
+  it('bounds open sockets, rejected ones included, by dropping connections past the bound', async () => {
+    // Rejection linger timers are frozen, so every rejected half-open socket stays open for the whole test.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { address, server, restore } = await localBroker()
+    let dropped = 0
+    server.on('drop', () => { dropped += 1 })
+    const clients = Array.from({ length: 40 }, () => connect(address, '{bad', true))
+    for (const client of clients) client.socket.on('error', () => {})
+    const settled = () => clients.every((client) => client.socket.destroyed || client.socket.readableEnded)
+    try {
+      const deadline = Date.now() + 15_000
+      while (!settled() && Date.now() < deadline) await new Promise((resolve) => setImmediate(resolve))
+      expect(settled(), JSON.stringify(clients.map((client) => client.text()))).toBe(true)
+      expect(await connectionCount(server)).toBe(32)
+      expect(dropped).toBe(8)
+      expect(clients.filter((client) => errorReply(client.text()))).toHaveLength(32)
+    } finally { vi.useRealTimers(); for (const client of clients) client.socket.destroy(); server.close(); restore() }
+  }, 20_000)
 
   it('closes half-open busy requests within a bound', async () => {
     const { address, server, restore } = await localBroker()
@@ -159,16 +269,16 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     await waitForConnections(server, held.length)
     const rejected = connect(address, undefined, true)
     try {
-      await waitFor(() => rejected.text().startsWith('error busy'))
+      await rejected.waitForReply((text) => /^error busy\n/.test(text))
       await waitForConnections(server, held.length, 1800)
       expect(await connectionCount(server)).toBe(16)
       for (const client of held) client.socket.destroy()
       await waitForConnections(server, 0)
       const next = connect(address, { argv: ['next'], waitS: 1 })
-      await waitFor(() => next.text().includes('granted '))
+      await next.waitForReply(granted)
       next.socket.end()
     } finally { rejected.socket.destroy(); for (const client of held) client.socket.destroy(); server.close(); restore() }
-  }, 10_000)
+  }, 20_000)
 
   it('never starts an acquisition from data sent after request timeout', async () => {
     const { address, server, restore } = await localBroker()
@@ -189,7 +299,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       if (number !== undefined && !before.has(Number(number))) startedLateAcquisition = true
     })
     try {
-      await waitFor(() => client.text().startsWith('error request timed out'))
+      await client.waitForReply((text) => /^error request timed out\n/.test(text))
       client.socket.write(`${JSON.stringify({ argv: ['late'], waitS: 1 })}\n`)
       let closed = false
       const deadline = Date.now() + 1800
@@ -203,20 +313,20 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       expect(closed).toBe(true)
       expect(client.text()).not.toContain('granted ')
     } finally { watcher.close(); client.socket.destroy(); releaseSuiteLock(blocker); server.close(); restore() }
-  }, 10_000)
+  }, 20_000)
 
   it('holds as the broker, serialises clients, and releases on client end', async () => {
     const broker = await startBroker()
     const first = connect(broker.socket, { argv: ['pnpm', 'test'], waitS: 2 })
-    await waitFor(() => first.text().includes('granted '))
+    await first.waitForReply(granted)
     const holder = JSON.parse(readFileSync(broker.lock, 'utf8'))
     expect(holder.pid).toBe(broker.child.pid)
     expect(holder.argv.slice(0, 2)).toEqual(['wt-lane-sandbox', 'test-lane'])
     const second = connect(broker.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
-    await waitFor(() => second.text().includes('wait '))
+    await second.waitForReply((text) => /(?:^|\n)wait [^\n]*\n/.test(text))
     expect(second.text()).not.toContain('granted ')
     first.socket.end()
-    await waitFor(() => second.text().includes('granted '))
+    await second.waitForReply(granted)
     second.socket.end()
     await waitFor(() => !existsSync(broker.lock))
   })
@@ -237,7 +347,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const parent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']); children.push(parent)
     const broker = await startBroker(parent.pid)
     const client = connect(broker.socket, { argv: ['pnpm', 'test'], waitS: 2 })
-    await waitFor(() => client.text().includes('granted '))
+    await client.waitForReply(granted)
     let closed = false
     client.socket.on('close', () => { closed = true })
     parent.kill('SIGKILL')
@@ -248,18 +358,27 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const broker = await startBroker()
     for (const request of ['{bad', `${'x'.repeat(4097)}`]) {
       const client = connect(broker.socket, request)
-      await waitFor(() => client.text().startsWith('error '))
+      await client.waitForReply(errorReply)
     }
     const idle = connect(broker.socket)
-    await waitFor(() => idle.text().startsWith('error '))
+    await idle.waitForReply(errorReply)
     const held = Array.from({ length: 16 }, () => connect(broker.socket))
     const extra = connect(broker.socket)
-    await waitFor(() => extra.text().startsWith('error busy'))
+    await extra.waitForReply((text) => /^error busy\n/.test(text))
     for (const client of held) client.socket.destroy()
-    const next = connect(broker.socket, { argv: ['next'], waitS: 1 })
-    await waitFor(() => next.text().includes('granted '))
+    // Destroying the local endpoints does not tell us when the broker has seen them go, so capacity is
+    // asserted to come back: a busy answer is retried until the deadline, any other answer ends the wait.
+    const deadline = Date.now() + 15_000
+    let next = connect(broker.socket, { argv: ['next'], waitS: 1 })
+    let reply = await next.waitForReply((text) => granted(text) || errorReply(text))
+    while (/^error busy\n/.test(reply) && Date.now() < deadline) {
+      await waitFor(() => next.socket.destroyed)
+      next = connect(broker.socket, { argv: ['next'], waitS: 1 })
+      reply = await next.waitForReply((text) => granted(text) || errorReply(text))
+    }
+    expect(reply).toMatch(/^granted /)
     next.socket.end()
-  }, 10_000)
+  }, 20_000)
 
   it('kills a running command with exit 75 when the broker disappears', async () => {
     const broker = await startBroker()

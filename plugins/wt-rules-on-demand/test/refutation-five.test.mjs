@@ -36,7 +36,7 @@ test('rule markup in a Read result is data; only genuine refusals prove delivery
   assert.equal(judged(`${refusal}\n<rule name="sample.md">body</rule>`, false).resolved.runtimeProofs.length, 1);
 });
 test('follow-up-tool alone tolerates unrelated successful Bash calls', () => {
-  const c = { tool: /^Agent$/, id: /(id)/, value: /(value)/, followUpTool: /^SendMessage$/, act: null, minDistinct: 1 };
+  const c = { tool: safeRegex('fixture', '^Agent$'), id: safeRegex('fixture', '(id)', '', { capture: true }), value: safeRegex('fixture', '(value)', '', { capture: true }), followUpTool: safeRegex('fixture', '^SendMessage$'), act: null, minDistinct: 1 };
   const events = [{ kind: 'use', id: 'a', name: 'Agent', input: {} }, { kind: 'result', id: 'a', text: 'id' }, { kind: 'use', id: 'b', name: 'Bash', input: { command: 'pwd' } }, { kind: 'result', id: 'b', text: 'ok' }, { kind: 'turn' }];
   assert.equal(correlateTurn(c, events)[0].verdict, 'not followed');
 });
@@ -48,10 +48,14 @@ test('one broken correlation rule does not abort transcript evaluation of anothe
     { kind: 'use', line: 1, id: 'a', name: 'Agent', input: { prompt: 'approved' }, at }, { kind: 'result', line: 2, id: 'a', text: 'Done' }, { kind: 'turn' }] };
   const scope = { scope: 'user', rulesDir: '/rules', rules: [broken, good] };
   const stats = { days: 7, coverage: { missingTimestamps: 0 }, skippedOutsideWindow: 0 };
-  assert.equal(judge(context, resolveContext(context, [scope]), 'file', stats, new Set(), now).length, 1);
+  const rows = judge(context, resolveContext(context, [scope]), 'file', stats, new Set(), now);
+  assert.equal(rows.length, 2);
+  assert.ok(rows.some((row) => row.rule === 'good.md'));
+  assert.ok(rows.some((row) => row.rule === 'broken.md' && row.checkVerdict === 'unresolved' && /null|test/.test(row.detail)));
 });
-test('nested unbounded alternatives and optional atoms are refused', () => {
-  for (const source of ['^(?:a+|b+)+$', '^(?:a+z?)+$']) assert.throws(() => safeRegex('sample', source), /nested unbounded/);
+test('nested alternatives and optional atoms are accepted with native answers', () => {
+  for (const source of ['^(?:a+|b+)+$', '^(?:a+z?)+$']) for (const subject of ['', 'a', 'ab', 'aaz', 'a!'])
+    assert.equal(safeRegex('sample', source).test(subject), new RegExp(source).test(subject));
 });
 test('prove respects command-head and shares migration rendered-size preflight', async (t) => {
   const root = await sandbox(t), rules = join(root, '.claude/rules'), transcripts = join(root, 'transcripts');
@@ -64,14 +68,14 @@ test('prove respects command-head and shares migration rendered-size preflight',
   await writeFile(source, 'x'.repeat(262144));
   const large = run(); assert.notEqual(large.status, 0); assert.match(large.stderr, /exceeds|too large/);
 });
-test('check-rules audits prompt triggers and interrupts pathological matches', async (t) => {
+test('check-rules audits prompt triggers and times the actual bounded matcher', async (t) => {
   const root = await sandbox(t), corpus = join(root, 'corpus.json');
   await writeFile(join(root, 'slow.md'), `---\non-demand:\n  triggers:\n    - kind: prompt\n      regex: '^a*a*a*a*a*a*a*a*c$'\n  compliance:\n    kind: none\n    reason: fixture\n---\nbody`);
   await writeFile(join(root, 'fast.md'), ruleText);
   await writeFile(corpus, JSON.stringify(['a'.repeat(60) + '!']));
-  const result = spawnSync(process.execPath, [scripts('rules'), 'check-rules', '--dir', root, '--corpus', corpus, '--time-bound-ms', '20'], { encoding: 'utf8', timeout: 8000 });
-  assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stdout, /slow slow\.md trigger-0-regex/);
+  const result = spawnSync(process.execPath, [scripts('rules'), 'check-rules', '--dir', root, '--corpus', corpus, '--time-bound-ms', '1000'], { encoding: 'utf8', timeout: 8000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.split('\n').some((line) => line.startsWith('ok\t') && line.endsWith('slow.md')));
   assert.ok(result.stdout.split('\n').some((line) => line.startsWith('ok\t') && line.endsWith('fast.md')));
 });
 test('corrupt followed projects reports error but user quality still runs', async (t) => {
@@ -140,9 +144,9 @@ test('pending journal survives crash after revert and is reconciled from lifecyc
   assert.equal(result.notificationsFailed.length, 0);
   assert.match(await readFile(join(dataDir, 'revert-notifications.jsonl'), 'utf8'), /sample\.md/);
 });
-test('a bounded repeat of a group holding an unbounded atom is refused, an anchored or single optional one is not', () => {
-  // (?:a+|b+){0,8} took ~2 s on 40 characters: a bounded outer count still multiplies the inner partitions.
-  for (const source of ['^(?:a+|b+){0,8}$', '^(?:a+){3}$', '^(?:x?a+){0,4}$']) assert.throws(() => safeRegex('sample', source), /nested unbounded/);
+test('bounded group repetitions with unbounded atoms preserve native short answers', () => {
+  for (const source of ['^(?:a+|b+){0,8}$', '^(?:a+){3}$', '^(?:x?a+){0,4}$']) for (const subject of ['a', 'aa', 'ab', 'a!'])
+    assert.equal(safeRegex('sample', source).test(subject), new RegExp(source).test(subject));
   for (const source of ['^(?:[^;]*?\\s)?run\\b', '^(?:ab){0,8}c', '^(?:-C\\s+\\S+\\s+)?push', 'push\\s+(?:-[^\\s]+\\s+){0,8}[A-Za-z]', '^(?:\\S+\\s+){2,6}x']) assert.doesNotThrow(() => safeRegex('sample', source));
 });
 

@@ -6,8 +6,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { defaultGuardJournalDir } from './guard-journal-read.mjs'
 
-function git(root, args) {
-  return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+function git(root, args, options = {}) {
+  return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...options })
 }
 
 function gitOrEmpty(root, args) {
@@ -90,7 +90,14 @@ export function diffTreeEntryDigests(before, after) {
 }
 
 export function recordPath(root, name) {
-  const repoId = createHash('sha256').update(root).digest('hex')
+  let canonicalRoot
+  try {
+    canonicalRoot = (fs.realpathSync.native ?? fs.realpathSync)(root)
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
+    canonicalRoot = root
+  }
+  const repoId = createHash('sha256').update(canonicalRoot).digest('hex')
   return path.join(defaultGuardJournalDir(), 'wt-gate-records', repoId, `${name}.json`)
 }
 
@@ -117,20 +124,33 @@ export function touchesDeclaredPath(paths, declaredPaths) {
   return paths.some((file) => declaredPaths.some((prefix) => file.startsWith(prefix)))
 }
 
-function recordIsFresh(root, record, signature, paths) {
+function recordIsFresh(root, record, signature, paths, gitRunner = git) {
   if (!record || record.version !== 2 || record.exit !== 0 || record.tree !== signature) return false
-  const finishedAt = Date.parse(record.finishedAt)
-  if (!Number.isFinite(finishedAt)) return false
-  return paths.every((file) => {
-    try {
-      return fs.statSync(path.join(root, file)).mtimeMs <= finishedAt
-    } catch {
-      return false
+  if (paths.length === 0) return true
+  try {
+    // Git pathspec controls inherited from the caller must not alter which index entries
+    // are inspected. Keep literal matching even for names containing pathspec syntax.
+    const env = { ...process.env }
+    for (const name of ['GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS']) delete env[name]
+    // diff-files compares index bytes, type and executable bit with the worktree, including
+    // unstaged deletions. A file removed from both index and disk before the gate, then
+    // restored on disk afterward, changes the signature because HEAD names remain in its walk.
+    // --quiet short-circuits on a stat-only change (including a future-dated touch);
+    // the patch form actually compares the bytes and modes before deciding. Bound argv size.
+    for (let offset = 0; offset < paths.length; offset += 100) {
+      const literals = paths.slice(offset, offset + 100).map((file) => `:(literal)${file}`)
+      const flags = gitRunner(root, ['ls-files', '-v', '-z', '--', ...literals], { env })
+      if (flags.split('\0').filter(Boolean).some((entry) => !entry.startsWith('H '))) return false
+      if (gitRunner(root, ['diff', '--no-ext-diff', '--no-textconv', '--binary', '--', ...literals], { env }) !== '') return false
     }
-  })
+    return true
+  } catch {
+    // An unreadable index or worktree is never fresh.
+    return false
+  }
 }
 
-export function requiredGateProblems(root, declaration, { signature, paths = [], pushedCommit = null } = {}) {
+export function requiredGateProblems(root, declaration, { signature, paths = [], pushedCommit = null, gitRunner = git } = {}) {
   return declaration.gates.flatMap((gate) => {
     const record = readGateRecord(root, gate.name)
     if (!record) return [{ gate, status: 'MISSING' }]
@@ -141,7 +161,7 @@ export function requiredGateProblems(root, declaration, { signature, paths = [],
         ? []
         : [{ gate, status: 'STALE (recorded tree does not match pushed commit)' }]
     }
-    return recordIsFresh(root, record, signature, paths)
+    return recordIsFresh(root, record, signature, paths, gitRunner)
       ? []
       : [{ gate, status: 'STALE (signature differs or staged file changed after gate)' }]
   })

@@ -1,0 +1,10 @@
+#!/bin/sh
+# One pinned guard invocation for the entire push, with stdin inherited from git.
+hook_dir=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 1
+engine="$hook_dir/wt-push-guard/bin/wt-push-scope-check.mjs"
+if ! command -v node >/dev/null 2>&1 || [ ! -f "$engine" ]; then
+  echo 'pre-push: pinned guard unavailable; run wt-push-guard-install.mjs --install' >&2
+  exit 1
+fi
+git_dir=$(git rev-parse --absolute-git-dir) || exit 1
+exec node "$engine" --pre-push --remote "$1" --url "$2" --authorized "$git_dir/wt-push-authorized.json" --install-dir "$hook_dir/wt-push-guard"
