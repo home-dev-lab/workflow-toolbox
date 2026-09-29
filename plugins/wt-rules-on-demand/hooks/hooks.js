@@ -108,9 +108,12 @@ async function notice($, message) {
   if (/failed|skipped|unavailable|dangling|cannot|exhausted/i.test(message)) void recordHealth($, null, message).catch(() => {});
   if (!logged.has(message)) { logged.add(message); await $.ui.log(`wt-rules-on-demand: ${message}`); }
 }
+const HEALTH_FIELDS = ['calls', 'errors', 'totalMs', 'maxMs', 'slow'];
+// A stored day may come from an older shape: every counter missing or non-numeric starts at zero.
+const healthDay = (counts) => Object.fromEntries(HEALTH_FIELDS.map((field) => [field, Number.isFinite(counts?.[field]) ? counts[field] : 0]));
 function mergeHealth(target, batch) {
   for (const [day, counts] of Object.entries(batch.days)) {
-    const entry = target.days[day] ?? { calls: 0, errors: 0, totalMs: 0, maxMs: 0, slow: 0 };
+    const entry = target.days[day] ?? healthDay(null);
     for (const field of ['calls', 'errors', 'totalMs', 'slow']) entry[field] += counts[field];
     entry.maxMs = Math.max(entry.maxMs, counts.maxMs);
     target.days[day] = entry;
@@ -128,7 +131,7 @@ async function flushHealth($) {
     pendingHealth = emptyHealth();
     try {
       const stored = await $.store.get('health');
-      const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, { ...counts }])),
+      const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, healthDay(counts)])),
         lastErrors: [...stored?.lastErrors ?? []] };
       mergeHealth(health, batch);
       health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
