@@ -26,7 +26,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterAll, afterEach, describe, it, expect } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error read-only JS plugin renderer has no TypeScript declaration
@@ -42,6 +42,9 @@ const RULE = 'wt-delegation-ladder.md'
 const AUTONOMY = 'AUTONOMY.md'
 const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 const ACT = 'wt-task-tracking-at-act.md'
+const remedyWord = (value: string) => process.platform === 'win32'
+  ? (/^[\w@%+=:,./\\-]+$/.test(value) ? value : `"${value.replaceAll('"', '\\"')}"`)
+  : `'${value.replaceAll("'", `'"'"'`)}'`
 const specPath = join(REPO_ROOT, 'plugin/rules/wt-task-tracking-at-act.spec.json')
 type ShippedSpec = { 'on-demand': { triggers: Record<string, string | boolean | number>[] }; compliance?: Record<string, string | boolean | number> }
 const renderShippedHead = (spec: ShippedSpec) => frontmatter({ ...spec, triggers: spec['on-demand'].triggers })
@@ -62,6 +65,8 @@ function copiedPlugin(): { script: string; spec: string } {
   for (const dir of ['.claude-plugin', 'rules', 'skills/adopt']) {
     cpSync(join(REPO_ROOT, 'plugin', dir), join(plugin, dir), { recursive: true })
   }
+  mkdirSync(join(plugin, 'bin/lib'), { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(plugin, 'bin/lib/remedy-quote.mjs'))
   return { script: join(plugin, 'skills/adopt/scripts/install.mjs'), spec: join(plugin, 'rules/wt-task-tracking-at-act.spec.json') }
 }
 function runCopied(script: string, args: string[], dir: string) {
@@ -120,6 +125,16 @@ function addOnDemandFrontmatter(dir: string): void {
 }
 
 describe('adopt installer — edit-safety contract (committed drift lock)', () => {
+  it.each(['win32', 'linux'])('quotes printed trigger remedies for injected %s', (platform) => {
+    const { dir, file } = actFixture()
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    const source = `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} }); process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, '--set', 'rules', '--check', '--dir', ${JSON.stringify(dir)}]; await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(result.status, result.stderr).toBe(0)
+    const fileWord = platform === 'win32' ? ACT : `'${ACT}'`
+    const dirWord = platform === 'win32' ? dir : `'${dir}'`
+    expect(result.stdout).toContain(`--refresh-triggers --file ${fileWord} --dir ${dirWord}`)
+  })
   it('ABSENT: --install writes the rule with a version banner AND a content fingerprint', () => {
     const d = mkDir()
     expect(run(['--check'], d)).toContain('ABSENT')
@@ -650,7 +665,7 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
       const check = run(['--set', 'rules', '--check'], dir)
       expect(check).toContain('on-demand triggers unresolved')
       for (const flag of ['refresh', 'keep']) {
-        expect(check).toContain(`node '${SCRIPT}' --set rules --install --${flag}-triggers --file '${ACT}' --dir '${dir}'`)
+        expect(check).toContain(`node ${remedyWord(SCRIPT)} --set rules --install --${flag}-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(dir)}`)
       }
       const oldHead = installedHead(changed)
       const oldStamp = stamped ? `head sha256:${headFp(head)}` : null
@@ -1787,6 +1802,8 @@ function makePluginCopy(version = '0.0.1'): { pluginRoot: string; script: string
   const scriptDir = join(pluginRoot, 'skills/adopt/scripts')
   mkdirSync(scriptDir, { recursive: true })
   cpSync(SCRIPT, join(scriptDir, 'install.mjs'))
+  mkdirSync(join(pluginRoot, 'bin/lib'), { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(pluginRoot, 'bin/lib/remedy-quote.mjs'))
   return { pluginRoot, script: join(scriptDir, 'install.mjs'), agentsDir: join(pluginRoot, 'agents') }
 }
 

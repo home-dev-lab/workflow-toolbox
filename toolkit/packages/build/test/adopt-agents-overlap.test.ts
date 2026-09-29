@@ -85,6 +85,8 @@ function mkFixture() {
   mkdirSync(join(pluginRoot, 'agent-templates'), { recursive: true })
   mkdirSync(join(pluginRoot, 'rules'), { recursive: true })
   mkdirSync(scriptsDir, { recursive: true })
+  mkdirSync(join(pluginRoot, 'bin/lib'), { recursive: true })
+  writeFileSync(join(pluginRoot, 'bin/lib/remedy-quote.mjs'), readFileSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), 'utf8'))
 
   writeFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }, null, 2) + '\n')
   writeFileSync(join(scriptsDir, 'install.mjs'), readFileSync(SOURCE_SCRIPT, 'utf8'))

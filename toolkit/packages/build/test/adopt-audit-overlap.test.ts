@@ -88,6 +88,8 @@ describe('adopt audit-overlap', () => {
     const pairsFile = join(base, 'pairs.json')
     mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
     mkdirSync(scriptsDir, { recursive: true })
+    mkdirSync(join(pluginRoot, 'bin/lib'), { recursive: true })
+    writeFileSync(join(pluginRoot, 'bin/lib/remedy-quote.mjs'), readFileSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), 'utf8'))
     mkdirSync(rulesDir)
     mkdirSync(userDir)
     writeFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }))

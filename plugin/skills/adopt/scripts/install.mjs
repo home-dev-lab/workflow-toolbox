@@ -68,6 +68,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -86,10 +87,9 @@ const ADOPT_JOURNAL_FILE = '.workflow-toolbox-adopt-journal.jsonl'
 // drift check reads. This installer REPAIRS a missing prerequisite; that hook DETECTS
 // one that went missing later — two mechanisms, one fact.
 //
-// The twin is a real duplication and it is DELIBERATE. This script must stay a single
-// relocatable file: the installer tests copy it alone into a synthetic plugin root, so
-// a runtime import of a sibling module breaks it by construction (measured — the import
-// threw ERR_MODULE_NOT_FOUND across six test files). Self-containment wins here.
+// The twin is a real duplication and it is DELIBERATE. Unlike the shared remedy-quoting
+// library in the same installed plugin tree, these requirements belong to the installer:
+// the SessionStart detector must track them without importing this CLI's side effects.
 //
 // What keeps the two copies honest is therefore a TEST, not an import:
 // packages/build/test/env-prerequisite-drift-hook.test.ts asserts the two declarations
@@ -639,10 +639,7 @@ function triggerState(classification, spec) {
   return { state, current, installed, spec, stamp }
 }
 
-function shellQuote(value) {
-  if (path.sep === String.fromCharCode(92)) return `"${value.replaceAll('"', () => String.fromCharCode(92) + '"')}"`
-  return `'${value.replaceAll("'", "'\\''")}'`
-}
+const shellQuote = (value) => quoteRemedyWord(value, undefined, true)
 
 function triggerRemedy(item, dir, flag) {
   return `node ${shellQuote(fileURLToPath(import.meta.url))} --set rules --install --${flag}-triggers --file ${shellQuote(item.file)} --dir ${shellQuote(dir)}`
