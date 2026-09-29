@@ -175,6 +175,21 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).not.toContain(`--install --dir ${remedyWord(demandDir)}`)
   })
 
+  it('treats a static rule migrated to on-demand (its own on-demand head) as placed, never misplaced', () => {
+    const f = fixture('migrated-static')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    mkdirSync(demandDir, { recursive: true })
+    const head = "---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: '\\bgit\\s+commit\\b'\n---\n"
+    writeFileSync(join(demandDir, RULE), head + readFileSync(join(staticDir, RULE), 'utf8'))
+    rmSync(join(staticDir, RULE))
+    const context = runHook(f.proj, f.env).context
+    expect(context).not.toContain(`${RULE}: MISPLACED`)
+    expect(context).not.toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
+    expect(context).not.toMatch(new RegExp(`NOT installed here:[^.]*${RULE.replace('.', '\\.')}`))
+  })
+
   it('names a file symlink for inspection without a removal command', () => {
     const f = fixture('misplaced-file-link')
     const staticDir = join(f.cfg, 'rules', 'wt')

@@ -2286,8 +2286,12 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   if (demand && args.mode === 'check' && !args.file) {
     for (const item of allItems.filter((candidate) => !isOnDemandRule(root, candidate))) {
       try {
-        const status = classify(path.join(dir, item.file), set).state
-        if (status !== 'absent') {
+        const target = path.join(dir, item.file)
+        const status = classify(target, set).state
+        if (status !== 'absent' && onDemandFrontmatter(fs.readFileSync(target, 'utf8'))) {
+          // Its own on-demand head is what the engine serves by: a deliberate migration.
+          process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
+        } else if (status !== 'absent') {
           process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
         }
       } catch {

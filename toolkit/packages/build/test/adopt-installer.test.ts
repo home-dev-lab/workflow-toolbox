@@ -146,6 +146,19 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(existsSync(join(dir, ACT))).toBe(true)
   })
 
+  it('does not report a static rule migrated to on-demand (own on-demand head) as misplaced', () => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    mkdirSync(dir, { recursive: true })
+    const migrated = join(dir, RULE)
+    writeFileSync(migrated, ON_DEMAND_FRONTMATTER + readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8'))
+    const checked = run(['--set', 'rules', '--check'], dir)
+    expect(checked).not.toContain(`${RULE}: MISPLACED`)
+    expect(checked).toContain(`${RULE}: ON-DEMAND`)
+    const before = readFileSync(migrated, 'utf8')
+    run(['--set', 'rules', '--install', '--force'], dir)
+    expect(readFileSync(migrated, 'utf8')).toBe(before)
+  })
+
   it('filters rules through a differently named symlink to an on-demand directory', () => {
     const root = mkDir()
     const demand = join(root, 'rules-on-demand')
