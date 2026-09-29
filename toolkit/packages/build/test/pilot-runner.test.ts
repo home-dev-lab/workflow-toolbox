@@ -1010,16 +1010,16 @@ describe('SDK pilot runner', () => {
   })
 
   it('keeps a grace-aborted SDK exception as a timeout in both receipts and the rejection', async () => {
-    const f = fixture(); const timers: Array<() => void> = []; let ready = false
+    const f = fixture(); const timers: Array<() => void> = []; let markReady!: () => void; const ready = new Promise<void>((resolve) => { markReady = resolve })
     const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => (async function* () {
       yield initMessage(); await prompt.next()
-      await new Promise<void>((resolve) => { ready = true; options.abortController.signal.addEventListener('abort', () => resolve(), { once: true }) })
+      await new Promise<void>((resolve) => { options.abortController.signal.addEventListener('abort', () => resolve(), { once: true }); markReady() })
       throw new Error('Claude Code process aborted by user')
     })()
     const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 1 }, {
       query, resolvePilotModels: models, setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
     })
-    while (!ready) await new Promise((resolve) => setTimeout(resolve, 1))
+    await ready
     timers[0]!(); timers[1]!()
     await expect(running).rejects.toThrow(/^timeout:.*Claude Code process aborted by user/)
     const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
@@ -1030,17 +1030,17 @@ describe('SDK pilot runner', () => {
   })
 
   it('retains an independent SDK error between timeout request and grace abort', async () => {
-    const f = fixture(); const timers: Array<() => void> = []; let ready = false; let release: (() => void) | undefined
+    const f = fixture(); const timers: Array<() => void> = []; let markReady!: () => void; const ready = new Promise<void>((resolve) => { markReady = resolve }); let release: (() => void) | undefined
     const original = new Error('transport disconnected')
     const query = () => (async function* () {
       yield initMessage()
-      await new Promise<void>((resolve) => { ready = true; release = resolve })
+      await new Promise<void>((resolve) => { release = resolve; markReady() })
       throw original
     })()
     const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 1 }, {
       query, resolvePilotModels: models, setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
     })
-    while (!ready) await new Promise((resolve) => setTimeout(resolve, 1))
+    await ready
     timers[0]!(); release!()
     await expect(running).rejects.toBe(original)
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))).toMatchObject({ reason: 'sdk stream error: transport disconnected', partial: { reason: 'sdk stream error: transport disconnected' } })
