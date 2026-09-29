@@ -15,7 +15,7 @@ export async function dailyRollback(options) {
   const dailyDir = join(dataDir, 'daily');
   await mkdir(dailyDir, { recursive: true });
   const journalPath = join(dataDir, 'rollback-journal.jsonl');
-  const result = { ok: false, reverted: [], refused: [], failed: [], attention: [], skipped: [], notificationsFailed: [] };
+   const result = { ok: false, reverted: [], refused: [], failed: [], attention: [], withinNoise: [], skipped: [], notificationsFailed: [] };
   let code = 0;
   try {
     let followed = [];
@@ -54,7 +54,10 @@ export async function dailyRollback(options) {
       const run = spawnSync(process.execPath, args, { encoding: 'utf8' });
       let outcomes;
       try { outcomes = JSON.parse(run.stdout); } catch { throw new Error(`rollback-check ${scope.rulesDir}: ${run.stderr || run.stdout}`); }
-      for (const item of outcomes) if (Object.hasOwn(result, item.action)) result[item.action].push(item);
+       for (const item of outcomes) {
+         if (item.action === 'none' && Number.isFinite(item.pValue) && item.reason?.includes('not significant')) result.withinNoise.push(item);
+         else if (Object.hasOwn(result, item.action)) result[item.action].push(item);
+       }
       if (run.status !== 0) code = run.status === 3 ? Math.max(code, 3) : 1;
     }
     result.ok = code === 0;
@@ -87,7 +90,7 @@ export async function dailyRollback(options) {
         const reverted = text.split('\n').some((line) => { try { const entry = JSON.parse(line); return entry.action === 'revert' && entry.rule === row.rule && Date.parse(entry.time) >= Date.parse(row.at); } catch { return false; } });
         if (!reverted) continue;
       }
-      const payload = { event: 'rule reverted', scope: row.scope, root: row.root ?? null, rule: row.rule, reason: row.reason, at: row.at };
+      const payload = { event: 'rule reverted', scope: row.scope, root: row.root ?? null, rule: row.rule, reason: row.reason, pValue: row.pValue ?? null, at: row.at };
       if (notify) {
         const sent = spawnSync(notify[0], notify.slice(1), { input: JSON.stringify(payload) + '\n', encoding: 'utf8', shell: false });
         if (sent.error || sent.status !== 0) {

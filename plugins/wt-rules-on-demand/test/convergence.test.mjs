@@ -17,15 +17,16 @@ const scenarios = [
   { label: 'miss without static baseline', after: [], before: [], action: 'attention' },
   { label: 'miss with improved follow rate', after: Array(5).fill('followed'), before: ['followed', 'followed', 'not followed', 'not followed', 'not followed'], action: 'attention' },
   { label: 'miss with independently worse follow rate', after: ['followed', ...Array(4).fill('not followed')], before: Array(5).fill('followed'), action: 'would revert' },
+  { label: 'one-miss gap within noise', after: [...Array(4).fill('followed'), 'not followed'], before: Array(5).fill('followed'), action: 'none', miss: false },
 ];
 
-for (const { label, after, before, action } of scenarios) test(`comparative rollback: ${label}`, async (t) => {
-  const input = { triggerMissMatched: 1, followed: after.filter((v) => v === 'followed').length, applicable: after.length,
+for (const { label, after, before, action, miss = true } of scenarios) test(`comparative rollback: ${label}`, async (t) => {
+  const input = { triggerMissMatched: Number(miss), followed: after.filter((v) => v === 'followed').length, applicable: after.length,
     beforeFollowed: before.filter((v) => v === 'followed').length, beforeApplicable: before.length };
   const decision = rollbackDecision(input);
   assert.equal(decision.attention, action === 'attention');
-  assert.match(decision.reason, /trigger miss/);
-  assert.match(decision.recommendation, /engine defect/);
+  if (miss) { assert.match(decision.reason, /trigger miss/); assert.match(decision.recommendation, /engine defect/); }
+  else { assert.equal(decision.attention, false); assert.match(decision.reason, /not significant/); }
   if (action === 'would revert') assert.match(decision.reason, /below static/);
 
   const root = await mkdtemp(join(tmpdir(), 'rod-converge-'));
@@ -42,15 +43,30 @@ for (const { label, after, before, action } of scenarios) test(`comparative roll
   const dated = (verdict, phase, index) => ({ rule: 'sample.md', scope: 'project', rulesDir, verdict, phase,
     at: phase === 'before' ? '2025-12-01T00:00:00Z' : '2026-06-01T00:00:00Z', line: index + 1, file: 'fixture' });
   const rows = [...before.map((v, i) => ({ ...dated('static baseline', 'before', i), checkVerdict: v })),
-    ...after.map((v, i) => dated(v, 'after', i)), { ...dated('trigger miss', 'after', 30), triggerMatched: true }];
+     ...after.map((v, i) => dated(v, 'after', i)), ...(miss ? [{ ...dated('trigger miss', 'after', 30), triggerMatched: true }] : [])];
   await writeFile(verdicts, rows.map((v) => JSON.stringify(v)).join('\n') + '\n');
   const run = spawnSync(process.execPath, [rollback, '--project', root, '--store', store, '--verdicts', verdicts, '--mechanical-only', '--dry-run', '--json'], { encoding: 'utf8', env: cleanEnv() });
   assert.equal(run.status, 0, run.stderr);
   const result = JSON.parse(run.stdout)[0];
   assert.equal(result.action, action);
-  assert.match(result.reason, /trigger miss/);
+  if (miss) assert.match(result.reason, /trigger miss/);
+  else { assert.match(result.reason, /not significant/); assert.ok(result.pValue > 0.05); }
   if (action === 'would revert') assert.match(result.reason, /below static/);
-  assert.equal(result.triggerMissEvidence.length, 1);
+  assert.equal(result.triggerMissEvidence.length, Number(miss));
+  if (!miss) {
+    const config = join(root, 'config');
+    await mkdir(join(config, 'rules-on-demand'), { recursive: true });
+    await writeFile(join(config, 'rules-on-demand/followed-projects.json'), JSON.stringify([{ root, addedAt: '2026-01-01T00:00:00Z', by: 'test' }]));
+    const daily = await dailyRollback({ configDirs: [config], projectsDirs: [], project: root, dataDir: join(root, 'quality'), apply: true,
+      checkQuality: async () => ({ complete: true, verdictPath: verdicts, scan: { filesFailed: 0, badLines: 0, linesRead: rows.length },
+        coverage: { missingTimestamps: 0 }, scopes: [{ scope: 'project', projectRoot: root, rulesDir }] }) });
+    assert.equal(daily.code, 0, daily.result.error);
+    assert.deepEqual(daily.result.reverted, []);
+    assert.equal(daily.result.withinNoise.length, 1);
+    assert.match(daily.result.withinNoise[0].reason, /not significant/);
+    assert.ok(daily.result.withinNoise[0].pValue > 0.05);
+    assert.match(await readFile(join(rulesDir, 'sample.md'), 'utf8'), /Body/);
+  }
 });
 
 test('explicit temporary project counts as covered and daily rollback proceeds', async (t) => {
