@@ -8,19 +8,25 @@ const failure = (message, code = 2) => Object.assign(new Error(message), { code 
 const lines = (text) => text.trim().split('\n').filter(Boolean)
 
 function extractFailedTests(log) {
-  const failures = new Set()
+  const failures = new Map()
   const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g')
   for (const raw of log.split('\n')) {
     const stripped = raw.replace(ansi, '')
-    const clean = stripped.slice(stripped.lastIndexOf('\t') + 1).trim()
+    const firstTab = stripped.indexOf('\t')
+    const secondTab = firstTab < 0 ? -1 : stripped.indexOf('\t', firstTab + 1)
+    const text = secondTab < 0 ? '' : stripped.slice(secondTab + 1)
+    const prefixed = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\s/.test(text)
+    const step = prefixed ? stripped.slice(firstTab + 1, secondTab).trim() : '(unknown step)'
+    const clean = (prefixed ? text : stripped).trim()
     const marker = clean.indexOf('FAIL ')
     if (marker < 0) continue
     const body = clean.slice(marker + 5).trim()
     const file = body.split(' ').find((token) => /\.test\.[cm]?[jt]sx?$/.test(token))
     if (!file || !body.includes(' > ')) continue
-    failures.add(body.slice(body.indexOf(file)).split(' > ').map((part) => part.trim()).join(' > '))
+    const test = body.slice(body.indexOf(file)).split(' > ').map((part) => part.trim()).join(' > ')
+    failures.set(`${step}\t${test}`, { step, test, gating: !step.startsWith('Diagnose ') })
   }
-  return [...failures]
+  return [...failures.values()]
 }
 
 function options(argv) {
@@ -48,6 +54,16 @@ const git = (ctx, ...args) => checked(ctx.io, ctx.cwd, 'git', args)
 const gh = (ctx, ...args) => JSON.parse(checked(ctx.io, ctx.cwd, 'gh', args))
 const shaOf = (ctx, ref) => git(ctx, 'rev-parse', '--verify', `${ref}^{commit}`)
 const recordPath = (ctx, sha) => ctx.io.join(ctx.store, `${sha}.json`)
+function reportSuccessfulDiagnostics(ctx, jobs) {
+  for (const job of jobs) {
+    let log
+    try { log = checked(ctx.io, ctx.cwd, 'gh', ['run', 'view', '-R', ctx.slug, '--job', String(job.databaseId), '--log']) }
+    catch { continue }
+    const diagnostic = extractFailedTests(log).filter((item) => !item.gating)
+    if (diagnostic.length) ctx.print(`DIAGNOSTIC FAILURES (did not block): ${job.name}`)
+    for (const item of diagnostic) ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`)
+  }
+}
 function save(ctx, record) {
   const text = `${JSON.stringify(record, null, 2)}\n`
   ctx.io.mkdirp(ctx.store)
@@ -194,8 +210,10 @@ async function collect(ctx, record) {
     const failingJobs = (run.jobs ?? []).filter((job) => job.conclusion !== 'success')
     for (const job of run.jobs ?? []) ctx.print(`JOB ${job.name}: ${job.conclusion}`)
     if (incomplete) ctx.print(`${matrixIncomplete ? 'MATRIX INCOMPLETE' : 'MATRIX COMPLETE'}: ${incomplete}`)
+    else reportSuccessfulDiagnostics(ctx, run.jobs ?? [])
     if (incomplete) {
       const tests = []
+      const diagnostics = []
       for (const job of failingJobs) {
         const url = `${record.url}/job/${job.databaseId}`
         ctx.print(`FAILED JOB ${job.name}: ${url}`)
@@ -203,14 +221,20 @@ async function collect(ctx, record) {
         try { log = checked(ctx.io, ctx.cwd, 'gh', ['run', 'view', '-R', ctx.slug, '--job', String(job.databaseId), '--log']) }
         catch (error) { ctx.print(`JOB LOG UNAVAILABLE ${job.name}: ${error.message}`) }
         const found = extractFailedTests(log)
-        if (!found.length) ctx.print(`FAILED TEST (none extracted — read ${url})`)
-        for (const test of found) { ctx.print(`FAILED TEST ${test}`); tests.push(test) }
+        const gating = found.filter((item) => item.gating)
+        if (!gating.length) ctx.print(`FAILED TEST (none extracted — read ${url})`)
+        for (const item of gating) { ctx.print(`FAILED TEST [gating step: ${item.step}] ${item.test}`); tests.push(item) }
+        const diagnostic = found.filter((item) => !item.gating)
+        if (diagnostic.length) ctx.print(`DIAGNOSTIC FAILURES (did not block): ${job.name}`)
+        for (const item of diagnostic) { ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`); diagnostics.push(item) }
       }
-      const blocker = `BLOCKER: host-layer merge ${record.sha} is red on cross-os run ${record.runId}; open a card and fix before release`
+      const blockingNames = tests.map((item) => `${item.test} [${item.step}]`).join('; ') || '(none extracted)'
+      const blocker = `BLOCKER: host-layer merge ${record.sha} is red on cross-os run ${record.runId}; gating failed tests: ${blockingNames}; open a card and fix before release`
       ctx.print(blocker)
       const jobLines = failingJobs.map((job) => '- ' + job.name).join('\n')
-      const testLines = tests.map((test) => '- ' + test).join('\n')
-      const draft = `# Cross-OS failure on ${record.sha}\n\nRun: ${record.url}\n\n${jobLines}\n${testLines}\n`
+      const testLines = tests.map((item) => `- ${item.test} (gating step: ${item.step})`).join('\n')
+      const diagnosticLines = diagnostics.map((item) => `- ${item.test} (diagnostic step: ${item.step})`).join('\n')
+      const draft = `# Cross-OS failure on ${record.sha}\n\nRun: ${record.url}\n\n${jobLines}\n\nBlocking failed tests (gating steps):\n${testLines || '- None extracted; read the failed job logs.'}\n\nDiagnostic failures (did not block):\n${diagnosticLines || '- None.'}\n`
       ctx.io.writeText(ctx.io.join(ctx.store, `${record.sha}.card.md`), draft)
     }
     save(ctx, record)
@@ -327,4 +351,3 @@ export async function dispatch(argv, { io = commandIO, print = console.log } = {
     return code
   }
 }
-
