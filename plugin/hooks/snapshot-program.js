@@ -1283,13 +1283,23 @@ for (const { lane, active } of activeExternalLanes) {
 }
 rows.sort((a, b) => a.id.localeCompare(b.id));
 
+const isCompanionProcess = processRecord => processRecord.args.some(arg => scriptIs(arg, 'companion')) && processRecord.args.includes('task');
+// A sandboxed consultation is a chain of processes (bwrap, bwrap, sh, node) that all end with the
+// same companion invocation. Only the innermost one, the real program, becomes an actor; a
+// companion below it running a DIFFERENT request is a separate consultation and hides nothing.
+// Every process of the chain still counts as part of the task for helper classification.
+const companionInvocation = args => args.slice(args.findIndex(arg => scriptIs(arg, 'companion'))).join(' ');
+const companionRecords = [...processes.values()].filter(isCompanionProcess);
+const companionPids = companionRecords.map(processRecord => processRecord.pid);
+const wrapsCompanion = processRecord => companionRecords.some(other => ancestryDistance(other.pid, processRecord.pid) !== null && companionInvocation(other.args) === companionInvocation(processRecord.args));
 const processActors = [];
 for (const processRecord of processes.values()) {
   const { args, pid } = processRecord;
   const executable = executableOf(args[0]);
   const isOpenCode = executable === executables.opencode && args[1] === 'run';
-  const isCompanion = args.some(arg => scriptIs(arg, 'companion')) && args.includes('task');
+  const isCompanion = isCompanionProcess(processRecord);
   if (!isOpenCode && !isCompanion) continue;
+  if (!isOpenCode && wrapsCompanion(processRecord)) continue;
   if (isOpenCode) {
     const worktree = worktreeByProcess.get(pid) || null;
     if (!worktree || !info(lanePath(worktree))?.isDirectory()) continue;
@@ -1571,7 +1581,7 @@ for (const session of sessionMap.values()) for (const card of session.cards) cyc
 for (const session of sessionMap.values()) for (const card of session.cards) card.devCycle = devCycleForCard(card.id, cycleActorsByCard.get(card.id));
 const sessions = [...sessionMap.values()].sort((a, b) => a.id.localeCompare(b.id));
 
-const taskPids = new Set(processActors.filter(actor => ['Refutation', 'Astra consultation'].includes(actor.label)).map(actor => actor.processPid));
+const taskPids = new Set([...companionPids, ...processActors.filter(actor => ['Refutation', 'Astra consultation'].includes(actor.label)).map(actor => actor.processPid)]);
 function relatedToTask(pid) {
   for (const taskPid of taskPids) for (const start of [taskPid, pid]) {
     let current = processes.get(start); const target = start === taskPid ? pid : taskPid; const seen = new Set();
