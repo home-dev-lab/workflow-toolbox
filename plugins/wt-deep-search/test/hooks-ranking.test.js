@@ -16,10 +16,17 @@ const mirrorPath = `${homedir()}/.claude-code-docs`
 //
 // Say plainly what that costs: on a clean machine this file proves nothing. The locks that hold
 // everywhere are the fixture-driven ones in the other test files.
+//
+// It is also OPT-IN (WT_DEEP_SEARCH_CALIBRATE=1). Measured 2026-09-29: the mirror refreshed itself
+// at 08:21 +01:00, and the same tree that gated green at 07:54 turned the suite red at 09:20 with
+// no code change — the gate was certifying the documentation, not the scorer.
+const calibrate = process.env.WT_DEEP_SEARCH_CALIBRATE === '1'
 const mirrorInstalled = existsSync(`${mirrorPath}/docs_manifest.json`)
-const needsMirror = mirrorInstalled
-  ? {}
-  : { skip: 'the local Claude Code documentation mirror is not installed on this machine' }
+const needsMirror = !calibrate
+  ? { skip: 'calibration against the live mirror runs only with WT_DEEP_SEARCH_CALIBRATE=1' }
+  : mirrorInstalled
+    ? {}
+    : { skip: 'the local Claude Code documentation mirror is not installed on this machine' }
 const $ = { fs: { read: (path) => readFile(path, 'utf8') } }
 
 // Each expected page and title comes from the real mirror manifest. The reason records why a
