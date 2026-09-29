@@ -58,9 +58,9 @@ then take the best one or another tier. Retries on a route are normal; a BLOCKED
 route is left.
 
 Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before
-committing. Arc complete → LEAVE the agent idle; do not send it a shutdown request. ⚠ Observed twice out of twice on one
-harness version: a shutdown request accepted by an in-process sub-agent was followed within seconds by the
-end of the SPAWNING session itself (unproven as a cause — no counter-example sought); an idle agent costs nothing. Terminated/quota-killed
+committing. Arc complete → LEAVE the agent idle; an idle agent costs nothing and needs no shutdown request. A
+shutdown request ending the SPAWNING session is NOT reproduced: 0 of 8 delivered to a finished in-process
+teammate, on harness 2.1.276 and 2.1.284 — never cite it as a cause. Terminated/quota-killed
 agent resumes from transcript on next message — try resuming before respawning; never spawn a
 successor into same worktree before predecessor's death confirmed (two writers corrupt one
 tree). Before assuming agent stuck, check observable state (git status, file mtimes, HEAD)
