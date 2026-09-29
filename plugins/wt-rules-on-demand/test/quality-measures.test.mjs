@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -305,7 +305,10 @@ test('host hook records daily calls, bounded errors and slow calls on the store'
 test('quality-check archives measure rows and enforces strict incomplete/problem exit codes', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'rod-quality-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const project = join(root, 'project'), config = join(root, 'config'), projects = join(config, 'projects'), data = join(root, 'quality');
+  // Reproduce a temp path spelled differently from its real path (e.g. /var vs /private/var).
+  const alias = process.platform === 'win32' ? root : join(root, 'alias');
+  if (alias !== root) await symlink(root, alias, 'dir');
+  const project = join(alias, 'project'), config = join(alias, 'config'), projects = join(config, 'projects'), data = join(alias, 'quality');
   await mkdir(join(project, '.claude', 'rules'), { recursive: true }); await mkdir(projects, { recursive: true });
   await writeFile(join(project, '.claude', 'rules', 'a.md'), 'Follow.\n');
   const spec = { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'tool-input', tool: '^Agent$', 'require-input-regex': 'yes', window: 1, 'on-close': 'not applicable' } };
@@ -347,8 +350,11 @@ test('quality-check archives measure rows and enforces strict incomplete/problem
     { encoding: 'utf8', env: cleanEnv({ HOME: root, CLAUDE_CONFIG_DIR: config, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }) });
   assert.equal(cross.status, 0, cross.stderr);
   const result = JSON.parse(cross.stdout);
-  assert.equal(result.measures.rules[`${'project'}:${join(project, '.claude', 'rules-on-demand')}:a.md`].measures.driftAdopted.value, 'ambiguous shipped source');
-  assert.equal(result.measures.rules[`${'project'}:${join(project, '.claude', 'rules-on-demand')}:a.md`].measures.driftAdopted.versions.length, 2);
+  // Scope identity is the physical rules directory, even when the CLI was passed an alias.
+  const ruleKey = `project:${await realpath(join(project, '.claude', 'rules-on-demand'))}:a.md`;
+  assert.deepEqual(result.scopes.map((scope) => scope.scope), ['project']);
+  assert.equal(result.measures.rules[ruleKey].measures.driftAdopted.value, 'ambiguous shipped source');
+  assert.equal(result.measures.rules[ruleKey].measures.driftAdopted.versions.length, 2);
   assert.deepEqual(result.measures.health.unrecorded, [second]);
   assert.equal(result.measures.health.status, 'unknown');
   assert.deepEqual(result.measures.health.profiles.map((profile) => profile.status), ['OK', 'unknown']);
