@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Commands printed for you to paste (adopt's check hook and installer remedies, the lane supervisor, `wt-second-opinion`'s consent remedy) are now quoted for the platform they run on: double quotes on Windows, where single quotes are not shell quoting, and single quotes elsewhere. A Windows path ending in a backslash keeps its closing quote.
 - `wt-second-opinion --route auto` no longer falls back to a Claude Opus consult when GPT-lane consent is off or unreadable. A second opinion is meant to come from another model family, so `auto` now refuses with `EXIT=1`, says the second opinion should be asked of the user, and names the remedy for the level that refused: `wt-lane-consent --on` when the account setting is off, `wt-lane-consent --project <repo> --on` when the project narrows consent. `--route opus` still runs the Claude consult when requested explicitly. The `second-opinion` skill now states this purpose and the fallback to the user.
 - Adopt now refreshes unedited on-demand trigger frontmatter from the shipped spec, reports edited or unverifiable heads with per-file take/keep commands, and includes the shipped head under `--force`.
 - Gate evidence now recognizes the same repository through linked or alternate paths, and staged-file checks stay exact on case-insensitive filesystems.
