@@ -11,6 +11,7 @@ import { safeRegex } from '../hooks/evidence.js';
 export const STATIC_DIR = join('.claude', 'rules');
 export const DEMAND_DIR = join('.claude', 'rules-on-demand');
 export const LEDGER = join('.claude', 'rules-on-demand-ledger.jsonl');
+const ROLLBACK_SIGNIFICANCE_LEVEL = 0.05;
 
 // A rule identity is `<scope>:<rules dir>:<basename>`. The directory may itself hold a colon (a Windows drive), so the
 // scope ends at the FIRST colon and the basename starts after the LAST one.
@@ -48,30 +49,51 @@ export async function assertSafeDataDir(dataDir) {
   return target;
 }
 
+// One-sided Fisher exact tail: probability of at most `followed` successes on demand,
+// conditional on both sample sizes and the combined number of successes. Log factorials
+// avoid overflow from binomial coefficients even for large observation windows.
+function lowerFollowRatePValue(followed, applicable, beforeFollowed, beforeApplicable) {
+  const total = applicable + beforeApplicable;
+  const successes = followed + beforeFollowed;
+  const logFactorial = [0];
+  for (let i = 1; i <= total; i++) logFactorial[i] = logFactorial[i - 1] + Math.log(i);
+  const choose = (n, k) => logFactorial[n] - logFactorial[k] - logFactorial[n - k];
+  const first = Math.max(0, applicable - (total - successes));
+  let tail = 0;
+  for (let x = first; x <= followed; x++) {
+    tail += Math.exp(choose(successes, x) + choose(total - successes, applicable - x) - choose(total, applicable));
+  }
+  return Math.min(1, tail);
+}
+
 export function rollbackDecision({ triggerMiss = false, triggerMissUnmatched = 0, triggerMissMatched = 0, triggerMissEvidence = [], followed = 0, applicable = 0, beforeFollowed = 0, beforeApplicable = 0, threshold = 0.8, minimum = 5 }) {
   const missed = triggerMissUnmatched + triggerMissMatched;
   const hasMiss = triggerMiss || missed > 0;
   const rate = applicable ? followed / applicable : null;
   const beforeRate = beforeApplicable ? beforeFollowed / beforeApplicable : null;
   // Owner decision: the only revert criterion is comparative. A migrated rule goes back to static only when it is
-  // followed LESS on demand than it was static, each measured on at least `minimum` samples. Without a static
-  // baseline it is flagged for attention and never reverted. `threshold` is kept for callers and reports only.
+  // followed significantly less on demand than it was static, each measured on at least `minimum` samples.
+  // Without a static baseline it is flagged for attention and never reverted. `threshold` is for reports only.
   const measured = applicable >= minimum;
   const noBaseline = measured && beforeApplicable < minimum;
-  const worse = measured && !noBaseline && rate < beforeRate;
+  const lower = measured && !noBaseline && rate < beforeRate;
+  const pValue = lower ? lowerFollowRatePValue(followed, applicable, beforeFollowed, beforeApplicable) : null;
+  const worse = lower && pValue < ROLLBACK_SIGNIFICANCE_LEVEL;
   const pct = (value) => `${(value * 100).toFixed(1)}%`;
   const comparison = `on-demand follow rate ${pct(rate)} below static ${pct(beforeRate)} (${applicable} on-demand, ${beforeApplicable} static samples)`;
+  const noise = lower ? `${comparison}, not significant (p=${pValue.toFixed(3)})` : '';
   let reason = '';
-  if (hasMiss) { reason = 'trigger miss (governed acts, never served)'; if (worse) reason += `; ${comparison}`; }
+  if (hasMiss) { reason = 'trigger miss (governed acts, never served)'; if (lower) reason += `; ${worse ? comparison : noise}`; }
   else if (noBaseline) reason = `no static baseline (${beforeApplicable} static samples, minimum ${minimum}); on demand ${pct(rate)} over ${applicable} samples`;
   else if (worse) reason = comparison;
+  else if (lower) reason = noise;
   let recommendation = '';
   if (triggerMissUnmatched) recommendation = `fix the trigger: it does not select ${triggerMissUnmatched} governed act(s), e.g. ${triggerMissEvidence[0] ?? 'unknown act'}`;
   else if (triggerMissMatched) recommendation = 'the trigger matched but nothing was served: engine defect (serve-once / refusal channel), investigate before any revert';
   else if (triggerMiss) recommendation = 'Fix the trigger or reinstate as static after reviewing the acts';
   else if (noBaseline) recommendation = 'measure the static regime first; never reverted without a baseline';
   else if (worse) recommendation = 'Review the rule and reinstate as static or correct the check';
-  return { reason, recommendation, followed, applicable, rate, beforeRate, attention: noBaseline || hasMiss && !worse, revert: worse, threshold };
+  return { reason, recommendation, followed, applicable, rate, beforeRate, pValue, attention: noBaseline || hasMiss && !worse, revert: worse, threshold };
 }
 
 const scalar = (value) => {
