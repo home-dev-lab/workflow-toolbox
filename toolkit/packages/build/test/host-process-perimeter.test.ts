@@ -30,6 +30,7 @@ describe('pid to parent-pid host perimeter', () => {
     // process-table-free modules (their filesystem access is contained in bin/lib/host); the push-guard
     // installer adds one process-table-free CLI. None adds a process-table primitive.
     // The TypeScript pack's protocol-only wt-tsls.mjs adds one perimeter entry; resolution and spawn stay in host/ts-language-server.mjs.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 237, violations: [] })
+    // The remedy-quote helper adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 238, violations: [] })
   })
 })
