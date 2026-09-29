@@ -2,7 +2,7 @@
 import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
 import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
-import { acquireSuiteLock, releaseSuiteLock } from '../suite-lock.mjs'
+import { acquireSuiteLock, formatSuiteLockHolder, readSuiteLock, releaseSuiteLock } from '../suite-lock.mjs'
 
 const REQUEST_LIMIT = 4096
 const REQUEST_TIMEOUT_MS = 5000
@@ -23,7 +23,8 @@ function rejectConnection(socket, message) {
 function requestFrom(line) {
   let request
   try { request = JSON.parse(line) } catch { throw new Error('malformed JSON') }
-  if (!request || typeof request !== 'object' || !Array.isArray(request.argv) || !request.argv.every((item) => typeof item === 'string')) throw new Error('argv must be an array of strings')
+  if (request && !Array.isArray(request) && Object.keys(request).length === 1 && request.status === true) return { status: true }
+  if (!request || typeof request !== 'object' || Array.isArray(request) || Object.keys(request).some((key) => key !== 'argv' && key !== 'waitS') || !Array.isArray(request.argv) || !request.argv.every((item) => typeof item === 'string')) throw new Error('argv must be an array of strings (only argv and waitS accepted)')
   const waitS = request.waitS === undefined ? 2700 : request.waitS
   if (typeof waitS !== 'number' || !Number.isFinite(waitS) || waitS < 0 || waitS > 10_800) throw new Error('waitS must be a number from 0 to 10800')
   return { argv: request.argv, waitS }
@@ -33,7 +34,6 @@ export function createSuiteLockBroker({ label = '' } = {}) {
   let active = 0
   const releases = new Set()
   const server = net.createServer((socket) => {
-    if (active >= MAX_CONNECTIONS) { socket.on('error', () => {}); rejectConnection(socket, 'busy'); return }
     active += 1
     let buffer = Buffer.alloc(0)
     let lease = null
@@ -66,10 +66,22 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       const newline = buffer.indexOf(10)
       if (newline < 0) return
       requested = true; clearTimeout(timer)
+      let request
       try {
-        const request = requestFrom(buffer.subarray(0, newline).toString('utf8'))
+        request = requestFrom(buffer.subarray(0, newline).toString('utf8'))
+        if (request.status) {
+          const lock = readSuiteLock()
+          socket.end(`status ${JSON.stringify({ held: lock.held, holder: lock.holder })}\n`)
+          finish()
+          return
+        }
+        if (active > MAX_CONNECTIONS) {
+          const holder = readSuiteLock().holder
+          error(`busy: ${formatSuiteLockHolder(holder)}; requested command ${JSON.stringify(request.argv)}; inspect with wt-suite-lock status`)
+          return
+        }
         const acquired = await acquireSuiteLock({
-          argv: ['wt-lane-sandbox', label, ...request.argv.slice(0, 2)],
+          argv: ['wt-lane-sandbox', label, ...request.argv],
           waitS: request.waitS,
           signal: controller.signal,
           onWait: (line) => { if (!socket.destroyed) socket.write(`wait ${line}\n`) },
@@ -78,7 +90,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
         lease = acquired
         socket.write(`granted ${lease.holder.leaseId}\n`)
       } catch (cause) {
-        if (!closed && cause?.code !== 'ABORT_ERR') error(cause?.message ?? String(cause))
+        if (!closed && cause?.code !== 'ABORT_ERR') error(`${cause?.message ?? String(cause)}; requested command ${JSON.stringify(request?.argv ?? 'unavailable')}`)
       }
     })
   })

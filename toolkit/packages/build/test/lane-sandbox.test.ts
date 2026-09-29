@@ -1182,7 +1182,9 @@ describe('suite lock across PID namespaces (M4)', () => {
   })
   // Card 1873134162710365740 reversed the earlier "within its own wait window" rule: a short --wait-s
   // reclaimed a LIVE host holder and ran two suites at once. The bound is --stale-s alone.
-  it('inside a sandbox, never reclaims a host holder by PID, only at the --stale-s hard bound, never the --wait-s', async () => {
+  // Card 1874724228020831318 removed the --stale-s age bound too: a sandbox cannot disprove a host
+  // holder's liveness by age, so only a host-side observer reclaims it on positive death evidence.
+  it('inside a sandbox, never reclaims a host holder by PID or by age, whatever --wait-s or --stale-s', async () => {
     for (const ns of ['pid:[4026531836]', null]) {
       const root = await held(`sandbox-${String(ns !== null)}`, ns)
       const hourAgo = new Date(Date.now() - 3_600_000)
@@ -1190,7 +1192,7 @@ describe('suite lock across PID namespaces (M4)', () => {
       const view = { root, pidNamespace: 'pid:[4026532999]', insideSandbox: true, namespaceHasProcesses: () => false }
       expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 999999, staleS: 999999 })).toMatchObject({ released: false, reason: 'live' })
       expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 60, staleS: 999999 })).toMatchObject({ released: false, reason: 'live' })
-      expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 999999, staleS: 1800 })).toMatchObject({ released: true })
+      expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 999999, staleS: 1800 })).toMatchObject({ released: false, reason: 'live' })
     }
   })
   it('treats a reused PID with a different start time as stale (PID-reuse defence)', async () => {

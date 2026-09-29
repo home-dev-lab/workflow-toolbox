@@ -1,4 +1,4 @@
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 // A host-side helper of a sandboxed lane (the egress proxy, the suite-lock broker) serves ONE unix
 // socket for the lane and must not outlive the process that started it: every helper shares the
@@ -54,6 +54,7 @@ export function runLaneHelper({ server, options, name, stoppedSuffix = '', befor
   const fatal = (message) => {
     process.stderr.write(`workflow-toolbox: lane ${name} stopped: ${message}${stoppedSuffix}\n`)
     try { rmSync(options.socket, { force: true }) } catch { /* nothing to remove */ }
+    try { rmSync(`${options.socket}.ready`, { force: true }) } catch { /* nothing to remove */ }
     process.exit(3)
   }
   if (!options.socket) fatal('--socket is required')
@@ -65,13 +66,20 @@ export function runLaneHelper({ server, options, name, stoppedSuffix = '', befor
     if (!errorReported) process.stderr.write(`workflow-toolbox: lane ${name} accept error (${error.code ?? error.message}); still serving\n`)
     errorReported = true
   })
-  server.listen(options.socket, () => { listening = true })
+  server.listen(options.socket, () => {
+    listening = true
+    // The parent waits synchronously; IPC callbacks cannot run during its wait. Publish a
+    // sibling marker ONLY from listen's callback, after the server is accepting clients.
+    try { writeFileSync(`${options.socket}.ready`, String(process.pid), { flag: 'wx', mode: 0o600 }) }
+    catch (error) { fatal(`cannot signal readiness (${error.code ?? error.message})`) }
+  })
   if (Number.isSafeInteger(options.parent) && options.parent > 1) {
     setInterval(() => {
       if (parentAlive(options.parent, options.parentStart)) return
       try { beforeExit() } catch { /* exiting anyway */ }
       server.close()
       try { rmSync(options.socket, { force: true }) } catch { /* already gone */ }
+      try { rmSync(`${options.socket}.ready`, { force: true }) } catch { /* already gone */ }
       process.exit(0)
     }, 2_000)
   }

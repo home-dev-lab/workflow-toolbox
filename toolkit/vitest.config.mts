@@ -52,7 +52,7 @@ const commonTestConfig = {
     // the machine's SSH agent (card 1838017282 — see the file's own header).
     './test-support/git-config-isolation.setup.ts',
   ],
-  globalSetup: ['./test-support/guard-journal-isolation.global-setup.ts'],
+  globalSetup: ['./test-support/suite-lease.global-setup.mjs', './test-support/guard-journal-isolation.global-setup.ts'],
 }
 
 const parallelProject = {
@@ -68,10 +68,20 @@ const processSpawningProject = {
   test: {
     ...commonTestConfig,
     name: 'process-spawning',
-    include: spawningTestFiles,
+    include: spawningTestFiles.filter((file) => file !== 'packages/build/test/what-is-running.test.ts'),
     ...(testMode === 'blocking' ? { testNamePattern: blockingTestPattern() } : {}),
     maxWorkers: configuredMaxWorkers === undefined ? 2 : Math.min(2, configuredMaxWorkers),
     sequence: { groupOrder: 1 },
+  },
+}
+const procSelftestProject = {
+  test: {
+    ...commonTestConfig,
+    name: 'proc-selftest',
+    include: ['packages/build/test/what-is-running.test.ts'],
+    maxWorkers: 1,
+    fileParallelism: false,
+    sequence: { groupOrder: 2 },
   },
 }
 const quarantineProject = {
@@ -90,7 +100,7 @@ export default defineConfig({
     // rather than time queued behind the ordinary parallel population.
     projects: testMode === 'quarantine'
       ? [quarantineProject]
-      : [parallelProject, processSpawningProject],
+      : [parallelProject, processSpawningProject, procSelftestProject],
     coverage: {
       provider: 'custom',
       customProviderModule: './scripts/child-process-coverage-provider.mjs',

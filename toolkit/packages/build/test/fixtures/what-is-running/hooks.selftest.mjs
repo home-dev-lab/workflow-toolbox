@@ -1981,20 +1981,80 @@ await test('[changed: stale spawn registry is not activity] an external row leav
   assert(!text.includes('pilot-one'));
 });
 await test('polling is 2 seconds and stops after host-side pane disposal', async () => {
-  await forwarded(hookFor('command.run'), { command: 'wir' });
-  const timer = timers.at(-1);
-  assert.equal(timer.ms, 2000);
-  const pane = hookFor('ui.render', (hook) => hook.matcher?.component === 'Pane');
-  await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
-  await timer.fn();
-  assert(!timer.cancelled);
-  // One tick without a render is a collection racing its own redraw, not a disposed pane: the third miss stops it.
-  await timer.fn();
-  assert(!timer.cancelled);
-  await timer.fn();
-  assert(!timer.cancelled);
-  await timer.fn();
-  assert(timer.cancelled);
+  // Deterministic under any host load: a FRESH registration (no poll state left by earlier cases), a
+  // virtual clock installed before its first collection, and every step gated on an acknowledgement
+  // (a collection settling, then its invalidate) rather than on real elapsed time.
+  const localCalls = []; const localTimers = [];
+  const originalNow = Date.now;
+  let virtualNow = originalNow();
+  let inFlight = 0; let settled = 0; let slowNext = false;
+  const local$ = {
+    ...$,
+    process: {
+      ...processCapability,
+      run: async (...args) => {
+        inFlight += 1;
+        try {
+          const result = await processCapability.run(...args);
+          if (slowNext) { slowNext = false; virtualNow += 5000; } // A loaded collection spans two poll intervals, without sleeping.
+          return result;
+        } finally { inFlight -= 1; settled += 1; }
+      },
+    },
+    clock: { every: (ms, fn) => { const timer = { ms, fn, cancelled: false, cancel: () => { timer.cancelled = true; } }; localTimers.push(timer); return timer; } },
+    ui: { ...$.ui, open: async (pane) => localCalls.push(['open', pane]), close: async (pane) => localCalls.push(['close', pane]), invalidate: (event) => localCalls.push(['invalidate', event]) },
+  };
+  const localHooks = [];
+  register((event, matcher, hook) => localHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), paths);
+  const find = (event, predicate = () => true) => localHooks.find((hook) => hook.event === event && predicate(hook));
+  const invalidations = () => localCalls.filter(([kind]) => kind === 'invalidate').length;
+  // Resolves once no collection is in flight and the refresh that ran it has invalidated: the refresh's own
+  // finally (duration bookkeeping, refreshing=false) runs synchronously after that invalidate.
+  const quiescent = async (sinceInvalidations, sinceSettled) => {
+    const deadline = originalNow() + 120_000;
+    while (!(inFlight === 0 && settled > sinceSettled && invalidations() > sinceInvalidations)) {
+      if (originalNow() > deadline) throw new Error('no collection was acknowledged within 120 s');
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  Date.now = () => virtualNow;
+  try {
+    await find('session.start').hook(local$, { cwd: worktree }, async () => ({}));
+    let beforeInvalidations = invalidations(); let beforeSettled = settled;
+    await find('command.run').hook(local$, { command: 'wir' }, async () => ({}));
+    const timer = localTimers.at(-1);
+    assert.equal(timer.ms, 2000);
+    await quiescent(beforeInvalidations, beforeSettled); // The opening refresh, started without being awaited.
+    const pane = find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+    await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+    // Tick 1: rendered since the last tick, so it collects; that collection is the slow one.
+    slowNext = true;
+    beforeInvalidations = invalidations(); beforeSettled = settled;
+    await timer.fn();
+    await quiescent(beforeInvalidations, beforeSettled);
+    assert(!timer.cancelled);
+    // The slow collection makes the next two ticks skips: they must neither collect nor count as misses.
+    for (let skip = 0; skip < 2; skip += 1) {
+      const before = settled;
+      await timer.fn();
+      assert.equal(settled, before, 'a tick owed to a slow collection must be skipped');
+      assert(!timer.cancelled, 'a skipped tick is not a missed render');
+    }
+    // No render since: miss 1 and miss 2 still collect (a tick can land between a collection and its render).
+    for (let miss = 1; miss <= 2; miss += 1) {
+      beforeInvalidations = invalidations(); beforeSettled = settled;
+      await timer.fn();
+      await quiescent(beforeInvalidations, beforeSettled);
+      assert(!timer.cancelled, `miss ${miss} must not stop polling`);
+    }
+    // Miss 3 means the host disposed of the pane: polling stops.
+    await timer.fn();
+    assert(timer.cancelled, 'the third missed render must stop polling');
+  } finally {
+    Date.now = originalNow;
+    for (const timer of localTimers) timer.cancel();
+  }
 });
 await test('[per-session pane state] one registration never adopts another registration\'s open pane through shared storage', async () => {
   const sharedStore = new Map();
