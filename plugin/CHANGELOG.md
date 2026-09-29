@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- wt-rules-on-demand tool triggers can use the registered `lsp-symbol-grep` detector to serve rules only for symbol searches in code covered by an enabled, resolvable language server, respecting profile extension mutes. `next-call` compliance records whether the first later matching tool call used the required tool at call start, including calls subsequently refused or denied; transcript tooling marks environment-dependent trigger proof unknown and uses live store verdicts for this kind.
+
 ### Fixed
 - Gate evidence now recognizes the same repository through linked or alternate paths, and staged-file checks stay exact on case-insensitive filesystems.
 - The suite-lock broker no longer answers a lane's suite "busy" while capacity is free: a slot is freed as soon as a request is refused, not when the refused client disconnects. Open sockets, rejected ones included, are now capped at twice the served limit, and connections past that cap are dropped.

@@ -136,7 +136,8 @@ function validateTrigger(trigger) {
   if (trigger['input-regex'] !== undefined && trigger.kind !== 'tool') throw new Error('input-regex applies to tool triggers only');
   if (trigger['input-regex'] !== undefined && !trigger['input-regex']) throw new Error('input-regex must not be empty');
   if (trigger.unconditional !== undefined && ![true, false, 'true', 'false'].includes(trigger.unconditional)) throw new Error('unconditional must be true or false');
-  if (trigger.kind === 'tool' && ![true, 'true'].includes(trigger.unconditional) && !trigger['input-regex']) throw new Error('tool trigger requires unconditional: true or input-regex');
+  if (trigger.detector !== undefined && trigger.kind !== 'tool') { throw new Error('detector applies to tool triggers only'); }
+  if (trigger.kind === 'tool' && ![true, 'true'].includes(trigger.unconditional) && !trigger['input-regex'] && !trigger.detector) throw new Error('tool trigger requires unconditional: true, input-regex or detector');
   // Compiling catches invalid patterns before any lifecycle write.
   const patterns = [[trigger.regex ?? '', trigger.flags ?? '']];
   if (trigger.tool) patterns.push([trigger.tool, '']);

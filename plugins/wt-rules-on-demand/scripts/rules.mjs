@@ -128,7 +128,8 @@ async function prove() {
   const spec = await readSpec(resolve(String(options.spec)));
   const { body, rendered: migrationText } = await migrationPreflight(lifecycleRoot, subject, spec, scope);
   const compiled = parseRuntimeRule(basename(subject), migrationText).triggers;
-  const byTrigger = spec.triggers.map((trigger) => ({ trigger, matches: 0 }));
+   const byTrigger = spec.triggers.map((trigger) => ({ trigger, matches: 0,
+     ...(trigger.detector ? { outcome: 'not provable from transcripts (environment-dependent detector)' } : {}) }));
   const examples = [];
   let inspected = 0;
   const skippedLinks = [];
@@ -141,7 +142,8 @@ async function prove() {
       try { row = JSON.parse(line); } catch { continue; }
       for (const item of candidates(row)) {
         inspected += 1;
-        for (let index = 0; index < spec.triggers.length; index += 1) {
+         for (let index = 0; index < spec.triggers.length; index += 1) {
+           if (spec.triggers[index].detector) continue;
            if (!triggerMatches(compiled[index], item)) continue;
           byTrigger[index].matches += 1;
           if (examples.length < 5) examples.push({ file: basename(file), line: lineNumber, channel: item.channel, tool: item.tool || null, sample: (item.text || item.path || item.input || '').slice(0, 160) });
@@ -160,8 +162,8 @@ async function prove() {
   process.stdout.write(rendered);
   // A dangling symlink is never silent: it is counted above AND named on stderr, visible even
   // to a caller that only reads the exit code and stdout summary line, not the full JSON.
-  for (const path of skippedLinks) console.error(`rules: skipped dangling symlink ${path}`);
-  if (!report.matches) process.exitCode = 1;
+  for (const path of skippedLinks) { console.error(`rules: skipped dangling symlink ${path}`); }
+    if (!report.matches && !byTrigger.some((row) => row.outcome)) { process.exitCode = 1; }
 }
 
 async function migrate() {
@@ -173,8 +175,11 @@ async function migrate() {
   let proof;
   if (options.proof) {
     proof = JSON.parse(await readFile(resolve(String(options.proof)), 'utf8'));
-    if (proof.rule !== basename(subject) || proof.triggersHash !== hash || proof.bodyHash !== bodyHash || proof.scopeRoot !== lifecycleRoot) throw new Error('proof does not match this rule body, scope root and trigger spec');
-    const zero = spec.triggers.map((trigger, i) => proof.byTrigger?.[i]?.matches ? null : `${i} (${trigger.kind}: ${trigger.tool ?? trigger.regex})`).filter((item) => item !== null);
+    if (proof.rule !== basename(subject) || proof.triggersHash !== hash || proof.bodyHash !== bodyHash || proof.scopeRoot !== lifecycleRoot) { throw new Error('proof does not match this rule body, scope root and trigger spec'); }
+      const zero = spec.triggers.map((trigger, i) => {
+        const proved = proof.byTrigger?.[i]?.matches || trigger.detector && proof.byTrigger?.[i]?.outcome === 'not provable from transcripts (environment-dependent detector)';
+        return proved ? null : `${i} (${trigger.kind}: ${trigger.tool ?? trigger.regex})`;
+      }).filter((item) => item !== null);
     if (zero.length) throw new Error(`proof has zero matches for triggers: ${zero.join(', ')}`);
     proof = { proof: { matches: proof.matches, transcriptsInspected: proof.inspected, generatedAt: proof.generatedAt } };
   } else if (typeof options['no-proof'] === 'string' && options['no-proof'].trim()) {

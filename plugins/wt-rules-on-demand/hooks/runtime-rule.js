@@ -1,4 +1,5 @@
 import { CHECKS } from './act-checks.js';
+import { DETECTORS } from './lsp-symbol.js';
 import { RULE_CAP, safeRegex } from './evidence.js';
 
 function scalar(value) {
@@ -11,8 +12,8 @@ function scalar(value) {
 // Every key a rule may declare. A key outside these lists is REFUSED, never ignored: an
 // ignored predicate fails open — a `tool` trigger whose narrowing key the engine does not know fires on every call.
 // scripts/rule-lifecycle-lib.mjs validates a migration spec against the same lists.
-export const TRIGGER_KEYS = Object.freeze(['kind', 'regex', 'tool', 'flags', 'unconditional', 'before-first-act', 'mentions', 'input-regex', 'command-head']);
-export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex', 'tool', 'require-input-regex', 'require-any-input-regex', 'forbid-input-regex', 'absent-input-key', 'exempt-regex', 'id-regex', 'follow-up-tool', 'value-regex', 'min-distinct', 'input-field', 'mask-code', 'when-input-regex', 'each-line-regex', 'match-block-regex', 'minimum-input-key', 'minimum-input-value', 'forbid-pipe', 'subject-input-key', 'subject-input-regex', 'identity-pair', 'reject-bash-regex',
+export const TRIGGER_KEYS = Object.freeze(['kind', 'regex', 'tool', 'flags', 'unconditional', 'before-first-act', 'mentions', 'input-regex', 'command-head', 'detector']);
+export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex', 'tool', 'require-tool', 'require-input-regex', 'require-any-input-regex', 'forbid-input-regex', 'absent-input-key', 'exempt-regex', 'id-regex', 'follow-up-tool', 'value-regex', 'min-distinct', 'input-field', 'mask-code', 'when-input-regex', 'each-line-regex', 'match-block-regex', 'minimum-input-key', 'minimum-input-value', 'forbid-pipe', 'subject-input-key', 'subject-input-regex', 'identity-pair', 'reject-bash-regex',
    // Not read by the engine: scripts/rollback-check.mjs reads them from the file (TRIGGERS.md, rollback).
   'rollback-threshold', 'rollback-min-samples']);
 
@@ -46,6 +47,10 @@ function parseCompliance(lines, complianceAt, name) {
   const flags = data.flags ?? '';
   if (!/^[imsu]*$/.test(flags)) throw new Error(`unsupported compliance regex flags: ${flags}`);
   if (data.model) return { kind: 'model', model: data.model, prompt: data.prompt ?? '', window, onClose: data['on-close'] };
+  if (data.kind === 'next-call') {
+    if (!data.tool || !data['require-tool']) throw new Error('next-call requires tool and require-tool');
+    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), requireTool: safeRegex(name, data['require-tool'], flags), window, onClose: data['on-close'] };
+  }
   if (data.kind === 'bash-command') {
     if (!data['act-regex'] || (!data['require-regex'] && !data['require-all'])) throw new Error('bash-command compliance requires act-regex and require-regex or require-all');
     if (data['forbid-pipe'] && !['true', 'false'].includes(data['forbid-pipe'])) throw new Error('forbid-pipe must be true or false');
@@ -138,7 +143,9 @@ export function parseRuntimeRule(name, text) {
     // (hooks.js toolInputText). It narrows and never widens: no input at runtime means no fire.
     if (entry['input-regex'] !== undefined && entry.kind !== 'tool') throw new Error('input-regex applies to tool triggers only');
     if (entry['input-regex'] !== undefined && !entry['input-regex']) throw new Error('input-regex must not be empty');
-    if (entry.kind === 'tool' && entry.unconditional !== 'true' && !entry['input-regex']) throw new Error('tool trigger requires unconditional: true or input-regex');
+    if (entry.detector !== undefined && entry.kind !== 'tool') throw new Error('detector applies to tool triggers only');
+    if (entry.detector !== undefined && !Object.hasOwn(DETECTORS, entry.detector)) throw new Error(`unknown detector: ${entry.detector}`);
+    if (entry.kind === 'tool' && entry.unconditional !== 'true' && !entry['input-regex'] && !entry.detector) throw new Error('tool trigger requires unconditional: true, input-regex or detector');
     if (entry['before-first-act'] && !['true', 'false'].includes(entry['before-first-act'])) throw new Error('before-first-act must be true or false');
     // `mentions: true` — a `bash` trigger that also fires when a read-only command (grep, cat, echo…) only mentions
     // its match; by default such a mention is blanked before the regex runs (hooks/bash-mention.js).
@@ -150,7 +157,8 @@ export function parseRuntimeRule(name, text) {
       kind: entry.kind,
        regex: entry.regex ? safeRegex(name, entry.regex, flags) : null,
        tool: entry.tool ? safeRegex(name, entry.tool) : null,
-       input: entry['input-regex'] ? safeRegex(name, entry['input-regex'], flags) : null,
+        input: entry['input-regex'] ? safeRegex(name, entry['input-regex'], flags) : null,
+       detector: entry.detector ?? null,
       beforeFirstAct: entry['before-first-act'] === 'true',
        onMention: entry.mentions === 'true',
        commandHead: entry['command-head'] === 'true',

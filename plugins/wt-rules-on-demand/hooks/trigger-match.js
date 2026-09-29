@@ -20,6 +20,7 @@ export function unevaluatedTrigger(trigger, item) {
 }
 
 export function triggerMatches(trigger, item, onError, budget) {
+  if (trigger.detector && item.detected?.get(trigger) !== true) return false;
   let failed = false;
   const test = (regex, text) => testTriggerRegex(trigger, regex, text, (error) => { failed = true; onError?.(error); }, budget);
   if (trigger.kind === 'prompt') return item.channel === 'prompt' && test(trigger.regex, item.text);
@@ -31,8 +32,8 @@ export function triggerMatches(trigger, item, onError, budget) {
     return test(trigger.regex, command);
   }
   if (trigger.kind === 'tool') {
-    const toolMatched = test(trigger.tool, item.tool);
-    return failed || (toolMatched && (!trigger.input || (item.input !== null && test(trigger.input, argumentEvidence(item.input)))));
+    const toolMatched = item.prechecked?.has(trigger) ? item.prechecked.get(trigger) : test(trigger.tool, item.tool);
+    return failed || (toolMatched && (!trigger.input || (item.input !== null && (item.inputPrechecked?.has(trigger) ? item.inputPrechecked.get(trigger) : test(trigger.input, argumentEvidence(item.input))))));
   }
   if (trigger.kind === 'path') {
     const toolMatched = test(trigger.tool, item.tool);
