@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- The plugin now refuses `rm` and `rmdir` commands that Claude Code would stop for a critical-path permission prompt (a glob or trailing slash under a variable, a possibly unset variable followed by a system directory name, a variable derived from the working directory, or a critical path written literally) and says what to write instead, with a paste-ready command when the rewrite is unambiguous, rather than leaving the prompt waiting. In `bypassPermissions` mode it also answers that prompt with a refusal when an `rm` target is not a plain literal path. `WT_RM_CRITICAL_PATH_GUARD=warn` turns the refusal into a notice.
 - wt-rules-on-demand tool triggers can use the registered `lsp-symbol-grep` detector to serve rules only for symbol searches in code covered by an enabled, resolvable language server, respecting profile extension mutes. `next-call` compliance records whether the first later matching tool call used the required tool at call start, including calls subsequently refused or denied; transcript tooling marks environment-dependent trigger proof unknown and uses live store verdicts for this kind.
 
 ### Fixed
