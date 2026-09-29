@@ -415,6 +415,7 @@ function templateDestination(command) {
 
 function shellTokens(command, context, escapes) {
   const tokens = [];
+  const redirectFds = new Map();
   let index = 0;
   const push = (type, end, extra = {}) => { tokens.push({ type, start: index, end, ...extra }); index = end; };
   while (index < command.length) {
@@ -440,7 +441,7 @@ function shellTokens(command, context, escapes) {
       if ((character === '<' || character === '>') && command[index + 1] === '(') { push('open', index + 2, { arith: false }); continue; }
       if (character === '<' || character === '>' || character === '&') {
         const op = /^(?:&>>?|<<<|<<-?|<>|<&|>&|>>|>\||<|>)/.exec(command.slice(index, index + 3))[0];
-        push('redirect', index + op.length, { op }); continue;
+        push('redirect', index + op.length, { op, fd: redirectFds.get(index) }); continue;
       }
       if (character === '(' || character === ')') { push(character, index + 1); continue; }
     }
@@ -448,7 +449,7 @@ function shellTokens(command, context, escapes) {
     if (word.end <= index) { index += 1; continue; }
     const raw = command.slice(word.start, word.end);
     // A file-descriptor number or `{name}` written against a redirection belongs to that redirection.
-    if (context[word.end] === 'bare' && /[<>]/.test(command[word.end] ?? '') && /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(raw)) { index = word.end; continue; }
+    if (context[word.end] === 'bare' && /[<>]/.test(command[word.end] ?? '') && /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(raw)) { redirectFds.set(word.end, raw); index = word.end; continue; }
     tokens.push({ type: 'word', ...word, raw });
     index = word.end;
   }
@@ -512,7 +513,7 @@ const PLAIN_DELIMITER = /^(?:[A-Za-z0-9_.-]+|'[A-Za-z0-9_.-]+'|"[A-Za-z0-9_.-]+"
 
 // The kind of one word: 'literal' (its text is exact), 'field' (one field whose text the guard does
 // not know: a double-quoted `$NAME`, an accepted `op read` substitution), or a refusal.
-function wordKind(command, context, from, to) {
+function wordKind(command, context, from, to, tildeTarget = false) {
   let kind = 'literal';
   let bracket = false; let brace = false;
   for (let at = from; at < to; at += 1) {
@@ -529,7 +530,7 @@ function wordKind(command, context, from, to) {
       if (brace && (character === ',' || (character === '.' && command[at + 1] === '.'))) return { refuse: 'a brace expansion' };
       // Bash expands a tilde at a word's start and after `=` or `:` - positions that differ between an
       // argument and an assignment. Beside our forms no unquoted tilde is accepted: write the path out.
-      if (character === '~') return { refuse: 'an unquoted tilde (write the path out)' };
+      if (character === '~' && !(tildeTarget && at === from)) return { refuse: 'an unquoted tilde (write the path out)' };
       continue;
     }
     if (where === 'double') {
@@ -746,7 +747,7 @@ function allowList(command, lexed, tokens, referenceStarts) {
     let to = token.end;
     let checked;
     if (opener < 0) {
-      checked = wordKind(command, context, from, to);
+      checked = wordKind(command, context, from, to, target === 'file');
     } else {
       // The only substitution accepted: the documented literal `op read` form, double-quoted or as an
       // assignment value - where its output is one field.
@@ -795,6 +796,115 @@ function allowList(command, lexed, tokens, referenceStarts) {
     if (refusal) return { refuse: refusal };
   }
   return { positions };
+}
+
+// A reference is written only by a plain echo/printf command with one file output redirection,
+// or by the first stage of an unredirected, two-stage emitter | tee pipeline. Keep it in
+// allowList and the op-verb checks: this classification changes only extent/prefetch for that span.
+const STREAM_TARGET = /^(?:\/dev\/(?:stdout|stderr|tty|null)$|\/dev\/(?:fd|tcp|udp)\/|\/proc\/self\/fd\/)/;
+
+function simpleStages(tokens) {
+  const stages = [{ tokens: [], before: null }];
+  for (const token of tokens) {
+    // After a pipeline/conditional operator, bash reads a newline as a continuation.
+    if (token.type === 'op' && token.op === '\n' && !stages.at(-1).tokens.length
+      && ['|', '&&', '||'].includes(stages.at(-1).before)) continue;
+    if (token.type === 'op') stages.push({ tokens: [], before: token.op });
+    else stages.at(-1).tokens.push(token);
+  }
+  return stages;
+}
+
+function plainStage(stage) {
+  return !stage.tokens.some((token) => token.type === 'open' || token.type === '(' || token.type === ')');
+}
+
+function stageParts(stage) {
+  const words = []; const redirects = [];
+  for (let index = 0; index < stage.tokens.length; index += 1) {
+    const token = stage.tokens[index];
+    if (token.type === 'redirect') {
+      redirects.push({ ...token, target: stage.tokens[index + 1] });
+      index += 1;
+    } else if (token.type === 'word') words.push(token);
+  }
+  return { words, redirects };
+}
+
+const ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+const TEE_WRITING_OPTION = /^(?:-[aip]+|--(?:append|ignore-interrupts|output-error(?:=.*)?))$/;
+
+function emitterOperand(words) {
+  let at = 0;
+  while (at < words.length && ASSIGNMENT_WORD.test(words[at].raw)) at += 1;
+  const wrapper = words[at]?.text;
+  if (wrapper === 'builtin' || wrapper === 'command') {
+    at += 1;
+    if (words[at]?.text?.startsWith('-')) return -1;
+  }
+  const name = words[at]?.literal && words[at].text.replace(/^.*\//, '');
+  if (name !== 'echo' && name !== 'printf') return -1;
+  // Only the first operand can select printf -v; later -v words are data. An expanded first
+  // operand might itself be -v, so leave that case to the existing reference resolution.
+  if (name === 'printf' && (!words[at + 1]?.literal || words[at + 1].text.startsWith('-v'))) return -1;
+  return at + 1;
+}
+
+function singleFileRedirect(redirects) {
+  if (redirects.length !== 1) return false;
+  const { op, fd, target } = redirects[0];
+  // The allow-list permits an unquoted tilde at the start of a redirect target.
+  if (target?.type !== 'word' || (!target.literal && !target.raw?.startsWith('~')) || STREAM_TARGET.test(target.text)) return false;
+  return (['>', '>>', '>|'].includes(op) && (fd === undefined || /^0*1$/.test(fd)))
+    || (['&>', '&>>'].includes(op) && fd === undefined);
+}
+
+function teeFileOperand(stage) {
+  if (!plainStage(stage)) return false;
+  if (stage.tokens.some((token) => token.type === 'redirect')) return false;
+  const { words } = stageParts(stage);
+  let at = 0;
+  while (at < words.length && ASSIGNMENT_WORD.test(words[at].raw)) at += 1;
+  if (words[at]?.text === 'sudo') {
+    const placed = wrapperCommand(words.map((word) => ({ ...word, kind: word.literal ? 'literal' : 'field', reference: false })), at + 1, 'sudo', null);
+    if (placed.none || placed.refuse) return false;
+    at = placed.index;
+  }
+  if (!words[at]?.literal || words[at].text.replace(/^.*\//, '') !== 'tee') return false;
+  let options = true;
+  for (const word of words.slice(at + 1)) {
+    if (options && word.text === '--') { options = false; continue; }
+    // Only tee's writing options may precede its files; --help, --version or an unknown option writes nothing.
+    if (options && word.text.startsWith('-') && word.text !== '-' && !TEE_WRITING_OPTION.test(word.text)) return false;
+    if (!options || !word.text.startsWith('-') || word.text === '-') {
+      if (word.literal && !STREAM_TARGET.test(word.text)) return true;
+    }
+  }
+  return false;
+}
+
+function writtenReferences(tokens, matches) {
+  const stages = simpleStages(tokens);
+  const written = new Set();
+  for (let index = 0; index < stages.length; index += 1) {
+    const stage = stages[index];
+    if (!plainStage(stage)) continue;
+    const { words, redirects } = stageParts(stage);
+    const operand = emitterOperand(words);
+    if (operand < 0) continue;
+    const next = stages[index + 1];
+    const file = next?.before !== '|' && next?.before !== '|&'
+      && redirects[0]?.start > words[operand - 1].start && singleFileRedirect(redirects);
+    const throughTee = !redirects.length && next?.before === '|' && stage.before !== '|'
+      && stages[index + 2]?.before !== '|' && stages[index + 2]?.before !== '|&'
+      && teeFileOperand(next);
+    if (!file && !throughTee) continue;
+    for (const match of matches) {
+      if (!match[0].startsWith('op://')) continue;
+      if (words.slice(operand).some((word) => match.index >= word.start && match.index < word.end)) written.add(match.index);
+    }
+  }
+  return written;
 }
 
 function extent(command, lexed, match) {
@@ -938,8 +1048,10 @@ export function planReferences(command, options = {}) {
       }
     }
   }
+  const written = refusals.length ? new Set() : writtenReferences(tokens, matches);
   for (const match of matches) {
     if (consumed.some(([from, to]) => match.index >= from && match.index < to)) continue;
+    if (written.has(match.index)) continue;
     const resolved = extent(command, lexed, match);
     if (resolved.refuse) { refusals.push(resolved.refuse); continue; }
     occurrences.push(resolved);
