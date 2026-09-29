@@ -154,9 +154,8 @@ export function spawnWithLaneLogStderr(log, start) {
   try { return start(['ignore', 'ignore', fd]) } finally { closeSync(fd) }
 }
 
-// Cleanup never blocks termination: a directory that cannot be removed is reported on stderr, not thrown.
-export function removeReadableLaneBrief(directory, { rm = rmSync, log = (line) => process.stderr.write(`${line}\n`) } = {}) {
-  try { rm(directory, { recursive: true, force: true }) } catch (error) { log(`wt-lane: could not remove ${directory}: ${error instanceof Error ? error.message : String(error)}`) }
+export function removeReadableLaneBrief(directory) {
+  rmSync(directory, { recursive: true, force: true })
 }
 
 export function readLifecycleRegular(file, root = null, options = {}) {

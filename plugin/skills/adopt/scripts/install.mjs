@@ -793,10 +793,10 @@ const { laneUnsandboxedAtStart, laneWritableForLaunch } = sandboxModule ?? { lan
   return adopted
 }
 
-/** The launcher's own runtime helpers (attachments, priority) are loaded from the installed plugin root like
+/** The launcher's own runtime helpers (the priority module) are loaded from the installed plugin root like
  * the consent modules: an adopted copy has no `./lib/` neighbour. Each named export falls back to a function
  * that throws the "older or incompatible plugin" refusal, so a plugin without a helper fails closed at use. */
-const LAUNCHER_RUNTIME_LIBS = ['lane-attachments', 'lane-priority']
+const LAUNCHER_RUNTIME_LIBS = ['lane-priority']
 function loadLauncherRuntimeLibs(adopted, src) {
   let out = adopted
   const loaders = []

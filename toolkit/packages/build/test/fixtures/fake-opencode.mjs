@@ -58,11 +58,10 @@ async function runAction() {
     return
   }
   if (action.includes('RECORD_LANE')) {
-    // Records argv, this process's niceness, and a copy of every `-f` attachment (bytes read while the lane brief directory exists).
+    // Records argv, this process's niceness and its I/O scheduling class.
     write('argv', `${argv.join('\n')}\n`)
     write('nice', `${os.getPriority()}\n`)
     write('ionice', spawnSync('ionice', ['-p', String(process.pid)], { encoding: 'utf8' }).stdout)
-    argv.forEach((value, index) => { if (value === '-f') copyFileSync(argv[index + 1], path.join(cwd, `attached-${index}`)) })
     return
   }
   if (action.includes('printf "%s\\n" "$@" > "$PWD/argv"')) {

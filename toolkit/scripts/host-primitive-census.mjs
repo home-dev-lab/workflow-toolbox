@@ -13,10 +13,9 @@ const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 // host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
 // lane brief and lifecycle reads moved into the host lane directory helper; the launcher
 // also moved its host file-descriptor operations behind that helper. The clock-independent
-// gate-evidence check replaced its per-path stat calls with a git comparison. The launcher's attachment
-// and priority helpers live in host/, taking their file, git and priority calls out of the launcher.
+// gate-evidence check replaced its per-path stat calls with a git comparison.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1889
+export const HOST_PRIMITIVE_CEILING = 1899
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

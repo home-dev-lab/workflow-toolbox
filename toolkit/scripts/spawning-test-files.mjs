@@ -171,7 +171,6 @@ export const spawningTestFiles = [
   'packages/build/test/wake-floor.test.ts',
   'packages/build/test/what-is-running.test.ts',
   'packages/build/test/wt-config.test.ts',
-  'packages/build/test/wt-lane-attachments.test.ts',
   'packages/build/test/wt-lane-helpers.test.ts',
   'packages/build/test/wt-lane-integrate.test.ts',
   'packages/build/test/wt-lane-launcher.test.ts',

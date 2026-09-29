@@ -193,7 +193,8 @@ describe('adopted wt-lane consent resolver', () => {
     })
   }
 
-  it.each(['lane-attachments.mjs', 'lane-priority.mjs'])('--install refuses when the resolved plugin root lacks the launcher helper %s', (name) => {
+  it('--install refuses when the resolved plugin root lacks the launcher helper lane-priority.mjs', () => {
+    const name = 'lane-priority.mjs'
     const f = fixture(undefined, false)
     const missing = join(f.root, 'plugin', 'bin', 'lib', 'host', name)
     rmSync(missing)
