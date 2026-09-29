@@ -5,6 +5,23 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.189.2] - 2026-09-29
+
+### Quality
+
+Patch release: measured on the release tree against the committed quality baseline (`node scripts/quality.mjs delta`, coverage from the release tree's own test run). Cyclomatic and cognitive complexity each rose by 1; duplication fell slightly; ESLint warnings, Knip issues and dependency cycles are unchanged; line and branch coverage rose by 0.15 and 0.25 points.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 127 | +1 |
+| Cognitive complexity | 268 -> 269 | +1 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| ESLint warnings | 684 -> 684 | 0 |
+| Duplication % | 2.4324 -> 2.4057 | -0.03 |
+| Knip issues | 196 -> 196 | 0 |
+| Coverage lines % | 78.61 -> 78.76 | +0.15 |
+| Coverage branches % | 69.76 -> 70.01 | +0.25 |
+
 ### Added
 - wt-rules-on-demand tool triggers can use the registered `lsp-symbol-grep` detector to serve rules only for symbol searches in code covered by an enabled, resolvable language server, respecting profile extension mutes. `next-call` compliance records whether the first later matching tool call used the required tool at call start, including calls subsequently refused or denied; transcript tooling marks environment-dependent trigger proof unknown and uses live store verdicts for this kind.
 
