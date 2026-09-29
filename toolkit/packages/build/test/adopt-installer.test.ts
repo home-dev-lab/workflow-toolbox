@@ -585,7 +585,10 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(refreshed).toContain('on-demand triggers refreshed from shipped spec')
     expect(refreshed).not.toContain('behind the shipped spec')
     writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
-    runCopied(copy.script, ['--install', '--keep-triggers', '--file', ACT], dir)
+    const kept = runCopied(copy.script, ['--install', '--keep-triggers', '--file', ACT], dir).split('\n').find((line) => line.includes(`${ACT}:`)) ?? ''
+    expect(kept).toContain('TRIGGERS KEPT')
+    expect(kept).toContain('on-demand triggers accepted local head')
+    expect(kept).not.toContain('on-demand triggers unresolved')
     const afterKeep = runCopied(copy.script, ['--install', '--file', ACT], dir)
     expect(afterKeep).not.toContain('behind the shipped spec')
   })
