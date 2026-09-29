@@ -15,6 +15,8 @@ import { afterEach, describe, it, expect } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error read-only JS plugin renderer has no TypeScript declaration
 import { frontmatter } from '../../../../plugins/wt-rules-on-demand/scripts/rule-lifecycle-lib.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-adopt-check-hook.mjs')
@@ -23,10 +25,7 @@ const RULE = 'wt-delegation-ladder.md'
 const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 const ACT = 'wt-task-tracking-at-act.md'
 const TRIGGER_MARKER = 'on-demand triggers behind the shipped spec'
-// Historic POSIX remedies quote every word; Windows leaves safe words bare.
-const remedyWord = (value: string) => process.platform === 'win32'
-  ? (/^[\w@%+=:,./\\-]+$/.test(value) ? value : `"${value.replaceAll('"', '\\"')}"`)
-  : `'${value.replaceAll("'", `'"'"'`)}'`
+const remedyWord = (value: string) => quoteRemedyWord(value, true)
 function specHead() {
   const spec = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/rules/wt-task-tracking-at-act.spec.json'), 'utf8'))
   return frontmatter({ ...spec, triggers: spec['on-demand'].triggers })
@@ -173,9 +172,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     })
     expect(result.status, result.stderr).toBe(0)
     const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext as string
-    const file = platform === 'win32' ? ACT : `'${ACT}'`
-    const location = platform === 'win32' ? `"${dir}"` : `'${dir}'`
-    expect(context).toContain(`--refresh-triggers --file ${file} --dir ${location}`)
+    expect(context).toContain(`--refresh-triggers --file '${ACT}' --dir '${dir}'`)
   })
   it.each(['stale', 'edited', 'ahead'])('reports stale trigger-head remedy under a %s body bucket, including PostToolUse', (bucket) => {
     const f = fixture(`head-${bucket}`)

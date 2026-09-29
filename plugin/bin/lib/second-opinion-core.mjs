@@ -233,7 +233,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       }
       if (projectNarrows) {
         reasons.push('this project narrows GPT lane consent')
-        remedies.push(`wt-lane-consent --project ${quoteRemedyWord(options.repo, options.platform)} --on`)
+        remedies.push(`wt-lane-consent --project ${quoteRemedyWord(options.repo)} --on`)
       }
     }
     return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reasons.join(', and ')}. `

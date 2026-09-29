@@ -230,7 +230,7 @@ function contentDirection(file, finding, set) {
   return `differs from v${currentVersion} (direction unknown: content-only comparison)`
 }
 
-const shellQuote = (value) => quoteRemedyWord(value, undefined, true)
+const shellQuote = (value) => quoteRemedyWord(value, true)
 
 function installRemedy(installCmd, set, dir) {
   return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`

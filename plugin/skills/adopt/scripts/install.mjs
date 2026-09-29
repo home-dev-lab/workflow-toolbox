@@ -639,7 +639,7 @@ function triggerState(classification, spec) {
   return { state, current, installed, spec, stamp }
 }
 
-const shellQuote = (value) => quoteRemedyWord(value, undefined, true)
+const shellQuote = (value) => quoteRemedyWord(value, true)
 
 function triggerRemedy(item, dir, flag) {
   return `node ${shellQuote(fileURLToPath(import.meta.url))} --set rules --install --${flag}-triggers --file ${shellQuote(item.file)} --dir ${shellQuote(dir)}`

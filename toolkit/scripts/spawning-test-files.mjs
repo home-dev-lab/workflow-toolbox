@@ -134,6 +134,7 @@ export const spawningTestFiles = [
   'packages/build/test/quota-watch-no-subscription.test.ts',
   'packages/build/test/quota-watch-route.test.ts',
   'packages/build/test/quota-watch-single-instance.test.ts',
+  'packages/build/test/remedy-quote.test.ts',
   'packages/build/test/report-findings-check.test.ts',
   'packages/build/test/right-sized-spawn-guard-hook.test.ts',
   'packages/build/test/rule-convention-guard.test.ts',
