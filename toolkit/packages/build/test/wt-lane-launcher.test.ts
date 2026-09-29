@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { getPriority, tmpdir } from 'node:os'
 import { delimiter, dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -1687,5 +1687,232 @@ const interval = setInterval(() => {
     const envLog = join(f.dir, '.lane', 'env.log'); waitForFile(envLog)
     expect(readFileSync(envLog, 'utf8')).toContain('ssh-add -l: exit=1 keys=0')
     expect(readFileSync(envLog, 'utf8')).not.toContain('identities')
+  })
+})
+
+describe('wt-lane --priority and --attach parsing', () => {
+  const base = ['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']
+  it('defaults the lane to low priority and validates the flag', () => {
+    expect(parse(base).priority).toBe('low')
+    expect(parse([...base, '--priority', 'normal']).priority).toBe('normal')
+    expect(parse([...base, '--priority', 'urgent']).error).toContain('--priority')
+  })
+  it('resolves --attach values to absolute paths and refuses a missing or non-regular file by name', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-attach-parse-'))); roots.push(root)
+    const file = join(root, 'note.md'); writeFileSync(file, 'x')
+    expect(parse([...base, '--attach', file, '--attach', file]).attach).toEqual([file, file])
+    const missing = join(root, 'missing.md')
+    expect(parse([...base, '--attach', missing]).error).toContain(missing)
+    expect(parse([...base, '--attach', root]).error).toContain(root)
+    expect(parse([...base, '--attach']).error).toContain('--attach')
+  })
+  it('refuses an --attach symlink and an --attach inside the lane worktree', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-attach-parse-'))); roots.push(root)
+    const lane = join(root, 'lane'); mkdirSync(lane)
+    const outside = join(root, 'outside.md'); writeFileSync(outside, 'x')
+    const link = join(root, 'link.md'); symlinkSync(outside, link)
+    const inside = join(lane, 'in.md'); writeFileSync(inside, 'x')
+    const args = ['--dir', lane, '--model', 'test/model', '--brief', outside]
+    expect(parse([...args, '--attach', link]).error).toContain(link)
+    expect(parse([...args, '--attach', inside]).error).toContain('lane-writable')
+    expect(parse([...args, '--attach', outside]).error).toBeUndefined()
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('wt-lane low priority, attachments and project lane files', () => {
+  const RECORD = '# RECORD_LANE'
+  const ok = (result: ReturnType<typeof run>) => expect(result.status, result.stderr).toBe(0)
+  const parentNice = () => String(getPriority())
+  const hasIonice = process.platform === 'linux' && spawnSync('ionice', ['-p', String(process.pid)], { stdio: 'ignore' }).status === 0
+  const readLog = (dir: string) => { const log = join(dir, '.lane', 'run.log'); waitFor(log); return readFileSync(log, 'utf8') }
+  const readArgv = (dir: string) => { waitForFile(join(dir, 'argv')); readLog(dir); return readFileSync(join(dir, 'argv'), 'utf8').split('\n').slice(0, -1) }
+  const externalFile = (f: ReturnType<typeof fixture>, name: string, body: string) => { const file = join(f.root, name); writeFileSync(file, body); return file }
+  const git = (cwd: string, ...args: string[]) => spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' })
+  // A project main checkout (root/main) and a linked lane worktree (root/linked) carrying the brief.
+  function linked(f: ReturnType<typeof fixture>) {
+    const main = join(f.root, 'main'); const dir = join(f.root, 'linked')
+    mkdirSync(main); git(main, 'init', '-q'); git(main, 'commit', '-q', '--allow-empty', '-m', 'x'); git(main, 'worktree', 'add', '-q', '-b', 'lane', dir)
+    mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, 'brief.md'), '# brief\n')
+    return { main, dir }
+  }
+  const runLinked = (f: ReturnType<typeof fixture>, dir: string, extra: string[] = []) => spawnSync(process.execPath, [LAUNCHER, '--dir', dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(dir, 'brief.md'), ...extra], { encoding: 'utf8', env: f.env })
+  const projectFile = (root: string, name: string, body: string) => { mkdirSync(join(root, '.claude'), { recursive: true }); const file = join(root, '.claude', name); writeFileSync(file, body); return file }
+  const attachedBodies = (dir: string, argv: string[]) => argv.flatMap((value, index) => value === '-f' ? [index] : []).map((index) => readFileSync(join(dir, `attached-${index}`), 'utf8'))
+
+  it('runs the lane at niceness 19 by default, idles its I/O class where ionice exists, and logs the priority stage', () => {
+    expect(parentNice(), 'the test process already runs at niceness 19; the low-priority assertion would pass vacuously').not.toBe('19')
+    const f = fixture(RECORD)
+    ok(run(f))
+    const log = readLog(f.dir)
+    expect(readFileSync(join(f.dir, 'nice'), 'utf8').trim()).toBe('19')
+    if (hasIonice) {
+      expect(log).toContain('stage=priority nice=19 ionice=idle')
+      expect(readFileSync(join(f.dir, 'ionice'), 'utf8')).toMatch(/^idle/)
+    } else expect(log).toMatch(/stage=priority nice=19 ionice=(unavailable \(.+\)|unsupported-platform)/)
+  })
+  it('leaves the niceness alone under --priority normal and says so', () => {
+    const f = fixture(RECORD)
+    ok(run(f, ['--priority', 'normal']))
+    const log = readLog(f.dir)
+    expect(readFileSync(join(f.dir, 'nice'), 'utf8').trim()).toBe(parentNice())
+    expect(log).toContain('stage=priority normal')
+  })
+  it('refuses an unknown --priority with exit 2 naming the flag', () => {
+    const f = fixture(RECORD)
+    const result = run(f, ['--priority', 'urgent'])
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('--priority')
+  })
+  it('appends each --attach as a trailing -f pair, keeps the message second, copies the bytes and prints attach= lines with their digest', () => {
+    const f = fixture(RECORD)
+    const one = externalFile(f, 'one.md', 'first bytes\n'); const two = externalFile(f, 'two.md', 'second bytes\n')
+    const result = run(f, ['--attach', one, '--attach', two])
+    ok(result)
+    const argv = readArgv(f.dir)
+    expect(argv[0]).toBe('run'); expect(argv[1]).toMatch(/^Read and execute the complete brief at /)
+    const tail = argv.slice(-4)
+    expect(tail[0]).toBe('-f'); expect(tail[2]).toBe('-f')
+    expect(tail[1]).toMatch(/attach-0-one\.md$/); expect(tail[3]).toMatch(/attach-1-two\.md$/)
+    expect(attachedBodies(f.dir, argv)).toEqual(['first bytes\n', 'second bytes\n'])
+    expect(result.stdout).toContain(`attach=${one} sha256=${createHash('sha256').update('first bytes\n').digest('hex')}`)
+    expect(result.stdout).toContain(`attach=${two} sha256=`)
+  })
+  it('refuses a missing, directory or symlinked --attach with exit 2 before spawning anything', () => {
+    const f = fixture(RECORD)
+    const real = externalFile(f, 'real.md', 'x'); const link = join(f.root, 'link.md'); symlinkSync(real, link)
+    const missing = join(f.root, 'missing.md')
+    const gone = run(f, ['--attach', missing]); expect(gone.status).toBe(2); expect(gone.stderr).toContain(missing)
+    const dir = run(f, ['--attach', f.root]); expect(dir.status).toBe(2); expect(dir.stderr).toContain(f.root)
+    const sym = run(f, ['--attach', link]); expect(sym.status).toBe(2); expect(sym.stderr).toContain(link)
+    expect(existsSync(join(f.dir, 'argv'))).toBe(false)
+  })
+  it('refuses an --attach that lives inside the lane worktree', () => {
+    const f = fixture(RECORD)
+    const inside = join(f.dir, 'brief.md')
+    const result = run(f, ['--attach', inside])
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('lane-writable')
+    expect(result.stderr).toContain(inside)
+  })
+  it('attaches the main checkout preamble then craft patterns and changes the message', () => {
+    const f = fixture(RECORD); const { main, dir } = linked(f)
+    projectFile(main, 'lane-brief-preamble.md', 'PRE\n'); projectFile(main, 'lane-craft-patterns.md', 'CRAFT\n')
+    const extra = externalFile(f, 'extra.md', 'EXTRA\n')
+    const result = runLinked(f, dir, ['--attach', extra]); ok(result)
+    const argv = readArgv(dir)
+    expect(argv[1]).toMatch(/^The attached project lane preamble applies to this brief; read it first\. Then read and execute the complete brief at .+[/\\]brief\.md\.$/)
+    expect(argv[1]).not.toContain('governs')
+    expect(attachedBodies(dir, argv)).toEqual(['PRE\n', 'CRAFT\n', 'EXTRA\n'])
+    expect(argv.slice(-6).filter((value) => value === '-f')).toHaveLength(3)
+  })
+  it('never reads project lane files from the lane worktree itself', () => {
+    const f = fixture(RECORD); const { dir } = linked(f)
+    projectFile(dir, 'lane-brief-preamble.md', 'FROM THE WORKTREE\n')
+    ok(runLinked(f, dir))
+    const argv = readArgv(dir)
+    expect(argv).not.toContain('-f')
+    expect(argv[1]).toMatch(/^Read and execute the complete brief at /)
+  })
+  it('skips a symlinked project lane file with a named reason and never follows it', () => {
+    const f = fixture(RECORD); const { main, dir } = linked(f)
+    const secret = externalFile(f, 'secret.txt', 'SECRET\n')
+    mkdirSync(join(main, '.claude')); symlinkSync(secret, join(main, '.claude', 'lane-brief-preamble.md'))
+    const result = runLinked(f, dir); ok(result)
+    expect(readArgv(dir)).not.toContain('-f')
+    expect(result.stdout).toMatch(/project-lane-files=skipped \(lane-brief-preamble\.md: .*symlink/)
+  })
+  it('skips project files when the lane runs in the main checkout itself (its files are lane-writable)', () => {
+    const f = fixture(RECORD); const { main } = linked(f)
+    projectFile(main, 'lane-brief-preamble.md', 'PRE\n')
+    writeFileSync(join(main, 'brief.md'), '# brief\n'); mkdirSync(join(main, '.lane'), { recursive: true })
+    const result = runLinked(f, main); ok(result)
+    expect(readArgv(main)).not.toContain('-f')
+    expect(result.stdout).toContain('project-lane-files=skipped')
+  })
+  it('leaves the argv exactly as before when no project lane file exists', () => {
+    const f = fixture(RECORD)
+    ok(run(f))
+    const argv = readArgv(f.dir)
+    expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]brief\.md\.$/)
+    expect(argv).not.toContain('-f')
+  })
+  it('attaches a project file once when the caller also passes it explicitly', () => {
+    const f = fixture(RECORD); const { main, dir } = linked(f)
+    projectFile(main, 'lane-brief-preamble.md', 'PRE\n')
+    const craft = projectFile(main, 'lane-craft-patterns.md', 'CRAFT\n')
+    ok(runLinked(f, dir, ['--attach', craft]))
+    expect(attachedBodies(dir, readArgv(dir))).toEqual(['PRE\n', 'CRAFT\n'])
+  })
+  // A worker started by hand the way the launcher starts it: the brief snapshot lives in the host-owned directory.
+  function workerRig(f: ReturnType<typeof fixture>) {
+    const snapshotDir = join(laneHostDir(f.dir), 'brief-snapshots'); mkdirSync(snapshotDir, { recursive: true, mode: 0o700 })
+    const brief = join(snapshotDir, '1-1.md'); writeFileSync(brief, '# brief\n')
+    const receiptFor = (attachments: unknown[], path = brief) => Buffer.from(JSON.stringify({ path, age: '1s', heading: '# brief', sha256: createHash('sha256').update(readFileSync(brief)).digest('hex'), attachments })).toString('base64url')
+    const runWorker = (attachments: unknown[], briefArg = brief) => { writeFileSync(brief, '# brief\n'); return spawnSync(process.execPath, [LAUNCHER, '--worker', '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', briefArg, '--brief-receipt', receiptFor(attachments), '--run-id', '1-1', '--allow-no-git'], { encoding: 'utf8', env: f.env }) }
+    const entry = (over: Record<string, unknown> = {}) => ({ name: 'one.md', source: '/x/one.md', sha256: createHash('sha256').update('original').digest('hex'), snapshot: join(snapshotDir, '1-1-attach-0'), ...over })
+    return { snapshotDir, brief, runWorker, entry }
+  }
+  it('a worker refuses attachment snapshot bytes that differ from the launcher receipt and leaves nothing behind', () => {
+    const f = fixture(RECORD); const rig = workerRig(f)
+    writeFileSync(join(rig.snapshotDir, '1-1-attach-0'), 'tampered')
+    const result = rig.runWorker([rig.entry()])
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('attachment snapshot sha256 mismatch')
+    expect(existsSync(join(f.dir, 'argv'))).toBe(false)
+    expect(existsSync(join(rig.snapshotDir, '1-1-attach-0')), 'the refused worker must not leave the attachment snapshot behind').toBe(false)
+  })
+  it('a worker refuses a receipt whose attachment name or snapshot path is not the launcher-shaped one', () => {
+    const f = fixture(RECORD); const rig = workerRig(f)
+    const traversal = rig.runWorker([rig.entry({ name: '../evil.md' })])
+    expect(traversal.status).toBe(1); expect(traversal.stderr).toContain('attachment name')
+    writeFileSync(join(f.dir, 'somewhere.md'), 'x')
+    const elsewhere = rig.runWorker([rig.entry({ snapshot: join(f.dir, 'somewhere.md') })])
+    expect(elsewhere.status).toBe(1); expect(elsewhere.stderr).toContain('unexpected snapshot path')
+  })
+  it('a worker whose --brief lives outside the host snapshot directory is refused and deletes nothing there', () => {
+    const f = fixture(RECORD); const rig = workerRig(f)
+    const other = join(f.root, 'other'); mkdirSync(other)
+    const otherBrief = join(other, '1-1.md'); writeFileSync(otherBrief, '# brief\n')
+    const sentinel = join(other, '1-1-attach-0'); writeFileSync(sentinel, 'keep me')
+    const result = rig.runWorker([rig.entry({ snapshot: sentinel })], otherBrief)
+    expect(result.status).toBe(1); expect(result.stderr).toContain('host snapshot directory')
+    expect(existsSync(sentinel), 'cleanup must only ever touch the host snapshot directory').toBe(true)
+    expect(existsSync(otherBrief)).toBe(true)
+  })
+  it('a worker refuses a symlinked attachment snapshot without following it', () => {
+    const f = fixture(RECORD); const rig = workerRig(f)
+    const target = join(f.root, 'target.md'); writeFileSync(target, 'original')
+    symlinkSync(target, join(rig.snapshotDir, '1-1-attach-0'))
+    const result = rig.runWorker([rig.entry()])
+    expect(result.status).toBe(1); expect(result.stderr).toMatch(/unreadable|symlink/)
+    expect(readFileSync(target, 'utf8')).toBe('original')
+  })
+  it('launches with an attachment whose basename is 255 characters and keeps the lane copy name short', () => {
+    const f = fixture(RECORD)
+    const longName = `${'a'.repeat(252)}.md`
+    const file = externalFile(f, longName, 'LONG\n')
+    ok(run(f, ['--attach', file]))
+    const argv = readArgv(f.dir)
+    const copy = argv[argv.indexOf('-f') + 1] ?? ''
+    expect(copy.split(/[/\\]/).pop()!.length).toBeLessThanOrEqual(115)
+    expect(attachedBodies(f.dir, argv)).toEqual(['LONG\n'])
+  })
+  it('refuses more than 16 attachments with exit 2 naming the limit', () => {
+    const f = fixture(RECORD)
+    const files = Array.from({ length: 17 }, (_, index) => externalFile(f, `n${index}.md`, `${index}`))
+    const result = run(f, files.flatMap((file) => ['--attach', file]))
+    expect(result.status).toBe(2); expect(result.stderr).toContain('16')
+    expect(existsSync(join(f.dir, 'argv'))).toBe(false)
+  })
+  it('does not attach project files for a directory whose .git is a hand-written gitfile pointing at another repository', () => {
+    const f = fixture(RECORD); const { main } = linked(f)
+    projectFile(main, 'lane-brief-preamble.md', 'OTHER\n')
+    const gitdir = git(main, 'rev-parse', '--absolute-git-dir').stdout.trim()
+    const linkedGitdir = join(gitdir, 'worktrees', 'linked')
+    writeFileSync(join(f.dir, '.git'), `gitdir: ${linkedGitdir}\n`)
+    const result = spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md')], { encoding: 'utf8', env: f.env })
+    ok(result)
+    expect(readArgv(f.dir)).not.toContain('-f')
+    expect(result.stdout).toContain('worktree pointers do not match')
   })
 })

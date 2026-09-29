@@ -193,6 +193,30 @@ describe('adopted wt-lane consent resolver', () => {
     })
   }
 
+  it.each(['lane-attachments.mjs', 'lane-priority.mjs'])('--install refuses when the resolved plugin root lacks the launcher helper %s', (name) => {
+    const f = fixture(undefined, false)
+    const missing = join(f.root, 'plugin', 'bin', 'lib', 'host', name)
+    rmSync(missing)
+    const result = runChild('adopt installer missing-helper check', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toContain(`runtime module is missing from the resolved plugin root: ${missing}`)
+  })
+
+  it.each([
+    ['a single-quoted named import', "import { unknownHelper } from './lib/unknown-helper.mjs'"],
+    ['a double-quoted named import', 'import { unknownHelper } from "./lib/unknown-helper.mjs"'],
+    ['a side-effect import', "import './lib/unknown-helper.mjs'"],
+    ['a dynamic import', "await import('./lib/unknown-helper.mjs')"],
+    ['a multi-line import', "import {\n  unknownHelper,\n  another,\n} from './lib/unknown-helper.mjs'"],
+    ['a parent-relative literal', "await import('../lib/unknown-helper.mjs')"],
+  ])('--install fails loudly when the launcher gains %s the transform does not know', (_form, statement) => {
+    const f = fixture((source) => `${source}\n${statement}\n`, false)
+    const result = runChild('adopt installer leftover-import check', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toContain('left a relative runtime import')
+    expect(existsSync(f.installed)).toBe(false)
+  })
+
   it('preflights the shared plugin-option resolver derived from the adopted loader', () => {
     const f = fixture(undefined, false)
     const missing = join(f.root, 'plugin', 'bin', 'lib', 'plugin-options.mjs')

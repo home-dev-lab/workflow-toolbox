@@ -6,6 +6,8 @@ import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
+import { collectLaneAttachments, copyAttachmentsForLane, explicitAttachRefusal, laneMessage, removeRunSnapshots, validReceiptAttachments, verifyAttachmentSnapshots, writeAttachmentSnapshots } from './lib/host/lane-attachments.mjs'
+import { applyLanePriority } from './lib/host/lane-priority.mjs'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
@@ -42,12 +44,12 @@ async function loadIntegrationModule() {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--priority low|normal] [--attach <file>]...\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
 export function parse(argv) {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null, priority: 'low', attach: [] }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -68,6 +70,8 @@ export function parse(argv) {
     else if (arg === '--variant') { out.variant = argv[++i] ?? null; out.variantExplicit = true }
     else if (arg === '--allow-unknown-variant') out.allowUnknownVariant = true
     else if (arg === '--allow-no-git') out.allowNoGit = true
+    else if (arg === '--priority') out.priority = argv[++i] ?? null
+    else if (arg === '--attach') out.attach.push(argv[++i] ?? null)
     else if (arg === '--run-id') out.runId = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
@@ -80,6 +84,7 @@ export function parse(argv) {
   if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return { error: '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB' }
   if (!['session', 'pilot'].includes(out.owner)) return { error: '--owner must be session or pilot' }
   if (out.role && !['pilot', 'pilotHard', 'orchestrator', 'sdkPilot', 'sdkPilotHard', 'sdkOrchestrator', 'critic', 'code', 'review', 'refutation'].includes(out.role)) return { error: '--role is not a known variant role' }
+  if (!['low', 'normal'].includes(out.priority)) return { error: '--priority must be low or normal' }
   if (out.runId && !/^\d+-\d+$/.test(out.runId)) return { error: 'internal run id is malformed' }
   // opencode's built-in effort axis; an unknown name falls back SILENTLY to the default on the opencode side, so it is validated here.
   if (out.variant !== undefined && out.variant !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(out.variant)) return { error: '--variant must be a plain variant name' }
@@ -93,12 +98,29 @@ export function parse(argv) {
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
   let writable
   try { writable = laneWritableForLaunch({ cwd: out.dir, args: ['--dir', out.dir], env: process.env, optionEnv: process.env }) } catch (error) { return { error: `cannot validate lane writable roots: ${error.message}` } }
+  const attachError = resolveAttachFlags(out, writable)
+  if (attachError) return { error: attachError }
   if (out.briefCleanupDir && (laneWritablePath(out.dir, out.briefCleanupDir) || writable(out.briefCleanupDir))) return { error: '--brief-cleanup-dir must be outside the lane worktree and every lane-writable root' }
   if (out.log && (laneWritablePath(out.dir, out.log) || writable(out.log))) return { error: '--log must be outside the lane worktree and every lane-writable root' }
   const explicitLog = out.log && path.resolve(out.log)
   if (explicitLog && explicitLog.startsWith(`${laneHostStateRoot()}${path.sep}`) && !explicitLog.startsWith(`${laneHostDir(out.dir)}${path.sep}`)) return { error: '--log cannot target another worktree host directory' }
   out.log = path.resolve(out.log ?? path.join(laneHostDir(out.dir), 'run.log'))
   return out
+}
+
+// --attach values: made absolute, then refused unless a readable regular file, not a symlink, and
+// outside everything the lane can write. The refusal names the offending value.
+function resolveAttachFlags(out, writable) {
+  const resolved = []
+  for (const value of out.attach) {
+    if (!value) return '--attach requires a file path'
+    const file = path.resolve(value)
+    const refusal = explicitAttachRefusal(file, out.dir, writable)
+    if (refusal) return refusal
+    resolved.push(file)
+  }
+  out.attach = resolved
+  return null
 }
 
 function commandOutput(command, args, run) {
@@ -175,7 +197,8 @@ function parseBriefReceipt(encoded) {
   try {
     const receipt = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
     if (typeof receipt?.path !== 'string' || typeof receipt?.age !== 'string' || typeof receipt?.heading !== 'string' || !/^[0-9a-f]{64}$/.test(receipt?.sha256)) return null
-    return receipt
+    const attachments = validReceiptAttachments(receipt.attachments)
+    return attachments ? { ...receipt, attachments } : null
   } catch {
     return null
   }
@@ -411,9 +434,15 @@ async function main() {
   if (!existsSync(opts.dir) || !statSync(opts.dir).isDirectory()) { process.stderr.write(`wt-lane: --dir is not a directory: ${opts.dir}\n`); return 2 }
   if (!existsSync(opts.brief)) { process.stderr.write(`wt-lane: --brief does not exist: ${opts.brief}\n`); return 2 }
   let briefEvidence
+  let verifiedAttachments = []
+  const hostSnapshotDir = path.join(laneHostDir(opts.dir), 'brief-snapshots')
   if (worker) {
     briefEvidence = parseBriefReceipt(opts.briefReceipt)
     if (!briefEvidence) { process.stderr.write('wt-lane: internal brief receipt is missing or malformed\n'); return 2 }
+    // Registered BEFORE any refusal below, so every early return also removes this run's snapshots.
+    // The snapshot directory is derived from host-owned state, never from an argument: the brief must live in it.
+    if (path.dirname(opts.brief) !== hostSnapshotDir) { process.stderr.write(`wt-lane: Refused: --brief is not inside the host snapshot directory ${hostSnapshotDir}\n`); return 1 }
+    process.once('beforeExit', () => { if (!workerSpawnedChild && opts.runId) removeRunSnapshots(hostSnapshotDir, opts.runId) })
     let workerBytes
     try { workerBytes = readFileSync(opts.brief) } catch (error) {
       process.stderr.write(`wt-lane: brief snapshot is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
@@ -424,7 +453,9 @@ async function main() {
       process.stderr.write(`wt-lane: Refused: brief snapshot sha256 mismatch for ${opts.brief}; refusing to obey bytes other than those announced by the launcher.\n`)
       return 1
     }
-    process.once('beforeExit', () => { if (!workerSpawnedChild) rmSync(opts.brief, { force: true }) })
+    const attachmentCheck = verifyAttachmentSnapshots(briefEvidence.attachments, { snapshotDir: hostSnapshotDir, runId: opts.runId })
+    if (attachmentCheck.error) { process.stderr.write(`wt-lane: ${attachmentCheck.error}\n`); return 1 }
+    verifiedAttachments = attachmentCheck.verified
   } else {
     try { briefEvidence = readBriefEvidence(opts.brief, opts.dir, opts.requestedDir) } catch (error) {
       process.stderr.write(`wt-lane: --brief is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
@@ -631,14 +662,20 @@ async function main() {
     const paths = consentModules.supervisionPaths(opts.dir, runId)
     const briefSnapshotDir = path.join(ensureLaneHostDir(opts.dir), 'brief-snapshots')
     const briefSnapshot = path.join(briefSnapshotDir, `${runId}.md`)
+    let keepSnapshots = false
     try {
+      // Attachments are read ONCE, here, and decided before `pid=` is ever printed; the worker only sees snapshots.
+      const collected = collectLaneAttachments({ dir: opts.dir, explicit: opts.attach, writable: laneWritableForLaunch({ cwd: opts.dir, args: ['--dir', opts.dir], env: process.env, optionEnv: process.env }) })
+      if (collected.error) { process.stderr.write(`wt-lane: ${collected.error}\n`); return 2 }
       mkdirSync(briefSnapshotDir, { recursive: true, mode: 0o700 })
       chmodSync(briefSnapshotDir, 0o700)
       writeFileSync(briefSnapshot, briefEvidence.bytes, { flag: 'wx', mode: 0o400 })
-      const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256 }), 'utf8').toString('base64url')
-      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      const attachEntries = writeAttachmentSnapshots(collected.items, briefSnapshotDir, runId)
+      const dropSnapshots = () => removeRunSnapshots(briefSnapshotDir, runId)
+      const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256, attachments: attachEntries }), 'utf8').toString('base64url')
+      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, '--priority', opts.priority, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       appendVariantLog(opts.log, variant)
-      process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
+      process.stdout.write(`${[...briefEvidenceLines(briefEvidence), ...collected.notes, ...attachEntries.map((entry) => `attach=${entry.source} sha256=${entry.sha256}`)].join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
       const spawnedAt = Date.now()
       // The worker's stderr goes to the host-owned lane log: a worker that refuses or throws before
@@ -650,7 +687,7 @@ async function main() {
         const reason = captureTimeoutReason(captured)
         writeLaneStage(opts.log, `worker-identity-capture-timeout ${reason}`)
         child.kill('SIGTERM')
-        rmSync(briefSnapshot, { force: true })
+        dropSnapshots()
         process.stderr.write(`wt-lane: ${reason}\n`)
         return 1
       }
@@ -661,21 +698,26 @@ async function main() {
         writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity?.argv ?? null, workerStartTime: identity?.startTime ?? null, ...(process.platform === 'win32' ? { workerStartTimeApproximate: identity?.startTimeApproximate ?? false, workerImage: identity?.image ?? null } : {}), ...(process.platform === 'darwin' ? { workerCwd: identity?.cwd ?? null } : {}), ...(captured.unavailable ? { workerIdentity: captured.unavailable } : {}), childPid: null, childArgv: null, childStartTime: null, ...(process.platform === 'darwin' ? { childCwd: null } : {}), worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
       } catch (error) {
         child.kill('SIGTERM')
-        rmSync(briefSnapshot, { force: true })
+        dropSnapshots()
         if (error?.code === 'EEXIST') { process.stderr.write(`wt-lane: Refused: supervision record ${paths.record} already exists\n`); return 1 }
         throw error
       }
       if (!consentModules.claimCurrentSupervision(paths, runId)) {
         child.kill('SIGTERM')
-        rmSync(briefSnapshot, { force: true })
+        dropSnapshots()
         process.stderr.write('wt-lane: Refused: another lane launch owns the current supervision pointer\n')
         return 1
       }
+      keepSnapshots = true
       child.unref()
       writeFileSync(path.join(ensureLaneHostDir(opts.dir), 'pid'), `${child.pid}\n`)
       process.stdout.write(`pid=${child.pid}\nrun=${runId}\nlog=${opts.log}\n`)
       return 0
-    } finally { releaseLaunchLock() }
+    } finally {
+      // Every non-success exit (refusal, timeout, throw) removes this run's snapshots; success hands them to the worker.
+      if (!keepSnapshots) removeRunSnapshots(briefSnapshotDir, runId)
+      releaseLaunchLock()
+    }
   }
 
   const runId = opts.runId ?? `${process.pid}-${Date.now()}`
@@ -691,7 +733,14 @@ async function main() {
   // The canonical snapshot is host-only. A short-lived, read-only bind exposes the exact bytes
   // to bwrap without exposing the host-state directory (which must never become a sandbox bind).
   const { directory: transientBriefDir, file: readableBrief } = makeReadableLaneBrief(opts.brief, opts.dir)
-  const args = ['run', `Read and execute the complete brief at ${readableBrief}.`, '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : [])]
+  let attached
+  try { attached = copyAttachmentsForLane(verifiedAttachments, transientBriefDir) } catch (error) {
+    removeReadableLaneBrief(transientBriefDir)
+    consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason: `attachment copy failed: ${error instanceof Error ? error.message : String(error)}` })
+    return 1
+  }
+  // -f is variadic: it goes after every other argument so it cannot swallow the message.
+  const args = ['run', laneMessage(readableBrief, briefEvidence.attachments.some((entry) => entry.preamble)), '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : []), ...attached.flatMap((copy) => ['-f', copy])]
   // OpenCode honours this runtime flag by skipping ~/.claude/skills and project .claude/skills,
   // preserving its own and .agents skills while fencing the harness's single-writer memory skills.
   let child
@@ -701,6 +750,7 @@ async function main() {
   const progress = `wt-lane: starting ${opencodeBinary} in ${opts.dir}`
   process.stdout.write(`${progress}\n`)
   appendFileSync(fd, `${new Date().toISOString()} stage=opencode-spawn-start ${progress}\n`)
+  writeLaneStage(opts.log, applyLanePriority(opts.priority))
   const childSpawnedAt = Date.now()
   try {
     child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames)
@@ -737,7 +787,7 @@ async function main() {
     consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason })
     terminateWindowsTree(child.pid)
     removeReadableLaneBrief(transientBriefDir)
-    rmSync(opts.brief, { force: true })
+    removeRunSnapshots(hostSnapshotDir, opts.runId)
     appendFileSync(fd, 'EXIT=1\n')
     process.stderr.write(`wt-lane: ${reason}\n`)
     return 1
@@ -751,7 +801,7 @@ async function main() {
     consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason })
     terminateWindowsTree(child.pid)
     removeReadableLaneBrief(transientBriefDir)
-    rmSync(opts.brief, { force: true })
+    removeRunSnapshots(hostSnapshotDir, opts.runId)
     appendFileSync(fd, 'EXIT=1\n')
     process.stderr.write(`wt-lane: ${reason}\n`)
     return 1
@@ -796,8 +846,8 @@ async function main() {
   }
   const cleanupBrief = () => {
     removeReadableLaneBrief(transientBriefDir)
-    if (opts.briefReceipt) rmSync(opts.brief, { force: true })
-    if (opts.briefCleanupDir && briefEvidence.path.startsWith(`${opts.briefCleanupDir}${path.sep}`)) rmSync(opts.briefCleanupDir, { recursive: true, force: true })
+    if (opts.briefReceipt) removeRunSnapshots(hostSnapshotDir, opts.runId)
+    if (opts.briefCleanupDir && briefEvidence.path.startsWith(`${opts.briefCleanupDir}${path.sep}`)) removeReadableLaneBrief(opts.briefCleanupDir)
   }
   let timer
   let graceTimer

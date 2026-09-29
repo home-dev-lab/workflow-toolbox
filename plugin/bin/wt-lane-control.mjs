@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { rmSync } from 'node:fs'
 import path from 'node:path'
 import { appendSupervisorJournal, classifyLane, readCurrentSupervision, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { laneHostDir } from './lib/host/lane-host-dir.mjs'
+import { removeRunSnapshots } from './lib/host/lane-attachments.mjs'
 import { legacySupervision } from './lib/lane-supervisor-core.mjs'
 
 function usage() {
@@ -55,7 +55,7 @@ function main() {
     journal({ event: 'decision', runId: state.runId, decision: 'abandon', source: 'owner', pid: state.childPid, worktree: state.worktree, owner: state.owner, reason: options.reason ?? null })
     const result = terminateLane(state, { source: 'control', journal, recordWorktree: options.dir, markTerminal: (stage) => writeJsonAtomic(stateFile, stage === 'terminal' ? abandoned : { ...state, state: 'terminating', decision: 'abandon', decisionSource: 'owner', decidedAt: abandoned.decidedAt }) })
     if (!result.killed && result.reason !== 'already-gone') { process.stderr.write(`wt-lane-control: refused: ${result.reason}\n`); return 1 }
-    rmSync(path.join(laneHostDir(options.dir), 'brief-snapshots', `${state.runId}.md`), { force: true })
+    removeRunSnapshots(path.join(laneHostDir(options.dir), 'brief-snapshots'), state.runId)
     process.stdout.write(`decision=abandon\nrun=${state.runId}\n`)
     return 0
   }

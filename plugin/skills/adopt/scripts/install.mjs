@@ -783,11 +783,36 @@ const { laneUnsandboxedAtStart, laneWritableForLaunch } = sandboxModule ?? { lan
   return import(pathToFileURL(integration).href)
 }`)
   adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { fileURLToPath, pathToFileURL } from 'node:url'")
-  const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
+  adopted = loadLauncherRuntimeLibs(adopted, src)
+  // ANY single- or double-quoted literal (or a template literal opening a call) that still starts with
+  // ./lib/ or ../lib/ (named, side-effect, dynamic or multi-line import; prose in comments is not a literal) would resolve next to the adopted copy, where no such directory exists.
+  const relativeRuntimeImport = adopted.match(/(?:['"]|\(\s*`)\.{1,2}\/lib\/[^'"`\n]*/)?.[0]
   if (relativeRuntimeImport) {
     fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)
   }
   return adopted
+}
+
+/** The launcher's own runtime helpers (attachments, priority) are loaded from the installed plugin root like
+ * the consent modules: an adopted copy has no `./lib/` neighbour. Each named export falls back to a function
+ * that throws the "older or incompatible plugin" refusal, so a plugin without a helper fails closed at use. */
+const LAUNCHER_RUNTIME_LIBS = ['lane-attachments', 'lane-priority']
+function loadLauncherRuntimeLibs(adopted, src) {
+  let out = adopted
+  const loaders = []
+  for (const [index, lib] of LAUNCHER_RUNTIME_LIBS.entries()) {
+    const line = new RegExp(`^import \\{([^}]*)\\} from '\\./lib/host/${lib}\\.mjs'\\n`, 'm')
+    const match = out.match(line)
+    if (!match) fail(`launcher transformation could not find the ${lib} import in ${src}`)
+    const names = match[1].split(',').map((name) => name.trim()).filter(Boolean)
+    out = out.replace(line, '')
+    loaders.push(`const runtimeLibPath${index} = root ? path.join(root, 'bin', 'lib', 'host', '${lib}.mjs') : null\nconst runtimeLib${index} = runtimeLibPath${index} ? await import(pathToFileURL(runtimeLibPath${index}).href).catch(() => null) : null\nconst { ${names.join(', ')} } = Object.fromEntries(${JSON.stringify(names)}.map((name) => [name, runtimeLib${index}?.[name] ?? unavailableRuntimeExport]))\n`)
+  }
+  const anchor = out.indexOf('\nconst { ensureLaneHostDir, ')
+  const insertAt = anchor < 0 ? -1 : out.indexOf('\n', anchor + 1) + 1
+  if (insertAt <= 0) fail(`launcher transformation could not place the runtime helper loaders in ${src}`)
+  const unavailable = "function unavailableRuntimeExport() { throw new Error('the installed workflow-toolbox plugin is unavailable, older or incompatible; update it and re-adopt wt-lane.mjs') }\n"
+  return `${out.slice(0, insertAt)}${unavailable}${loaders.join('')}${out.slice(insertAt)}`
 }
 
 /** Resolve the plugin root the adopted wt-lane launcher will use. This intentionally mirrors
@@ -818,7 +843,7 @@ function adoptedLauncherPluginRoot(env = process.env) {
  * this preflight. */
 function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
   const moduleByVariable = new Map()
-  for (const match of adopted.matchAll(/const\s+(\w+)\s*=\s*path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
+  for (const match of adopted.matchAll(/const\s+(\w+)\s*=\s*(?:root\s*\?\s*)?path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
     const segments = [...match[2].matchAll(/'([^']+)'/g)].map((segment) => segment[1])
     if (segments.length > 0) moduleByVariable.set(match[1], path.join(runtimeRoot, ...segments))
   }
