@@ -501,6 +501,24 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(f.root, 'loaded-sdk.txt'), 'utf8')).toBe('fixture-sdk')
   })
 
+  it('prints unavailable rather than zero for an assistant-only SDK stream', () => {
+    const f = fixture(); const install = join(f.root, 'safe-sdk')
+    const packageDir = join(install, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
+    symlinkSync(ZOD_ROOT, join(install, 'node_modules', 'zod'), 'dir')
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', main: 'index.mjs' }))
+    writeFileSync(join(packageDir, 'index.mjs'), [
+      `export const query = () => (async function* () { yield ${JSON.stringify(initMessage('sonnet'))}; yield { type: 'assistant', message: { id: 'one', model: 'sonnet', usage: { input_tokens: 7, output_tokens: 5 }, content: [] } } })()`,
+      'export const createSdkMcpServer = (options) => ({ type: "sdk", name: options.name, instance: {} })',
+      'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
+      encoding: 'utf8', timeout: 20_000, env: deterministicAdmissionEnv(f.root, sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_AGENT_SDK_PATH: join(packageDir, 'index.mjs'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') })),
+    })
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stdout).toMatch(/fresh=unavailable turns=unavailable report=false/)
+    expect(result.stdout).not.toMatch(/fresh=(?:undefined|NaN|0) turns=/)
+  })
+
   it('starts SDK resolution from an installed plugin using an external operator-selected SDK', () => {
     const f = fixture(); const sdkRoot = join(f.root, 'safe-sdk'); fakeSdk(sdkRoot, 'operator')
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
@@ -597,6 +615,8 @@ describe('SDK pilot runner', () => {
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed').models['claude-haiku-test']).toMatchObject({ input: 2, output: 1, fresh_tokens: 3 })
     const index = readFileSync(join(f.root, '.claude', 'reports', 'cost-index.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     expect(index).toEqual([expect.objectContaining({ run_id: expect.stringMatching(/^1-\d+$/), card: '1', route: 'LITE', usd_total: 'price unknown' })])
+    expect(index[0].coverage).toEqual(cost.coverage)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).cost).toEqual({ total_usd: null, coverage: cost.coverage })
     // One total per BILLED class (owner, wt-suite #2913): classes are priced differently, and OpenAI output already
     // contains reasoning, so a single summed "total" is both meaningless and a double count.
     for (const totals of [index[0].run_total, index[0].phase_totals.discovery]) {
@@ -987,6 +1007,135 @@ describe('SDK pilot runner', () => {
     expect(aborted).toBe(true)
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'timeout', partial: { phase: 'discovery', reason: 'timeout' } } })
     expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { phase: 'discovery', reason: 'timeout' } })
+  })
+
+  it('keeps a grace-aborted SDK exception as a timeout in both receipts and the rejection', async () => {
+    const f = fixture(); const timers: Array<() => void> = []; let ready = false
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => (async function* () {
+      yield initMessage(); await prompt.next()
+      await new Promise<void>((resolve) => { ready = true; options.abortController.signal.addEventListener('abort', () => resolve(), { once: true }) })
+      throw new Error('Claude Code process aborted by user')
+    })()
+    const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 1 }, {
+      query, resolvePilotModels: models, setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
+    })
+    while (!ready) await new Promise((resolve) => setTimeout(resolve, 1))
+    timers[0]!(); timers[1]!()
+    await expect(running).rejects.toThrow(/^timeout:.*Claude Code process aborted by user/)
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(summary).toMatchObject({ reason: 'timeout', sdk_stream_error: 'Claude Code process aborted by user', partial: { reason: 'timeout' } })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8'))).toMatchObject({ reason: 'timeout', sdk_stream_error: 'Claude Code process aborted by user' })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { reason: 'timeout' } })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8')).cost).toEqual(summary.cost)
+  })
+
+  it('retains an independent SDK error between timeout request and grace abort', async () => {
+    const f = fixture(); const timers: Array<() => void> = []; let ready = false; let release: (() => void) | undefined
+    const original = new Error('transport disconnected')
+    const query = () => (async function* () {
+      yield initMessage()
+      await new Promise<void>((resolve) => { ready = true; release = resolve })
+      throw original
+    })()
+    const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 1 }, {
+      query, resolvePilotModels: models, setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
+    })
+    while (!ready) await new Promise((resolve) => setTimeout(resolve, 1))
+    timers[0]!(); release!()
+    await expect(running).rejects.toBe(original)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))).toMatchObject({ reason: 'sdk stream error: transport disconnected', partial: { reason: 'sdk stream error: transport disconnected' } })
+  })
+
+  it.each([['no result', false, false], ['trailing assistant', true, true], ['covered assistant', true, false]] as const)(
+    'reports usage for %s without fabricating completed turns', async (_shape, hasResult, trailing) => {
+      const f = fixture()
+      const assistant = (id: string, input: number) => ({ type: 'assistant', message: { id, model: 'claude-opus-5', usage: { input_tokens: input, cache_creation_input_tokens: 3, output_tokens: 5 }, content: [] } })
+      const query = () => (async function* () {
+        yield initMessage('claude-opus-5')
+        yield assistant('first', 7)
+        if (hasResult) yield { type: 'result', usage: { input_tokens: 7, cache_creation_input_tokens: 3, output_tokens: 5 } }
+        if (trailing || !hasResult) yield assistant('second', 11)
+      })()
+      const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+      const unavailable = !hasResult || trailing
+      expect(summary.fresh_tokens).toBe(unavailable ? 'unavailable' : 15)
+      expect(summary.turns).toBe(unavailable ? 'unavailable' : 1)
+      const usage = JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8'))
+      expect(usage.fresh_tokens).toBe(summary.fresh_tokens)
+      if (unavailable) {
+        expect(summary.turns_completed).toBe(hasResult ? 1 : 0)
+        expect(summary.fresh_tokens_lower_bound).toBe(trailing || !hasResult ? 34 : 15)
+        expect(summary.fresh_tokens_source).toMatch(/lower bound.*assistant.*output.*undercount/i)
+      } else expect(summary.fresh_tokens_lower_bound ?? null).toBeNull()
+    },
+  )
+
+  it('keeps a repeated message id in its original completed turn even with tied timestamps', async () => {
+    const f = fixture()
+    const assistant = (output: number) => ({ type: 'assistant', message: { id: 'repeat', model: 'claude-opus-5', usage: { input_tokens: 7, output_tokens: output }, content: [] } })
+    const query = () => (async function* () {
+      yield initMessage('claude-opus-5')
+      yield assistant(4)
+      yield { type: 'result', usage: { input_tokens: 7, output_tokens: 5 } }
+      yield assistant(5)
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+    expect(summary).toMatchObject({ fresh_tokens: 12, turns: 1 })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8')).messages).toHaveLength(1)
+  })
+
+  it('treats new usage for an already-closed message id as an unclosed turn', async () => {
+    const f = fixture()
+    const assistant = (output: number) => ({ type: 'assistant', message: { id: 'repeat', model: 'claude-opus-5', usage: { input_tokens: 7, output_tokens: output }, content: [] } })
+    const query = () => (async function* () {
+      yield initMessage('claude-opus-5')
+      yield assistant(4)
+      yield { type: 'result', usage: { input_tokens: 7, output_tokens: 5 } }
+      yield assistant(50)
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+    expect(summary).toMatchObject({ fresh_tokens: 'unavailable', turns: 'unavailable', turns_completed: 1, fresh_tokens_lower_bound: 57 })
+  })
+
+  it('names a completed tool call even when it took zero milliseconds', async () => {
+    const f = fixture()
+    const query = () => (async function* () {
+      yield initMessage()
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'instant', name: 'Read', input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'instant', content: '' }] } }
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+    expect(summary.longest_tool_call).toMatchObject({ tool: 'Read', tool_use_id: 'instant', ms: 0 })
+  })
+
+  it('identifies the longest completed lifecycle call and an unfinished call at run end', async () => {
+    const f = fixture(); let clock = 1000
+    const tool = lifecycleToolName('run')
+    const query = () => (async function* () {
+      yield initMessage()
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'short', name: 'Read', input: {} }] } }
+      clock += 100
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'short', content: '' }] } }
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'long', name: tool, input: { kind: 'lane', name: 'harden' } }] } }
+      clock += 4_340_264
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'long', content: '' }] } }
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'open', name: tool, input: { kind: 'lane', name: 'harden' } }] } }
+      clock += 200
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => clock })
+    expect(summary.longest_tool_call_ms).toBe(4_340_264)
+    expect(summary.longest_tool_call).toMatchObject({ ms: 4_340_264, tool, tool_use_id: 'long', kind: 'lane', name: 'harden', phase: 'discovery', started_at: new Date(1100).toISOString(), ended_at: new Date(4_341_364).toISOString() })
+    expect(summary.unfinished_tool_calls).toEqual([expect.objectContaining({ tool, tool_use_id: 'open', ms: 200, started_at: new Date(4_341_364).toISOString() })])
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8')).unfinished_tool_calls).toEqual(summary.unfinished_tool_calls)
+  })
+
+  it('reconciles declared budget with measured elapsed time and boundary grace', async () => {
+    const f = fixture(); let clock = 0
+    const query = () => (async function* () { yield initMessage(); clock = 22_205_078 })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 21_600 }, { query, resolvePilotModels: models, now: () => clock })
+    expect(summary.budget).toMatchObject({ declared_seconds: 21_600, boundary_grace_seconds: 600, actual_seconds: 22_205.078 })
+    expect(summary.budget.delta_seconds).toBeCloseTo(605.078, 3)
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8')).budget.delta_seconds).toBeCloseTo(605.078, 3)
   })
 
   it('refuses a report when any measured run-cost block disagrees with the receipt', () => {

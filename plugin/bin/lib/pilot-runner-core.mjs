@@ -274,6 +274,7 @@ function appendCostIndex({ archiveRoot, runId, card, route, cost, started, ended
       card: String(card),
       route,
       ...indexedCostTotals(cost),
+      coverage: cost.coverage,
       started_at: new Date(started).toISOString(),
       ended_at: new Date(ended).toISOString(),
       archive_path: archive ?? null,
@@ -383,6 +384,76 @@ function bindingNotice(disputes) {
   return disputes.map((dispute) => ` Binding decision on DoD ${dispute.criterion} (${dispute.resolution.source}, runner-owned): ${dispute.resolution.reading}; ${dispute.resolution.criticRule ?? ''}`).join('')
 }
 
+function classifyStreamFailure(error, { timeoutBoundary, graceAborted, initReceiptSeen, incompleteReason }) {
+  if (timeoutBoundary) return { streamError: null, incompleteReason, sdkStreamError: null }
+  const detail = error instanceof Error ? error.message : String(error)
+  if (graceAborted) return { streamError: new Error(`timeout: ${detail}`, { cause: error }), incompleteReason: 'timeout', sdkStreamError: detail }
+  return { streamError: error, incompleteReason: initReceiptSeen ? `sdk stream error: ${detail}` : incompleteReason, sdkStreamError: null }
+}
+
+function usageEvidence(messages, totals, completedTurns, unclosedTurn) {
+  const freshTokens = totals.input + totals.cache_creation + totals.output
+  if (!unclosedTurn) return { fresh_tokens: freshTokens, turns: completedTurns }
+  return {
+    fresh_tokens: 'unavailable', turns: 'unavailable', turns_completed: completedTurns,
+    fresh_tokens_lower_bound: messages.reduce((sum, message) => sum + message.input + message.cache_creation + message.output, 0),
+    fresh_tokens_source: 'Lower bound from recorded assistant message usage; per-message output can undercount the terminal SDK result, so completed-turn fresh tokens are unavailable.',
+  }
+}
+
+const USAGE_FIELDS = ['input', 'cache_creation', 'cache_read', 'output']
+
+// One assistant message is streamed once per content block with the same id and usage: a repeat replaces the
+// recorded usage (keeping the first arrival time), it never adds to it. Returns whether the stream brought usage
+// evidence no SDK result has covered yet: a new message, or a repeat whose changed usage takes the recorded message
+// sum past the result totals.
+function recordAssistantUsage(messages, record, messageId, totals) {
+  const previous = messageId ? messages.findIndex((entry) => entry.message_id === messageId) : -1
+  if (previous < 0) {
+    messages.push(messageId ? { ...record, message_id: messageId } : record)
+    return true
+  }
+  const changed = USAGE_FIELDS.some((field) => messages[previous][field] !== record[field])
+  messages[previous] = { ...record, message_id: messageId, arrived_at: messages[previous].arrived_at }
+  return changed && USAGE_FIELDS.some((field) => messages.reduce((sum, message) => sum + message[field], 0) > totals[field])
+}
+
+function toolCallStart(item, started, state) {
+  const call = { tool: item.name, tool_use_id: item.id, started_at: new Date(started).toISOString(), started_ms: started }
+  if (item.name === lifecycleToolName('run')) {
+    if (item.input?.kind !== undefined) call.kind = item.input.kind
+    if (item.input?.name !== undefined) call.name = item.input.name
+    const lifecycleState = state()
+    call.phase = lifecycleState.phase
+    if (lifecycleState.round !== undefined) call.round = lifecycleState.round
+  }
+  return call
+}
+
+function toolCallReceipt(call, ended) {
+  const { started_ms: startedMs, ...identity } = call
+  return { ...identity, ms: ended - startedMs, ended_at: new Date(ended).toISOString() }
+}
+
+function longerToolCall(current, receipt) {
+  return current === null || receipt.ms > current.ms ? receipt : current
+}
+
+function toolCallFields(longestToolCall, startedTools, ended) {
+  const unfinished = [...startedTools.values()].map((call) => { const { started_ms: startedMs, ...identity } = call; return { ...identity, ms: ended - startedMs } })
+  return { longest_tool_call_ms: longestToolCall?.ms ?? 0, longest_tool_call: longestToolCall, unfinished_tool_calls: unfinished }
+}
+
+function summaryCost(cost) {
+  const total = cost.totals === 'unknown' ? null : cost.totals?.usd
+  return { total_usd: typeof total === 'number' ? total : null, coverage: cost.coverage }
+}
+
+function budgetReceipt(started, ended, declared) {
+  const actual = (ended - started) / 1000
+  return { declared_seconds: declared, boundary_grace_seconds: TIMEOUT_BOUNDARY_GRACE_MS / 1000, actual_seconds: actual, delta_seconds: Math.round((actual - declared) * 1000) / 1000 }
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
@@ -448,8 +519,11 @@ export async function runPilot(options, dependencies) {
   let acceptedLifecycleResults = 0
   let acceptedAtLastContinuation = 0
   let incompleteReason = null
-  let longestToolCallMs = 0
+  let longestToolCall = null
   const startedTools = new Map()
+  let streamIndex = 0
+  let lastAssistantUsageIndex = -1
+  let lastResultIndex = -1
   const lifecycleCalls = new Map()
   let awaitingFidelityReceipt = false
   let initReceiptSeen = false
@@ -457,7 +531,9 @@ export async function runPilot(options, dependencies) {
   let servedModelFirstTurn
   let firstAssistantSeen = false
   let streamError = null
+  let sdkStreamError = null
   let timeoutBoundary = null
+  let graceAborted = false
   const pluginRoot = resolve(MODULE_DIR, '../..')
   const configuredPlugins = options.pluginDirs ?? []
   const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, loadedCodePaths: dependencies.loadedCodePaths, adapterOptions: { log } })
@@ -484,7 +560,7 @@ export async function runPilot(options, dependencies) {
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
   const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
-  const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: totals.input + totals.cache_creation + totals.output, tool_names: [...new Set(tools)] })
+  const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: usageEvidence(messages, totals, turns.length, lastAssistantUsageIndex > lastResultIndex).fresh_tokens, tool_names: [...new Set(tools)] })
   const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)
   const timeoutTimer = setTimer(() => {
     if (lifecycleServer.requestStop('timeout')) {
@@ -493,6 +569,7 @@ export async function runPilot(options, dependencies) {
       timeoutGraceTimer = setTimer(() => {
         if (!timeoutBoundary) {
           log('timeout boundary grace elapsed; aborting the SDK run')
+          graceAborted = true
           abortController.abort()
         }
       }, TIMEOUT_BOUNDARY_GRACE_MS)
@@ -569,6 +646,7 @@ export async function runPilot(options, dependencies) {
     }, sdkRole)
     const stream = query({ prompt: prompt(), options: queryOptions })
     for await (const message of stream) {
+      streamIndex += 1
       modelTracker.observe(message)
       transcript.push(message)
       // An account-level rate-limit notice can precede init; it carries no model output and is not "another message first".
@@ -586,13 +664,9 @@ export async function runPilot(options, dependencies) {
       servedModelFirstTurn = message.message?.model
     }
     if (message.type === 'assistant' && message.message?.usage) {
-      // One assistant message is streamed once per content block with the same id and usage: a repeat replaces the
-      // recorded usage (keeping the first arrival time), it never adds to it.
       const record = { ...usageOf(message.message), model: message.message.model ?? servedModelFirstTurn ?? servedModel ?? model.value, arrived_at: new Date(now()).toISOString() }
       const messageId = message.message.id
-      const previous = messageId ? messages.findIndex((entry) => entry.message_id === messageId) : -1
-       if (previous >= 0) messages[previous] = { ...record, message_id: messageId, arrived_at: messages[previous].arrived_at }
-       else messages.push(messageId ? { ...record, message_id: messageId } : record)
+      if (recordAssistantUsage(messages, record, messageId, totals)) lastAssistantUsageIndex = streamIndex
        persistUsage()
     }
     const content = message.message?.content
@@ -600,11 +674,12 @@ export async function runPilot(options, dependencies) {
         if (item.type === 'tool_use') {
         tools.push(item.name)
         turnTools.push(item.name)
-          if (item.id) startedTools.set(item.id, now())
+           if (item.id) startedTools.set(item.id, toolCallStart(item, now(), () => lifecycleServer.state()))
           if (item.id && ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).includes(item.name)) lifecycleCalls.set(item.id, item.name)
       }
         if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) {
-        longestToolCallMs = Math.max(longestToolCallMs, now() - startedTools.get(item.tool_use_id))
+        const receipt = toolCallReceipt(startedTools.get(item.tool_use_id), now())
+        longestToolCall = longerToolCall(longestToolCall, receipt)
         startedTools.delete(item.tool_use_id)
         }
         if (item.type === 'tool_result' && lifecycleCalls.has(item.tool_use_id)) {
@@ -617,6 +692,7 @@ export async function runPilot(options, dependencies) {
         }
     }
     if (message.type === 'result') {
+       lastResultIndex = streamIndex
       const usage = usageOf(message)
       addModelUsage(modelUsage, message.modelUsage)
       turns.push({ ...usage, model: servedModelFirstTurn ?? servedModel ?? model.value, ended_at: new Date(now()).toISOString(), tool_names: [...new Set(turnTools)] })
@@ -627,10 +703,10 @@ export async function runPilot(options, dependencies) {
     }
     if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   } catch (error) {
-    if (!timeoutBoundary) {
-      streamError = error
-      if (initReceiptSeen) incompleteReason = `sdk stream error: ${error instanceof Error ? error.message : String(error)}`
-    }
+    const failure = classifyStreamFailure(error, { timeoutBoundary, graceAborted, initReceiptSeen, incompleteReason })
+    streamError = failure.streamError
+    sdkStreamError = failure.sdkStreamError
+    incompleteReason = failure.incompleteReason
   } finally {
     for (const warning of modelWarnings(modelTracker.result(), { name: 'pilot' })) log(warning)
     clearTimer(timeoutTimer)
@@ -638,8 +714,7 @@ export async function runPilot(options, dependencies) {
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
-  const freshTokens = totals.input + totals.cache_creation + totals.output
-  const usage = currentUsage()
+   const usage = currentUsage()
   const completedNormally = awaitingFidelityReceipt && exists(report)
   let finalizationError = null
   if (!completedNormally) {
@@ -650,7 +725,7 @@ export async function runPilot(options, dependencies) {
   const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
-  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }, executorProfile.executor), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+   const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, ...usageEvidence(messages, totals, turns.length, lastAssistantUsageIndex > lastResultIndex), injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, ...toolCallFields(longestToolCall, startedTools, ended), budget: budgetReceipt(started, ended, options.timeout), sdk_stream_error: sdkStreamError, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }, executorProfile.executor), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
@@ -661,9 +736,11 @@ export async function runPilot(options, dependencies) {
   } catch (error) {
     cost = unknownRunCost({ route: options.hard ? 'HARD' : routing.route, worktree: options.dir, reason: `cost computation failed: ${error instanceof Error ? error.message : String(error)}` })
   }
+  summary.cost = summaryCost(cost)
   try {
     const costContent = `${JSON.stringify(cost, null, 2)}\n`
     writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
+    writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
     let costReport = null
     if (exists(report)) {
       const reportContent = `${readFile(report, 'utf8').trimEnd()}\n\nvariant=${modelVariant.value} origin=${modelVariant.origin} forced=false\n`
