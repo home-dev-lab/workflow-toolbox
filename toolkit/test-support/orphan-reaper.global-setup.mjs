@@ -29,8 +29,8 @@ export default function setup(project) {
   project.provide('wtTestWorkerRegistry', registry)
   const watchdog = process.env.WT_TEST_ORPHAN_REAPER_WATCHDOG === '0' ? undefined : launchWatchdog(tag, registry)
   return () => {
-    const { supported, killed, errors } = reapTagged(tag, { exclude: watchdog?.pid ? [watchdog.pid] : [] })
-    if (!supported) process.stderr.write(`orphan reaper: process enumeration unavailable on ${process.platform}; test orphans are not reaped\n`)
+    const { supported, killed, errors, reason } = reapTagged(tag, { exclude: watchdog?.pid ? [watchdog.pid] : [] })
+    if (!supported) process.stderr.write(`orphan reaper: ${reason}; test orphans are not reaped\n`)
     if (killed.length) process.stderr.write(`orphan reaper: killed ${killed.length} test orphans (pids: ${killed.join(', ')})\n`)
     if (errors.length) process.stderr.write(`orphan reaper: cleanup errors: ${errors.map(({ pid, code }) => `${pid}: ${code}`).join(', ')}\n`)
   }

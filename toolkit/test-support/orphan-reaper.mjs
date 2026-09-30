@@ -10,19 +10,27 @@ export function listTaggedPids(tag, { platform = process.platform, procRoot = '/
   if (platform === 'linux') {
     const pids = []
     let entries
-    try { entries = readdirSync(procRoot) } catch { return { supported: false, pids } }
+    let unreadable = 0
+    try { entries = readdirSync(procRoot) } catch (error) { return { supported: false, pids, reason: `cannot list ${procRoot}: ${error.code ?? error.message}` } }
     for (const entry of entries) {
       if (!/^[0-9]+$/.test(entry)) continue
       try {
         if (readFileSync(join(procRoot, entry, 'environ'), 'utf8').split('\0').includes(token)) pids.push(Number(entry))
-      } catch { /* A process may exit or deny access during the scan. */ }
+      } catch (error) {
+        // A process that exits (ENOENT, ESRCH) or belongs to another user (EACCES) during the scan
+        // is expected; anything else is counted so the caller can report an incomplete sweep.
+        if (!['ENOENT', 'ESRCH', 'EACCES'].includes(error.code)) unreadable++
+      }
     }
-    return { supported: true, pids }
+    return { supported: true, pids, unreadable }
   }
   if (platform === 'darwin') {
     let output
     try { output = runPs ? runPs() : execFileSync('ps', ['-wwEax', '-o', 'pid=,command='], { encoding: 'utf8' }) }
-    catch { return { supported: false, pids: [] } }
+    catch (error) {
+      const reason = error.code === 'ENOBUFS' ? 'ps output exceeded its buffer' : `ps failed: ${error.code ?? error.message}`
+      return { supported: false, pids: [], reason }
+    }
     const pids = []
     for (const line of output.split('\n')) {
       const match = /^\s*(\d+)\s+(.+)$/.exec(line)
@@ -30,7 +38,7 @@ export function listTaggedPids(tag, { platform = process.platform, procRoot = '/
     }
     return { supported: true, pids }
   }
-  return { supported: false, pids: [] }
+  return { supported: false, pids: [], reason: `process enumeration unavailable on ${platform}` }
 }
 
 export function reapTagged(tag, { exclude = [], kill = (pid) => process.kill(pid, 'SIGKILL'), ...listOptions } = {}) {
@@ -38,8 +46,9 @@ export function reapTagged(tag, { exclude = [], kill = (pid) => process.kill(pid
   const killed = []
   const errors = []
   for (let round = 0; round < 5; round++) {
-    const { supported, pids } = listTaggedPids(tag, listOptions)
-    if (!supported) return { supported, killed, errors }
+    const { supported, pids, reason, unreadable = 0 } = listTaggedPids(tag, listOptions)
+    if (!supported) return { supported, killed, errors, reason }
+    if (unreadable) errors.push({ pid: 'scan', code: `${unreadable} unreadable environ` })
     const targets = pids.filter((pid) => !skipped.has(pid))
     if (!targets.length) return { supported, killed, errors }
     for (const pid of targets) {
@@ -55,11 +64,26 @@ export function reapTagged(tag, { exclude = [], kill = (pid) => process.kill(pid
   return { supported: true, killed, errors }
 }
 
-export function linuxStartTime(pid) {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
-  } catch { return undefined }
+// /proc/<pid>/stat field 2 is the command name in parentheses and may itself contain spaces and
+// parentheses, so fields are counted from the LAST ')': state is field 3, starttime field 22.
+export function parseStatFields(stat) {
+  const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+  return { state: fields[0], startTime: fields[19] }
+}
+
+export function linuxStartTime(pid, { readStat = (target) => readFileSync(`/proc/${target}/stat`, 'utf8') } = {}) {
+  try { return parseStatFields(readStat(pid)).startTime } catch { return undefined }
+}
+
+// Only a vanished process (ESRCH, ENOENT), a zombie, or a different start time means the watched
+// parent is gone. Any other failure to read it leaves it alive: reaping a live run is the worse error.
+export function parentGone(pid, startTime, { platform = process.platform, probe = (target) => process.kill(target, 0), readStat = (target) => readFileSync(`/proc/${target}/stat`, 'utf8') } = {}) {
+  try { probe(pid) } catch (error) { if (error.code === 'ESRCH') return true }
+  if (platform !== 'linux' || startTime === undefined) return false
+  let stat
+  try { stat = readStat(pid) } catch (error) { return error.code === 'ENOENT' || error.code === 'ESRCH' }
+  const { state, startTime: current } = parseStatFields(stat)
+  return state === 'Z' || current !== startTime
 }
 
 // Start time guards against pid reuse between registration and this check. Node offers no
@@ -106,18 +130,7 @@ if (process.argv[1] === import.meta.filename && process.argv[2] === '--watch') {
   if (!Number.isSafeInteger(pid) || pid < 1 || !/^[0-9a-f-]{36}$/.test(tag ?? '') || !registry) throw new Error('invalid watchdog arguments')
   const startTime = process.platform === 'linux' ? linuxStartTime(pid) : undefined
   const poll = setInterval(() => {
-    let alive = true
-    try { process.kill(pid, 0) } catch (error) { if (error.code === 'ESRCH') alive = false }
-    if (alive && process.platform === 'linux' && startTime !== undefined) {
-      if (linuxStartTime(pid) !== startTime) alive = false
-      else {
-        try {
-          const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
-          if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ')) alive = false
-        } catch { alive = false }
-      }
-    }
-    if (!alive) {
+    if (parentGone(pid, startTime)) {
       clearInterval(poll)
       const errors = onParentDeath({ tag, registry })
       if (errors.length) process.stderr.write(`orphan reaper: cleanup errors: ${errors.map((error) => `${error.step ?? error.pid}: ${error.code}`).join(', ')}\n`)

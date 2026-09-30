@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
-import { listTaggedPids, onParentDeath, reapRegisteredWorkers, reapTagged, RUN_TAG_ENV } from '../../../test-support/orphan-reaper.mjs'
+import { linuxStartTime, listTaggedPids, onParentDeath, parentGone, parseStatFields, reapRegisteredWorkers, reapTagged, RUN_TAG_ENV } from '../../../test-support/orphan-reaper.mjs'
 // @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
 import { launchWatchdog } from '../../../test-support/orphan-reaper.global-setup.mjs'
 
@@ -146,10 +146,10 @@ describe.skipIf(process.platform === 'win32')('orphan reaper (Windows has no pro
       mkdirSync(join(root, String(pid)))
       writeFileSync(join(root, String(pid), 'environ'), `OTHER=yes\0${value}\0`)
     }
-    expect(listTaggedPids(tag, { platform: 'linux', procRoot: root })).toEqual({ supported: true, pids: [101] })
+    expect(listTaggedPids(tag, { platform: 'linux', procRoot: root })).toEqual({ supported: true, pids: [101], unreadable: 0 })
     const runPs = () => ` 101 node -e code ${RUN_TAG_ENV}=${tag} OTHER=yes\n 102 node ${RUN_TAG_ENV}=${tag}x\n 103 node ${RUN_TAG_ENV}=${randomUUID()}\n`
     expect(listTaggedPids(tag, { platform: 'darwin', runPs })).toEqual({ supported: true, pids: [101] })
-    expect(listTaggedPids(tag, { platform: 'win32' })).toEqual({ supported: false, pids: [] })
+    expect(listTaggedPids(tag, { platform: 'win32' })).toEqual({ supported: false, pids: [], reason: 'process enumeration unavailable on win32' })
     expect(() => listTaggedPids('')).toThrow()
     expect(() => listTaggedPids(`${tag}x`)).toThrow()
   })
@@ -158,13 +158,12 @@ describe.skipIf(process.platform === 'win32')('orphan reaper (Windows has no pro
     expect(listTaggedPids(randomUUID(), {
       platform: 'darwin',
       runPs: () => { throw new Error('ps failed') },
-    })).toEqual({ supported: false, pids: [] })
+    })).toEqual({ supported: false, pids: [], reason: 'ps failed: ps failed' })
   })
 
   it('kills only the child with the target tag', async () => {
     const tag = randomUUID()
-    // A subprocess outside the Vitest worker sets T: the worker wrapper correctly
-    // forces its own run tag onto direct children even when they pass an explicit env.
+    // A separate launcher sets tag T explicitly, so this test does not depend on the worker's own run tag.
     const launcher = spawnSync(process.execPath, ['-e', `const { spawn } = require('node:child_process');
       const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
         detached: true, stdio: 'ignore', env: Object.assign({}, process.env, { WT_TEST_RUN_TAG: process.argv[1] }),
@@ -275,5 +274,55 @@ describe.skipIf(process.platform === 'win32')('orphan reaper (Windows has no pro
       reapRegisteredWorkers(registry, { platform, startTimeOf: () => startTime, kill: (pid: number) => { killed.push(pid) } })
       expect({ platform, startTime, killed }).toEqual({ platform, startTime, killed: expected })
     }
+  })
+
+  it('reads state and start time after the LAST parenthesis of a stat line', () => {
+    const after = ['S', ...Array.from({ length: 18 }, (_, index) => String(index + 1)), '987654', '7', '8']
+    expect(parseStatFields(`4242 (a) b (c) ${after.join(' ')}`)).toEqual({ state: 'S', startTime: '987654' })
+  })
+
+  it.skipIf(process.platform !== 'linux')('reads the real start time of live processes, whose command name holds spaces and parentheses', async () => {
+    const first = spawn(process.execPath, ['-e', 'process.title = "a) b (c"; setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+    let second: ReturnType<typeof spawn> | undefined
+    try {
+      await waitFor(() => { try { return readFileSync(`/proc/${first.pid}/comm`, 'utf8').includes(')') } catch { return false } }, 5000, 'renamed first child')
+      second = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+      await waitFor(() => linuxStartTime(second!.pid) !== undefined, 5000, 'second child stat')
+      const a = linuxStartTime(first.pid)
+      const b = linuxStartTime(second.pid)
+      expect(a).toMatch(/^\d+$/)
+      expect(b).toMatch(/^\d+$/)
+      expect(Number(b)).toBeGreaterThan(Number(a))
+      const ticks = Number(spawnSync('getconf', ['CLK_TCK'], { encoding: 'utf8' }).stdout.trim())
+      const uptime = Number(readFileSync('/proc/uptime', 'utf8').split(' ')[0])
+      expect(Math.abs(Number(a) / ticks - uptime)).toBeLessThan(60)
+    } finally {
+      killIfAlive(first.pid)
+      killIfAlive(second?.pid)
+    }
+  })
+
+  it('treats only a vanished, zombie or replaced parent as gone', () => {
+    const stat = (state: string, start: string) => `9 (node) ${[state, ...Array.from({ length: 18 }, () => '0'), start].join(' ')}`
+    const fail = (code: string) => () => { throw Object.assign(new Error(code), { code }) }
+    const live = { platform: 'linux', probe: () => true }
+    expect(parentGone(9, '100', { ...live, readStat: () => stat('S', '100') })).toBe(false)
+    expect(parentGone(9, '100', { ...live, readStat: fail('EACCES') })).toBe(false)
+    expect(parentGone(9, '100', { ...live, readStat: fail('EIO') })).toBe(false)
+    expect(parentGone(9, '100', { ...live, readStat: fail('ENOENT') })).toBe(true)
+    expect(parentGone(9, '100', { ...live, readStat: () => stat('Z', '100') })).toBe(true)
+    expect(parentGone(9, '100', { ...live, readStat: () => stat('S', '200') })).toBe(true)
+    expect(parentGone(9, '100', { platform: 'linux', probe: fail('ESRCH'), readStat: () => stat('S', '100') })).toBe(true)
+    expect(parentGone(9, '100', { platform: 'linux', probe: fail('EPERM'), readStat: () => stat('S', '100') })).toBe(false)
+  })
+
+  it('names a ps buffer overflow and counts unexpected environ read errors', () => {
+    const tag = randomUUID()
+    const overflow = () => { throw Object.assign(new Error('stdout maxBuffer length exceeded'), { code: 'ENOBUFS' }) }
+    expect(listTaggedPids(tag, { platform: 'darwin', runPs: overflow })).toEqual({ supported: false, pids: [], reason: 'ps output exceeded its buffer' })
+    const root = tempRoot()
+    mkdirSync(join(root, '101', 'environ'), { recursive: true })
+    expect(listTaggedPids(tag, { platform: 'linux', procRoot: root })).toEqual({ supported: true, pids: [], unreadable: 1 })
+    expect(reapTagged(tag, { platform: 'linux', procRoot: root }).errors).toEqual([{ pid: 'scan', code: '1 unreadable environ' }])
   })
 })
