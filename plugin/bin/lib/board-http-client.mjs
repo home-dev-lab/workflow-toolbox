@@ -70,10 +70,16 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
         body: JSON.stringify(body),
       })
     } catch (error) {
+      // An adapter may already reject with a BoardUnavailable: keep it (status, single prefix), mark it.
+      if (error instanceof BoardUnavailable) { error.transport = true; throw error }
       throw transportFailure(error instanceof Error ? error.message : String(error))
     }
     if (!response?.ok) throw transportFailure(`HTTP ${response?.status ?? 'unknown'}`, response?.status)
-    sessionId = response.headers?.get?.('mcp-session-id') ?? sessionId
+    try {
+      sessionId = response.headers?.get?.('mcp-session-id') ?? sessionId
+    } catch (error) {
+      throw transportFailure(error instanceof Error ? error.message : String(error))
+    }
     return response
   }
   async function rpc(method, params = {}) {
