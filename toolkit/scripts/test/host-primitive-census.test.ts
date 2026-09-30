@@ -120,7 +120,8 @@ describe('raw host primitive quality ratchet', () => {
     // and the home directory through bin/lib/host, and the parser's separators are shell syntax.
     // The plugin-root classifier (plugin-root-state.mjs) adds one; its home-directory read goes
     // through bin/lib/host.
-    expect(result.perimeterFiles).toBe(253)
+    // The shipped Depends-on parser (depends-on-parser.mjs) adds one pure module with no host operation.
+    expect(result.perimeterFiles).toBe(254)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

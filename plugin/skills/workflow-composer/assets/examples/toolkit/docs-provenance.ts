@@ -1063,6 +1063,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-actionable-gate-hook.mjs',
       'plugin/bin/wt-actionable-snapshot-producer-hook.mjs',
       'plugin/bin/wt-actionable-snapshot-refresh.mjs',
+      // The shipped Depends-on convention the producer falls back to; its rules are documented there.
+      'plugin/bin/lib/depends-on-parser.mjs',
       'plugin/bin/wt-registry-heartbeat-hook.mjs',
       'plugin/bin/wt-session-start-registry-hook.mjs',
       'plugin/bin/wt-spawn-registry-scan.mjs',

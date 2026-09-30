@@ -525,7 +525,7 @@ describe('wt-actionable-gate-hook', () => {
     // The printed command must run as-is in a shell where CLAUDE_PLUGIN_ROOT is empty (the main session's): an
     // absolute path to a file that exists, never an unexpanded variable.
     const refresh = join(REPO_ROOT, 'plugin', 'bin', 'wt-actionable-snapshot-refresh.mjs')
-    expect(blockText(first)).toContain(`Run exactly: node "${refresh}"`)
+    expect(blockText(first)).toContain(`or run exactly: node "${refresh}"`)
     expect(blockText(first)).not.toContain('${CLAUDE_PLUGIN_ROOT}')
     expect(blockText(first)).toContain('Block 1 of 1')
     expect(second.code).toBe(0)
@@ -629,7 +629,7 @@ describe('wt-actionable-gate-hook', () => {
     })
   })
 
-  it('names a fresh failed producer heartbeat and says to check the tracker', () => {
+  it('names a fresh failed producer heartbeat with the refresh remedy', () => {
     const boardUnreachable = scaffold('board-unreachable')
     writeSnapshot(boardUnreachable.stateDir, boardUnreachable.cwd, {
       at: Date.now() - (2 * 60 * 60 * 1000 + 1),
@@ -647,11 +647,11 @@ describe('wt-actionable-gate-hook', () => {
     })
     const unreachable = runHook(boardUnreachable.payload, boardUnreachable.env)
     expect(unreachable.code).toBe(0)
-    expect(blockText(unreachable)).toContain('could not read the board')
-    expect(blockText(unreachable)).toContain('check the tracker')
+    expect(blockText(unreachable)).toContain('(unreachable)')
+    expect(blockText(unreachable)).toContain('refresh the board snapshot')
   })
 
-  it('names a fresh first-read producer failure as a tracker problem, not an unwired producer', () => {
+  it('names a fresh first-read producer failure with a refresh remedy, not an unwired producer', () => {
     const firstReadFailure = scaffold('first-read-failure')
     writeProjectState(firstReadFailure.stateDir, firstReadFailure.cwd, {
       optedIn: true,
@@ -662,11 +662,12 @@ describe('wt-actionable-gate-hook', () => {
     const result = runHook(firstReadFailure.payload, firstReadFailure.env)
 
     expect(result.code).toBe(0)
-    expect(blockText(result)).toContain('could not read the board')
+    expect(blockText(result)).toContain('(unreachable)')
+    expect(blockText(result)).toContain('refresh the board snapshot')
     expect(blockText(result)).not.toContain('wire the producer')
   })
 
-  it('names a fresh unavailable producer heartbeat as a tracker problem, not stale lag', () => {
+  it('names a fresh unavailable producer heartbeat with a refresh remedy, not stale lag', () => {
     const unavailable = scaffold('fresh-unavailable')
     writeSnapshot(unavailable.stateDir, unavailable.cwd, {
       at: Date.now() - (2 * 60 * 60 * 1000 + 1),
@@ -686,7 +687,8 @@ describe('wt-actionable-gate-hook', () => {
     const result = runHook(unavailable.payload, unavailable.env)
 
     expect(result.code).toBe(0)
-    expect(blockText(result)).toContain('check the tracker')
+    expect(blockText(result)).toContain('(unavailable)')
+    expect(blockText(result)).toContain('refresh the board snapshot')
     expect(blockText(result)).not.toContain('heartbeat is stale')
   })
 
@@ -704,7 +706,83 @@ describe('wt-actionable-gate-hook', () => {
     const result = runHook(payload, env)
     expect(result.code).toBe(0)
     expect(blockText(result)).toContain('cannot be distinguished')
-    expect(blockText(result)).toContain('check the tracker')
+    expect(blockText(result)).toContain('refresh the board snapshot')
+    expect(blockText(result)).not.toContain('heartbeat is stale')
+  })
+
+  it('F8: a fresh heartbeat still reading says the board read did not finish, not that the heartbeat is stale', () => {
+    const { env, payload, stateDir, cwd } = scaffold('unfinished-read')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() - (2 * 60 * 60 * 1000 + 1),
+      actionable: 0,
+      next: '',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'reading' })
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('a board read started and did not finish')
+    expect(text).toContain('refresh the board snapshot')
+    expect(text).not.toContain('heartbeat is stale')
+    expect(text.split('\n')).toHaveLength(1)
+  })
+
+  it('F3: the refresh remedy names the portable unfiltered board read before the command, in one sentence', () => {
+    const { env, payload, stateDir, cwd } = scaffold('portable-remedy')
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unreachable', lastReason: 'partial-payload' })
+    const text = blockText(runHook(payload, env))
+    const portable = text.indexOf('read the whole board once with an unfiltered get_board with cardsSummary off')
+    const command = text.indexOf('wt-actionable-snapshot-refresh.mjs')
+    expect(portable).toBeGreaterThan(-1)
+    expect(command).toBeGreaterThan(portable)
+    expect(text.split('wt-actionable-snapshot-refresh.mjs')).toHaveLength(2)
+    expect(text.split('\n')).toHaveLength(1)
+  })
+
+  it('C2: a producer failure newer than a fresh positive snapshot keeps the count and names the failure and its remedy', () => {
+    const { env, payload, stateDir, cwd } = scaffold('newer-failure')
+    const at = Date.now() - 10 * 60_000
+    writeSnapshot(stateDir, cwd, { at, actionable: 2, next: 'Ready', workPossible: true, reason: '', blockedUntil: null, inFlightUntil: null })
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: at + 60_000, lastOutcome: 'unreachable', lastReason: 'descriptions-missing' })
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('2 actionable item(s) remain.')
+    expect(text).toContain('descriptions-missing')
+    expect(text).toContain('refresh the board snapshot')
+    expect(text.split('wt-actionable-snapshot-refresh.mjs')).toHaveLength(2)
+    expect(text.split('\n')).toHaveLength(1)
+  })
+
+  it('C2: a fresh snapshot-written heartbeat with no snapshot file says the file is missing, never stale', () => {
+    const { env, payload, stateDir, cwd } = scaffold('written-but-missing')
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'snapshot-written' })
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('snapshot file is missing although the producer reported writing it')
+    expect(text).toContain('refresh the board snapshot')
+    expect(text).not.toContain('stale')
+    expect(text.split('\n')).toHaveLength(1)
+  })
+
+  it('F7: a snapshot write failure names the snapshot file that could not be written', () => {
+    const { env, payload, stateDir, cwd } = scaffold('write-failed')
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable', lastReason: 'snapshot-write-failed' })
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('snapshot-write-failed')
+    expect(text).toContain(join(stateDir, `${slug(cwd)}.json`))
+    expect(text).not.toContain('state directory is not writable')
+    expect(text).not.toContain('wt-actionable-snapshot-refresh.mjs')
+    expect(text.split('\n')).toHaveLength(1)
+  })
+
+  it('F7: an invalid computed snapshot names the project parser remedy', () => {
+    const { env, payload, stateDir, cwd } = scaffold('snapshot-invalid')
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable', lastReason: 'snapshot-invalid' })
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('snapshot-invalid')
+    expect(text).toContain(join('.claude', 'scripts', 'lib', 'depends-on-parser.mjs'))
+    expect(text).not.toContain('wt-actionable-snapshot-refresh.mjs')
+    expect(text.split('\n')).toHaveLength(1)
   })
 
   it('consecutive blocks reach the ceiling -> passes', () => {
@@ -1043,6 +1121,37 @@ describe('wt-actionable-gate-hook', () => {
     const text = blockText(r)
     expect(text).not.toBe('')
     expect(text.split('\n')).toHaveLength(1)
+  })
+
+  it('T6: a failed project parser yields one parser remedy, not a refresh remedy, for a stale snapshot', () => {
+    const { env, payload, stateDir, cwd } = scaffold('parser-remedy')
+    writeSnapshot(stateDir, cwd, { at: Date.now() - 3 * 60 * 60_000, actionable: 0, next: '', workPossible: true,
+      reason: '', blockedUntil: null, inFlightUntil: null })
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable', lastReason: 'snapshot-computation-failed' })
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('snapshot-computation-failed')
+    expect(text).toContain(join('.claude', 'scripts', 'lib', 'depends-on-parser.mjs'))
+    expect(text).not.toContain('wt-actionable-snapshot-refresh.mjs')
+    expect(text.split('\n')).toHaveLength(1)
+  })
+
+  it('T7: a legacy state without lastReason names its outcome and gives the refresh command once', () => {
+    const { env, payload, stateDir, cwd } = scaffold('legacy-reason')
+    writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable' })
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('(unavailable)')
+    expect(text.split('wt-actionable-snapshot-refresh.mjs')).toHaveLength(2)
+    expect(text).not.toContain('could not read the board')
+  })
+
+  it('rejects malformed undeclared counts but accepts legacy snapshots without that field', () => {
+    const { env, payload, stateDir, cwd } = scaffold('undeclared-validation')
+    const snapshot = { at: Date.now(), actionable: 1, next: 'Ready', workPossible: true,
+      reason: '', blockedUntil: null, inFlightUntil: null }
+    writeSnapshot(stateDir, cwd, { ...snapshot, undeclared: -1 })
+    expect(systemMessage(runHook(payload, env))).toContain('snapshot is unreadable')
+    writeSnapshot(stateDir, cwd, snapshot)
+    expect(blockText(runHook(payload, env))).toContain('1 actionable item(s) remain')
   })
 })
 

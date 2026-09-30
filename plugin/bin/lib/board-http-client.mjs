@@ -6,6 +6,14 @@ export class BoardUnavailable extends Error {
   }
 }
 
+// Only the request itself failing (no connection, or a non-OK HTTP status) is a transport failure.
+// Every other BoardUnavailable is an answer the endpoint gave that could not be read.
+function transportFailure(detail, status) {
+  const failure = new BoardUnavailable(detail, status)
+  failure.transport = true
+  return failure
+}
+
 const TEXT_TOLERANT_TOOLS = new Set(['add_label_to_card', 'remove_label_from_card', 'add_comment', 'move_card'])
 
 // Live Planka MCP shapes measured 2026-09-19: get_card, create_card, get_board, find_cards,
@@ -54,18 +62,19 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
   let initialized = false
   let sessionId = null
   async function send(body) {
+    let response
     try {
-      const response = await request(url, {
+      response = await request(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(sessionId ? { 'mcp-session-id': sessionId } : {}) },
         body: JSON.stringify(body),
       })
-      if (!response?.ok) throw new Error(`HTTP ${response?.status ?? 'unknown'}`)
-      sessionId = response.headers?.get?.('mcp-session-id') ?? sessionId
-      return response
     } catch (error) {
-      throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error instanceof Error ? error.message : String(error))
+      throw transportFailure(error instanceof Error ? error.message : String(error))
     }
+    if (!response?.ok) throw transportFailure(`HTTP ${response?.status ?? 'unknown'}`, response?.status)
+    sessionId = response.headers?.get?.('mcp-session-id') ?? sessionId
+    return response
   }
   async function rpc(method, params = {}) {
     try {
