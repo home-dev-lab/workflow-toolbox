@@ -10,7 +10,7 @@ import { createSecondOpinionDependencies, listProcessRelationships, listProcessT
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { LaneSandboxRefusal, laneSandboxReadRemedyAllowed } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+import { LaneSandboxRefusal, laneSandboxReadRemedyAllowed, laneWritableForLaunch, resolveLaneSandbox } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -230,6 +230,17 @@ describe('second-opinion advisor', () => {
     expect(laneSandboxReadRemedyAllowed('/home', env, fs)).toBe(false)
     expect(laneSandboxReadRemedyAllowed('/home/reader', env, fs)).toBe(false)
     expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', env, fs)).toBe(true)
+  })
+
+  it('refuses HOME with parent traversal before comparing either view of a macOS-style ancestor', () => {
+    const resolved: Record<string, string> = { '/': '/', '/home': '/System/Volumes/Data/home', '/home/spare': '/System/Volumes/Data/home/spare' }
+    const fs = { realpath: (file: string) => resolved[file] ?? null }
+    const env = { HOME: '/home/spare/../reader', PATH: '/usr/bin' }
+    expect(laneSandboxReadRemedyAllowed('/home', env, fs)).toBe(false)
+    expect(() => resolveLaneSandbox({ profile: 'opencode', cwd: '/work/tree', env, optionEnv: {}, platform: 'linux', bwrap: '/usr/bin/bwrap', probe: () => ({ ok: true }), fs: { ...fs, exists: () => true } })).toThrow(/refusing HOME .*set HOME to its resolved spelling/)
+    expect(() => laneWritableForLaunch({ cwd: '/work/tree', env, optionEnv: {}, fs, platform: 'linux' })).toThrow(/refusing HOME/)
+    // Control: a clean HOME still permits an outside READ remedy.
+    expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', { ...env, HOME: '/home/reader' }, fs)).toBe(true)
   })
 
   // Resolving through the deepest existing ancestor must only ADD refusals. A missing child under a host-state link

@@ -143,10 +143,12 @@ function executableSymlinks(invoked, fs) {
 
 // Values of the named flags, resolved to absolute against `base` (the working directory). A relative
 // --dir or -f must be bound, not dropped (LOW 8): opencode resolves them against its cwd, so we do too.
+// A long flag also takes its value inline (`--file=<path>`), so that spelling is checked like the other.
 function argumentValues(args, flags, base) {
   return args.flatMap((value, index) => {
-    if (!flags.includes(args[index - 1])) return []
-    const raw = String(value)
+    const inline = flags.find((flag) => flag.startsWith('--') && String(value).startsWith(`${flag}=`))
+    if (!flags.includes(args[index - 1]) && !inline) return []
+    const raw = inline ? String(value).slice(inline.length + 1) : String(value)
     if (path.isAbsolute(raw)) return [raw]
     return base ? [path.resolve(base, raw)] : []
   })
@@ -154,7 +156,14 @@ function argumentValues(args, flags, base) {
 
 // Root, $HOME, its ancestors, or host lane state would re-expose what the sandbox hides; checked for EVERY bind (H2). Forbidden under
 // EITHER view: realpath-else-lexical is the original check; deepest-existing-ancestor adds a missing $HOME under a link (a '..' it cannot resolve is left to bindPath's refusal).
+// A $HOME spelled with a '..' segment is refused, never resolved: lexical and physical resolution
+// disagree under a symlinked ancestor, so neither view could compare it safely.
+const malformedHome = (env) => home(env).split(/[\\/]/).includes('..')
+function refuseMalformedHome(env) {
+  if (malformedHome(env)) throw new LaneSandboxRefusal(`refusing HOME ${home(env)}: a '..' segment cannot be compared safely; set HOME to its resolved spelling`)
+}
 function isForbiddenPath(candidate, env, fs) {
+  refuseMalformedHome(env)
   if (!candidate || !path.isAbsolute(candidate)) return true
   const views = [(value) => fs.realpath(value) ?? path.resolve(value), (value) => canonicalPath(value, fs)]
   return views.some((view, index) => { try { return forbiddenUnder(view, candidate, env, fs) } catch (error) { if (index === 0) throw error; return false } })
@@ -168,7 +177,7 @@ function forbiddenUnder(view, candidate, env, fs) {
 }
 
 export function laneSandboxReadRemedyAllowed(directory, env, fs = realFs) {
-  return !directory.includes(':') && !isForbiddenPath(directory, env, fs)
+  return !directory.includes(':') && !malformedHome(env) && !isForbiddenPath(directory, env, fs)
 }
 
 function hostStateRootOf(env, fs, view = (value) => fs.realpath(value) ?? path.resolve(value)) {
@@ -410,6 +419,11 @@ function operatorExtras(optionEnv, env, fs) {
       return ok
     })
   return { readable: accepted(LANE_SANDBOX_READ_ENV), writable: accepted(LANE_SANDBOX_WRITE_ENV), refused }
+}
+
+function callerNamedDroppedBinds(paths, args, profile, base, env, fs) {
+  const named = [...(paths.readable ?? []), ...(paths.writable ?? []), ...(profile === 'opencode' ? argumentValues(args, ['-f', '--file'], base) : [])]
+  return [...new Set(named.filter((item) => item && isForbiddenPath(item, env, fs)))]
 }
 
 function bindPath(item) {
@@ -678,6 +692,7 @@ function windowsWritableRoots({ cwd, args, profile, env, optionEnv, paths, reado
 // Preflight for host output paths, using exactly the same root collector as the final sandbox plan.
 export function laneWritableForLaunch({ cwd, args = [], profile = 'opencode', env = process.env, optionEnv = process.env, paths = {}, readonlyCwd = false, fs = realFs, platform = process.platform } = {}) {
   if (platform === 'win32') return laneWritablePredicate(windowsWritableRoots({ cwd, args, profile, env, optionEnv, paths, readonlyCwd, fs }), fs, win32)
+  refuseMalformedHome(env)
   const base = path.resolve(cwd)
   const runtimeDir = path.join(os.tmpdir(), 'wt-lane-sandbox-preflight')
   const selected = PROFILES[profile]({ env, args, fs, runtimeDir, readonlyCwd, base, trustedRead: () => null })
@@ -916,6 +931,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const availability = sandboxAvailability({ optionEnv, platform, bwrap: bwrapPath, probe, fs })
   if (availability.none) return unsandboxed(availability.none)
   if (availability.refuse) throw new LaneSandboxRefusal(`bubblewrap is present but its probe failed (${availability.refuse}); refusing to launch a lane unsandboxed — set ${LANE_SANDBOX_SWITCH_ENV}=off to override deliberately`)
+  refuseMalformedHome(env)
 
   // A relative working directory is resolved, not dropped (LOW 8): the lane must land in a real tree.
   const base = cwd ? path.resolve(cwd) : null
@@ -939,6 +955,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   try {
   fs.ensureDir(runtimeDir)
    const extras = operatorExtras(optionEnv, env, fs)
+   const droppedBinds = callerNamedDroppedBinds(paths, args, profile, base, env, fs)
    const registry = fs === realFs ? registeredLaneRoots(optionEnv) : { roots: [], present: true }
    let laneWritable
    let sourceWritable
@@ -1025,11 +1042,12 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   }
 
   const refusedNote = extras.refused.length ? `; refused ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV} entries ${extras.refused.join(', ')}` : ''
+   const droppedNote = droppedBinds.length ? `; dropped caller-named binds ${droppedBinds.join(', ')} (/, $HOME, an ancestor of $HOME, or host lane state)` : ''
    const netNote = networkNote({ network: { ...network, unreadable: [...(network.unreadable ?? []), ...rejectedConfigs] }, bridges, socat: socatPath })
    const registryNote = registry.present ? '' : '; registered lane worktree index absent (registered-root clause skipped)'
   // Both the writable AND the readable sets are recorded: a secret leak would come from a readable
   // bind, so a reader can audit exactly what was exposed (LOW 2).
-   const line = `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote})`
+   const line = `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote}${droppedNote})`
 
   // Write the CLI's refreshed credential back to the shared home only if it actually changed inside
   // the per-run home; the shared file stayed read-only during the run (H3). Lives here (host
@@ -1059,7 +1077,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   }
 
     const unreadable = (candidates, { probe, env: probeEnv = env, exempt = [] } = {}) => unreadableRequestPaths(candidates, { fs, wrap, execPath, env: probeEnv, probe, exempt })
-    return { kind: 'bwrap', line, readable, writable, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
+    return { kind: 'bwrap', line, readable, writable, droppedBinds, refusedExtras: extras.refused, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
   } catch (error) {
     bridgeState.disposed = true
     for (const relay of bridge?.relays ?? []) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }
@@ -1075,6 +1093,13 @@ export function announceUnsandboxedLane(sandbox, write = (text) => process.stder
   if (sandbox.kind !== 'none' || announced.has(sandbox.line)) return
   announced.add(sandbox.line)
   write(`workflow-toolbox: ${sandbox.line}\n`)
+}
+
+// A consumer that never reads the plan line (a probe, a verifier) still hears about a bind it named and did not get.
+export function announceDroppedBinds(sandbox, write = (text) => process.stderr.write(text)) {
+  if (sandbox.refusedExtras?.length) write(`workflow-toolbox: lane sandbox refused ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV} entries ${sandbox.refusedExtras.join(', ')}\n`)
+  if (!sandbox.droppedBinds?.length) return
+  write(`workflow-toolbox: lane sandbox dropped caller-named binds ${sandbox.droppedBinds.join(', ')} (/, $HOME, an ancestor of $HOME, or host lane state)\n`)
 }
 
 // Am I running inside a bwrap-style sandbox? Mechanical, from the user namespace map rather than an

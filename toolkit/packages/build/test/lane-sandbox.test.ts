@@ -18,12 +18,13 @@ import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../.
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')
 
-interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
+interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], droppedBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
   laneWritableForLaunch: (request: Record<string, unknown>) => (file: string) => boolean
   announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
+  announceDroppedBinds: (plan: SandboxPlan, write: (text: string) => void) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
   suiteLockCli: (fs?: { isFile: (f: string) => boolean, isExecutable?: (f: string) => boolean }) => string
@@ -506,7 +507,59 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.kind).toBe('bwrap')
     expect(p.readable).not.toContain(discarded)
     expect(everyBind(p.wrap('opencode', [])[1])).not.toContain(discarded)
+    expect(p.droppedBinds).toEqual([discarded])
+    expect(p.line).toContain(`dropped caller-named binds ${discarded}`)
     p.dispose()
+  })
+
+  it('reports a dropped OpenCode -f path named by the caller without refusing the launch', () => {
+    const p = plan({ args: ['run', '-f', HOME], fs: fakeFs({}, [HOME, '/work/tree']) })
+    try {
+      expect(p.kind).toBe('bwrap')
+      expect(p.readable).not.toContain(HOME)
+      expect(p.droppedBinds).toEqual([HOME])
+      expect(p.line).toContain(`dropped caller-named binds ${HOME}`)
+    } finally { p.dispose() }
+  })
+
+  it('reads an inline --file=<path> like a separate one: a forbidden one is reported, a forbidden --dir=<path> is refused', () => {
+    const fs = fakeFs({}, [HOME, '/work/tree'])
+    const p = plan({ args: ['run', `--file=${HOME}`], fs })
+    try {
+      expect(p.droppedBinds).toEqual([HOME])
+      expect(p.line).toContain(`dropped caller-named binds ${HOME}`)
+    } finally { p.dispose() }
+    expect(() => plan({ args: ['run', `--dir=${HOME}`], fs })).toThrow(/refusing a lane --dir of/)
+  })
+
+  it('announces refused WT_LANE_SANDBOX_READ/WRITE entries on stderr, not only on the plan line', () => {
+    const p = plan({ optionEnv: { WT_LANE_SANDBOX_READ: '/' }, fs: fakeFs({}, [HOME, '/work/tree']) })
+    const lines: string[] = []
+    try {
+      sandbox.announceDroppedBinds(p, (text) => lines.push(text))
+      expect(lines).toEqual(['workflow-toolbox: lane sandbox refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /\n'])
+    } finally { p.dispose() }
+  })
+
+  it('reports a forbidden caller writable bind but does not list allowed or computed binds', () => {
+    const p = plan({ paths: { writable: [HOME, '/data/other'] }, fs: fakeFs({}, [HOME, '/work/tree', '/data/other']) })
+    try {
+      expect(p.kind).toBe('bwrap')
+      expect(p.writable).not.toContain(HOME)
+      expect(p.writable).toContain('/data/other')
+      expect(p.droppedBinds).toEqual([HOME])
+      expect(p.line).toContain(`dropped caller-named binds ${HOME}`)
+      expect(p.line).not.toContain('dropped caller-named binds /data/other')
+    } finally { p.dispose() }
+  })
+
+  it('writes one stderr notice for dropped caller-named binds on a sandboxed OpenCode plan', () => {
+    const p = plan({ paths: { readable: [HOME, HOME] }, fs: fakeFs({}, [HOME, '/work/tree']) })
+    const lines: string[] = []
+    try {
+      sandbox.announceDroppedBinds(p, (text) => lines.push(text))
+      expect(lines).toEqual([`workflow-toolbox: lane sandbox dropped caller-named binds ${HOME} (/, $HOME, an ancestor of $HOME, or host lane state)\n`])
+    } finally { p.dispose() }
   })
 
   it('constructs codex PATH with a late symlink to the selected realpath, discarding relative and empty entries', () => {
@@ -693,6 +746,20 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     for (const refused of extras.slice(0, 3)) { expect(everyBind(args)).not.toContain(refused) }
     expect(flat(args, '--bind-try')).toContain('/scratch')
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries ${extras.slice(0, 3).join(', ')}`)
+  })
+
+  it.skipIf(process.platform === 'win32' || sandbox.insideChildUserNamespace() === true)('reports a caller-named writable ancestor of aliased host state while keeping an allowed caller bind (skipped on Windows and inside a child user namespace, where the host-state override is ignored)', () => {
+    const env = { HOME: '/home/owner', PATH: '/usr/bin', WT_LANE_HOST_STATE: '/alias/missing', XDG_CONFIG_HOME: '/state' }
+    const fs = fakeFs({}, ['/home/owner', '/work/tree', '/state', '/state/opencode', '/data/other'], { '/alias': '/state' })
+    const p = plan({ env, fs, paths: { writable: ['/state', '/data/other'] } })
+    try {
+      expect(p.kind).toBe('bwrap')
+      expect(p.writable).not.toContain('/state')
+      expect(p.writable).toContain('/data/other')
+      expect(p.droppedBinds).toEqual(['/state'])
+      expect(p.line).toContain('dropped caller-named binds /state')
+      expect(p.line).not.toContain('dropped caller-named binds /data/other')
+    } finally { p.dispose() }
   })
 
   it('announces an unsandboxed lane once per reason, and a sandboxed one never', () => {
@@ -1473,6 +1540,25 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
       expect(() => fence.spawnOpencode(boom, '/bin/true', [], { cwd: w, env: { PATH: process.env.PATH, HOME: home } }, 'linux')).toThrow('spawn EAGAIN')
       expect(readdirSync(run).filter((name) => name.startsWith('wt-lane-sandbox-'))).toEqual([])
     } finally { if (prev === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = prev }
+  })
+
+  // A consumer that never reads the plan line (a probe, a verifier) still hears about a caller bind the sandbox dropped.
+  it('spawnOpencode writes the dropped caller-named binds notice to stderr', () => {
+    const root = tempRoot('dropnotice')
+    const home = join(root, 'home'); const w = join(root, 'w'); const run = join(root, 'run')
+    for (const dir of [home, w, run]) mkdirSync(dir, { recursive: true })
+    const prev = process.env.XDG_RUNTIME_DIR
+    process.env.XDG_RUNTIME_DIR = run
+    const written: string[] = []
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => { written.push(String(chunk)); return true })
+    try {
+      const stub = (() => ({ status: 0, stdout: '', stderr: '' })) as unknown as typeof spawnSync
+      fence.spawnOpencode(stub, '/bin/true', [], { cwd: w, env: { PATH: process.env.PATH, HOME: home }, sandboxPaths: { readable: [home] } }, 'linux')
+      expect(written).toContain(`workflow-toolbox: lane sandbox dropped caller-named binds ${home} (/, $HOME, an ancestor of $HOME, or host lane state)\n`)
+    } finally {
+      spy.mockRestore()
+      if (prev === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = prev
+    }
   })
 
   it('the git pointer files are read-only inside, so a planted fsmonitor cannot be written (H1)', () => {
