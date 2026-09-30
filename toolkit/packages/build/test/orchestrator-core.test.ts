@@ -209,6 +209,19 @@ describe('orchestrator board HTTP client', () => {
     if (_name === 'HTTP 500') await expect(promise).rejects.toThrow('HTTP 500')
     if (_name === 'malformed MCP result JSON') await expect(promise).rejects.toThrow('malformed MCP result JSON')
   })
+
+  it('keeps a BoardUnavailable rejected by the fetch adapter, with its status and a single prefix', async () => {
+    const fetch = async () => { throw new BoardUnavailable('upstream fetch offline', 503) }
+    const promise = createBoardClient({ boardId: 'board-1', url: 'http://board', fetch }).moveCard('1', 'Next')
+    await expect(promise).rejects.toMatchObject({ message: 'board unavailable: upstream fetch offline', status: 503, transport: true })
+  })
+
+  it('turns a response whose headers cannot be read into a transport BoardUnavailable', async () => {
+    const fetch = async () => ({ ok: true, headers: { get: () => { throw new Error('header getter exploded') } }, text: async () => '{}' })
+    const promise = createBoardClient({ boardId: 'board-1', url: 'http://board', fetch }).getCard('1')
+    await expect(promise).rejects.toBeInstanceOf(BoardUnavailable)
+    await expect(promise).rejects.toMatchObject({ message: 'board unavailable: header getter exploded', transport: true })
+  })
 })
 
 describe('wave lifecycle server', () => {

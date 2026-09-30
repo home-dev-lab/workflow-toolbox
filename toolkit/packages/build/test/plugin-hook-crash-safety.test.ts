@@ -454,10 +454,9 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_input: { file_path: join(sandbox.projectDir, 'plugin', 'bin', 'foo-hook.mjs') },
       }
     case 'wt-actionable-snapshot-producer-hook.mjs':
-      // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook
-      // must no-op cleanly rather than crash, which is exactly what a project without the
-      // dependency-parser convention should see (see actionability-planka-producer.test.ts
-      // for the full write/no-write behavior matrix).
+      // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook falls
+      // back to the parser shipped with the plugin and must exit cleanly rather than crash
+      // (see actionability-planka-producer.test.ts for the full write/no-write behavior matrix).
       return {
         hook_event_name: 'PostToolUse',
         tool_name: 'mcp__planka__get_board',

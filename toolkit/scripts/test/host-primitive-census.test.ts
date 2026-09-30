@@ -121,7 +121,8 @@ describe('raw host primitive quality ratchet', () => {
     // The plugin-root classifier (plugin-root-state.mjs) adds one; its home-directory read goes
     // through bin/lib/host. Completion attribution and its scanner add two more perimeter files;
     // their filesystem primitives live in bin/lib/host, so the primitive ceiling stays unchanged.
-    expect(result.perimeterFiles).toBe(255)
+    // The shipped Depends-on parser (depends-on-parser.mjs) adds one pure module with no host operation.
+    expect(result.perimeterFiles).toBe(256)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
