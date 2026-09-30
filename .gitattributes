@@ -12,3 +12,10 @@ probes/host-platform/evidence/** -text -eol
 # out with LF (the blanket rule above) can misbehave on Windows depending on how it reached the
 # disk. No test currently locks these bytes (card 1872232864, review r3, LOW finding 5).
 *.cmd text eol=crlf
+
+# Every card adds its plugin changelog entry at the same place (under `## [Unreleased]`), so two
+# merged branches always conflict there, and the only right resolution is to keep both. Git's
+# built-in `union` driver does that without asking; it needs no configuration on any OS. It keeps
+# both versions of a line the two sides edited differently, and it cannot see a release moving
+# lines under a version heading: released sections are locked by plugin-version-changelog.test.ts.
+plugin/CHANGELOG.md merge=union
