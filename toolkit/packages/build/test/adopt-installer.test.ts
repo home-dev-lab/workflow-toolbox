@@ -42,7 +42,9 @@ const INSTALLER_ENV: NodeJS.ProcessEnv = sealedPluginCliEnv(ENV_ROOT, {
 })
 const RULE = 'wt-delegation-ladder.md'
 const AUTONOMY = 'AUTONOMY.md'
-const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
+const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - kind: tool\n      tool: Edit\n      unconditional: true\n---\n'
+// The head the rules-on-demand engine REJECTS (`unknown trigger kind: (missing)`): loaded nowhere.
+const REJECTED_ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 const ACT = 'wt-task-tracking-at-act.md'
 const remedyWord = (value: string) => quoteRemedyWord(value, true)
 const specPath = join(REPO_ROOT, 'plugin/rules/wt-task-tracking-at-act.spec.json')
@@ -507,7 +509,7 @@ describe('adopt installer — rules-on-demand copies', () => {
 // on-demand head, is served from there. Every mode must recognise it and never write a static copy
 // back beside it: that copy would load the rule twice.
 describe('adopt installer — static rule migrated to the sibling on-demand dir', () => {
-  function migratedLayout(base: string): { staticDir: string; onDemandDir: string; migrated: string } {
+  function migratedLayout(base: string, head = ON_DEMAND_FRONTMATTER): { staticDir: string; onDemandDir: string; migrated: string } {
     const staticDir = join(base, 'rules', 'wt')
     const onDemandDir = join(base, 'rules-on-demand')
     run(['--set', 'rules', '--install'], staticDir)
@@ -516,7 +518,7 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
     for (const file of readdirSync(onDemandDir).filter((name) => name.endsWith('.md'))) rmSync(join(staticDir, file), { force: true })
     const migrated = join(onDemandDir, RULE)
     renameSync(join(staticDir, RULE), migrated)
-    writeFileSync(migrated, ON_DEMAND_FRONTMATTER + readFileSync(migrated, 'utf8'))
+    writeFileSync(migrated, head + readFileSync(migrated, 'utf8'))
     return { staticDir, onDemandDir, migrated }
   }
   function expectRecognised(check: { status: number | null; out: string }) {
@@ -664,6 +666,61 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
     expect(check.out).not.toContain('MIGRATED-ON-DEMAND')
     expect(check.out).toContain(`${RULE}: ABSENT`)
     expect(runResult(['--set', 'rules', '--check'], onDemandDir).out).toContain(`${RULE}: MISPLACED`)
+  })
+
+  // An on-demand copy counts as a migration only when the rules-on-demand engine would SERVE it. A head the
+  // engine's parser rejects loads the rule nowhere, so the installer must write the static copy and say why.
+  function expectRejectedHead(head: string, reason: string, env?: (root: string, config: string) => NodeJS.ProcessEnv) {
+    const root = mkDir()
+    const project = join(root, 'project')
+    mkdirSync(project, { recursive: true })
+    const config = join(root, 'config')
+    const { staticDir, migrated } = migratedLayout(config, head)
+    const sealed = env ? env(root, config) : sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const check = runInCwdResult(['--set', 'rules', '--check', '--global'], project, sealed)
+    expect(check.out).not.toContain(`${RULE}: MIGRATED-ON-DEMAND`)
+    expect(check.out).toContain(reason)
+    expect(check.out).toMatch(new RegExp(`${RULE}: MISPLACED \\(static rule in on-demand directory; the rules-on-demand engine does not serve it: .*${reason}`))
+    expect(check.out).toContain(`${RULE}: ABSENT (the on-demand copy at ${migrated} is not served: `)
+    expect(check.out).toContain('write the ABSENT')
+
+    runInCwdResult(['--set', 'rules', '--install', '--global'], project, sealed)
+    expect(existsSync(join(staticDir, RULE))).toBe(true)
+  }
+
+  it('an on-demand head the engine rejects (tool trigger without a kind) is no migration: MISPLACED, and the static copy is written', () => {
+    expectRejectedHead(REJECTED_ON_DEMAND_FRONTMATTER, 'unknown trigger kind')
+  })
+
+  it('`on-demand: false` is no migration either', () => {
+    expectRejectedHead('---\non-demand: false\n---\n', 'expected on-demand.triggers list')
+  })
+
+  it('a valid head is not taken for a migration when the engine cannot be found', () => {
+    expectRejectedHead(ON_DEMAND_FRONTMATTER, 'engine was not found', (root, config) => sealedPluginCliEnv(root, {
+      CLAUDE_CONFIG_DIR: config,
+      CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin'),
+      WT_RULES_ON_DEMAND_ROOT: join(root, 'no-engine-here'),
+    }))
+  })
+
+  it('a project whose .claude is a symlink to shared storage keeps its project identity', () => {
+    const root = mkDir()
+    const config = join(root, 'config')
+    const { migrated } = migratedLayout(config)
+    const project = join(root, 'p')
+    const storage = join(root, 'storage', 'project-settings')
+    mkdirSync(join(storage, 'rules', 'wt'), { recursive: true })
+    mkdirSync(project, { recursive: true })
+    symlinkSync(storage, join(project, '.claude'), 'dir')
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    // No exit-code assertion: an explicit --dir into a static dir exits non-zero for the adopted spec-backed siblings (prior contract).
+    const res = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--install', '--file', RULE, '--dir', join(project, '.claude', 'rules', 'wt')], { cwd: project, encoding: 'utf8', env })
+    const out = (res.stdout ?? '') + (res.stderr ?? '')
+    expect(out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (served from ${migrated}`)
+    expect(existsSync(join(storage, 'rules', 'wt', RULE))).toBe(false)
   })
 
   it('a copy present in BOTH dirs is still reported, never hidden as a migration', () => {

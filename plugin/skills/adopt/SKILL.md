@@ -342,7 +342,11 @@ its real target are one target; a second real config directory is checked and re
   nothing, even with `--force`: a static copy would load it twice. Delete the on-demand copy first
   to bring it back as a static rule. When this rules directory is a link into another profile's,
   the status says the rule is migrated there but not loaded by this profile; nothing is written
-  either, since the copy would land in that other profile.
+  either, since the copy would land in that other profile. Only a head the rules-on-demand engine
+  accepts counts (the installer asks the engine's own parser, or reports that it could not find the
+  engine). A rejected head loads the rule nowhere, so it is no migration: the on-demand directory's
+  line reads **MISPLACED** with the parser's reason, and the static side stays **ABSENT** with the
+  same reason, so `--install` writes the static copy.
 - **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real
   target) untouched. `--install --replace-symlinks` replaces the link with a managed copy in
   place (the former target preserved).
