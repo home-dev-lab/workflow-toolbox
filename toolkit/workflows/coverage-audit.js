@@ -2575,6 +2575,7 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-lane-consent-gate-hook.mjs",
         "plugin/bin/wt-lane-orphan-watch.mjs",
         "plugin/bin/wt-arc-watch.mjs",
+        "plugin/bin/wt-delegate-wake-scan.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
         "plugin/bin/lib/session-role.mjs",

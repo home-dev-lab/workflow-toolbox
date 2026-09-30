@@ -111,13 +111,13 @@ it('F4 one budget carries unprinted candidates into the next polls and retries a
   expect(first).toHaveLength(20)
   // A degraded poll computes eligibility but cannot advance the throttle.
   expect(dueRelays(candidates, state, 1001, 20)).toHaveLength(20)
-  first.forEach((p) => { state[p.key] = { lastEmittedAt: 1000, count: 1 } })
+  first.forEach((p: { key: string }) => { state[p.key] = { lastEmittedAt: 1000, count: 1 } })
   expect(dueRelays(candidates, state, 1001, 20)).toHaveLength(5)
   expect(dueRelays(candidates, state, 1000 + 600000, 20)).toHaveLength(20)
-  expect(dueRelays(candidates.slice(0, 1), { 'WAKE:0': { lastEmittedAt: 0, count: 4 } }, 3600001, 20).some((p) => p.key === 'WAKE:0')).toBe(true)
+  expect(dueRelays(candidates.slice(0, 1), { 'WAKE:0': { lastEmittedAt: 0, count: 4 } }, 3600001, 20).some((p: { key: string }) => p.key === 'WAKE:0')).toBe(true)
   const out: string[] = []
   const budget = eventBudget((line: string) => out.push(line))
-  first.forEach((p) => budget.emit(p.line))
+  first.forEach((p: { line: string }) => budget.emit(p.line))
   budget.emit('STALE: ordinary')
   budget.close()
   expect(out).toHaveLength(20)
@@ -282,7 +282,7 @@ fs.readFileSync = function (target, ...rest) {
   return read.call(this, target, ...rest)
 }
 `)
-  const cli = new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url).pathname
+  const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
   const result = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--grace', '90'], {
     encoding: 'utf8', env: { PATH: process.env.PATH ?? '', NODE_OPTIONS: `--require ${guard}`, WT_OUTBOUND_GUARD_DIR: temp } })
   expect(result.stdout).toContain(`WAKE: ${owner}`)
@@ -292,7 +292,7 @@ fs.readFileSync = function (target, ...rest) {
 
 // Real enqueue shapes measured in a 373 MB main transcript (neutral ids and paths).
 const OUT = '/tmp/claude-1000/-home-user-projects-example/00000000-0000-4000-8000-000000000001/tasks'
-const shape = (o: { ids: string[], tool?: string, out?: string, status?: string, summary: string, tail?: string }) => `<task-notification>\n${o.ids.map((id) => `<task-id>${id}</task-id>\n`).join('')}${o.tool ? `<tool-use-id>${o.tool}</tool-use-id>\n` : ''}${o.out ? `<output-file>${o.out}</output-file>\n` : ''}${o.status ? `<status>${o.status}</status>\n` : ''}<summary>${o.summary}</summary>\n${o.tail ?? ''}</task-notification>`
+const shape = (o: { ids: string[], tool?: string | undefined, out?: string | undefined, status?: string, summary: string, tail?: string }) => `<task-notification>\n${o.ids.map((id) => `<task-id>${id}</task-id>\n`).join('')}${o.tool ? `<tool-use-id>${o.tool}</tool-use-id>\n` : ''}${o.out ? `<output-file>${o.out}</output-file>\n` : ''}${o.status ? `<status>${o.status}</status>\n` : ''}<summary>${o.summary}</summary>\n${o.tail ?? ''}</task-notification>`
 const monitorEvent = shape({ ids: ['bmon123456'], summary: 'Monitor event: "Arc watch"', tail: '<event>ARC WATCH ARMED: stale=10min poll=60s</event>\nIf this event is something the user would act on now, send a PushNotification.\n' })
 const monitorStopped = shape({ ids: ['bmon123457'], out: `${OUT}/bmon123457.output`, status: 'killed', summary: 'Monitor "Arc watch" stopped' })
 const monitorEnded = shape({ ids: ['bmon123458'], tool: 'toolu_mon456', out: `${OUT}/bmon123458.output`, status: 'completed', summary: 'Monitor "wait for batch" stream ended', tail: '<event>"inspected": 95504</event>\n' })
@@ -387,7 +387,7 @@ it('route b: the one-shot scanner prefixes FORWARD candidates as unverified, kee
     writeFileSync(join(subs, `agent-${id}.jsonl`), (records as unknown[]).map((r) => JSON.stringify(r)).join('\n') + '\n')
     writeFileSync(join(subs, `agent-${id}.meta.json`), JSON.stringify((scenario.meta as Record<string, unknown>)[id]))
   }
-  const cli = new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url).pathname
+  const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
   const env = { PATH: process.env.PATH ?? '', WT_OUTBOUND_GUARD_DIR: temp }
   const run = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--grace', '90'], { encoding: 'utf8', env })
   const lines = run.stdout.trim().split('\n')
@@ -543,7 +543,8 @@ global.setTimeout = (fn, ms, ...args) => {
   const run = () => {
     const watcher = fileURLToPath(new URL('../../../../plugin/bin/wt-arc-watch.mjs', import.meta.url))
     const result = spawnSync(process.execPath, ['--require', preload, watcher, '--project', project, '--poll', '5'], {
-      encoding: 'utf8', timeout: 10000, env: { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SESSION_ID: sessionId,
+      // A hang bound only: the preloaded timers end the watcher after three polls.
+      encoding: 'utf8', timeout: 60_000, env: { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SESSION_ID: sessionId,
         WT_OUTBOUND_GUARD_DIR: registryDir, WT_DELEGATE_WAKE_DIR: stateDir, WT_LIVENESS_DIR: join(temp!, 'liveness') },
     })
     expect(result.error).toBeUndefined()
@@ -557,7 +558,7 @@ it('fix5 #4 watcher serves WAKE before 20 diagnostics and drains pending diagnos
   const f = watcherFixture(20)
   const polls = f.run()
   expect(polls).toHaveLength(3)
-  expect(polls[0][0]).toMatch(/^WAKE:/)
+  expect(polls[0]?.[0]).toMatch(/^WAKE:/)
   expect(polls[0]).toHaveLength(20)
   expect(polls[1]).toHaveLength(1)
   expect(polls[2]).toHaveLength(0)
@@ -576,7 +577,7 @@ it('fix5 #5 watcher uses empty eligibility for a valid fully-throttled state in 
   chmodSync(f.stateDir, 0o500)
   try {
     const polls = f.run()
-    expect(polls[0].filter((line) => line.startsWith('WAKE:'))).toHaveLength(1)
+    expect((polls[0] ?? []).filter((line) => line.startsWith('WAKE:'))).toHaveLength(1)
     expect(polls.flat().filter((line) => line.startsWith('ARC WATCH DEGRADED: throttle state'))).toEqual(['ARC WATCH DEGRADED: throttle state unwritable'])
   } finally { chmodSync(f.stateDir, 0o700) }
 })
@@ -586,7 +587,7 @@ it('fix5 #4 watcher retains an unprinted transient throttle diagnostic after the
   rmSync(f.stateFile)
   const polls = f.run()
   expect(polls[0]).toHaveLength(20)
-  expect(polls[0].every((line) => line.startsWith('WAKE:'))).toBe(true)
+  expect(polls[0]?.every((line) => line.startsWith('WAKE:'))).toBe(true)
   expect(polls[1]).toEqual(['ARC WATCH DEGRADED: throttle state absent'])
   expect(polls[2]).toHaveLength(0)
 })
