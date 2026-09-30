@@ -463,7 +463,6 @@ function inspectors(worktree, route, runnerLog) {
   const matching = pattern => files.filter(file => pattern.test(path.basename(file))).sort((left, right) => (info(right)?.mtimeMs || 0) - (info(left)?.mtimeMs || 0) || right.localeCompare(left));
   const hostMatching = pattern => hostFiles.filter(file => pattern.test(path.basename(file))).sort((left, right) => (info(right)?.mtimeMs || 0) - (info(left)?.mtimeMs || 0) || right.localeCompare(left));
   const first = (...candidates) => candidates.flat().find(file => file && info(file)?.isFile()) || null;
-  const concise = selected => bounded(selected.flatMap(file => String(slice(file, REPORT_TAIL_BYTES) || '').split(/\r?\n/)));
   const laneEvidence = phase => matching(new RegExp('^' + phase + '-(?:brief\\.md|run(?:\\.[^.]+)?\\.log|report(?:\\.[^.]+)?\\.md)$', 'i'));
   const routeReasons = Array.isArray(route?.reasons) ? route.reasons.join(', ') : 'none recorded';
   const effective = String(runnerLog || '').match(/\beffective=([^\s]+)/)?.[1] || route?.model || route?.effective || route?.models?.lane || UNKNOWN;
@@ -1485,7 +1484,7 @@ function devCycleForCard(id, actors) {
 
 const sessionMap = new Map();
 const configRoot = canonicalDirectory(config.configDir);
-function sessionCwd(pid, worktree, launcherSessionId) {
+function sessionCwd(pid, worktree) {
   if (pid) try { return fs.realpathSync(path.join(procRoot, String(pid), 'cwd')); } catch {}
   // A worktree under the suite root belongs to that project even when its runner is detached (setsid SDK pilot, lane)
   // and no Claude ancestor or launcher session id survives: otherwise the project filter hides exactly those runs.
@@ -1515,7 +1514,7 @@ function sessionFor(pid, launcherSessionId, worktree) {
   const identity = launcherSessionId || pid || 'unknown';
   const key = 'session:' + identity;
   if (!sessionMap.has(key)) {
-    const cwd = sessionCwd(pid, worktree, launcherSessionId);
+    const cwd = sessionCwd(pid, worktree);
     sessionMap.set(key, {
       id: key,
       pid: pid || null,

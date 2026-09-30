@@ -1,6 +1,5 @@
-import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { ESLint } from 'eslint'
@@ -8,8 +7,10 @@ import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error -- plain .mjs script without type declarations
 import { lintPasses, PLUGIN_LINT_TARGETS } from '../../../scripts/lint-gate.mjs'
+// @ts-expect-error -- plain .js plugin module without type declarations
+import { SNAPSHOT_PROGRAM } from '../../../../plugin/hooks/snapshot-program.js'
 
-const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
+const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url)).replace(/[\\/]$/, '')
 const TOOLKIT_ROOT = join(REPO_ROOT, 'toolkit')
 const CONFIG_FILE = join(TOOLKIT_ROOT, 'eslint.config.mjs')
 
@@ -22,21 +23,33 @@ const CONFIG_FILE = join(TOOLKIT_ROOT, 'eslint.config.mjs')
 // gate now runs a second pass from the repository root (scripts/lint-gate.mjs) with the same
 // config file, where `no-undef` and `no-unused-vars` are ERRORS for every shipped plugin script.
 //
-// These tests lock the three things that must stay true for that to hold: the gate still runs
-// the root pass, every tracked plugin script is inside what that pass lints with both rules at
-// error, and the real config still turns an undefined reference in plugin/bin/lib into an error.
+// These tests lock what must stay true for that to hold: the gate runs the root pass; every
+// plugin script found on disk is selected by the gate's globs AND linted with both rules at
+// error; the collector program embedded as text in snapshot-program.js is checked too; and the
+// real config turns an undefined reference in plugin/bin/lib into an error.
 
 // Paths the config deliberately leaves out, each for a stated reason in eslint.config.mjs:
-// test fixtures, a vendored byte-identity-checked artifact, and a generated program.
+// test fixtures, and a vendored byte-identity-checked artifact whose generator is linted.
 const DELIBERATE_EXCLUSIONS = [
-  (path: string) => path.includes('/fixtures/'),
+  (path: string) => path.split('/').includes('fixtures'),
   (path: string) => path === 'plugin/bin/lib/vendor/yaml.mjs',
-  (path: string) => path === 'plugin/hooks/snapshot-program.js',
 ]
 
-function trackedPluginScripts(): string[] {
-  const out = execFileSync('git', ['ls-files', '-z', '--', 'plugin', 'plugins'], { cwd: REPO_ROOT, encoding: 'utf8' })
-  return out.split('\0').filter((path) => /\.(?:m?js|cjs)$/.test(path))
+// The inventory is built from the disk, independently of the gate's own target list, so that
+// dropping a glob from the gate leaves files unselected instead of shrinking the expectation.
+function pluginScriptsOnDisk(): string[] {
+  const found: string[] = []
+  const walk = (relative: string) => {
+    for (const entry of readdirSync(join(REPO_ROOT, relative), { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue
+      const child = posix.join(relative, entry.name)
+      if (entry.isDirectory()) walk(child)
+      else if (/\.(?:m?js|cjs)$/.test(entry.name)) found.push(child)
+    }
+  }
+  walk('plugin')
+  walk('plugins')
+  return found.sort()
 }
 
 function rootLinter() {
@@ -51,7 +64,7 @@ function severity(setting: unknown): number {
 describe('the lint gate covers every shipped plugin script', () => {
   it('runs a second pass from the repository root with the toolkit config', () => {
     const passes = lintPasses() as Array<{ name: string; cwd: string; args: string[] }>
-    const plugin = passes.find((pass) => pass.cwd === REPO_ROOT.replace(/[\\/]$/, '') || pass.cwd === REPO_ROOT)
+    const plugin = passes.find((pass) => pass.cwd.replace(/[\\/]$/, '') === REPO_ROOT)
     expect(plugin, JSON.stringify(passes.map((pass) => pass.cwd))).toBeDefined()
     expect(plugin!.args).toContain('toolkit/eslint.config.mjs')
     for (const target of PLUGIN_LINT_TARGETS as string[]) expect(plugin!.args).toContain(target)
@@ -60,20 +73,23 @@ describe('the lint gate covers every shipped plugin script', () => {
     expect(pkg.scripts.lint).toContain('scripts/lint-gate.mjs')
   })
 
-  it('lints every tracked plugin script with no-undef and no-unused-vars at error', async () => {
-    const scripts = trackedPluginScripts()
-    // The gate's globs name .mjs and .js only; a .cjs script would fall outside them silently.
-    expect(scripts.filter((path) => path.endsWith('.cjs'))).toEqual([])
-
+  it('selects and lints every plugin script on disk with no-undef and no-unused-vars at error', async () => {
+    const scripts = pluginScriptsOnDisk()
+    const targets = PLUGIN_LINT_TARGETS as string[]
     const eslint = rootLinter()
-    const uncovered: string[] = []
+    const unselected: string[] = []
+    const ignored: string[] = []
     const weak: string[] = []
     const perDirectory: Record<string, number> = {}
     for (const path of scripts) {
       if (DELIBERATE_EXCLUSIONS.some((excluded) => excluded(path))) continue
+      if (!targets.some((target) => posix.matchesGlob(path, target))) {
+        unselected.push(path)
+        continue
+      }
       const absolute = join(REPO_ROOT, path)
       if (await eslint.isPathIgnored(absolute)) {
-        uncovered.push(path)
+        ignored.push(path)
         continue
       }
       const config = await eslint.calculateConfigForFile(absolute)
@@ -83,13 +99,31 @@ describe('the lint gate covers every shipped plugin script', () => {
       const key = path.split('/').slice(0, 2).join('/')
       perDirectory[key] = (perDirectory[key] ?? 0) + 1
     }
-    expect(uncovered).toEqual([])
+    expect(unselected).toEqual([])
+    expect(ignored).toEqual([])
     expect(weak).toEqual([])
-    // Every directory adopters run scripts from is represented; a glob that silently stopped
-    // matching one of them would drop its count to zero.
-    for (const directory of ['plugin/bin', 'plugin/hooks', 'plugin/skills', 'plugins/wt-deep-search', 'plugins/wt-rules-on-demand', 'plugins/wt-secret-guard']) {
+    // Every directory adopters run scripts from is represented; a walk or glob that silently
+    // stopped reaching one of them would drop its count to zero.
+    for (const directory of ['plugin/bin', 'plugin/hooks', 'plugin/hooks-modules', 'plugin/skills', 'plugin/workflows', 'plugins/wt-deep-search', 'plugins/wt-rules-on-demand', 'plugins/wt-secret-guard']) {
       expect(perDirectory[directory] ?? 0, JSON.stringify(perDirectory)).toBeGreaterThan(0)
     }
+  })
+
+  // The collector in snapshot-program.js is source TEXT: hooks.js runs it through
+  // `Function('require', 'laneHostDir', 'ensureLaneHostDir', SNAPSHOT_PROGRAM)`, so no lint of
+  // the file reads inside it. Lint it here as the function body it becomes.
+  it('finds no undefined reference or unused binding in the embedded snapshot collector', async () => {
+    const eslint = rootLinter()
+    const filePath = join(REPO_ROOT, 'plugin/hooks/snapshot-collector.virtual.js')
+    const lint = async (parameters: string) => {
+      const [result] = await eslint.lintText(`(function (${parameters}) {\n${SNAPSHOT_PROGRAM as string}\n});\n`, { filePath })
+      return result!.messages.filter((message) => message.ruleId === 'no-undef' || message.ruleId === 'no-unused-vars')
+    }
+    expect(await lint('require, laneHostDir, ensureLaneHostDir')).toEqual([])
+    // Control: without the injected names the same lint must report them, so a green result
+    // above comes from the rules running on the program, not from the text being skipped.
+    const withoutInjection = await lint('require')
+    expect(withoutInjection.some((message) => message.severity === 2 && message.message.includes("'laneHostDir'"))).toBe(true)
   })
 
   // The red proof, run on every suite: a check whose ability to fail is never exercised is

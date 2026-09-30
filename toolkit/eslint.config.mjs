@@ -52,8 +52,6 @@ export default tseslint.config(
       '!plugin/**/*.js',
       '!../plugin/**/*.js',
       '!plugins/**/*.js',
-      'plugin/hooks/snapshot-program.js',
-      '../plugin/hooks/snapshot-program.js',
       'plugin/**/fixtures/**',
       '../plugin/**/fixtures/**',
       // Vendored, byte-identity-checked upstream artifact; lint its generator instead.
@@ -76,7 +74,8 @@ export default tseslint.config(
     // Correctness floor for every shipped plugin script. The block above maps all of
     // js.recommended to WARN for the quality ratchet; these two stay ERRORS because an
     // undefined reference or a dangling binding in a plugin script reaches adopters as
-    // a runtime ReferenceError that no type checker sees.
+    // a runtime ReferenceError that no type checker sees. A binding whose name starts
+    // with `_` is a declared discard and is exempt from no-unused-vars.
     files: pluginScriptFiles,
     rules: {
       'no-undef': 'error',
