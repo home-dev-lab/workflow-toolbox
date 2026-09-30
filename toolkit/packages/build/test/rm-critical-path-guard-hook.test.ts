@@ -143,8 +143,8 @@ describe('review regression locks — parser', () => {
     expect(run('rm -rf ~').denied).toBe(true)
   })
   it('W1 reads a Windows-form home and working directory the way Git Bash spells them', () => {
-    // On win32 the hook receives `C:\...` from os.homedir() and the payload cwd, while the Bash
-    // commands it judges spell the same directories `/c/...`.
+    // On win32 the hook receives `C:\...` from the host's home lookup and the payload cwd, while
+    // the Bash commands it judges spell the same directories `/c/...`. Both are injected here.
     const ctx = { cwd: 'C:\\work\\project', home: 'C:\\Users\\tester' }
     expect(scanRmCriticalPath('rm -rf ~', ctx)).not.toEqual([])
     expect(scanRmCriticalPath('rm -rf /c/Users/tester', ctx)).not.toEqual([])
