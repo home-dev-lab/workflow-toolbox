@@ -94,7 +94,7 @@ function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signa
       const unseen = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, ownership.env.HOME ?? env.HOME ?? '') })
       // Only files refuse; an unreadable named directory is reported and the review runs.
       const missing = unseen.filter((item) => typeof item === 'string' || !item.directory)
-      directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path))
+      directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path), ownership.env.HOME ?? env.HOME ?? '', env)
       if (missing.length) {
         refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
         return Promise.resolve({ status: 2, stdout: '', stderr: requestPathRefusal(missing, cwd, ownership.env.HOME ?? env.HOME ?? '', env), cleanup: [], sandbox: sandbox.line })

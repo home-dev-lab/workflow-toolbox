@@ -10,11 +10,13 @@ import { createSecondOpinionDependencies, listProcessRelationships, listProcessT
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { LaneSandboxRefusal } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+import { LaneSandboxRefusal, laneSandboxReadRemedyAllowed } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { requestPathRefusal } from '../../../../plugin/bin/lib/host/second-opinion-request-paths.mjs'
+import { requestDirectoryNote, requestPathRefusal } from '../../../../plugin/bin/lib/host/second-opinion-request-paths.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { laneHostStateRoot } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -49,6 +51,14 @@ function fixture(consented: boolean) {
     options: { request, out, repo, effort: 'medium' },
   }
 }
+
+// Skipped on win32 because the product never runs this check there. The request-path check runs only for a
+// bwrap plan (plugin/bin/lib/second-opinion-core.mjs:89), and a non-Linux host always gets the 'none' plan
+// (plugin/bin/lib/host/lane-sandbox.mjs:551, :488), announced on stderr as "lane sandbox: none (bubblewrap
+// sandbox is Linux-only ...)" (lane-sandbox.mjs:1074). An unsandboxed reviewer reads a named file directly, so
+// there is nothing to refuse. These cases inject the bwrap plan but name real temp files, which on Windows are
+// C:\ paths the POSIX extractor is not built to read.
+const REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32 = process.platform === 'win32'
 
 const BROKER_SEEN_MARKER = 'broker-seen-by-parent'
 
@@ -172,7 +182,7 @@ describe('second-opinion advisor', () => {
     expect(lists[0]!.length).toBeLessThan(300)
   })
 
-  it('refuses an outside named file before the reviewer starts, and releases launch resources', async () => {
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('refuses an outside named file before the reviewer starts, and releases launch resources', async () => {
     const f = fixture(true)
     const outside = join(resolve(f.repo, '..'), 'outside.md')
     writeFileSync(outside, 'outside')
@@ -211,6 +221,39 @@ describe('second-opinion advisor', () => {
     expect(requestPathRefusal([{ path: '/home', reason: null }], '/repo', '/home/reader', env)).not.toContain('WT_LANE_SANDBOX_READ=')
   })
 
+  // macOS layout: /home resolves to /System/Volumes/Data/home. With a HOME that does not exist, the old check
+  // compared a resolved candidate with a lexical HOME and offered /home, an ancestor of HOME, as a READ entry.
+  it('never offers an ancestor of HOME when the ancestor resolves elsewhere and HOME does not exist', () => {
+    const resolved: Record<string, string> = { '/': '/', '/home': '/System/Volumes/Data/home' }
+    const fs = { realpath: (file: string) => resolved[file] ?? null }
+    const env = { HOME: '/home/reader', PATH: '/usr/bin' }
+    expect(laneSandboxReadRemedyAllowed('/home', env, fs)).toBe(false)
+    expect(laneSandboxReadRemedyAllowed('/home/reader', env, fs)).toBe(false)
+    expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', env, fs)).toBe(true)
+  })
+
+  // Resolving through the deepest existing ancestor must only ADD refusals. A missing child under a host-state link
+  // that points outside state was forbidden by its lexical spelling and stays forbidden; a '..' spelling the
+  // canonical view refuses to resolve stays forbidden under the macOS layout.
+  it('keeps every refusal the realpath-else-lexical view made: a missing child under a state link, and a ".." spelling', () => {
+    const env = { HOME: '/home/owner', PATH: '/usr/bin', WT_LANE_HOST_STATE: '/state/wt-lane-host' }
+    const state = laneHostStateRoot({ env })
+    const layout: Record<string, string> = { '/': '/', [`${state}/link`]: '/work/lane', '/work/lane': '/work/lane', '/home/owner': '/home/owner' }
+    const fs = { realpath: (file: string) => layout[file] ?? null }
+    expect(laneSandboxReadRemedyAllowed(`${state}/link/new`, env, fs)).toBe(false)
+    expect(laneSandboxReadRemedyAllowed('/work/lane/other', env, fs)).toBe(true)
+    const mac: Record<string, string> = { '/': '/', '/home': '/System/Volumes/Data/home' }
+    const macFs = { realpath: (file: string) => mac[file] ?? null }
+    expect(laneSandboxReadRemedyAllowed('/home/reader/..', { HOME: '/home/reader', PATH: '/usr/bin' }, macFs)).toBe(false)
+  })
+
+  it('never offers a forbidden directory as a READ entry in the directory note', () => {
+    const env = { HOME: '/home/reader', PATH: '/usr/bin' }
+    expect(requestDirectoryNote(['/home'], '/home/reader', env)).not.toContain('WT_LANE_SANDBOX_READ=')
+    expect(requestDirectoryNote(['/home'], '/home/reader', env)).toContain('/home')
+    expect(requestDirectoryNote(['/outside/docs', '/home'], '/home/reader', env)).toContain(`WT_LANE_SANDBOX_READ=${quoteRemedyWord('/outside/docs', true)}.`)
+  })
+
   it('refuses a bwrap plan lacking a path checker before the reviewer runs', async () => {
     const f = fixture(true)
     const outside = join(resolve(f.repo, '..'), 'outside.md')
@@ -231,7 +274,7 @@ describe('second-opinion advisor', () => {
     expect(process.listenerCount('exit')).toBe(baseline)
   })
 
-  it.each([
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32).each([
     ['bold', (p: string) => `Review **${p}**`],
     ['punctuation', (p: string) => `Review ${p},please`],
     ['escaped space', (p: string) => `Review ${p.replace('design notes', 'design\\ notes')}`],
@@ -251,7 +294,7 @@ describe('second-opinion advisor', () => {
     expect(unreadable.mock.calls[0]![0].some((group) => group.includes(outside))).toBe(true)
   })
 
-  it('refuses both outside files named in one backticked span before starting Codex', async () => {
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('refuses both outside files named in one backticked span before starting Codex', async () => {
     const f = fixture(true)
     const a = join(resolve(f.repo, '..'), 'a.md')
     const b = join(resolve(f.repo, '..'), 'b.md')
@@ -269,7 +312,7 @@ describe('second-opinion advisor', () => {
     expect(wrap).not.toHaveBeenCalled()
   })
 
-  it('passes explicit exemptions to the real selector; punctuation in an existing spelling cannot be exempted by stripping it', async () => {
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('passes explicit exemptions to the real selector; punctuation in an existing spelling cannot be exempted by stripping it', async () => {
     const f = fixture(true)
     const named = join(resolve(f.repo, '..'), 'report.md!')
     writeFileSync(named, 'exists')
@@ -287,7 +330,7 @@ describe('second-opinion advisor', () => {
   // Replay of 191 archived requests: every directory the check refused was named as context
   // (`~/.claude-work`, `/var`, `~/.claude/rules`), never as the file to review. A named directory the
   // sandbox cannot see is therefore REPORTED in the output and the review runs; only files refuse.
-  it('reports an unreadable named directory in the output and still runs; an unreadable file in the same request still refuses', async () => {
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('reports an unreadable named directory in the output and still runs; an unreadable file in the same request still refuses', async () => {
     const f = fixture(true)
     const dir = join(resolve(f.repo, '..'), 'context-dir')
     const file = join(resolve(f.repo, '..'), 'outside.md')

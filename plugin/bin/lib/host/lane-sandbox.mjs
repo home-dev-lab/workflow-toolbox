@@ -152,29 +152,29 @@ function argumentValues(args, flags, base) {
   })
 }
 
-// The filesystem root, the home directory, and every ancestor of home would re-expose what the
-// sandbox exists to hide. Symlinks are resolved so a link to $HOME cannot slip past (LOW 4). This
-// is applied to EVERY computed bind, not only the operator extras (H2).
+// Root, $HOME, its ancestors, or host lane state would re-expose what the sandbox hides; checked for EVERY bind (H2). Forbidden under
+// EITHER view: realpath-else-lexical is the original check; deepest-existing-ancestor adds a missing $HOME under a link (a '..' it cannot resolve is left to bindPath's refusal).
 function isForbiddenPath(candidate, env, fs) {
   if (!candidate || !path.isAbsolute(candidate)) return true
-  const target = fs.realpath(candidate) ?? path.resolve(candidate)
-  const homeDir = fs.realpath(home(env)) ?? path.resolve(home(env))
-  if (target === path.parse(target).root) return true
-  if (homeDir === target || homeDir.startsWith(`${target}${path.sep}`)) return true
-  // Host-owned lane state (records, decisions, logs) must never be visible to a lane: its root, an
-  // ancestor that would contain it, or anything beneath it.
-  const hostRoot = hostStateRootOf(env, fs)
+  const views = [(value) => fs.realpath(value) ?? path.resolve(value), (value) => canonicalPath(value, fs)]
+  return views.some((view, index) => { try { return forbiddenUnder(view, candidate, env, fs) } catch (error) { if (index === 0) throw error; return false } })
+}
+function forbiddenUnder(view, candidate, env, fs) {
+  const target = view(candidate)
+  const homeDir = view(home(env))
+  if (target === path.parse(target).root || homeDir === target || homeDir.startsWith(`${target}${path.sep}`)) return true
+  const hostRoot = hostStateRootOf(env, fs, view) // host lane state: its root, an ancestor containing it, or anything beneath
   return hostRoot !== null && (within(target, hostRoot) || within(hostRoot, target))
 }
 
-export function laneSandboxReadRemedyAllowed(directory, env) {
-  return !directory.includes(':') && !isForbiddenPath(directory, env, realFs)
+export function laneSandboxReadRemedyAllowed(directory, env, fs = realFs) {
+  return !directory.includes(':') && !isForbiddenPath(directory, env, fs)
 }
 
-function hostStateRootOf(env, fs) {
+function hostStateRootOf(env, fs, view = (value) => fs.realpath(value) ?? path.resolve(value)) {
   try {
     const root = laneHostStateRoot({ env })
-    return fs.realpath(root) ?? path.resolve(root)
+    return view(root)
   } catch { return null }
 }
 
