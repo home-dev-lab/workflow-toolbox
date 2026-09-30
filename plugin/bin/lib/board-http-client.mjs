@@ -1,3 +1,5 @@
+export { resolveBoardPointer } from './host/board-pointer.mjs'
+
 export class BoardUnavailable extends Error {
   constructor(detail, status) {
     super(`board unavailable: ${detail}`)
@@ -39,7 +41,7 @@ function rpcBody(body) {
 // get_card {cardId}; find_cards {boardId, list, limit, offset, includeDescription}; move_card
 // {cardId, listId}; add_comment {cardId, text}; get_board {boardId, cardsSummary}. The first real
 // wave failed with "malformed MCP result JSON" because the client had invented `id`/`listName`.
-export function createBoardClient({ url, boardId, fetch: request = globalThis.fetch }) {
+export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: request = globalThis.fetch }) {
   if (typeof request !== 'function') throw new BoardUnavailable('fetch is unavailable')
   let listsById = null
   async function lists() {
@@ -80,7 +82,7 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
   }
   async function call(name, arguments_ = {}) {
     // Lazy on purpose: the driver prints its wave line and renders a fail-closed report on this refusal.
-    if (!boardId) throw new BoardUnavailable('boardId is required (--board-id or .claude/planka.json)')
+    if (!boardId) throw new BoardUnavailable(boardIdMissingReason ?? 'boardId is required (--board-id or .claude/planka.json)')
     if (!initialized) {
       await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'wt-orchestrator', version: '1.0.0' } })
       await send({ jsonrpc: '2.0', method: 'notifications/initialized' })
@@ -90,6 +92,7 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
     catch (error) { throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error.message) }
   }
   return {
+    get boardId() { return boardId },
     async findCards({ listName, limit, offset, includeDescription = true }) {
       const result = await call('find_cards', { boardId, list: listName, limit, offset, includeDescription })
       if (!Array.isArray(result) && !Array.isArray(result?.cards) && !Array.isArray(result?.items)) throw new BoardUnavailable('malformed find_cards result')

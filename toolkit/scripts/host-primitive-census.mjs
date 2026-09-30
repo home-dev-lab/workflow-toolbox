@@ -20,8 +20,10 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // gate-evidence check replaced its per-path stat calls with a git comparison. The plugin lint
 // pass removed an unused `homedir` import from wt-service-watch.mjs. The plugin-root classifier
 // that replaced the duplicate-hook notice reads the home directory through host/home-directory.mjs.
+// The board-pointer walk and the worktree remover's canonical path moved into host/board-pointer.mjs; the
+// retention helpers read the platform from host/platform.mjs.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1897
+export const HOST_PRIMITIVE_CEILING = 1894
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
