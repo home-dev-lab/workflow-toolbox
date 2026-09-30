@@ -3465,7 +3465,7 @@ function sdkRunnerFixture(name, id, { phaseLog, lifecycle, routeModels, runnerAl
 
 await test('[card 1874319379 INV1+INV3] a live SDK runner in an in-process phase with no fresh write stays listed, without a phantom lane', async () => {
   const id = '1874319379915605690';
-  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
+  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
   const alive = sdkRunnerFixture('sdk-silent-plan', id, { phaseLog: 'lifecycle: accepted phase=discovery\nlifecycle: accepted phase=plan\n', routeModels });
   const actor = (await readSnapshot({ process: processCapability }, alive.isolatedPaths)).rows.find((item) => item.id === id);
   assert(actor, 'the live runner keeps its row although nothing was written for 30 min');
@@ -3484,11 +3484,11 @@ await test('[card 1874319379 INV2] a runner whose log ends on EXIT= is not liste
 
 await test('[card 1874319379 INV4] the SDK row carries the CURRENT phase model', async () => {
   const { currentPhaseModel } = artifactHelpers;
-  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
+  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
   assert.equal(currentPhaseModel('plan', { pilotModel: 'opus', routeModels, lanes: [] }), 'opus');
   assert.equal(currentPhaseModel('verify', { pilotModel: 'opus', routeModels, lanes: [] }), 'opus');
   assert.equal(currentPhaseModel('review', { pilotModel: 'opus', routeModels, lanes: [] }), 'openai/gpt-6-astra');
-  assert.equal(currentPhaseModel('tdd', { pilotModel: 'opus', routeModels, lanes: [] }), 'openai/gpt-6-sol');
+  assert.equal(currentPhaseModel('tdd', { pilotModel: 'opus', routeModels, lanes: [] }), 'openai/gpt-6.1-sol');
   assert.equal(currentPhaseModel('tdd', { pilotModel: 'opus', routeModels: { lane: 'terra' }, lanes: [] }), 'terra');
   assert.equal(currentPhaseModel('refutation', { pilotModel: 'opus', routeModels: {}, lanes: [] }), 'unknown');
   const lanes = [

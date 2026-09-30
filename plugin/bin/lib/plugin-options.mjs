@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { resolveConsent } from './lane-consent-check-core.mjs'
-import { EXECUTOR_DEFAULTS, EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
+import { DEFAULT_LANE_MODELS, EXECUTOR_DEFAULTS, EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
 
 const PLUGIN_CONFIG_PREFIX = 'workflow-toolbox@'
 
@@ -10,7 +10,7 @@ const DEFINITIONS = Object.freeze({
   executor_lane_consent: { envKey: 'WT_EXECUTOR_LANE_CONSENT', type: 'boolean', defaultValue: false },
   adopt_refresh: { envKey: 'WT_ADOPT_REFRESH', type: 'string', defaultValue: 'session' },
   lane_skills: { envKey: 'WT_LANE_SKILLS', type: 'string', defaultValue: '' },
-  lane_models: { envKey: 'WT_LANE_MODELS', type: 'string', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra' },
+  lane_models: { envKey: 'WT_LANE_MODELS', type: 'string', defaultValue: DEFAULT_LANE_MODELS.join(',') },
   artifact_server: { envKey: 'WT_ARTIFACT_SERVER', type: 'boolean', defaultValue: true },
   artifact_server_roots: { envKey: 'WT_ARTIFACT_SERVER_ROOTS', type: 'string', defaultValue: null },
   artifact_server_port: { envKey: 'WT_ARTIFACT_SERVER_PORT', type: 'number', defaultValue: null },
