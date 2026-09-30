@@ -61,10 +61,10 @@ describe('pilot model configuration', () => {
   })
 
   it.each([
-    ['gpt-lane', 'LITE', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'LITE', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'LITE', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'LITE', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
     ['claude-sdk', 'LITE', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
     ['claude-sdk', 'LITE', true, { critic: 'opus', code: 'opus', review: 'opus', refutation: 'opus' }],
     ['claude-sdk', 'FULL', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
@@ -75,6 +75,18 @@ describe('pilot model configuration', () => {
       worktree: '/worktree', route, hard, env: {}, settingsEnv: {},
       resolveConsentImpl: () => ({ outcome: consent }),
     })).toMatchObject({ executor, models, executors: { critic: executor, code: executor, review: executor, refutation: executor } })
+  })
+
+  it.each([false, true])('defaults GPT implementation to GPT-6.1 Sol at high and preserves critic and review routing for hard=%s', (hard) => {
+    const profile = resolveExecutorProfile({
+      worktree: '/worktree', route: 'FULL', hard, env: {}, settingsEnv: {},
+      resolveConsentImpl: () => ({ outcome: 'true' }),
+    })
+    expect(profile.models).toEqual({
+      critic: hard ? 'openai/gpt-6-astra' : 'openai/gpt-6-sol',
+      code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra',
+    })
+    expect(profile.variants).toEqual({ critic: 'max', code: 'high', review: 'medium', refutation: 'medium' })
   })
 
   it('treats unresolved consent as Claude and resolves each override by its own model', () => {
@@ -89,7 +101,7 @@ describe('pilot model configuration', () => {
 
   it('routes GPT code with Claude refutation and preserves each family effort', () => {
     expect(resolveExecutorProfile({ worktree: '/w', route: 'FULL', env: { WT_EXECUTOR_REFUTATION_MODEL: 'opus' }, resolveConsentImpl: () => ({ outcome: 'true' }) })).toMatchObject({
-      executor: 'gpt-lane', models: { code: 'openai/gpt-6-sol', refutation: 'opus' },
+      executor: 'gpt-lane', models: { code: 'openai/gpt-6.1-sol', refutation: 'opus' },
       executors: { code: 'gpt-lane', refutation: 'claude-sdk' }, variants: { code: 'high', refutation: 'xhigh' },
     })
   })

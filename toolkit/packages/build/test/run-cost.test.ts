@@ -169,6 +169,12 @@ describe('run cost', () => {
     }
   })
 
+  it('prices GPT-6.1 Sol with its lower cached-input rate without double-billing reasoning', () => {
+    const table = JSON.parse(readFileSync(PRICE_TABLE, 'utf8'))
+    expect(table.models['openai/gpt-6.1-sol']).toMatchObject({ input: 2, cache_read: 0.1, output: 10, cache_write: null })
+    expect(pricedModel('openai/gpt-6.1-sol', { family: 'openai', input: 1_000_000, cache_read: 2_000_000, output: 3_000_000, reasoning: 9_000_000 }, table).row.usd).toBe(32.2)
+  })
+
   it('prices Anthropic and OpenAI tokens without billing reasoning twice', () => {
     const table = JSON.parse(readFileSync(PRICE_TABLE, 'utf8'))
     expect(pricedModel('anthropic/claude-opus-5-20260901', { family: 'anthropic', input: 1_000_000, cache_write: 2_000_000, cache_read: 3_000_000, output: 4_000_000 }, table).row.usd).toBe(119)

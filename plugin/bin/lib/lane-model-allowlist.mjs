@@ -8,6 +8,7 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
   'openai/gpt-6-luna',
   'openai/gpt-6-sol',
   'openai/gpt-6-astra',
+  'openai/gpt-6.1-sol',
 ])
 
 // Aide-memoire kept up to date with variants we have verified; never an authority on what providers expose.

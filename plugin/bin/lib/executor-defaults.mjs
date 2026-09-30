@@ -8,8 +8,8 @@ export function executorFamilyForModel(model) {
 
 export const EXECUTOR_DEFAULTS = Object.freeze({
   'gpt-lane': {
-    standard: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' },
-    hard: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' },
+    standard: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' },
+    hard: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' },
   },
   'claude-sdk': {
     standard: { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' },

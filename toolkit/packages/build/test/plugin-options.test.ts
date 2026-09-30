@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { describeWorkflowToolboxOptions, findOrphanedPluginConfigs, resolveWorkflowToolboxOption } from '../../../../plugin/bin/lib/plugin-options.mjs'
 // @ts-expect-error Standalone plugin helpers have no declaration surface.
 import { resolveExecutorProfile, resolvePilotModels } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
+// @ts-expect-error Standalone plugin helpers have no declaration surface.
+import { DEFAULT_LANE_MODELS, laneModelRefusal, resolveLaneModelAllowlist } from '../../../../plugin/bin/lib/lane-model-allowlist.mjs'
 import manifest from '../../../../plugin/.claude-plugin/plugin.json'
 
 const roots: string[] = []
@@ -13,7 +15,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const cases = [
   { option: 'lane_skills', envKey: 'WT_LANE_SKILLS', optionValue: 'option-skill', envValue: 'env-skill', defaultValue: '' },
-  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra' },
+  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra,openai/gpt-6.1-sol' },
   { option: 'artifact_server', envKey: 'WT_ARTIFACT_SERVER', optionValue: false, envValue: '1', defaultValue: true },
   { option: 'artifact_server_roots', envKey: 'WT_ARTIFACT_SERVER_ROOTS', optionValue: 'option=/root', envValue: 'env=/root', defaultValue: null },
   { option: 'artifact_server_port', envKey: 'WT_ARTIFACT_SERVER_PORT', optionValue: 49123, envValue: '49124', defaultValue: null },
@@ -38,6 +40,19 @@ function fixture(settings?: unknown) {
 }
 
 describe('workflow-toolbox plugin option resolver', () => {
+  it('admits GPT-6.1 Sol through every default lane allow-list while refusing an unknown model', () => {
+    const f = fixture({})
+    expect(DEFAULT_LANE_MODELS).toEqual([
+      'openai/gpt-5.6-luna', 'openai/gpt-5.6-terra', 'openai/gpt-5.6-sol',
+      'openai/gpt-6-luna', 'openai/gpt-6-sol', 'openai/gpt-6-astra', 'openai/gpt-6.1-sol',
+    ])
+    expect(resolveLaneModelAllowlist({ env: f.env })).toEqual(DEFAULT_LANE_MODELS)
+    expect(resolveLaneModelAllowlist({ env: { ...f.env, WT_LANE_MODELS: '' } })).toEqual(DEFAULT_LANE_MODELS)
+    expect(manifest.userConfig.lane_models.default.split(',')).toEqual(DEFAULT_LANE_MODELS)
+    expect(laneModelRefusal('openai/gpt-6.1-sol', { env: f.env })).toBeNull()
+    expect(laneModelRefusal('unknown/model', { env: f.env })).toContain('is not in the lane model allow-list')
+  })
+
   it.each(cases)('$option: plugin option wins over env', ({ option, envKey, optionValue, envValue }) => {
     const f = fixture({ pluginConfigs: { 'workflow-toolbox@local': { options: { [option]: optionValue } } } })
     f.env[envKey] = envValue
@@ -100,7 +115,7 @@ describe('workflow-toolbox plugin option resolver', () => {
 
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_code_model: '' } } } }))
     const defaultRow = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest }).find((row: { option: string }) => row.option === 'executor_code_model')
-    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-sol', source: 'default' })
+    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6.1-sol / hard openai/gpt-6.1-sol', source: 'default' })
   })
 
   it('describes every empty executor model option using the resolved standard and hard defaults', () => {

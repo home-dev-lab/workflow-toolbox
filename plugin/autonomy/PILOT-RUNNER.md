@@ -201,7 +201,8 @@ Tree signature v3 is a filesystem signature over names from HEAD, the index, and
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
 rename does not change it; recorded v2 signatures do not compare.
 
-GPT lanes use `openai/gpt-6-sol` for code and standard critic (`high` / `max`);
+GPT lanes use `openai/gpt-6.1-sol` for standard and hard code (`high`),
+and `openai/gpt-6-sol` for standard critic (`max`);
 hard critic, review and refutation use `openai/gpt-6-astra` (`max` / `medium` / `medium`).
 Astra reviews Sol's code so the same model never judges itself. Claude SDK executors
 use `opus` for critic, review and refutation at `xhigh`; standard code uses `sonnet`
