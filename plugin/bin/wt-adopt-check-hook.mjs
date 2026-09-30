@@ -117,6 +117,9 @@ function bucket(status) {
   if (/^MISPLACED/.test(status)) return 'misplaced'
   if (/^ABSENT/.test(status)) return 'absent'
   if (/^MIGRATION-PENDING/.test(status)) return 'absent'
+  // Not present at THIS static location: the rule is served from on-demand storage, whose own check
+  // reports it. Read as 'ok' it would count as a second location and raise a false DOUBLE-LOAD.
+  if (/^MIGRATED-ON-DEMAND/.test(status)) return 'absent'
   if (/^DUPLICATE/.test(status)) return 'duplicate'
   if (/^STALE/.test(status)) return 'stale'
   if (/^AHEAD(?:\/FORKED)?/.test(status)) return 'ahead'

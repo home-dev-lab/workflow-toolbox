@@ -503,6 +503,184 @@ describe('adopt installer — rules-on-demand copies', () => {
   })
 })
 
+// A STATIC rule the owner migrated into the sibling rules-on-demand dir, where it carries its own
+// on-demand head, is served from there. Every mode must recognise it and never write a static copy
+// back beside it: that copy would load the rule twice.
+describe('adopt installer — static rule migrated to the sibling on-demand dir', () => {
+  function migratedLayout(base: string): { staticDir: string; onDemandDir: string; migrated: string } {
+    const staticDir = join(base, 'rules', 'wt')
+    const onDemandDir = join(base, 'rules-on-demand')
+    run(['--set', 'rules', '--install'], staticDir)
+    run(['--set', 'rules', '--install'], onDemandDir)
+    // As on a real profile: the spec-backed halves live on demand only, so nothing else loads twice.
+    for (const file of readdirSync(onDemandDir).filter((name) => name.endsWith('.md'))) rmSync(join(staticDir, file), { force: true })
+    const migrated = join(onDemandDir, RULE)
+    renameSync(join(staticDir, RULE), migrated)
+    writeFileSync(migrated, ON_DEMAND_FRONTMATTER + readFileSync(migrated, 'utf8'))
+    return { staticDir, onDemandDir, migrated }
+  }
+  function expectRecognised(check: { status: number | null; out: string }) {
+    expect(check.status, check.out).toBe(0)
+    expect(check.out).toContain(`${RULE}: MIGRATED-ON-DEMAND`)
+    expect(check.out).not.toContain(`${RULE}: ABSENT`)
+  }
+  // An explicit --dir install into a static dir exits non-zero for the spec-backed halves adopted in the sibling
+  // on-demand dir (existing DUPLICATE contract); only the implicit modes are expected to exit 0 here.
+  function expectNotWritten(install: { status: number | null; out: string }, staticDir: string, migrated: string, before: string, exitZero = true) {
+    if (exitZero) expect(install.status, install.out).toBe(0)
+    expect(install.out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND`)
+    expect(existsSync(join(staticDir, RULE))).toBe(false)
+    expect(readFileSync(migrated, 'utf8')).toBe(before)
+  }
+
+  it('--global: check reports it migrated and install writes no static copy', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    mkdirSync(project, { recursive: true })
+    const config = join(root, 'config')
+    const { staticDir, migrated } = migratedLayout(config)
+    const before = readFileSync(migrated, 'utf8')
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    expectRecognised(runInCwdResult(['--set', 'rules', '--check', '--global'], project, env))
+    expectNotWritten(runInCwdResult(['--set', 'rules', '--install', '--global'], project, env), staticDir, migrated, before)
+    expectNotWritten(runInCwdResult(['--set', 'rules', '--install', '--global', '--force'], project, env), staticDir, migrated, before)
+    expectNotWritten(runInCwdResult(['--set', 'rules', '--install', '--global', '--file', RULE], project, env), staticDir, migrated, before)
+    // Settings are written by now, so the only thing that could still ask for an install is the rule.
+    const recheck = runInCwdResult(['--set', 'rules', '--check', '--global'], project, env)
+    expectRecognised(recheck)
+    expect(recheck.out).not.toContain('write the ABSENT')
+  })
+
+  it('--dir on the static dir: check reports it migrated and install writes no static copy', () => {
+    const { staticDir, migrated } = migratedLayout(join(mkDir(), 'config'))
+    const before = readFileSync(migrated, 'utf8')
+
+    expectRecognised(runResult(['--set', 'rules', '--check'], staticDir))
+    expectNotWritten(runResult(['--set', 'rules', '--install'], staticDir), staticDir, migrated, before, false)
+    expectNotWritten(runResult(['--set', 'rules', '--install', '--file', RULE], staticDir), staticDir, migrated, before)
+  })
+
+  it('project level: check reports it migrated and install writes no static copy', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const { staticDir, migrated } = migratedLayout(join(project, '.claude'))
+    const before = readFileSync(migrated, 'utf8')
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: join(root, 'empty-config'), CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    expectRecognised(runInCwdResult(['--set', 'rules', '--check'], project, env))
+    expectNotWritten(runInCwdResult(['--set', 'rules', '--install'], project, env), staticDir, migrated, before)
+  })
+
+  it('a project install never writes a static copy of a rule the config dir serves on demand', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    mkdirSync(project, { recursive: true })
+    const config = join(root, 'config')
+    const { migrated } = migratedLayout(config)
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const install = runInCwdResult(['--set', 'rules', '--install'], project, env)
+    expect(install.out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (served from ${migrated}`)
+    expect(existsSync(join(project, '.claude', 'rules', 'wt', RULE))).toBe(false)
+  })
+
+  it('--global through a profile whose rules dir is a symlink to another profile recognises that profile\'s migration', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    mkdirSync(project, { recursive: true })
+    const { staticDir, migrated } = migratedLayout(join(root, 'first'))
+    const second = join(root, 'second')
+    mkdirSync(second, { recursive: true })
+    symlinkSync(join(root, 'first', 'rules'), join(second, 'rules'), 'dir')
+    const before = readFileSync(migrated, 'utf8')
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: second, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const check = runInCwdResult(['--set', 'rules', '--check', '--global'], project, env)
+    expectRecognised(check)
+    expect(check.out).toContain('so the rule is not loaded here')
+    expectNotWritten(runInCwdResult(['--set', 'rules', '--install', '--global'], project, env), staticDir, migrated, before)
+  })
+
+  it('follows a linked rules directory whose wt subdirectory does not exist yet', () => {
+    const root = mkDir()
+    const first = join(root, 'first')
+    mkdirSync(join(first, 'rules'), { recursive: true })
+    mkdirSync(join(first, 'rules-on-demand'), { recursive: true })
+    const migrated = join(first, 'rules-on-demand', RULE)
+    writeFileSync(migrated, ON_DEMAND_FRONTMATTER + readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8'))
+    const third = join(root, 'third')
+    mkdirSync(third, { recursive: true })
+    symlinkSync(join(first, 'rules'), join(third, 'rules'), 'dir')
+
+    const check = runResult(['--set', 'rules', '--check'], join(third, 'rules', 'wt'))
+    expect(check.out).toContain(`${RULE}: MIGRATED-ON-DEMAND (migrated to ${migrated}`)
+  })
+
+  it('refuses a --file that no set manages, whichever groups the implicit resolution builds', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    mkdirSync(project, { recursive: true })
+    const config = join(root, 'config')
+    const { staticDir } = migratedLayout(config)
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const install = runInCwdResult(['--set', 'rules', '--install', '--global', '--file', 'no-such-rule.md'], project, env)
+    expect(install.status).not.toBe(0)
+    expect(install.out).toContain('--file is not managed by --set rules: no-such-rule.md')
+    expect(existsSync(join(staticDir, 'no-such-rule.md'))).toBe(false)
+  })
+
+  it('recognises a migrated copy without an adoption banner, as the on-demand side does', () => {
+    const { staticDir, onDemandDir, migrated } = migratedLayout(join(mkDir(), 'config'))
+    writeFileSync(migrated, ON_DEMAND_FRONTMATTER + readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8'))
+    const before = readFileSync(migrated, 'utf8')
+
+    expect(runResult(['--set', 'rules', '--check'], onDemandDir).out).toContain(`${RULE}: ON-DEMAND`)
+    expectRecognised(runResult(['--set', 'rules', '--check'], staticDir))
+    expectNotWritten(runResult(['--set', 'rules', '--install'], staticDir), staticDir, migrated, before, false)
+  })
+
+  it('an explicit --dir into a project, run from another directory, sees the active profile\'s migration', () => {
+    const root = mkDir()
+    const config = join(root, 'config')
+    const { migrated } = migratedLayout(config)
+    const projectRules = join(root, 'elsewhere', 'project', '.claude', 'rules', 'wt')
+    const cwd = join(root, 'unrelated')
+    mkdirSync(cwd, { recursive: true })
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const res = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--install', '--file', RULE, '--dir', projectRules], { cwd, encoding: 'utf8', env })
+    const out = (res.stdout ?? '') + (res.stderr ?? '')
+    expect(out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (served from ${migrated}`)
+    expect(existsSync(join(projectRules, RULE))).toBe(false)
+  })
+
+  it('a sibling copy WITHOUT its own on-demand head is not taken for a migration', () => {
+    const { staticDir, onDemandDir, migrated } = migratedLayout(join(mkDir(), 'config'))
+    writeFileSync(migrated, readFileSync(migrated, 'utf8').slice(ON_DEMAND_FRONTMATTER.length))
+
+    const check = runResult(['--set', 'rules', '--check'], staticDir)
+    expect(check.out).not.toContain('MIGRATED-ON-DEMAND')
+    expect(check.out).toContain(`${RULE}: ABSENT`)
+    expect(runResult(['--set', 'rules', '--check'], onDemandDir).out).toContain(`${RULE}: MISPLACED`)
+  })
+
+  it('a copy present in BOTH dirs is still reported, never hidden as a migration', () => {
+    const base = mkDir()
+    const { staticDir, migrated } = migratedLayout(join(base, 'config'))
+    const scratch = join(base, 'scratch', 'rules', 'wt')
+    run(['--set', 'rules', '--install', '--file', RULE], scratch)
+    cpSync(join(scratch, RULE), join(staticDir, RULE))
+    expect(existsSync(migrated)).toBe(true)
+
+    const install = runResult(['--set', 'rules', '--install'], staticDir)
+    expect(install.out).not.toContain('MIGRATED-ON-DEMAND')
+    expect(install.out).toContain(`${RULE}: SKIPPED — DUPLICATE`)
+    expect(install.status).not.toBe(0)
+  })
+})
+
 describe('adopt installer — spec-backed on-demand trigger heads', () => {
   it.each([
     '<!-- installed from workflow-toolbox v0.189.1 · content sha256:f3eafead0d07 head sha256:735fd0df79d7 by the adopt skill kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill — editable copy. -->',

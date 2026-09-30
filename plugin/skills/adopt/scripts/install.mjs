@@ -2120,14 +2120,84 @@ function legacyItemDecision(set, dir, item, classification) {
   }
 }
 
-function siblingOnDemandDir(set, dir, args) {
-  if (!args.dir || args.mode !== 'install' || set.kind !== 'rules') return null
-  const resolved = path.resolve(dir)
-  if (path.basename(resolved) === 'wt' && path.basename(path.dirname(resolved)) === 'rules') {
+/** The rules-on-demand directory beside a static `rules/wt` or `rules` directory, or null. */
+function siblingOnDemandPath(resolved) {
+  const name = (p) => path.basename(p)
+  if (name(resolved) === 'wt' && name(path.dirname(resolved)) === 'rules') {
     return path.join(path.dirname(path.dirname(resolved)), 'rules-on-demand')
   }
-  if (path.basename(resolved) === 'rules') return path.join(path.dirname(resolved), 'rules-on-demand')
+  if (name(resolved) === 'rules') return path.join(path.dirname(resolved), 'rules-on-demand')
   return null
+}
+
+/** `dir` through its real path; a directory not created yet resolves through its parent. */
+function realDir(dir) {
+  const resolved = path.resolve(dir)
+  for (const [base, rest] of [[resolved, ''], [path.dirname(resolved), path.basename(resolved)]]) {
+    try {
+      return path.join(fs.realpathSync(base), rest)
+    } catch {
+      // Try the parent next; neither existing leaves the path as given.
+    }
+  }
+  return resolved
+}
+
+/** The `.claude` directory of a PROJECT whose static rules directory `dir` is (`<p>/.claude/rules[/wt]`),
+ *  or null. A config profile root is never a project's, even when it is named `.claude`. */
+function projectClaudeDirOf(dir) {
+  const rules = siblingOnDemandPath(realDir(dir))
+  const claude = rules ? path.dirname(rules) : null
+  if (!claude || path.basename(claude) !== '.claude') return null
+  const configRoots = new Set(discoveredConfigRoots().map(realDir))
+  return configRoots.has(claude) ? null : claude
+}
+
+/** The on-demand directories the engine serves beside static `dir`: its sibling, plus the active config
+ *  profile's when `dir` belongs to a project (a session loads the project and the active profile). Decided
+ *  from the target itself, never from the working directory the installer runs in. */
+function servedOnDemandDirs(dir) {
+  const dirs = [siblingOnDemandPath(path.resolve(dir))]
+  if (projectClaudeDirOf(dir)) dirs.push(path.join(resolvedConfigRoot(), 'rules-on-demand'))
+  return [...new Set(dirs.filter(Boolean).map((onDemand) => path.resolve(onDemand)))]
+}
+
+function siblingOnDemandDir(set, dir, args) {
+  if (!args.dir || args.mode !== 'install' || set.kind !== 'rules') return null
+  return siblingOnDemandPath(path.resolve(dir))
+}
+
+/** True for a shipped STATIC rule copy sitting in on-demand storage with its own on-demand head: a
+ *  deliberate migration the engine serves by that head. The one definition both check sides use. */
+function isMigratedStaticCopy(set, target) {
+  if (set.kind !== 'rules') return false
+  try {
+    return classify(target, set).state !== 'absent' && !!onDemandFrontmatter(readRuleText(target))
+  } catch {
+    return false
+  }
+}
+
+/** Where a static rule ABSENT from static `dir` already lives on demand, or null. `served` is false when
+ *  the copy sits beside the REAL static directory only (a rules directory linked to another profile's):
+ *  that profile serves it, this one does not, and a static copy would still load twice there. */
+function migratedOnDemandCopy(set, dir, item, root) {
+  if (set.kind !== 'rules' || inOnDemandStorage(dir) || isOnDemandRule(root, item)) return null
+  const served = servedOnDemandDirs(dir)
+  const shared = siblingOnDemandPath(realDir(dir))
+  for (const onDemandDir of [...served, ...(shared && !served.includes(shared) ? [shared] : [])]) {
+    const target = path.join(onDemandDir, item.file)
+    if (isMigratedStaticCopy(set, target)) return { target, served: served.includes(onDemandDir) }
+  }
+  return null
+}
+
+function migratedStatus({ target, served }) {
+  return served
+    ? `MIGRATED-ON-DEMAND (served from ${target} with its own on-demand head; no static copy is written here)`
+    : `MIGRATED-ON-DEMAND (migrated to ${target} by the profile whose static rules directory this one links to; ` +
+      'this profile does not load that on-demand directory, so the rule is not loaded here; no static copy is ' +
+      'written, it would load twice there)'
 }
 
 function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
@@ -2152,6 +2222,11 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
     duplicate = true
     decision = { status: `DUPLICATE (adopted copy already present in ${path.join(alternateDirs.onDemand, item.file)})`, write: false }
   }
+  const migrated = classification.state === 'absent' ? migratedOnDemandCopy(set, dir, item, root) : null
+  if (migrated) {
+    duplicate = false
+    decision = { status: migratedStatus(migrated), write: false }
+  }
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
   const spec = ['clean', 'edited', 'edited-unknown'].includes(classification.state)
@@ -2167,7 +2242,7 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
     classification.state === 'clean' &&
     ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
       (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
-  return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate }
+  return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate, migrated: !!migrated && !legacyDecision }
 }
 
 function existingContentForRender(set, target, classification) {
@@ -2298,7 +2373,7 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
     }
   }
   return {
-    anyAbsent: classification.state === 'absent',
+    anyAbsent: classification.state === 'absent' && !planned.migrated,
     anyStale: planned.stale || triggers?.state === 'stale',
     anyTriggersUnresolved: !!triggers && ['edited', 'unverified', 'kept-spec-moved', 'edited-after-keep'].includes(triggers.state),
     anyEdited: ['edited', 'edited-unknown'].includes(classification.state),
@@ -2318,7 +2393,8 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   const allItems = set.resolveItems(root)
   const demand = set.kind === 'rules' && inOnDemandStorage(dir)
   const items = demand ? allItems.filter((item) => isOnDemandRule(root, item)) : allItems
-  if (args.file && !items.some((item) => item.file === args.file)) {
+  // A group the implicit resolution did not assign this file to has nothing to say about it.
+  if (args.file && (!selectedItems || selectedItems.has(args.file)) && !items.some((item) => item.file === args.file)) {
     fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
   }
   const state = {
@@ -2339,8 +2415,7 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
       try {
         const target = path.join(dir, item.file)
         const status = classify(target, set).state
-        if (status !== 'absent' && onDemandFrontmatter(readRuleText(target))) {
-          // Its own on-demand head is what the engine serves by: a deliberate migration.
+        if (isMigratedStaticCopy(set, target)) {
           process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
         } else if (status !== 'absent') {
           process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
@@ -2988,6 +3063,10 @@ function runManagedCommand(args, context) {
     const fallbackDir = path.resolve(
       args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
     )
+    // Checked once against the whole set: a group the implicit resolution did not give this file skips it.
+    if (args.file && !set.resolveItems(root).some((item) => item.file === args.file)) {
+      fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
+    }
     for (const [dir, files] of managedSetGroups(set, fallbackDir, implicitInstallDirs.get(name), root)) {
       if (!args.refreshTriggers && !args.keepTriggers) refuseExplicitRootInstall(set, dir, args, root)
       mergeSetState(state, processSet(set, dir, args, version, root, files))
