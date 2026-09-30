@@ -46,6 +46,7 @@ import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { quoteRemedyWord } from './lib/remedy-quote.mjs'
+import { pluginRootState } from './lib/plugin-root-state.mjs'
 import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
 
@@ -115,8 +116,16 @@ function checkDir(dir, set = 'rules', locationKind = 'static', project = null) {
  *  through the merge undisturbed. */
 function bucket(status) {
   if (/^MISPLACED/.test(status)) return 'misplaced'
+  // The installer HELD its decision: an on-demand copy's head is not confirmed (the engine rejects it, or
+  // could not be found or loaded to ask). Neither 'absent' (its remedy, an install, writes nothing here) nor
+  // 'misplaced' (the copy may be perfectly placed): its own bucket, never the fail-open 'ok', so a malformed
+  // head is loud at every session.
+  if (/^ON-DEMAND-UNVERIFIED/.test(status)) return 'unverified'
   if (/^ABSENT/.test(status)) return 'absent'
   if (/^MIGRATION-PENDING/.test(status)) return 'absent'
+  // Not present at THIS static location: the rule is served from on-demand storage, whose own check
+  // reports it. Read as 'ok' it would count as a second location and raise a false DOUBLE-LOAD.
+  if (/^MIGRATED-ON-DEMAND/.test(status)) return 'absent'
   if (/^DUPLICATE/.test(status)) return 'duplicate'
   if (/^STALE/.test(status)) return 'stale'
   if (/^AHEAD(?:\/FORKED)?/.test(status)) return 'ahead'
@@ -139,6 +148,9 @@ function mergeAll(maps, file) {
   const present = maps
     .map((map) => map.get(file))
     .filter((finding) => finding && bucket(finding.status) !== 'absent')
+  // Whether this rule loads once, twice or nowhere is unknown until the engine is reachable: say so first.
+  const unverified = present.find((finding) => bucket(finding.status) === 'unverified')
+  if (unverified) return { bucket: 'unverified', status: unverified.status, location: unverified.location }
   const misplaced = present.filter((finding) => bucket(finding.status) === 'misplaced' &&
     !present.some((other) => other.locationKind === 'static' && other.realLocation === finding.realLocation))
   if (misplaced.length) {
@@ -210,7 +222,21 @@ function stripBanner(text) {
   const body = frontmatter.ok && /^on-demand\s*:/m.test(frontmatter.block)
     ? frontmatter.body
     : withoutBanner
-  return body.replace(/^[\r\n]+|[ \t\r\n]+$/gu, '')
+  return trimTrailingBlank(trimLeadingNewlines(body))
+}
+
+// Linear scans instead of anchored whitespace regexes, which backtrack super-linearly
+// on a long whitespace run.
+function trimLeadingNewlines(text) {
+  let start = 0
+  while (start < text.length && (text[start] === '\r' || text[start] === '\n')) start++
+  return text.slice(start)
+}
+
+function trimTrailingBlank(text) {
+  let end = text.length
+  while (end > 0 && ' \t\r\n'.includes(text[end - 1])) end--
+  return text.slice(0, end)
 }
 
 function contentDirection(file, finding, set) {
@@ -231,7 +257,7 @@ function contentDirection(file, finding, set) {
   const sourceDir = set === 'agents' ? 'agent-templates' : 'rules'
   try {
     const copy = stripBanner(fs.readFileSync(path.join(finding.location, file), 'utf8'))
-    const shipped = fs.readFileSync(path.join(HERE, '..', sourceDir, file), 'utf8').replace(/[ \t\r\n]+$/u, '')
+    const shipped = trimTrailingBlank(fs.readFileSync(path.join(HERE, '..', sourceDir, file), 'utf8'))
     const copyLines = new Set(copy.split(/\r?\n/))
     const shippedLines = new Set(shipped.split(/\r?\n/))
     const onlyCopy = [...copyLines].some((line) => !shippedLines.has(line))
@@ -288,7 +314,7 @@ function triggerLines(file, finding, installCmd, event) {
 }
 
 function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
-  const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [], misplaced: [] }
+  const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [], misplaced: [], unverified: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
   }
@@ -297,13 +323,17 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
   // pilot suite made a choice, and nagging it on every session would be a guard that is
   // always red, which is a guard that gets ignored. For agents, only STALE is a finding.
   if (set !== 'rules') buckets.absent = []
-  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length && !buckets.misplaced.length) return null
+  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length && !buckets.misplaced.length && !buckets.unverified.length) return null
 
   const named = (items) => items.sort((a, b) => a.file.localeCompare(b.file)).map(({ file, location }) => {
     return location ? `${file} (${location})` : file
   }).join(', ')
 
   const lines = []
+  for (const finding of buckets.unverified.sort((a, b) => a.file.localeCompare(b.file))) {
+    const why = /^ON-DEMAND-UNVERIFIED \((.*)\)$/.exec(finding.status)?.[1] ?? finding.status
+    lines.push(`${finding.file}: ON-DEMAND-UNVERIFIED in ${finding.location}; ${why}. This hook runs nothing.`)
+  }
   for (const finding of buckets.misplaced.sort((a, b) => a.file.localeCompare(b.file))) {
     const duplicate = finding.locations.length > 1 ? ` DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}.` : ''
     lines.push(`${finding.file}: MISPLACED static rule in ${finding.location}.${duplicate} ${PLACEMENT_CONFLICT} This hook proposes no deletion.`)
@@ -411,6 +441,7 @@ export function main() {
 
   const root = typeof input.cwd === 'string' && input.cwd ? input.cwd : null
   if (!root) return // no cwd in payload → can't locate the project; stay silent
+  const rootState = pluginRootState({ ownRoot: path.join(HERE, '..'), projectDir: root, event })
 
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
   const roots = placementRoots({ project: root, config: configDir })
@@ -434,6 +465,7 @@ export function main() {
   ]
 
   const sections = []
+  const skipped = []
   for (const { set, subdirs } of SETS) {
     const maps = []
     for (const subdir of subdirs) {
@@ -445,7 +477,12 @@ export function main() {
 
     const files = new Set(maps.flatMap((m) => [...m.keys()]))
     const perFile = new Map()
-    for (const file of files) perFile.set(file, mergeAll(maps, file))
+    for (const file of files) {
+      const finding = mergeAll(maps, file)
+      if (rootState.kind === 'stale' && (finding.bucket === 'stale' || finding.bucket === 'ahead')) {
+        skipped.push(finding.location ? `${file} (${finding.location})` : file)
+      } else perFile.set(file, finding)
+    }
 
     const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
     let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
@@ -454,7 +491,8 @@ export function main() {
     if (built) sections.push(built)
   }
 
-  const message = sections.length ? sections.join('\n') : null
+  if (skipped.length) sections.push(`Comparison skipped for ${skipped.sort().join(', ')}: this session runs v${rootState.runningVersion} from ${rootState.runningRoot} while v${rootState.installedVersion} is installed at ${rootState.installedRoot}; a comparison against the running version is not reliable until /reload-plugins or a restart loads the installed one.`)
+  const message = sections.filter(Boolean).join('\n')
   if (!message) return // everything adopted & current somewhere → silent
 
   // After a push attempt, the reader needs to know WHY they are being told now: a

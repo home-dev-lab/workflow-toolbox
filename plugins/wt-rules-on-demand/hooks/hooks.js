@@ -21,6 +21,12 @@ let limit = 1;
 let enabled = false;
 let counter = 0;
 let currentMain = 0;
+let sequence = 0;
+const processPrefix = () => (typeof process !== 'undefined' ? `${process.pid}-` : '');
+const newToken = () => processPrefix() + Date.now().toString(36);
+let token = newToken();
+const deliveryFields = ({ deliveryId, deliverySeq, servingSeq }) => ({ deliveryId, deliverySeq, servingSeq });
+const advancesClose = (previous, closeMark) => closeMark && !(previous?.token === token && previous.seq >= closeMark.seq);
 const logged = new Set();
 const emptyHealth = () => ({ days: {}, lastErrors: [], calls: 0 });
 let pendingHealth = emptyHealth();
@@ -91,14 +97,15 @@ const context = async ($, loop) => {
     if (oldest) {
       const evicted = contexts.get(oldest);
       contexts.delete(oldest);
-      victim = { loop: oldest, evicted, closing: [...evicted.pending.splice(0), ...detachNext(evicted)] };
+      victim = { loop: oldest, evicted, actSeq: ++sequence, closing: [...evicted.pending.splice(0), ...detachNext(evicted)] };
     }
   }
   const created = { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [] };
   contexts.set(loop, created);
   if (victim) {
-    for (const pending of victim.closing) await close($, pending, victim.loop, 'context evicted');
-    await closeCorrelation($, victim.evicted, victim.loop);
+    for (const pending of victim.closing) await close($, pending, victim.loop, 'context evicted', victim.actSeq);
+    await closeCorrelation($, victim.evicted, victim.loop, victim.actSeq);
+    await journal($, [], victim.loop, [], [], [], { close: { seq: victim.actSeq } });
   }
   return created;
 };
@@ -291,8 +298,8 @@ const summary = (e) => e.tool === 'Bash' ? `Bash: ${bounded(e.command ?? '').tri
   : `${e.tool}: ${String(pathOf(e)).split(/[\\/]/).at(-1) || 'call'}`;
 
 async function journal($, names, loop, suppressed = [], acts = [], injected = [], options = {}) {
-  const { channel = 'tool.call', triggerErrors = [] } = options;
-  if (!names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length) return;
+  const { channel = 'tool.call', triggerErrors = [], close: closeMark } = options;
+  if (!names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length && !closeMark) return;
   const turn = writeTurn();
   await turn.previous.catch(() => {});
   try {
@@ -328,7 +335,8 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
          if (existing) { existing.count++; existing.last = now; }
          else ctx.governedActs.push({ rule: rule.name, ruleIdentity: rule.identity, at: now, last: now, count: 1 });
        }
-       for (const rule of injected) ctx.complianceInjected.push({ rule: rule.name, ruleIdentity: rule.identity, at: now });
+        for (const pending of injected) ctx.complianceInjected.push({ rule: pending.rule.name, ruleIdentity: pending.rule.identity, at: now, ...deliveryFields(pending) });
+        if (advancesClose(ctx.lastClose, closeMark)) ctx.lastClose = { token, seq: closeMark.seq, at: now };
        if (triggerErrors.length) {
          ctx.triggerErrors ??= [];
          ctx.triggerErrors.push(...triggerErrors.map((error) => ({ ...error, at: now, channel })));
@@ -346,9 +354,12 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
      } catch (error) { await notice($, `journal write failed: ${error.message}`).catch(() => {}); }
    } finally { turn.release(); }
 }
-async function verdict($, pending, loop, value, evidence, reason) {
-  const { rule } = pending;
-  const record = { rule: rule.name, ruleIdentity: rule.identity, trigger: pending.trigger, verdict: value, evidence: String(evidence).slice(0, 160), sessionId: await sessionId($), agentId: loop === MAIN ? null : loop, injectedAt: pending.injectedAt, decidedAt: new Date().toISOString(), ...(reason ? { reason } : {}) };
+ async function verdict($, pending, loop, value, evidence, reason, act = {}) {
+   const { rule } = pending;
+   const { seq: actSeq, discharged = [] } = act;
+   const verdictId = `${token}-${++sequence}`;
+   const record = { rule: rule.name, ruleIdentity: rule.identity, trigger: pending.trigger, verdict: value, evidence: String(evidence).slice(0, 160), sessionId: await sessionId($), agentId: loop === MAIN ? null : loop, injectedAt: pending.injectedAt, decidedAt: new Date().toISOString(), verdictId, actSeq,
+     ...(pending.deliveryId ? deliveryFields(pending) : {}), ...(discharged.length ? { discharged: discharged.map(deliveryFields) } : {}), ...(reason ? { reason } : {}) };
    const turn = writeTurn();
    await turn.previous.catch(() => {});
    try {
@@ -372,8 +383,8 @@ async function verdict($, pending, loop, value, evidence, reason) {
     } else await $.store.set('compliance-verdicts-jsonl', old + line);
    } finally { turn.release(); }
 }
-async function safeVerdict($, pending, loop, value, evidence, reason) {
-  try { await verdict($, pending, loop, value, evidence, reason); }
+ async function safeVerdict($, pending, loop, value, evidence, reason, act) {
+   try { await verdict($, pending, loop, value, evidence, reason, act); }
   catch (error) { await notice($, `verdict write failed: ${error.message}`).catch(() => {}); }
 }
 // Claim every window synchronously before verdict I/O can interleave with another call.
@@ -397,7 +408,8 @@ function decideWindow(pending, e, measured, actions, remaining) {
   pending.remaining--;
   pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
   if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
-    if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value: bashCommandVerdict(c, e.command ?? ''), evidence: summary(e) });
+     if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value: bashCommandVerdict(c, e.command ?? ''), evidence: summary(e) });
+     else dischargeMeasured(actions, pending);
     measured.add(pending.rule.name);
   }
   else if (c.kind === 'tool-input') {
@@ -407,7 +419,8 @@ function decideWindow(pending, e, measured, actions, remaining) {
       else remaining.push(pending);
       return;
     }
-    if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value, evidence: summary(e), reason: matchError });
+     if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value, evidence: summary(e), reason: matchError });
+     else dischargeMeasured(actions, pending);
     measured.add(pending.rule.name);
   }
   else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) {
@@ -419,11 +432,17 @@ function decideWindow(pending, e, measured, actions, remaining) {
   else if (pending.remaining <= 0) actions.push({ type: 'close', pending });
   else remaining.push(pending);
 }
-async function evaluate($, ctx, e, loop, measured) {
+function dischargeMeasured(actions, pending) {
+  const owner = actions.find((action) => action.type === 'verdict' && action.pending.rule.name === pending.rule.name);
+  if (!owner) return;
+  owner.discharged ??= [];
+  owner.discharged.push(pending);
+}
+ async function evaluate($, ctx, e, loop, measured, actSeq) {
   const { actions, error } = decideEvaluate(ctx, e, measured);
   for (const action of actions) {
-    if (action.type === 'verdict') await safeVerdict($, action.pending, loop, action.value, action.evidence, action.reason);
-    else await close($, action.pending, loop);
+     if (action.type === 'verdict') await safeVerdict($, action.pending, loop, action.value, action.evidence, action.reason, { seq: actSeq, discharged: action.discharged });
+     else await close($, action.pending, loop, 'window closed', actSeq);
   }
   if (error) throw error;
 }
@@ -461,18 +480,19 @@ function detachNext(ctx) {
   for (const pending of closing) terminalNext(ctx, pending);
   return closing;
 }
-async function closePending($, ctx, loop, reason) {
-  const closing = [...ctx.pending.splice(0), ...detachNext(ctx)];
-  for (const pending of closing) await close($, pending, loop, reason);
+ async function closePending($, ctx, loop, reason, actSeq = ++sequence) {
+   const closing = [...ctx.pending.splice(0), ...detachNext(ctx)];
+   for (const pending of closing) await close($, pending, loop, reason, actSeq);
+   return actSeq;
 }
-async function close($, pending, loop, reason = 'window closed') {
+ async function close($, pending, loop, reason = 'window closed', actSeq) {
   const c = pending.rule.compliance;
   if (c.kind === 'model') {
     try {
        const v = await $.model.classify([pending.rule.content, c.prompt, ...pending.calls.map((call) => call.detail)].join('\n'), ['followed', 'not followed', 'not applicable'], { model: c.model });
-        await safeVerdict($, pending, loop, v || 'unknown', pending.calls.map((call) => call.summary).join(' | ') || 'no following calls', v === 'not applicable' ? c.onClose : undefined);
-      } catch (error) { await safeVerdict($, pending, loop, 'unknown', '', error.message); }
-    } else await safeVerdict($, pending, loop, c.onClose, pending.calls.at(-1)?.summary ?? 'no governed act', reason);
+         await safeVerdict($, pending, loop, v || 'unknown', pending.calls.map((call) => call.summary).join(' | ') || 'no following calls', v === 'not applicable' ? c.onClose : undefined, { seq: actSeq });
+       } catch (error) { await safeVerdict($, pending, loop, 'unknown', '', error.message, { seq: actSeq }); }
+     } else await safeVerdict($, pending, loop, c.onClose, pending.calls.at(-1)?.summary ?? 'no governed act', reason, { seq: actSeq });
 }
 // A served declarative rule judges every act it governs, like a named check does while served.
 function servedVerdict(c, e) {
@@ -480,21 +500,25 @@ function servedVerdict(c, e) {
   if (c?.kind === 'tool-input') return toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
   return { verdict: null, matchError: null };
 }
-function inject(ctx, rules, trigger, event = null) {
-   const injectedAt = new Date().toISOString();
-   const injected = rules.filter((rule) => rule.compliance && !['check', 'unregistered', 'turn-correlation'].includes(rule.compliance.kind));
+ function inject(ctx, rules, trigger, admission, event = null) {
+    const injectedAt = new Date().toISOString();
+    const injected = rules.filter((rule) => rule.compliance && !['check', 'unregistered', 'turn-correlation'].includes(rule.compliance.kind));
+    const opened = [];
     for (const rule of injected) {
+       const deliverySeq = ++sequence;
       const pending = { rule, trigger, injectedAt, remaining: rule.compliance.window,
-        calls: event && rule.compliance.kind === 'model' ? [{ detail: `${event.tool}: ${bounded(textOf(event) ?? '')}`, summary: summary(event) }] : [], testSeen: false };
+         deliveryId: `${token}-${deliverySeq}`, deliverySeq, servingSeq: admission,
+         calls: event && rule.compliance.kind === 'model' ? [{ detail: `${event.tool}: ${bounded(textOf(event) ?? '')}`, summary: summary(event) }] : [], testSeen: false };
+       opened.push(pending);
        if (rule.compliance.kind === 'next-call') { pending.terminal = false; ctx.nextWindows.add(pending); }
       else ctx.pending.push(pending);
     }
-   return injected;
+    return opened;
 }
-async function closeCorrelation($, ctx, loop) {
+ async function closeCorrelation($, ctx, loop, actSeq) {
   const events = [...ctx.correlation, { kind: 'turn' }];
     for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation' && ctx.served.has(rule.name)) {
-     try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail); }
+      try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail, { seq: actSeq }); }
      catch (error) { await notice($, `${rule.name}: correlation failed: ${error.message}`).catch(() => {}); }
    }
   ctx.correlation = [];
@@ -514,6 +538,7 @@ function claim(ctx, rules) {
 
 /** @type {import('claude-code').Register} */
 export const register = (on, options, clock = Date.now) => {
+  token = newToken();
   triggerClock = clock;
   enabled = options?.enabled === true;
   reserve = options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
@@ -580,8 +605,10 @@ async function sessionCompactWork($, e, next) {
      if (!result || typeof result !== 'object' || !('skip' in result)) {
        const loop = agentLoop(e.agentId), ctx = contexts.get(loop);
        if (ctx) {
-          await closePending($, ctx, loop, 'compaction');
-         await closeCorrelation($, ctx, loop);
+           const actSeq = ++sequence;
+           await closePending($, ctx, loop, 'compaction', actSeq);
+          await closeCorrelation($, ctx, loop, actSeq);
+          await journal($, [], loop, [], [], [], { close: { seq: actSeq } });
           ctx.rules = null;
           ctx.loading = null;
            ctx.served.clear();
@@ -591,8 +618,9 @@ async function sessionCompactWork($, e, next) {
      }
     return result;
 }
-async function promptSubmitWork($, e, next) {
-    if (!enabled) return next(e);
+ async function promptSubmitWork($, e, next) {
+     if (!enabled) return next(e);
+     const admission = ++sequence;
     const ctx = await context($, MAIN);
      await rulesFor($, ctx, e.cwd ?? '.');
        const triggerErrors = [];
@@ -618,7 +646,7 @@ async function promptSubmitWork($, e, next) {
        const ride = chosen.filter((rule) => currentPrompting.get(rule.name) === reservation && eligible(ctx, rule));
         if (!ride.length) { return result; }
         claim(ctx, ride);
-        const injected = inject(ctx, ride, 'prompt.submit');
+         const injected = inject(ctx, ride, 'prompt.submit', admission);
         await journal($, ride, MAIN, [], ride, injected, { channel: 'prompt.submit' });
        for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
        return result;
@@ -632,23 +660,26 @@ async function turnCompleteWork($, e, next) {
      if (enabled) {
        const loop = agentLoop(e.agentId);
        const ctx = await context($, loop);
-        await closePending($, ctx, loop, 'turn ended');
-       await closeCorrelation($, ctx, loop);
+         const actSeq = ++sequence;
+         await closePending($, ctx, loop, 'turn ended', actSeq);
+        await closeCorrelation($, ctx, loop, actSeq);
+        await journal($, [], loop, [], [], [], { close: { seq: actSeq } });
      }
     return result;
 }
   // One matcherless tool.call handler: the host permits only one per module.
-async function toolCallWork($, e, next) {
-    if (!enabled) return next(e);
+ async function toolCallWork($, e, next) {
+     if (!enabled) return next(e);
+     const admission = ++sequence;
     const loop = agentLoop(e.agentId);
     const existing = contexts.get(loop);
     const nextRecords = existing ? decideNext(existing, e) : [];
     const ctx = await context($, loop);
        await rulesFor($, ctx, e.cwd ?? '.');
        const rules = ctx.rules;
-         for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason);
+          for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission });
       const measured = new Set();
-     await evaluate($, ctx, e, loop, measured);
+      await evaluate($, ctx, e, loop, measured, admission);
       const triggerErrors = [];
       const budget = regexCallBudget(triggerClock);
        if (textOf(e) === null) for (const rule of rules) {
@@ -669,9 +700,9 @@ async function toolCallWork($, e, next) {
       try {
         await $.ui.log(`wt-rules-on-demand: before-act refusal serving ${before.map((r) => r.name).join(', ')}`);
           // A refused call never runs: its retry, seen by evaluate(), is the classifier's evidence.
-          const injected = inject(ctx, before, `tool.call:${e.tool}`);
+           const injected = inject(ctx, before, `tool.call:${e.tool}`, admission);
          await journal($, before, loop, [], [], injected);
-         for (const rule of before) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
+          for (const rule of before) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
          const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.', ...before.map(block)].join('\n\n') };
         claim(ctx, before);
           return result;
@@ -687,24 +718,25 @@ async function toolCallWork($, e, next) {
      const acts = rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
      const ride = chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
       if (ride.length) claim(ctx, ride);
-      const injected = inject(ctx, ride, `tool.call:${e.tool}`, e);
+      const injected = inject(ctx, ride, `tool.call:${e.tool}`, admission, e);
        await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
        const classified = classify(e.tool, e.input ?? e);
         for (const rule of rules) if (rule.compliance?.kind === 'check' && ctx.served.has(rule.name)) {
          for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
            await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
-             item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e));
+              item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e), undefined, { seq: admission });
        }
       for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
      // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
       for (const rule of rules) if (ctx.served.has(rule.name)) {
        const { verdict: value, matchError } = servedVerdict(rule.compliance, e);
        if (value === null) continue;
+       const discharged = ctx.pending.filter((pending) => pending.rule === rule);
        ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
-       if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError);
+       if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError, { seq: admission, discharged });
      }
-    for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
+     for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
 }
 
-export function resetForSelftest() { contexts = new Map(); queue = Promise.resolve(); counter = 0; currentMain = 0; logged.clear(); pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest() { contexts = new Map(); queue = Promise.resolve(); counter = 0; currentMain = 0; sequence = 0; token = newToken(); logged.clear(); pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

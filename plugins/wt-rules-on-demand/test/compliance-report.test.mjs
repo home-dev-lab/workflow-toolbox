@@ -49,3 +49,21 @@ test('compliance aggregation counts served separately from verdicts and flags mi
   assert.match(overridden['broken.md'].check, /^invalid: unknown compliance check/);
   assert.equal(overridden['custom.md'].check, 'declared');
 });
+
+test('delivery join removes repeated window verdicts and notes unjudged windows', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rod-joined-report-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const config = join(root, 'config'), store = join(root, 'store.json');
+  const entry = (id) => ({ rule: 'r.md', ruleIdentity: 'user:r.md', at: '2026-01-01T00:00:00Z', deliveryId: id, deliverySeq: 10, servingSeq: 9 });
+  const first = { ...entry('t-10'), verdictId: 't-12', actSeq: 12, sessionId: 's', verdict: 'followed', decidedAt: '2026-01-01T00:00:01Z' };
+  const second = { ...first, verdictId: 't-13', verdict: 'not followed', actSeq: 13 };
+  await writeFile(store, JSON.stringify({ served: { 'r.md': { count: 2 } }, sessions: { s: { contexts: { 0: { complianceInjected: [entry('t-10'), entry('t-11')] } } } }, 'compliance-verdicts-jsonl': [first, second].map(JSON.stringify).join('\n') }));
+  const cli = fileURLToPath(new URL('../scripts/compliance-report.mjs', import.meta.url));
+  const run = spawnSync(process.execPath, [cli, '--store', store, '--config-dir', config, '--json'], { encoding: 'utf8', env: cleanEnv() });
+  assert.equal(run.status, 0, run.stderr);
+  const report = JSON.parse(run.stdout)['r.md'];
+  assert.equal(report.injections, 1, 'duplicate window verdict must not increase the denominator');
+  assert.equal(report.duplicateRows, 1);
+  assert.equal(report.unjudged, 1);
+  assert.match(report.note, /1 deliveries without a verdict/);
+});
