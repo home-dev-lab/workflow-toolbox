@@ -197,7 +197,10 @@ describe('registeredWorktrees', () => {
     }
     const scan = registeredWorktrees(repo, { spawnSyncImpl: untimedSpawn })
     expect(scan.status).toBe('known')
-    expect(scan.worktrees.map((path: string) => realpathSync(path))).toEqual([realpathSync(repo), realpathSync(lane)])
+    // realpathSync.native, not realpathSync: on Windows the temp directory can be an 8.3 short
+    // name (C:\Users\RUNNER~1\…) that only the native call expands, while git reports the long one.
+    const canonical = (path: string) => realpathSync.native(path)
+    expect(scan.worktrees.map(canonical)).toEqual([canonical(repo), canonical(lane)])
   })
 })
 
