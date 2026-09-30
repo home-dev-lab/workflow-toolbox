@@ -172,15 +172,22 @@ function seedOpenDelivery(rows, sessions, judged, options) {
   const numeric = Object.keys(contexts).filter((key) => /^\d+$/.test(key)).sort((a, b) => Number(b) - Number(a));
   const ctx = contexts[numeric[0] ?? judged.context];
   const entries = journalDeliveries(sessions);
-  const sequences = [ctx.lastClose?.seq, ...entries.map((item) => item.deliverySeq), ...rows.map((row) => row.actSeq)];
+  const closes = ctx.closeMarkers ?? (ctx.lastClose ? [ctx.lastClose] : []);
+  const sequences = [...closes.map((close) => close.seq), ...entries.map((item) => item.deliverySeq), ...rows.map((row) => row.actSeq)];
   const after = Math.max(0, ...sequences.filter(Number.isFinite)) + 2;
-  const times = [ctx.lastClose?.at, judged.at, ...entries.map((item) => item.at), ...(options.archiveRows ?? []).map((row) => row.decidedAt)];
+  const times = [...closes.map((close) => close.at), judged.at, ...entries.map((item) => item.at), ...(options.archiveRows ?? []).map((row) => row.decidedAt)];
   const time = Math.max(0, ...times.map(Date.parse).filter(Number.isFinite)) + 1;
   ctx.complianceInjected ??= [];
   // Do not copy the old context's lastClose annotation into the new journal entry.
   ctx.complianceInjected.push({ rule: judged.rule, ruleIdentity: judged.ruleIdentity,
     deliveryId: judged.deliveryId.replace(/-\d+$/, () => `-${after}`), deliverySeq: after,
     servingSeq: after - 1, at: new Date(time).toISOString() });
+}
+
+function consistentHeadline({ anomaly }) {
+  // Same convention as ratio(): a zero denominator has no rate.
+  const expected = anomaly.denominator ? anomaly.count / anomaly.denominator : null;
+  return anomaly.rate === expected;
 }
 
 export function seedExactControl(rows, sessions, options = {}, measureFn = measureExact) {
@@ -196,7 +203,8 @@ export function seedExactControl(rows, sessions, options = {}, measureFn = measu
   const cloned = structuredClone(sessions);
   seedOpenDelivery(rows, cloned, judged, options);
   const opened = run(rows, cloned);
-  const plusOne = (result, name) => result[name].count === baseline[name].count + 1;
+  const plusOne = (result, name) => consistentHeadline(baseline) && consistentHeadline(result)
+    && result[name].count === baseline[name].count + 1;
   return { available: true, duplicate: plusOne(duplicate, 'duplicateIds') && plusOne(duplicate, 'anomaly'),
     settled: plusOne(removed, 'unjudgedSettled') && plusOne(removed, 'anomaly'),
     open: plusOne(opened, 'unjudgedOpen') && opened.anomaly.count === baseline.anomaly.count,

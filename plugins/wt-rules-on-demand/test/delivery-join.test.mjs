@@ -29,13 +29,49 @@ test('session merge preserves contexts, deduplicates ids, retains legacy entries
   const original = structuredClone(stores);
   for (const order of [stores, [...stores].reverse()]) {
     const merged = module.mergeSessions(order).s.contexts;
-    assert.deepEqual(new Set(merged[0].complianceInjected.filter((item) => item.deliveryId).map((item) => item.deliveryId)), new Set(['a', 'b']));
+    const identified = merged[0].complianceInjected.filter((item) => item.deliveryId);
+    assert.equal(identified.length, 2, 'merged journal contains exactly two id-bearing entries');
+    assert.deepEqual(new Set(identified.map((item) => item.deliveryId)), new Set(['a', 'b']));
     assert.equal(merged[0].complianceInjected.filter((item) => !item.deliveryId).length, 2);
     assert.equal(merged[0].lastClose.seq, 4);
     assert.equal(merged[1].lastClose.token, 'new');
     assert.ok(merged['agent:x']);
   }
   assert.deepEqual(stores, original, 'merging does not mutate input stores');
+});
+
+const closeStore = (serve, lastClose) => ({ sessions: { s: { contexts: { 0: { complianceInjected: [serve], lastClose } } } } });
+
+test('equal-time close markers settle the delivery in both store orders', () => {
+  const serve = delivery('t-10', 10, { at: at(20) });
+  const stores = [
+    closeStore(serve, { token: 't', seq: 20, at: at(20) }),
+    closeStore(serve, { token: 'q', seq: 1, at: at(20) }),
+  ];
+  for (const order of [stores, [...stores].reverse()]) {
+    const sessions = module.mergeSessions(order);
+    const result = join([], module.journalDeliveries(sessions));
+    assert.equal(result.unjudged.length, 1);
+    assert.equal(result.unjudged[0].status, 'settled', 'same-token close settles despite an equal-time foreign close');
+  }
+});
+
+test('reversed-clock close markers settle the delivery in all six store orders', () => {
+  const serve = delivery('t-10', 10, { at: at(25) });
+  const stores = [
+    closeStore(serve, { token: 't', seq: 20, at: at(10) }),
+    closeStore(serve, { token: 'q', seq: 1, at: at(20) }),
+    closeStore(serve, { token: 't', seq: 5, at: at(30) }),
+  ];
+  for (const [a, b, c] of [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]) {
+    const sessions = module.mergeSessions([stores[a], stores[b], stores[c]]);
+    const result = join([], module.journalDeliveries(sessions));
+    assert.equal(result.unjudged.length, 1);
+    assert.equal(result.unjudged[0].status, 'settled', 'highest same-token sequence settles despite reversed clocks');
+    assert.deepEqual(sessions.s.contexts[0].closeMarkers, [
+      { token: 'q', seq: 1, at: at(20) }, { token: 't', seq: 20, at: at(10) },
+    ], 'retain only the highest sequence per token');
+  }
 });
 
 test('same-act discharge tolerates a null verdict session like claim matching', () => {

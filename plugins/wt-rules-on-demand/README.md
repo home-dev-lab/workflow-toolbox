@@ -190,7 +190,16 @@ open windows, agents, voided deliveries and unmatched IDs. `--seed-control`
 checks duplicate, settled, open and copied-row counter changes.
 The duplicate and settled controls also require the headline anomaly count to
 increase by exactly one; open and copy controls require it to stay unchanged.
-The open control seeds the newest retained MAIN context after its close marker.
+Every control checks that the baseline and seeded headline rate equal count
+divided by denominator, with no rate (null) when the denominator is zero.
+The open control seeds the newest retained MAIN context after all its retained
+close markers and existing verdict acts.
+
+When stores share a context, their close markers are retained by token, keeping
+the highest sequence for each token. Any retained marker can settle a delivery:
+a same-token marker must have a greater sequence, and a different-token marker
+must have a strictly later timestamp. This classification is independent of
+store order; `lastClose` remains readable as a representative marker.
 
 Archived verdict rows bound what is observable: deliveries older than the
 oldest archived decision are `outOfReach`, rather than unjudged. A context's

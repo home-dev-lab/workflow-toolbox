@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { measure, main, seedControl, measureExact, seedExactControl } from '../scripts/serve-verdict-reconcile.mjs';
+import { mergeSessions } from '../scripts/delivery-join.mjs';
 
 const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'serve-verdict-store.json');
 const archives = dirname(fixture);
@@ -171,6 +172,58 @@ for (const name of ['duplicate', 'settled']) test(`${name} control rejects a hea
   assert.equal(controls.copy, true);
 });
 
+test('all exact controls reject a headline rate stuck at zero', () => {
+  const { rows, sessions } = exactFixture();
+  sessions.s.contexts[0].complianceInjected.push({ ...rows[0], deliveryId: 't-20', deliverySeq: 20, servingSeq: 19, at: at(20) });
+  const working = seedExactControl(rows, sessions);
+  const broken = (...args) => { const result = measureExact(...args); result.anomaly.rate = 0; return result; };
+  const controls = seedExactControl(rows, sessions, {}, broken);
+  for (const name of ['duplicate', 'settled', 'open', 'copy']) {
+    assert.equal(working[name], true, `working ${name} control passes with a nonzero baseline anomaly`);
+    assert.equal(controls[name], false, `${name} control detects a rate-only stuck headline`);
+  }
+});
+
+test('each exact control checks its own headline rate and the baseline rate', () => {
+  const { rows, sessions } = exactFixture();
+  for (const [name, call] of [['duplicate', 1], ['settled', 2], ['copy', 3], ['open', 4]]) {
+    let calls = 0;
+    const broken = (...args) => {
+      const result = measureExact(...args);
+      if (calls++ === call) result.anomaly.rate = -1;
+      return result;
+    };
+    const controls = seedExactControl(rows, sessions, {}, broken);
+    for (const other of ['duplicate', 'settled', 'open', 'copy']) {
+      assert.equal(controls[other], other !== name, `${other} control checks its own run's rate`);
+    }
+  }
+  let calls = 0;
+  const brokenBaseline = (...args) => {
+    const result = measureExact(...args);
+    if (calls++ === 0) result.anomaly.rate = -1;
+    return result;
+  };
+  const controls = seedExactControl(rows, sessions, {}, brokenBaseline);
+  for (const name of ['duplicate', 'settled', 'open', 'copy']) assert.equal(controls[name], false, 'an inconsistent baseline invalidates every control');
+});
+
+test('exact controls require the producer null rate when the headline denominator is zero', () => {
+  const { rows, sessions } = exactFixture();
+  for (const rate of [0, null]) {
+    const wrapper = (...args) => {
+      const result = measureExact(...args);
+      result.anomaly.denominator = 0;
+      result.anomaly.rate = rate;
+      return result;
+    };
+    const controls = seedExactControl(rows, sessions, {}, wrapper);
+    for (const name of ['duplicate', 'settled', 'open', 'copy']) {
+      assert.equal(controls[name], rate === null, `${name} requires the null rate ratio() produces for a zero denominator`);
+    }
+  }
+});
+
 test('archive populations include judged old deliveries exactly once as out of reach', () => {
   const { rows, sessions } = exactFixture();
   sessions.s.contexts[0].complianceInjected.push({ rule: 'legacy.md', at: at(1) }, { ...rows[0], deliveryId: 't-20', deliverySeq: 20, at: at(20) });
@@ -197,6 +250,15 @@ test('open control seeds the newest MAIN context after compactions and later pro
 
 test('open control does not accidentally seed a same-act discharged window', () => {
   const { rows, sessions } = exactFixture();
-  rows[0].actSeq = 30;
+  rows[0].actSeq = 31;
   assert.equal(seedExactControl(rows, sessions).open, true, 'synthetic serving admission must be later than existing verdict acts');
+});
+
+test('open control seeds past every retained close marker', () => {
+  const { rows, sessions } = exactFixture();
+  sessions.s.contexts[0].lastClose = { token: 't', seq: 50, at: at(5) };
+  const foreign = structuredClone(sessions);
+  foreign.s.contexts[0].lastClose = { token: 'q', seq: 1, at: at(40) };
+  const merged = mergeSessions([{ sessions }, { sessions: foreign }]);
+  assert.equal(seedExactControl(rows, merged).open, true, 'open seed must exceed close sequences hidden by the readable lastClose');
 });

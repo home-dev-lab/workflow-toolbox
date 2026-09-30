@@ -10,8 +10,19 @@ const order = (a, b) => (number(a.row.actSeq) ? a.row.actSeq : Infinity) - (numb
 function greaterClose(existing, incoming) {
   if (!existing) return incoming;
   if (!incoming) return existing;
-  if (existing.token === incoming.token) return existing.seq >= incoming.seq ? existing : incoming;
-  return Date.parse(existing.at) >= Date.parse(incoming.at) ? existing : incoming;
+  if (existing.token === incoming.token && existing.seq !== incoming.seq) return existing.seq > incoming.seq ? existing : incoming;
+  const order = Date.parse(existing.at) - Date.parse(incoming.at) || String(existing.token).localeCompare(String(incoming.token));
+  return order >= 0 ? existing : incoming;
+}
+
+const closeMarkersOf = (context) => context.closeMarkers ?? (context.lastClose ? [context.lastClose] : []);
+
+function mergeCloseMarkers(previous, context) {
+  const byToken = new Map();
+  for (const marker of [...closeMarkersOf(previous), ...closeMarkersOf(context)]) {
+    byToken.set(marker.token, greaterClose(byToken.get(marker.token), marker));
+  }
+  return [...byToken.values()].sort((a, b) => String(a.token).localeCompare(String(b.token)));
 }
 
 export function mergeSessions(stores) {
@@ -28,7 +39,9 @@ export function mergeSessions(stores) {
         seen.add(entry.deliveryId);
         return true;
       });
-      contexts[key] = { ...previous, ...context, complianceInjected, lastClose: greaterClose(previous.lastClose, context.lastClose) };
+      const closeMarkers = mergeCloseMarkers(previous, context);
+      const lastClose = closeMarkers.reduce(greaterClose, undefined);
+      contexts[key] = { ...previous, ...context, complianceInjected, closeMarkers, lastClose };
     }
     sessions[id] = { ...existing, ...session, contexts };
   }
@@ -38,9 +51,15 @@ export function mergeSessions(stores) {
 export function journalDeliveries(sessions = {}) {
   const deliveries = [];
   for (const [sessionId, session] of Object.entries(sessions)) for (const [context, data] of Object.entries(session.contexts ?? {})) {
-    for (const entry of data.complianceInjected ?? []) if (entry.deliveryId) deliveries.push({ ...entry, sessionId, context, lastClose: data.lastClose });
+    for (const entry of data.complianceInjected ?? []) if (entry.deliveryId) deliveries.push({ ...entry, sessionId, context,
+      lastClose: data.lastClose, closeMarkers: data.closeMarkers });
   }
   return deliveries;
+}
+
+function closesDelivery(close, delivery, tokenOf) {
+  if (close.token === tokenOf(delivery.deliveryId)) return number(close.seq) && close.seq > delivery.deliverySeq;
+  return Date.parse(close.at) > Date.parse(delivery.at);
 }
 
 function classification(delivery, kept, contexts, tokenOf) {
@@ -49,9 +68,8 @@ function classification(delivery, kept, contexts, tokenOf) {
   if (kept.some((row) => sameSession(row, delivery) && (row.ruleIdentity ?? row.rule) === identity
     && tokenOf(row.verdictId) === tokenOf(delivery.deliveryId) && row.actSeq === delivery.servingSeq)) return 'dischargedBySameAct';
   const context = contexts?.[session]?.[delivery.context] ?? {};
-  const close = delivery.lastClose ?? context.lastClose;
-  if (close && (close.token === tokenOf(delivery.deliveryId) && number(close.seq) && close.seq > delivery.deliverySeq
-    || close.token !== tokenOf(delivery.deliveryId) && Date.parse(close.at) > Date.parse(delivery.at))) return 'settled';
+  const closeMarkers = delivery.closeMarkers ?? context.closeMarkers ?? closeMarkersOf({ lastClose: delivery.lastClose ?? context.lastClose });
+  if (closeMarkers.some((close) => closesDelivery(close, delivery, tokenOf))) return 'settled';
   if (delivery.context != null && /^\d+$/.test(delivery.context) && Object.keys(contexts?.[session] ?? {})
     .some((key) => /^\d+$/.test(key) && Number(key) > Number(delivery.context))) return 'settled';
   return 'open';
