@@ -21,6 +21,21 @@ function envFor(directory: string): NodeJS.ProcessEnv {
   return { ...env, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK_DIR: directory }
 }
 afterEach(() => { for (const directory of roots.splice(0)) rmSync(directory, { recursive: true, force: true }) })
+// Skipped on win32 because the product never reaches the broker there. The broker is a unix-domain socket
+// bridge that only the Linux bwrap plan starts and exports (plugin/bin/lib/host/lane-sandbox.mjs:1006, :482), and
+// a non-Linux host never gets that plan (lane-sandbox.mjs:551). If WT_SUITE_LOCK_BROKER is set by hand on
+// Windows, the client's net.connect(<path>) (plugin/bin/lib/host/suite-lock-host.mjs:5) fails and acquisition
+// rejects with "suite lock broker <path>: <error>" (plugin/bin/lib/suite-lock.mjs:426). The test fixtures
+// listen on a socket path, which Windows refuses with EACCES.
+const BROKER_UNREACHABLE_ON_WIN32 = process.platform === 'win32'
+// On Windows a non-detached child dies with its parent (libuv's kill-on-close job), so a background
+// descendant that must outlive its parent is spawned detached there; the parent/lease contract under test is
+// unchanged. Killing it in cleanup tolerates a descendant that is already gone.
+const SURVIVE = "detached:process.platform==='win32'"
+function killIfAlive(pidFile: string) {
+  if (!existsSync(pidFile)) return
+  try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+}
 async function waitFor(check: () => boolean, timeout = 12_000) {
   const deadline = Date.now() + timeout
   while (!check()) {
@@ -130,7 +145,7 @@ it('certification writes a receipt while holding its one lease, even with no gat
   expect(JSON.parse(readFileSync(join(directory, '.lane', 'certifications', receipts[0]!), 'utf8')).admission).toBe('admitted: load unavailable')
 })
 
-it('a 0.189.x-shaped broker sees only argv/waitS and nested setup never contacts it', async () => {
+it.skipIf(BROKER_UNREACHABLE_ON_WIN32)('a 0.189.x-shaped broker sees only argv/waitS and nested setup never contacts it', async () => {
   const directory = root(); const address = join(directory, 'broker.sock')
   let requests = 0
   const server = net.createServer((socket) => socket.once('data', (data) => {
@@ -154,7 +169,7 @@ it('a 0.189.x-shaped broker sees only argv/waitS and nested setup never contacts
   } finally { server.close() }
 }, 5000)
 
-it('a broker-domain marker skips the socket entirely in a nested CLI', async () => {
+it.skipIf(BROKER_UNREACHABLE_ON_WIN32)('a broker-domain marker skips the socket entirely in a nested CLI', async () => {
   const directory = root(); const address = join(directory, 'broker.sock')
   let connections = 0
   const server = net.createServer((socket) => { connections += 1; socket.end('error nested request forbidden\n') })
@@ -296,7 +311,7 @@ it.skipIf(!pnpmAvailable)('keeps the lease through a real `pnpm run` chain until
 it.each(['direct', 'nested'])('releases the %s CLI lease after its direct child exits even with a background descendant', async (mode) => {
   const directory = root()
   const descendantPid = join(directory, 'descendant-pid')
-  const script = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('fs').writeFileSync(${JSON.stringify(descendantPid)},String(c.pid));c.unref()`
+  const script = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',${SURVIVE}});require('fs').writeFileSync(${JSON.stringify(descendantPid)},String(c.pid));c.unref()`
   const command = mode === 'nested' ? [process.execPath, CLI, 'run', '--', process.execPath, '-e', script] : [process.execPath, '-e', script]
   const holder = spawn(process.execPath, [CLI, 'run', '--', ...command], { env: envFor(directory), stdio: ['ignore', 'pipe', 'pipe'] })
   const holderDone = new Promise<number | null>((resolve) => holder.once('exit', resolve))
@@ -306,7 +321,7 @@ it.each(['direct', 'nested'])('releases the %s CLI lease after its direct child 
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toBe('admitted')
   } finally {
-    if (existsSync(descendantPid)) process.kill(Number(readFileSync(descendantPid, 'utf8')), 'SIGKILL')
+    killIfAlive(descendantPid)
     holder.kill('SIGKILL')
     await holderDone
   }
@@ -317,7 +332,7 @@ it('returns from a certification gate after its direct child exits despite a bac
   const lease = await acquireSuiteLock({ root: directory })
   const pidFile = join(directory, 'gate-descendant-pid')
   const background = `require('fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>{},1000)`
-  const program = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',${JSON.stringify(background)}],{stdio:'ignore'});c.unref()`
+  const program = `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',${JSON.stringify(background)}],{stdio:'ignore',${SURVIVE}});c.unref()`
   const spawnGate = (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv; detached?: boolean }) => spawn(process.execPath, ['-e', program], { env: options.env, stdio: 'ignore', ...(options.detached !== undefined ? { detached: options.detached } : {}) })
   try {
     const gate = runGate('test', ROOT, lease, spawnGate)
@@ -328,12 +343,12 @@ it('returns from a certification gate after its direct child exits despite a bac
     const result = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.8', '--', process.execPath, '-e', ''], { env: envFor(directory), encoding: 'utf8', timeout: 4000 })
     expect(result.status, result.stderr).toBe(0)
   } finally {
-    if (existsSync(pidFile)) process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL')
+    killIfAlive(pidFile)
     releaseSuiteLock(lease)
   }
 }, 12_000)
 
-it.each(['mode', 'verify', 'status', 'requester'])('broker refuses unsupported %s request fields', async (field) => {
+it.skipIf(BROKER_UNREACHABLE_ON_WIN32).each(['mode', 'verify', 'status', 'requester'])('broker refuses unsupported %s request fields', async (field) => {
   const directory = root(); const address = join(directory, 'broker.sock')
   const previous = { WT_SUITE_LOCK_DIR: process.env.WT_SUITE_LOCK_DIR, WT_SUITE_LOCK_BROKER: process.env.WT_SUITE_LOCK_BROKER, WT_SUITE_LEASE: process.env.WT_SUITE_LEASE }
   process.env.WT_SUITE_LOCK_DIR = directory; process.env.WT_SUITE_LOCK_BROKER = ''; process.env.WT_SUITE_LEASE = ''
