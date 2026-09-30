@@ -99,7 +99,8 @@ describe('raw host primitive quality ratchet', () => {
     // The TypeScript pack adds a protocol-only entry; its host reads and spawn remain under bin/lib/host.
     // The push-guard installer is another CLI; its host operations stay in bin/lib/host.
     // The remedy-quote helper adds one; its POSIX-style quoting performs no host operation.
-    expect(result.perimeterFiles).toBe(249)
+    // The SDK account gate adds one; it reads the SDK's accountInfo() and performs no host operation.
+    expect(result.perimeterFiles).toBe(250)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
