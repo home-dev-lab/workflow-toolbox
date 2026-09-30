@@ -8,6 +8,8 @@ import { describeWorkflowToolboxOptions, findOrphanedPluginConfigs, resolveWorkf
 import { resolveExecutorProfile, resolvePilotModels } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
 // @ts-expect-error Standalone plugin helpers have no declaration surface.
 import { DEFAULT_LANE_MODELS, laneModelRefusal, resolveLaneModelAllowlist } from '../../../../plugin/bin/lib/lane-model-allowlist.mjs'
+// @ts-expect-error Standalone plugin helpers have no declaration surface.
+import { EXECUTOR_DEFAULTS } from '../../../../plugin/bin/lib/executor-defaults.mjs'
 import manifest from '../../../../plugin/.claude-plugin/plugin.json'
 
 const roots: string[] = []
@@ -15,7 +17,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const cases = [
   { option: 'lane_skills', envKey: 'WT_LANE_SKILLS', optionValue: 'option-skill', envValue: 'env-skill', defaultValue: '' },
-  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra,openai/gpt-6.1-sol' },
+  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: (DEFAULT_LANE_MODELS as string[]).join(',') },
   { option: 'artifact_server', envKey: 'WT_ARTIFACT_SERVER', optionValue: false, envValue: '1', defaultValue: true },
   { option: 'artifact_server_roots', envKey: 'WT_ARTIFACT_SERVER_ROOTS', optionValue: 'option=/root', envValue: 'env=/root', defaultValue: null },
   { option: 'artifact_server_port', envKey: 'WT_ARTIFACT_SERVER_PORT', optionValue: 49123, envValue: '49124', defaultValue: null },
@@ -51,6 +53,18 @@ describe('workflow-toolbox plugin option resolver', () => {
     expect(manifest.userConfig.lane_models.default.split(',')).toEqual(DEFAULT_LANE_MODELS)
     expect(laneModelRefusal('openai/gpt-6.1-sol', { env: f.env })).toBeNull()
     expect(laneModelRefusal('unknown/model', { env: f.env })).toContain('is not in the lane model allow-list')
+  })
+
+  it('admits every default GPT executor role model through the default lane allow-list and the manifest default', () => {
+    const f = fixture({})
+    const manifestModels = manifest.userConfig.lane_models.default.split(',')
+    const roleModels = Object.values(EXECUTOR_DEFAULTS['gpt-lane'] as Record<string, Record<string, string>>).flatMap((roles) => Object.values(roles))
+    expect(roleModels.length).toBeGreaterThan(0)
+    for (const model of new Set(roleModels)) {
+      expect(DEFAULT_LANE_MODELS, model).toContain(model)
+      expect(manifestModels, model).toContain(model)
+      expect(laneModelRefusal(model, { env: f.env }), model).toBeNull()
+    }
   })
 
   it.each(cases)('$option: plugin option wins over env', ({ option, envKey, optionValue, envValue }) => {

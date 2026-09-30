@@ -1,15 +1,7 @@
 import { readWorkflowToolboxPluginOption, resolveWorkflowToolboxOption } from './plugin-options.mjs'
-import { EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
+import { DEFAULT_LANE_MODELS, EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
 
-export const DEFAULT_LANE_MODELS = Object.freeze([
-  'openai/gpt-5.6-luna',
-  'openai/gpt-5.6-terra',
-  'openai/gpt-5.6-sol',
-  'openai/gpt-6-luna',
-  'openai/gpt-6-sol',
-  'openai/gpt-6-astra',
-  'openai/gpt-6.1-sol',
-])
+export { DEFAULT_LANE_MODELS }
 
 // Aide-memoire kept up to date with variants we have verified; never an authority on what providers expose.
 const KNOWN_VARIANTS = Object.freeze(['none', 'low', 'medium', 'high', 'xhigh', 'max'])
