@@ -1283,6 +1283,27 @@ describe('What is running collector seam', () => {
       expect(rows.map(row => row.processPid)).toEqual([803])
     })
 
+    // The full tree seen live once the consultation is under way: the companion's detached
+    // app-server broker (a second node, no `task` in its argv) under the program, the codex
+    // app-server it starts, and that server's own child.
+    const consultationTree = (base: number, request: string): Proc[] => [
+      ...sandboxChain(base, request),
+      { pid: base + 4, ppid: base + 3, name: 'MainThread', args: ['/usr/bin/node', '/opt/codex/scripts/app-server-broker.mjs', 'serve', '--endpoint', 'unix:/tmp/cxc/broker.sock', '--cwd', '/work/tree', '--pid-file', '/tmp/cxc/broker.pid'] },
+      { pid: base + 5, ppid: base + 4, name: 'codex', args: ['codex', 'app-server'] },
+      { pid: base + 6, ppid: base + 5, name: 'codex-code-mode', args: ['codex-code-mode'] },
+    ]
+
+    it('shows one row for a live consultation tree with its broker and codex server, and lists none of them as a helper', async () => {
+      const unrelated: Proc = { pid: 600, ppid: 1, name: 'codex', args: ['codex', 'app-server'] }
+      const snapshot = await withChains([consultationTree(800, 'Consult on the retry policy')], [unrelated])
+      expect(actorsLabelled(snapshot, 'Astra consultation').map(row => row.processPid)).toEqual([803])
+      const listed = snapshot.helpers.items.map((item: { pid: number }) => item.pid)
+      // Control: a codex server outside any consultation IS listed, so the absence of 805 (the same
+      // shape, two hops below the program) is read, not assumed.
+      expect(listed).toContain(600)
+      expect(listed).not.toContain(805)
+    })
+
     it('shows two rows for two concurrent consultations', async () => {
       const snapshot = await withChains([sandboxChain(800, 'First question'), sandboxChain(900, 'Second question')])
       expect(actorsLabelled(snapshot, 'Astra consultation').map(row => row.processPid).sort()).toEqual([803, 903])

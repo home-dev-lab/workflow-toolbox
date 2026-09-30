@@ -48,11 +48,13 @@ const commonTestConfig = {
     './test-support/guard-journal-isolation.setup.ts',
     './test-support/lane-host-state-isolation.setup.ts',
     './test-support/child-process-coverage.setup.ts',
+    // SIGKILL skips in-process cleanup; tag children so an external watchdog can reap detached keepalives.
+    './test-support/orphan-reaper.setup.ts',
     // Every git child reads a suite-owned global config, never the machine's, and cannot reach
     // the machine's SSH agent (card 1838017282 — see the file's own header).
     './test-support/git-config-isolation.setup.ts',
   ],
-  globalSetup: ['./test-support/suite-lease.global-setup.mjs', './test-support/guard-journal-isolation.global-setup.ts'],
+  globalSetup: ['./test-support/suite-lease.global-setup.mjs', './test-support/guard-journal-isolation.global-setup.ts', './test-support/orphan-reaper.global-setup.mjs'],
 }
 
 const parallelProject = {

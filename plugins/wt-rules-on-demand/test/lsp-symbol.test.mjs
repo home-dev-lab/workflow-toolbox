@@ -187,7 +187,7 @@ test('a refusal log failure cannot undo the call-start verdict', async () => {
   assert.deepEqual(f.rows().map((row) => row.verdict), ['followed']);
 });
 
-test('compaction during a held next-call verdict write does not add a second verdict', async () => {
+test('compaction during a held next-call verdict write does not add a second verdict', { timeout: 2000 }, async () => {
   const f = fake();
   await f.call('Grep', { pattern: 'buildEnvelope', path: '/repo/a.ts' });
   let release, entered;
@@ -197,8 +197,8 @@ test('compaction during a held next-call verdict write does not add a second ver
   f.$.store.set = async (key, value) => { if (key === 'compliance-verdicts-jsonl') { entered(); await held; } return set(key, value); };
   const deciding = f.call('LSP');
   await started;
-  await f.hooks.get('session.compact')(f.$, {}, async () => ({}));
-  release(); await deciding;
+  const compact = f.hooks.get('session.compact')(f.$, {}, async () => ({}));
+  release(); await Promise.all([compact, deciding]);
   assert.deepEqual(f.rows().map((row) => row.verdict), ['followed']);
 });
 

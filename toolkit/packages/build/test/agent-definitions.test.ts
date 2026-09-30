@@ -45,7 +45,7 @@ describe('agent definitions', () => {
       const opts = { cwd, configDir, env: {}, pluginRoot: path.join(root, 'plugin') }
       expect(resolveAgentDefinition('pilot', opts)).toMatchObject({ unresolved: expect.any(String) }) // broken sibling could have hidden another name
       expect(resolveAgentDefinition('pilot', { ...opts, budget: createBudget({ maxEntries: 1 }) })).toMatchObject({ unresolved: expect.stringContaining('budget') })
-      fs.rmSync(path.join(agents, 'z-broken'))
+      fs.unlinkSync(path.join(agents, 'z-broken')) // rmSync leaves a dangling symlink behind on Node 24.0-24.13.0
       fs.rmSync(path.join(agents, 'a-readme.md'))
       expect(resolveAgentDefinition('pilot', opts)).toMatchObject({ unresolved: expect.any(String) }) // speculative ancestor cannot establish a winner
       expect(resolveAgentDefinition('pilot', { ...opts, env: { CLAUDE_PROJECT_DIR: root } })).toMatchObject({ scope: 'project', identity: 'pilot', data: { observer: 'watchdog' } })

@@ -90,3 +90,54 @@ export function readRuleText(file) {
     return ''
   }
 }
+
+/** `dir` through its real path; a directory not created yet resolves through its parent (one level only). */
+export function realDirOrParent(dir) {
+  const resolved = path.resolve(dir)
+  for (const [base, rest] of [[resolved, ''], [path.dirname(resolved), path.basename(resolved)]]) {
+    try {
+      return path.join(fs.realpathSync(base), rest)
+    } catch {
+      // Try the parent next; neither existing leaves the path as given.
+    }
+  }
+  return resolved
+}
+
+/** The UTF-8 text of `file` when it is a regular file; throws `not a regular file` otherwise. */
+export function readRegularFileText(file) {
+  if (!fs.statSync(file).isFile()) throw new Error('not a regular file')
+  return fs.readFileSync(file, 'utf8')
+}
+
+/** The first path in `paths` that exists, or null. */
+export function firstExistingPath(paths) {
+  return paths.find((candidate) => fs.existsSync(candidate)) ?? null
+}
+
+/** Where the rules-on-demand engine's `hooks/runtime-rule.js` may live, in order: an explicit
+ *  WT_RULES_ON_DEMAND_ROOT (the only candidate when set, never falling through), the engine beside this
+ *  plugin (a repository or marketplace checkout), the registry's installPath, then the marketplace clone of
+ *  the marketplace workflow-toolbox was installed from. */
+export function onDemandEngineFiles({ pluginRoot, configDir, env = process.env }) {
+  const file = (root) => path.join(root, 'hooks', 'runtime-rule.js')
+  if (env.WT_RULES_ON_DEMAND_ROOT) return [file(path.resolve(env.WT_RULES_ON_DEMAND_ROOT))]
+  const candidates = [file(path.join(pluginRoot, '..', 'plugins', 'wt-rules-on-demand'))]
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'))
+    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
+    const installPath = (name) => {
+      const entry = plugins[name]
+      return (Array.isArray(entry) ? entry[0] : entry)?.installPath
+    }
+    const engineKey = Object.keys(plugins).find((name) => name.startsWith('wt-rules-on-demand@'))
+    if (engineKey && typeof installPath(engineKey) === 'string') candidates.push(file(installPath(engineKey)))
+    const toolboxKey = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
+    if (toolboxKey) {
+      candidates.push(file(path.join(configDir, 'plugins', 'marketplaces', toolboxKey.slice(toolboxKey.indexOf('@') + 1), 'plugins', 'wt-rules-on-demand')))
+    }
+  } catch {
+    // No readable registry: the earlier candidates stand alone.
+  }
+  return candidates
+}

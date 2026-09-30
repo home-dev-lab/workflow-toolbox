@@ -29,6 +29,17 @@ afterEach(() => {
 })
 
 describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
+  it('reports fixture commit stderr immediately when the initial commit fails', () => {
+    const previousAuthorDate = process.env.GIT_AUTHOR_DATE
+    try {
+      process.env.GIT_AUTHOR_DATE = 'not-a-git-date'
+      expect(() => root()).toThrow('fatal: invalid date format: not-a-git-date')
+    } finally {
+      if (previousAuthorDate === undefined) delete process.env.GIT_AUTHOR_DATE
+      else process.env.GIT_AUTHOR_DATE = previousAuthorDate
+    }
+  })
+
   it('passes the knowledge-base index only to Claude SDK independent roles and names it in their briefs', async () => {
     const knowledgeBaseDir = mkdtempSync(join(tmpdir(), 'wt-lifecycle-kb-')); roots.push(knowledgeBaseDir)
     const index = join(knowledgeBaseDir, 'MEMORY.md'); writeFileSync(index, '- review claim\n')
@@ -913,7 +924,8 @@ function root() {
   writeFileSync(join(value, 'renamed.txt'), 'distinctive renamed fixture\n')
   writeFileSync(join(value, 'doomed.txt'), 'delete this fixture\n')
   spawnSync('git', ['add', '.'], { cwd: value })
-  spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: value })
+  const commit = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base'], { cwd: value, encoding: 'utf8' })
+  expect(commit.status, commit.stderr).toBe(0)
   spawnSync('git', ['config', 'user.email', 't@t'], { cwd: value }); spawnSync('git', ['config', 'user.name', 't'], { cwd: value })
   return value
 }
