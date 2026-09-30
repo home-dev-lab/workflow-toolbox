@@ -94,7 +94,10 @@ function sharedHooks(ownManifestPath, installedManifestPath, registered) {
 }
 
 /** A none result means the available read-only inputs cannot prove a root-state finding. */
-function classifyRoot({ ownRoot, projectDir, event = 'SessionStart', invokedEvent, invokedScript, env = process.env }) {
+function classifyRoot({ ownRoot, projectDir: payloadDir, event = 'SessionStart', invokedEvent, invokedScript, env = process.env }) {
+  // Scope and project settings belong to the directory the session started in. The harness
+  // keeps CLAUDE_PROJECT_DIR there, while a payload's cwd follows a later cd or worktree entry.
+  const projectDir = env.CLAUDE_PROJECT_DIR || payloadDir
   const runningRoot = canonical(env.CLAUDE_PLUGIN_ROOT || ownRoot)
   if (!runningRoot) return { kind: 'none' }
   const ownManifestPath = join(runningRoot, '.claude-plugin', 'plugin.json')

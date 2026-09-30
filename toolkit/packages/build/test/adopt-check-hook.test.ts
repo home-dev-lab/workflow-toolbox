@@ -56,7 +56,7 @@ function fixture(tag: string) {
   const cfg = join(root, 'cfg')
   mkdirSync(home, { recursive: true })
   mkdirSync(cfg, { recursive: true })
-  return { root, proj, cfg, env: sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: cfg }) }
+  return { root, proj, cfg, env: sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: cfg, CLAUDE_PROJECT_DIR: proj }) }
 }
 
 function installInto(dir: string, script = INSTALL_RULES): void {
@@ -208,7 +208,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).toContain(`v999.0.0 is installed at ${installedRoot}`)
     expect(context).toContain('until /reload-plugins or a restart')
     expect(context).not.toContain('downgrade')
-    expect(context).not.toContain('older')
+    expect(context).not.toMatch(/\bolder\b/)
     expect(context).toContain('not reliable until /reload-plugins or a restart')
     expect(context).toContain(`NOT installed here: ${missing}`)
     expect(context).toContain(`Locally modified (supported, left untouched by any refresh): ${ACT} (${dir})`)

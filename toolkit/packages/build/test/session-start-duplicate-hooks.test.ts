@@ -62,14 +62,17 @@ function writeJson(file: string, value: unknown) {
 
 const hookEntry = (event = 'SessionStart') => ({ [event]: [{ hooks: [{ type: 'command', command: `node "${HOOK}"` }] }] })
 
+// The harness sets CLAUDE_PROJECT_DIR to the directory the session started in and keeps it
+// there when the session later changes directory; the payload's cwd follows the directory.
 function run(configDir: string, pluginRoot: string | undefined, root: string, pluginId?: string,
-  { hook = HOOK, event = 'SessionStart' as string | null } = {}) {
+  { hook = HOOK, event = 'SessionStart' as string | null, cwd = projectOf(root), projectDir = projectOf(root) as string | undefined } = {}) {
   return spawnSync(process.execPath, [hook], {
-    input: JSON.stringify({ ...(event ? { hook_event_name: event } : {}), session_id: 'session-double', cwd: projectOf(root) }),
+    input: JSON.stringify({ ...(event ? { hook_event_name: event } : {}), session_id: 'session-double', cwd }),
     encoding: 'utf8',
     env: {
       ...process.env,
       CLAUDE_CONFIG_DIR: configDir,
+      CLAUDE_PROJECT_DIR: projectDir,
       CLAUDE_PLUGIN_ROOT: pluginRoot,
       CLAUDE_PLUGIN_DATA: pluginId ? join(configDir, 'plugins', 'data', pluginId.replace(/[^A-Za-z0-9_-]/g, '-')) : undefined,
       HOME: root,
@@ -222,6 +225,38 @@ describe('SessionStart plugin-root state', () => {
     const result = run(configDir, PLUGIN_ROOT, root, KEY)
     expect(result.status).toBe(0)
     expect(result.stdout).not.toContain('STALE PLUGIN VERSION')
+  })
+
+  it('MED-1: after a cd below the project, a local entry at the running root still means not stale', () => {
+    const { configDir, installedRoot, root } = fixture()
+    writeRegistry(configDir, [
+      { scope: 'user', installPath: installedRoot, version: '0.182.0' },
+      { scope: 'local', projectPath: projectOf(root), installPath: PLUGIN_ROOT, version: JSON.parse(MANIFEST).version },
+    ])
+    const sub = join(projectOf(root), 'sub')
+    mkdirSync(sub, { recursive: true })
+    const result = run(configDir, PLUGIN_ROOT, root, KEY, { cwd: sub })
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('STALE PLUGIN VERSION')
+  })
+
+  it('MED-1: after a cd below the project, a local-only entry at another version is still stale', () => {
+    const { configDir, installedRoot, root } = fixture()
+    writeRegistry(configDir, [{ scope: 'local', projectPath: projectOf(root), installPath: installedRoot, version: '0.182.0' }])
+    const sub = join(projectOf(root), 'sub')
+    mkdirSync(sub, { recursive: true })
+    const result = run(configDir, PLUGIN_ROOT, root, KEY, { cwd: sub })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('STALE PLUGIN VERSION')
+    expect(result.stdout).toContain(installedRoot)
+  })
+
+  it('MED-1: without CLAUDE_PROJECT_DIR the payload cwd is the project', () => {
+    const { configDir, installedRoot, root } = fixture()
+    writeRegistry(configDir, [{ scope: 'local', projectPath: projectOf(root), installPath: installedRoot, version: '0.182.0' }])
+    const result = run(configDir, PLUGIN_ROOT, root, KEY, { projectDir: undefined })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('STALE PLUGIN VERSION')
   })
 
   it('a settings command that only mentions a hook path is not a registration', () => {
