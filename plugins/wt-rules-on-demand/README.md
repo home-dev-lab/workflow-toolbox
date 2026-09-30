@@ -130,6 +130,45 @@ but only agreed cases with judge rows for precision/recall. A judge file with
 multiple predictions for one case (for example, changed evidence or two model
 runs) must be split before scoring.
 
+### In-hook verdict measurement bound
+
+In-hook verdict rows can miss or repeat the verdict of a compliance window whose
+settlement races another handler of the same context: concurrent tool calls
+closing the same window, or a compaction, MAIN context replacement or turn
+completion arriving while a handler of that context is suspended. A lost window
+costs one verdict; a repeated one adds one extra verdict per overlapping handler
+that closes it, so the error is not bounded by one when many calls overlap.
+`scripts/compliance-report.mjs` counts and the follow rate it reports move by
+those samples. Follow rates that `scripts/rollback-check.mjs`
+reports from in-hook rows move the same way.
+
+Automatic rollback is unaffected: when `scripts/daily-rollback.mjs` applies
+(`--apply`), it invokes `scripts/rollback-check.mjs` with `--mechanical-only`
+and transcript verdicts.
+For the transcript-measured kinds (`check`, `bash-command`, `tool-input`,
+`turn-correlation`), transcript rows replace in-hook verdicts. For any other
+kind, `--mechanical-only` returns `attention`, never an automatic revert.
+A manual `scripts/rollback-check.mjs` run without `--mechanical-only` is
+different: it takes every rule's rate evidence from in-hook rows when `--verdicts` is absent,
+and the kinds the transcript does not measure (for example `model` and
+`next-call`) from in-hook rows when it is present; without `--dry-run` it
+can revert, so near a rule's threshold such a shift can change the outcome.
+
+Measure retained serves against verdicts in a read-only snapshot with:
+
+```sh
+node scripts/serve-verdict-reconcile.mjs --store /path/to/store.json --archives /path/to/archives --seed-control
+```
+
+With `--store`, only the archives named by `--archives` are read; without
+`--store`, the store and archives of the current config directory are read.
+The store retains only recent session journals: verdicts of a session that is
+no longer journalled are counted as unjoinable. The join is a timestamp
+heuristic, not an identity: rows carry no delivery ID, no decision ID and no
+MAIN context generation, so close re-serves, identical-key verdicts and legacy
+journal entries without a rule identity cannot be attributed with certainty.
+The script prints these limits with every run.
+
 Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
 from a host timer or cron job; the plugin ships no scheduler. This entry point
 checks the user rules and configured followed projects, and defaults to dry-run.
