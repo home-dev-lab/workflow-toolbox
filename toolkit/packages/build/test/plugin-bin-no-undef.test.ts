@@ -112,9 +112,28 @@ describe('the lint gate covers every shipped plugin script', () => {
   // The collector in snapshot-program.js is source TEXT: hooks.js runs it through
   // `Function('require', 'laneHostDir', 'ensureLaneHostDir', SNAPSHOT_PROGRAM)`, so no lint of
   // the file reads inside it. Lint it here as the function body it becomes.
+  //
+  // Only the two correctness rules run, with the settings and globals the REAL config resolves
+  // for a plugin script at that path: the full rule set (sonarjs, complexity) on a 1600-line
+  // body took ~5 s per lint on an idle machine and timed out under full-suite load.
   it('finds no undefined reference or unused binding in the embedded snapshot collector', async () => {
-    const eslint = rootLinter()
     const filePath = join(REPO_ROOT, 'plugin/hooks/snapshot-collector.virtual.js')
+    const real = await rootLinter().calculateConfigForFile(filePath)
+    expect(severity(real.rules?.['no-undef'])).toBe(2)
+    expect(severity(real.rules?.['no-unused-vars'])).toBe(2)
+    const eslint = new ESLint({
+      cwd: REPO_ROOT,
+      overrideConfigFile: true,
+      overrideConfig: [{
+        files: ['**/*.js'],
+        languageOptions: {
+          ecmaVersion: real.languageOptions.ecmaVersion,
+          sourceType: real.languageOptions.sourceType,
+          globals: real.languageOptions.globals,
+        },
+        rules: { 'no-undef': real.rules['no-undef'], 'no-unused-vars': real.rules['no-unused-vars'] },
+      }],
+    })
     const lint = async (parameters: string) => {
       const [result] = await eslint.lintText(`(function (${parameters}) {\n${SNAPSHOT_PROGRAM as string}\n});\n`, { filePath })
       return result!.messages.filter((message) => message.ruleId === 'no-undef' || message.ruleId === 'no-unused-vars')
