@@ -5,6 +5,28 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.189.3] - 2026-09-30
+
+### Quality
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 126 -> 124 | -2 | 126 -> 124 | plugin/bin/lib/pilot-runner-core.mjs |
+| Cognitive complexity | 268 -> 243 | -25 | 268 -> 243 | plugin/bin/lib/pilot-runner-core.mjs |
+| Biggest file (lines) | 2719 -> 2719 | 0 | 2092 -> 2456 | - |
+| Longest function (lines) | 700 -> 700 | 0 | 477 -> 479 | - |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 684 -> 633 | -51 | 33 -> 32 | plugin/hooks/hooks.js, plugin/bin/lib/wave-lifecycle-server.mjs, plugin/skills/adopt/scripts/install.mjs |
+| Duplication % | 2.432415513803064 -> 2.36409289555766 | -0.07 | 126 -> 126 | - |
+| Knip issues | 196 -> 211 | +15 | 5 -> 7 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 78.61 -> 78.77 | +0.16 | - -> - | - |
+| Coverage branches % | 69.76 -> 69.99 | +0.23 | - -> - | - |
+| Coverage functions % | 80.86 -> 80.88 | +0.02 | - -> - | - |
+| Coverage statements % | 76.5 -> 76.55 | +0.05 | - -> - | - |
+
+
 ### Added
 - Release certification (`pnpm certify`) holds one exclusive FIFO suite lease through all gates and the on-disk receipt, recording load admission and gate results. Package scripts and non-watch Vitest runs also take exclusive leases; the lease ends after the direct child exits (or Vitest itself exits), and background descendants are outside coverage. Interactive commands keep their controlling terminal. Nested commands use one inherited domain marker and never queue behind their own holder. The lane broker proxies through the same filesystem mutex, answers status without acquiring (an older broker's status is reported as unavailable, never guessed), and signals readiness only after listen completes. A saturated broker's refusal exits 75 with the holder named, like a timeout.
 - `wt-lane.mjs` runs the lane at low priority by default (`--priority low|normal`: niceness 19 on Linux and macOS, below-normal CPU priority on Windows, idle I/O class on Linux only; the log records what was applied or why it degraded). Extra text for a lane is composed into its brief file: `--attach` (either form) is refused with exit 2 and a message naming that remedy and `WT_LANE_SANDBOX_READ`. The adopted launcher loads its priority helper from the plugin root like its other runtime modules.
