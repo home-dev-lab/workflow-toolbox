@@ -349,6 +349,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: "grep -rn foo --include=*.ts ." },
       }
+    case 'wt-rm-critical-path-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -f $G/*.log' },
+      }
     case 'wt-zsh-word-split-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

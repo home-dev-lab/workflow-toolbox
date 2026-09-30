@@ -32,6 +32,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The TypeScript pack's protocol-only wt-tsls.mjs adds one perimeter entry; resolution and spawn stay in host/ts-language-server.mjs.
     // The remedy-quote helper adds one process-table-free module.
     // The SDK account gate (sdk-account-check.mjs) adds one process-table-free module.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 239, violations: [] })
+    // The rm critical-path guard adds its hook and its shell-command parser, both process-table-free.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 241, violations: [] })
   })
 })

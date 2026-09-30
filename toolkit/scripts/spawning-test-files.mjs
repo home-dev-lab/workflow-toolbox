@@ -138,6 +138,7 @@ export const spawningTestFiles = [
   'packages/build/test/remedy-quote.test.ts',
   'packages/build/test/report-findings-check.test.ts',
   'packages/build/test/right-sized-spawn-guard-hook.test.ts',
+  'packages/build/test/rm-critical-path-guard-hook.test.ts',
   'packages/build/test/rule-convention-guard.test.ts',
   'packages/build/test/rule-edit-horizon-hook.test.ts',
   'packages/build/test/rules-manifest.test.ts',
