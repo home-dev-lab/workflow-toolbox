@@ -132,7 +132,11 @@ Checks BOTH managed sets — `.claude/rules/` and `.claude/agents/` — in the p
 
 ### `wt-arc-watch.mjs` — delegated-agent transcript watcher (monitor)
 
-Watches subagent transcripts for the current project's sessions and emits only when a transcript has stopped growing or disappeared. It stays silent while agents are writing, so silence means the watched agents are still working. It does not treat staleness as proof of death: a waiting agent can be stale too. It withholds all output until this session has delegated at least once, and never self-terminates while waiting so a later delegation remains covered.
+Watches subagent transcripts for the current project's sessions and emits on stale/disappeared transcripts. It does not treat staleness as proof of death: a waiting agent can be stale too. It withholds all output until this session has delegated at least once, and never self-terminates while waiting so a later delegation remains covered. From its **own main session's** incrementally read transcript it also announces `WAKE` for attributable background completion after a delegate's `end_turn` without a later assistant record. `WAKE` names the raw target id and the exact `SendMessage` relay with an occurrence marker; unresolved relays retry with backoff, and an unattributable record produces `DEGRADED` rather than a guessed target. It does not announce nested-notice `FORWARD` candidates (whether a parent received its child's notice is inferred from missing records, with unmeasured precision); those are available from the one-shot scanner below. One poll emits at most 20 lines across all event types. The harness woke permitted-shape delegates in the measured majority (606/628 and 168/173), not invariably; delivering a relayed message still requires a main-session model step.
+
+### `wt-delegate-wake-scan.mjs` — one-shot completion replay (standalone CLI)
+
+`--session <absolute main transcript>` evaluates the same session-scoped attribution and prints `FORWARD (unverified):` diagnostic candidates for nested delegates whose parent has no matching record (unmeasured precision, never announced by the watch); `--at <iso>` replays only records available at that instant, `--grace <seconds>` adjusts the minimum wait, and `--json` emits structured results. `--write-resumed` additionally appends transcript-confirmed `resumed` transitions to that session's outbound-guard registry; regular arc-watch polls do this automatically. A declared `WAITING-FOR` remains a separate registry state after a clean stop, until a real next turn (end_turn, non-hook-feedback inbound, then assistant) or a later outbound action clears it. A detached file's presence does not prove completion.
 
 ### `wt-lesson-harvest-hook.mjs` — closure-report lesson surfacing (Stop)
 
@@ -302,7 +306,7 @@ Warns, never blocks, when an Agent call issued by a subagent asks for verificati
 
 ### `wt-spawn-shape-guard-hook.mjs` — observer-preserving spawn guard (PreToolUse)
 
-Refuses a named `Agent` spawn without `isolation` where the spawning session is in a Git repository, because that shape can route through the in-process-teammate path and lose the declared observer. Outside a Git repository it allows the spawn and states what will be lost, since `isolation: worktree` cannot be applied there. This prevents a silent failure where the agent works normally and reports no observer findings because no observer was attached. Internal errors fail open with one stderr trace.
+Refuses a named `Agent` spawn without `isolation` in **every** cwd, including nested spawns. That in-process-teammate shape loses its observer and may doze past its own background task's completion. Drop `name` and address the returned raw id in any cwd; inside a Git repository, `isolation: "worktree"` is another remedy. Internal errors fail open with one stderr trace.
 
 ### `wt-actionable-gate-hook.mjs` — tracker-agnostic actionability Stop gate
 
@@ -385,7 +389,7 @@ naming itself. A guard that failed closed on its own bug would block all rule ed
 
 ### `wt-registry-heartbeat-hook.mjs` — Stop-time spawn-registry re-check
 
-This Stop hook simply forwards `wt-spawn-registry-scan.mjs` with two env-tunable thresholds: `WT_REGISTRY_HEARTBEAT_QUIET_MIN` (default `20`) is the message-silence window, and `WT_REGISTRY_HEARTBEAT_STALE_TRANSCRIPT_MIN` (default `5`) is the transcript-staleness window that must also hold before the hook blocks. The two thresholds stay distinct on purpose: message silence alone is only a candidate, not the block condition.
+This Stop hook forwards `wt-spawn-registry-scan.mjs` with two env-tunable thresholds: `WT_REGISTRY_HEARTBEAT_QUIET_MIN` (default `20`) is the message-silence window, and `WT_REGISTRY_HEARTBEAT_STALE_TRANSCRIPT_MIN` (default `5`) is the transcript-staleness window that must also hold before the hook blocks. The two thresholds stay distinct on purpose: message silence alone is only a candidate, not the block condition. Independently of flagged open agents, the hook lists unresolved waits declared in the last 24 hours as `waiting for: <artifact> @ <path>` without blocking on the wait itself. The one-shot `wt-spawn-registry-scan.mjs` lists all unresolved waits.
 
 ### `wt-stale-date-guard.mjs` — stale operational-deadline scanner (standalone CLI)
 

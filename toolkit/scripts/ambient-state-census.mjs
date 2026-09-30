@@ -54,7 +54,6 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/plugin-data-dir.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [join(ROOT, 'plugin/bin/lib/plugin-data-dir.selftest.mjs')], {", 'case deliberately varies CLAUDE_PLUGIN_DATA itself and must inherit the remaining test environment'],
   ["packages/build/test/plugin-eval-gate.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [GATE], {", 'case passes all gate inputs explicitly and does not resolve global npm or home state'],
   ["packages/build/test/plugin-hook-registration-drift.test.ts:real-home-directory:HOME: process.env.HOME || homedir(),", 'opt-in real-installation case deliberately locates the operator config home'],
-  ["packages/build/test/plugin-hooks.test.ts:short-negative-output-match:expect(r.stdout).not.toContain('deny')", 'assertion is over controlled hook JSON output'],
   ["packages/build/test/plugin-hooks.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [LADDER_HOOK], {", 'empty-stdin case exits before any plugin-state lookup'],
   ["packages/build/test/plugin-hooks.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {", 'child imports pure hook helpers and receives no CLI workload that discovers state'],
   ["packages/build/test/plugin-release-record-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync('git', args, {", 'case uses an explicit hermetic release environment and controlled hook payload'],

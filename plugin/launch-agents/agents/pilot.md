@@ -531,7 +531,7 @@ Select the first available correlation key:
 
 | Priority | Key and file |
 | --- | --- |
-| 1 | `LIVENESS_AGENT_ID: <raw id>` from the prompt or immediate SendMessage. Check the inbox before falling back: the id exists only after the spawner's `Agent` call, so it may arrive as a follow-up. Use it verbatim as `agentId`, `agentIdSource: "brief"`, and `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. This is the only anonymous-spawn option; named isolation loses its observer and named non-isolation conflicts with a lane writing the worktree. |
+| 1 | `LIVENESS_AGENT_ID: <raw id>` from the prompt or immediate SendMessage. Check the inbox before falling back: the id exists only after the spawner's `Agent` call, so it may arrive as a follow-up. Use it verbatim as `agentId`, `agentIdSource: "brief"`, and `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. Anonymous spawns preserve the observer; named isolated spawns also preserve it where a repository permits isolation. |
 | 2 | Your declared spawn name: `agentIdSource: "name"`; use the same path with the name. Replace each character outside `[A-Za-z0-9_.-]` with `-`. |
 | 3 | Neither: write a distinct file (for example, timestamp), `agentId: null`, `agentIdSource: "none"`. It cannot correlate a transcript, but catches `waitingOn:"spawner"` and reports `UNCORRELATABLE` rather than healthy silence. |
 
@@ -562,14 +562,19 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   the target (the launcher's cwd is the server's, not yours). NEVER let a fan-out inherit
   your model silently — pin model/effort per role; you are the expensive judgment, they
   are the cheap mechanics.
-  ⚠ **Your own background `await` will NOT reliably re-invoke you when the run settles** (a
-  harness limitation — a DORMANT sub-agent is only reliably re-woken by an inbound
-  SendMessage; its own background-child completion does not wake it). So after launching a
-  long run: journal `awaiting <runId>` and yield; SendMessage your arbiter one line
-  ("launched <runId>, awaiting — please wake me at settle") so a settle-watch gets armed
-  (the main session owns the disk watchers; an orchestrator relays the arm request); keep a
-  best-effort await but NEVER depend on it. If you resume to find a run already settled and
-  unprocessed, THAT was the miss — arbitrate it; it is not a new instruction.
+  **First choice for a wait: a bounded foreground poll in your turn.** A named spawn without
+  `isolation` becomes an in-process teammate: its observer is not attached and its own
+  background tasks do not reliably wake it. Spawn any delegate that will background work
+  anonymously (address it by its returned raw id), or named with `isolation: "worktree"`
+  where a repository exists. Permitted-shape delegates self-woke in the measured majority
+  (606/628 and 168/173), not invariably. If you end a turn awaiting your own tracked
+  background command, the arc watch announces an attributable unresolved completion to main
+  with an exact SendMessage relay; main must send that call verbatim. The announcement retries
+  until you resume. For detached work, declare `WAITING-FOR: <artifact> @ <absolute path>` on
+  the FIRST line of your last SendMessage and journal the run; the registry lists this wait,
+  but file presence alone is not a completion signal. On an unattributable notice the watch
+  emits DEGRADED rather than guessing. A settled-but-unprocessed run on resume is yours to
+  arbitrate; it is not a new instruction.
 - **Heavy implementation increments → the `EXECUTOR_LANE`** your spawn prompt names, if any
   and CONSENTED (a lane your spawn prompt names but marks disabled/not-consented is not
   usable — treat it as absent, not as a lane). **If no consented lane is available, you
@@ -593,8 +598,8 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   TURN with a HARD CAP; never arm your own background watcher and yield expecting it to
   wake you.** A lane process is not tracked as your child by the harness — backgrounding it
   and arming a Monitor/watcher on its output puts you to sleep on a signal that never fires
-  (only an inbound SendMessage reliably re-wakes a dormant agent, never your own background
-  completion). So either run the lane call in the FOREGROUND of one Bash invocation (it
+  (an external lane's completion alone supplies no harness wake event; main's inbound
+  SendMessage is needed after yielding). So either run the lane call in the FOREGROUND of one Bash invocation (it
   blocks your turn until it returns, no watcher needed), or if you background it, poll it
   yourself in a loop you stay awake for (`until [ -f "$REPORT" ]; do sleep 5; done`) bounded
   by an explicit HARD CAP you name (e.g. 30 min) — never an unbounded wait. This trades a

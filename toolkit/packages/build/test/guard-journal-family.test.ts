@@ -207,7 +207,7 @@ describe('guard-journal — live wiring proof across the code-shape spread', () 
     }
   })
 
-  it('WARN shape (systemMessage): wt-spawn-shape-guard-hook.mjs journals a warned event when named-without-isolation outside a git repo', () => {
+  it('DENY shape: wt-spawn-shape-guard-hook.mjs journals a distinct no-repo block for named-without-isolation', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'wt-spawn-shape-live-'))
     try {
       const r = runHook('wt-spawn-shape-guard-hook.mjs', {
@@ -219,7 +219,8 @@ describe('guard-journal — live wiring proof across the code-shape spread', () 
       expect(r.status).toBe(0)
       const entries = journalEntries()
       expect(entries).toHaveLength(1)
-      expect(entries[0]).toMatchObject({ guard: 'wt-spawn-shape-guard-hook.mjs', decision: 'warned' })
+      expect(r.stdout).toContain('deny')
+      expect(entries[0]).toMatchObject({ guard: 'wt-spawn-shape-guard-hook.mjs', decision: 'blocked', class: 'named-without-isolation-no-repo' })
     } finally {
       rmSync(cwd, { recursive: true, force: true })
     }
