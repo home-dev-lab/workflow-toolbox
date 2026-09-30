@@ -53,6 +53,25 @@ export function markdownToHtml(markdown) {
   return output.join('\n');
 }
 
+// The model working the SDK run's current phase. Lane phases run on their own executor model: the lane
+// recorded in lifecycle.json (a running one first, else the latest started), else the frozen route model
+// of that role (a legacy receipt keyed lane/review/refutation serves the critic from review, as the runner
+// does). Discovery, plan, verify and report run inside the pilot's own session, on the pilot model. A run
+// waiting for arbiter review has finished its lifecycle: no model is working on it.
+export function currentPhaseModel(phase, { pilotModel, routeModels, lanes } = {}) {
+  const known = (value) => typeof value === 'string' && value.trim() && value !== 'unknown' ? value : null;
+  if (!known(phase) || phase === 'awaiting_fidelity') return 'unknown';
+  const roleKeys = { critic: ['critic', 'review'], tdd: ['code', 'lane'], review: ['review'], refutation: ['refutation'] };
+  if (!roleKeys[phase]) return known(pilotModel) || 'unknown';
+  const ofPhase = (Array.isArray(lanes) ? lanes : []).filter((lane) => lane && lane.phase === phase && known(lane.model));
+  const latest = (items) => items.reduce((best, lane) => (!best || (Number(lane.started_at) || 0) >= (Number(best.started_at) || 0) ? lane : best), null);
+  const lane = latest(ofPhase.filter((item) => String(item.state || '').toLowerCase() === 'running')) || latest(ofPhase);
+  if (lane) return lane.model;
+  const models = routeModels && typeof routeModels === 'object' ? routeModels : {};
+  for (const key of roleKeys[phase]) if (known(models[key])) return models[key];
+  return 'unknown';
+}
+
 // Kept as source text because a Function Hook module may only import its own files and
 // "claude-code". The collector runs through $.process.run, the module's audited door to disk.
 // The program below is ONE String.raw template literal: a backtick anywhere in it, a comment included, ends
@@ -67,6 +86,7 @@ const timingStartedAt = Date.now();
 const timingsMs = {};
 const detectArtifactUrl = ${detectArtifactUrl.toString()};
 const markdownToHtml = ${markdownToHtml.toString()};
+const currentPhaseModel = ${currentPhaseModel.toString()};
 const stripAnsiAndControl = ${stripAnsiAndControl.toString()};
 const executableName = ${executableName.toString()};
 const resolvedBinary = ${resolvedBinary.toString()};
@@ -958,7 +978,8 @@ if (processScanAvailable) for (const pid of listedPids) {
     const model = modelAt >= 0 && args[modelAt + 1] ? args[modelAt + 1] : UNKNOWN;
     const brief = resolveActorFile(briefFromArgs(args));
     worktreeByProcess.set(Number(pid), worktree);
-    if (sdkRunner) sdkRunnerByWorktree.set(worktree, { pid: Number(pid), model, brief });
+    const cardAt = args.findIndex(arg => arg === '--card');
+    if (sdkRunner) sdkRunnerByWorktree.set(worktree, { pid: Number(pid), model, brief, card: cardAt >= 0 && /^\d{19}$/.test(String(args[cardAt + 1] || '')) ? args[cardAt + 1] : null });
     else {
       const previous = processByWorktree.get(worktree);
       const laneKind = executable === executables.codex ? 'codex' : executable === executables.opencode ? 'opencode' : 'plain';
@@ -1156,6 +1177,13 @@ function nestedLane(lane, id) {
   const phaseRole = phase === UNKNOWN ? null : (phase === 'tdd' ? 'TDD' : phase.replace(/_/g, ' ').replace(/^./, letter => letter.toUpperCase())) + ' lane';
   return { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: isFix ? 'Fix lane' : phaseRole || lane.label || 'Lane', phaseAvailability: (runner?.laneKind || 'plain') + ' lane', parentCardId: id, title: isFix ? detail : phaseRole ? null : cleanCardTitle(lane.title, id) || path.basename(lane.worktree), outcome: 'running', ...(runner?.model && runner.model !== UNKNOWN ? { model: runner.model } : {}), activity: laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) };
 }
+// The model the pilot's own SDK session was last served, from its live usage receipt. The run log's
+// effective= line is written once at start and leaves the tail of a long log.
+function servedPilotModel(worktree) {
+  const messages = worktree ? json(lanePath(worktree, 'usage.json'))?.messages : null;
+  const model = Array.isArray(messages) ? messages.findLast(message => typeof message?.model === 'string' && message.model.trim())?.model : null;
+  return model || null;
+}
 function lifecycleLaneRows(worktree, timeline, id) {
   if (!worktree || !timeline) return [];
   const supervisionBySlot = new Map(currentSupervisions(worktree).map(item => [item.slot, item.record]));
@@ -1203,7 +1231,11 @@ for (const id of ids) {
   const waiting = live?.waitingOn && live.waitingOn !== 'none' ? 'waiting on: ' + live.waitingOn : null;
   const lastWrite = worktree ? freshestWrite(worktree) : null;
   const processState = worktree ? pidState(worktree) : UNKNOWN;
-  if (processState !== 'alive' && !freshTime(lastWrite) && !live && !record) continue;
+  // A live runner process keeps its row: discovery, plan, verify and report run inside it and may write nothing for a while.
+  // The runner must be working on THIS card: a relaunch for another card in the same worktree is not evidence for this one.
+  const liveRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
+  const runnerAlive = Boolean(liveRunner && (!liveRunner.card || liveRunner.card === id));
+  if (processState !== 'alive' && !runnerAlive && !freshTime(lastWrite) && !live && !record) continue;
   const activity = waiting || (lastWrite === null ? live ? 'updated ' + age + ' min ago' : record ? 'lifecycle updated recently' : UNKNOWN : 'last write ' + (approximateWalkRoots.has(worktree) ? 'at least ' : '') + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago');
   const watchdog = !live || age === null ? UNKNOWN : age > ACTIVE_WINDOW_MIN ? 'alert' : 'silent';
   const wave = waveFor(lane, id);
@@ -1218,7 +1250,7 @@ for (const id of ids) {
   const phaseCostResult = worktree ? phaseCosts(worktree, timeline) : { costs: {}, total: null, source: null, kind: null };
   const failedOutcome = [record?.outcome, record?.status, record?.state].find(value => /^(?:error|failed|fail)/i.test(String(value || '')));
   const waitingForArbiter = lane?.phase === 'awaiting_fidelity';
-  const sdkRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
+  const sdkRunner = runnerAlive ? liveRunner : null;
   const phaseStates = statesOf(lane?.phaseHistory?.length ? lane.phaseHistory : record?.phase ? [record.phase] : [], lane?.route);
   const frozenRoute = worktree ? json(lanePath(worktree, 'route.json')) : null;
   if (waitingForArbiter) phaseStates.awaiting_fidelity = 'waiting for arbiter review';
@@ -1240,6 +1272,7 @@ for (const id of ids) {
     phaseStates,
     outcome: waitingForArbiter ? 'waiting for arbiter review' : lane?.outcome || failedOutcome || UNKNOWN,
     model: lane?.model || workers[0]?.model || UNKNOWN,
+    phaseModel: currentPhaseModel(phaseOf(lane?.phase || record?.phase), { pilotModel: servedPilotModel(worktree) || lane?.model || workers[0]?.model, routeModels: frozenRoute?.models, lanes: timeline?.lanes }),
     models: frozenRoute?.models || {},
     phaseRounds: lane?.phaseRounds || {},
     legacyHarden: lane?.legacyHarden || false,

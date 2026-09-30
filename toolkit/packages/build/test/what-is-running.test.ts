@@ -1066,6 +1066,12 @@ describe('What is running collector seam', () => {
     expect(result.stdout).toContain('tests: 1/1')
   }, 40_000)
 
+  it.skipIf(process.platform === 'win32')('keeps a live SDK run listed and names its phase, that phase model and elapsed [synthetic Linux /proc]', () => {
+    const result = runSelftest('card 1874319379', 60_000)
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 11/11')
+  }, 90_000)
+
   it('keeps pane-open state local to one session registration', () => {
     const result = runSelftest('[per-session pane state] one registration')
     expect(result.status, result.stderr || result.stdout).toBe(0)
