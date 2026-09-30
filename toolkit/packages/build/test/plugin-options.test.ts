@@ -1,6 +1,7 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helpers have no declaration surface.
 import { describeWorkflowToolboxOptions, findOrphanedPluginConfigs, resolveWorkflowToolboxOption } from '../../../../plugin/bin/lib/plugin-options.mjs'
@@ -9,7 +10,7 @@ import { resolveExecutorProfile, resolvePilotModels } from '../../../../plugin/b
 // @ts-expect-error Standalone plugin helpers have no declaration surface.
 import { DEFAULT_LANE_MODELS, laneModelRefusal, resolveLaneModelAllowlist } from '../../../../plugin/bin/lib/lane-model-allowlist.mjs'
 // @ts-expect-error Standalone plugin helpers have no declaration surface.
-import { EXECUTOR_DEFAULTS } from '../../../../plugin/bin/lib/executor-defaults.mjs'
+import * as EXECUTOR_DEFAULTS_MODULE from '../../../../plugin/bin/lib/executor-defaults.mjs'
 import manifest from '../../../../plugin/.claude-plugin/plugin.json'
 
 const roots: string[] = []
@@ -55,10 +56,28 @@ describe('workflow-toolbox plugin option resolver', () => {
     expect(laneModelRefusal('unknown/model', { env: f.env })).toContain('is not in the lane model allow-list')
   })
 
+  it('spells out the default lane model allow-list in exactly one plugin source file', () => {
+    // Values alone cannot tell a derived copy from an identical literal: lock the mechanism.
+    expect(DEFAULT_LANE_MODELS).toBe(EXECUTOR_DEFAULTS_MODULE.DEFAULT_LANE_MODELS)
+    const pluginRoot = fileURLToPath(new URL('../../../../plugin/', import.meta.url))
+    const holders: string[] = []
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) { if (entry.name !== 'node_modules') walk(full) } else if (/\.(?:mjs|cjs|js)$/.test(entry.name)) {
+          const text = readFileSync(full, 'utf8')
+          if ((DEFAULT_LANE_MODELS as string[]).every((model) => text.includes(model))) holders.push(relative(pluginRoot, full).split(sep).join('/'))
+        }
+      }
+    }
+    walk(pluginRoot)
+    expect(holders).toEqual(['bin/lib/executor-defaults.mjs'])
+  })
+
   it('admits every default GPT executor role model through the default lane allow-list and the manifest default', () => {
     const f = fixture({})
     const manifestModels = manifest.userConfig.lane_models.default.split(',')
-    const roleModels = Object.values(EXECUTOR_DEFAULTS['gpt-lane'] as Record<string, Record<string, string>>).flatMap((roles) => Object.values(roles))
+    const roleModels = Object.values(EXECUTOR_DEFAULTS_MODULE.EXECUTOR_DEFAULTS['gpt-lane'] as Record<string, Record<string, string>>).flatMap((roles) => Object.values(roles))
     expect(roleModels.length).toBeGreaterThan(0)
     for (const model of new Set(roleModels)) {
       expect(DEFAULT_LANE_MODELS, model).toContain(model)
