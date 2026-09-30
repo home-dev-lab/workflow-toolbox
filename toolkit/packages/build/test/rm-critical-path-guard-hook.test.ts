@@ -172,8 +172,8 @@ describe('review regression locks — parser', () => {
     expect(run("X=''; rm -rf $X/usr").denied).toBe(true)
     expect(run("X='/tmp/safe'; rm -rf $X/usr").denied).toBe(false)
   })
-  it('R2-F keeps a derived variable critical behind a guard followed by more path', () => {
-    expect(run('M=$(pwd); rm -rf "${M:?}"/*.log').denied).toBe(true)
+  it('R2-F leaves a guarded derived child alone', () => {
+    expect(run('M=$(pwd); rm -rf "${M:?}"/*.log').denied).toBe(false)
     expect(run('M=/tmp/safe; rm -rf "${M:?}"/*.log').denied).toBe(false)
   })
   it('F14a treats single-quoted assignment as literal', () => {
@@ -208,6 +208,169 @@ describe('review regression locks — parser', () => {
 })
 
 describe('wt-rm-critical-path-guard-hook — PreToolUse', () => {
+  it('never invents a slash-containing token in new-rule refusal advice', () => {
+    const commands = [
+      'R=missing; A=$PWD/$R/../doublefx; rm -rf "$A"',
+      "R=r; A=$PWD/'$R'/x; rm -rf \"$A\"",
+      'HOME=/tmp; A=$HOME/; rm -rf "$A"',
+      'cd /missing; R=r; A=$PWD/$R/x; rm -rf "$A"',
+      'R=old; false && R=new; A=$PWD/$R/x; rm -rf "$A"',
+      'R=r; A=$PWD/$R/x; rm -rf "$A"',
+      'R=r; A=$PWD/$R/x; rm -rf $A/*',
+      'A=$(pwd); rm -rf "${A:?}"',
+      'rm -rf $1/*',
+      'rm -rf $(cat /t/cfg.txt)',
+    ]
+    const rules = new Set<string>()
+    for (const command of commands) {
+      const hits = scanRmCriticalPath(command, { cwd: '/tmp/rmbv-e2e', home: '/home/tester' }) as { rule: string }[]
+      expect(hits.length, command).toBeGreaterThan(0)
+      for (const hit of hits) rules.add(hit.rule)
+      const remedy = describeRemedy(command, hits)
+      for (const text of [...remedy.lines, ...(remedy.rewritten === null ? [] : [remedy.rewritten])]) {
+        for (const raw of text.match(/\S*\/\S*/g) ?? []) {
+          const token = raw.replace(/^[`(']+|[`'),.;:]+$/g, '')
+          expect(command, `${command}: invented ${token} in ${text}`).toContain(token)
+        }
+      }
+    }
+    expect(rules).toEqual(new Set(['derived-directory', 'glob-under-variable', 'positional-glob', 'substitution-target']))
+  })
+
+  it('matches the seven measured derived-target shapes', () => {
+    const prefix = 'R=r; A=$PWD/$R/gN; mkdir -p $A; rm -rf '
+    const cases: [string, string | null][] = [
+      ['"${A:?}"/*.log', null],
+      ['$A*', null],
+      ['"${A:?}"/child', null],
+      ['"$A/."', 'derived-directory'],
+      ['"${A?}/*"', 'derived-directory'],
+      ['"${A:?}"/', 'derived-directory'],
+      ['$A', 'derived-directory'],
+      ['"$A"', 'derived-directory'],
+      ['${A:?}', 'derived-directory'],
+    ]
+    for (const [target, rule] of cases) {
+      const hits = scanRmCriticalPath(prefix + target, { cwd: '/tmp/rmbv-e2e' }) as { rule: string }[]
+      expect(hits.map((hit) => hit.rule), target).toEqual(rule === null ? [] : [rule])
+    }
+  })
+
+  it('distinguishes a literal marker from substitutions and sees positionals after them', () => {
+    expect(scanRmCriticalPath('rm -rf __CMDSUB__', { cwd: '/tmp/rmbv-e2e' })).toEqual([])
+    expect(scanRmCriticalPath('rm -rf __CMDSUB__$(printf x)', { cwd: '/tmp/rmbv-e2e' })).toEqual([])
+    const hits = scanRmCriticalPath('rm -rf $(printf x)$1/*', { cwd: '/tmp/rmbv-e2e' }) as { rule: string }[]
+    expect(hits.map((hit) => hit.rule)).toEqual(['positional-glob'])
+  })
+
+  it('refuses the derived archive removal without guessing its path after cd', () => {
+    const cmd = 'cd /x/.claude && F=/x/f.sh; R=reports/r; E=/x/e; A=$PWD/$R/e2e-archive-r2; L=$R/out.txt; rm -rf $A'
+    const hits = scanRmCriticalPath(cmd, { cwd: '/work/project', home: '/home/tester' }) as { rule: string }[]
+    expect(hits.map((h) => h.rule)).toContain('derived-directory')
+    expect(run(cmd, { agentId: 'sub-agent' }).reason).toContain('use a literal absolute path')
+  })
+
+  it('refuses the archive through a sub-agent PreToolUse denial envelope', () => {
+    const r = run('cd /t && R=r; A=$PWD/$R/arch; rm -rf $A', { agentId: 'sub-agent' })
+    expect(r.status).toBe(0)
+    expect(r.out.hookSpecificOutput.hookEventName).toBe('PreToolUse')
+    expect(r.denied).toBe(true)
+    expect(r.reason).toContain('use a literal absolute path')
+  })
+
+  it('keeps a derived assignment through a whole-variable copy', () => {
+    const r = run('cd /t && R=r; A=$PWD/$R/arch; B=$A; rm -rf $B')
+    expect(r.denied).toBe(true)
+    expect(r.reason).toContain('use a literal absolute path')
+  })
+
+  it('refuses a guarded derived target and never proposes the guard as its escape', () => {
+    const r = run('cd /t && R=r; A=$PWD/$R/arch; rm -rf "${A:?}"')
+    expect(r.denied).toBe(true)
+    expect(r.reason).toContain('use a literal absolute path')
+    expect(r.reason).not.toContain('Run this instead')
+  })
+
+  it('recognises whole derived variables with slashes and stars but not a plain child', () => {
+    for (const target of ['$A', '"$A"', '${A}', '"${A:?}"', '$A/', '$A/*']) {
+      expect(run(`R=r; A=$PWD/$R/arch; rm -rf ${target}`).denied).toBe(true)
+    }
+    expect(run('R=r; A=$PWD/$R/arch; rm -rf $A/x').denied).toBe(false)
+  })
+
+  it('does not need the interpolated variable to be unset to derive the root', () => {
+    expect(run('A=$PWD/$UNSET; rm -rf $A').denied).toBe(true)
+    expect(run('R=r; A=$PWD/$R/x; rm -rf $A', { env: { R: 'r' } }).denied).toBe(true)
+  })
+
+  it('refuses a recursive rm whose target is only a command substitution', () => {
+    for (const cmd of ['rm -rf $(cat /t/cfg.txt)', 'rm -rf "$(cat /t/cfg.txt)"', 'rm -rf `cat /t/f`', 'rm -rf $(cat /t/f)/',
+      'rm -r -f -- "$(cat /t/f)"', 'rm --recursive $(cat /t/f)', 'bash -c \'rm -rf $(cat /t/f)\'', 'echo $(rm -rf $(cat /t/f))']) {
+      const r = run(cmd)
+      expect(r.denied, cmd).toBe(true)
+      expect(r.reason, cmd).toContain('run the substitution on its own first')
+      expect(r.reason, cmd).not.toContain('Run this instead')
+    }
+  })
+
+  it('fires only when no other expansion is left in the rm statement once substitutions are removed', () => {
+    for (const cmd of ['T=/t; rm -rf $(cat $T/cfg.txt)', 'rm -rf $(cat /t/cfg.txt) /t/dn']) {
+      expect(run(cmd).denied, cmd).toBe(true)
+    }
+    for (const cmd of ['T=/t; rm -rf $(cat $T/cfg.txt) $T/dn', 'T=/t; rm -rf $(cat $T/cfg.txt) $T/dn && echo x',
+      'rm -rf "$(cat $F)" "$G"']) {
+      expect(run(cmd).reason ?? '', cmd).not.toContain('run the substitution on its own first')
+    }
+  })
+
+  it('leaves non-recursive, prefixed, rmdir and assigned substitutions alone', () => {
+    for (const cmd of ['rm -f $(cat /t/f)', 'rm -rf /t/$(cat /t/f)', 'rmdir $(cat /t/f)', 'D=$(mktemp -d); rm -rf "$D"',
+      "rm -rf '$(cat /t/f)'", 'rm -rf $(cat /t/f).bak']) {
+      expect(run(cmd).denied, cmd).toBe(false)
+    }
+  })
+
+  it('refuses a trailing-slash prefix assignment', () => {
+    expect(run('A=$W/; rm -rf $A').denied).toBe(true)
+    expect(run('A=$PWD/; rm -rf $A').denied).toBe(true)
+    expect(run('A=$W; rm -rf $A').denied).toBe(false)
+  })
+
+  it('leaves harmless assigned and bare variable targets silent', () => {
+    for (const cmd of ['A=/t/r/lit; rm -rf $A', 'rm -rf $UNSET', 'A=$PWD/r/plain; rm -rf $A',
+      'A=/tmp/x; rm -rf $A', 'A=$W/.lane; rm -rf "$A"', 'A="$W"/x; rm -rf $A',
+      'A=$(mktemp -d); rm -rf "$A"', 'rm -rf "${A:?}"/x']) {
+      expect(run(cmd).denied, cmd).toBe(false)
+    }
+  })
+
+  it('refuses positional globs with non-mechanical literal or bound-parameter advice', () => {
+    const r = run('rm -rf $1/*nothing')
+    expect(r.denied).toBe(true)
+    expect(r.reason).toContain('bind $1 and write `${1:?}`')
+    expect(r.reason).not.toContain('Run this instead')
+    for (const target of ['$1/*', '${1}/', '"$@"/', '$2/$f']) {
+      expect(run(`rm -rf ${target}`).denied).toBe(true)
+    }
+  })
+
+  it('refuses a quoted positional glob and allows the guarded form it asks for', () => {
+    expect(run('rm -rf "$1"/*').denied).toBe(true)
+    expect(run('rm -rf "${1:?}"/*').denied).toBe(false)
+  })
+
+  it('leaves an escaped dollar alone: `\\$1` is a literal directory name, never a positional parameter', () => {
+    expect(run('rm -rf "\\$1"/*').denied).toBe(false)
+    expect(run('rm -rf \\$1/*').denied).toBe(false)
+    expect(run('rm -rf $(printf x)$1/*').denied).toBe(true)
+  })
+
+  it('does not apply the positional check to function bodies or set -- arguments', () => {
+    expect(run('f() { rm -rf $1/*; }').denied).toBe(false)
+    expect(run('set -- a; rm -rf $1/*').denied).toBe(false)
+    expect(run("bash -c 'rm -rf $1/*'").denied).toBe(false)
+  })
+
   it('denies a glob under a variable for a SUB-AGENT and hands back the guarded command', () => {
     const cmd = 'W=/abs/wt; G=$W/.lane/gates; rm -f $G/*.log $G/done; git -C $W diff'
     const r = run(cmd, { agentId: 'a0123' })
