@@ -231,7 +231,26 @@ function sameWorktree(left, right, platform) {
   return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
 }
 
-export async function removeLifecycleWorktree({ root, board, force = false, git = execFileSync, platform = process.platform }) {
+const BOARD_REMEDY = 'restore access to the board (the planka_mcp_url plugin option) and rerun'
+
+// The board the expiry is read on: the adapter's own id, else the marker's recorded id (adapters that predate the
+// `boardId` property). A board id taken from a flag or a pointer is proven only by the card's own boardId; a marker's
+// own board id keeps the older contract for a card without one, but a card naming another board always refuses.
+function assertCardOnBoard({ card, board, marker, boardIdFromMarker, prefix }) {
+  const recorded = typeof marker.expiry.boardId === 'string' && marker.expiry.boardId.trim() ? marker.expiry.boardId : null
+  const selected = board.boardId == null ? recorded : String(board.boardId)
+  if (card.boardId != null && selected !== null && String(card.boardId) !== selected) {
+    const remedy = boardIdFromMarker
+      ? `correct expiry.boardId in the retention marker to ${card.boardId}, then rerun`
+      : `rerun with --board-id ${card.boardId}`
+    throw new Error(`${prefix} belongs to board ${card.boardId}, not ${selected}; ${remedy}`)
+  }
+  if (!boardIdFromMarker && (card.boardId == null || selected === null)) {
+    throw new Error(`${prefix}: the board response carries no boardId, so the card cannot be proven to be on board ${selected ?? 'unknown'}; rerun once the board server returns boardId, or record the board id in the retention marker's expiry.boardId`)
+  }
+}
+
+export async function removeLifecycleWorktree({ root, board, boardIdFromMarker = true, force = false, git = execFileSync, platform = process.platform }) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('worktree path must be absolute')
   const resolvedRoot = fs.realpathSync(root)
   const markerPath = path.join(resolvedRoot, WORKTREE_RETENTION_FILE)
@@ -244,19 +263,24 @@ export async function removeLifecycleWorktree({ root, board, force = false, git 
       throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId} names worktree ${markerWorktree}, not removal target ${resolvedRoot}`)
     }
     if (!board || typeof board.getCard !== 'function') {
-      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable, so retention expiry cannot be verified`)
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable, so retention expiry cannot be verified; ${BOARD_REMEDY}`)
     }
     let card
     let listName
     try {
       card = await board.getCard(marker.cardId)
+    } catch (error) {
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable (${error instanceof Error ? error.message : String(error)}); ${BOARD_REMEDY}`, { cause: error })
+    }
+    if (card) assertCardOnBoard({ card, board, marker, boardIdFromMarker, prefix: `worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}` })
+    try {
       if (card) {
         listName = card.listName ?? card.list?.name
         if (!listName && card.listId && typeof board.listNameOf === 'function') listName = await board.listNameOf(String(card.listId))
         if (!listName) throw new Error('card list is unavailable')
       }
     } catch (error) {
-      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable (${error instanceof Error ? error.message : String(error)})`, { cause: error })
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable (${error instanceof Error ? error.message : String(error)}); ${BOARD_REMEDY}`, { cause: error })
     }
     expired = card === null || card === undefined || ['Done', 'NotDoing'].includes(listName)
     if (!expired) {

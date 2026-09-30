@@ -1,17 +1,6 @@
 #!/usr/bin/env node
-import { createBoardClient } from './lib/board-http-client.mjs'
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-
-// The board id comes from --board-id or from the nearest `.claude/planka.json` walking up from cwd
-// (the suite root holds it; a repository checkout inside the suite does not).
-function resolveBoardId(start) {
-  for (let dir = start; ; dir = dirname(dir)) {
-    const file = join(dir, '.claude', 'planka.json')
-    if (existsSync(file)) { try { return JSON.parse(readFileSync(file, 'utf8')).boardId ?? null } catch { return null } }
-    if (dirname(dir) === dir) return null
-  }
-}
+import { createBoardClient, resolveBoardPointer } from './lib/board-http-client.mjs'
+import { readFileSync } from 'node:fs'
 import { parseOrchestratorArgs, runOrchestrator } from './lib/orchestrator-runner-core.mjs'
 import { loadProfileEnv, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
@@ -34,7 +23,7 @@ async function main() {
     process.stdout.write(`wave=${options.waveId} report=${path.resolve(options.report)}\n`)
     const contract = readFileSync(new URL('../autonomy/ORCHESTRATOR-CONTRACT.md', import.meta.url), 'utf8')
     const lifecycleOptions = { sdk, sdkRequire: resolution.require }
-    const result = await runOrchestrator(options, { board: createBoardClient({ url: options.boardUrl, boardId: options.boardId ?? resolveBoardId(process.cwd()) }), runPilot, pilotDependencies: { query: sdk.query, resolvePilotModels, loadedCodePaths, lifecycleOptions }, query: sdk.query, sdk, sdkRequire: resolution.require, loadedCodePaths, models, contract, env: { ...process.env, ...profileEnv } })
+    const result = await runOrchestrator(options, { board: createBoardClient({ url: options.boardUrl, boardId: options.boardId ?? resolveBoardPointer(process.cwd())?.boardId ?? null }), runPilot, pilotDependencies: { query: sdk.query, resolvePilotModels, loadedCodePaths, lifecycleOptions }, query: sdk.query, sdk, sdkRequire: resolution.require, loadedCodePaths, models, contract, env: { ...process.env, ...profileEnv } })
     return result.exitCode
   } catch (error) {
     process.stderr.write(`wt-run-orchestrator: ${error instanceof Error ? error.message : String(error)}\n`)

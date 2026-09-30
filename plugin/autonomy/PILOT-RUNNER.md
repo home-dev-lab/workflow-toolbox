@@ -327,6 +327,11 @@ condition `card is absent or in Done or NotDoing`. Readers of v1 tolerate additi
 marker before every removal, resolves the card's current list, and refuses while the card is open or
 the board cannot be reached. It also refuses a marker copied from a different worktree; `--force`
 changes Git's removal mode only and never bypasses these checks.
+When `expiry.boardId` is null or blank, pass `--board-id <id>` or place a
+`.claude/planka.json` pointer above the worktree (or the invocation directory). The remover
+looks above the canonical worktree first, then above the current directory. A marker's own
+board id takes precedence; a conflicting flag refuses removal. A found card on a different
+board, or one whose board cannot be verified when using a flag or pointer, also refuses.
 An absent marker preserves ordinary removal behavior. A direct `git worktree remove`, manual recursive
 deletion, or other tooling that does not call this remover remains outside this guard.
 
