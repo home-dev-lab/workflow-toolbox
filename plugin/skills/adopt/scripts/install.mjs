@@ -81,7 +81,6 @@ const BANNER_TOOL = 'workflow-toolbox'
 const SETTINGS_FILE = 'settings.json'
 const SETTINGS_TRACE_DIR = 'workflow-toolbox'
 const SETTINGS_TRACE_FILE = 'adopt-settings-trace.json'
-const SETTINGS_BACKUP_PREFIX = 'settings.json.workflow-toolbox.bak.'
 const ADOPT_JOURNAL_FILE = '.workflow-toolbox-adopt-journal.jsonl'
 
 // ⚠ THIS LIST HAS A TWIN: plugin/bin/lib/env-prerequisites.mjs, which the SessionStart

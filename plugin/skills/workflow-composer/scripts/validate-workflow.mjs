@@ -401,7 +401,7 @@ const filePath = args[0]
 let src
 try {
   src = readFileSync(filePath, 'utf8')
-} catch (err) {
+} catch {
   process.stderr.write(`Cannot read file: ${filePath}\n`)
   process.exit(1)
 }
