@@ -20,10 +20,6 @@ function claudeEvidence(query) {
   return null;
 }
 
-function isClaudeCodeQuestion(query) {
-  return CLAUDE_PRODUCT_PATTERN.test(query)
-    || CLAUDE_IDENTIFIER_PATTERN.test(query);
-}
 const DEEP_RESEARCH_PATTERN =
   /\b(comprehensive|in[- ]depth|literature review|deep research|investigate|synthesi[sz]e|multiple sources|trade-?offs?|competing theories|compare\b.{0,40}\bevidence|evaluate\b.{0,40}\bevidence)\b/i;
 

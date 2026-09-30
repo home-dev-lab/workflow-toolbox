@@ -408,7 +408,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const phaseKnown = row.phase && row.phase !== 'unknown';
     const visiblePhases = phaseKnown ? PANE_PHASES : [];
     const stageHeading = row.phaseSource === 'log' ? 'Work stages (from log):' : 'Work stages:';
-    const phaseButtons = visiblePhases.map(([phase, label]) => {
+    const phaseButtons = visiblePhases.map(([phase]) => {
       const state = stateOf(row, phase);
       const buttonKey = `detail-toggle:stage:${row.id}:${phase}`;
       const hasEvidence = (Boolean(row.inspectors?.[phase]?.summary || row.inspectors?.[phase]?.href) || Object.hasOwn(row.phaseCosts || {}, phase)) && !['not started', 'skipped'].includes(state.words);

@@ -13,6 +13,21 @@ const qualityFiles = [
   'plugin/**/*.mjs',
   'plugin/**/*.js',
 ]
+// Every script a shipped plugin carries: the toolbox plugin and each marketplace plugin.
+const pluginScriptFiles = [
+  '../plugin/**/*.mjs',
+  '../plugin/**/*.js',
+  '../plugins/**/*.{mjs,js}',
+  'plugin/**/*.mjs',
+  'plugin/**/*.js',
+  'plugins/**/*.{mjs,js}',
+]
+const workflowScriptFiles = [
+  'plugin/workflows/**/*.js',
+  'plugin/skills/workflow-composer/assets/**/*.js',
+  '../plugin/workflows/**/*.js',
+  '../plugin/skills/workflow-composer/assets/**/*.js',
+]
 const replacementRuleFiles = [
   ...qualityFiles,
   'plugin/**/*.{ts,mts,cts}',
@@ -36,7 +51,7 @@ export default tseslint.config(
     ignores: [
       '!plugin/**/*.js',
       '!../plugin/**/*.js',
-       '!plugins/wt-rules-on-demand/**/*.js',
+      '!plugins/**/*.js',
       'plugin/hooks/snapshot-program.js',
       '../plugin/hooks/snapshot-program.js',
       'plugin/**/fixtures/**',
@@ -47,7 +62,7 @@ export default tseslint.config(
     ],
   },
   {
-    files: ['../plugin/**/*.mjs', '../plugin/**/*.js', 'plugins/wt-rules-on-demand/**/*.{mjs,js}', 'plugin/**/*.mjs', 'plugin/**/*.js'],
+    files: pluginScriptFiles,
     ...js.configs.recommended,
     languageOptions: { globals: globals.node },
     rules: {
@@ -55,6 +70,27 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-expressions': 'off',
       '@typescript-eslint/no-unused-vars': 'off',
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    // Correctness floor for every shipped plugin script. The block above maps all of
+    // js.recommended to WARN for the quality ratchet; these two stay ERRORS because an
+    // undefined reference or a dangling binding in a plugin script reaches adopters as
+    // a runtime ReferenceError that no type checker sees.
+    files: pluginScriptFiles,
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    // Workflow-tool scripts run in a sandbox that injects these names; the generated
+    // glue binds them (`const __rt = { agent, parallel, pipeline, phase, log, budget, workflow }`).
+    files: workflowScriptFiles,
+    languageOptions: {
+      globals: Object.fromEntries(
+        ['agent', 'parallel', 'pipeline', 'phase', 'log', 'budget', 'workflow', 'args'].map((name) => [name, 'readonly']),
+      ),
     },
   },
   {

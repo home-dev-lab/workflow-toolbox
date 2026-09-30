@@ -7,7 +7,7 @@
   },
   "scripts": {
     "typecheck": "node scripts/with-suite-lease.mjs -- pnpm -r typecheck",
-    "lint": "node scripts/with-suite-lease.mjs -- eslint .",
+    "lint": "node scripts/with-suite-lease.mjs -- node scripts/lint-gate.mjs",
     "quality:lint": "node scripts/with-suite-lease.mjs -- node scripts/quality-root-gate.mjs lint",
     "quality:host": "node scripts/host-primitive-census.mjs",
     "quality:dup": "node scripts/with-suite-lease.mjs -- jscpd packages/runtime/src packages/patterns/src packages/build/src packages/std/src packages/pipeline-spec/src packages/comm/src packages/debugger/src packages/scaffold/src packages/smoke/src ../plugin --config .jscpd.json",

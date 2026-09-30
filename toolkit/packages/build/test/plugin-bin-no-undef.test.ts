@@ -1,107 +1,123 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { ESLint } from 'eslint'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
+
+// @ts-expect-error -- plain .mjs script without type declarations
+import { lintPasses, PLUGIN_LINT_TARGETS } from '../../../scripts/lint-gate.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const PLUGIN_BIN = join(REPO_ROOT, 'plugin/bin')
+const TOOLKIT_ROOT = join(REPO_ROOT, 'toolkit')
+const CONFIG_FILE = join(TOOLKIT_ROOT, 'eslint.config.mjs')
 
-// The plugin's runtime scripts are `.mjs` and live OUTSIDE the toolkit, so nothing
-// checked them for undefined references:
+// The plugin scripts are `.mjs`/`.js` files that live OUTSIDE the toolkit, and adopters run
+// them as they are: no type checker reads them, and `node --check` sees syntax only, so an
+// undefined reference or a dangling binding reaches an adopter as a runtime ReferenceError.
 //
-//   - `pnpm lint` runs `eslint .` from toolkit/, and ESLint refuses to lint outside
-//     its base path (the cwd), so plugin/bin was never in scope;
-//   - the shared config is `tseslint.configs.recommended`, which disables `no-undef`
-//     because tsc covers `.ts` — nothing covers `.mjs`;
-//   - `node --check` sees syntax only, and an undefined reference is valid syntax.
+// ESLint refuses to lint a file outside its base path, and `eslint .` run from toolkit/ has
+// toolkit/ as base path — so for a long time the toolkit's lint gate read none of them. The
+// gate now runs a second pass from the repository root (scripts/lint-gate.mjs) with the same
+// config file, where `no-undef` and `no-unused-vars` are ERRORS for every shipped plugin script.
 //
-// Measured 2026-08-27, merging main into a long-lived branch: a function renamed on
-// one side kept its OLD call sites on the other, and auto-merge produced no conflict
-// marker because those lines were touched by only one side. Test, typecheck and lint
-// were all green with the symbol undefined — inside a FAIL-OPEN hook, so the resulting
-// ReferenceError would have been swallowed and the failure the hook exists to record
-// would have vanished.
-//
-// This runs ESLint through its Node API rather than the CLI precisely because the API
-// takes an explicit `cwd`: that is what lets the base path be the repo root while the
-// dependency resolves from toolkit/. It is also why this is a test rather than a second
-// `lint` script — a `cd ..` in a package script is one more thing to get wrong on a
-// platform we do not develop on.
-const NODE_GLOBALS = [
-  '__dirname', '__filename', 'AbortController', 'AbortSignal', 'atob', 'btoa', 'Buffer', 'clearImmediate',
-  'clearInterval', 'clearTimeout', 'console', 'fetch', 'globalThis', 'performance', 'process',
-  'queueMicrotask', 'setImmediate', 'setInterval', 'setTimeout', 'structuredClone',
-  'TextDecoder', 'TextEncoder', 'URL', 'URLSearchParams',
+// These tests lock the three things that must stay true for that to hold: the gate still runs
+// the root pass, every tracked plugin script is inside what that pass lints with both rules at
+// error, and the real config still turns an undefined reference in plugin/bin/lib into an error.
+
+// Paths the config deliberately leaves out, each for a stated reason in eslint.config.mjs:
+// test fixtures, a vendored byte-identity-checked artifact, and a generated program.
+const DELIBERATE_EXCLUSIONS = [
+  (path: string) => path.includes('/fixtures/'),
+  (path: string) => path === 'plugin/bin/lib/vendor/yaml.mjs',
+  (path: string) => path === 'plugin/hooks/snapshot-program.js',
 ]
 
-function noUndefConfig(pattern: string) {
-  const globals: Record<string, 'readonly'> = {}
-  for (const name of NODE_GLOBALS) globals[name] = 'readonly'
-  return [
-    {
-      files: [pattern],
-      languageOptions: { ecmaVersion: 2023 as const, sourceType: 'module' as const, globals },
-      rules: { 'no-undef': 'error' as const },
-    },
-  ]
+function trackedPluginScripts(): string[] {
+  const out = execFileSync('git', ['ls-files', '-z', '--', 'plugin', 'plugins'], { cwd: REPO_ROOT, encoding: 'utf8' })
+  return out.split('\0').filter((path) => /\.(?:m?js|cjs)$/.test(path))
 }
 
-async function undefinedReferencesIn(cwd: string, target: string, pattern: string) {
-  const eslint = new ESLint({ cwd, overrideConfigFile: true, overrideConfig: noUndefConfig(pattern) })
-  const results = await eslint.lintFiles([target])
-  return results.flatMap((r) =>
-    r.messages
-      .filter((m) => m.ruleId === 'no-undef')
-      .map((m) => `${r.filePath.slice(cwd.length)}:${m.line} ${m.message}`),
-  )
+function rootLinter() {
+  return new ESLint({ cwd: REPO_ROOT, overrideConfigFile: CONFIG_FILE })
 }
 
-describe('plugin/bin carries no undefined references', () => {
-  const roots: string[] = []
-  afterEach(() => {
-    while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true })
+function severity(setting: unknown): number {
+  const level = Array.isArray(setting) ? setting[0] : setting
+  return level === 'error' || level === 2 ? 2 : level === 'warn' || level === 1 ? 1 : 0
+}
+
+describe('the lint gate covers every shipped plugin script', () => {
+  it('runs a second pass from the repository root with the toolkit config', () => {
+    const passes = lintPasses() as Array<{ name: string; cwd: string; args: string[] }>
+    const plugin = passes.find((pass) => pass.cwd === REPO_ROOT.replace(/[\\/]$/, '') || pass.cwd === REPO_ROOT)
+    expect(plugin, JSON.stringify(passes.map((pass) => pass.cwd))).toBeDefined()
+    expect(plugin!.args).toContain('toolkit/eslint.config.mjs')
+    for (const target of PLUGIN_LINT_TARGETS as string[]) expect(plugin!.args).toContain(target)
+
+    const pkg = JSON.parse(readFileSync(join(TOOLKIT_ROOT, 'package.json'), 'utf8')) as { scripts: Record<string, string> }
+    expect(pkg.scripts.lint).toContain('scripts/lint-gate.mjs')
   })
 
-  it('reports nothing across the whole directory', async () => {
-    expect(await undefinedReferencesIn(REPO_ROOT, PLUGIN_BIN, 'plugin/bin/**/*.mjs')).toEqual([])
+  it('lints every tracked plugin script with no-undef and no-unused-vars at error', async () => {
+    const scripts = trackedPluginScripts()
+    // The gate's globs name .mjs and .js only; a .cjs script would fall outside them silently.
+    expect(scripts.filter((path) => path.endsWith('.cjs'))).toEqual([])
+
+    const eslint = rootLinter()
+    const uncovered: string[] = []
+    const weak: string[] = []
+    const perDirectory: Record<string, number> = {}
+    for (const path of scripts) {
+      if (DELIBERATE_EXCLUSIONS.some((excluded) => excluded(path))) continue
+      const absolute = join(REPO_ROOT, path)
+      if (await eslint.isPathIgnored(absolute)) {
+        uncovered.push(path)
+        continue
+      }
+      const config = await eslint.calculateConfigForFile(absolute)
+      for (const rule of ['no-undef', 'no-unused-vars']) {
+        if (severity(config.rules?.[rule]) !== 2) weak.push(`${path} ${rule}=${JSON.stringify(config.rules?.[rule])}`)
+      }
+      const key = path.split('/').slice(0, 2).join('/')
+      perDirectory[key] = (perDirectory[key] ?? 0) + 1
+    }
+    expect(uncovered).toEqual([])
+    expect(weak).toEqual([])
+    // Every directory adopters run scripts from is represented; a glob that silently stopped
+    // matching one of them would drop its count to zero.
+    for (const directory of ['plugin/bin', 'plugin/hooks', 'plugin/skills', 'plugins/wt-deep-search', 'plugins/wt-rules-on-demand', 'plugins/wt-secret-guard']) {
+      expect(perDirectory[directory] ?? 0, JSON.stringify(perDirectory)).toBeGreaterThan(0)
+    }
   })
 
-  // The lock's own red proof, run on every suite rather than once by hand: a check whose
-  // ability to fail is never exercised is decoration, and this one guards a defect class
-  // that produced no other visible signal.
-  //
-  // ⚠ The mutation happens on a COPY in a temp directory, never on the working tree. A
-  // suite that rewrites a real file leaves it rewritten when it is interrupted, and under
-  // a parallel run the tests that SPAWN these hooks would read the broken version.
-  it('reports the defect when a call site names a function that does not exist', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-no-undef-'))
-    roots.push(root)
-    const dir = join(root, 'scripts')
-    mkdirSync(dir, { recursive: true })
-
-    // Reproduce the real shape: rename the DEFINITION and leave every caller behind.
-    // `String.replace` with a string pattern hits the first occurrence only, which is the
-    // declaration — so the callers below it become dangling, exactly as they did when one
-    // side of a merge renamed the function and the other side kept calling the old name.
-    //
-    // ⚠ The assertion checks the PROPERTY (an undefined reference is reported), never a
-    // particular spelling. An earlier version asserted the new name appeared in the output
-    // and passed on one branch and failed on another — the mutation was doing something
-    // other than what its comment claimed, and only running it against a second tree showed
-    // that. A red proof whose mutation is not itself verified proves nothing.
-    const original = readFileSync(join(PLUGIN_BIN, 'wt-actionable-snapshot-producer-hook.mjs'), 'utf8')
-    expect(original).toContain('function recordAttempt(')
-    const mutated = original.replace('function recordAttempt(', 'function recordAttemptRenamed(')
+  // The red proof, run on every suite: a check whose ability to fail is never exercised is
+  // decoration. It lints mutated TEXT under a real plugin/bin/lib path, so the real config's
+  // file matching decides the outcome, and no file on disk is ever rewritten (a suite that
+  // mutates a real file leaves it mutated when interrupted, and tests that spawn these
+  // scripts would read the broken version under a parallel run).
+  it('reports an undefined reference in plugin/bin/lib as an error', async () => {
+    // Reproduce the real defect shape: one side of a merge renames a function's DEFINITION and
+    // the other side keeps calling the old name. Pick the first function defined in the file
+    // and also called in it, rename only its definition, and expect its callers to dangle.
+    const relative = 'plugin/bin/lib/suite-lock.mjs'
+    const original = readFileSync(join(REPO_ROOT, relative), 'utf8')
+    const victim = [...original.matchAll(/^(?:export )?function (\w+)\(/gm)]
+      .map((match) => match[1]!)
+      .find((name) => original.split(`${name}(`).length > 2)
+    expect(victim, 'no function in the file is both defined and called').toBeDefined()
+    const mutated = original.replace(new RegExp(`function ${victim}\\(`), `function ${victim}Renamed(`)
     expect(mutated).not.toBe(original)
 
-    const victim = join(dir, 'hook.mjs')
-    writeFileSync(victim, mutated, 'utf8')
+    const eslint = rootLinter()
+    const [clean] = await eslint.lintText(original, { filePath: join(REPO_ROOT, relative) })
+    expect(clean!.messages.filter((message) => message.ruleId === 'no-undef')).toEqual([])
 
-    const found = await undefinedReferencesIn(root, victim, '**/*.mjs')
-    expect(found.length).toBeGreaterThan(0)
-    expect(found.join('\n')).toContain('recordAttempt')
+    const [result] = await eslint.lintText(mutated, { filePath: join(REPO_ROOT, relative) })
+    const undefinedReferences = result!.messages.filter((message) => message.ruleId === 'no-undef')
+    expect(undefinedReferences.length).toBeGreaterThan(0)
+    expect(undefinedReferences.every((message) => message.severity === 2)).toBe(true)
+    expect(undefinedReferences.map((message) => message.message).join('\n')).toContain(`'${victim}'`)
   })
 })

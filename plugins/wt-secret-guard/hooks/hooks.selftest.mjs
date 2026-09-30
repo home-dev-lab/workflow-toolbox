@@ -439,7 +439,6 @@ await test('prose mentions pass and journal mention-allowed without command text
 });
 await test('secret-file warning option off remains fail-open and journals policy-disabled', async () => {
   configure({ secretFileReadWarnings: false });
-  const before = calls.length;
   const result = await bash($, { tool: 'Bash', command: 'cat ~/.npmrc' }, async () => ({ text: 'ok' }));
   assert.equal(result.text, 'ok');
   assert([...journalSnapshot().values()].some((value) => value.includes('policy-disabled')));
@@ -2909,8 +2908,7 @@ await test('V50 the verify13 findings are closed and the README describes what t
     const earlier = tokenize('vfifty', 'v50-earlier-value');
     testEnv.set('WT_V50_ALIAS', earlier);
     const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
-    let received;
-    const result = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/wt-env/WT_V50_ALIAS' }, async (event) => { received = event.command; return execute(event.command); });
+    const result = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/wt-env/WT_V50_ALIAS' }, async (event) => execute(event.command));
     if (result?.deny) failures.push(`1 the alias command was refused: ${result.deny}`);
     else if (JSON.stringify(result).includes(earlier)) failures.push('1 a value equal to another value\'s issued token reached the output unmasked');
     const outbound = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v50-alias.txt', content: `note ${earlier}` });
