@@ -33,6 +33,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The remedy-quote helper adds one process-table-free module.
     // The SDK account gate (sdk-account-check.mjs) adds one process-table-free module.
     // The rm critical-path guard adds its hook and its shell-command parser, both process-table-free.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 241, violations: [] })
+    // The plugin-root classifier (plugin-root-state.mjs) adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 242, violations: [] })
   })
 })
