@@ -26,7 +26,7 @@ const processPrefix = () => (typeof process !== 'undefined' ? `${process.pid}-` 
 const newToken = () => processPrefix() + Date.now().toString(36);
 let token = newToken();
 const deliveryFields = ({ deliveryId, deliverySeq, servingSeq }) => ({ deliveryId, deliverySeq, servingSeq });
-const advancesClose = (previous, close) => close && !(previous?.token === token && previous.seq >= close.seq);
+const advancesClose = (previous, closeMark) => closeMark && !(previous?.token === token && previous.seq >= closeMark.seq);
 const logged = new Set();
 const emptyHealth = () => ({ days: {}, lastErrors: [], calls: 0 });
 let pendingHealth = emptyHealth();
@@ -298,8 +298,8 @@ const summary = (e) => e.tool === 'Bash' ? `Bash: ${bounded(e.command ?? '').tri
   : `${e.tool}: ${String(pathOf(e)).split(/[\\/]/).at(-1) || 'call'}`;
 
 async function journal($, names, loop, suppressed = [], acts = [], injected = [], options = {}) {
-  const { channel = 'tool.call', triggerErrors = [], close } = options;
-  if (!names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length && !close) return;
+  const { channel = 'tool.call', triggerErrors = [], close: closeMark } = options;
+  if (!names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length && !closeMark) return;
   const turn = writeTurn();
   await turn.previous.catch(() => {});
   try {
@@ -336,7 +336,7 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
          else ctx.governedActs.push({ rule: rule.name, ruleIdentity: rule.identity, at: now, last: now, count: 1 });
        }
         for (const pending of injected) ctx.complianceInjected.push({ rule: pending.rule.name, ruleIdentity: pending.rule.identity, at: now, ...deliveryFields(pending) });
-        if (advancesClose(ctx.lastClose, close)) ctx.lastClose = { token, seq: close.seq, at: now };
+        if (advancesClose(ctx.lastClose, closeMark)) ctx.lastClose = { token, seq: closeMark.seq, at: now };
        if (triggerErrors.length) {
          ctx.triggerErrors ??= [];
          ctx.triggerErrors.push(...triggerErrors.map((error) => ({ ...error, at: now, channel })));
