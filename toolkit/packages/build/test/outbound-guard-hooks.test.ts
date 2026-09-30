@@ -870,6 +870,38 @@ describe('wt-spawn-registry-scan.mjs — relaunches after a recorded stop', () =
 describe('wt-spawn-registry-scan.mjs — WAITING-FOR surfaces on flagged/confirmedAlive entries, and clears on resume', () => {
   const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
 
+  it('declared waits survive a clean stop independently of the open set and appear on heartbeat', () => {
+    const { env, dir } = guardEnv('waiting-stopped')
+    const at = minutesAgo(2)
+    writeFileSync(join(dir, 'sess.jsonl'), [
+      { t: 'spawn', child: 'auser1234567', childName: 'worker', name: 'worker', at: minutesAgo(3) },
+      { t: 'out', agentId: 'auser1234567', name: 'worker', at },
+      { t: 'waiting', agentId: 'auser1234567', name: 'worker', artifact: 'build', path: '/tmp/claude-1000/example/result', at },
+      { t: 'stop', agentId: 'auser1234567', name: 'worker', at: minutesAgo(1) },
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n')
+    const scan = runNoInput(SCAN, ['--session', 'sess', '--json'], env)
+    const parsed = JSON.parse(scan.stdout) as { open: number; waiting: Array<{ agentId: string; artifact: string }> }
+    expect(parsed.open).toBe(0)
+    expect(parsed.waiting).toMatchObject([{ agentId: 'auser1234567', artifact: 'build' }])
+    const heartbeat = run(HEARTBEAT_HOOK, { hook_event_name: 'Stop', session_id: 'sess', cwd: '/home/user/project' }, env)
+    expect(JSON.parse(heartbeat.stdout)).toMatchObject({ systemMessage: expect.stringContaining('waiting for: build') })
+  })
+
+  it('heartbeat lists only unresolved waits declared in the last 24 hours; the scan keeps all of them', () => {
+    const { env, dir } = guardEnv('waiting-old')
+    const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString()
+    writeFileSync(join(dir, 'sess.jsonl'), [
+      { t: 'waiting', agentId: 'aold12345678', name: 'old', artifact: 'stale-artifact', path: '/tmp/claude-1000/old', at: hoursAgo(25) },
+      { t: 'waiting', agentId: 'anew12345678', name: 'new', artifact: 'fresh-artifact', path: '/tmp/claude-1000/new', at: hoursAgo(1) },
+    ].map((record) => JSON.stringify(record)).join('\n') + '\n')
+    const scan = JSON.parse(runNoInput(SCAN, ['--session', 'sess', '--json'], env).stdout) as { waiting: Array<{ agentId: string }> }
+    expect(scan.waiting.map((w) => w.agentId).sort()).toEqual(['anew12345678', 'aold12345678'])
+    const heartbeat = run(HEARTBEAT_HOOK, { hook_event_name: 'Stop', session_id: 'sess', cwd: '/home/user/project' }, env)
+    const message = (JSON.parse(heartbeat.stdout) as { systemMessage?: string }).systemMessage ?? ''
+    expect(message).toContain('fresh-artifact')
+    expect(message).not.toContain('stale-artifact')
+  })
+
   it('CLOSURE CRITERION 1: a flagged (open+silent) agent with a waiting declaration carries waitingFor, identifiable with no correlation', () => {
     const dir = mkRoot('waiting-flagged')
     const spawnAt = minutesAgo(45)

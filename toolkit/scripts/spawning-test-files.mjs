@@ -49,6 +49,7 @@ export const spawningTestFiles = [
   'packages/build/test/concurrent-test-guard-hook.test.ts',
   'packages/build/test/crossos-dispatch.test.ts',
   'packages/build/test/deep-grounding.test.ts',
+  'packages/build/test/delegate-wake.test.ts',
   'packages/build/test/env-prerequisite-drift-hook.test.ts',
   'packages/build/test/find-newermt-format-guard-hook.test.ts',
   'packages/build/test/frontmatter-consumers-round3.test.ts',

@@ -241,7 +241,12 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-arc-watch.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this monitor and its terminal-state output contract under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this monitor, its terminal-state output and attributable completion relay under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-delegate-wake-scan.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this session-scoped completion replay and optional registry resume observer.',
   },
   {
     script: 'plugin/bin/wt-autonomy-arm.mjs',
@@ -1063,6 +1068,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-actionable-gate-hook.mjs',
       'plugin/bin/wt-actionable-snapshot-producer-hook.mjs',
       'plugin/bin/wt-actionable-snapshot-refresh.mjs',
+      // The shipped Depends-on convention the producer falls back to; its rules are documented there.
+      'plugin/bin/lib/depends-on-parser.mjs',
       'plugin/bin/wt-registry-heartbeat-hook.mjs',
       'plugin/bin/wt-session-start-registry-hook.mjs',
       'plugin/bin/wt-spawn-registry-scan.mjs',
@@ -1086,6 +1093,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-lane-consent-gate-hook.mjs',
       'plugin/bin/wt-lane-orphan-watch.mjs',
       'plugin/bin/wt-arc-watch.mjs',
+       'plugin/bin/wt-delegate-wake-scan.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
        'plugin/bin/wt-autonomy-watch.mjs',
        'plugin/bin/lib/session-role.mjs',

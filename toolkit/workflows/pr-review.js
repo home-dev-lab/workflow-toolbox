@@ -2674,6 +2674,8 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-actionable-gate-hook.mjs",
         "plugin/bin/wt-actionable-snapshot-producer-hook.mjs",
         "plugin/bin/wt-actionable-snapshot-refresh.mjs",
+        // The shipped Depends-on convention the producer falls back to; its rules are documented there.
+        "plugin/bin/lib/depends-on-parser.mjs",
         "plugin/bin/wt-registry-heartbeat-hook.mjs",
         "plugin/bin/wt-session-start-registry-hook.mjs",
         "plugin/bin/wt-spawn-registry-scan.mjs"
@@ -2697,6 +2699,7 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-lane-consent-gate-hook.mjs",
         "plugin/bin/wt-lane-orphan-watch.mjs",
         "plugin/bin/wt-arc-watch.mjs",
+        "plugin/bin/wt-delegate-wake-scan.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
         "plugin/bin/lib/session-role.mjs",

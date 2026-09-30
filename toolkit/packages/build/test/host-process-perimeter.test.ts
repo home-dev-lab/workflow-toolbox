@@ -33,7 +33,9 @@ describe('pid to parent-pid host perimeter', () => {
     // The remedy-quote helper adds one process-table-free module.
     // The SDK account gate (sdk-account-check.mjs) adds one process-table-free module.
     // The rm critical-path guard adds its hook and its shell-command parser, both process-table-free.
-    // The plugin-root classifier (plugin-root-state.mjs) adds one process-table-free module.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 242, violations: [] })
+    // The plugin-root classifier (plugin-root-state.mjs) adds one process-table-free module; the wake
+    // observer and its one-shot replay add two more.
+    // The shipped Depends-on parser (depends-on-parser.mjs) adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 245, violations: [] })
   })
 })

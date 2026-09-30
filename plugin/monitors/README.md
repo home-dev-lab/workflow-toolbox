@@ -17,6 +17,34 @@ Each watcher exits immediately after help handling and prints this exact line:
 
 Reading an environment variable is portable across the supported platforms.
 
+## Delegated completion relay
+
+`delegated-arc-watch` observes only its own main session transcript. `WAKE` names a raw
+delegate id whose background task finished after a clean `end_turn` without a later
+assistant record, with the exact `SendMessage` call: main sends it verbatim, including its
+`[wt-relay ...]` marker. A background command that no subagent of this session launched is
+main's own and stays silent; unattributable records produce `ARC WATCH DEGRADED`, never a
+guessed target. An unresolved WAKE is announced again with backoff until its target
+resumes; main's SendMessage is still a model step. A completion older than 24 hours is
+never relayed, since waking an agent that late points it at stale work; the one-shot
+scanner lists those as `STALE (not relayed ...)`. A delegate spawned anonymously or named
+with worktree isolation self-woke in the measured majority (606 of 628 and 168 of 173 on
+two installations), not every case.
+
+The watch announces WAKE only. Whether a nested delegate's parent received its completion
+notice is inferred from missing records, and that inference did not survive real
+transcripts, so `FORWARD` candidates are not announced: `wt-delegate-wake-scan.mjs` lists
+them as `FORWARD (unverified)` diagnostics whose precision is unmeasured.
+
+Declared `WAITING-FOR` entries remain in the registry even after a clean stop. The
+heartbeat lists unresolved waits declared in the last 24 hours; the one-shot
+`wt-spawn-registry-scan.mjs` lists all unresolved waits. A transcript-confirmed next
+turn clears them. Detached work has no harness completion event, so a file appearing
+does not prove it is finished.
+The one-shot `wt-delegate-wake-scan.mjs --session <main transcript> [--at <iso>]`
+replays the same attribution and can append transcript-confirmed `resumed` transitions
+with `--write-resumed` (using `WT_OUTBOUND_GUARD_DIR` when set).
+
 ## Prompt-cache keepalive
 
 `cache-keepalive` is registered with `when: always` and is **on by default**. Set

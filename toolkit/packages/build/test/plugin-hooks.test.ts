@@ -202,8 +202,7 @@ describe('wt-pilot-guard-hook — self-scoped destructive-action guard', () => {
   // never reads its `observer:` — the watchdog is silently never attached, and the agent's own
   // report then honestly says "no observer findings", which reads exactly like a watchdog that
   // saw nothing. `isolation` excludes the spawn from that path and the pairing survives.
-  // The guard refuses only where the remedy exists: `isolation` itself needs the session cwd to
-  // be inside a git repository, so outside one it says what is lost and allows.
+  // An anonymous spawn is a valid remedy even when isolation needs a repository.
   const SHAPE_HOOK = GUARD_HOOK.replace('wt-pilot-guard-hook.mjs', 'wt-spawn-shape-guard-hook.mjs')
   const spawn = (ti: Record<string, unknown>, cwd: string) => ({
     hook_event_name: 'PreToolUse',
@@ -221,10 +220,20 @@ describe('wt-pilot-guard-hook — self-scoped destructive-action guard', () => {
     expect(r.stdout).toContain('isolation')
   })
 
-  it('spawn-shape: ALLOWS but warns when isolation is unavailable (cwd outside a git repo)', () => {
+  it('spawn-shape: the denial says to prefer dropping the name when the agent waits on an external lane', () => {
+    const r = runHook(SHAPE_HOOK, spawn({ subagent_type: 'pilot', name: 's-x' }, IN_REPO))
+    expect(r.stdout).toContain('external lane')
+    expect(r.stdout).toContain('reaped')
+    expect(r.stdout).toContain('Drop name')
+    expect(r.stdout).toContain('isolation: \\"worktree\\"')
+  })
+
+  it('spawn-shape: REFUSES named non-isolated spawns even outside a repo and from a subagent', () => {
     const r = runHook(SHAPE_HOOK, spawn({ subagent_type: 'pilot', name: 's-x' }, NO_REPO))
-    expect(r.stdout).toContain('systemMessage')
-    expect(r.stdout).not.toContain('deny')
+    expect(r.stdout).toContain('deny')
+    expect(r.stdout).toContain('Drop name')
+    const nested = runHook(SHAPE_HOOK, { ...spawn({ subagent_type: 'pilot', name: 's-x' }, NO_REPO), agent_id: 'a1234567' })
+    expect(nested.stdout).toContain('deny')
   })
 
   it('spawn-shape: SILENT for the safe shapes and for anything else', () => {

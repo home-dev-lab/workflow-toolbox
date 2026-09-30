@@ -20,18 +20,15 @@
 // board — computing "actionable" from a subset is exactly the plausible-but-
 // wrong number the card calls out by name. See extractCards() in
 // actionability-planka-producer-core.mjs: a partial/unreadable/unparseable
-// response makes this hook skip the snapshot, never a guess. It records why in
+// response makes this hook skip the snapshot, never a guess. A complete read
+// without card descriptions (a get_board summary read) is refused the same way,
+// because it cannot say which cards declare dependencies. It records why in
 // a bounded state-directory journal so that refusal is no longer silent.
 //
-// DEPENDENCY RESOLUTION REUSES THE PROJECT'S OWN PARSER, NOT A RESTATEMENT OF
-// ITS RULES. An adopting project's own what-next skill has already measured
-// the failure this guards against: a prose restatement of the Depends-on
-// parsing rule, written into that skill's own doc, silently under-covered 7
-// of 8 real dependency lines because a line the restated rule could not parse
-// read as "no dependency" instead of "unresolved". So this hook
-// shells out to <project>/.claude/scripts/lib/depends-on-parser.mjs (stdin
-// mode) when that file exists, and writes NOTHING when it does not — a
-// project without that convention gets silence, never a wrong count.
+// DEPENDENCY RESOLUTION prefers the project's own parser when present, invoked
+// in stdin mode as before. Projects without that file use the shipped parser
+// in-process. Both paths require an explicit Depends-on line before a card
+// can be counted as actionable; undeclared cards are reported separately.
 //
 // TRUST BOUNDARY, NAMED EXPLICITLY (review finding): `execFileSync` is called
 // with an argument array, never a shell string, so there is no shell/path
@@ -49,7 +46,8 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { ACTIONABLE_REFRESH_COMMAND, projectStatePath, stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
-import { extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
+import { checkDescriptionsPresent, extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
+import { parseDependsOn } from './lib/depends-on-parser.mjs'
 import { stateRoot as priorArtStateRoot, cardIndexPath } from './lib/prior-art-state-paths.mjs'
 import { buildCardIndex } from './lib/prior-art-index-core.mjs'
 
@@ -173,6 +171,7 @@ function isValidSnapshotFields(f) {
   return (
     typeof f.at === 'number' && Number.isFinite(f.at) &&
     typeof f.actionable === 'number' && Number.isFinite(f.actionable) && f.actionable >= 0 &&
+    Number.isInteger(f.undeclared) && f.undeclared >= 0 &&
     typeof f.next === 'string' &&
     typeof f.workPossible === 'boolean' &&
     typeof f.reason === 'string' &&
@@ -199,10 +198,39 @@ function writeSnapshot(cwd, fields) {
   writeFileSync(path, JSON.stringify(fields), 'utf8')
 }
 
-function writeProducerState(cwd, lastOutcome) {
+function writeProducerState(cwd, lastOutcome, lastReason = '', lastDetail = '') {
   const path = projectStatePath(stateRoot(), cwd)
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify({ optedIn: true, heartbeatAt: Date.now(), lastOutcome }), 'utf8')
+  const state = { optedIn: true, heartbeatAt: Date.now(), lastOutcome, lastReason: boundedText(lastReason) }
+  if (lastDetail) state.lastDetail = boundedText(lastDetail)
+  writeFileSync(path, JSON.stringify(state), 'utf8')
+}
+
+// Records a refusal in the journal, then declares it in the producer state the Stop gate reads.
+function refuseSnapshot(cwd, outcome, reason, detail) {
+  recordAttempt(cwd, false, reason, detail)
+  try {
+    writeProducerState(cwd, outcome, reason, detail)
+  } catch (error) {
+    recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
+  }
+}
+
+// For the refresh CLI: the board could not be read at all, so no hook ever ran. Declaring it keeps
+// the Stop gate from reading an older heartbeat as a stale one.
+export function recordBoardReadFailure(cwd, reason, detail) {
+  refuseSnapshot(cwd, reason === 'board-unreachable' ? 'unreachable' : 'unavailable', reason, detail)
+}
+
+function recordExtractionFailure(cwd, extraction, spillRefused) {
+  let reason = 'payload-unparseable'
+  let detail = extraction.reason
+  if (extraction.reason === 'no readable tool_response text') {
+    reason = 'payload-diverted-or-too-large'
+    detail = `Run exactly: ${ACTIONABLE_REFRESH_COMMAND}`
+  } else if (extraction.reason.includes('result is a subset')) reason = 'partial-payload'
+  recordAttempt(cwd, false, reason, detail)
+  return spillRefused ? 'spill-payload-refused' : reason
 }
 
 export function produceSnapshot(input) {
@@ -236,23 +264,22 @@ export function produceSnapshot(input) {
     }
   }
 
+  let spillRefused = false
   const extraction = extractCards({
     toolName,
     toolInput: input.tool_input,
     toolResponse: input.tool_response,
-    readSpilledFile: (path) => readValidatedSpillFile(journalDir, path),
+    readSpilledFile: (path) => {
+      const text = readValidatedSpillFile(journalDir, path)
+      if (text === null) spillRefused = true
+      return text
+    },
   })
   if (!extraction.ok) {
-    if (extraction.reason === 'no readable tool_response text') {
-      recordAttempt(journalDir, false, 'payload-diverted-or-too-large', `Run exactly: ${ACTIONABLE_REFRESH_COMMAND}`)
-    } else if (extraction.reason.includes('result is a subset')) {
-      recordAttempt(journalDir, false, 'partial-payload', extraction.reason)
-    } else {
-      recordAttempt(journalDir, false, 'payload-unparseable', extraction.reason)
-    }
+    const reason = recordExtractionFailure(journalDir, extraction, spillRefused)
     if (boardProjectDir) {
       try {
-        writeProducerState(boardProjectDir, 'unreachable')
+        writeProducerState(boardProjectDir, 'unreachable', reason)
       } catch (error) {
         recordAttempt(boardProjectDir, false, 'producer-state-write-failed', error?.message ?? error)
       }
@@ -261,10 +288,10 @@ export function produceSnapshot(input) {
   }
 
   // PRIOR-ART CARD-TITLE INDEX. Deliberately independent of the
-  // dependency-parser / board-pointer gating below: the title index needs
+  // board-pointer gating below: the title index needs
   // only {id, name, listName}, which extraction() already guarantees on
   // `ok` — it is written on ANY successful read, including a project with
-  // no `.claude/planka.json` and no Depends-on convention at all (the
+  // no `.claude/planka.json` (the
   // actionability snapshot below stays silent for such a project; this
   // index does not have to, because it answers a different question). A
   // write failure here must never affect the actionability snapshot logic
@@ -280,25 +307,12 @@ export function produceSnapshot(input) {
   // without a board pointer. The refusal was already journaled above.
   if (!boardProjectDir) return
   const cwd = boardProjectDir
+  const descriptions = checkDescriptionsPresent({ toolName, toolInput: input.tool_input, extraction })
+  if (!descriptions.ok) return refuseSnapshot(cwd, 'unreachable', 'descriptions-missing', descriptions.reason)
 
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)
-  if (!existsSync(parserPath)) {
-    recordAttempt(cwd, false, 'dependency-parser-unavailable', `no ${DEPENDS_ON_PARSER_RELATIVE} for this project`)
-    try {
-      writeProducerState(cwd, 'unavailable')
-    } catch (error) {
-      recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
-    }
-    return // no known dependency convention here — never write a wrong count
-  }
-
-  let resolveDeps
-  try {
-    resolveDeps = makeDepsResolver(parserPath)
-  } catch (error) {
-    recordAttempt(cwd, false, 'dependency-parser-unavailable', error?.message ?? error)
-    return
-  }
+  const projectParser = existsSync(parserPath)
+  const resolveDeps = projectParser ? makeDepsResolver(parserPath) : parseDependsOn
 
   const boardId =
     (input.tool_input && typeof input.tool_input === 'object' && typeof input.tool_input.boardId === 'string')
@@ -307,20 +321,16 @@ export function produceSnapshot(input) {
 
   let snapshot
   try {
-    snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: Date.now() })
+    snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: Date.now(), parserKind: projectParser ? 'project parser' : 'shipped parser' })
   } catch (error) {
-    recordAttempt(cwd, false, 'snapshot-computation-failed', error?.message ?? error)
-    try {
-      writeProducerState(cwd, 'unavailable')
-    } catch (stateError) {
-      recordAttempt(cwd, false, 'producer-state-write-failed', stateError?.message ?? stateError)
-    }
-    return // a card's dependency line could not be resolved (parser died mid-scan) — write nothing
+    // A card's dependency line could not be resolved (parser died mid-scan) — write nothing.
+    return refuseSnapshot(cwd, 'unavailable', 'snapshot-computation-failed', error?.message ?? error)
   }
 
   const fields = {
     at: snapshot.at,
     actionable: snapshot.actionable,
+    undeclared: snapshot.undeclared,
     next: snapshot.next,
     workPossible: snapshot.workPossible,
     reason: snapshot.reason,
@@ -329,28 +339,22 @@ export function produceSnapshot(input) {
     countedScope: snapshot.countedScope,
   }
   if (!isValidSnapshotFields(fields)) {
-    recordAttempt(cwd, false, 'snapshot-invalid', 'computed snapshot failed field validation')
-    try {
-      writeProducerState(cwd, 'unavailable')
-    } catch (error) {
-      recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
-    }
-    return
+    return refuseSnapshot(cwd, 'unavailable', 'snapshot-invalid', 'computed snapshot failed field validation')
   }
 
+  // Two writes, two failure reasons: the snapshot-file remedy is only true of the snapshot write.
+  // Writing must never turn this hook into a blocker — the consumer's own fail-closed
+  // missing/stale path is the safety net if either write fails.
   try {
     writeSnapshot(cwd, fields)
-    writeProducerState(cwd, 'snapshot-written')
-    recordAttempt(cwd, true, 'snapshot-written', snapshot.countedScope)
   } catch (error) {
-    recordAttempt(cwd, false, 'snapshot-write-failed', error?.message ?? error)
-    try {
-      writeProducerState(cwd, 'unavailable')
-    } catch (stateError) {
-      recordAttempt(cwd, false, 'producer-state-write-failed', stateError?.message ?? stateError)
-    }
-    // Writing must never turn this hook into a blocker — the consumer's own
-    // fail-closed missing/stale path is the safety net if this write fails.
+    return refuseSnapshot(cwd, 'unavailable', 'snapshot-write-failed', error?.message ?? error)
+  }
+  recordAttempt(cwd, true, 'snapshot-written', snapshot.countedScope)
+  try {
+    writeProducerState(cwd, 'snapshot-written')
+  } catch (error) {
+    recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
   }
 }
 
