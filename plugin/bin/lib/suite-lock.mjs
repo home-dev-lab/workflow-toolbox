@@ -10,6 +10,12 @@ import { connectSuiteLockBroker, createSuiteLockLeaseId } from './host/suite-loc
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
 
+export function suiteLockWaitSeconds(env = process.env) {
+  return env.WT_SUITE_LOCK_WAIT_S === undefined
+    ? DEFAULT_SUITE_LOCK_WAIT_S
+    : positiveSeconds(env.WT_SUITE_LOCK_WAIT_S, 'WT_SUITE_LOCK_WAIT_S')
+}
+
 // processStartTime (host perimeter) is recorded beside the PID so a reused PID does not read as the
 // same holder: a live process with that PID but a different start time is a DIFFERENT process, and
 // the lock is stale (M4 "dead locks kept", LOW 7).
@@ -64,15 +70,16 @@ export function readSuiteLock(options = {}) {
 // namespace-local. Whether I am the one inside a sandbox is read MECHANICALLY from the user
 // namespace map (insideChildUserNamespace), never from an environment variable a child could lose
 // (M4). Returns true (stale), false (live), or null (not a foreign-namespace case → fall through).
-function foreignNamespaceStale(lock, options, reclaimMs) {
+function foreignNamespaceStale(lock, options) {
   const namespace = options.pidNamespace ?? currentPidNamespace()
   const holderNamespace = lock.holder.pidNamespace ?? null
   const iAmSandboxed = options.insideSandbox ?? insideChildUserNamespace()
   const foreign = namespace !== null && holderNamespace !== null && holderNamespace !== namespace
   if (!foreign && !(iAmSandboxed && holderNamespace === null)) return null
   if (iAmSandboxed) {
-    // Inside a sandbox the host holder is invisible: it can only be reclaimed at the hard bound.
-    return lock.ageMs !== null && lock.ageMs >= reclaimMs
+    // A sandbox cannot disprove a host holder's liveness by age; its host-side broker
+    // or another host observer must reclaim it on positive death evidence.
+    return false
   }
   // On the host, the holder's namespace is visible and empties when its sandbox ends. Reclaim only
   // when that namespace has NO processes; a reused inode that is populated reads as live.
@@ -106,7 +113,7 @@ function holderIsStale(lock, options = {}) {
   if (!Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return lock.ageMs !== null && lock.ageMs >= HALF_CREATED_LOCK_MS
   const platform = platformOf(options)
   const staleMs = positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000
-  const foreign = foreignNamespaceStale(lock, options, staleMs)
+  const foreign = foreignNamespaceStale(lock, options)
   if (foreign !== null) return foreign
   if (pidProvesGone(lock.holder, options)) return true
   // Windows signalability does not prove process identity: after this conservative age bound,
@@ -127,7 +134,7 @@ const displaySafe = (character) => {
 
 function displayArgv(argv) {
   if (!Array.isArray(argv)) return 'unknown command'
-  const text = argv.slice(0, 2).map((value) => Array.from(String(value), displaySafe).join('')).join(' ')
+  const text = argv.map((value) => Array.from(String(value), displaySafe).join('')).join(' ')
   return text.length > ARGV_DISPLAY_MAX ? `${text.slice(0, ARGV_DISPLAY_MAX - 3)}...` : text
 }
 
@@ -141,6 +148,7 @@ export function formatSuiteLockHolder(holder) {
   return `holder pid ${pid} (${displayArgv(holder.argv)}) since ${since}`
 }
 
+// Every acquirer uses the same FIFO mutex; a holder covers its descendant commands by marker.
 // FIFO queue. Without it every waiter polled `mkdir lock.d` and the first poller after a release
 // won, so a waiter asleep between polls starved behind arrivals that kept coming. Each waiter now
 // takes a numbered ticket in queue.d (file layer: host/suite-lock-queue.mjs) and only the LOWEST live
@@ -163,7 +171,7 @@ const TICKET_HEARTBEAT_MAX_MS = TICKET_SILENCE_MS / 4
 function ticketIsStale(ticket, options) {
   if (!Number.isSafeInteger(ticket.holder?.pid) || ticket.holder.pid <= 0) return ticket.ageMs >= UNREADABLE_TICKET_GRACE_MS
   if (ticket.ageMs >= TICKET_SILENCE_MS) return true
-  const foreign = foreignNamespaceStale(ticket, options, Infinity)
+  const foreign = foreignNamespaceStale(ticket, options)
   return foreign ?? pidProvesGone(ticket.holder, options)
 }
 
@@ -314,14 +322,21 @@ function pollQueue(state, options) {
 
 export async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
+  if (options.mode !== undefined) throw new Error('unknown suite lease mode argument: mode')
+  throwIfAborted(options.signal)
+  // The marker decision precedes every wait (including a broker connection). An explicit root
+  // selects its own filesystem domain, regardless of the caller's broker environment.
+  const domain = suiteLeaseDomain({ ...options, env })
+  const id = coveredSuiteLease(env, domain)
+  if (id) return { inherited: true, holder: { leaseId: id }, domain }
   // Inside a lane sandbox the host lock directory is not writable: the host-side broker takes the
   // lock for this process and holds it while the connection stays open (host/lane-suite-lock-broker.mjs).
   const broker = typeof env.WT_SUITE_LOCK_BROKER === 'string' ? env.WT_SUITE_LOCK_BROKER.trim() : ''
-  if (broker) return acquireBrokerSuiteLock(broker, options)
-  const root = options.root ?? suiteLockDir(env, options.home, options.platform)
+  if (broker && !options.root) return acquireBrokerSuiteLock(broker, options)
+  const root = domain
   const lockDir = path.join(root, 'lock.d')
   const queueDir = path.join(root, 'queue.d')
-  const waitMs = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s') * 1000
+  const waitMs = positiveSeconds(options.waitS ?? suiteLockWaitSeconds(env), '--wait-s') * 1000
   const pollMs = options.pollMs ?? 2000
   const noticeMs = options.noticeMs ?? 30_000
   const startedWaiting = Date.now()
@@ -340,7 +355,7 @@ export async function acquireSuiteLock(options = {}) {
       const { place, current } = step
       const now = Date.now()
       if (now - startedWaiting >= waitMs) {
-        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
+        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}; inspect with wt-suite-lock status`)
         timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
         timeout.holder = current.holder
         throw timeout
@@ -358,7 +373,7 @@ export async function acquireSuiteLock(options = {}) {
 }
 
 function acquireBrokerSuiteLock(socketPath, options) {
-  const waitS = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s')
+  const waitS = positiveSeconds(options.waitS ?? suiteLockWaitSeconds(options.env), '--wait-s')
   throwIfAborted(options.signal)
   return new Promise((resolve, reject) => {
     const socket = connectSuiteLockBroker(socketPath)
@@ -379,11 +394,13 @@ function acquireBrokerSuiteLock(socketPath, options) {
       options.signal?.removeEventListener?.('abort', abort)
       reject(error)
     }
+    // The broker enforces waitS; the client allows a small transport/response margin so a
+    // zero-wait refusal still carries the broker's named holder rather than a blind timer.
     const timer = setTimeout(() => {
-      const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}`)
+      const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}: holder unknown; inspect with wt-suite-lock status`)
       timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
       fail(timeout)
-    }, waitS * 1000)
+    }, waitS * 1000 + 2000)
     const abort = () => fail(abortError())
     options.signal?.addEventListener?.('abort', abort, { once: true })
     socket.once('connect', () => { if (!settled) socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS })}\n`) })
@@ -393,7 +410,13 @@ function acquireBrokerSuiteLock(socketPath, options) {
         const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
         if (settled && !granted) { socket.destroy(); return }
         if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
-        else if (line.startsWith('error ')) fail(new Error(`suite lock broker ${socketPath}: ${line.slice(6)}`))
+        else if (line.startsWith('error ')) {
+          const error = new Error(`suite lock broker ${socketPath}: ${line.slice(6)}; inspect with wt-suite-lock status`)
+          if (line.includes('timed out waiting')) error.code = 'WT_SUITE_LOCK_TIMEOUT'
+          // A saturated broker refuses a request it cannot queue: a named refusal, like a timeout (exit 75).
+          else if (line.startsWith('error busy: ')) error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
+          fail(error)
+        }
         else if (line.startsWith('granted ') && !settled) {
           settled = true; granted = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
           resolve({ broker: socketPath, socket, holder: { leaseId: line.slice(8) }, lost, markReleased: () => { released = true } })
@@ -407,6 +430,7 @@ function acquireBrokerSuiteLock(socketPath, options) {
 }
 
 export function releaseSuiteLock(lease) {
+  if (lease?.inherited) return true
   if (lease?.broker) {
     lease.markReleased?.()
     if (!lease.socket.destroyed) lease.socket.end()
@@ -417,6 +441,59 @@ export function releaseSuiteLock(lease) {
   if (!sameInstance(current.holder, lease.holder)) return false
   rmSync(lease.lockDir, REMOVE_WITH_RETRY)
   return true
+}
+
+function queryBroker(socketPath, request) {
+  return new Promise((resolve, reject) => {
+    const socket = connectSuiteLockBroker(socketPath)
+    let text = ''
+    const timer = setTimeout(() => socket.destroy(new Error('broker status unavailable after 2 s')), 2000)
+    socket.once('connect', () => socket.write(`${JSON.stringify(request)}\n`))
+    socket.on('data', (chunk) => { text += String(chunk) })
+    socket.once('error', reject)
+    socket.once('close', () => {
+      clearTimeout(timer)
+      resolve(text)
+    })
+  })
+}
+
+export async function readBrokerSuiteLock(socketPath) {
+  const reply = await queryBroker(socketPath, { status: true })
+  if (reply.startsWith('status ')) {
+    const state = JSON.parse(reply.slice(7))
+    if (typeof state.held === 'boolean') return state
+  }
+  // 0.189.x brokers reject a status request with exactly this text (later brokers add a suffix).
+  if (reply.startsWith('error argv must be an array of strings')) return { held: null, holder: null, legacyStatus: 'status unavailable (older broker)' }
+  throw new Error(`broker status unavailable: ${reply.trim()}`)
+}
+
+export function suiteLeaseDomain({ root, env = process.env, home, platform } = {}) {
+  if (!root && env.WT_SUITE_LOCK_BROKER?.trim()) return `broker:${env.WT_SUITE_LOCK_BROKER.trim()}`
+  return path.resolve(root ?? suiteLockDir(env, home, platform))
+}
+
+export function suiteLeaseMarker(lease) {
+  const domain = lease.domain ?? (lease.broker ? 'broker:' + lease.broker : lease.root)
+  return `${domain}|${lease.holder.leaseId}`
+}
+
+function coveredSuiteLease(env, domain) {
+  const marker = env.WT_SUITE_LEASE
+  const prefix = `${domain}|`
+  if (typeof marker !== 'string' || !marker.startsWith(prefix)) return null
+  const id = marker.slice(prefix.length)
+  if (!id) return null
+  if (domain.startsWith('broker:')) return id // The connection-owning ancestor stops its tree on loss.
+  if (readSuiteLock({ root: domain }).holder?.leaseId === id) return id
+  const error = new Error(`suite lease ${id} from WT_SUITE_LEASE is no longer held; inspect with wt-suite-lock status`)
+  error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
+  throw error
+}
+
+export async function hasSuiteLeaseAsync(env = process.env, options = {}) {
+  return Boolean(coveredSuiteLease(env, suiteLeaseDomain({ ...options, env })))
 }
 
 export function operatorReleaseSuiteLock(options = {}) {

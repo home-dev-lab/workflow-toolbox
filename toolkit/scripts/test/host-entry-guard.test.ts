@@ -27,22 +27,38 @@ const CACHE_ENTRYPOINTS = [
   { file: 'wt-verifier-cli-guard-hook.mjs', input: '{}' },
 ] as const
 
-// A raw `process.argv[1] === fileURLToPath(import.meta.url)` (either operand order) breaks the
-// moment the entrypoint is reached through a symlink: realpath differs from the symlink path, the
-// direct-execution branch never runs, and the file silently does nothing (card 1872232864). Every
-// file under plugin/bin must route that comparison through the symlink-safe isInvokedDirectly
-// guard instead. This scans the whole tree so a third raw copy can never reappear unnoticed.
+// A raw comparison between import.meta and process.argv[1] breaks the moment the entrypoint is
+// reached through a symlink: import.meta.url is the realpath, argv[1] keeps the link, the
+// direct-execution branch never runs, and the file silently does nothing. Every shape counts:
+// `file://${argv[1]}`, pathToFileURL(argv[1]), path.resolve(argv[1]) against fileURLToPath or
+// import.meta.filename, either operand order. Every file under plugin/ must route the comparison
+// through the symlink-safe isInvokedDirectly guard, or call realpath on the same line.
+// A line-based tripwire, not a proof: it cannot see a comparison split across lines, argv[1]
+// read through an alias (a variable, process.argv.at(1)), or Object.is. Every raw guard found in
+// this repository so far sat on one line, which is the shape it is built for.
+function rawEntryGuardLines(text: string): number[] {
+  const out: number[] = []
+  text.split('\n').forEach((line, i) => {
+    const t = line.trim()
+    if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return
+    if (!line.includes('process.argv[1]')) return
+    if (!/import\.meta\.(?:url|filename)/.test(line)) return
+    if (!/[!=]==?/.test(line)) return
+    if (/\brealpath(?:Sync)?\s*\(/.test(line)) return
+    out.push(i + 1)
+  })
+  return out
+}
+
 function findRawDirectExecutionComparisons(root: string): string[] {
-  const RAW_COMPARISON = /process\.argv\[1\]\s*(?:===|==)\s*fileURLToPath\(import\.meta\.url\)|fileURLToPath\(import\.meta\.url\)\s*(?:===|==)\s*process\.argv\[1\]/
   const offenders: string[] = []
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name === 'node_modules') continue
       const full = join(dir, entry.name)
       if (entry.isDirectory()) { walk(full); continue }
-      if (!entry.name.endsWith('.mjs')) continue
-      const text = readFileSync(full, 'utf8')
-      if (RAW_COMPARISON.test(text)) offenders.push(full)
+      if (!/\.(?:mjs|cjs|js)$/.test(entry.name)) continue
+      for (const line of rawEntryGuardLines(readFileSync(full, 'utf8'))) offenders.push(`${full}:${line}`)
     }
   }
   walk(root)
@@ -117,8 +133,24 @@ describe('host entry guard', () => {
     expect(result.stdout).toContain('suite lock')
   })
 
-  it('never lets a raw process.argv[1]===fileURLToPath(import.meta.url) comparison reappear under plugin/bin', () => {
-    const offenders = findRawDirectExecutionComparisons(join(PLUGIN_ROOT, 'bin'))
+  it('flags the raw single-line entry-guard shapes and passes the realpath ones', () => {
+    const raw = [
+      'if (import.meta.url === `file://${process.argv[1]}`) main()',
+      'if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {',
+      'if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main()',
+      'if (process.argv[1] === fileURLToPath(import.meta.url)) main()',
+      'if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {',
+      'if (import.meta.url === pathToFileURL(process.argv[1] ?? \'\').href) main()',
+      'if (import.meta.url === pathToFileURL(process.argv[1]).href) main() // realpath later',
+    ]
+    for (const line of raw) expect(rawEntryGuardLines(line), line).toEqual([1])
+    expect(rawEntryGuardLines('if (isInvokedDirectly(import.meta.url)) main()')).toEqual([])
+    expect(rawEntryGuardLines('if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main()')).toEqual([])
+    expect(rawEntryGuardLines('// if (import.meta.url === `file://${process.argv[1]}`) main()')).toEqual([])
+  })
+
+  it('never lets a raw import.meta / process.argv[1] entry-guard comparison reappear anywhere under plugin/', () => {
+    const offenders = findRawDirectExecutionComparisons(PLUGIN_ROOT)
 
     expect(offenders).toEqual([])
   })

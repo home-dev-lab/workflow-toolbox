@@ -18,7 +18,7 @@ test('every hooks import process reference has a typeof guard', async () => {
     visited.add(url.href);
     const source = await readFile(url, 'utf8');
     for (const line of source.split('\n')) {
-      if (/\bprocess\b/.test(line)) assert.match(line, /typeof process\s*!==\s*['"]undefined['"]/, `${url.pathname}: ${line.trim()}`);
+      if (/\bprocess\b/.test(line)) assert.match(line, /typeof process\s*!==\s*['"]undefined['"]/, `${fileURLToPath(url)}: ${line.trim()}`);
     }
     for (const match of source.matchAll(/from\s+['"](\.[^'"]+)['"]/g)) await visit(new URL(match[1], url));
   }

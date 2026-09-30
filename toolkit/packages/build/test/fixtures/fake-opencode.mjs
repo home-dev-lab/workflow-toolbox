@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 const action = process.env.WT_FAKE_OPENCODE_ACTION || ''
@@ -54,6 +55,13 @@ async function runAction() {
     write('claude-skills-fence', `${process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS || ''}\n`)
     if (action.includes('PROVIDER_KEYS')) write('provider-keys', `${process.env.OPENAI_API_KEY || 'unset'}|${process.env.GOOGLE_GENERATIVE_AI_API_KEY || 'unset'}|${process.env.AZURE_API_KEY || 'unset'}|${process.env.AZURE_RESOURCE_NAME || 'unset'}\n`)
     write('argv', `${argv.join('\n')}\n`)
+    return
+  }
+  if (action.includes('RECORD_LANE')) {
+    // Records argv, this process's niceness and its I/O scheduling class.
+    write('argv', `${argv.join('\n')}\n`)
+    write('nice', `${os.getPriority()}\n`)
+    write('ionice', spawnSync('ionice', ['-p', String(process.pid)], { encoding: 'utf8' }).stdout)
     return
   }
   if (action.includes('printf "%s\\n" "$@" > "$PWD/argv"')) {

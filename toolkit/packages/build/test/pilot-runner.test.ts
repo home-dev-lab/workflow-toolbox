@@ -25,6 +25,8 @@ import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 import { assertCostReportMatches } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { decidePilotRun } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { PROFILE_AUTH_KEYS } from '../../../../plugin/bin/lib/sdk-account-check.mjs'
 // Production resolveExecutorProfile always resolves a model per role; a lane launch needs it to pick its family's variant base.
 const GPT_LANE_MODELS = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
@@ -61,7 +63,12 @@ const initMessage = (model?: string) => ({
 })
 const roots: string[] = []
 // All pilot fixtures must keep the parent-owned decision store inside their disposable parent directory.
+// The run timeout is a real wall-clock timer by default; fixtures spawn real launcher processes, so on a
+// slow host it fired mid-run and ended the lifecycle early. Every test gets a timer that never fires
+// unless it passes its own setTimer/clearTimer to drive the timeout itself.
+const neverFiringTimer = { setTimer: () => 0, clearTimer: () => {} }
 const runPilot = (options: { dir: string; [key: string]: unknown }, dependencies: { decisionStateRoot?: string; [key: string]: unknown }) => rawRunPilot(options, {
+  ...neverFiringTimer,
   ...dependencies,
   decisionStateRoot: dependencies.decisionStateRoot ?? join(options.dir, '..', 'decision-state'),
 })
@@ -114,6 +121,277 @@ function deterministicAdmissionEnv(root: string, env: NodeJS.ProcessEnv): NodeJS
 afterEach(() => { for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'worktree')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) } })
 
 describe('SDK pilot runner', () => {
+  function accountStream(account: Record<string, unknown> | undefined, { missing = false, pending = false } = {}) {
+    const users: unknown[] = []
+    let closed = false
+    let consumed: Promise<void>
+    let controller: AbortController
+    let answer: ((value: Record<string, unknown>) => void) | undefined
+    const delayed = new Promise<Record<string, unknown>>((resolve) => { answer = resolve })
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => {
+      controller = options.abortController
+      // Like the real SDK, start reading before query returns a stream to the runner.
+      consumed = prompt.next().then(({ value, done }) => { if (!done) users.push(value) })
+      return {
+        ...(!missing ? { accountInfo: () => pending ? delayed : Promise.resolve(account) } : {}),
+        close: () => { closed = true },
+        async *[Symbol.asyncIterator]() { await consumed; if (users.length) yield initMessage() },
+      }
+    }
+    return { query, users, isClosed: () => closed, isAborted: () => controller.signal.aborted,
+      // Waits on the prompt read itself; a read that never settles fails the test at its own timeout.
+      async settled() { await consumed },
+      answer: (value: Record<string, unknown>) => answer!(value) }
+  }
+
+  const accountOptions = (f: ReturnType<typeof fixture>, expectAccount?: string) => ({
+    card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2, hard: false, expectAccount,
+  })
+
+  it('account gate: mismatch refuses before an eager SDK reads a user prompt and records both accounts', async () => {
+    const f = fixture(); const fake = accountStream({ email: 'other@example.com', apiProvider: 'firstParty' }); const logs: string[] = []
+    const result = await runPilot(accountOptions(f, 'owner@example.com'), { query: fake.query, resolvePilotModels: models, log: (line: string) => logs.push(line) })
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(fake.users).toHaveLength(0)
+    await fake.settled()
+    expect(fake.isAborted()).toBe(true)
+    expect(result.exitCode).toBe(1)
+    expect(fake.isClosed()).toBe(true)
+    expect(summary).toMatchObject({ completed: false, account: { verdict: 'mismatch', email: 'other@example.com', expected: 'owner@example.com' } })
+    expect(summary.reason).toContain('CLAUDE_CODE_OAUTH_TOKEN')
+    expect(summary.reason).toContain('owner@example.com')
+    expect(summary.reason).toContain('other@example.com')
+    expect(logs).toContain(summary.reason)
+  })
+
+  it('account gate: selected launcher token is allowed with an explicit unverified-owner line', async () => {
+    const f = fixture(); const fake = accountStream({ tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN', apiProvider: 'firstParty' }); const logs: string[] = []
+    const result = await runPilot(accountOptions(f, 'owner@example.com'), { query: fake.query, resolvePilotModels: models, log: (line: string) => logs.push(line) })
+    expect(fake.users).toHaveLength(1)
+    expect(result.summary.account).toMatchObject({ verdict: 'launcher_asserted', email: null, token_source: 'CLAUDE_CODE_OAUTH_TOKEN', expected: 'owner@example.com' })
+    expect(logs).toContain('account: OAuth environment token selected; owner not independently verified (expected owner@example.com)')
+  })
+
+  it('account gate: a complete enforced lifecycle succeeds with a trusted stored login', async () => {
+    const f = fixture()
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => {
+      const stream = (async function* () {
+        yield initMessage()
+        await prompt.next()
+        writeFileSync(join(f.dir, '.lane', 'pilot-report.md'), '# pilot\n')
+        yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
+        yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'lifecycle', content: [{ type: 'text', text: AWAITING_FIDELITY_RESULT }] }] } }
+        yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+        await prompt.next()
+      })()
+      return Object.assign(stream, { accountInfo: async () => ({ email: 'owner@example.com', apiProvider: 'firstParty' }) })
+    }
+    const result = await runPilot(accountOptions(f, 'owner@example.com'), { query, resolvePilotModels: models, sleep: async () => {} })
+    expect(result.summary.account.verdict).toBe('email_matched')
+    expect(result.summary.completed).toBe(true)
+    expect(result.exitCode).toBe(0)
+  })
+
+  it.each(['a@example.com', 'b@example.com'])('account gate: config email does not identify an environment token for %s when a managed key is present', async (expected) => {
+    const f = fixture(); const fake = accountStream({ email: 'a@example.com', tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN', apiKeySource: '/login managed key', apiProvider: 'firstParty' })
+    const result = await runPilot(accountOptions(f, expected), { query: fake.query, resolvePilotModels: models })
+    expect(result.summary.account.verdict).toBe('unverifiable')
+    expect(result.summary.reason).toContain('config reports a@example.com; not the token\'s owner')
+    expect(fake.users).toHaveLength(0)
+    await fake.settled()
+    expect(fake.isAborted()).toBe(true)
+  })
+
+  it('account gate: config email alongside a selected environment token is launcher-asserted only without an API key', async () => {
+    const f = fixture(); const fake = accountStream({ email: 'a@example.com', tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN', apiProvider: 'firstParty' }); const logs: string[] = []
+    const result = await runPilot(accountOptions(f, 'b@example.com'), { query: fake.query, resolvePilotModels: models, log: (line: string) => logs.push(line) })
+    expect(result.summary.account.verdict).toBe('launcher_asserted')
+    expect(logs.find((line) => line.startsWith('account:'))).toContain('config reports a@example.com; not the token\'s owner')
+    expect(fake.users).toHaveLength(1)
+  })
+
+  it('account gate: missing provider never confirms an environment token', async () => {
+    const f = fixture(); const fake = accountStream({ tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN' })
+    const result = await runPilot(accountOptions(f, 'owner@example.com'), { query: fake.query, resolvePilotModels: models })
+    expect(result.summary.account.verdict).toBe('unverifiable')
+    expect(fake.users).toHaveLength(0)
+    await fake.settled()
+    expect(fake.isAborted()).toBe(true)
+  })
+
+  it('account gate: matches e-mail without case or surrounding whitespace; refuses other credential sources', async () => {
+    const f = fixture(); const fake = accountStream({ email: ' Owner@Example.com ', apiProvider: 'firstParty' })
+    const result = await runPilot(accountOptions(f, 'owner@example.com'), { query: fake.query, resolvePilotModels: models })
+    expect(result.summary.account.verdict).toBe('email_matched')
+    expect(fake.users).toHaveLength(1)
+    for (const account of [
+      { tokenSource: 'other', apiProvider: 'firstParty' },
+      { tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN', apiProvider: 'bedrock' },
+      { tokenSource: 'CLAUDE_CODE_OAUTH_TOKEN', apiKeySource: 'ANTHROPIC_API_KEY' },
+    ]) {
+      const next = fixture(); const candidate = accountStream(account)
+      await runPilot(accountOptions(next, 'owner@example.com'), { query: candidate.query, resolvePilotModels: models }).catch(() => {})
+      expect(candidate.users).toHaveLength(0)
+      await candidate.settled()
+      expect(candidate.isAborted()).toBe(true)
+      expect(JSON.parse(readFileSync(join(next.dir, '.lane', 'summary.json'), 'utf8')).account.verdict).toBe('unverifiable')
+    }
+  })
+
+  it('account gate: missing accountInfo refuses when enforced and proceeds when not enforced', async () => {
+    const f = fixture(); const fake = accountStream(undefined, { missing: true })
+    await runPilot(accountOptions(f, 'owner@example.com'), { query: fake.query, resolvePilotModels: models }).catch(() => {})
+    expect(fake.users).toHaveLength(0)
+    await fake.settled()
+    expect(fake.isAborted()).toBe(true)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).account.verdict).toBe('unavailable')
+    const open = fixture(); const openFake = accountStream(undefined, { missing: true }); const lines: string[] = []
+    const result = await runPilot(accountOptions(open), { query: openFake.query, resolvePilotModels: models, log: (line: string) => lines.push(line) })
+    expect(openFake.users).toHaveLength(1)
+    expect(result.summary.account.verdict).toBe('not_enforced')
+    expect(lines).toContain('account: unknown (accountInfo unavailable) (not enforced)')
+  })
+
+  it('account gate: accountInfo throwing fails closed only in enforced mode without logging exception content', async () => {
+    for (const enforced of [true, false]) {
+      const f = fixture(); const fake = accountStream(undefined); const lines: string[] = []
+      const query = (args: Parameters<typeof fake.query>[0]) => {
+        const stream = fake.query(args)
+        return { ...stream, accountInfo: () => { throw new Error('fixture-secret') } }
+      }
+      const result = await runPilot(accountOptions(f, enforced ? 'owner@example.com' : undefined), {
+        query, resolvePilotModels: models, log: (line: string) => lines.push(line),
+      })
+      expect(result.exitCode).toBe(1)
+      expect(fake.users).toHaveLength(enforced ? 0 : 1)
+      if (enforced) { await fake.settled(); expect(fake.isAborted()).toBe(true) }
+      else expect(result.summary.served_model_agreement).not.toContain('initialization receipt absent')
+      expect(result.summary.account.verdict).toBe(enforced ? 'unavailable' : 'not_enforced')
+      if (enforced) expect(result.summary.reason).toBe('account: unknown (accountInfo threw); expected owner@example.com; SDK account check unavailable')
+      expect(lines.join('\n')).not.toContain('fixture-secret')
+    }
+  })
+
+  it('account gate: a late accountInfo success cannot reopen a timed-out gate', async () => {
+    const f = fixture(); const fake = accountStream(undefined, { pending: true }); let expire: (() => void) | undefined
+    const running = runPilot(accountOptions(f, 'owner@example.com'), {
+      query: fake.query, resolvePilotModels: models,
+      setTimer: (callback: () => void, ms: number) => { if (ms === 30_000) expire = callback; return ms },
+      clearTimer: () => {},
+    }).catch(() => {})
+    while (!expire) await new Promise((resolve) => setImmediate(resolve))
+    expire()
+    await running
+    fake.answer({ email: 'owner@example.com' })
+    await Promise.resolve()
+    expect(fake.users).toHaveLength(0)
+    await fake.settled()
+    expect(fake.isAborted()).toBe(true)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).account.verdict).toBe('unavailable')
+  })
+
+  it('account gate: runner launch environment fallback is not overridden by profile env', async () => {
+    const f = fixture(); const fake = accountStream({ email: 'wrong@example.com', apiProvider: 'firstParty' }); const profile = join(f.root, 'profile.json')
+    writeFileSync(profile, JSON.stringify({ env: { UNRELATED_SETTING: 'ok' } }))
+    await runPilot({ ...accountOptions(f), profileEnv: profile }, { query: fake.query, resolvePilotModels: models, env: { ...process.env, WT_PILOT_EXPECT_ACCOUNT: 'owner@example.com' } })
+    expect(fake.users).toHaveLength(0)
+    await fake.settled()
+    expect(fake.isAborted()).toBe(true)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).account.expected).toBe('owner@example.com')
+    const override = fixture(); const profileOverride = join(override.root, 'profile.json'); writeFileSync(profileOverride, JSON.stringify({ env: { WT_PILOT_EXPECT_ACCOUNT: 'wrong@example.com' } }))
+    let queried = false
+    const result = await runPilot({ ...accountOptions(override), profileEnv: profileOverride }, {
+      query: () => { queried = true; throw new Error('query was called') }, resolvePilotModels: models, env: { ...process.env, WT_PILOT_EXPECT_ACCOUNT: 'owner@example.com' },
+    })
+    expect(queried).toBe(false)
+    expect(result.summary.account).toMatchObject({ verdict: 'profile_override', expected: 'owner@example.com' })
+  })
+
+  it('account gate: parses the explicit e-mail and refuses a missing value', () => {
+    const base = ['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md']
+    expect(parsePilotRunnerArgs([...base, '--expect-account', 'owner@example.com']).expectAccount).toBe('owner@example.com')
+    expect(parsePilotRunnerArgs([...base, '--expect-account'])).toEqual({ error: '--expect-account requires an e-mail' })
+    expect(parsePilotRunnerArgs([...base, '--expect-account', '  '])).toEqual({ error: '--expect-account requires an e-mail' })
+  })
+
+  it('account gate: profile credential override refuses before query starts and names only the variable', async () => {
+    const f = fixture(); const profile = join(f.root, 'profile.json')
+    writeFileSync(profile, JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'fixture-secret' } }))
+    let queried = false
+    const result = await runPilot({ ...accountOptions(f, 'owner@example.com'), profileEnv: profile }, {
+      query: () => { queried = true; throw new Error('query was called') }, resolvePilotModels: models,
+    })
+    expect(queried).toBe(false)
+    expect(result.exitCode).toBe(1)
+    expect(result.summary.account.verdict).toBe('profile_override')
+    expect(result.summary.reason).toContain('CLAUDE_CODE_OAUTH_TOKEN')
+    expect(JSON.stringify(result.summary)).not.toContain('fixture-secret')
+  })
+
+  it.each(PROFILE_AUTH_KEYS as string[])(
+    'account gate: profile-env %s cannot change enforced account identity', async (key: string) => {
+      const f = fixture(); const profile = join(f.root, 'profile.json')
+      writeFileSync(profile, JSON.stringify({ env: { [key]: 'fixture-secret' } }))
+      let queried = false
+      const result = await runPilot({ ...accountOptions(f, 'owner@example.com'), profileEnv: profile }, {
+        query: () => { queried = true; throw new Error('query was called') }, resolvePilotModels: models,
+      })
+      expect(queried).toBe(false)
+      expect(result.summary.account.verdict).toBe('profile_override')
+      expect(result.summary.reason).toContain(key)
+      expect(JSON.stringify(result.summary)).not.toContain('fixture-secret')
+    },
+  )
+
+  it('account gate: exported profile selectors cover SDK credential and endpoint overrides', () => {
+    expect(PROFILE_AUTH_KEYS).toEqual(expect.arrayContaining([
+      'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+      'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'ANTHROPIC_UNIX_SOCKET',
+    ]))
+  })
+
+  it('account gate: query startup exception retains its account refusal in the summary', async () => {
+    const f = fixture(); const logs: string[] = []
+    await runPilot(accountOptions(f, 'owner@example.com'), {
+      query: () => { throw new Error('fixture-secret') }, resolvePilotModels: models, log: (line: string) => logs.push(line),
+    }).catch(() => {})
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(summary.reason).toBe('account: unknown (accountInfo unavailable); expected owner@example.com; SDK account check unavailable')
+    expect(logs).toContain(summary.reason)
+    expect(logs.join('\n')).not.toContain('fixture-secret')
+  })
+
+  it('account gate: an SDK stream error after an allowed account keeps the stream error as the reason', async () => {
+    const f = fixture(); const fake = accountStream({ email: 'owner@example.com', apiProvider: 'firstParty' })
+    const query = (args: Parameters<typeof fake.query>[0]) => {
+      const stream = fake.query(args)
+      return { ...stream, async *[Symbol.asyncIterator]() { yield* stream; throw new Error('fixture-stream-broke') } }
+    }
+    await runPilot(accountOptions(f, 'owner@example.com'), { query, resolvePilotModels: models, log: () => {} }).catch(() => {})
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(summary.account.verdict).toBe('email_matched')
+    expect(summary.reason).toBe('sdk stream error: fixture-stream-broke')
+  })
+
+  it('account gate: cleanup error does not displace a mismatch', async () => {
+    const f = fixture(); const fake = accountStream({ email: 'other@example.com', apiProvider: 'firstParty' }); const logs: string[] = []
+    const query = (args: Parameters<typeof fake.query>[0]) => ({ ...fake.query(args), close: () => { throw new Error('fixture-cleanup-failure') } })
+    const result = await runPilot(accountOptions(f, 'owner@example.com'), { query, resolvePilotModels: models, log: (line: string) => logs.push(line) })
+    expect(result.exitCode).toBe(1)
+    expect(result.summary.reason).toContain('other@example.com does not match expected owner@example.com')
+    expect(logs).toContain('account: SDK stream close failed after refusal')
+    expect(logs.join('\n')).not.toContain('fixture-cleanup-failure')
+    expect(fake.users).toHaveLength(0)
+    await fake.settled()
+  })
+
+  it('account gate: unenforced accountInfo line records the reported email and token source', async () => {
+    const f = fixture(); const fake = accountStream({ email: 'guest@example.com', tokenSource: 'savedLogin' }); const logs: string[] = []
+    const result = await runPilot(accountOptions(f), { query: fake.query, resolvePilotModels: models, log: (line: string) => logs.push(line) })
+    expect(fake.users).toHaveLength(1)
+    expect(result.summary.account.verdict).toBe('not_enforced')
+    expect(logs).toContain('account: guest@example.com tokenSource=savedLogin (not enforced)')
+  })
   it('records the launching session id and replaces an existing env log', () => {
     for (const [sessionId, expected] of [['session-set', 'CLAUDE_CODE_SESSION_ID=session-set\n'], [undefined, 'CLAUDE_CODE_SESSION_ID=\n']] as const) {
       const started = fixture()
@@ -496,6 +774,24 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(f.root, 'loaded-sdk.txt'), 'utf8')).toBe('fixture-sdk')
   })
 
+  it('prints unavailable rather than zero for an assistant-only SDK stream', () => {
+    const f = fixture(); const install = join(f.root, 'safe-sdk')
+    const packageDir = join(install, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
+    symlinkSync(ZOD_ROOT, join(install, 'node_modules', 'zod'), 'dir')
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', main: 'index.mjs' }))
+    writeFileSync(join(packageDir, 'index.mjs'), [
+      `export const query = () => (async function* () { yield ${JSON.stringify(initMessage('sonnet'))}; yield { type: 'assistant', message: { id: 'one', model: 'sonnet', usage: { input_tokens: 7, output_tokens: 5 }, content: [] } } })()`,
+      'export const createSdkMcpServer = (options) => ({ type: "sdk", name: options.name, instance: {} })',
+      'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
+      encoding: 'utf8', timeout: 20_000, env: deterministicAdmissionEnv(f.root, sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_AGENT_SDK_PATH: join(packageDir, 'index.mjs'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') })),
+    })
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stdout).toMatch(/fresh=unavailable turns=unavailable report=false/)
+    expect(result.stdout).not.toMatch(/fresh=(?:undefined|NaN|0) turns=/)
+  })
+
   it('starts SDK resolution from an installed plugin using an external operator-selected SDK', () => {
     const f = fixture(); const sdkRoot = join(f.root, 'safe-sdk'); fakeSdk(sdkRoot, 'operator')
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
@@ -592,6 +888,8 @@ describe('SDK pilot runner', () => {
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed').models['claude-haiku-test']).toMatchObject({ input: 2, output: 1, fresh_tokens: 3 })
     const index = readFileSync(join(f.root, '.claude', 'reports', 'cost-index.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
     expect(index).toEqual([expect.objectContaining({ run_id: expect.stringMatching(/^1-\d+$/), card: '1', route: 'LITE', usd_total: 'price unknown' })])
+    expect(index[0].coverage).toEqual(cost.coverage)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8')).cost).toEqual({ total_usd: null, coverage: cost.coverage })
     // One total per BILLED class (owner, wt-suite #2913): classes are priced differently, and OpenAI output already
     // contains reasoning, so a single summed "total" is both meaningless and a double count.
     for (const totals of [index[0].run_total, index[0].phase_totals.discovery]) {
@@ -982,6 +1280,135 @@ describe('SDK pilot runner', () => {
     expect(aborted).toBe(true)
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'timeout', partial: { phase: 'discovery', reason: 'timeout' } } })
     expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { phase: 'discovery', reason: 'timeout' } })
+  })
+
+  it('keeps a grace-aborted SDK exception as a timeout in both receipts and the rejection', async () => {
+    const f = fixture(); const timers: Array<() => void> = []; let markReady!: () => void; const ready = new Promise<void>((resolve) => { markReady = resolve })
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => (async function* () {
+      yield initMessage(); await prompt.next()
+      await new Promise<void>((resolve) => { options.abortController.signal.addEventListener('abort', () => resolve(), { once: true }); markReady() })
+      throw new Error('Claude Code process aborted by user')
+    })()
+    const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 1 }, {
+      query, resolvePilotModels: models, setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
+    })
+    await ready
+    timers[0]!(); timers[1]!()
+    await expect(running).rejects.toThrow(/^timeout:.*Claude Code process aborted by user/)
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(summary).toMatchObject({ reason: 'timeout', sdk_stream_error: 'Claude Code process aborted by user', partial: { reason: 'timeout' } })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8'))).toMatchObject({ reason: 'timeout', sdk_stream_error: 'Claude Code process aborted by user' })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { reason: 'timeout' } })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8')).cost).toEqual(summary.cost)
+  })
+
+  it('retains an independent SDK error between timeout request and grace abort', async () => {
+    const f = fixture(); const timers: Array<() => void> = []; let markReady!: () => void; const ready = new Promise<void>((resolve) => { markReady = resolve }); let release: (() => void) | undefined
+    const original = new Error('transport disconnected')
+    const query = () => (async function* () {
+      yield initMessage()
+      await new Promise<void>((resolve) => { release = resolve; markReady() })
+      throw original
+    })()
+    const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 1 }, {
+      query, resolvePilotModels: models, setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
+    })
+    await ready
+    timers[0]!(); release!()
+    await expect(running).rejects.toBe(original)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))).toMatchObject({ reason: 'sdk stream error: transport disconnected', partial: { reason: 'sdk stream error: transport disconnected' } })
+  })
+
+  it.each([['no result', false, false], ['trailing assistant', true, true], ['covered assistant', true, false]] as const)(
+    'reports usage for %s without fabricating completed turns', async (_shape, hasResult, trailing) => {
+      const f = fixture()
+      const assistant = (id: string, input: number) => ({ type: 'assistant', message: { id, model: 'claude-opus-5', usage: { input_tokens: input, cache_creation_input_tokens: 3, output_tokens: 5 }, content: [] } })
+      const query = () => (async function* () {
+        yield initMessage('claude-opus-5')
+        yield assistant('first', 7)
+        if (hasResult) yield { type: 'result', usage: { input_tokens: 7, cache_creation_input_tokens: 3, output_tokens: 5 } }
+        if (trailing || !hasResult) yield assistant('second', 11)
+      })()
+      const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+      const unavailable = !hasResult || trailing
+      expect(summary.fresh_tokens).toBe(unavailable ? 'unavailable' : 15)
+      expect(summary.turns).toBe(unavailable ? 'unavailable' : 1)
+      const usage = JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8'))
+      expect(usage.fresh_tokens).toBe(summary.fresh_tokens)
+      if (unavailable) {
+        expect(summary.turns_completed).toBe(hasResult ? 1 : 0)
+        expect(summary.fresh_tokens_lower_bound).toBe(trailing || !hasResult ? 34 : 15)
+        expect(summary.fresh_tokens_source).toMatch(/lower bound.*assistant.*output.*undercount/i)
+      } else expect(summary.fresh_tokens_lower_bound ?? null).toBeNull()
+    },
+  )
+
+  it('keeps a repeated message id in its original completed turn even with tied timestamps', async () => {
+    const f = fixture()
+    const assistant = (output: number) => ({ type: 'assistant', message: { id: 'repeat', model: 'claude-opus-5', usage: { input_tokens: 7, output_tokens: output }, content: [] } })
+    const query = () => (async function* () {
+      yield initMessage('claude-opus-5')
+      yield assistant(4)
+      yield { type: 'result', usage: { input_tokens: 7, output_tokens: 5 } }
+      yield assistant(5)
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+    expect(summary).toMatchObject({ fresh_tokens: 12, turns: 1 })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8')).messages).toHaveLength(1)
+  })
+
+  it('treats new usage for an already-closed message id as an unclosed turn', async () => {
+    const f = fixture()
+    const assistant = (output: number) => ({ type: 'assistant', message: { id: 'repeat', model: 'claude-opus-5', usage: { input_tokens: 7, output_tokens: output }, content: [] } })
+    const query = () => (async function* () {
+      yield initMessage('claude-opus-5')
+      yield assistant(4)
+      yield { type: 'result', usage: { input_tokens: 7, output_tokens: 5 } }
+      yield assistant(50)
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+    expect(summary).toMatchObject({ fresh_tokens: 'unavailable', turns: 'unavailable', turns_completed: 1, fresh_tokens_lower_bound: 57 })
+  })
+
+  it('names a completed tool call even when it took zero milliseconds', async () => {
+    const f = fixture()
+    const query = () => (async function* () {
+      yield initMessage()
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'instant', name: 'Read', input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'instant', content: '' }] } }
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => 1000 })
+    expect(summary.longest_tool_call).toMatchObject({ tool: 'Read', tool_use_id: 'instant', ms: 0 })
+  })
+
+  it('identifies the longest completed lifecycle call and an unfinished call at run end', async () => {
+    const f = fixture(); let clock = 1000
+    const tool = lifecycleToolName('run')
+    const query = () => (async function* () {
+      yield initMessage()
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'short', name: 'Read', input: {} }] } }
+      clock += 100
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'short', content: '' }] } }
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'long', name: tool, input: { kind: 'lane', name: 'harden' } }] } }
+      clock += 4_340_264
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'long', content: '' }] } }
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'open', name: tool, input: { kind: 'lane', name: 'harden' } }] } }
+      clock += 200
+    })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2 }, { query, resolvePilotModels: models, now: () => clock })
+    expect(summary.longest_tool_call_ms).toBe(4_340_264)
+    expect(summary.longest_tool_call).toMatchObject({ ms: 4_340_264, tool, tool_use_id: 'long', kind: 'lane', name: 'harden', phase: 'discovery', started_at: new Date(1100).toISOString(), ended_at: new Date(4_341_364).toISOString() })
+    expect(summary.unfinished_tool_calls).toEqual([expect.objectContaining({ tool, tool_use_id: 'open', ms: 200, started_at: new Date(4_341_364).toISOString() })])
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8')).unfinished_tool_calls).toEqual(summary.unfinished_tool_calls)
+  })
+
+  it('reconciles declared budget with measured elapsed time and boundary grace', async () => {
+    const f = fixture(); let clock = 0
+    const query = () => (async function* () { yield initMessage(); clock = 22_205_078 })()
+    const { summary } = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 21_600 }, { query, resolvePilotModels: models, now: () => clock })
+    expect(summary.budget).toMatchObject({ declared_seconds: 21_600, boundary_grace_seconds: 600, actual_seconds: 22_205.078 })
+    expect(summary.budget.delta_seconds).toBeCloseTo(605.078, 3)
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'summary.json'), 'utf8')).budget.delta_seconds).toBeCloseTo(605.078, 3)
   })
 
   it('refuses a report when any measured run-cost block disagrees with the receipt', () => {

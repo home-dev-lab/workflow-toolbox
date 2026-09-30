@@ -74,6 +74,16 @@ setsid nohup node "${CLAUDE_PLUGIN_ROOT}/bin/wt-second-opinion.mjs" \
   --repo <repository> >/dev/null 2>&1 < /dev/null &
 ```
 
+Put every file the reviewer must read under `--repo`, and name it by absolute
+path. Expect `EXIT=2` before the reviewer starts when, on Linux, a named file is
+not readable inside the reviewer's sandbox; read the refusal for the path.
+Then apply one remedy: copy the file under `--repo` and name the copy; or
+re-run with `WT_LANE_SANDBOX_READ=<path>` for that exact path; or, for a path
+only mentioned and not needed, re-run with
+`WT_SECOND_OPINION_UNREAD='["<path>"]'`. Read a `NOTE:` line as a named
+directory the reviewer cannot see: the review ran without it. Name the files
+you need reviewed; never rely on a named directory to carry them.
+
 On Windows, launch the same `node` command with `Start-Process` instead of
 `setsid nohup`; the CLI itself owns the output file and completion marker.
 

@@ -239,7 +239,9 @@ const backgroundLiveCount = backgroundTasksVisible ? input.background_tasks.filt
 
 const activityRoot = resolveActivityRoot(cwd)
 const activityCutoff = Date.now() - ACTIVITY_WINDOW_MIN * 60_000
-const worktreeScan = activityRoot ? registeredWorktrees(activityRoot) : suiteUmbrellaWorktrees(cwd)
+const worktreeScan = activityRoot
+  ? registeredWorktrees(activityRoot, { porcelainFile: process.env.WT_QUEUE_GATE_WORKTREE_LIST_FILE || null })
+  : suiteUmbrellaWorktrees(cwd)
 const activityStatus = registeredWorktreeActivity(worktreeScan, activityCutoff)
 if (activityStatus === 'recent') runningBail()
 if (hasActiveLaneLog(worktreeScan, activityCutoff)) runningBail()

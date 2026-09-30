@@ -220,6 +220,33 @@ process that creates its own session escapes the lane process group and remains 
 
 ## Completion and CLI
 
+### Which account the SDK child uses
+
+The SDK child inherits the runner's environment (`pilot-runner-core.mjs`, `effectiveEnv` and
+`queryOptions.env`). Without `CLAUDE_CODE_OAUTH_TOKEN`, it can authenticate using the config dir's
+saved login, which may belong to a different account. Claude Code sessions started with
+`CLAUDE_CODE_OAUTH_TOKEN` do not pass that variable to their Bash tool's subprocesses (observed on
+Claude Code 2.1.284; undocumented). For a runner launched from an agent's Bash tool, supply the
+intended account's token in the **runner launch environment** and pass
+`--expect-account owner@example.com` (or set `WT_PILOT_EXPECT_ACCOUNT` in that launch environment).
+Do not put the expected account or authentication variables in `--profile-env`.
+
+The runner checks SDK `Query.accountInfo()` before sending the first user prompt, logs the account
+line, and writes `summary.json` `account` with verdict, e-mail (if exposed), token source and expected
+e-mail. `email_matched` means the SDK reported the expected e-mail (case-insensitive),
+`apiProvider` is `firstParty`, and both `tokenSource` and `apiKeySource` are absent or `none`:
+the stored login is the credential in use. `mismatch` requires the same stored-login evidence
+with a different e-mail. `launcher_asserted` requires `tokenSource=CLAUDE_CODE_OAUTH_TOKEN`,
+`apiProvider=firstParty`, and `apiKeySource` absent or `none`: the owner is **not independently
+verified**; this verdict trusts the launcher's token-to-account mapping. An e-mail reported
+alongside an environment token comes from the config and does not identify the token's owner.
+`not_enforced` means no expected account was supplied; it logs the reported account or an unknown
+reason and permits the run. `unverifiable` means the receipt fits neither trusted stored-login
+nor launcher-token conditions; `unavailable` means `accountInfo()` could not return a receipt;
+`profile_override` means `--profile-env` supplied an account or credential selector. These and
+`mismatch` refuse before any user prompt and fail the run. The check is pure JavaScript over SDK account fields and
+works the same way on Linux, macOS and Windows.
+
 ### SDK installation
 
 The runner and orchestrator resolve `@anthropic-ai/claude-agent-sdk` in this order: the plugin's
@@ -255,6 +282,14 @@ source/effective model, plus `served_model` from the SDK `system:init` receipt a
 two SDK readings agree with each other (a remapped profile serves a different id than the requested
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
+`summary.json` also records `budget` (declared seconds, 600-second boundary grace, measured seconds,
+and signed measured-minus-declared delta), `longest_tool_call` with tool name, id, duration and
+start/end timestamps, and `unfinished_tool_calls` measured through run end. Lifecycle `run` calls
+include their kind/name and the phase at call start (and a round when the state exposes one).
+When assistant usage follows the last SDK result, `fresh_tokens` and `turns` are `unavailable`;
+`turns_completed` counts results and `fresh_tokens_lower_bound` sums recorded assistant input,
+cache creation and output. Per-message output can undercount a terminal result, so this sum is
+not a final total. The same unavailable value appears in `usage.json` and the CLI's `fresh=` line.
 
 The runner timeout is a clean-boundary stop, not a mid-phase kill. A Node timer calls the in-process
 lifecycle server's `requestStop('timeout')`; the current lane, gate, or other phase work is allowed to
@@ -266,12 +301,12 @@ instead yielded a user prompt from the async prompt generator while a lifecycle 
 running; the SDK buffered that prompt, but no lifecycle state consumed it, so a pilot could continue
 through later phases.
 
-This boundary contract has an intentional worst case: if a phase never returns and therefore never
-calls `transition`, the runner timeout remains pending and cannot fire cleanly. Supervised executor
-lanes retain their existing owner decision path and identity-aware abandon control; use that control
-for a wedged lane. There is no second hard kill for a wedged pilot or gate, so an operator must
-terminate the runner externally if the phase has no supervised control path. That preserves the
-worktree but cannot promise the boundary report that the wedged phase never reached.
+If a phase never returns and therefore never calls `transition`, the runner waits up to ten minutes
+after the timeout request, then aborts the SDK stream. An SDK exception caused by that grace abort
+keeps `reason: timeout` in the summary and lifecycle partial, preserves its message as
+`sdk_stream_error`, and rejects with a `timeout:` error after publishing the receipts. An unrelated
+SDK exception before the grace abort remains a stream error. Supervised executor lanes retain their
+owner decision path and identity-aware abandon control for wedged lane processes.
 
 Timeout delivery itself has no shell, signal, process-table, or filesystem-injection dependency:
 `pilot-runner-core.mjs` uses the cross-platform Node timer and `AbortController`, and
@@ -280,7 +315,7 @@ Timeout delivery itself has no shell, signal, process-table, or filesystem-injec
 single-process identity path in `lane-supervisor-core.mjs`. An unavailable or inconclusive Windows
 identity read is returned as an actionable `TIMEOUT: unknown` rather than a plausible success, while
 the runner's own timeout request remains visible in its launch log as
-`timeout requested; waiting for the <phase> phase boundary`.
+`timeout requested; waiting up to 10 min for the <phase> phase boundary`.
 
 When critic, review, or refutation exhausts its round bound, the runner also writes the ignored
 `.lane/worktree-retention.json` file. Version 1 records `cardId`, the canonical absolute `worktree`,
@@ -317,6 +352,15 @@ summary minutes only when those mtimes collapse to one copied instant). Every fa
 `cost.json` records card/run identity, route (`HARD` when `--hard` selected it),
 complete/partial/unknown outcome, wall time,
 and per phase/model raw `input`, `cache_write`, `cache_read`, `output`, and `reasoning` columns.
+Its `coverage` separates lifecycle-attributed USD, inferred USD (`unknown`, `reconciled`,
+`unattributed`), and unmatched-session USD; it counts missing-token sources, priced sources
+outside an attributed lane/phase, and models with no price. Missing sources or prices mark the
+total incomplete and the report labels it a lower bound; a last pilot turn with no terminal SDK result
+counts as one missing source, because its output can exceed the per-message usage. Every priced
+phase other than the synthetic rows counts as attributed, so the three amounts add up to the total.
+Reconciled terminal output by itself
+does not mark coverage incomplete. The same coverage appears beside `cost.total_usd` in
+`summary.json` and in the run's cost-index record.
 Prices are resolved fresh for every completed run by exact provider and model. The primary source is
 OpenCode's models.dev cache: `$XDG_CACHE_HOME/opencode/models.json` (otherwise
 `~/.cache/opencode/models.json`) on Linux, `~/Library/Caches/opencode/models.json` on macOS, and
@@ -343,7 +387,7 @@ and enter totals only with `--include-partial`. Mirrored receipts deduplicate by
 start, never by archive path. Malformed usage exits 2.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--board-contract <json file>`, `--knowledge-base-index`, repeatable
-`--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,
+`--plugin-dir <absolute-path>`, `--profile-env`, `--expect-account <email>`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout <seconds>`; `--lane-silence` is not accepted. The runner uses Node path semantics on
 Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.

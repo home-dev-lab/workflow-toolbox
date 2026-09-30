@@ -401,6 +401,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-rm-critical-path-guard-hook.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-zsh-word-split-guard-hook.mjs\""
           }
         ]
@@ -619,6 +628,17 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-release-push-evidence-guard-hook.mjs\"",
             "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-rm-critical-path-guard-hook.mjs\""
           }
         ]
       }

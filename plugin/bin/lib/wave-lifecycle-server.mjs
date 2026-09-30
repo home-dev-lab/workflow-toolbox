@@ -12,7 +12,7 @@ const toolResult = (text) => ({ content: [{ type: 'text', text }] })
 const MAX_DIFF_BYTES = 200 * 1024
 const TERMINAL_STATES = new Set(['accepted', 'escalated', 'rejected', 'undecided'])
 
-export function createWaveServer({ waveDir, cards, receipts = {}, sha256 = null, sdk = null, sdkRequire = null }) {
+export function createWaveServer({ waveDir, cards, receipts = {}, sdk = null, sdkRequire = null }) {
   const require = sdkRequire ?? resolveAgentSdkRequire({ projectDir: waveDir })
   const { createSdkMcpServer, tool } = sdk ?? require('@anthropic-ai/claude-agent-sdk')
   // zod belongs to the SDK install selected by the shared resolver, not to the caller.

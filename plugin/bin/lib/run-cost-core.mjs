@@ -212,6 +212,35 @@ function modelUsageDifference(modelUsage, primaryModel, resultTotals) {
   return { agrees: Object.values(difference).every((value) => value === 0), primary_model: primaryModel, model_total: modelTotal, result_total: resultTotal, difference }
 }
 
+const INFERRED_PHASES = ['unknown', 'reconciled', 'unattributed']
+const UNATTRIBUTED_SOURCE_PHASES = ['unknown', 'unattributed', 'unmatched']
+
+function coverageBucket(phase) {
+  if (INFERRED_PHASES.includes(phase.phase)) return 'inferred'
+  if (phase.phase === 'unmatched') return 'unmatched'
+  return 'attributed'
+}
+
+// Every priced row falls in exactly one bucket: synthetic rows are inferred or unmatched, every other phase is a
+// named lifecycle or lane phase and counts as attributed, so the three dollar parts always add up to the total.
+function costCoverage(priced, entries, unknown) {
+  const sumUsd = (rows) => rows.reduce((sum, row) => sum + Object.values(row.models).reduce((subtotal, model) => subtotal + (typeof model.usd === 'number' ? model.usd : 0), 0), 0)
+  const unknownEntries = entries.filter((entry) => entry.status === 'unknown')
+  // A reason with no entry behind it (dropped modelUsage rows, an absent terminal result) is cost left out of the total.
+  const missingSources = unknownEntries.filter((entry) => !entry.tokens).length + Math.max(0, unknown.length - unknownEntries.length)
+  const priceUnknownModels = priced.price_unknown_models?.length ?? 0
+  const pricedEntry = (entry) => priced.phases.find((phase) => phaseKey(phase.phase, phase.round) === phaseKey(entry.phase, entry.round))?.models[entry.model]?.usd !== 'price unknown'
+  return {
+    status: missingSources || priceUnknownModels ? 'incomplete' : 'complete',
+    attributed_usd: sumUsd(priced.phases.filter((phase) => coverageBucket(phase) === 'attributed')),
+    inferred_usd: sumUsd(priced.phases.filter((phase) => coverageBucket(phase) === 'inferred')),
+    unmatched_usd: sumUsd(priced.phases.filter((phase) => coverageBucket(phase) === 'unmatched')),
+    missing_sources: missingSources,
+    included_unattributed_sources: entries.filter((entry) => entry.tokens && UNATTRIBUTED_SOURCE_PHASES.includes(entry.phase) && pricedEntry(entry)).length,
+    price_unknown_models: priceUnknownModels,
+  }
+}
+
 export function computeRunCost(options) {
   const laneDir = path.resolve(options.laneDir)
   const routeReceipt = readJson(path.join(laneDir, 'route.json'))
@@ -231,6 +260,7 @@ export function computeRunCost(options) {
   const reconciled = []
   const resultTotals = usage.result_totals ?? usage.totals ?? {}
   const rawPilotCheck = usageDifference(pilotMessages, resultTotals)
+  if (usage.fresh_tokens === 'unavailable' && pilotMessages.length > 0) unknown.push('The last pilot turn has no terminal SDK result; its output can exceed the per-message usage, so the pilot total is a lower bound.')
   const missingOutput = rawPilotCheck.result_total.output - rawPilotCheck.message_sum.output
   const outputAdjustments = []
   if (missingOutput > 0) {
@@ -323,7 +353,7 @@ export function computeRunCost(options) {
       : summary.partial?.reason || !summary.completed
       ? { status: 'partial', reason: summary.partial?.reason ?? summary.reason ?? 'run incomplete' }
       : { status: 'complete' }
-  return priceRunCost({
+  const priced = priceRunCost({
     version: 2,
     card_id: routeReceipt.cardId ?? routeReceipt.card_id ?? null,
     route: options.route ?? routeReceipt.route,
@@ -341,10 +371,19 @@ export function computeRunCost(options) {
     },
     sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: [...laneSources].map((family) => family === 'anthropic' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3').join(' and ') || 'unavailable', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
   }, options.priceTable)
+  priced.coverage = costCoverage(priced, entries, unknown)
+  return priced
 }
 
 export function unknownRunCost({ route = 'unknown', reason, worktree = null, cardId = null, startedAt = null }) {
-  return { version: 2, card_id: cardId, route, outcome: { status: 'partial', reason }, worktree, window: startedAt == null ? null : { started_at: new Date(startedAt).toISOString() }, phases: [], families: { anthropic: null, openai: null }, totals: 'unknown', unknown: [reason] }
+  return { version: 2, card_id: cardId, route, outcome: { status: 'partial', reason }, worktree, window: startedAt == null ? null : { started_at: new Date(startedAt).toISOString() }, phases: [], families: { anthropic: null, openai: null }, totals: 'unknown', unknown: [reason], coverage: { status: 'incomplete', missing_sources: 1 } }
+}
+
+function coverageSplit(coverage, usd) {
+  if (!coverage) return ''
+  const parts = [`attributed ${usd(coverage.attributed_usd)}`, `inferred ${usd(coverage.inferred_usd)}`, `unmatched ${usd(coverage.unmatched_usd)}`]
+  if (coverage.status === 'incomplete') parts.push(`LOWER BOUND (${coverage.missing_sources} missing sources, ${coverage.price_unknown_models} price-unknown models)`)
+  return parts.map((part) => ` · ${part}`).join('')
 }
 
 export function costReportSection(cost) {
@@ -355,7 +394,9 @@ export function costReportSection(cost) {
   const lines = ['<!-- run-cost -->', '## Measured Run Cost', '', `Route: ${cost.route} | Outcome: ${cost.outcome.status}${cost.outcome.reason ? ` (${cost.outcome.reason})` : ''} | Unknown: ${cost.unknown.length}`]
   if (cost.totals === 'unknown') return `${lines.join('\n')}\n\nCost: unknown (${cost.unknown.join('; ')})\n<!-- /run-cost -->\n`
   const missingPrices = cost.price_unknown_models?.length ? ` · missing price for: ${cost.price_unknown_models.join(', ')}` : ''
-  lines.push('', `Run total: ${usd(cost.totals.usd, cost.price_labels?.join('; '))}${missingPrices}`, '', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | USD | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+  const coverage = cost.coverage
+  const split = coverageSplit(coverage, usd)
+  lines.push('', `Run total: ${usd(cost.totals.usd, cost.price_labels?.join('; '))}${missingPrices}${split}`, '', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | USD | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
   for (const phase of cost.phases) {
     const label = `${phase.phase}${phase.round ? ` ${phase.round}` : ''}`
     for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${usd(value.usd, value.price_label)} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)

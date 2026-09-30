@@ -60,7 +60,7 @@ const CODEX_PATH_DIR = '/run/wt-lane/bin'
 const probeCache = new Map()
 const SYSTEM_BIN_DIRS = ['/usr/bin', '/bin', '/usr/local/bin', '/run/current-system/sw/bin']
 
-function trustedSystemExecutable(name, searchPath) {
+export function trustedSystemExecutable(name, searchPath) {
   for (const directory of SYSTEM_BIN_DIRS) {
     const candidate = path.join(directory, name)
     let target
@@ -88,6 +88,7 @@ function trustedSystemExecutable(name, searchPath) {
 export class LaneSandboxRefusal extends Error {}
 
 const realFs = {
+  identity: (file) => { const info = statSync(file); return `${info.dev}:${info.ino}` },
   exists: (file) => existsSync(file),
   realpath: (file) => { try { return realpathSync.native(file) } catch { return null } },
   isFile: (file) => { try { return statSync(file).isFile() } catch { return false } },
@@ -151,25 +152,29 @@ function argumentValues(args, flags, base) {
   })
 }
 
-// The filesystem root, the home directory, and every ancestor of home would re-expose what the
-// sandbox exists to hide. Symlinks are resolved so a link to $HOME cannot slip past (LOW 4). This
-// is applied to EVERY computed bind, not only the operator extras (H2).
+// Root, $HOME, its ancestors, or host lane state would re-expose what the sandbox hides; checked for EVERY bind (H2). Forbidden under
+// EITHER view: realpath-else-lexical is the original check; deepest-existing-ancestor adds a missing $HOME under a link (a '..' it cannot resolve is left to bindPath's refusal).
 function isForbiddenPath(candidate, env, fs) {
   if (!candidate || !path.isAbsolute(candidate)) return true
-  const target = fs.realpath(candidate) ?? path.resolve(candidate)
-  const homeDir = fs.realpath(home(env)) ?? path.resolve(home(env))
-  if (target === path.parse(target).root) return true
-  if (homeDir === target || homeDir.startsWith(`${target}${path.sep}`)) return true
-  // Host-owned lane state (records, decisions, logs) must never be visible to a lane: its root, an
-  // ancestor that would contain it, or anything beneath it.
-  const hostRoot = hostStateRootOf(env, fs)
+  const views = [(value) => fs.realpath(value) ?? path.resolve(value), (value) => canonicalPath(value, fs)]
+  return views.some((view, index) => { try { return forbiddenUnder(view, candidate, env, fs) } catch (error) { if (index === 0) throw error; return false } })
+}
+function forbiddenUnder(view, candidate, env, fs) {
+  const target = view(candidate)
+  const homeDir = view(home(env))
+  if (target === path.parse(target).root || homeDir === target || homeDir.startsWith(`${target}${path.sep}`)) return true
+  const hostRoot = hostStateRootOf(env, fs, view) // host lane state: its root, an ancestor containing it, or anything beneath
   return hostRoot !== null && (within(target, hostRoot) || within(hostRoot, target))
 }
 
-function hostStateRootOf(env, fs) {
+export function laneSandboxReadRemedyAllowed(directory, env, fs = realFs) {
+  return !directory.includes(':') && !isForbiddenPath(directory, env, fs)
+}
+
+function hostStateRootOf(env, fs, view = (value) => fs.realpath(value) ?? path.resolve(value)) {
   try {
     const root = laneHostStateRoot({ env })
-    return fs.realpath(root) ?? path.resolve(root)
+    return view(root)
   } catch { return null }
 }
 
@@ -480,7 +485,62 @@ function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays,
 }
 
 function unsandboxed(reason) {
-  return { kind: 'none', reason, line: `lane sandbox: none (${reason}); running with the environment allow-list only`, wrap: (bin, args) => [bin, args], dispose: () => {} }
+  return { kind: 'none', reason, line: `lane sandbox: none (${reason}); running with the environment allow-list only`, wrap: (bin, args) => [bin, args], unreadable: () => [], dispose: () => {} }
+}
+
+const REQUEST_PATH_PROBE = `const fs=require('node:fs');let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>data+=s);process.stdin.on('end',()=>{const answer={};for(const p of JSON.parse(data)){try{const info=fs.statSync(p);fs.accessSync(p,fs.constants.R_OK|(info.isDirectory()?fs.constants.X_OK:0));answer[p]=info.dev+':'+info.ino}catch{answer[p]=null}}process.stdout.write(JSON.stringify(answer))})`
+
+export function probeRequestPaths(paths, { wrap, execPath, env }) {
+  const [command, args] = wrap(execPath, ['-e', REQUEST_PATH_PROBE])
+  const result = spawnSync(command, args, { env, input: JSON.stringify(paths), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000 })
+  if (result.error || result.signal || result.status !== 0) throw new Error(result.error?.message ?? String(result.stderr ?? result.signal ?? `exit ${result.status}`).trim())
+  return JSON.parse(result.stdout)
+}
+
+function checkedHostIdentity(fs, candidate) {
+  try { return fs.identity(candidate) } catch (error) {
+    // A spelling that cannot name a file (missing, a file used as a directory, or too long for the
+    // filesystem — a prose tail after a real path) is not a lookup failure: try the next spelling.
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR' || error.code === 'ENAMETOOLONG') return null
+    return { error: error.code ?? error.message }
+  }
+}
+
+// Longest spelling first; stop at the first one the host can answer for, so a long prose tail costs
+// one failed lookup per shorter spelling only until the real path is reached.
+function firstExistingSpelling(variants, fs) {
+  for (const candidate of variants) {
+    const identity = checkedHostIdentity(fs, candidate)
+    if (identity !== null) return { path: candidate, identity }
+  }
+  return null
+}
+
+// The sandbox supplies its own /proc, /dev, tmpfs /tmp, empty $HOME and the ancestor directories of
+// every bind, so such a path exists inside under a different identity. Naming one is not asking the
+// reviewer for host content: accept a directory, or a /proc or /dev entry, that exists inside. A
+// regular file must still be the SAME file, and a directory absent inside is still refused.
+const SANDBOX_OWNED_ROOTS = ['/proc', '/dev']
+function replacedBySandbox(candidate, insideIdentity, fs) {
+  if (typeof insideIdentity !== 'string') return false
+  return fs.isDir(candidate) || SANDBOX_OWNED_ROOTS.some((root) => within(candidate, root))
+}
+
+function unreadableRequestPaths(candidates, { fs, wrap, execPath, env, probe, exempt = [] }) {
+  const chosen = candidates.map((variants) => firstExistingSpelling(variants, fs)).filter(Boolean)
+    .filter(({ path }) => !exempt.includes(path))
+  const lookup = chosen.filter(({ identity }) => typeof identity === 'string')
+  let inside = {}
+  if (lookup.length) {
+    try {
+      inside = (probe ?? probeRequestPaths)([...new Set(lookup.map(({ path }) => path))], { wrap, execPath, env })
+      if (!inside || typeof inside !== 'object' || Array.isArray(inside) || lookup.some(({ path }) => !Object.hasOwn(inside, path) || (inside[path] !== null && typeof inside[path] !== 'string'))) throw new Error('invalid probe response')
+    } catch (error) { throw new LaneSandboxRefusal(`could not check the request's paths inside the sandbox: ${error.message}`) }
+  }
+  // A directory is marked so the caller can REPORT it rather than refuse: a named directory is
+  // usually context, and its contents are never checked anyway.
+  return chosen.filter(({ path, identity }) => typeof identity !== 'string' || !(inside[path] === identity || replacedBySandbox(path, inside[path], fs)))
+    .map(({ path, identity }) => ({ path, reason: typeof identity === 'object' ? identity.error : null, ...(typeof identity === 'string' && fs.isDir(path) ? { directory: true } : {}) }))
 }
 
 // Returns { ok } to sandbox, { none: reason } to run unsandboxed with that reason, or
@@ -579,7 +639,7 @@ function laneWritablePredicate(roots, fs, hostPath = path) {
 
 // The host suite lock root is never a lane-writable root on Linux: a sandboxed lane takes the lock through the
 // host broker. Only the Windows preflight (no sandbox) names it, as a location an unsandboxed lane can write.
-function effectiveWritableRoots({ workdir, selected, git, env, paths, extras, runtimeDir, readonlyCwd, suiteLock = null }) {
+function effectiveWritableRoots({ workdir, selected, git, paths, extras, runtimeDir, readonlyCwd, suiteLock = null }) {
   return [...(readonlyCwd ? [] : workdir), ...(selected.writable ?? []), ...git.writable, ...(suiteLock ? [suiteLock] : []), ...(paths.writable ?? []), ...extras.writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), runtimeDir]
 }
 
@@ -775,7 +835,7 @@ function networkBridges({ network, socketDir, execPath, egressLog }) {
   return bridges
 }
 
-// Starts every host bridge and waits for its socket. A bridge whose socket never appears REFUSES
+// Starts every host bridge and waits for its socket (or, for the broker, its listen acknowledgement). A bridge whose socket never appears REFUSES
 // the launch (the lane would otherwise start with a launch line claiming a route that does not
 // exist); a bridge that dies later says so on the lane's diagnostics stream (its run log).
 function bridgeName(bridge) {
@@ -799,10 +859,12 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
   // A host bridge's unix socket appears asynchronously. Wait for it BEFORE the sandbox starts, or
   // the lane's first connection races the socket into existence and is refused (measured).
     const deadline = Date.now() + 3_000
-    for (const { sock } of bridges) {
-      while (!fs.exists(sock) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    // Synthetic filesystem plans do not launch runLaneHelper and cannot publish its acknowledgement.
+    const readyPath = (bridge) => bridge.hostOnly && fs === realFs && spawnFn === spawn ? `${bridge.sock}.ready` : bridge.sock
+    for (const bridge of bridges) {
+      while (!fs.exists(readyPath(bridge)) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
     }
-    const missing = bridges.filter(({ sock }) => !fs.exists(sock))
+    const missing = bridges.filter((bridge) => !fs.exists(readyPath(bridge)))
     if (missing.length) {
       const names = missing.map(bridgeName).join(', ')
       throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)
@@ -996,7 +1058,8 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
     return [bwrapPath, [...prefix, '--', '/bin/sh', '-c', bootstrap, 'wt-lane-net', command, ...commandArgs]]
   }
 
-   return { kind: 'bwrap', line, readable, writable, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, dispose }
+    const unreadable = (candidates, { probe, env: probeEnv = env, exempt = [] } = {}) => unreadableRequestPaths(candidates, { fs, wrap, execPath, env: probeEnv, probe, exempt })
+    return { kind: 'bwrap', line, readable, writable, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
   } catch (error) {
     bridgeState.disposed = true
     for (const relay of bridge?.relays ?? []) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }

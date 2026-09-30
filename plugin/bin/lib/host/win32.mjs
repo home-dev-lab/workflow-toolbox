@@ -1,3 +1,5 @@
+import { processSnapshotFailure } from './process-snapshot-failure.mjs'
+
 const PROCESS_TABLE_SCRIPT = [
   '$now = Get-Date',
   'Get-CimInstance Win32_Process | ForEach-Object {',
@@ -35,7 +37,8 @@ export function readProcessRelationships(invoke) {
 
 export function readProcessSnapshot(invoke) {
   const result = invoke.run(processSnapshotOperation.command, processSnapshotOperation.args, { timeout: PROCESS_READ_TIMEOUT_MS })
-  if (result.status !== 0) return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
+  const failure = processSnapshotFailure(result, processSnapshotOperation.command)
+  if (failure) return failure
   const processes = String(result.stdout ?? '').split(/\r?\n/).flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)$/.exec(line)
     return match && Number(match[3]) >= 0 && Number(match[4]) >= 0

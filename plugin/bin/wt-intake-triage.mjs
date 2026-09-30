@@ -15,7 +15,7 @@ try {
     const input = JSON.parse(readFileSync(cardsPath(process.argv.slice(2)), 'utf8'))
     const cards = Array.isArray(input) ? input : input?.cards
     const { results, eligible } = prepareTriage(cards)
-    const output = results.map(({ routeLine, ...card }) => card)
+    const output = results.map(({ routeLine: _routeLine, ...card }) => card)
     process.stdout.write(`${JSON.stringify({ cards: output, eligible: eligible.map(({ card }) => card) }, null, 2)}\n`)
   }
 } catch (error) {

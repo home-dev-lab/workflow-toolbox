@@ -15,7 +15,7 @@ import { triggerMatches } from '../hooks/trigger-match.js';
 import { toolInputVerdict, bashSegments, segmentVerdict, correlateTurn } from '../hooks/declarative-checks.js';
 
 const RULE_BLOCK = /<rule name="([^"]+\.md)"(\s+source="[^"]*")?>/g;
-const REFUSAL = 'wt-rules-on-demand: read the rule below before this action';
+export const REFUSAL = 'wt-rules-on-demand: read the rule below before this action';
 const watched = /"(?:tool_use|hook_additional_context|compact_boundary|tool_result)"|"cwd"|"timestamp"/;
 const exec = promisify(execFile);
 
@@ -105,10 +105,11 @@ function matches(rule, use) {
      command: input.command, path: input.file_path ?? input.path, input: use.argumentEvidence ?? argumentEvidence(input) }));
 }
 
-function blocks(text) {
+export function blocks(text) {
   return [...String(text).matchAll(RULE_BLOCK)].map((match) => {
     const end = String(text).indexOf('</rule>', match.index + match[0].length);
-    return { name: match[1], fallback: !!match[2], bytes: end < 0 ? null : Buffer.byteLength(String(text).slice(match.index, end + '</rule>'.length)) };
+    return { name: match[1], fallback: !!match[2], bytes: end < 0 ? null : Buffer.byteLength(String(text).slice(match.index, end + '</rule>'.length)),
+      text: end < 0 ? null : String(text).slice(match.index + match[0].length, end).trim() };
   });
 }
 
@@ -135,7 +136,7 @@ function toolVerdict(rule, use, checked, correlated) {
 
 // Pipeline: normalize(file) -> context events; resolve(context, scopes) -> effective rules;
 // judge(events, effective rules) -> verdict rows. No stage retains raw transcript JSON.
-const textOf = (content) => {
+export const textOf = (content) => {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((part) => typeof part === 'string' ? part : part?.text ?? '').join('\n');
   return '';

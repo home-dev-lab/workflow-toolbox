@@ -17,10 +17,11 @@ const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtur
 const PHASE_COST_FIXTURE = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'phase-cost.json')
 const SNAPSHOT_CLI = join(REPO_ROOT, 'plugin', 'hooks', 'snapshot-cli')
 
-function runSelftest(filter?: string) {
+function runSelftest(filter?: string, timeout?: number) {
   return spawnSync(process.execPath, [SELFTEST], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    timeout,
     env: { ...process.env, ...(filter ? { WT_WIR_SELFTEST_FILTER: filter } : {}), NODE_NO_WARNINGS: '1' },
   })
 }
@@ -1050,10 +1051,26 @@ describe('What is running collector seam', () => {
   })
 
   it.skipIf(process.platform !== 'linux')('runs every assertion from the ported hardened selftest (requires /proc)', () => {
-    const result = runSelftest()
+    // This enumerates real /proc and launches many subprocesses. Under host load the
+    // synchronous selftest can exceed the ordinary 60 s bound; give this one workload a
+    // bounded 150 s child budget, and report its own timeout rather than a Vitest hang.
+    const result = runSelftest(undefined, 150_000)
+    expect(result.error, result.stderr || result.stdout).toBeUndefined()
     expect(result.status, result.stderr || result.stdout).toBe(0)
     expect(result.stdout).toContain('tests: ')
-  }, 60_000)
+  }, 180_000)
+
+  it('counts completed collections rather than scheduled ticks under deterministic collector delay', () => {
+    const result = runSelftest('polling is 2 seconds', 30_000)
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 1/1')
+  }, 40_000)
+
+  it.skipIf(process.platform === 'win32')('keeps a live SDK run listed and names its phase, that phase model and elapsed [synthetic Linux /proc]', () => {
+    const result = runSelftest('card 1874319379', 60_000)
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 11/11')
+  }, 90_000)
 
   it('keeps pane-open state local to one session registration', () => {
     const result = runSelftest('[per-session pane state] one registration')
@@ -1214,5 +1231,129 @@ describe('What is running collector seam', () => {
       expect(row.activity).toBe('$ echo visible words')
       expect(row.activity).not.toMatch(/[\x00-\x1f\x7f]/)
     } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  describe('a sandboxed consultation is one row, not one per sandbox process [synthetic Linux /proc chain]', () => {
+    type Proc = { pid: number, ppid: number, name: string, args: string[] }
+    const writeProc = (procRoot: string, { pid, ppid, name, args }: Proc) => {
+      mkdirSync(join(procRoot, String(pid)))
+      writeFileSync(join(procRoot, String(pid), 'status'), `Name:\t${name}\nPPid:\t${ppid}\n`)
+      writeFileSync(join(procRoot, String(pid), 'cmdline'), args.join('\0') + '\0')
+    }
+    // The shape measured on a live consultation: bwrap -> bwrap -> sh -> node, every one of them
+    // carrying the companion script and its `task` request in its argv.
+    const sandboxChain = (base: number, request: string): Proc[] => {
+      const program = ['/usr/bin/node', '/opt/codex/scripts/codex-companion.mjs', 'task', '--fresh', '--model', 'gpt-6-astra', request]
+      const shell = ['/bin/sh', '-c', 'sleep 0.5\n"$@"', 'wt-lane-net', ...program]
+      const sandbox = ['/usr/bin/bwrap', '--die-with-parent', '--unshare-all', '--dir', '/run/wt-lane/bin', '--', ...shell]
+      return [
+        { pid: base, ppid: 1, name: 'bwrap', args: sandbox },
+        { pid: base + 1, ppid: base, name: 'bwrap', args: sandbox },
+        { pid: base + 2, ppid: base + 1, name: 'sh', args: shell },
+        { pid: base + 3, ppid: base + 2, name: 'MainThread', args: program },
+      ]
+    }
+    const actorsLabelled = (snapshot: { rows: unknown[], sessions: unknown[] }, label: string) => {
+      const found: Array<{ processPid: number }> = []
+      const walk = (value: unknown) => {
+        if (Array.isArray(value)) { for (const item of value) walk(item); return }
+        if (!value || typeof value !== 'object') return
+        const record = value as Record<string, unknown>
+        if (record.label === label && typeof record.processPid === 'number') found.push(record as { processPid: number })
+        for (const child of Object.values(record)) walk(child)
+      }
+      walk(snapshot.rows); walk(snapshot.sessions)
+      // One actor can be listed both as a row and under its session: count distinct processes.
+      return [...new Map(found.map(actor => [actor.processPid, actor])).values()]
+    }
+    const withChains = async (chains: Proc[][], extra: Proc[] = []) => {
+      const root = mkdtempSync(join(tmpdir(), 'wt-wir-sandbox-chain-'))
+      try {
+        // PATH is pinned so `codex` classifies by its argv name, whatever this host has installed.
+        const paths = collector(root, { executablePlatform: 'linux', processEnv: { PATH: '/missing' } })
+        writeFileSync(join(paths.procRoot, 'uptime'), '20000.00 1000.00\n')
+        for (const proc of [...chains.flat(), ...extra]) writeProc(paths.procRoot, proc)
+        return await readSnapshot({ process: processCapability() }, paths)
+      } finally { rmSync(root, { recursive: true, force: true }) }
+    }
+
+    it('shows one Astra consultation row for a four-process sandbox chain, keyed on the real program', async () => {
+      const snapshot = await withChains([sandboxChain(800, 'Consult on the retry policy')])
+      const rows = actorsLabelled(snapshot, 'Astra consultation')
+      expect(rows.map(row => row.processPid)).toEqual([803])
+    })
+
+    it('shows two rows for two concurrent consultations', async () => {
+      const snapshot = await withChains([sandboxChain(800, 'First question'), sandboxChain(900, 'Second question')])
+      expect(actorsLabelled(snapshot, 'Astra consultation').map(row => row.processPid).sort()).toEqual([803, 903])
+    })
+
+    it('shows one Refutation row for a sandboxed refutation', async () => {
+      const snapshot = await withChains([sandboxChain(800, 'Refute the claim that the cache is safe')])
+      expect(actorsLabelled(snapshot, 'Refutation').map(row => row.processPid)).toEqual([803])
+      expect(actorsLabelled(snapshot, 'Astra consultation')).toEqual([])
+    })
+
+    it('still treats a helper started inside the sandbox, beside the program, as part of the consultation', async () => {
+      const helper: Proc = { pid: 805, ppid: 802, name: 'codex', args: ['codex', 'app-server'] }
+      const unrelated: Proc = { pid: 600, ppid: 1, name: 'codex', args: ['codex', 'app-server'] }
+      const snapshot = await withChains([sandboxChain(800, 'Consult on the retry policy')], [helper, unrelated])
+      const listed = snapshot.helpers.items.map((item: { pid: number }) => item.pid)
+      expect(listed).toContain(600)
+      expect(listed).not.toContain(805)
+    })
+
+    it('keeps a distinct consultation started inside another one as its own row', async () => {
+      const outer = sandboxChain(800, 'Outer question')
+      const inner: Proc = { pid: 810, ppid: 803, name: 'MainThread', args: ['/usr/bin/node', '/opt/codex/scripts/codex-companion.mjs', 'task', '--fresh', '--model', 'gpt-6-astra', 'Inner question'] }
+      const snapshot = await withChains([outer], [inner])
+      expect(actorsLabelled(snapshot, 'Astra consultation').map(row => row.processPid).sort()).toEqual([803, 810])
+    })
+
+    it('treats a helper started by a refutation lane as part of that task', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'wt-wir-refutation-lane-'))
+      try {
+        const paths = collector(root, { executablePlatform: 'linux', processEnv: { PATH: '/missing' } })
+        writeFileSync(join(paths.procRoot, 'uptime'), '20000.00 1000.00\n')
+        const worktree = join(paths.suiteRoot, 'worktrees', 'refutation-lane')
+        mkdirSync(join(worktree, '.lane'), { recursive: true })
+        writeFileSync(join(worktree, '.lane', 'brief.md'), '# Brief: refutation lane\n')
+        writeFileSync(join(worktree, '.lane', 'run.log'), 'working\n')
+        writeFileSync(join(worktree, '.lane', 'route.json'), JSON.stringify({ laneRole: 'refutation' }))
+        for (const proc of [
+          { pid: 700, ppid: 1, name: 'opencode', args: ['opencode', 'run', '--dir', worktree] },
+          { pid: 705, ppid: 700, name: 'codex', args: ['codex', 'app-server'] },
+          { pid: 600, ppid: 1, name: 'codex', args: ['codex', 'app-server'] },
+        ]) writeProc(paths.procRoot, proc)
+        const snapshot = await readSnapshot({ process: processCapability() }, paths)
+        const listed = snapshot.helpers.items.map((item: { pid: number }) => item.pid)
+        expect(listed).toContain(600)
+        expect(listed).not.toContain(705)
+      } finally { rmSync(root, { recursive: true, force: true }) }
+    })
+
+    it('shows one lane for an opencode run started inside a sandbox', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'wt-wir-sandbox-opencode-'))
+      try {
+        const paths = collector(root, { executablePlatform: 'linux' })
+        const worktree = join(paths.suiteRoot, 'worktrees', 'sandboxed-lane')
+        mkdirSync(join(worktree, '.lane'), { recursive: true })
+        writeFileSync(join(worktree, '.lane', 'brief.md'), '# Brief: sandboxed lane\n')
+        writeFileSync(join(worktree, '.lane', 'run.log'), 'working\n')
+        const program = ['opencode', 'run', '--dir', worktree, '--model', 'openai/gpt-6-luna']
+        const shell = ['/bin/sh', '-c', '"$@"', 'wt-lane-net', ...program]
+        const sandbox = ['/usr/bin/bwrap', '--die-with-parent', '--dir', '/run/wt-lane/bin', '--', ...shell]
+        for (const proc of [
+          { pid: 700, ppid: 1, name: 'bwrap', args: sandbox },
+          { pid: 701, ppid: 700, name: 'bwrap', args: sandbox },
+          { pid: 702, ppid: 701, name: 'sh', args: shell },
+          { pid: 703, ppid: 702, name: 'opencode', args: program },
+        ]) writeProc(paths.procRoot, proc)
+        const snapshot = await readSnapshot({ process: processCapability() }, paths)
+        const lanes = JSON.stringify(snapshot.rows).match(/"worktree":"[^"]*sandboxed-lane"/g) || []
+        expect(lanes).toHaveLength(1)
+        expect(snapshot.rows.map((row: { processPid?: number }) => row.processPid).filter(Boolean)).toEqual([703])
+      } finally { rmSync(root, { recursive: true, force: true }) }
+    })
   })
 })

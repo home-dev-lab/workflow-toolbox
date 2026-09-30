@@ -51,6 +51,7 @@ const ROLE_CONTEXT_TOOLS = Object.freeze([CONTEXT_MODE_TOOLS.fetchAndIndex, CONT
 
 const WRITER_GUARDS = Object.freeze([
   { script: 'wt-unquoted-tool-glob-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'refuse shell-expanded tool-option globs' },
+  { script: 'wt-rm-critical-path-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'refuse rm targets that stop for a critical-path prompt' },
   { script: 'wt-zsh-word-split-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'warn on implicit scalar word splitting under zsh' },
   { script: 'wt-merge-chain-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'warn before a stale tree is certified after merge' },
   { script: 'wt-concurrent-test-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'prevent load-induced concurrent suite failures' },

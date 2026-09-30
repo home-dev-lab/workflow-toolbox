@@ -8,14 +8,19 @@ const FILESYSTEM_MODULES = new Set(['fs', 'fs/promises', 'node:fs', 'node:fs/pro
 const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
+// A parser of Bash command text: its `/` and `\` literals are POSIX paths written inside the
+// command and shell quoting, whatever the host. Only the separator check is skipped for it; its
+// imports and host calls are counted like any other file's.
+const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 
 // Lowered by independent reductions: the suite lock's reclaim moved its file operations into
 // host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
 // lane brief and lifecycle reads moved into the host lane directory helper; the launcher
 // also moved its host file-descriptor operations behind that helper. The clock-independent
-// gate-evidence check replaced its per-path stat calls with a git comparison.
+// gate-evidence check replaced its per-path stat calls with a git comparison. The plugin lint
+// pass removed an unused `homedir` import from wt-service-watch.mjs.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1899
+export const HOST_PRIMITIVE_CEILING = 1898
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
@@ -122,7 +127,7 @@ function scanFile(path, root) {
     const value = literalText(node)
     if (value !== undefined) {
       if (/^\/proc(?:\/|$)/.test(value)) add(node, 'literal /proc')
-      if (isHardCodedPathSeparator(node, value)) add(node, 'hard-coded path separator')
+      if (!SHELL_GRAMMAR_FILES.has(file) && isHardCodedPathSeparator(node, value)) add(node, 'hard-coded path separator')
     }
     ts.forEachChild(node, visit)
   }

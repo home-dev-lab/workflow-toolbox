@@ -82,6 +82,93 @@ drive the daily rollback decision, which stays dry-run. Legacy store rows withou
 a rule identity are counted and skipped by rollback. The report CLI accepts
 repeatable `--rules-dir` to inspect an alternate rule tree.
 
+Offline judgment (EXPERIMENTAL, measurement-only) uses separate files, never
+the compliance store or rollback archives:
+
+```sh
+node scripts/judge-cases.mjs extract --projects-dir <config-dir>/projects --rules-dir <rules-dir> --out <judge-output-dir>
+node scripts/judge-cases.mjs judge --cases <path-printed-by-extract> --out <judge-output-dir> --model haiku
+node scripts/judge-cases.mjs score --judges <path-printed-by-judge> --labels labels-a.jsonl --labels labels-b.jsonl
+```
+
+`extract` accepts repeatable `--projects-dir`, `--transcript` (including
+`subagents/*.jsonl`), `--rules-dir`, optional `--rule <substring>` and
+`--from-verdicts <jsonl>`. Each unmatched existing verdict is reported on stderr.
+The served body is retained alongside the current rule file hash. The historical
+trigger is provisionally evaluated from the last committed version of the rule
+at or before the serve timestamp; the case names that commit. A commit alone
+does not prove which trigger was active in the session. Missing history, an
+ambiguous owner, a malformed record, or an evaluator error similarly makes
+`triggerState` unknown. An owned, non-empty excerpt with only provisional
+historical trigger provenance can reach the model with that uncertainty named;
+ambiguous ownership or missing evidence is code-decided `undecidable`.
+For each governed call the excerpt includes its preceding prompt and assistant
+text, arguments and result, with compaction markers and line-numbered gaps.
+Arguments/results are capped at 1,200 characters each and the excerpt at 12,000
+characters; the case records truncation and dropped-act count. Only the model
+can return `not applicable`, on non-empty evidence; code never decides a negative.
+The extract summary compares raw served blocks to cases produced, including
+serves beyond the quality scanner's refusal bound.
+`judge` defaults to concurrency 2 (override `--concurrency`) and writes under
+`<config-dir>/plugins/data/wt-rules-on-demand/judge/` unless `--out` chooses a
+directory. Every extract and judge run creates a new exclusive file in a fresh
+run directory and prints its path. To resume, pass the previous judge file as
+`--previous <file>`; a new output file contains only the remaining cases.
+It checks the installed CLI's `--help` for the isolation flags before invoking
+`claude -p` with zero tools and a temporary cwd. Override the binary with
+`--binary` or `WT_ROD_JUDGE_CLI`. `--config-dir` selects output and lookup
+locations only. Supply a separate, disposable authenticated Claude profile with
+`--judge-config-dir` or `WT_ROD_JUDGE_CONFIG_DIR`: create that directory and
+authenticate the Claude CLI against it beforehand (for example, run the CLI's
+login command with `CLAUDE_CONFIG_DIR` set to that directory). Neither the CLI
+help probe nor the judge process inherits the caller's credentials, identity,
+model overrides, hooks, plugins, or config directory. Existing files and
+symlinked output directories are refused. Labels have
+`caseId`, `label` and `labeller` (include `rule` for per-rule reporting when a
+case lacks a judge row); score counts every multiply-labelled case for agreement,
+but only agreed cases with judge rows for precision/recall. A judge file with
+multiple predictions for one case (for example, changed evidence or two model
+runs) must be split before scoring.
+
+### In-hook verdict measurement bound
+
+In-hook verdict rows can miss or repeat the verdict of a compliance window whose
+settlement races another handler of the same context: concurrent tool calls
+closing the same window, or a compaction, MAIN context replacement or turn
+completion arriving while a handler of that context is suspended. A lost window
+costs one verdict; a repeated one adds one extra verdict per overlapping handler
+that closes it, so the error is not bounded by one when many calls overlap.
+`scripts/compliance-report.mjs` counts and the follow rate it reports move by
+those samples. Follow rates that `scripts/rollback-check.mjs`
+reports from in-hook rows move the same way.
+
+Automatic rollback is unaffected: when `scripts/daily-rollback.mjs` applies
+(`--apply`), it invokes `scripts/rollback-check.mjs` with `--mechanical-only`
+and transcript verdicts.
+For the transcript-measured kinds (`check`, `bash-command`, `tool-input`,
+`turn-correlation`), transcript rows replace in-hook verdicts. For any other
+kind, `--mechanical-only` returns `attention`, never an automatic revert.
+A manual `scripts/rollback-check.mjs` run without `--mechanical-only` is
+different: it takes every rule's rate evidence from in-hook rows when `--verdicts` is absent,
+and the kinds the transcript does not measure (for example `model` and
+`next-call`) from in-hook rows when it is present; without `--dry-run` it
+can revert, so near a rule's threshold such a shift can change the outcome.
+
+Measure retained serves against verdicts in a read-only snapshot with:
+
+```sh
+node scripts/serve-verdict-reconcile.mjs --store /path/to/store.json --archives /path/to/archives --seed-control
+```
+
+With `--store`, only the archives named by `--archives` are read; without
+`--store`, the store and archives of the current config directory are read.
+The store retains only recent session journals: verdicts of a session that is
+no longer journalled are counted as unjoinable. The join is a timestamp
+heuristic, not an identity: rows carry no delivery ID, no decision ID and no
+MAIN context generation, so close re-serves, identical-key verdicts and legacy
+journal entries without a rule identity cannot be attributed with certainty.
+The script prints these limits with every run.
+
 Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
 from a host timer or cron job; the plugin ships no scheduler. This entry point
 checks the user rules and configured followed projects, and defaults to dry-run.

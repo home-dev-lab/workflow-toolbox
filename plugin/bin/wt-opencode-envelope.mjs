@@ -212,7 +212,7 @@ function uniqueToken() {
   return `${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 }
 
-function invocationOutDir(dir) {
+function invocationOutDir() {
   const explicit = process.env.WT_ENVELOPE_WORKDIR
   if (typeof explicit === 'string' && explicit.length > 0) return path.resolve(explicit)
   // SHARED state, deliberately NOT the hook-only plugin data dir: the observatory (a non-plugin
@@ -471,7 +471,7 @@ async function reduceManifest(opts) {
     return 2
   }
 
-  const outDir = invocationOutDir(opts.dir)
+  const outDir = invocationOutDir()
   const manifestPath = path.join(outDir, 'envelope.manifest.json')
   const skippedFailedTaskIds = source.tasks.filter((task) => task?.status !== 'answer').map((task) => String(task?.id))
   const unusableAnswerIds = []
@@ -633,7 +633,7 @@ async function main() {
     seenIds.add(t.id)
   }
 
-  const outDir = invocationOutDir(opts.dir)
+  const outDir = invocationOutDir()
   const manifestPath = path.join(outDir, 'envelope.manifest.json')
   if (generatedMode && tasks.length === 0) {
     fs.mkdirSync(outDir, { recursive: true })

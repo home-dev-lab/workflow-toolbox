@@ -31,11 +31,15 @@ export function createHostAdapter({ platform = process.platform, invoke, evidenc
   return { ...adapter, evidence: () => evidenceSummary(platform, captured) }
 }
 
+// A busy host's process table (`ps`, or the PowerShell snapshot) can exceed the 1 MiB child-output default;
+// past it spawnSync fails with ENOBUFS and discovery would read as unavailable.
+const COMMAND_OUTPUT_MAX_BYTES = 64 * 1024 * 1024
+
 function realInvocation() {
   return {
     run(command, args, options = {}) {
       try {
-        const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, ...options })
+        const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, maxBuffer: COMMAND_OUTPUT_MAX_BYTES, ...options })
         return { status: result.status ?? 'unavailable', stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error ?? null }
       } catch (error) {
         return { status: 'unavailable', stdout: '', stderr: '', error }

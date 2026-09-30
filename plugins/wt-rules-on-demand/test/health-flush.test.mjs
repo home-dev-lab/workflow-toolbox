@@ -134,3 +134,39 @@ test('elapsed minute flushes pending calls on the next event', { skip: !!mutatio
     assert.equal(Object.values(stored.get('health').days)[0].calls, 2);
   } finally { globalThis.Date = RealDate; }
 });
+
+test('a stored day missing a counter field is merged as numbers, not NaN', { skip: !!mutation }, async (t) => {
+  const { register } = await hooks(t);
+  const day = new Date().toISOString().slice(0, 10);
+  // Entries written by an older shape: today lacks totalMs and slow, an older day lacks everything but calls.
+  const { stored, writes, tool, turn } = fixture(register,
+    { initialHealth: { days: { [day]: { calls: 5, errors: 1, maxMs: 2 }, '2000-01-01': { calls: 3 } }, lastErrors: [] } });
+  await tool();
+  await turn();
+  assert.equal(writes.length, 1);
+  const { days } = stored.get('health');
+  for (const field of ['calls', 'errors', 'totalMs', 'maxMs', 'slow']) assert.ok(Number.isFinite(days[day][field]), `${day}.${field} is ${days[day][field]}`);
+  for (const [name, entry] of Object.entries(days)) {
+    assert.deepEqual(Object.keys(entry).sort(), ['calls', 'errors', 'maxMs', 'slow', 'totalMs'], name);
+    for (const [field, value] of Object.entries(entry)) assert.ok(Number.isFinite(value), `${name}.${field} is ${value}`);
+  }
+  assert.equal(days[day].calls, 7);
+  assert.equal(days[day].errors, 1);
+  assert.equal(days['2000-01-01'].calls, 3);
+  assert.equal(days['2000-01-01'].totalMs, 0);
+  assert.doesNotMatch(JSON.stringify(writes[0]), /null/);
+});
+
+test('malformed stored error history and negative counters do not block or skew later flushes', { skip: !!mutation }, async (t) => {
+  const { register } = await hooks(t);
+  const day = new Date().toISOString().slice(0, 10);
+  const { stored, tool, turn } = fixture(register, { initialHealth: {
+    days: { [day]: { calls: 5, errors: 0, totalMs: 10, maxMs: 2, slow: 0 }, '2000-01-01': { calls: -5, errors: 0, totalMs: 0, maxMs: 0, slow: 0 } },
+    lastErrors: [{}, null, { at: '2000-01-01T00:00:00.000Z', message: 'kept' }] } });
+  await tool();
+  await turn();
+  const health = stored.get('health');
+  assert.equal(health.days[day].calls, 7);
+  assert.equal(health.days['2000-01-01'].calls, 0);
+  assert.deepEqual(health.lastErrors, [{ at: '2000-01-01T00:00:00.000Z', message: 'kept' }]);
+});

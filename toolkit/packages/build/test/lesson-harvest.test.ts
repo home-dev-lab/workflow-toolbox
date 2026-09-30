@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -117,5 +117,21 @@ describe('lesson-harvest: human-readable mode (default, no --json)', () => {
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('1 candidate')
     expect(res.stdout).toContain('One lesson.')
+  })
+})
+
+describe('lesson-harvest: invoked through a symlinked path', () => {
+  // argv[1] keeps the link while import.meta.url is the realpath: an entry guard comparing the
+  // two raw never calls main(), so the harvester prints nothing and exits 0.
+  it.skipIf(process.platform === 'win32')('prints the same manifest and exit status as the real path', () => {
+    const d = mkDir()
+    const p = writeReport(d, '# Report\n\n## Lessons for the memory\n\n- one lesson\n')
+    const link = join(d, 'harvest-lessons.mjs')
+    symlinkSync(SCRIPT, link)
+    const real = spawnSync(process.execPath, [SCRIPT, p, '--json'], { encoding: 'utf8' })
+    const viaLink = spawnSync(process.execPath, [link, p, '--json'], { encoding: 'utf8' })
+    expect(viaLink.stdout).toContain('"sectionFound":true')
+    expect(viaLink.status).toBe(real.status)
+    expect(viaLink.stdout).toBe(real.stdout)
   })
 })

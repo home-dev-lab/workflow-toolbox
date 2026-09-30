@@ -23,7 +23,7 @@ test('every host capability in the hook import tree is directly called', async (
     const source = await readFile(url, 'utf8');
     for (const match of source.matchAll(/\$\.[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*/g)) {
       if (match[0] === '$.plugin.root') continue; // documented metadata, not a capability
-      assert.match(source.slice(match.index + match[0].length), /^\s*\(/, `${url.pathname}: ${match[0]} must be directly called`);
+      assert.match(source.slice(match.index + match[0].length), /^\s*\(/, `${fileURLToPath(url)}: ${match[0]} must be directly called`);
     }
     for (const match of source.matchAll(/^import .* from ['"](\.[^'"]+)['"]/gm)) await visit(new URL(match[1], url));
   };

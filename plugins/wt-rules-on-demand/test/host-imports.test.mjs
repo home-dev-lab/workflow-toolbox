@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 
 test('Function Hooks entry has no transitive Node builtin imports', async () => {
   const seen = new Set();
@@ -11,7 +12,7 @@ test('Function Hooks entry has no transitive Node builtin imports', async () => 
     const imports = source.split('\n').filter((line) => /^\s*(?:import|export)\s/.test(line))
       .flatMap((line) => [...line.matchAll(/\b(?:from\s*|import\s*)['"]([^'"]+)['"]/g)].map((match) => match[1]));
     for (const specifier of imports) {
-      assert.ok(specifier.startsWith('.'), `${url.pathname} imports ${specifier}`);
+      assert.ok(specifier.startsWith('.'), `${fileURLToPath(url)} imports ${specifier}`);
       await walk(new URL(specifier, url));
     }
   };

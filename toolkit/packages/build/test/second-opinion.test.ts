@@ -1,16 +1,22 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { canonicalPath } from './helpers/canonical-path.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, requestNamedPaths, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { LaneSandboxRefusal, laneSandboxReadRemedyAllowed } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { quoteRemedyWord } from '../../../../plugin/bin/lib/remedy-quote.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { requestDirectoryNote, requestPathRefusal } from '../../../../plugin/bin/lib/host/second-opinion-request-paths.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { laneHostStateRoot } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -45,6 +51,14 @@ function fixture(consented: boolean) {
     options: { request, out, repo, effort: 'medium' },
   }
 }
+
+// Skipped on win32 because the product never runs this check there. The request-path check runs only for a
+// bwrap plan (plugin/bin/lib/second-opinion-core.mjs:89), and a non-Linux host always gets the 'none' plan
+// (plugin/bin/lib/host/lane-sandbox.mjs:551, :488), announced on stderr as "lane sandbox: none (bubblewrap
+// sandbox is Linux-only ...)" (lane-sandbox.mjs:1074). An unsandboxed reviewer reads a named file directly, so
+// there is nothing to refuse. These cases inject the bwrap plan but name real temp files, which on Windows are
+// C:\ paths the POSIX extractor is not built to read.
+const REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32 = process.platform === 'win32'
 
 const BROKER_SEEN_MARKER = 'broker-seen-by-parent'
 
@@ -132,6 +146,274 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe('second-opinion advisor', () => {
+  // What the host keeps from each candidate list: the first spelling that exists.
+  const selected = (text: string, existing: string[], home = '/home/reader') =>
+    requestNamedPaths(text, home).map((spellings: string[]) => spellings.find((spelling: string) => existing.includes(spelling))).filter(Boolean)
+
+  it('never treats a URL, a relative path or a word-attached slash as a named path', () => {
+    expect(requestNamedPaths('https://x/y ./relative a/b and/or file://z', '/home/reader')).toEqual([])
+  })
+
+  it('keeps the longest existing spelling whatever quoting, markup, punctuation or location surrounds it', () => {
+    const existing = ['/o', '/o/design notes.md', '/o/design', '/o/plan.md', '/o/report.md', '/home/reader/notes.md', '/o/my plan.md', '/o/a.md', '/o/b.md', '/o/report[final].md', '/o/report(v2).md']
+    const text = [
+      "I'll review '/o/design notes.md' first.",
+      'Then **/o/plan.md** and /o/report.md:12:3!',
+      '```',
+      '~/notes.md#L4',
+      '```',
+      'Also /o/my\\ plan.md, `/o/a.md /o/b.md`, /o/report[final].md,please and (/o/report(v2).md).',
+    ].join('\n')
+    expect(selected(text, existing)).toEqual(['/o/design notes.md', '/o/plan.md', '/o/report.md', '/home/reader/notes.md', '/o/my plan.md', '/o/a.md', '/o/b.md', '/o/report[final].md', '/o/report(v2).md'])
+  })
+
+  it('does not shrink a missing file to the existing directory above it', () => {
+    expect(selected('Review /o/typo.md now', ['/o'])).toEqual([])
+  })
+
+  it('expands ~/ by concatenation so a symlink followed by .. is checked as the kernel resolves it', () => {
+    expect(requestNamedPaths('Review ~/link/../r.md', '/home/u')[0]![0]).toBe('/home/u/link/../r.md')
+  })
+
+  it('bounds the spellings of one start by the Linux name and path limits on a very long line', () => {
+    const lists = requestNamedPaths(`see /o/x.md ${'word '.repeat(20000)}`, '/h')
+    expect(lists).toHaveLength(1)
+    expect(Math.max(...lists[0]!.map((spelling: string) => spelling.length))).toBeLessThanOrEqual(4096)
+    expect(lists[0]!.length).toBeLessThan(300)
+  })
+
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('refuses an outside named file before the reviewer starts, and releases launch resources', async () => {
+    const f = fixture(true)
+    const outside = join(resolve(f.repo, '..'), 'outside.md')
+    writeFileSync(outside, 'outside')
+    writeFileSync(f.request, `Review **${outside}**`)
+    const unreadable = vi.fn(() => [outside])
+    const dispose = vi.fn()
+    // Nothing was launched, so a broker diagnostic from ownership.stop() would only mislead.
+    const stop = vi.fn(() => ['app-server cleanup unavailable: broker not captured before companion exit'])
+    const wrap = vi.fn()
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop, capture: vi.fn() }) }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', unreadable, wrap, dispose }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    const baseline = process.listenerCount('exit')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
+    expect(unreadable).toHaveBeenCalledWith([expect.arrayContaining([outside])], expect.objectContaining({ env: expect.any(Object), exempt: [] }))
+    expect(statSync(outside).ino).toBeGreaterThan(0)
+    expect(lines(f.out).join('\n')).toContain(`REFUSED: the request names ${outside}`)
+    expect(lines(f.out).join('\n')).toContain('WT_LANE_SANDBOX_READ=')
+    expect(lines(f.out).at(-1)).toBe('EXIT=2')
+    expect(lines(f.out).join('\n')).not.toContain('broker not captured')
+    expect(wrap).not.toHaveBeenCalled()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(process.listenerCount('exit')).toBe(baseline)
+  })
+
+  // A READ remedy names exactly the path the request named: its parent directory could be the whole
+  // suite root or all of ~/.ssh. A path with ':' cannot be one entry of a ':' list, and a forbidden
+  // path ($HOME or an ancestor of it) is never offered.
+  it('suggests the exact named path as the READ remedy, never its directory, and only allowed entries', () => {
+    const env = { HOME: '/home/reader', PATH: '/usr/bin' }
+    const message = requestPathRefusal([{ path: '/outside/notes/a.md', reason: null }, { path: '/odd:name.md', reason: null }, { path: '/home', reason: null }], '/repo', '/home/reader', env)
+    expect(message).toContain(`WT_LANE_SANDBOX_READ=${quoteRemedyWord('/outside/notes/a.md', true)} `)
+    expect(message).not.toMatch(/WT_LANE_SANDBOX_READ=\S*\/outside\/notes[^/]/)
+    expect(message).not.toMatch(/WT_LANE_SANDBOX_READ=\S*(odd|:\/home)/)
+    expect(requestPathRefusal([{ path: '/home', reason: null }], '/repo', '/home/reader', env)).not.toContain('WT_LANE_SANDBOX_READ=')
+  })
+
+  // macOS layout: /home resolves to /System/Volumes/Data/home. With a HOME that does not exist, the old check
+  // compared a resolved candidate with a lexical HOME and offered /home, an ancestor of HOME, as a READ entry.
+  it('never offers an ancestor of HOME when the ancestor resolves elsewhere and HOME does not exist', () => {
+    const resolved: Record<string, string> = { '/': '/', '/home': '/System/Volumes/Data/home' }
+    const fs = { realpath: (file: string) => resolved[file] ?? null }
+    const env = { HOME: '/home/reader', PATH: '/usr/bin' }
+    expect(laneSandboxReadRemedyAllowed('/home', env, fs)).toBe(false)
+    expect(laneSandboxReadRemedyAllowed('/home/reader', env, fs)).toBe(false)
+    expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', env, fs)).toBe(true)
+  })
+
+  // Resolving through the deepest existing ancestor must only ADD refusals. A missing child under a host-state link
+  // that points outside state was forbidden by its lexical spelling and stays forbidden; a '..' spelling the
+  // canonical view refuses to resolve stays forbidden under the macOS layout.
+  it('keeps every refusal the realpath-else-lexical view made: a missing child under a state link, and a ".." spelling', () => {
+    const env = { HOME: '/home/owner', PATH: '/usr/bin', WT_LANE_HOST_STATE: '/state/wt-lane-host' }
+    const state = laneHostStateRoot({ env })
+    const layout: Record<string, string> = { '/': '/', [`${state}/link`]: '/work/lane', '/work/lane': '/work/lane', '/home/owner': '/home/owner' }
+    const fs = { realpath: (file: string) => layout[file] ?? null }
+    expect(laneSandboxReadRemedyAllowed(`${state}/link/new`, env, fs)).toBe(false)
+    expect(laneSandboxReadRemedyAllowed('/work/lane/other', env, fs)).toBe(true)
+    const mac: Record<string, string> = { '/': '/', '/home': '/System/Volumes/Data/home' }
+    const macFs = { realpath: (file: string) => mac[file] ?? null }
+    expect(laneSandboxReadRemedyAllowed('/home/reader/..', { HOME: '/home/reader', PATH: '/usr/bin' }, macFs)).toBe(false)
+  })
+
+  it('never offers a forbidden directory as a READ entry in the directory note', () => {
+    const env = { HOME: '/home/reader', PATH: '/usr/bin' }
+    expect(requestDirectoryNote(['/home'], '/home/reader', env)).not.toContain('WT_LANE_SANDBOX_READ=')
+    expect(requestDirectoryNote(['/home'], '/home/reader', env)).toContain('/home')
+    expect(requestDirectoryNote(['/outside/docs', '/home'], '/home/reader', env)).toContain(`WT_LANE_SANDBOX_READ=${quoteRemedyWord('/outside/docs', true)}.`)
+  })
+
+  it('refuses a bwrap plan lacking a path checker before the reviewer runs', async () => {
+    const f = fixture(true)
+    const outside = join(resolve(f.repo, '..'), 'outside.md')
+    writeFileSync(outside, 'outside')
+    writeFileSync(f.request, `Review ${outside}`)
+    const wrap = vi.fn()
+    const dispose = vi.fn()
+    const stop = vi.fn(() => [])
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop, capture: vi.fn() }) }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', wrap, dispose }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    const baseline = process.listenerCount('exit')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
+    expect(lines(f.out).join('\n')).toContain('sandbox plan cannot check request paths')
+    expect(wrap).not.toHaveBeenCalled()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(process.listenerCount('exit')).toBe(baseline)
+  })
+
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32).each([
+    ['bold', (p: string) => `Review **${p}**`],
+    ['punctuation', (p: string) => `Review ${p},please`],
+    ['escaped space', (p: string) => `Review ${p.replace('design notes', 'design\\ notes')}`],
+    ['quoted space', (p: string) => `Review "${p}"`],
+  ])('refuses a %s named outside path end to end', async (_case, requestText) => {
+    const f = fixture(true)
+    const outside = join(resolve(f.repo, '..'), _case === 'escaped space' || _case === 'quoted space' ? 'design notes.md' : 'design.md')
+    writeFileSync(outside, 'outside')
+    writeFileSync(f.request, requestText(outside))
+    const unreadable = vi.fn((candidates: string[][]) => candidates.filter((group) => group.includes(outside)).map(() => ({ path: outside, reason: null })))
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap: vi.fn() }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
+    expect(lines(f.out).join('\n')).toContain(outside)
+    expect(lines(f.out).at(-1)).toBe('EXIT=2')
+    expect(unreadable.mock.calls[0]![0].some((group) => group.includes(outside))).toBe(true)
+  })
+
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('refuses both outside files named in one backticked span before starting Codex', async () => {
+    const f = fixture(true)
+    const a = join(resolve(f.repo, '..'), 'a.md')
+    const b = join(resolve(f.repo, '..'), 'b.md')
+    writeFileSync(a, 'a')
+    writeFileSync(b, 'b')
+    writeFileSync(f.request, `Review \`${a} ${b}\``)
+    const unreadable = vi.fn((candidates: string[][]) => candidates.flatMap((group) => [a, b].filter((file) => group.includes(file)).map((file) => ({ path: file, reason: null }))))
+    const wrap = vi.fn()
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
+    expect(lines(f.out).join('\n')).toContain(`${a}, ${b}`)
+    expect(lines(f.out).at(-1)).toBe('EXIT=2')
+    expect(wrap).not.toHaveBeenCalled()
+  })
+
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('passes explicit exemptions to the real selector; punctuation in an existing spelling cannot be exempted by stripping it', async () => {
+    const f = fixture(true)
+    const named = join(resolve(f.repo, '..'), 'report.md!')
+    writeFileSync(named, 'exists')
+    writeFileSync(f.request, `Review ${named}`)
+    const unreadable = vi.fn((candidates: string[][], { exempt }: { exempt: string[] }) => candidates.filter((group) => !exempt.includes(group[0]!)).map((group) => ({ path: group[0]!, reason: null })))
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap: () => [process.execPath, ['-e', '']] }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, { ...f.env, WT_SECOND_OPINION_UNREAD: named.slice(0, -1) })).toBe(2)
+    expect(unreadable.mock.calls[0]![1].exempt).toEqual([named.slice(0, -1)])
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, { ...f.env, WT_SECOND_OPINION_UNREAD: JSON.stringify([named]) })).toBe(0)
+    expect(unreadable.mock.calls[1]![1].exempt).toEqual([named])
+  })
+
+  // Replay of 191 archived requests: every directory the check refused was named as context
+  // (`~/.claude-work`, `/var`, `~/.claude/rules`), never as the file to review. A named directory the
+  // sandbox cannot see is therefore REPORTED in the output and the review runs; only files refuse.
+  it.skipIf(REQUEST_PATH_CHECK_UNREACHABLE_ON_WIN32)('reports an unreadable named directory in the output and still runs; an unreadable file in the same request still refuses', async () => {
+    const f = fixture(true)
+    const dir = join(resolve(f.repo, '..'), 'context-dir')
+    const file = join(resolve(f.repo, '..'), 'outside.md')
+    mkdirSync(dir); writeFileSync(file, 'x')
+    writeFileSync(f.request, `State lives in ${dir}. Review the code.`)
+    const unreadable = vi.fn((candidates: string[][]) => candidates.flatMap((group) => [dir, file].filter((p) => group.includes(p)).map((p) => (p === dir ? { path: p, reason: null, directory: true } : { path: p, reason: null }))))
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop: vi.fn(() => []), capture: vi.fn() }) }
+    const wrap = vi.fn(() => [process.execPath, ['-e', "process.stdout.write('ran\\n')"]])
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable, dispose: vi.fn(), wrap }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(0)
+    const text = lines(f.out).join('\n')
+    // Its own line, right under the sandbox line near the top of the file the caller reads: a
+    // missing directory must never hide at the end of the long sandbox line.
+    expect(lines(f.out).findIndex((line: string) => line.startsWith(`NOTE: the request names ${dir}`))).toBe(2)
+    expect(lines(f.out)[1]).toBe('sandbox')
+    expect(text).toContain('ran')
+    expect(wrap).toHaveBeenCalledOnce()
+    writeFileSync(f.request, `State lives in ${dir}. Review ${file}.`)
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
+    expect(lines(f.out).join('\n')).toContain(`REFUSED: the request names ${file} outside`)
+    expect(lines(f.out).join('\n')).not.toContain(`REFUSED: the request names ${dir}`)
+  })
+
+  it('reports probe failures as a refusal with EXIT=1 and releases ownership and listeners', async () => {
+    const f = fixture(true)
+    const outside = join(resolve(f.repo, '..'), 'outside.md')
+    writeFileSync(outside, 'outside')
+    writeFileSync(f.request, `Review ${outside}`)
+    const stop = vi.fn(() => ['app-server cleanup unavailable: broker not captured before companion exit'])
+    const dispose = vi.fn()
+    const wrap = vi.fn()
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop, capture: vi.fn() }) }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => ({ kind: 'bwrap', line: 'sandbox', unreadable: () => { throw new LaneSandboxRefusal('could not check the request\'s paths inside the sandbox: probe failed') }, dispose, wrap }) })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    const baseline = process.listenerCount('exit')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(lines(f.out).join('\n')).toContain('REFUSED: could not check the request')
+    expect(lines(f.out).join('\n')).not.toContain('broker not captured')
+    expect(lines(f.out).at(-1)).toBe('EXIT=1')
+    expect(stop).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(wrap).not.toHaveBeenCalled()
+    expect(process.listenerCount('exit')).toBe(baseline)
+  })
+
+  it.skipIf(process.platform === 'win32')('the real Linux planner supplies the path checker to Codex and refuses an invisible named file', async () => {
+    const f = fixture(true)
+    const outside = join(resolve(f.repo, '..'), 'outside.md')
+    writeFileSync(outside, 'outside')
+    writeFileSync(f.request, `Review ${outside}`)
+    const codex = '/opt/good/bin/codex'
+    const files = new Set([codex])
+    const dirs = new Set([f.home, f.repo, '/opt/good/bin', '/opt/good'])
+    const fs = {
+      exists: (file: string) => files.has(file) || dirs.has(file) || file === '/usr/bin/bwrap',
+      realpath: (file: string) => files.has(file) || dirs.has(file) ? file : null,
+      identity: (file: string) => file === outside ? '1:3' : null,
+      isFile: (file: string) => files.has(file), isExecutable: (file: string) => files.has(file),
+      isDir: (file: string) => dirs.has(file), readText: () => null,
+      ensureDir: (file: string) => { dirs.add(file) }, ensureFile: (file: string) => { files.add(file) }, copy: () => {},
+    }
+    const sandbox = await import(pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/lane-sandbox.mjs')).href)
+    const stop = vi.fn(() => [])
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: () => ({ env: { HOME: f.home, PATH: '/opt/good/bin' }, stop, capture: vi.fn() }) }
+    const resolveSandbox = vi.fn((request: Record<string, unknown>) => {
+      const actual = sandbox.resolveLaneSandbox({ ...request, fs, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: null, probe: () => ({ ok: true }), runtimeParent: f.home, spawnFn: (_cmd: string, args: string[]) => {
+        const index = args.indexOf('--socket')
+        if (index >= 0) fs.ensureFile(args[index + 1]!)
+        return { kill: () => {} }
+      } })
+      return { ...actual, unreadable: (paths: string[][], options: Record<string, unknown>) => actual.unreadable(paths, { ...options, probe: (selected: string[]) => Object.fromEntries(selected.map((file) => [file, null])) }) }
+    })
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    const baseline = process.listenerCount('exit')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(2)
+    expect(lines(f.out).join('\n')).toContain(`REFUSED: the request names ${outside}`)
+    expect(lines(f.out).at(-1)).toBe('EXIT=2')
+    expect(resolveSandbox).toHaveBeenCalledOnce()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(process.listenerCount('exit')).toBe(baseline)
+  })
   it('gives the external Codex companion only its allow-listed environment', () => {
     const adapter = createHostAdapter({ platform: process.platform })
     const ownership = adapter.createCodexBrokerOwnership({
@@ -737,7 +1019,7 @@ describe('second-opinion advisor', () => {
     }
     const resolveSandbox = (request: Record<string, unknown>) => {
       requests.push(request)
-      return { kind: 'bwrap', line: 'lane sandbox: bwrap (codex; writable /fixture)', wrap: () => [process.execPath, ['-e', "process.stdout.write('ran inside the wrapper\\n')"]] }
+      return { kind: 'bwrap', line: 'lane sandbox: bwrap (codex; writable /fixture)', unreadable: vi.fn(() => []), wrap: () => [process.execPath, ['-e', "process.stdout.write('ran inside the wrapper\\n')"]] }
     }
     const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
     deps.resolveCodexCompanion = () => companion
@@ -804,7 +1086,7 @@ describe('second-opinion advisor', () => {
       createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
     }
     const deps = createSecondOpinionDependencies(adapter, {
-      resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', wrap: () => [join(f.repo, 'missing-executable'), []] }),
+      resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', unreadable: vi.fn(() => []), wrap: () => [join(f.repo, 'missing-executable'), []] }),
     })
     deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
 
@@ -870,7 +1152,7 @@ describe('second-opinion advisor', () => {
       createCodexBrokerOwnership: (env: Record<string, string>) => ({ env: { ...env, HOME: windowsHome }, capture: vi.fn(), stop }),
     }
     const sandbox = await import(pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/lane-sandbox.mjs')).href)
-    const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox(request))
+    const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox({ ...request, optionEnv: {} }))
     const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
     deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
 

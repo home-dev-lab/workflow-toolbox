@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { getPriority, tmpdir } from 'node:os'
 import { delimiter, dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -1687,5 +1687,80 @@ const interval = setInterval(() => {
     const envLog = join(f.dir, '.lane', 'env.log'); waitForFile(envLog)
     expect(readFileSync(envLog, 'utf8')).toContain('ssh-add -l: exit=1 keys=0')
     expect(readFileSync(envLog, 'utf8')).not.toContain('identities')
+  })
+})
+
+describe('wt-lane --priority and the removed --attach', () => {
+  const base = ['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']
+  const remedy = (message: string | undefined) => {
+    expect(message).toContain('--attach was removed')
+    expect(message).toContain('compose the extra text into the brief file')
+    expect(message).toContain('WT_LANE_SANDBOX_READ')
+  }
+  it('defaults the lane to low priority and validates the flag', () => {
+    expect(parse(base).priority).toBe('low')
+    expect(parse([...base, '--priority', 'normal']).priority).toBe('normal')
+    expect(parse([...base, '--priority', 'urgent']).error).toContain('--priority')
+  })
+  it('refuses --attach in both forms with a remedy that names brief composition', () => {
+    remedy(parse([...base, '--attach', 'note.md']).error)
+    remedy(parse([...base, '--attach=note.md']).error)
+    remedy(parse([...base, '--attach']).error)
+  })
+  it('leaves every other unknown argument on the generic message', () => {
+    expect(parse([...base, '--attached', 'x']).error).toBe('unknown argument: --attached')
+    expect(parse([...base, '--bogus']).error).toBe('unknown argument: --bogus')
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
+  const RECORD = '# RECORD_LANE'
+  const ok = (result: ReturnType<typeof run>) => expect(result.status, result.stderr).toBe(0)
+  const parentNice = () => String(getPriority())
+  const hasIonice = process.platform === 'linux' && spawnSync('ionice', ['-p', String(process.pid)], { stdio: 'ignore' }).status === 0
+  const readLog = (dir: string) => { const log = join(dir, '.lane', 'run.log'); waitFor(log); return readFileSync(log, 'utf8') }
+
+  it('runs the lane at niceness 19 by default, idles its I/O class where ionice exists, and logs the priority stage', () => {
+    expect(parentNice(), 'the test process already runs at niceness 19; the low-priority assertion would pass vacuously').not.toBe('19')
+    const f = fixture(RECORD)
+    ok(run(f))
+    const log = readLog(f.dir)
+    expect(readFileSync(join(f.dir, 'nice'), 'utf8').trim()).toBe('19')
+    if (hasIonice) {
+      expect(log).toContain('stage=priority nice=19 ionice=idle')
+      expect(readFileSync(join(f.dir, 'ionice'), 'utf8')).toMatch(/^idle/)
+    } else expect(log).toMatch(/stage=priority nice=19 ionice=(unavailable \(.+\)|unsupported-platform)/)
+  })
+  it('leaves the niceness alone under --priority normal and says so', () => {
+    const f = fixture(RECORD)
+    ok(run(f, ['--priority', 'normal']))
+    const log = readLog(f.dir)
+    expect(readFileSync(join(f.dir, 'nice'), 'utf8').trim()).toBe(parentNice())
+    expect(log).toContain('stage=priority normal')
+  })
+  it('refuses an unknown --priority with exit 2 naming the flag', () => {
+    const f = fixture(RECORD)
+    const result = run(f, ['--priority', 'urgent'])
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('--priority')
+  })
+  it('exits 2 on --attach (both forms) with the removal remedy and spawns nothing', () => {
+    const f = fixture(RECORD)
+    for (const args of [['--attach', join(f.root, 'note.md')], [`--attach=${join(f.root, 'note.md')}`]]) {
+      const result = run(f, args)
+      expect(result.status).toBe(2)
+      expect(result.stderr).toContain('--attach was removed')
+      expect(result.stderr).toContain('compose the extra text into the brief file')
+      expect(result.stderr).toContain('WT_LANE_SANDBOX_READ')
+    }
+    expect(existsSync(join(f.dir, 'nice'))).toBe(false)
+  })
+  it('passes the brief message as the only argument after run, with no -f attachment', () => {
+    const f = fixture(RECORD)
+    ok(run(f))
+    readLog(f.dir); waitForFile(join(f.dir, 'argv'))
+    const argv = readFileSync(join(f.dir, 'argv'), 'utf8').split('\n').slice(0, -1)
+    expect(argv[0]).toBe('run'); expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]brief\.md\.$/)
+    expect(argv).not.toContain('-f')
   })
 })

@@ -307,6 +307,35 @@ const prefetchArgv = async (command) => {
   const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
   return { received, argvs, result };
 };
+await test('echo-append of a whole-word 1Password reference runs unchanged without a vault read', async () => {
+  const reference = 'op' + '://Private/item/credential';
+  const command = `echo '${reference}' >> ~/.profile.secrets.perso.tpl`;
+  const { received, argvs, result } = await prefetchArgv(command);
+  assert.equal(result?.deny, undefined);
+  assert.equal(received, command);
+  assert.deepEqual(argvs, []);
+});
+await test('echo-append of the card command runs unchanged without a vault read when it is the sole command', async () => {
+  const reference = 'op' + '://Private/item/credential';
+  const command = `echo 'export DEEPSEEK_API_KEY="${reference}"' >> ~/.profile.secrets.perso.tpl`;
+  const { received, argvs, result } = await prefetchArgv(command);
+  assert.equal(result?.deny, undefined);
+  assert.equal(received, command);
+  assert.deepEqual(argvs, []);
+});
+// A reference that is not the whole quoted word keeps develop's refusal as soon as anything else
+// shares the command: that part could run the file, which would resolve it with no mask.
+for (const [shape, template] of [
+  ['echo-append of the literal op-read template', (reference) => `echo 'export DEEPSEEK_API_KEY=""$(op read --account 'my.1password.com' '${reference}')""' >> ~/.profile.secrets.perso.tpl`],
+  ['an op read line written into a script that is then run', (reference) => `echo 'op read ${reference}' > /tmp/r.sh; bash /tmp/r.sh`],
+  ['an op read line written into a script that is then run after &&', (reference) => `echo 'op read ${reference}' > /tmp/r.sh && sh /tmp/r.sh`],
+]) {
+  await test(`${shape} is refused without a vault read, as on develop`, async () => {
+    const { argvs, result } = await prefetchArgv(template('op' + '://Private/item/credential'));
+    assert.ok(result?.deny, 'the command was not refused');
+    assert.deepEqual(argvs, []);
+  });
+}
 await test('op reference rewrite with shell quoting', async () => { const { received, argvs, result } = await prefetchArgv('echo "op://Private/O\'Brien/token"'); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.deepEqual(argvs.at(-1), ['op', 'read', "op://Private/O'Brien/token"], 'the quote in the reference did not reach the prefetch argv intact'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); const withAccount = await prefetchArgv('echo op://Private/item/field-account'); configure({}); assert.deepEqual(withAccount.argvs.at(-1), ['op', 'read', '--account', 'my.1password.com', 'op://Private/item/field-account']); assert.equal(commandPart(withAccount.received), 'echo "${__wt_secret_0}"'); const plain = await prefetchArgv('echo op://Private/item/field-plain'); assert.deepEqual(plain.argvs.at(-1), ['op', 'read', 'op://Private/item/field-plain']); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
@@ -319,7 +348,7 @@ const assertSkippedWhilePlainRewrites = async (command) => {
   assert.equal(skipped, command);
   assert.equal(commandPart(plain), 'echo "${__wt_secret_0}"');
 };
-await test('op reference written to a tpl file is left literal', async () => { let executed = false; const result = await bash($, { tool: 'Bash', command: "printf '%s\\n' 'op://Private/item/field' > /tmp/profile.tpl" }, async () => { executed = true; return {}; }); assert.equal(executed, false); assert.match(result.deny, /refused/i); });
+await test('op reference written to a tpl file is left literal', async () => { const command = "printf '%s\\n' 'op://Private/item/field' > /tmp/profile.tpl"; const { received, argvs, result } = await prefetchArgv(command); assert.equal(result?.deny, undefined); assert.equal(received, command); assert.deepEqual(argvs, []); });
 await test('V30 a heredoc that MENTIONS a reference triggers no op call and passes untouched', async () => {
   // Decision (round 8 addendum): a heredoc body is not a context the guard expands. It cannot tell
   // "inject this secret into a file" from "write a doc, a test or a brief that mentions a
@@ -410,7 +439,6 @@ await test('prose mentions pass and journal mention-allowed without command text
 });
 await test('secret-file warning option off remains fail-open and journals policy-disabled', async () => {
   configure({ secretFileReadWarnings: false });
-  const before = calls.length;
   const result = await bash($, { tool: 'Bash', command: 'cat ~/.npmrc' }, async () => ({ text: 'ok' }));
   assert.equal(result.text, 'ok');
   assert([...journalSnapshot().values()].some((value) => value.includes('policy-disabled')));
@@ -1750,7 +1778,8 @@ await test('reference allow-list: every supported form expands byte-identically 
         assert.equal(result?.deny, undefined, `${form} in ${context} was refused: ${result?.deny}`);
         const execution = run(rewritten);
         assert.equal(execution.status, 0, `${form} in ${context}: ${execution.stderr?.toString()}`);
-        assert.equal(execution.stdout.toString().replace(/\n$/, ''), value, `${form} in ${context} did not expand byte-identically`);
+        const expected = form === '1Password reference' && context === 'bare before a redirection' ? reference : value;
+        assert.equal(execution.stdout.toString().replace(/\n$/, ''), expected, `${form} in ${context} did not expand byte-identically`);
       }
       let executed = false;
       const inside = await bash($, { tool: 'Bash', command: `printf %s "$(printf %s ${reference})"` }, async () => { executed = true; return { text: 'ok' }; });
@@ -1814,7 +1843,6 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['a relative file reference', 'printf %s secret:file:relative/path'],
       ['a lowercase environment name', 'printf %s secret:env:not_valid'],
       ['a truncated 1Password path', 'printf %s op://broken'],
-      ['a reference written to a template destination', "printf '%s' 'op://Private/matrix/password' > /tmp/profile.tpl"],
       ['a reference escaped inside a double-quoted word', 'printf %s "\\secret:file:/tmp/wt-env/MATRIX_SECRET"'],
       ['op run with a flag beside a reference', "op run --env-file /tmp/env -- printf %s 'op://Private/matrix/password'"],
       ['a quoted op command word whose reference is a variable', '"op" read "$REF"'],
@@ -1828,13 +1856,20 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['inside an ANSI-quoted word', (reference) => `printf %s $'${reference}'`],
       ['preceded by a backslash escape', (reference) => `printf %s \\${reference}`],
       ['beside op run', (reference) => `op run -- printf %s ${reference}`],
-      ['written to a template destination', (reference) => `printf '%s' '${reference}' > /tmp/profile.tpl`],
       ['inside a parameter expansion', (reference) => `printf %s "\${REF:-${reference}}"`],
       ['inside backticks', (reference) => `printf %s \`printf %s ${reference}\``],
       ['inside a larger quoted word', (reference) => `printf '%s' 'prefix ${reference} suffix'`],
     ];
     for (const [form, reference] of forms) {
       for (const [family, build] of families) refusals.push([`a ${form} ${family}`, build(reference)]);
+    }
+    const writtenTemplate = "printf '%s' 'op://Private/matrix/password' > /tmp/profile.tpl";
+    const { received: templateCommand, argvs: templateReads, result: templateResult } = await prefetchArgv(writtenTemplate);
+    assert.equal(templateResult?.deny, undefined);
+    assert.equal(templateCommand, writtenTemplate);
+    assert.deepEqual(templateReads, []);
+    for (const [form, reference] of forms.filter(([form]) => form !== '1Password reference')) {
+      refusals.push([`a ${form} written to a template destination`, `printf '%s' '${reference}' > /tmp/profile.tpl`]);
     }
     for (const [shape, command] of refusals) {
       let executed = false;
@@ -2873,8 +2908,7 @@ await test('V50 the verify13 findings are closed and the README describes what t
     const earlier = tokenize('vfifty', 'v50-earlier-value');
     testEnv.set('WT_V50_ALIAS', earlier);
     const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
-    let received;
-    const result = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/wt-env/WT_V50_ALIAS' }, async (event) => { received = event.command; return execute(event.command); });
+    const result = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/wt-env/WT_V50_ALIAS' }, async (event) => execute(event.command));
     if (result?.deny) failures.push(`1 the alias command was refused: ${result.deny}`);
     else if (JSON.stringify(result).includes(earlier)) failures.push('1 a value equal to another value\'s issued token reached the output unmasked');
     const outbound = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v50-alias.txt', content: `note ${earlier}` });

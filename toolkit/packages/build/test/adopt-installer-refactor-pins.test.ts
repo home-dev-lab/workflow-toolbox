@@ -55,6 +55,8 @@ function fixturePlugin(): { root: string; script: string } {
   mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
   mkdirSync(join(root, 'bin/lib'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
+  mkdirSync(join(root, 'bin/lib/host'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
   cpSync(SCRIPT, script)
   return { root, script }
 }
@@ -65,6 +67,8 @@ function mutateScript(replacements: Array<[string, string]>): string {
   mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
   mkdirSync(join(root, 'bin/lib'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
+  mkdirSync(join(root, 'bin/lib/host'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
   let source = readFileSync(SCRIPT, 'utf8')
   for (const [from, to] of replacements) {
     expect(source).toContain(from)
@@ -355,6 +359,8 @@ describe('adopt installer refactor pins', () => {
     mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
     mkdirSync(join(root, 'bin/lib'), { recursive: true })
     cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
+    mkdirSync(join(root, 'bin/lib/host'))
+    cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
     cpSync(SCRIPT, script)
     const result = run(['--set', 'all', '--check', '--dir', tempDir()], { script })
     expect(result.status).toBe(1)

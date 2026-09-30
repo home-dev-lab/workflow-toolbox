@@ -53,6 +53,22 @@ describe('raw host primitive quality ratchet', () => {
     expect(checkHostPrimitives(root, 0)).toMatchObject({ count: 0, perimeterFiles: 0, exceeded: false })
   })
 
+  it('reads separators in the declared shell-command parser as shell syntax, but still counts its host access', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'lib', 'rm-critical-path-core.mjs'), [
+      "import { readFileSync } from 'node:fs'",
+      "const isEscape = (c) => c === '\\\\'",
+      "const isRoot = (p) => p === '/'",
+    ].join('\n'))
+    writeFileSync(join(root, 'bin', 'lib', 'other.mjs'), "const isRoot = (p) => p === '/'\n")
+
+    const primitives = scanHostPrimitives(root).findings.map(({ file, primitive }) => `${file} ${primitive}`)
+    expect(primitives).toEqual([
+      'bin/lib/other.mjs hard-coded path separator',
+      'bin/lib/rm-critical-path-core.mjs fs import',
+    ])
+  })
+
   it('counts child-process, OS and filesystem calls in every executable source extension', () => {
     const root = fixturePlugin()
     writeFileSync(join(root, 'direct.js'), [
@@ -99,7 +115,10 @@ describe('raw host primitive quality ratchet', () => {
     // The TypeScript pack adds a protocol-only entry; its host reads and spawn remain under bin/lib/host.
     // The push-guard installer is another CLI; its host operations stay in bin/lib/host.
     // The remedy-quote helper adds one; its POSIX-style quoting performs no host operation.
-    expect(result.perimeterFiles).toBe(249)
+    // The SDK account gate adds one; it reads the SDK's accountInfo() and performs no host operation.
+    // The rm critical-path guard adds its hook and its shell-command parser; the hook reads stdin
+    // and the home directory through bin/lib/host, and the parser's separators are shell syntax.
+    expect(result.perimeterFiles).toBe(252)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
@@ -109,7 +128,8 @@ describe('raw host primitive quality ratchet', () => {
     }
 
     expect(manifest.scripts['quality:host']).toBe('node scripts/host-primitive-census.mjs')
-    expect(manifest.scripts.quality).toContain('pnpm run quality:host')
+    expect(manifest.scripts.quality).toContain('script-gates.mjs quality')
+    expect(readFileSync(join(TOOLKIT_ROOT, 'scripts/script-gates.mjs'), 'utf8')).toContain("'quality:host'")
     expect(manifest.scripts.lint).not.toContain('host-primitive-census')
   })
 })

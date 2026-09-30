@@ -163,6 +163,113 @@ test('full context map closes pending verdicts on eviction', async () => {
   assert.equal(rows[0]?.agentId, 'agent-0');
 });
 
+test('concurrent first calls of a new agent during an eviction share one context and every served window gets a verdict', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'bash-command'\n    window: '100'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'"));
+  for (let i = 0; i < 64; i++) await f.call({ agentId: `agent-${i}` });
+  // Hold the first verdict write, which is the evicted context's window closing.
+  const get = f.$.store.get;
+  let held = false, release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  f.$.store.get = async (name) => {
+    if (name === 'compliance-verdicts-jsonl' && !held) { held = true; await gate; }
+    return get(name);
+  };
+  const one = f.call({ agentId: 'agent-new' });
+  while (!held) await new Promise((resolve) => setTimeout(resolve, 0));
+  const two = f.call({ agentId: 'agent-new' });
+  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  release();
+  await Promise.all([one, two]);
+  await f.handlers.get('turn.complete')(f.$, { agentId: 'agent-new' }, async () => ({}));
+  const rows = String(f.stored.get('compliance-verdicts-jsonl') ?? '').trim().split('\n').filter(Boolean).map(JSON.parse);
+  const served = f.stored.get('sessions')['sample-session'].contexts['agent:agent-new'].served['sample.md'];
+  assert.equal(served, 1, 'one context for the new agent serves the rule once');
+  assert.equal(rows.filter((row) => row.agentId === 'agent-new').length, served, 'every window served to the new agent is judged');
+  assert.equal(rows.filter((row) => row.agentId === 'agent-0' && row.reason === 'context evicted').length, 1, 'the victim window is closed once');
+});
+
+// Each windowed kind, with a call its window judges and a call that leaves its window open.
+const windowed = {
+  'bash-command': { compliance: "kind: 'bash-command'\n    window: '100'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'", judged: { tool: 'Bash', command: 'git push origin' } },
+  'tool-input': { compliance: "kind: 'tool-input'\n    tool: '^Write$'\n    require-input-regex: 'approved'\n    window: '100'\n    on-close: 'not applicable'", judged: { tool: 'Write', input: { file_path: 'notes.txt', content: 'approved' } } },
+  'test-before-edit': { compliance: "kind: 'test-before-edit'\n    window: '100'\n    on-close: 'not applicable'\n    test-regex: 'npm test'\n    path-regex: 'sample\\.js'", judged: { tool: 'Edit', file_path: 'sample.js' } },
+  model: { compliance: "kind: 'model'\n    model: 'haiku'\n    prompt: 'Judge the call'\n    window: '1'\n    on-close: 'not applicable'", judged: { tool: 'Read', file_path: 'notes.txt' } },
+};
+// A function replacement: a compliance holding `$'` (a regex ending in `$`) must not expand as a pattern.
+const windowedRule = (compliance) => rule(false).replace("kind: 'none'\n    reason: 'no mechanical check'", () => compliance);
+const verdictRows = (f) => String(f.stored.get('compliance-verdicts-jsonl') ?? '').trim().split('\n').filter(Boolean).map(JSON.parse);
+// Hold the next verdict write until released; resolves `held` once a write is waiting.
+function holdNextVerdict(f) {
+  const get = f.$.store.get;
+  let release, reached;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const held = new Promise((resolve) => { reached = resolve; });
+  let armed = true;
+  f.$.store.get = async (name) => {
+    if (name === 'compliance-verdicts-jsonl' && armed) { armed = false; reached(); await gate; }
+    return get(name);
+  };
+  return { held, release };
+}
+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
+
+for (const [kind, { compliance, judged }] of Object.entries(windowed)) {
+  test(`two concurrent calls judge one ${kind} window once`, async () => {
+    const f = fixture();
+    f.files.set('/sample-config/rules-on-demand/sample.md', windowedRule(compliance));
+    f.$.model = { classify: async () => 'followed' };
+    await f.call({ tool: 'Agent' });
+    const { held, release } = holdNextVerdict(f);
+    const one = f.call(judged);
+    await held;
+    const two = f.call(judged);
+    await settle();
+    release();
+    await Promise.all([one, two]);
+    await f.handlers.get('turn.complete')(f.$, {}, async () => ({}));
+    const window = verdictRows(f).filter((row) => row.rule === 'sample.md' && row.trigger === 'tool.call:Agent');
+    assert.equal(window.length, 1, `${kind}: ${JSON.stringify(window)}`);
+  });
+
+  test(`compaction during a held verdict write leaves an open ${kind} window closed`, async () => {
+    // The open window is listed first so the held call has already kept it when compaction runs.
+    const f = fixture({ userNames: ['open.md', 'push.md'] });
+    f.files.set('/sample-config/rules-on-demand/push.md', windowedRule(windowed['bash-command'].compliance));
+    // The open window must survive the Bash call: a model window is widened for that.
+    f.files.set('/sample-config/rules-on-demand/open.md', windowedRule(kind === 'bash-command'
+      ? compliance.replace("act-regex: 'git push'", "act-regex: 'npm publish'") : compliance.replace("window: '1'", "window: '5'")));
+    f.$.model = { classify: async () => 'followed' };
+    await f.call({ tool: 'Agent' });
+    const { held, release } = holdNextVerdict(f);
+    const call = f.call({ tool: 'Bash', command: 'git push origin' });
+    await held;
+    // Compaction closes its windows through the same write queue, so it completes only after the release.
+    const compaction = f.handlers.get('session.compact')(f.$, {}, async () => ({}));
+    await settle();
+    release();
+    await Promise.all([call, compaction]);
+    await f.handlers.get('turn.complete')(f.$, {}, async () => ({}));
+    const rows = verdictRows(f).filter((row) => row.trigger === 'tool.call:Agent');
+    const count = (name) => rows.filter((row) => row.rule === name).length;
+    assert.deepEqual({ push: count('push.md'), open: count('open.md') }, { push: 1, open: 1 }, JSON.stringify(rows));
+  });
+}
+
+test('a window whose decision throws keeps the verdicts decided before it and stays open for the turn end', async () => {
+  const f = fixture({ userNames: ['a-input.md', 'b-test.md'] });
+  f.files.set('/sample-config/rules-on-demand/a-input.md', windowedRule("kind: 'tool-input'\n    tool: '^Bash$'\n    require-input-regex: 'a'\n    window: '100'\n    on-close: 'not applicable'"));
+  // This test regex exhausts the regex work budget on a long run of `a`, so deciding its window throws.
+  f.files.set('/sample-config/rules-on-demand/b-test.md', windowedRule("kind: 'test-before-edit'\n    window: '100'\n    on-close: 'not applicable'\n    test-regex: '(?:[a]{1024}){4}b'\n    path-regex: 'sample\\.js'"));
+  await f.call({ tool: 'Agent' });
+  await f.call({ tool: 'Bash', command: 'a'.repeat(16000) }).catch(() => {});
+  const early = verdictRows(f).filter((row) => row.trigger === 'tool.call:Agent');
+  assert.deepEqual(early.map((row) => [row.rule, row.verdict]), [['a-input.md', 'followed']], JSON.stringify(early));
+  await f.handlers.get('turn.complete')(f.$, {}, async () => ({}));
+  const rows = verdictRows(f).filter((row) => row.trigger === 'tool.call:Agent');
+  assert.deepEqual(rows.map((row) => row.rule).sort(), ['a-input.md', 'b-test.md'], JSON.stringify(rows));
+});
+
 test('disabled with no files passes through, no journal', async () => {
   const f = fixture({ options: { enabled: false }, userNames: [] });
   let calls = 0;

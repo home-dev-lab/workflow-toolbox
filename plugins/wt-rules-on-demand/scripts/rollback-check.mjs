@@ -5,6 +5,7 @@ import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDat
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
 import { verdictPath, readVerdicts, pendingRules, recordRollback } from './verdict-record.mjs';
+import { rollbackStoreDirectory, rollbackArchiveDirectory, rollbackInputLocations } from './rollback-input-paths.mjs';
 
 const args = process.argv.slice(2);
 const options = { project: process.cwd(), stores: [], verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
@@ -44,8 +45,8 @@ try {
 }
 
 async function defaultStorePath() {
-  const root = join(configDir, 'plugins', 'store');
-  const names = (await readdir(root).catch((error) => (error.code === 'ENOENT' ? [] : Promise.reject(error)))).filter((name) => /^wt-rules-on-demand[_-].*\.json$/.test(name));
+   const root = rollbackStoreDirectory(configDir);
+   const names = (await readdir(root).catch((error) => (error.code === 'ENOENT' ? [] : Promise.reject(error)))).filter((name) => rollbackInputLocations[0].namePattern.test(name));
   if (!names.length) throw new Error(`no wt-rules-on-demand store found under ${root}`);
   const candidates = await Promise.all(names.map(async (name) => ({ path: join(root, name), mtime: (await stat(join(root, name))).mtimeMs })));
   return candidates.sort((a, b) => b.mtime - a.mtime)[0].path;
@@ -73,9 +74,9 @@ const stores = await Promise.all((await storePaths()).map(async (path) => JSON.p
 const store = { sessions: Object.assign({}, ...stores.map((item) => item.sessions ?? {})) };
 const verdictLines = stores.map((item) => String(item['compliance-verdicts-jsonl'] ?? ''));
 for (const item of stores) for (const [name, text] of Object.entries(item)) if (name.startsWith('compliance-verdicts-archive-')) verdictLines.push(String(text));
-const archiveDir = await assertSafeDataDir(qualityDataDir(configDir, {}));
+const archiveDir = await assertSafeDataDir(rollbackArchiveDirectory(configDir));
 for (const name of (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
-  .filter((item) => /^compliance-verdicts-archive-\d+-\d+\.jsonl$/.test(item)).sort()) verdictLines.push(await readFile(join(archiveDir, name), 'utf8'));
+  .filter((item) => rollbackInputLocations[1].namePattern.test(item)).sort()) verdictLines.push(await readFile(join(archiveDir, name), 'utf8'));
 const verdicts = verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 let legacyRowsSkipped = verdicts.filter((row) => !row.ruleIdentity).length;
 const transcriptRows = (await Promise.all(options.verdictFiles.map(async (path) => (await readFile(path, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))))).flat();

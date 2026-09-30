@@ -1981,20 +1981,80 @@ await test('[changed: stale spawn registry is not activity] an external row leav
   assert(!text.includes('pilot-one'));
 });
 await test('polling is 2 seconds and stops after host-side pane disposal', async () => {
-  await forwarded(hookFor('command.run'), { command: 'wir' });
-  const timer = timers.at(-1);
-  assert.equal(timer.ms, 2000);
-  const pane = hookFor('ui.render', (hook) => hook.matcher?.component === 'Pane');
-  await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
-  await timer.fn();
-  assert(!timer.cancelled);
-  // One tick without a render is a collection racing its own redraw, not a disposed pane: the third miss stops it.
-  await timer.fn();
-  assert(!timer.cancelled);
-  await timer.fn();
-  assert(!timer.cancelled);
-  await timer.fn();
-  assert(timer.cancelled);
+  // Deterministic under any host load: a FRESH registration (no poll state left by earlier cases), a
+  // virtual clock installed before its first collection, and every step gated on an acknowledgement
+  // (a collection settling, then its invalidate) rather than on real elapsed time.
+  const localCalls = []; const localTimers = [];
+  const originalNow = Date.now;
+  let virtualNow = originalNow();
+  let inFlight = 0; let settled = 0; let slowNext = false;
+  const local$ = {
+    ...$,
+    process: {
+      ...processCapability,
+      run: async (...args) => {
+        inFlight += 1;
+        try {
+          const result = await processCapability.run(...args);
+          if (slowNext) { slowNext = false; virtualNow += 5000; } // A loaded collection spans two poll intervals, without sleeping.
+          return result;
+        } finally { inFlight -= 1; settled += 1; }
+      },
+    },
+    clock: { every: (ms, fn) => { const timer = { ms, fn, cancelled: false, cancel: () => { timer.cancelled = true; } }; localTimers.push(timer); return timer; } },
+    ui: { ...$.ui, open: async (pane) => localCalls.push(['open', pane]), close: async (pane) => localCalls.push(['close', pane]), invalidate: (event) => localCalls.push(['invalidate', event]) },
+  };
+  const localHooks = [];
+  register((event, matcher, hook) => localHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), paths);
+  const find = (event, predicate = () => true) => localHooks.find((hook) => hook.event === event && predicate(hook));
+  const invalidations = () => localCalls.filter(([kind]) => kind === 'invalidate').length;
+  // Resolves once no collection is in flight and the refresh that ran it has invalidated: the refresh's own
+  // finally (duration bookkeeping, refreshing=false) runs synchronously after that invalidate.
+  const quiescent = async (sinceInvalidations, sinceSettled) => {
+    const deadline = originalNow() + 120_000;
+    while (!(inFlight === 0 && settled > sinceSettled && invalidations() > sinceInvalidations)) {
+      if (originalNow() > deadline) throw new Error('no collection was acknowledged within 120 s');
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  Date.now = () => virtualNow;
+  try {
+    await find('session.start').hook(local$, { cwd: worktree }, async () => ({}));
+    let beforeInvalidations = invalidations(); let beforeSettled = settled;
+    await find('command.run').hook(local$, { command: 'wir' }, async () => ({}));
+    const timer = localTimers.at(-1);
+    assert.equal(timer.ms, 2000);
+    await quiescent(beforeInvalidations, beforeSettled); // The opening refresh, started without being awaited.
+    const pane = find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+    await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+    // Tick 1: rendered since the last tick, so it collects; that collection is the slow one.
+    slowNext = true;
+    beforeInvalidations = invalidations(); beforeSettled = settled;
+    await timer.fn();
+    await quiescent(beforeInvalidations, beforeSettled);
+    assert(!timer.cancelled);
+    // The slow collection makes the next two ticks skips: they must neither collect nor count as misses.
+    for (let skip = 0; skip < 2; skip += 1) {
+      const before = settled;
+      await timer.fn();
+      assert.equal(settled, before, 'a tick owed to a slow collection must be skipped');
+      assert(!timer.cancelled, 'a skipped tick is not a missed render');
+    }
+    // No render since: miss 1 and miss 2 still collect (a tick can land between a collection and its render).
+    for (let miss = 1; miss <= 2; miss += 1) {
+      beforeInvalidations = invalidations(); beforeSettled = settled;
+      await timer.fn();
+      await quiescent(beforeInvalidations, beforeSettled);
+      assert(!timer.cancelled, `miss ${miss} must not stop polling`);
+    }
+    // Miss 3 means the host disposed of the pane: polling stops.
+    await timer.fn();
+    assert(timer.cancelled, 'the third missed render must stop polling');
+  } finally {
+    Date.now = originalNow;
+    for (const timer of localTimers) timer.cancel();
+  }
 });
 await test('[per-session pane state] one registration never adopts another registration\'s open pane through shared storage', async () => {
   const sharedStore = new Map();
@@ -3373,6 +3433,184 @@ await test('[Step 8 round 2 jitter] process refusals appear only after two conse
   tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   text = descendants(tree, (item) => item.name === 'Text').flatMap((item) => item.props.children).join('\n');
   assert(text.includes('Some running work could not be listed'));
+});
+
+function sdkRunnerFixture(name, id, { phaseLog, lifecycle, routeModels, runnerAlive = true, laneProcess = false, logHead = 'route=FULL model=opus effective=opus\n', writeLog = true, usage = null, admission = null }) {
+  const isolated = join(root, name);
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', clockTicks: 100 };
+  for (const dir of [join(isolatedPaths.configDir, 'plugins', 'store'), join(isolatedPaths.configDir, 'plugins', 'data'), isolatedPaths.livenessDir, isolatedPaths.procRoot]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(isolatedPaths.procRoot, 'uptime'), '20000.00 1000.00\n');
+  const worktree = join(isolatedPaths.suiteRoot, 'worktrees', name); const lane = join(worktree, '.lane'); mkdirSync(lane, { recursive: true });
+  writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: id, route: 'FULL', models: routeModels }));
+  writeFileSync(join(lane, 'card.md'), `# card ${id}. Show a silent SDK run\n`);
+  if (writeLog) writeFileSync(join(lane, 'sdk-pilot.log'), logHead + (phaseLog || ''));
+  if (lifecycle) writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify(lifecycle));
+  if (usage) writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage));
+  if (admission) { const host = laneHostDir(worktree); mkdirSync(host, { recursive: true }); writeFileSync(join(host, 'admission.json'), JSON.stringify(admission)); utimesSync(join(host, 'admission.json'), new Date('2026-09-12T12:00:00Z'), new Date('2026-09-12T12:00:00Z')); }
+  // Every file is 30 minutes old: nothing in the worktree is fresh, so only a live process can keep the row.
+  const old = new Date('2026-09-12T12:00:00Z');
+  for (const file of ['route.json', 'card.md', ...(writeLog ? ['sdk-pilot.log'] : []), ...(lifecycle ? ['lifecycle.json'] : []), ...(usage ? ['usage.json'] : [])]) utimesSync(join(lane, file), old, old);
+  utimesSync(lane, old, old); utimesSync(worktree, old, old);
+  const processes = [];
+  if (runnerAlive) processes.push([930, 1, ['node', '/plugin/bin/wt-pilot-runner.mjs', '--card', id, '--dir', worktree], 1820000]);
+  if (laneProcess) processes.push([931, 930, ['node', '/plugin/bin/wt-lane.mjs', '--worker', '--dir', worktree, '--model', 'openai/gpt-6-sol'], 1976000]);
+  for (const [pid, ppid, args, startTicks] of processes) {
+    mkdirSync(join(isolatedPaths.procRoot, String(pid)));
+    writeFileSync(join(isolatedPaths.procRoot, String(pid), 'status'), `PPid:\t${ppid}\n`);
+    writeFileSync(join(isolatedPaths.procRoot, String(pid), 'cmdline'), args.join('\0') + '\0');
+    writeFileSync(join(isolatedPaths.procRoot, String(pid), 'stat'), `${pid} (fixture) S ${ppid} ${Array(17).fill('0').join(' ')} ${startTicks}\n`);
+  }
+  return { isolatedPaths, worktree };
+}
+
+await test('[card 1874319379 INV1+INV3] a live SDK runner in an in-process phase with no fresh write stays listed, without a phantom lane', async () => {
+  const id = '1874319379915605690';
+  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
+  const alive = sdkRunnerFixture('sdk-silent-plan', id, { phaseLog: 'lifecycle: accepted phase=discovery\nlifecycle: accepted phase=plan\n', routeModels });
+  const actor = (await readSnapshot({ process: processCapability }, alive.isolatedPaths)).rows.find((item) => item.id === id);
+  assert(actor, 'the live runner keeps its row although nothing was written for 30 min');
+  assert.equal(actor.label, 'SDK pilot'); assert.equal(actor.phase, 'plan'); assert.equal(actor.elapsed, '30 min');
+  assert.deepEqual(actor.lanes, [], 'a runner alone must not produce a nested lane');
+  // Control readable in both outcomes: the same fixture without the runner process has no row.
+  const gone = sdkRunnerFixture('sdk-silent-plan-dead', id, { phaseLog: 'lifecycle: accepted phase=plan\n', routeModels, runnerAlive: false });
+  assert.equal((await readSnapshot({ process: processCapability }, gone.isolatedPaths)).rows.find((item) => item.id === id), undefined);
+});
+
+await test('[card 1874319379 INV2] a runner whose log ends on EXIT= is not listed even while its process lingers', async () => {
+  const id = '1874319379915605691';
+  const finished = sdkRunnerFixture('sdk-finished', id, { phaseLog: 'lifecycle: accepted phase=report\nEXIT=0\n', routeModels: {} });
+  assert.equal((await readSnapshot({ process: processCapability }, finished.isolatedPaths)).rows.find((item) => item.id === id), undefined);
+});
+
+await test('[card 1874319379 INV4] the SDK row carries the CURRENT phase model', async () => {
+  const { currentPhaseModel } = artifactHelpers;
+  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
+  assert.equal(currentPhaseModel('plan', { pilotModel: 'opus', routeModels, lanes: [] }), 'opus');
+  assert.equal(currentPhaseModel('verify', { pilotModel: 'opus', routeModels, lanes: [] }), 'opus');
+  assert.equal(currentPhaseModel('review', { pilotModel: 'opus', routeModels, lanes: [] }), 'openai/gpt-6-astra');
+  assert.equal(currentPhaseModel('tdd', { pilotModel: 'opus', routeModels, lanes: [] }), 'openai/gpt-6-sol');
+  assert.equal(currentPhaseModel('tdd', { pilotModel: 'opus', routeModels: { lane: 'terra' }, lanes: [] }), 'terra');
+  assert.equal(currentPhaseModel('refutation', { pilotModel: 'opus', routeModels: {}, lanes: [] }), 'unknown');
+  const lanes = [
+    { phase: 'critic', round: 1, state: 'completed', model: 'openai/gpt-6-luna', started_at: 1 },
+    { phase: 'critic', round: 2, state: 'running', model: 'openai/gpt-6-terra', started_at: 3 },
+    { phase: 'critic', round: 2, state: 'completed', model: 'openai/gpt-6-luna', started_at: 5 },
+  ];
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels, lanes }), 'openai/gpt-6-terra', 'a running lane wins');
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels, lanes: lanes.filter((lane) => lane.state !== 'running') }), 'openai/gpt-6-luna', 'else the latest lane of the phase');
+  assert.equal(currentPhaseModel(null, { pilotModel: 'opus', routeModels, lanes }), 'unknown');
+  assert.equal(currentPhaseModel('plan', { pilotModel: 'unknown', routeModels, lanes }), 'unknown');
+
+  const id = '1874319379915605692';
+  const now = Date.parse(paths.now);
+  const lifecycle = {
+    version: 1, started_at: now - 40 * 60000, ended_at: null,
+    phases: [
+      { phase: 'discovery', round: null, entered_at: now - 40 * 60000, exited_at: now - 35 * 60000, transition_id: 'discovery-1' },
+      { phase: 'review', round: 1, entered_at: now - 35 * 60000, exited_at: null, transition_id: 'review-1' },
+    ],
+    lanes: [{ phase: 'review', round: 1, state: 'running', executor: 'gpt-lane', model: 'openai/gpt-6-astra', started_at: now - 34 * 60000 }],
+  };
+  const fixture = sdkRunnerFixture('sdk-review-model', id, { lifecycle, routeModels: { review: 'openai/gpt-6-sol' }, laneProcess: true });
+  const actor = (await readSnapshot({ process: processCapability }, fixture.isolatedPaths)).rows.find((item) => item.id === id);
+  assert.equal(actor.phase, 'review'); assert.equal(actor.phaseModel, 'openai/gpt-6-astra'); assert.equal(actor.model, 'opus');
+});
+
+await test('[card 1874319379 INV5] the SDK pilot header names the current phase, its model and the run elapsed', async () => {
+  const id = '1874319379915605693';
+  const fixture = sdkRunnerFixture('sdk-header', id, { phaseLog: 'lifecycle: accepted phase=discovery\nlifecycle: accepted phase=plan\n', routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered');
+  assert.deepEqual(texts.slice(header + 1, header + 4), ['· Plan', '· opus', '· 30 min']);
+  const bareSnapshot = JSON.parse(JSON.stringify(snapshot, (_key, value) => (value && typeof value === 'object' && value.id === id && value.sdkLifecycle ? { ...value, phaseModel: 'unknown', elapsed: 'unknown' } : value)));
+  assert(JSON.stringify(bareSnapshot).includes('"phaseModel":"unknown"'), 'fixture rewrote the SDK actor');
+  const bare = await renderSnapshot(bareSnapshot);
+  const bareTexts = descendants(bare.tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const bareHeader = bareTexts.findIndex((text) => text === 'drives the stages below');
+  assert(bareHeader >= 0, 'SDK pilot header rendered for the bare row');
+  assert.equal(bareTexts[bareHeader + 1], '· Plan');
+  assert(!bareTexts.some((text) => /·\s*unknown/.test(text)), 'unknown never rendered');
+});
+
+await test('[card 1874319379 critic F4+F6] awaiting review has no current model; a legacy critic falls back to the review model', async () => {
+  const { currentPhaseModel } = artifactHelpers;
+  assert.equal(currentPhaseModel('awaiting_fidelity', { pilotModel: 'opus', routeModels: {}, lanes: [] }), 'unknown');
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels: { lane: 'terra', review: 'sol', refutation: 'astra' }, lanes: [] }), 'sol');
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels: { critic: 'luna', review: 'sol' }, lanes: [] }), 'luna');
+});
+
+await test('[card 1874319379 critic F3] an in-process phase shows the model the pilot was SERVED, even when the log lost its effective= line', async () => {
+  const id = '1874319379915605694';
+  const usage = { messages: [
+    { input: 1, output: 1, model: 'claude-opus-5', arrived_at: '2026-09-12T11:50:00Z' },
+    { input: 1, output: 1, model: 'claude-opus-5-5', arrived_at: '2026-09-12T11:59:00Z' },
+  ] };
+  const fixture = sdkRunnerFixture('sdk-served-model', id, { logHead: '', phaseLog: 'lifecycle: accepted phase=plan\n', routeModels: { critic: 'openai/gpt-6-sol' }, usage });
+  const actor = (await readSnapshot({ process: processCapability }, fixture.isolatedPaths)).rows.find((item) => item.id === id);
+  assert.equal(actor.phase, 'plan'); assert.equal(actor.phaseModel, 'claude-opus-5-5');
+});
+
+await test('[card 1874319379 critic F1] an admitted runner with no phase yet shows as a starting SDK pilot', async () => {
+  const id = '1874319379915605695';
+  const fixture = sdkRunnerFixture('sdk-starting', id, { writeLog: false, routeModels: {}, admission: { state: 'active', cardId: id } });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const actor = snapshot.rows.find((item) => item.id === id);
+  assert(actor, 'admitted live runner is collected');
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered while starting');
+  assert.equal(texts[header + 1], '· starting');
+});
+
+await test('[card 1874319379 critic F4+F5] a run waiting for arbiter review says so in the header, without a phase model', async () => {
+  const id = '1874319379915605696';
+  const fixture = sdkRunnerFixture('sdk-awaiting', id, { phaseLog: 'lifecycle: accepted phase=report\nlifecycle: accepted phase=awaiting_fidelity\n', routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered');
+  assert.deepEqual(texts.slice(header + 1, header + 3), ['· Waiting for arbiter review', '· 30 min']);
+  assert(!texts.some((text) => text.includes('awaiting_fidelity')));
+});
+
+await test('[card 1874319379 review F1] a live runner for ANOTHER card does not keep a stale card row alive', async () => {
+  const id = '1874319379915605697';
+  const fixture = sdkRunnerFixture('sdk-other-card', id, { phaseLog: 'lifecycle: accepted phase=plan\n', routeModels: {} });
+  // Rewrite the runner's command line: same worktree, different card.
+  writeFileSync(join(fixture.isolatedPaths.procRoot, '930', 'cmdline'), ['node', '/plugin/bin/wt-pilot-runner.mjs', '--card', '1874319379915605698', '--dir', fixture.worktree].join('\0') + '\0');
+  assert.equal((await readSnapshot({ process: processCapability }, fixture.isolatedPaths)).rows.find((item) => item.id === id), undefined);
+});
+
+await test('[card 1874319379 review F2] a live runner whose phase history left the log tail reads "phase unavailable", not "starting"', async () => {
+  const id = '1874319379915605699';
+  const filler = 'x'.repeat(200) + '\n';
+  const fixture = sdkRunnerFixture('sdk-lost-phase', id, { phaseLog: 'lifecycle: accepted phase=plan\n' + filler.repeat(400), routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const actor = snapshot.rows.find((item) => item.id === id);
+  assert(actor, 'live runner row'); assert.equal(actor.runnerLogTruncated, true);
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered');
+  assert.equal(texts[header + 1], '· phase unavailable');
+});
+
+await test('[card 1874319379 breadth] a running stage whose elapsed is unknown shows no "unknown" word', async () => {
+  const id = '1874319379915605700';
+  const now = Date.parse(paths.now);
+  // A phase entered AFTER the collection instant (the transition raced the scan) has no computable age.
+  const lifecycle = { version: 1, started_at: now - 60000, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: now + 5000, exited_at: null, transition_id: 'discovery-1' }], lanes: [] };
+  const fixture = sdkRunnerFixture('sdk-future-phase', id, { lifecycle, routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  assert.equal(snapshot.rows.find((item) => item.id === id)?.phaseElapsed?.discovery, 'unknown', 'fixture produces the unknown elapsed');
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  assert(!texts.some((text) => /·\s*unknown$/.test(text)), texts.filter((text) => text.includes('unknown')).join(' | '));
 });
 
 rmSync(root, { recursive: true, force: true });

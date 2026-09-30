@@ -46,6 +46,7 @@ import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { quoteRemedyWord } from './lib/remedy-quote.mjs'
+import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -70,13 +71,16 @@ function readInput() {
  *  per-file status lines (`  <file>: <status>`) into a Map<file, {status, location}>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
-function checkDir(dir, set = 'rules', locationKind = 'static') {
+function checkDir(dir, set = 'rules', locationKind = 'static', project = null) {
   const map = new Map()
   let res
   try {
+    // The installer takes its project on-demand root from its cwd: run it from the hook's project.
+    // A project that no longer exists fails the spawn, which reads as nothing checked (silence).
     res = spawnSync(process.execPath, [INSTALL_RULES, '--check', '--set', set, '--dir', dir], {
       encoding: 'utf8',
       timeout: 5_000,
+      ...(project ? { cwd: project } : {}),
     })
   } catch {
     return map
@@ -110,6 +114,7 @@ function checkDir(dir, set = 'rules', locationKind = 'static') {
  *  Treating it as 'absent' instead lets the OTHER checked location's real classification
  *  through the merge undisturbed. */
 function bucket(status) {
+  if (/^MISPLACED/.test(status)) return 'misplaced'
   if (/^ABSENT/.test(status)) return 'absent'
   if (/^MIGRATION-PENDING/.test(status)) return 'absent'
   if (/^DUPLICATE/.test(status)) return 'duplicate'
@@ -134,17 +139,25 @@ function mergeAll(maps, file) {
   const present = maps
     .map((map) => map.get(file))
     .filter((finding) => finding && bucket(finding.status) !== 'absent')
-  const reportedDuplicate = present.find((finding) => bucket(finding.status) === 'duplicate')
+  const misplaced = present.filter((finding) => bucket(finding.status) === 'misplaced' &&
+    !present.some((other) => other.locationKind === 'static' && other.realLocation === finding.realLocation))
+  if (misplaced.length) {
+    return { bucket: 'misplaced', status: 'MISPLACED', location: misplaced[0].location,
+      locations: [...new Set(present.map((finding) => finding.location))].sort(), findings: misplaced,
+      staticFinding: present.find((finding) => finding.locationKind === 'static' && bucket(finding.status) === 'stale') }
+  }
+  const correctlyPlaced = present.filter((finding) => bucket(finding.status) !== 'misplaced')
+  const reportedDuplicate = correctlyPlaced.find((finding) => bucket(finding.status) === 'duplicate')
   if (reportedDuplicate) {
     const extra = /\(also present in ([^)]+)\)/.exec(reportedDuplicate.status)?.[1]
     return {
       bucket: 'duplicate', status: 'DUPLICATE', location: null,
       locations: [...new Set([reportedDuplicate.location, ...(extra ? [path.dirname(extra)] : [])])].sort(),
-      findings: present,
+      findings: correctlyPlaced,
     }
   }
-  const staticLocations = new Set(present.filter((finding) => finding.locationKind === 'static').map((finding) => finding.realLocation))
-  const onDemandLocations = new Set(present.filter((finding) => finding.locationKind === 'on-demand').map((finding) => finding.realLocation))
+  const staticLocations = new Set(correctlyPlaced.filter((finding) => finding.locationKind === 'static').map((finding) => finding.realLocation))
+  const onDemandLocations = new Set(correctlyPlaced.filter((finding) => finding.locationKind === 'on-demand').map((finding) => finding.realLocation))
   if (
     onDemandLocations.size > 1 ||
     (staticLocations.size && onDemandLocations.size && new Set([...staticLocations, ...onDemandLocations]).size > 1)
@@ -153,17 +166,18 @@ function mergeAll(maps, file) {
       bucket: 'duplicate',
       location: null,
       status: 'DUPLICATE',
-      locations: [...new Set(present.map((finding) => finding.location))].sort(),
-      findings: present,
+      locations: [...new Set(correctlyPlaced.map((finding) => finding.location))].sort(),
+      findings: correctlyPlaced,
     }
   }
   let best = { bucket: 'absent', location: null, status: 'ABSENT' }
   for (const map of maps) {
     const finding = map.get(file)
     const b = finding ? bucket(finding.status) : 'absent'
+    if (b === 'misplaced') continue
     if (b === 'ok') return { bucket: 'ok', location: finding.location, status: finding.status }
     if (RANK[b] < RANK[best.bucket]) {
-      best = { bucket: b, location: finding?.location ?? null, status: finding?.status ?? 'ABSENT' }
+      best = { bucket: b, location: finding?.location ?? null, status: finding?.status ?? 'ABSENT', locationKind: finding?.locationKind }
     }
   }
   return best
@@ -232,9 +246,16 @@ function contentDirection(file, finding, set) {
 
 const shellQuote = (value) => quoteRemedyWord(value, true)
 
-function installRemedy(installCmd, set, dir) {
+function installRemedy(installCmd, set, dir, locationKind = 'static', roots = {}) {
+  if (set === 'rules' && locationKind === 'static' && isOnDemandDir(dir, roots)) return null
   return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`
 }
+
+// A hook sees only the directories it scans: it cannot prove any copy disposable
+// (a symlink elsewhere may point at it, it may hold the only local edits), so
+// every conflict remedy is reconciliation guidance and never a deletion.
+const PLACEMENT_CONFLICT = 'Placement conflict: compare the copies, preserve any local edits, ' +
+  'confirm whether this rule should load statically or on demand, then reconcile by hand.'
 
 function checkRemedy(installCmd, set, dir) {
   return `node ${shellQuote(installCmd)} --set ${set} --check --dir ${shellQuote(dir)}`
@@ -266,8 +287,8 @@ function triggerLines(file, finding, installCmd, event) {
   return []
 }
 
-function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false) {
-  const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [] }
+function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
+  const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [], misplaced: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
   }
@@ -276,36 +297,49 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
   // pilot suite made a choice, and nagging it on every session would be a guard that is
   // always red, which is a guard that gets ignored. For agents, only STALE is a finding.
   if (set !== 'rules') buckets.absent = []
-  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length) return null
+  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length && !buckets.misplaced.length) return null
 
   const named = (items) => items.sort((a, b) => a.file.localeCompare(b.file)).map(({ file, location }) => {
     return location ? `${file} (${location})` : file
   }).join(', ')
 
   const lines = []
+  for (const finding of buckets.misplaced.sort((a, b) => a.file.localeCompare(b.file))) {
+    const duplicate = finding.locations.length > 1 ? ` DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}.` : ''
+    lines.push(`${finding.file}: MISPLACED static rule in ${finding.location}.${duplicate} ${PLACEMENT_CONFLICT} This hook proposes no deletion.`)
+    if (finding.staticFinding) {
+      const install = installRemedy(installCmd, set, finding.staticFinding.location, 'static', roots)
+      const action = install
+        ? `refresh with \`${install}\` after reconciling the misplaced copy.`
+        : 'inspect the aliased directory before refreshing.'
+      lines.push(`${finding.file} (${finding.staticFinding.location}): stale static copy; ${action}`)
+    }
+  }
   for (const finding of buckets.duplicate.sort((a, b) => a.file.localeCompare(b.file))) {
-    lines.push(`${finding.file}: DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}. Remove one copy; this hook will not choose silently.`)
+    lines.push(`${finding.file}: DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}. ${PLACEMENT_CONFLICT} This hook will not choose silently.`)
     for (const locationFinding of finding.findings) lines.push(...triggerLines(finding.file, locationFinding, installCmd, event))
   }
   if (buckets.absent.length) {
+    const install = installRemedy(installCmd, set, remedyDir, 'static', roots)
     lines.push(
       `workflow-toolbox rules NOT installed here: ${named(buckets.absent)}. ` +
         `Plugin ${set} never load into a session on their own, so what they carry is ` +
         `NOT in force for these. Fix: run the ${SKILL_NAME} skill ` +
-        `(or \`${installRemedy(installCmd, set, remedyDir)}\`).`,
+        (install ? `(or \`${install}\`).` : '(choose a static rules directory that does not resolve to rules-on-demand).'),
     )
   }
   for (const finding of buckets.stale.sort((a, b) => a.file.localeCompare(b.file))) {
     const target = finding.location ? finding.file + ' (' + finding.location + ')' : finding.file
     const install = finding.status.includes(TRIGGERS_STALE) && finding.status.includes('body current')
       ? triggerRemedy(installCmd, finding.file, finding.location, 'refresh')
-      : installRemedy(installCmd, set, finding.location)
+      : installRemedy(installCmd, set, finding.location, finding.locationKind, roots)
     const check = checkRemedy(installCmd, set, finding.location)
-    const action = noticeOnly
+    let action = noticeOnly
       ? `NOTICE ONLY: hand this to the session that owns this directory: run \`${install}\`, then ` +
         `\`${check}\`, and report one line. This read-only hook will not run it.`
       : `SESSION ACTION: run \`${install}\` now, then re-check the same directory with ` +
         `\`${check}\`, and report one line. This read-only hook will not run it.`
+    if (!install) action = 'Inspect the aliased directory and select a location-correct copy before refreshing.'
     const headNote = finding.status.includes(TRIGGERS_STALE) && !finding.status.includes('body current')
       ? `; ${TRIGGERS_STALE}` : ''
     lines.push(`${target}: ${contentDirection(finding.file, finding, set)}${headNote}. ${action}`)
@@ -379,6 +413,7 @@ export function main() {
   if (!root) return // no cwd in payload → can't locate the project; stay silent
 
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  const roots = placementRoots({ project: root, config: configDir })
   const noticeOnly = resolveWorkflowToolboxOption('adopt_refresh').value === 'notice-only'
 
   // BOTH managed sets, not just rules. An agent definition goes stale exactly the same way a
@@ -403,8 +438,8 @@ export function main() {
     const maps = []
     for (const subdir of subdirs) {
       const locationKind = subdir === 'rules-on-demand' ? 'on-demand' : 'static'
-      maps.push(checkDir(path.join(root, '.claude', subdir), set, locationKind))
-      maps.push(checkDir(path.join(configDir, subdir), set, locationKind))
+      maps.push(checkDir(path.join(root, '.claude', subdir), set, locationKind, root))
+      maps.push(checkDir(path.join(configDir, subdir), set, locationKind, root))
     }
     if (maps.every((m) => m.size === 0)) continue // couldn't check any location → skip this set
 
@@ -412,10 +447,10 @@ export function main() {
     const perFile = new Map()
     for (const file of files) perFile.set(file, mergeAll(maps, file))
 
-    const remedyDir = set === 'rules'
-      ? path.join(root, '.claude', 'rules', 'wt')
-      : path.join(root, '.claude', subdirs[subdirs.length - 1])
-    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly)
+    const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
+    let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
+    if (set === 'rules') remedyDir = isOnDemandDir(nestedRulesDir, roots) ? path.dirname(nestedRulesDir) : nestedRulesDir
+    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
     if (built) sections.push(built)
   }
 
