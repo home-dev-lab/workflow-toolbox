@@ -22,7 +22,9 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-adopt-check-hook.mjs')
 const INSTALL_RULES = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const RULE = 'wt-delegation-ladder.md'
-const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
+const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - kind: tool\n      tool: Edit\n      unconditional: true\n---\n'
+// The head the rules-on-demand engine REJECTS (`unknown trigger kind: (missing)`): loaded nowhere.
+const REJECTED_ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 const ACT = 'wt-task-tracking-at-act.md'
 const TRIGGER_MARKER = 'on-demand triggers behind the shipped spec'
 const remedyWord = (value: string) => quoteRemedyWord(value, true)
@@ -261,6 +263,38 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).not.toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
     expect(context).not.toMatch(new RegExp(`NOT installed here:[^.]*${RULE.replace('.', '\\.')}`))
     expect(context).not.toContain('DOUBLE-LOAD')
+  })
+
+  it('does not stay silent about a static rule whose on-demand head the engine rejects, and orders no install', () => {
+    const f = fixture('migrated-static-rejected')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    mkdirSync(demandDir, { recursive: true })
+    writeFileSync(join(demandDir, RULE), REJECTED_ON_DEMAND_FRONTMATTER + readFileSync(join(staticDir, RULE), 'utf8'))
+    rmSync(join(staticDir, RULE))
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain(`${RULE}: ON-DEMAND-UNVERIFIED in `)
+    expect(context).toContain('rejects it (unknown trigger kind')
+    expect(context).toContain('fix the on-demand head')
+    expect(context).not.toMatch(new RegExp(`NOT installed here:[^\\n]*${RULE.replace('.', '\\.')}`))
+    expect(context).not.toContain(`${RULE}: MISPLACED`)
+  })
+
+  it('surfaces a migrated rule it cannot validate because the engine is missing, and orders no install', () => {
+    const f = fixture('migrated-static-no-engine')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    mkdirSync(demandDir, { recursive: true })
+    writeFileSync(join(demandDir, RULE), ON_DEMAND_FRONTMATTER + readFileSync(join(staticDir, RULE), 'utf8'))
+    rmSync(join(staticDir, RULE))
+    const context = runHook(f.proj, { ...f.env, WT_RULES_ON_DEMAND_ROOT: join(f.root, 'no-engine-here') }).context
+    expect(context).toContain(`${RULE}: ON-DEMAND-UNVERIFIED in `)
+    expect(context).toContain('the rules-on-demand engine was not found (tried ')
+    expect(context).toContain('set WT_RULES_ON_DEMAND_ROOT to the root of the rules-on-demand engine the session actually runs')
+    expect(context).not.toMatch(new RegExp(`NOT installed here:[^\\n]*${RULE.replace('.', '\\.')}`))
+    expect(context).not.toContain(`${RULE}: MISPLACED`)
   })
 
   it('names a file symlink for inspection without a removal command', () => {

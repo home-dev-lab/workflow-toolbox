@@ -67,9 +67,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { isOnDemandDir, placementRoots as placementRootsFor, readRuleText } from '../../../bin/lib/host/adopt-placement.mjs'
+import { firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -2131,26 +2131,20 @@ function siblingOnDemandPath(resolved) {
 }
 
 /** `dir` through its real path; a directory not created yet resolves through its parent. */
-function realDir(dir) {
-  const resolved = path.resolve(dir)
-  for (const [base, rest] of [[resolved, ''], [path.dirname(resolved), path.basename(resolved)]]) {
-    try {
-      return path.join(fs.realpathSync(base), rest)
-    } catch {
-      // Try the parent next; neither existing leaves the path as given.
-    }
-  }
-  return resolved
-}
+const realDir = realDirOrParent
 
 /** The `.claude` directory of a PROJECT whose static rules directory `dir` is (`<p>/.claude/rules[/wt]`),
- *  or null. A config profile root is never a project's, even when it is named `.claude`. */
+ *  or null. The shape may show in the LEXICAL path or in the REAL one (a project `.claude` symlinked to
+ *  shared storage keeps its identity through the link). A config profile root is never a project's, even
+ *  when it is named `.claude`; config roots are compared by real path. */
 function projectClaudeDirOf(dir) {
-  const rules = siblingOnDemandPath(realDir(dir))
-  const claude = rules ? path.dirname(rules) : null
-  if (!claude || path.basename(claude) !== '.claude') return null
   const configRoots = new Set(discoveredConfigRoots().map(realDir))
-  return configRoots.has(claude) ? null : claude
+  for (const candidate of new Set([path.resolve(dir), realDir(dir)])) {
+    const rules = siblingOnDemandPath(candidate)
+    const claude = rules ? path.dirname(rules) : null
+    if (claude && path.basename(claude) === '.claude' && !configRoots.has(realDir(claude))) return claude
+  }
+  return null
 }
 
 /** The on-demand directories the engine serves beside static `dir`: its sibling, plus the active config
@@ -2167,34 +2161,120 @@ function siblingOnDemandDir(set, dir, args) {
   return siblingOnDemandPath(path.resolve(dir))
 }
 
-/** True for a shipped STATIC rule copy sitting in on-demand storage with its own on-demand head: a
- *  deliberate migration the engine serves by that head. The one definition both check sides use. */
+// The rules-on-demand engine's OWN rule parser decides whether an on-demand copy is served: a second parser
+// here would drift from it. Loaded once by ensureOnDemandEngine(), before any decision needs it.
+let onDemandEngineState = null
+
+/** Where the engine's `hooks/runtime-rule.js` may live, in order (host lookup in adopt-placement.mjs). */
+function onDemandEngineCandidates() {
+  return onDemandEngineFiles({ pluginRoot: pluginRoot(), configDir: resolvedConfigRoot() })
+}
+
+/** Import the engine's rule parser. Never throws: `{ parseRuntimeRule, source }` or `{ error }`. */
+async function loadOnDemandEngine() {
+  let candidates
+  try {
+    candidates = onDemandEngineCandidates()
+  } catch (err) {
+    return { error: `the rules-on-demand engine was not found (${err && err.message ? err.message : String(err)})` }
+  }
+  const source = firstExistingPath(candidates)
+  if (!source) return { error: `the rules-on-demand engine was not found (tried ${candidates.join(', ')})` }
+  try {
+    const engine = await import(pathToFileURL(source).href)
+    if (typeof engine.parseRuntimeRule !== 'function') throw new Error('it exports no parseRuntimeRule')
+    return { parseRuntimeRule: engine.parseRuntimeRule, source }
+  } catch (err) {
+    return { error: `the rules-on-demand engine at ${source} could not be loaded (${err && err.message ? err.message : String(err)})` }
+  }
+}
+
+async function ensureOnDemandEngine() {
+  onDemandEngineState ??= await loadOnDemandEngine()
+  return onDemandEngineState
+}
+
+/** `{ ok: true }` when the engine would serve the on-demand copy at `target`, `{ ok: false, reason }` when
+ *  its parser rejects it, and `{ ok: false, unknown: true, reason }` when no engine could be found or
+ *  loaded to ask: an unanswered question, never a rejection. Reads the file and parses it exactly as the
+ *  engine's loader does (hooks.js: a `.md` regular file, then parseRuntimeRule(entry.name, text)); the
+ *  size cap is the parser's own. */
+function onDemandServeVerdict(target) {
+  const engine = onDemandEngineState ?? { error: 'the rules-on-demand engine was not found (it was not loaded)' }
+  if (engine.error) return { ok: false, unknown: true, reason: engine.error }
+  try {
+    engine.parseRuntimeRule(path.basename(target), readRegularFileText(target))
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, reason: `the rules-on-demand engine at ${engine.source} rejects it (${err && err.message ? err.message : String(err)})` }
+  }
+}
+
+/** True for a shipped STATIC rule copy sitting in on-demand storage with its own on-demand head that the
+ *  engine ACCEPTS: a deliberate migration it serves. A head it rejects is loaded nowhere, so it is no
+ *  migration. The one definition both check sides use. */
 function isMigratedStaticCopy(set, target) {
   if (set.kind !== 'rules') return false
   try {
-    return classify(target, set).state !== 'absent' && !!onDemandFrontmatter(readRuleText(target))
+    return classify(target, set).state !== 'absent' && !!onDemandFrontmatter(readRuleText(target)) && onDemandServeVerdict(target).ok
   } catch {
     return false
   }
+}
+
+/** Why the on-demand copy at `target` is not CONFIRMED served although it carries an `on-demand:` head
+ *  (the engine rejects it, or no engine could be found or loaded to ask), or null (absent, no head, or
+ *  accepted). The installer cannot tell which engine the session actually runs (a --plugin-dir engine is
+ *  invisible to it), so neither answer licenses a static twin: the decision is held, never taken. */
+function unverifiedOnDemandReason(set, target) {
+  if (set.kind !== 'rules') return null
+  try {
+    if (classify(target, set).state === 'absent' || !onDemandFrontmatter(readRuleText(target))) return null
+    const verdict = onDemandServeVerdict(target)
+    return verdict.ok ? null : verdict.reason
+  } catch {
+    return null
+  }
+}
+
+const ENGINE_REMEDY = 'fix the on-demand head, set WT_RULES_ON_DEMAND_ROOT to the root of the rules-on-demand ' +
+  'engine the session actually runs, or delete the on-demand copy to bring the rule back as a static rule'
+
+function unverifiedStatus(target, reason) {
+  return `ON-DEMAND-UNVERIFIED (the on-demand copy at ${target} carries an on-demand head, but ${reason}, so ` +
+    `it is not confirmed served; nothing is written, not even with --force. Fix: ${ENGINE_REMEDY})`
+}
+
+/** The on-demand copies of `item` beside static `dir`, in decision order. `served` is false when the copy
+ *  sits beside the REAL static directory only (a rules directory linked to another profile's). */
+function onDemandCopyCandidates(set, dir, item, root) {
+  if (set.kind !== 'rules' || inOnDemandStorage(dir) || isOnDemandRule(root, item)) return []
+  const served = servedOnDemandDirs(dir)
+  const shared = siblingOnDemandPath(realDir(dir))
+  return [...served, ...(shared && !served.includes(shared) ? [shared] : [])]
+    .map((onDemandDir) => ({ target: path.join(onDemandDir, item.file), served: served.includes(onDemandDir) }))
 }
 
 /** Where a static rule ABSENT from static `dir` already lives on demand, or null. `served` is false when
  *  the copy sits beside the REAL static directory only (a rules directory linked to another profile's):
  *  that profile serves it, this one does not, and a static copy would still load twice there. */
 function migratedOnDemandCopy(set, dir, item, root) {
-  if (set.kind !== 'rules' || inOnDemandStorage(dir) || isOnDemandRule(root, item)) return null
-  const served = servedOnDemandDirs(dir)
-  const shared = siblingOnDemandPath(realDir(dir))
-  for (const onDemandDir of [...served, ...(shared && !served.includes(shared) ? [shared] : [])]) {
-    const target = path.join(onDemandDir, item.file)
-    if (isMigratedStaticCopy(set, target)) return { target, served: served.includes(onDemandDir) }
+  return onDemandCopyCandidates(set, dir, item, root).find(({ target }) => isMigratedStaticCopy(set, target)) ?? null
+}
+
+/** The first on-demand copy of `item` beside `dir` whose `on-demand:` head is not confirmed served, with the
+ *  reason, or null. */
+function unverifiedOnDemandCopy(set, dir, item, root) {
+  for (const { target } of onDemandCopyCandidates(set, dir, item, root)) {
+    const reason = unverifiedOnDemandReason(set, target)
+    if (reason) return { target, reason }
   }
   return null
 }
 
 function migratedStatus({ target, served }) {
   return served
-    ? `MIGRATED-ON-DEMAND (served from ${target} with its own on-demand head; no static copy is written here)`
+    ? `MIGRATED-ON-DEMAND (moved to ${target} with an on-demand head the rules-on-demand engine accepts; no static copy is written here)`
     : `MIGRATED-ON-DEMAND (migrated to ${target} by the profile whose static rules directory this one links to; ` +
       'this profile does not load that on-demand directory, so the rule is not loaded here; no static copy is ' +
       'written, it would load twice there)'
@@ -2227,6 +2307,13 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
     duplicate = false
     decision = { status: migratedStatus(migrated), write: false }
   }
+  // Head not confirmed (engine missing, unloadable, or rejecting): fail CLOSED. The engine that actually runs
+  // may serve the copy, so a static twin could double-load.
+  const unverified = classification.state === 'absent' && !migrated ? unverifiedOnDemandCopy(set, dir, item, root) : null
+  if (unverified) {
+    duplicate = false
+    decision = { status: unverifiedStatus(unverified.target, unverified.reason), write: false }
+  }
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
   const spec = ['clean', 'edited', 'edited-unknown'].includes(classification.state)
@@ -2242,7 +2329,8 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
     classification.state === 'clean' &&
     ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
       (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
-  return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate, migrated: !!migrated && !legacyDecision }
+  return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate, migrated: !!migrated && !legacyDecision,
+    unverified: !!unverified && !legacyDecision }
 }
 
 function existingContentForRender(set, target, classification) {
@@ -2373,7 +2461,8 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
     }
   }
   return {
-    anyAbsent: classification.state === 'absent' && !planned.migrated,
+    anyAbsent: classification.state === 'absent' && !planned.migrated && !planned.unverified,
+    anyUnverified: planned.unverified,
     anyStale: planned.stale || triggers?.state === 'stale',
     anyTriggersUnresolved: !!triggers && ['edited', 'unverified', 'kept-spec-moved', 'edited-after-keep'].includes(triggers.state),
     anyEdited: ['edited', 'edited-unknown'].includes(classification.state),
@@ -2405,6 +2494,7 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
     anySymlink: false,
     anyMigrationPending: false,
     anyDuplicate: false,
+    anyUnverified: false,
   }
   for (const item of items.filter((candidate) =>
     (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
@@ -2417,6 +2507,12 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
         const status = classify(target, set).state
         if (isMigratedStaticCopy(set, target)) {
           process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
+          continue
+        }
+        const unverifiedReason = unverifiedOnDemandReason(set, target)
+        if (unverifiedReason) {
+          process.stdout.write(`  ${item.file}: ${unverifiedStatus(target, unverifiedReason)}\n`)
+          process.exitCode = 1
         } else if (status !== 'absent') {
           process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
         }
@@ -2995,6 +3091,9 @@ function renderCheckHints(args, state) {
   else if (state.anyEdited) process.stdout.write('adopt: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
   else if (state.anySettingsProblem) process.stdout.write('adopt: account-level settings need manual attention before this tool can manage them safely.\n')
   else process.stdout.write('adopt: nothing to do.\n')
+  if (state.anyUnverified) {
+    process.stdout.write(`adopt: ON-DEMAND-UNVERIFIED item(s) held, nothing written for them — ${ENGINE_REMEDY}.\n`)
+  }
   if (state.anyMigrationPending) {
     process.stdout.write(
       'adopt: item(s) found only at the pre-migration rules/ location — run the adopt:migrate ' +
@@ -3015,7 +3114,7 @@ function renderCheckHints(args, state) {
 }
 
 function mergeSetState(state, result) {
-  for (const key of ['anyAbsent', 'anyStale', 'anyTriggersUnresolved', 'anyEdited', 'anySymlink', 'anyMigrationPending', 'anyDuplicate']) {
+  for (const key of ['anyAbsent', 'anyStale', 'anyTriggersUnresolved', 'anyEdited', 'anySymlink', 'anyMigrationPending', 'anyDuplicate', 'anyUnverified']) {
     state[key] = state[key] || result[key]
   }
 }
@@ -3053,6 +3152,7 @@ function runManagedCommand(args, context) {
     anySettingsProblem: false,
     anyMigrationPending: false,
     anyDuplicate: false,
+    anyUnverified: false,
   }
   for (const name of chosen) {
     const set = SETS[name]
@@ -3074,6 +3174,8 @@ function runManagedCommand(args, context) {
   }
 
   if (state.anyDuplicate && !args.refreshTriggers && !args.keepTriggers) process.exitCode = 1
+  // A held decision is not a success: a caller reading only the exit code must see it.
+  if (state.anyUnverified) process.exitCode = 1
 
   const settingsResult = processSettings(globalRoot, chosen, args, version)
   state.anyAbsent = state.anyAbsent || settingsResult.anyAbsent
@@ -3086,7 +3188,7 @@ function runManagedCommand(args, context) {
   renderCheckHints(args, state)
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2))
   checkFlagModeAsymmetry(args)
   if (args.refreshTriggers || args.keepTriggers) {
@@ -3096,13 +3198,14 @@ function main() {
   }
   if (args.mode === 'migrate') return runMigrationCommand(args)
   if (args.mode === 'audit-overlap') return runAuditCommand(args)
+  await ensureOnDemandEngine()
   const context = standardCommandContext(args)
   if (args.mode === 'diff') return runDiffCommand(args, context)
   runManagedCommand(args, context)
 }
 
 try {
-  main()
+  await main()
 } catch (err) {
   fail(err && err.message ? err.message : String(err))
 }

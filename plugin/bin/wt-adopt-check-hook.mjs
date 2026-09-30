@@ -116,6 +116,11 @@ function checkDir(dir, set = 'rules', locationKind = 'static', project = null) {
  *  through the merge undisturbed. */
 function bucket(status) {
   if (/^MISPLACED/.test(status)) return 'misplaced'
+  // The installer HELD its decision: an on-demand copy's head is not confirmed (the engine rejects it, or
+  // could not be found or loaded to ask). Neither 'absent' (its remedy, an install, writes nothing here) nor
+  // 'misplaced' (the copy may be perfectly placed): its own bucket, never the fail-open 'ok', so a malformed
+  // head is loud at every session.
+  if (/^ON-DEMAND-UNVERIFIED/.test(status)) return 'unverified'
   if (/^ABSENT/.test(status)) return 'absent'
   if (/^MIGRATION-PENDING/.test(status)) return 'absent'
   // Not present at THIS static location: the rule is served from on-demand storage, whose own check
@@ -143,6 +148,9 @@ function mergeAll(maps, file) {
   const present = maps
     .map((map) => map.get(file))
     .filter((finding) => finding && bucket(finding.status) !== 'absent')
+  // Whether this rule loads once, twice or nowhere is unknown until the engine is reachable: say so first.
+  const unverified = present.find((finding) => bucket(finding.status) === 'unverified')
+  if (unverified) return { bucket: 'unverified', status: unverified.status, location: unverified.location }
   const misplaced = present.filter((finding) => bucket(finding.status) === 'misplaced' &&
     !present.some((other) => other.locationKind === 'static' && other.realLocation === finding.realLocation))
   if (misplaced.length) {
@@ -306,7 +314,7 @@ function triggerLines(file, finding, installCmd, event) {
 }
 
 function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
-  const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [], misplaced: [] }
+  const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [], misplaced: [], unverified: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
   }
@@ -315,13 +323,17 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
   // pilot suite made a choice, and nagging it on every session would be a guard that is
   // always red, which is a guard that gets ignored. For agents, only STALE is a finding.
   if (set !== 'rules') buckets.absent = []
-  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length && !buckets.misplaced.length) return null
+  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length && !buckets.misplaced.length && !buckets.unverified.length) return null
 
   const named = (items) => items.sort((a, b) => a.file.localeCompare(b.file)).map(({ file, location }) => {
     return location ? `${file} (${location})` : file
   }).join(', ')
 
   const lines = []
+  for (const finding of buckets.unverified.sort((a, b) => a.file.localeCompare(b.file))) {
+    const why = /^ON-DEMAND-UNVERIFIED \((.*)\)$/.exec(finding.status)?.[1] ?? finding.status
+    lines.push(`${finding.file}: ON-DEMAND-UNVERIFIED in ${finding.location}; ${why}. This hook runs nothing.`)
+  }
   for (const finding of buckets.misplaced.sort((a, b) => a.file.localeCompare(b.file))) {
     const duplicate = finding.locations.length > 1 ? ` DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}.` : ''
     lines.push(`${finding.file}: MISPLACED static rule in ${finding.location}.${duplicate} ${PLACEMENT_CONFLICT} This hook proposes no deletion.`)
