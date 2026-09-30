@@ -3,9 +3,13 @@ import { trustedSystemExecutable } from './lane-sandbox.mjs'
 import { spawnSync } from 'node:child_process'
 
 // ionice comes from a root-owned system location only: never a relative, user-owned or lane-supplied PATH entry.
-function defaultResolve(name) {
-  try { return trustedSystemExecutable(name, process.env.PATH) } catch (error) { return { refusal: error instanceof Error ? error.message : String(error) } }
+// The trusted resolver and the search path are injectable so a test never depends on the host filesystem or PATH syntax.
+export function resolveIonice({ trusted = trustedSystemExecutable, searchPath = process.env.PATH } = {}) {
+  return (name) => {
+    try { return trusted(name, searchPath) } catch (error) { return { refusal: error instanceof Error ? error.message : String(error) } }
+  }
 }
+const defaultResolve = (name) => resolveIonice()(name)
 
 // Niceness (and, on Linux, the idle I/O class) set on the worker is inherited by the lane it spawns
 // next. Every degraded path is named in the returned stage text, never silent.
