@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 // @ts-expect-error plugin runtime modules are untyped JavaScript.
 import { resolveAgentDefinition } from '../../../../plugin/bin/lib/agent-definitions.mjs'
 // @ts-expect-error plugin runtime modules are untyped JavaScript.
@@ -11,7 +12,59 @@ import { resolveAgentTypeTools } from '../../../../plugin/bin/lib/agent-type-too
 // @ts-expect-error plugin runtime modules are untyped JavaScript.
 import { parseFrontmatter } from '../../../../plugin/bin/lib/frontmatter.mjs'
 
+function withWalkFixture(run: (root: string, opts: object, unrelated: string) => void) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-agent-walk-'))
+  const configDir = path.join(root, 'config')
+  const agents = path.join(root, '.claude', 'agents')
+  const unrelated = path.join(configDir, 'agents', 'different.md')
+  try {
+    fs.mkdirSync(agents, { recursive: true })
+    fs.mkdirSync(path.dirname(unrelated), { recursive: true })
+    fs.writeFileSync(path.join(agents, 'pilot.md'), '---\nname: pilot\ndescription: worker\nobserver: watchdog\n---\n')
+    // If read, this user-scope child makes even the project winner ineligible.
+    fs.writeFileSync(unrelated, '---\nname: pilot\n---\n')
+    run(root, { cwd: root, configDir, env: {}, pluginRoot: path.join(root, 'unused') }, unrelated)
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+}
+
 describe('agent definitions', () => {
+  it('keeps the project winner when a child vanishes in an unrelated root', () => withWalkFixture((_root, opts, unrelated) => {
+    expect(resolveAgentDefinition('pilot', opts)).toMatchObject({ unresolved: expect.stringContaining('ineligible') })
+    const vanished: string[] = []
+    const walkFs = { ...fs, lstatSync: (file: string) => {
+      if (file === unrelated && !vanished.length) { vanished.push(file); fs.unlinkSync(file) }
+      return fs.lstatSync(file)
+    } }
+    const result = resolveAgentDefinition('pilot', { ...opts, walkFs })
+    expect(vanished).toEqual([unrelated])
+    expect(fs.existsSync(unrelated)).toBe(false)
+    expect(result).toMatchObject({ scope: 'project', identity: 'pilot', data: { observer: 'watchdog' } })
+  }))
+
+  it('stays unresolved when a child is renamed in an unrelated root', () => withWalkFixture((_root, opts, unrelated) => {
+    const renamed = path.join(path.dirname(unrelated), 'lead.md')
+    const moved: string[] = []
+    const walkFs = { ...fs, lstatSync: (file: string) => {
+      if (file === unrelated && !moved.length) { moved.push(file); fs.renameSync(file, renamed) }
+      return fs.lstatSync(file)
+    } }
+    const result = resolveAgentDefinition('pilot', { ...opts, walkFs })
+    expect(moved).toEqual([unrelated])
+    expect(fs.existsSync(unrelated)).toBe(false)
+    expect(fs.readFileSync(renamed, 'utf8')).toBe('---\nname: pilot\n---\n')
+    expect(result).toEqual({ unresolved: `unreadable definition: ENOENT ${unrelated}` })
+  }))
+
+  it.skipIf(process.platform === 'win32')('ignores a non-agent FIFO but refuses an agent-named FIFO (requires POSIX mkfifo)', () => withWalkFixture((_root, opts, unrelated) => {
+    fs.unlinkSync(unrelated)
+    const pipe = path.join(path.dirname(unrelated), 'pipe')
+    execFileSync('mkfifo', [pipe])
+    expect(resolveAgentDefinition('pilot', opts)).toMatchObject({ scope: 'project', identity: 'pilot' })
+    const agentPipe = `${pipe}.md`
+    fs.renameSync(pipe, agentPipe)
+    expect(resolveAgentDefinition('pilot', opts)).toEqual({ unresolved: `unreadable definition: NOT_REGULAR ${agentPipe}` })
+  }))
+
   it('does not treat opaque tools as unrestricted or missing', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-opaque-tools-'))
     const previous = process.env.CLAUDE_CONFIG_DIR
@@ -43,7 +96,7 @@ describe('agent definitions', () => {
       fs.writeFileSync(path.join(root, 'nested', '.git'), 'gitdir: elsewhere')
       const configDir = path.join(root, 'config')
       const opts = { cwd, configDir, env: {}, pluginRoot: path.join(root, 'plugin') }
-      expect(resolveAgentDefinition('pilot', opts)).toMatchObject({ unresolved: expect.any(String) }) // broken sibling could have hidden another name
+      expect(resolveAgentDefinition('pilot', opts)).toEqual({ unresolved: `unreadable definition: ENOENT ${path.join(agents, 'z-broken')}` }) // broken sibling could have hidden another name
       expect(resolveAgentDefinition('pilot', { ...opts, budget: createBudget({ maxEntries: 1 }) })).toMatchObject({ unresolved: expect.stringContaining('budget') })
       fs.unlinkSync(path.join(agents, 'z-broken')) // rmSync leaves a dangling symlink behind on Node 24.0-24.13.0
       fs.rmSync(path.join(agents, 'a-readme.md'))

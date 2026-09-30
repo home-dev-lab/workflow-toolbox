@@ -31,6 +31,7 @@ export const spawningTestFiles = [
   'packages/build/test/adopt-migrate-dry-run.test.ts',
   'packages/build/test/adopted-wt-lane-consent-parity.test.ts',
   'packages/build/test/agent-definition-guard-unresolved.test.ts',
+  'packages/build/test/agent-definitions.test.ts',
   'packages/build/test/artifact-server-context-hook.test.ts',
   'packages/build/test/artifact-server.test.ts',
   'packages/build/test/autonomy-arm.test.ts',
