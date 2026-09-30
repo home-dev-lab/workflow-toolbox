@@ -6,6 +6,7 @@ import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
 import { verdictPath, readVerdicts, pendingRules, recordRollback } from './verdict-record.mjs';
 import { rollbackStoreDirectory, rollbackArchiveDirectory, rollbackInputLocations } from './rollback-input-paths.mjs';
+import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
 
 const args = process.argv.slice(2);
 const options = { project: process.cwd(), stores: [], verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
@@ -77,7 +78,10 @@ for (const item of stores) for (const [name, text] of Object.entries(item)) if (
 const archiveDir = await assertSafeDataDir(rollbackArchiveDirectory(configDir));
 for (const name of (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
   .filter((item) => rollbackInputLocations[1].namePattern.test(item)).sort()) verdictLines.push(await readFile(join(archiveDir, name), 'utf8'));
-const verdicts = verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+const joined = joinDeliveries(verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line)), journalDeliveries(store.sessions), {
+  contexts: Object.fromEntries(Object.entries(store.sessions).map(([id, session]) => [id, session.contexts ?? {}])), sessionOf: store.sessions });
+const verdicts = joined.rows;
+if (joined.copies.length || joined.duplicateRows.length || joined.discarded.length) console.error(`rollback-check: delivery join dropped ${joined.copies.length} copies, ${joined.duplicateRows.length} duplicate and ${joined.discarded.length} discarded in-hook rows`);
 let legacyRowsSkipped = verdicts.filter((row) => !row.ruleIdentity).length;
 const transcriptRows = (await Promise.all(options.verdictFiles.map(async (path) => (await readFile(path, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))))).flat();
 const rateSummary = [];

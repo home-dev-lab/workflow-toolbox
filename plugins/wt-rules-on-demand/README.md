@@ -132,15 +132,25 @@ runs) must be split before scoring.
 
 ### In-hook verdict measurement bound
 
-In-hook verdict rows can miss or repeat the verdict of a compliance window whose
-settlement races another handler of the same context: concurrent tool calls
-closing the same window, or a compaction, MAIN context replacement or turn
-completion arriving while a handler of that context is suspended. A lost window
-costs one verdict; a repeated one adds one extra verdict per overlapping handler
-that closes it, so the error is not bounded by one when many calls overlap.
-`scripts/compliance-report.mjs` counts and the follow rate it reports move by
-those samples. Follow rates that `scripts/rollback-check.mjs`
-reports from in-hook rows move the same way.
+Each served compliance window now has a `deliveryId`, `deliverySeq` (taken at
+injection) and `servingSeq` (the serving call's admission). Its journal entry
+and any window verdict share those fields. Every verdict has a `verdictId` and
+`actSeq` (the deciding call's admission, or a lifecycle close sequence). A
+per-act verdict can list windows it ended in `discharged`; turn end, compaction
+and eviction record a context `lastClose`. Sequence numbers are process-local;
+the ID prefix identifies that process's registration. No new store key is used.
+
+The readers join by ID and session before counting. Identical `verdictId`s
+within a session are storage copies; legacy rows without IDs remain counted.
+For each delivery, three rules apply: a delivery with **zero surviving claims**
+is unjudged; for **multiple claims**, the earliest valid `actSeq` wins (then
+decision time and input order), dropping other own-claim rows; a claim with
+`actSeq < deliverySeq` is void unless that act served the window. A dropped row
+loses its other discharge claims too. `compliance-report.mjs` adds `unjudged`,
+`duplicateRows`, `discarded` and `copies` per rule, appending these columns to
+the text output. `rollback-check.mjs` filters in-hook verdicts through the same
+join before applying its usual identity and rollback rules, and reports dropped
+row totals to stderr. On a legacy store, the new counts are zero.
 
 Automatic rollback is unaffected: when `scripts/daily-rollback.mjs` applies
 (`--apply`), it invokes `scripts/rollback-check.mjs` with `--mechanical-only`
@@ -162,12 +172,30 @@ node scripts/serve-verdict-reconcile.mjs --store /path/to/store.json --archives 
 
 With `--store`, only the archives named by `--archives` are read; without
 `--store`, the store and archives of the current config directory are read.
-The store retains only recent session journals: verdicts of a session that is
-no longer journalled are counted as unjoinable. The join is a timestamp
-heuristic, not an identity: rows carry no delivery ID, no decision ID and no
-MAIN context generation, so close re-serves, identical-key verdicts and legacy
-journal entries without a rule identity cannot be attributed with certainty.
-The script prints these limits with every run.
+The legacy timestamp-based `JOIN` remains for comparison. `EXACT` reports the
+archive reach bound, `archivesRead`, `outOfReach`, MAIN `withId` and `withoutId`,
+`duplicateIds`, `discardedIds`, `voidedIds`, `conflicting`,
+`unjudgedSettled`, `unjudgedOpen`, `dischargedBySameAct`, agent settled/open
+and duplicate/discarded buckets, `copies`, `legacyIdenticalLines`,
+`withoutDelivery` (`sessionMissing`, `idMissing`) and `ambiguous`. Each bucket
+has a count, denominator and rate. The headline `anomaly` is the union of
+MAIN duplicate, discarded, conflicting and settled-unjudged deliveries divided
+by reachable MAIN deliveries with IDs; `anomalyUpper` additionally includes
+open windows, agents, voided deliveries and unmatched IDs. `--seed-control`
+checks duplicate, settled, open and copied-row counter changes.
+
+Archived verdict rows bound what is observable: deliveries older than the
+oldest archived decision are `outOfReach`, rather than unjudged. A context's
+later close (or a newer MAIN generation) distinguishes settled missing verdicts
+from open windows; `open` also includes a process that died without a later
+close. An already-written evaluate verdict may precede a same-act window drop;
+that delivery remains visible as unjudged. Serial calls issued together in one
+model message cannot be distinguished from later calls; a call that only
+consumes a window count writes no row for the act-before-delivery check, and a
+refused call can settle other rules' windows. Legacy serves without IDs cannot
+be joined exactly. Each verdict row grows by roughly 100 bytes, bringing
+rotation at the 3.5 MB limit sooner and shortening the history held by 14
+archives. The script prints these limits on every run.
 
 Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
 from a host timer or cron job; the plugin ships no scheduler. This entry point

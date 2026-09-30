@@ -4,7 +4,7 @@ import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { measure, main, seedControl } from '../scripts/serve-verdict-reconcile.mjs';
+import { measure, main, seedControl, measureExact, seedExactControl } from '../scripts/serve-verdict-reconcile.mjs';
 
 const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'serve-verdict-store.json');
 const archives = dirname(fixture);
@@ -99,4 +99,32 @@ test('an explicit --store reads no archive from the ambient config dir', async (
     assert.equal(code, 0);
     assert.equal(lines.filter((line) => line.startsWith('INPUT ')).length, 1, 'only the named store is read');
   } finally { await rm(config, { recursive: true, force: true }); }
+});
+
+test('reconcile prints exact buckets and checks four independent seeded controls', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'svr-exact-'));
+  try {
+    const file = join(root, 'store.json');
+    const serves = [10, 20, 30].map((seq) => ({ rule: 'r.md', ruleIdentity: 'user:r.md', deliveryId: `t-${seq}`, deliverySeq: seq, servingSeq: seq - 1, at: at(seq) }));
+    const rows = serves.map((item) => ({ ...item, verdictId: `t-${item.deliverySeq + 1}`, actSeq: item.deliverySeq + 1, sessionId: 's', agentId: null, verdict: 'followed', injectedAt: item.at, decidedAt: at(item.deliverySeq + 2) }));
+    await writeFile(file, JSON.stringify({ sessions: { s: { contexts: { 0: { complianceInjected: serves, lastClose: { token: 't', seq: 40, at: at(40) } } } } }, 'compliance-verdicts-jsonl': rows.map(JSON.stringify).join('\n') }));
+    const { code, lines } = await capture(['--store', file, '--archives', root, '--seed-control']);
+    assert.equal(code, 0, lines.join('\n'));
+    const exact = JSON.parse(lines.find((line) => line.startsWith('EXACT ')).slice(6));
+    assert.equal(exact.withId, 3);
+    assert.equal(exact.anomaly.count, 0);
+    for (const name of ['duplicate', 'settled', 'open', 'copy']) assert.match(lines.join('\n'), new RegExp(`CONTROL ${name} \\+1: ok`));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('every exact seeded control fails against its own broken counter', () => {
+  const serves = [10, 20].map((seq) => ({ rule: 'r.md', ruleIdentity: 'user:r.md', deliveryId: `t-${seq}`, deliverySeq: seq, servingSeq: seq - 1, at: at(seq) }));
+  const sessions = { s: { contexts: { 0: { complianceInjected: serves, lastClose: { token: 't', seq: 30, at: at(30) } } } } };
+  const rows = serves.map((serve) => ({ ...serve, sessionId: 's', verdictId: `t-${serve.deliverySeq + 1}`, actSeq: serve.deliverySeq + 1, verdict: 'followed', decidedAt: at(serve.deliverySeq + 2) }));
+  const controls = seedExactControl(rows, sessions);
+  for (const [name, field] of [['duplicate', 'duplicateIds'], ['settled', 'unjudgedSettled'], ['open', 'unjudgedOpen'], ['copy', 'copies']]) {
+    assert.equal(controls[name], true, `working ${name} control passes`);
+    const broken = (...args) => { const result = measureExact(...args); result[field] = { ...result[field], count: 0 }; return result; };
+    assert.equal(seedExactControl(rows, sessions, {}, broken)[name], false, `${name} control detects a stuck counter`);
+  }
 });
