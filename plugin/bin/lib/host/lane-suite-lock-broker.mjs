@@ -20,14 +20,19 @@ function rejectConnection(socket, message) {
   socket.once('close', () => clearTimeout(timer))
 }
 
+// The words a broker from before priority used are the exact prefix of this text: the client tells the two
+// apart by the `light` this one names (see acquireBrokerSuiteLock in ../suite-lock.mjs).
+export const BROKER_REFUSAL = 'argv must be an array of strings (only argv and waitS accepted, plus light as a boolean)'
+
 function requestFrom(line) {
   let request
   try { request = JSON.parse(line) } catch { throw new Error('malformed JSON') }
   if (request && !Array.isArray(request) && Object.keys(request).length === 1 && request.status === true) return { status: true }
-  if (!request || typeof request !== 'object' || Array.isArray(request) || Object.keys(request).some((key) => key !== 'argv' && key !== 'waitS') || !Array.isArray(request.argv) || !request.argv.every((item) => typeof item === 'string')) throw new Error('argv must be an array of strings (only argv and waitS accepted)')
+  if (!request || typeof request !== 'object' || Array.isArray(request) || Object.keys(request).some((key) => key !== 'argv' && key !== 'waitS' && key !== 'light') || !Array.isArray(request.argv) || !request.argv.every((item) => typeof item === 'string')) throw new Error(BROKER_REFUSAL)
   const waitS = request.waitS === undefined ? 2700 : request.waitS
   if (typeof waitS !== 'number' || !Number.isFinite(waitS) || waitS < 0 || waitS > 10_800) throw new Error('waitS must be a number from 0 to 10800')
-  return { argv: request.argv, waitS }
+  if (request.light !== undefined && typeof request.light !== 'boolean') throw new Error('light must be a boolean')
+  return { argv: request.argv, waitS, light: request.light === true }
 }
 
 export function createSuiteLockBroker({ label = '' } = {}) {
@@ -83,6 +88,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
         const acquired = await acquireSuiteLock({
           argv: ['wt-lane-sandbox', label, ...request.argv],
           waitS: request.waitS,
+          ...(request.light ? { light: true } : {}),
           signal: controller.signal,
           onWait: (line) => { if (!socket.destroyed) socket.write(`wait ${line}\n`) },
         })
