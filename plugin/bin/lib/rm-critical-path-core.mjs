@@ -36,9 +36,13 @@ const NAME = '[A-Za-z_][A-Za-z0-9_]*'
 // `${D:-$E}` — every form that can still expand to empty. `${D:?}` is deliberately absent.
 const EMPTYABLE_REF = String.raw`\$(?:\{(${NAME})(?::?-(?:["']{2}|"?\$\{?${NAME}\}?"?)?)?\}|(${NAME}))`
 const GLOB_UNDER_VAR = new RegExp(String.raw`^["']*${EMPTYABLE_REF}["']*\\?\/(?:[*?[{]|\$|\/|["']|$)`)
-const GLOB_UNDER_POSITIONAL = /^["']*\$(?:\{([0-9]+|[@*!])(?::?-(?:["']{2}|"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?)?)?\}|([0-9@*!]))["']*\\?\/(?:[*?[{]|\$|\/|["']|$)/
-const FUNCTION_DEFINITION = /(?:^|[;&|(\n])[ \t]*(?:function[ \t]+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*[ \t]*\([ \t]*\))/
-const NONEMPTY_POSITIONALS = /(?:^|[;&|(\n])[ \t]*set[ \t]+--[ \t]+(?!["']{2}(?:[\s;&|]|$)|["']?\$)[^\s;&|]/
+const GLOB_UNDER_POSITIONAL = new RegExp(String.raw`^["']*\$(?:\{(\d+|[@*!])(?::?-(?:["']{2}|"?\$\{?${NAME}\}?"?)?)?\}|([\d@*!]))["']*\\?\/(?:[*?[{]|\$|\/|["']|$)`)
+// The start of a shell statement: beginning of text, or after a separator, then blanks.
+const STATEMENT_START = String.raw`(?:^|[;&|(\n])[ \t]*`
+const FUNCTION_DEFINITION = new RegExp(String.raw`${STATEMENT_START}(?:function[ \t]+${NAME}|${NAME}[ \t]*\([ \t]*\))`)
+const NONEMPTY_POSITIONALS = new RegExp(String.raw`${STATEMENT_START}set[ \t]+--[ \t]+(?!["']{2}(?:[\s;&|]|$)|["']?\$)[^\s;&|]`)
+// Claude Code 2.1.285's Njt pattern: a whole variable reference, optionally `:?`/`-` guarded, optionally quoted.
+const WHOLE_VARIABLE = new RegExp(String.raw`^["']*\$(?:\{(${NAME})(?::?[?-][^}]*)?\}|(${NAME}))["']*$`)
 // The top-level directory names the harness knows (it only reads `$D/name` as a critical path for these).
 const TOP_LEVEL_NAMES = 'bin|boot|dev|etc|home|lib|lib32|lib64|libx32|media|mnt|opt|proc|root|run|sbin|srv|sys|tmp|usr|var|snap|nix|lost\\+found|private|cores|Applications|Library|System|Users|Volumes|Windows|ProgramData|cygdrive'
 const ROOT_CHILD = new RegExp(String.raw`^["']*\$(?:\{(${NAME})\}|(${NAME}))["']*\/+(${TOP_LEVEL_NAMES})(?:\/+\*+)*\/*["']*$`, 'i')
@@ -400,28 +404,34 @@ function stripSubstitutions(word, replacement = '\0', keepQuoting = false) {
   let out = ''
   let quote = null
   let found = false
-  for (let i = 0; i < word.length; i += 1) {
+  let i = 0
+  while (i < word.length) {
     const c = word[i]
-    if (quote === "'") { if (c === "'") quote = null; if (c !== "'" || keepQuoting) out += c; continue }
-    if (c === '\\' && i + 1 < word.length) { out += keepQuoting ? c + word[i + 1] : word[i + 1]; i += 1; continue }
-    if (c === '"') { quote = quote === '"' ? null : '"'; if (keepQuoting) out += c; continue }
-    if (c === "'" && quote === null) { quote = "'"; if (keepQuoting) out += c; continue }
-    if (c === '$' && word[i + 1] === '(' && word[i + 2] !== '(') {
-      const nested = []
-      const end = captureParen(word, i + 1, nested, () => {})
+    let next = i + 1
+    if (quote === "'") {
+      if (c === "'") quote = null
+      if (c !== "'" || keepQuoting) out += c
+    } else if (c === '\\' && i + 1 < word.length) {
+      out += keepQuoting ? c + word[i + 1] : word[i + 1]
+      next = i + 2
+    } else if (c === '"') {
+      quote = quote === '"' ? null : '"'
+      if (keepQuoting) out += c
+    } else if (c === "'" && quote === null) {
+      quote = "'"
+      if (keepQuoting) out += c
+    } else if (c === '$' && word[i + 1] === '(' && word[i + 2] !== '(') {
       out += replacement
       found = true
-      i = end
-      continue
-    }
-    if (c === '`') {
-      const end = captureBacktick(word, i, [], () => {})
+      next = captureParen(word, i + 1, [], () => {}) + 1
+    } else if (c === '`') {
       out += replacement
       found = true
-      i = end
-      continue
+      next = captureBacktick(word, i, [], () => {}) + 1
+    } else {
+      out += c
     }
-    out += c
+    i = next
   }
   return { text: out, found }
 }
@@ -523,7 +533,7 @@ function trimDerivedSuffix(target) {
 
 // Claude Code 2.1.285's Njt: accept only a whole variable after Ajt.
 function derivedTargetName(target) {
-  const match = /^["']*\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::?[?-][^}]*)?\}|([A-Za-z_][A-Za-z0-9_]*))["']*$/.exec(target)
+  const match = WHOLE_VARIABLE.exec(target)
   return match === null ? undefined : match[1] ?? match[2]
 }
 
