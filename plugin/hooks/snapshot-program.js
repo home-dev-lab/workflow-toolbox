@@ -978,7 +978,8 @@ if (processScanAvailable) for (const pid of listedPids) {
     const model = modelAt >= 0 && args[modelAt + 1] ? args[modelAt + 1] : UNKNOWN;
     const brief = resolveActorFile(briefFromArgs(args));
     worktreeByProcess.set(Number(pid), worktree);
-    if (sdkRunner) sdkRunnerByWorktree.set(worktree, { pid: Number(pid), model, brief });
+    const cardAt = args.findIndex(arg => arg === '--card');
+    if (sdkRunner) sdkRunnerByWorktree.set(worktree, { pid: Number(pid), model, brief, card: cardAt >= 0 && /^\d{19}$/.test(String(args[cardAt + 1] || '')) ? args[cardAt + 1] : null });
     else {
       const previous = processByWorktree.get(worktree);
       const laneKind = executable === executables.codex ? 'codex' : executable === executables.opencode ? 'opencode' : 'plain';
@@ -1231,7 +1232,9 @@ for (const id of ids) {
   const lastWrite = worktree ? freshestWrite(worktree) : null;
   const processState = worktree ? pidState(worktree) : UNKNOWN;
   // A live runner process keeps its row: discovery, plan, verify and report run inside it and may write nothing for a while.
-  const runnerAlive = Boolean(worktree && sdkRunnerByWorktree.has(worktree));
+  // The runner must be working on THIS card: a relaunch for another card in the same worktree is not evidence for this one.
+  const liveRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
+  const runnerAlive = Boolean(liveRunner && (!liveRunner.card || liveRunner.card === id));
   if (processState !== 'alive' && !runnerAlive && !freshTime(lastWrite) && !live && !record) continue;
   const activity = waiting || (lastWrite === null ? live ? 'updated ' + age + ' min ago' : record ? 'lifecycle updated recently' : UNKNOWN : 'last write ' + (approximateWalkRoots.has(worktree) ? 'at least ' : '') + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago');
   const watchdog = !live || age === null ? UNKNOWN : age > ACTIVE_WINDOW_MIN ? 'alert' : 'silent';
@@ -1247,7 +1250,7 @@ for (const id of ids) {
   const phaseCostResult = worktree ? phaseCosts(worktree, timeline) : { costs: {}, total: null, source: null, kind: null };
   const failedOutcome = [record?.outcome, record?.status, record?.state].find(value => /^(?:error|failed|fail)/i.test(String(value || '')));
   const waitingForArbiter = lane?.phase === 'awaiting_fidelity';
-  const sdkRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
+  const sdkRunner = runnerAlive ? liveRunner : null;
   const phaseStates = statesOf(lane?.phaseHistory?.length ? lane.phaseHistory : record?.phase ? [record.phase] : [], lane?.route);
   const frozenRoute = worktree ? json(lanePath(worktree, 'route.json')) : null;
   if (waitingForArbiter) phaseStates.awaiting_fidelity = 'waiting for arbiter review';

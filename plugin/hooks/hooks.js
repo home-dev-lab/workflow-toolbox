@@ -484,7 +484,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
           node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
             fixedText({ dimColor: true }, isLast ? '└' : '├'),
             renderStateSegment({ key: `stage-state:${sessionId}:${card.id}:${stage.id}`, buttonKey, label: stage.label, state: stage.state, open: selection === stage.id, onPress: hasEvidence ? () => actions.select(key, stage.id) : null }),
-            pilot.phaseElapsed?.[stage.id] ? fixedText({ dimColor: true }, `· ${pilot.phaseElapsed[stage.id]}`) : null,
+            pilot.phaseElapsed?.[stage.id] && pilot.phaseElapsed[stage.id] !== 'unknown' ? fixedText({ dimColor: true }, `· ${pilot.phaseElapsed[stage.id]}`) : null,
             stage.cost && stage.cost !== 'unknown' ? fixedText({ dimColor: true }, `· ${formatUsd(stage.cost.usd, stage.cost.priceLabel)}`) : null,
           ),
           openDetail,
@@ -505,7 +505,9 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       }
       const pilotLabel = pilot.label || 'SDK pilot';
       const known = (value) => typeof value === 'string' && value.trim() !== '' && value !== 'unknown';
-      const currentPhaseLabel = known(pilot.phase) ? phaseLabel(pilot.phase) : 'starting';
+      // "starting" only when the run's history is complete; a truncated log may have lost the phase.
+      const unknownPhase = pilot.runnerLogTruncated ? 'phase unavailable' : 'starting';
+      const currentPhaseLabel = known(pilot.phase) ? phaseLabel(pilot.phase) : unknownPhase;
       const pilotDetails = isExpanded ? renderOpenDetail(`detail-toggle:row:${pilot.id}`, `${pilotLabel} details`, () => actions.toggle(pilot.id),
         ...knownDetails(pilot).map((line) => node(Text, { dimColor: true }, line)),
         roundSummary,

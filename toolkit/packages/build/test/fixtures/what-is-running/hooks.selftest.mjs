@@ -3578,6 +3578,41 @@ await test('[card 1874319379 critic F4+F5] a run waiting for arbiter review says
   assert(!texts.some((text) => text.includes('awaiting_fidelity')));
 });
 
+await test('[card 1874319379 review F1] a live runner for ANOTHER card does not keep a stale card row alive', async () => {
+  const id = '1874319379915605697';
+  const fixture = sdkRunnerFixture('sdk-other-card', id, { phaseLog: 'lifecycle: accepted phase=plan\n', routeModels: {} });
+  // Rewrite the runner's command line: same worktree, different card.
+  writeFileSync(join(fixture.isolatedPaths.procRoot, '930', 'cmdline'), ['node', '/plugin/bin/wt-pilot-runner.mjs', '--card', '1874319379915605698', '--dir', fixture.worktree].join('\0') + '\0');
+  assert.equal((await readSnapshot({ process: processCapability }, fixture.isolatedPaths)).rows.find((item) => item.id === id), undefined);
+});
+
+await test('[card 1874319379 review F2] a live runner whose phase history left the log tail reads "phase unavailable", not "starting"', async () => {
+  const id = '1874319379915605699';
+  const filler = 'x'.repeat(200) + '\n';
+  const fixture = sdkRunnerFixture('sdk-lost-phase', id, { phaseLog: 'lifecycle: accepted phase=plan\n' + filler.repeat(400), routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const actor = snapshot.rows.find((item) => item.id === id);
+  assert(actor, 'live runner row'); assert.equal(actor.runnerLogTruncated, true);
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered');
+  assert.equal(texts[header + 1], '· phase unavailable');
+});
+
+await test('[card 1874319379 breadth] a running stage whose elapsed is unknown shows no "unknown" word', async () => {
+  const id = '1874319379915605700';
+  const now = Date.parse(paths.now);
+  // A phase entered AFTER the collection instant (the transition raced the scan) has no computable age.
+  const lifecycle = { version: 1, started_at: now - 60000, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: now + 5000, exited_at: null, transition_id: 'discovery-1' }], lanes: [] };
+  const fixture = sdkRunnerFixture('sdk-future-phase', id, { lifecycle, routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  assert.equal(snapshot.rows.find((item) => item.id === id)?.phaseElapsed?.discovery, 'unknown', 'fixture produces the unknown elapsed');
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  assert(!texts.some((text) => /·\s*unknown$/.test(text)), texts.filter((text) => text.includes('unknown')).join(' | '));
+});
+
 rmSync(root, { recursive: true, force: true });
 console.log(`tests: ${testCount - failures.length}/${testCount}`);
 process.exitCode = failures.length ? 1 : 0;
