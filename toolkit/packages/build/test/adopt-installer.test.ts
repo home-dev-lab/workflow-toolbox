@@ -671,41 +671,72 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
     expect(runResult(['--set', 'rules', '--check'], onDemandDir).out).toContain(`${RULE}: MISPLACED`)
   })
 
-  // An on-demand copy counts as a migration only when the rules-on-demand engine would SERVE it. A head the
-  // engine's parser rejects loads the rule nowhere, so the installer must write the static copy and say why.
-  function expectRejectedHead(head: string, reason: string, env?: (root: string, config: string) => NodeJS.ProcessEnv) {
+  // An on-demand copy counts as a migration only when the rules-on-demand engine ACCEPTS its head. Any other answer
+  // (a rejection, no engine found, an engine that will not load) is held, never answered with a static copy: the
+  // engine the session actually runs may be one the installer cannot see (--plugin-dir), and a static twin would
+  // then load the rule twice. The hold is loud (status, reason, remedy, exit 1) and --force does not lift it.
+  const REPO_ENGINE = join(REPO_ROOT, 'plugins', 'wt-rules-on-demand', 'hooks', 'runtime-rule.js')
+  function expectHeld(head: string, cause: (engine: string) => string, engineRoot?: (root: string) => string) {
     const root = mkDir()
     const project = join(root, 'project')
     mkdirSync(project, { recursive: true })
     const config = join(root, 'config')
-    const { staticDir, migrated } = migratedLayout(config, head)
-    const sealed = env ? env(root, config) : sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
-
-    const check = runInCwdResult(['--set', 'rules', '--check', '--global'], project, sealed)
-    expect(check.out).not.toContain(`${RULE}: MIGRATED-ON-DEMAND`)
-    expect(check.out).toContain(reason)
-    expect(check.out).toMatch(new RegExp(`${RULE}: MISPLACED \\(static rule in on-demand directory; the rules-on-demand engine does not serve it: .*${reason}`))
-    expect(check.out).toContain(`${RULE}: ABSENT (the on-demand copy at ${migrated} is not served: `)
-    expect(check.out).toContain('write the ABSENT')
-
-    runInCwdResult(['--set', 'rules', '--install', '--global'], project, sealed)
-    expect(existsSync(join(staticDir, RULE))).toBe(true)
-  }
-
-  it('an on-demand head the engine rejects (tool trigger without a kind) is no migration: MISPLACED, and the static copy is written', () => {
-    expectRejectedHead(REJECTED_ON_DEMAND_FRONTMATTER, 'unknown trigger kind')
-  })
-
-  it('`on-demand: false` is no migration either', () => {
-    expectRejectedHead('---\non-demand: false\n---\n', 'expected on-demand.triggers list')
-  })
-
-  it('a valid head is not taken for a migration when the engine cannot be found', () => {
-    expectRejectedHead(ON_DEMAND_FRONTMATTER, 'engine was not found', (root, config) => sealedPluginCliEnv(root, {
+    const { staticDir, onDemandDir, migrated } = migratedLayout(config, head)
+    const before = readFileSync(migrated, 'utf8')
+    const engine = engineRoot ? engineRoot(root) : ''
+    const env = sealedPluginCliEnv(root, {
       CLAUDE_CONFIG_DIR: config,
       CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin'),
-      WT_RULES_ON_DEMAND_ROOT: join(root, 'no-engine-here'),
-    }))
+      ...(engine ? { WT_RULES_ON_DEMAND_ROOT: engine } : {}),
+    })
+    const held = `${RULE}: ON-DEMAND-UNVERIFIED (the on-demand copy at ${migrated} carries an on-demand head, but `
+    const remedy = 'Fix: fix the on-demand head, set WT_RULES_ON_DEMAND_ROOT to the root of the rules-on-demand engine ' +
+      'the session actually runs, or delete the on-demand copy'
+
+    const check = runInCwdResult(['--set', 'rules', '--check', '--global'], project, env)
+    expect(check.status, check.out).toBe(1)
+    expect(check.out).toContain(held)
+    expect(check.out).toContain(cause(engine))
+    expect(check.out).toContain(remedy)
+    expect(check.out).not.toContain(`${RULE}: ABSENT`)
+    expect(check.out).not.toContain(`${RULE}: MIGRATED-ON-DEMAND`)
+    expect(check.out).not.toContain('write the ABSENT')
+    const demandSide = runInCwdResult(['--set', 'rules', '--check', '--dir', onDemandDir], project, env)
+    expect(demandSide.out).toContain(held)
+    expect(demandSide.out).not.toContain(`${RULE}: MISPLACED`)
+
+    for (const extra of [[], ['--force'], ['--file', RULE], ['--force', '--file', RULE]]) {
+      const install = runInCwdResult(['--set', 'rules', '--install', '--global', ...extra], project, env)
+      expect(install.status, install.out).toBe(1)
+      expect(install.out).toContain(`${RULE}: SKIPPED — ON-DEMAND-UNVERIFIED`)
+      expect(existsSync(join(staticDir, RULE)), install.out).toBe(false)
+      expect(readFileSync(migrated, 'utf8')).toBe(before)
+    }
+  }
+
+  it('an on-demand head the engine rejects (tool trigger without a kind) is held: UNVERIFIED, nothing written, reason shown', () => {
+    expectHeld(REJECTED_ON_DEMAND_FRONTMATTER, () => `the rules-on-demand engine at ${REPO_ENGINE} rejects it (unknown trigger kind`)
+  })
+
+  it('`on-demand: false` is held the same way', () => {
+    expectHeld('---\non-demand: false\n---\n', () => `the rules-on-demand engine at ${REPO_ENGINE} rejects it (expected on-demand.triggers list`)
+  })
+
+  it('a valid head is held, never written over, when the engine cannot be found', () => {
+    expectHeld(ON_DEMAND_FRONTMATTER,
+      (engine) => `the rules-on-demand engine was not found (tried ${join(engine, 'hooks', 'runtime-rule.js')})`,
+      (root) => join(root, 'no-engine-here'))
+  })
+
+  it('a valid head is held, never written over, when the engine cannot be loaded', () => {
+    expectHeld(ON_DEMAND_FRONTMATTER,
+      (engine) => `the rules-on-demand engine at ${join(engine, 'hooks', 'runtime-rule.js')} could not be loaded (it exports no parseRuntimeRule)`,
+      (root) => {
+        const engine = join(root, 'broken-engine')
+        mkdirSync(join(engine, 'hooks'), { recursive: true })
+        writeFileSync(join(engine, 'hooks', 'runtime-rule.js'), 'export const notTheParser = 1\n')
+        return engine
+      })
   })
 
   it('a project whose .claude is a symlink to shared storage keeps its project identity', () => {

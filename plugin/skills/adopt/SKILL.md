@@ -344,10 +344,15 @@ its real target are one target; a second real config directory is checked and re
   to bring it back as a static rule. When this rules directory is a link into another profile's,
   the status says the rule is migrated there but not loaded by this profile; nothing is written
   either, since the copy would land in that other profile. Only a head the rules-on-demand engine
-  accepts counts (the installer asks the engine's own parser, or reports that it could not find the
-  engine). A rejected head loads the rule nowhere, so it is no migration: the on-demand directory's
-  line reads **MISPLACED** with the parser's reason, and the static side stays **ABSENT** with the
-  same reason, so `--install` writes the static copy.
+  accepts counts (the installer asks the engine's own parser).
+- **ON-DEMAND-UNVERIFIED** — the on-demand copy carries an on-demand head the installer cannot
+  confirm: the engine it found rejects the head (the status gives the parser's reason and the
+  engine path used), or no engine could be found or loaded (the status names the paths tried).
+  The engine the session actually runs may be one the installer cannot see (a `--plugin-dir`
+  copy), so a static copy could load the rule twice: the installer writes nothing, even with
+  `--force`, and exits 1. Fix the head, set `WT_RULES_ON_DEMAND_ROOT` to the root of the engine
+  the session runs, or delete the on-demand copy to bring the rule back as a static rule. The
+  SessionStart check reports it on its own line at every session and orders no install.
 - **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real
   target) untouched. `--install --replace-symlinks` replaces the link with a managed copy in
   place (the former target preserved).
