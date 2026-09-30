@@ -28,7 +28,7 @@ import { decidePilotRun } from '../../../../plugin/bin/lib/host/pilot-decision-s
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { PROFILE_AUTH_KEYS } from '../../../../plugin/bin/lib/sdk-account-check.mjs'
 // Production resolveExecutorProfile always resolves a model per role; a lane launch needs it to pick its family's variant base.
-const GPT_LANE_MODELS = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }
+const GPT_LANE_MODELS = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
 const CONTEXT_MODE_TOOLS = {
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
@@ -1714,7 +1714,7 @@ describe('SDK pilot runner', () => {
     const query = () => (async function* () { yield initMessage() })()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
       query, env, resolvePilotModels: models, log: () => {},
-      resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' } }),
+      resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'opus' } }),
     })
     expect(result.summary.executor_variants).toEqual({
       critic: { value: 'max', origin: 'role base', executor: 'gpt-lane' },

@@ -5,6 +5,7 @@ import { getPriority, tmpdir } from 'node:os'
 import { delimiter, dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
@@ -84,7 +85,7 @@ function fixture(script: string, watcherHostCensus = false) {
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
   const helperFixture = join(root, 'helpers.json')
   writeFileSync(helperFixture, '[]\n')
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', WT_LANE_SANDBOX: 'off', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
+  const env: NodeJS.ProcessEnv = { ...sealedPluginCliEnv(root), PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', WT_LANE_SANDBOX: 'off', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
   return { root, dir, config, env }
 }
 function isolateWatcherHostCensus(f: ReturnType<typeof fixture>) {
@@ -368,8 +369,9 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     )
   }, 15_000)
 
-  it.each(['openai/gpt-6-sol', 'openai/gpt-6-luna'])('launches allowed GPT-6 lane model %s', (model) => {
+  it.each(['openai/gpt-6-sol', 'openai/gpt-6-luna', 'openai/gpt-6.1-sol'])('launches allowed GPT-6 lane model %s', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
+    f.env.WT_LANE_MODELS = undefined
     expect(run(f, [], model).status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
@@ -377,7 +379,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   })
   it.each([
     ['openai/gpt-6-sol', 'critic', 'max', 'role base'],
-    ['openai/gpt-6-sol', 'code', 'high', 'role base'],
+    ['openai/gpt-6.1-sol', 'code', 'high', 'role base'],
     ['openai/gpt-5.6-luna', 'critic', 'xhigh', 'role base (clamped from max)'],
   ])('passes --role %s/%s through to the real opencode argv at %s', (model, role, effort, origin) => {
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"')
@@ -411,7 +413,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('printf spawned > "$PWD/spawned"')
     const res = run(f, [], model)
     expect(res.status).toBe(1)
-    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-luna, openai/gpt-6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
+    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-luna, openai/gpt-6-sol, openai/gpt-6-astra, openai/gpt-6.1-sol); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('honours a comma- or whitespace-separated WT_LANE_MODELS override with exact matching', () => {
