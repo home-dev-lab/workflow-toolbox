@@ -60,7 +60,7 @@ const CODEX_PATH_DIR = '/run/wt-lane/bin'
 const probeCache = new Map()
 const SYSTEM_BIN_DIRS = ['/usr/bin', '/bin', '/usr/local/bin', '/run/current-system/sw/bin']
 
-function trustedSystemExecutable(name, searchPath) {
+export function trustedSystemExecutable(name, searchPath) {
   for (const directory of SYSTEM_BIN_DIRS) {
     const candidate = path.join(directory, name)
     let target
