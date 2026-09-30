@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { treeSignature } from './gate-evidence.mjs'
 import { costReportSection } from './run-cost-core.mjs'
 import { readWorktreeRegular } from './host/lane-host-dir.mjs'
+import { hostPlatform } from './host/platform.mjs'
 
 const WORKTREE_RETENTION_FILE = path.join('.lane', 'worktree-retention.json')
 const COST_BLOCK = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/g
@@ -176,7 +177,7 @@ export function readWorktreeRetentionMarker(root) {
     marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'))
   } catch (error) {
     if (error?.code === 'ENOENT') return null
-    throw new Error(`worktree removal refused: invalid retention marker ${markerPath} for card unknown (${error instanceof Error ? error.message : String(error)})`, { cause: error })
+    throw new Error(`worktree removal refused: invalid retention marker ${markerPath} for card unknown (${error instanceof Error ? error.message : String(error)}); the marker is not a version-1 retention marker, so the retention stands until the owner inspects ${markerPath}`, { cause: error })
   }
   if (
     marker?.version !== 1 ||
@@ -192,7 +193,7 @@ export function readWorktreeRetentionMarker(root) {
     (marker.expiry.boardId !== null && typeof marker.expiry.boardId !== 'string') ||
     typeof marker.expiry.removeWhen !== 'string'
   ) {
-    throw new Error(`worktree removal refused: invalid retention marker ${markerPath} for card ${typeof marker?.cardId === 'string' ? marker.cardId : 'unknown'}`)
+    throw new Error(`worktree removal refused: invalid retention marker ${markerPath} for card ${typeof marker?.cardId === 'string' ? marker.cardId : 'unknown'}; the marker is not a version-1 retention marker, so the retention stands until the owner inspects ${markerPath}`)
   }
   return marker
 }
@@ -231,6 +232,23 @@ function sameWorktree(left, right, platform) {
   return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
 }
 
+export function assertMarkerTargetsWorktree(marker, resolvedRoot, platform = hostPlatform) {
+  if (!marker) return
+  const markerPath = path.join(resolvedRoot, WORKTREE_RETENTION_FILE)
+  let markerWorktree
+  try { markerWorktree = fs.realpathSync(marker.worktree) } catch { markerWorktree = marker.worktree }
+  if (!sameWorktree(markerWorktree, resolvedRoot, platform)) {
+    throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId} names worktree ${markerWorktree}, not removal target ${resolvedRoot}; rerun with --dir ${markerWorktree} to release that worktree, or remove this worktree once the owner confirms the marker was copied`)
+  }
+}
+
+function assertMarkerUnchanged(previous, current, markerPath) {
+  if (previous === undefined) return
+  if (previous?.cardId === current?.cardId && previous?.expiry?.boardId === current?.expiry?.boardId) return
+  const identity = (marker) => `card ${marker?.cardId ?? 'unknown'}/board ${marker?.expiry?.boardId ?? 'null'}`
+  throw new Error(`worktree removal refused: retention marker ${markerPath} changed while removal was being decided (${identity(previous)}, now ${identity(current)}); rerun`)
+}
+
 const BOARD_REMEDY = 'restore access to the board (the planka_mcp_url plugin option) and rerun'
 
 // The board the expiry is read on: the adapter's own id, else the marker's recorded id (adapters that predate the
@@ -241,29 +259,31 @@ function assertCardOnBoard({ card, board, marker, boardIdFromMarker, prefix }) {
   const selected = board.boardId == null ? recorded : String(board.boardId)
   if (card.boardId != null && selected !== null && String(card.boardId) !== selected) {
     const remedy = boardIdFromMarker
-      ? `correct expiry.boardId in the retention marker to ${card.boardId}, then rerun`
+      ? `the retention marker records board ${recorded} but the card is on board ${card.boardId}, so the retention stands until the owner resolves the mismatch`
       : `rerun with --board-id ${card.boardId}`
     throw new Error(`${prefix} belongs to board ${card.boardId}, not ${selected}; ${remedy}`)
   }
   if (!boardIdFromMarker && (card.boardId == null || selected === null)) {
-    throw new Error(`${prefix}: the board response carries no boardId, so the card cannot be proven to be on board ${selected ?? 'unknown'}; rerun once the board server returns boardId, or record the board id in the retention marker's expiry.boardId`)
+    throw new Error(`${prefix}: the board response carries no boardId, so the card cannot be proven to be on board ${selected ?? 'unknown'}; rerun once the board server returns boardId`)
   }
 }
 
-export async function removeLifecycleWorktree({ root, board, boardIdFromMarker = true, force = false, git = execFileSync, platform = process.platform }) {
+export async function removeLifecycleWorktree({ root, board, marker: decidedMarker, boardIdFromMarker, force = false, git = execFileSync, platform = hostPlatform }) {
   if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('worktree path must be absolute')
   const resolvedRoot = fs.realpathSync(root)
   const markerPath = path.join(resolvedRoot, WORKTREE_RETENTION_FILE)
   const marker = readWorktreeRetentionMarker(resolvedRoot)
+  assertMarkerUnchanged(decidedMarker, marker, markerPath)
   let expired = false
   if (marker) {
-    let markerWorktree
-    try { markerWorktree = fs.realpathSync(marker.worktree) } catch { markerWorktree = marker.worktree }
-    if (!sameWorktree(markerWorktree, resolvedRoot, platform)) {
-      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId} names worktree ${markerWorktree}, not removal target ${resolvedRoot}`)
-    }
+    assertMarkerTargetsWorktree(marker, resolvedRoot, platform)
+    const recordedBoard = typeof marker.expiry.boardId === 'string' && marker.expiry.boardId.trim()
+    const fromMarker = Boolean(recordedBoard && boardIdFromMarker !== false)
     if (!board || typeof board.getCard !== 'function') {
       throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable, so retention expiry cannot be verified; ${BOARD_REMEDY}`)
+    }
+    if (recordedBoard && board.boardId != null && String(board.boardId) !== marker.expiry.boardId) {
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId} records board ${marker.expiry.boardId}; adapter board ${board.boardId} disagrees, so retention stands until the owner resolves the mismatch`)
     }
     let card
     let listName
@@ -272,7 +292,11 @@ export async function removeLifecycleWorktree({ root, board, boardIdFromMarker =
     } catch (error) {
       throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable (${error instanceof Error ? error.message : String(error)}); ${BOARD_REMEDY}`, { cause: error })
     }
-    if (card) assertCardOnBoard({ card, board, marker, boardIdFromMarker, prefix: `worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}` })
+    if (!card && !fromMarker) {
+      const selected = board.boardId ?? 'unknown'
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; card ${marker.cardId} was not found, and its absence cannot be proven on board ${selected}, which came from --board-id or .claude/planka.json rather than the retention marker; if the card lives on another board, rerun with --board-id <that board>; if it was deleted, the retention stands until the owner removes the worktree`)
+    }
+    if (card) assertCardOnBoard({ card, board, marker, boardIdFromMarker: fromMarker, prefix: `worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}` })
     try {
       if (card) {
         listName = card.listName ?? card.list?.name
@@ -284,12 +308,16 @@ export async function removeLifecycleWorktree({ root, board, boardIdFromMarker =
     }
     expired = card === null || card === undefined || ['Done', 'NotDoing'].includes(listName)
     if (!expired) {
-      throw new Error(`worktree removal refused: retention marker ${markerPath} for open card ${marker.cardId} in list ${listName}: ${marker.reason}`)
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for open card ${marker.cardId} in list ${listName}: ${marker.reason}; the worktree is retained until card ${marker.cardId} is in Done or NotDoing, then rerun`)
     }
   }
+  // The release decision holds only for the marker it was computed on: re-read it after the board calls, before
+  // any git call, and again just before `git worktree remove`. A writer racing the removal itself is not coordinated.
+  assertMarkerUnchanged(marker, readWorktreeRetentionMarker(resolvedRoot), markerPath)
   const commonOutput = git('git', ['-C', resolvedRoot, 'rev-parse', '--git-common-dir'], { cwd: path.dirname(resolvedRoot), encoding: 'utf8' })
   const commonDir = fs.realpathSync(path.resolve(resolvedRoot, String(commonOutput).trim()))
   const repositoryRoot = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : commonDir
+  assertMarkerUnchanged(marker, readWorktreeRetentionMarker(resolvedRoot), markerPath)
   git('git', ['-C', repositoryRoot, 'worktree', 'remove', ...(force ? ['--force'] : []), resolvedRoot], { cwd: repositoryRoot, stdio: 'inherit' })
   return { removed: true, expired, cardId: marker?.cardId ?? null }
 }

@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { createBoardClient } from './lib/board-http-client.mjs'
 import { canonicalPath, resolveBoardPointer } from './lib/host/board-pointer.mjs'
-import { readWorktreeRetentionMarker, removeLifecycleWorktree } from './lib/lifecycle-report-edge.mjs'
+import { assertMarkerTargetsWorktree, readWorktreeRetentionMarker, removeLifecycleWorktree } from './lib/lifecycle-report-edge.mjs'
 
 const USAGE = 'Usage: node wt-worktree-remove.mjs --dir <absolute-worktree-path> [--board-id <id>] [--force]'
 
@@ -46,10 +46,11 @@ try {
   else {
     const root = canonicalPath(options.dir)
     const marker = readWorktreeRetentionMarker(root)
+    assertMarkerTargetsWorktree(marker, root)
     const boardUrl = resolveWorkflowToolboxOption('planka_mcp_url').value
     const resolution = marker ? removalBoard(marker, root, options.boardId) : null
     const board = resolution ? createBoardClient({ url: boardUrl, boardId: resolution.boardId }) : null
-    const result = await removeLifecycleWorktree({ root, board, boardIdFromMarker: resolution?.boardIdFromMarker ?? true, force: options.force })
+    const result = await removeLifecycleWorktree({ root, marker, board, boardIdFromMarker: resolution?.boardIdFromMarker, force: options.force })
     const expiry = result.expired ? ` after card ${result.cardId} retention expired` : ''
     process.stdout.write(`removed worktree ${options.dir}${expiry}\n`)
   }
