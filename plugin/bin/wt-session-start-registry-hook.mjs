@@ -45,7 +45,7 @@ function main() {
     invokedEvent: payload?.hook_event_name, invokedScript: fileURLToPath(import.meta.url) });
   if (state.kind === 'stale') {
     process.stdout.write(`STALE PLUGIN VERSION: running ${state.name} v${state.runningVersion} from ${state.runningRoot}; `
-      + `a different version is installed: v${state.installedVersion} at ${state.installedRoot}. Hooks run once from the running root. `
+      + `a different version is installed: v${state.installedVersion} at ${state.installedRoot}. `
       + 'Use /reload-plugins or restart to load the installed version; monitors keep the old root until a restart; '
       + 'non-interactive sessions keep MCP servers on the old path.\n');
   } else if (state.kind === 'settings-double') {

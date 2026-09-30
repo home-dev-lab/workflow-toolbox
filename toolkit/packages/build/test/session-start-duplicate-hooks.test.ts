@@ -103,6 +103,8 @@ describe('SessionStart plugin-root state', () => {
     expect(dev.stdout).toContain('MCP servers')
     expect(dev.stdout).not.toContain('DUPLICATE')
     expect(dev.stdout).not.toContain('twice')
+    // Version drift says nothing about how many times a hook runs.
+    expect(dev.stdout).not.toContain('Hooks run once')
   })
 
   it('T3: a settings-registered hook shared with the enabled installed manifest is a real double', () => {
@@ -191,6 +193,8 @@ describe('SessionStart plugin-root state', () => {
   it('F1: a local-scope entry for another project does not make this session stale', () => {
     const { configDir, installedRoot, root } = fixture()
     const current = installCopy(root, 'current', JSON.parse(MANIFEST).version)
+    // The foreign project exists, so only the project comparison can reject it.
+    mkdirSync(join(root, 'another-project'), { recursive: true })
     writeRegistry(configDir, [
       { scope: 'user', installPath: current, version: JSON.parse(MANIFEST).version },
       { scope: 'local', projectPath: join(root, 'another-project'), installPath: installedRoot, version: '0.182.0' },
@@ -207,6 +211,31 @@ describe('SessionStart plugin-root state', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('STALE PLUGIN VERSION')
     expect(result.stdout).toContain(installedRoot)
+  })
+
+  it('a session already running the installed root of this project is not stale beside an older user entry', () => {
+    const { configDir, installedRoot, root } = fixture()
+    writeRegistry(configDir, [
+      { scope: 'user', installPath: installedRoot, version: '0.182.0' },
+      { scope: 'local', projectPath: projectOf(root), installPath: PLUGIN_ROOT, version: JSON.parse(MANIFEST).version },
+    ])
+    const result = run(configDir, PLUGIN_ROOT, root, KEY)
+    expect(result.status).toBe(0)
+    expect(result.stdout).not.toContain('STALE PLUGIN VERSION')
+  })
+
+  it('a settings command that only mentions a hook path is not a registration', () => {
+    const { configDir, root } = fixture()
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'workflow-toolbox@workflow-toolbox': true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `echo node "${HOOK}"` }] }] },
+    }))
+    expect(run(configDir, undefined, root, undefined, { event: null }).stdout).not.toContain('DUPLICATE HOOK REGISTRATION')
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'workflow-toolbox@workflow-toolbox': true },
+      hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `cd /tmp && node "${HOOK}"` }] }] },
+    }))
+    expect(run(configDir, undefined, root, undefined, { event: null }).stdout).toContain('DUPLICATE HOOK REGISTRATION')
   })
 
   it('F2: project settings.local.json disabling the plugin outranks user settings', () => {

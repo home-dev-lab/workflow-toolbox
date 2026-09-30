@@ -476,7 +476,7 @@ export function main() {
     if (built) sections.push(built)
   }
 
-  if (skipped.length) sections.push(`Comparison skipped for ${skipped.sort().join(', ')}: this session runs v${rootState.runningVersion} from ${rootState.runningRoot} while v${rootState.installedVersion} is installed at ${rootState.installedRoot}; comparing against the older running version would recommend a downgrade. Run /reload-plugins or restart first.`)
+  if (skipped.length) sections.push(`Comparison skipped for ${skipped.sort().join(', ')}: this session runs v${rootState.runningVersion} from ${rootState.runningRoot} while v${rootState.installedVersion} is installed at ${rootState.installedRoot}; a comparison against the running version is not reliable until /reload-plugins or a restart loads the installed one.`)
   const message = sections.filter(Boolean).join('\n')
   if (!message) return // everything adopted & current somewhere → silent
 

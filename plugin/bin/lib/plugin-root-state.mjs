@@ -71,8 +71,10 @@ function settingsHooks(configDir, projectDir, ownRoot, event) {
       for (const entry of Array.isArray(group?.hooks) ? group.hooks : []) {
         if (entry?.type !== 'command' || typeof entry.command !== 'string') continue
         // Compare entire absolute script path tokens, never just a basename or a
-        // substring of a command which happens to mention the script.
-        for (const match of entry.command.matchAll(/(?:^|\s)node\s+(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|([^\s"']+\.mjs))(?=$|\s)/g)) {
+        // substring of a command which happens to mention the script. `node` must sit in
+        // command position (start, or after ; & | or an opening parenthesis), so text that
+        // only prints the path is not read as an execution.
+        for (const match of entry.command.matchAll(/(?:^|[;&|(]\s*)node(?:\.exe)?\s+(?:"([^"]+\.mjs)"|'([^']+\.mjs)'|([^\s"']+\.mjs))(?=$|\s)/g)) {
           const script = canonical(match[1] ?? match[2] ?? match[3])
           if (!script) continue
           const rel = relative(ownRoot, script)
@@ -105,8 +107,11 @@ function classifyRoot({ ownRoot, projectDir, event = 'SessionStart', invokedEven
     const loadedId = env.CLAUDE_PLUGIN_DATA && basename(env.CLAUDE_PLUGIN_DATA)
     if (!loadedId) return { kind: 'none' }
     if (loadedId === `${manifest.name}@inline`.replace(/[^A-Za-z0-9_-]/g, '-')) return { kind: 'session-only' }
-    for (const { key, root, version } of copies) {
-      if (root === runningRoot || loadedId !== key.replace(/[^A-Za-z0-9_-]/g, '-')) continue
+    const loaded = copies.filter(({ key }) => loadedId === key.replace(/[^A-Za-z0-9_-]/g, '-'))
+    // An applicable entry at the running root means the session already runs an installed
+    // copy of this key; another scope's entry at another version proves no drift.
+    if (loaded.some(({ root }) => root === runningRoot)) return { kind: 'none' }
+    for (const { root, version } of loaded) {
       if (typeof manifest.version !== 'string' || typeof version !== 'string' || manifest.version === version) continue
       return { kind: 'stale', name: manifest.name, runningRoot, runningVersion: manifest.version,
         installedRoot: root, installedVersion: version }
