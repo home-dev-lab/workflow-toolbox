@@ -337,6 +337,10 @@ file, directory, before/after versions, and the adopted shipped snapshot. A dire
 its real target are one target; a second real config directory is checked and refreshed separately.
 
 - **ABSENT** — not installed; `--install` writes it.
+- **MIGRATED-ON-DEMAND** — a static rule absent here because it was moved into the on-demand
+  directory served beside this one, where it carries its own on-demand head. `--install` writes
+  nothing, even with `--force`: a static copy would load it twice. Delete the on-demand copy first
+  to bring it back as a static rule.
 - **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real
   target) untouched. `--install --replace-symlinks` replaces the link with a managed copy in
   place (the former target preserved).

@@ -193,6 +193,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).not.toContain(`${RULE}: MISPLACED`)
     expect(context).not.toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
     expect(context).not.toMatch(new RegExp(`NOT installed here:[^.]*${RULE.replace('.', '\\.')}`))
+    expect(context).not.toContain('DOUBLE-LOAD')
   })
 
   it('names a file symlink for inspection without a removal command', () => {
