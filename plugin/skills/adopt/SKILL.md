@@ -149,6 +149,7 @@ When adopting into a project that already has rules, reconcile first — see the
   the symlink and writes a managed copy in its place, leaving the former target untouched.
 - **Target a specific dir:** add `--dir <dir>` — requires a SINGLE `--set` (with `--set all`
   each set uses its own default dir).
+  A static rules tree containing a subdirectory literally named `rules-on-demand` is not a supported layout; that name is reserved for on-demand rules.
 - Use `--dir` for the exact destination directory; use `--global` for the config directory and
   its managed subdirectories. For rules, passing a parent that already contains adopted
   `wt/` files is refused to prevent flat duplicates; use `--dir <root>/wt` or `--global`.

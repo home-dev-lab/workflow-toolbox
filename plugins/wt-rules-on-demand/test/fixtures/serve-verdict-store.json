@@ -1,0 +1,23 @@
+{
+  "sessions": {
+    "session-fixture": {
+      "contexts": {
+        "0": { "complianceInjected": [
+          { "rule": "clean.md", "ruleIdentity": "user:clean.md", "at": "2026-01-01T00:00:01.000Z" },
+          { "rule": "duplicate.md", "ruleIdentity": "user:duplicate.md", "at": "2026-01-01T00:00:02.000Z" },
+          { "rule": "orphan.md", "ruleIdentity": "user:orphan.md", "at": "2025-12-31T22:00:04.000Z" },
+          { "rule": "per-act.md", "ruleIdentity": "user:per-act.md", "at": "2026-01-01T00:00:05.000Z" },
+          { "rule": "legacy.md", "at": "2026-01-01T00:00:06.000Z" }
+        ] },
+        "1": { "complianceInjected": [
+          { "rule": "conflict.md", "ruleIdentity": "user:conflict.md", "at": "2026-01-01T00:00:03.000Z" },
+          { "rule": "open.md", "ruleIdentity": "user:open.md", "at": "2026-01-01T00:09:59.000Z" }
+        ] },
+        "agent:agent-fixture": { "complianceInjected": [
+          { "rule": "agent.md", "ruleIdentity": "user:agent.md", "at": "2026-01-01T00:00:07.000Z" }
+        ] }
+      }
+    }
+  },
+  "compliance-verdicts-jsonl": "{\"rule\":\"clean.md\",\"ruleIdentity\":\"user:clean.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:00.999Z\",\"decidedAt\":\"2026-01-01T00:00:01.300Z\",\"verdict\":\"followed\"}\n{\"rule\":\"duplicate.md\",\"ruleIdentity\":\"user:duplicate.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:01.999Z\",\"decidedAt\":\"2026-01-01T00:00:02.300Z\",\"verdict\":\"followed\"}\n{\"rule\":\"duplicate.md\",\"ruleIdentity\":\"user:duplicate.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:01.999Z\",\"decidedAt\":\"2026-01-01T00:00:02.301Z\",\"verdict\":\"followed\"}\n{\"rule\":\"conflict.md\",\"ruleIdentity\":\"user:conflict.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:02.999Z\",\"decidedAt\":\"2026-01-01T00:00:03.300Z\",\"verdict\":\"followed\"}\n{\"rule\":\"conflict.md\",\"ruleIdentity\":\"user:conflict.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:02.999Z\",\"decidedAt\":\"2026-01-01T00:00:03.301Z\",\"verdict\":\"not followed\"}\n{\"rule\":\"per-act.md\",\"ruleIdentity\":\"user:per-act.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:05.100Z\",\"decidedAt\":\"2026-01-01T00:00:05.101Z\",\"verdict\":\"followed\"}\n{\"rule\":\"legacy.md\",\"ruleIdentity\":\"user:legacy.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:05.999Z\",\"decidedAt\":\"2026-01-01T00:00:06.300Z\",\"verdict\":\"followed\"}\n{\"rule\":\"agent.md\",\"ruleIdentity\":\"user:agent.md\",\"sessionId\":\"session-fixture\",\"agentId\":\"agent-fixture\",\"injectedAt\":\"2026-01-01T00:00:06.999Z\",\"decidedAt\":\"2026-01-01T00:00:07.300Z\",\"verdict\":\"followed\"}\n{\"rule\":\"stray.md\",\"ruleIdentity\":\"user:stray.md\",\"sessionId\":\"session-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:08.000Z\",\"decidedAt\":\"2026-01-01T00:00:08.300Z\",\"verdict\":\"followed\"}\n{\"rule\":\"lost.md\",\"ruleIdentity\":\"user:lost.md\",\"sessionId\":\"evicted-fixture\",\"agentId\":null,\"injectedAt\":\"2026-01-01T00:00:09.000Z\",\"decidedAt\":\"2026-01-01T00:10:00.000Z\",\"verdict\":\"followed\"}\n"
+}

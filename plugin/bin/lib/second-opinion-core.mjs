@@ -4,7 +4,8 @@ import path from 'node:path'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { withRepositoryGuide } from './sdk-role-profile.mjs'
-import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
+import { announceUnsandboxedLane, LaneSandboxRefusal, resolveLaneSandbox } from './host/lane-sandbox.mjs'
+import { requestNamedPaths, requestDirectoryNote, requestPathRefusal, unreadEscape } from './host/second-opinion-request-paths.mjs'
 import { classifyProviderRefusal, createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
 
@@ -12,6 +13,7 @@ const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT availab
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 // The Claude fallback always runs Opus at xhigh; the caller's --effort drives only the Astra route.
 const OPUS_EFFORT = 'xhigh'
+export { requestNamedPaths }
 function signalExitCode(reason) {
   if (reason === 'SIGHUP') return 129
   if (reason === 'SIGINT') return 130
@@ -57,7 +59,15 @@ function companionRoot(companion) {
   return path.basename(scripts) === 'scripts' ? path.dirname(scripts) : scripts
 }
 
-function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES, resolveSandbox = resolveLaneSandbox }) {
+// A refusal before the companion starts: release the plan and the ownership record. No companion or
+// broker ever ran, so ownership's broker diagnostics describe nothing and are not reported.
+function refuseBeforeLaunch(sandbox, ownership, removeListeners) {
+  sandbox.dispose?.()
+  ownership.stop()
+  removeListeners()
+}
+
+function runCodex({ companion, cwd, effort, request, namedPaths = [], env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES, resolveSandbox = resolveLaneSandbox }) {
   if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
   const ownership = adapter.createCodexBrokerOwnership(env)
   const companionArgs = [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request]
@@ -70,11 +80,26 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   process.once('exit', onExit)
   signal?.addEventListener('abort', onAbort, { once: true })
   let sandbox
+  let directoryNote = null
   let child
   try {
     // second-opinion only reads the repository: it is bound read-only (H5).
     sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true })
     announceUnsandboxedLane(sandbox)
+    if (sandbox.kind === 'bwrap') {
+      if (typeof sandbox.unreadable !== 'function') {
+        refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
+        return Promise.resolve({ status: 2, stdout: '', stderr: 'REFUSED: sandbox plan cannot check request paths.\n', cleanup: [], sandbox: sandbox.line })
+      }
+      const unseen = sandbox.unreadable(namedPaths, { env: ownership.env, exempt: unreadEscape(env.WT_SECOND_OPINION_UNREAD, ownership.env.HOME ?? env.HOME ?? '') })
+      // Only files refuse; an unreadable named directory is reported and the review runs.
+      const missing = unseen.filter((item) => typeof item === 'string' || !item.directory)
+      directoryNote = requestDirectoryNote(unseen.filter((item) => typeof item !== 'string' && item.directory).map((item) => item.path), ownership.env.HOME ?? env.HOME ?? '', env)
+      if (missing.length) {
+        refuseBeforeLaunch(sandbox, ownership, () => { process.removeListener('exit', onExit); signal?.removeEventListener('abort', onAbort) })
+        return Promise.resolve({ status: 2, stdout: '', stderr: requestPathRefusal(missing, cwd, ownership.env.HOME ?? env.HOME ?? '', env), cleanup: [], sandbox: sandbox.line })
+      }
+    }
     // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
     // a host descendant of the sandbox instead of trusting that number.
     if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
@@ -91,6 +116,10 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
     signal?.removeEventListener('abort', onAbort)
     sandbox?.dispose?.()
     ownership.stop()
+    // A path-check refusal happens before the companion starts, so no broker diagnostic applies.
+    if (sandbox?.kind === 'bwrap' && error instanceof LaneSandboxRefusal) {
+      return Promise.resolve({ status: 1, stdout: '', stderr: `REFUSED: ${error.message}\n`, cleanup: [], sandbox: sandbox.line })
+    }
     throw error
   }
   const chunks = { stdout: [], stderr: [] }
@@ -145,7 +174,7 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
       clearInterval(captureTimer)
       process.removeListener('exit', onExit)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ ...result, interrupted, sandbox: sandbox.line })
+      resolve({ ...result, interrupted, sandbox: sandbox.line, notes: directoryNote ? [directoryNote] : [] })
     }
     child.once('error', (error) => {
       stopEverything()
@@ -255,10 +284,13 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
         cwd: options.repo,
         effort: options.effort,
         request: `${TOOL_NOTE}\n\n${request}`,
+        namedPaths: requestNamedPaths(request, env.HOME ?? ''),
         env,
         signal: options.signal,
       })
       if (result.sandbox) appendLine(options.out, result.sandbox)
+      // Each note on its own line right under the sandbox line, before the answer.
+      for (const note of result.notes ?? []) appendLine(options.out, note)
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)
       for (const line of result.cleanup ?? []) appendLine(options.out, line)

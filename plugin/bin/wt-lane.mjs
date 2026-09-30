@@ -6,6 +6,7 @@ import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
+import { applyLanePriority } from './lib/host/lane-priority.mjs'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
@@ -41,13 +42,15 @@ async function loadIntegrationModule() {
   return import('./lib/lane-integrate.mjs')
 }
 
+const ATTACH_REMOVED = '--attach was removed: compose the extra text into the brief file, or expose a read-only path to the lane with WT_LANE_SANDBOX_READ'
+
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--priority low|normal]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
 export function parse(argv) {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null, priority: 'low' }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -68,6 +71,8 @@ export function parse(argv) {
     else if (arg === '--variant') { out.variant = argv[++i] ?? null; out.variantExplicit = true }
     else if (arg === '--allow-unknown-variant') out.allowUnknownVariant = true
     else if (arg === '--allow-no-git') out.allowNoGit = true
+    else if (arg === '--priority') out.priority = argv[++i] ?? null
+    else if (arg === '--attach' || arg.startsWith('--attach=')) return { error: ATTACH_REMOVED }
     else if (arg === '--run-id') out.runId = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
@@ -80,6 +85,7 @@ export function parse(argv) {
   if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return { error: '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB' }
   if (!['session', 'pilot'].includes(out.owner)) return { error: '--owner must be session or pilot' }
   if (out.role && !['pilot', 'pilotHard', 'orchestrator', 'sdkPilot', 'sdkPilotHard', 'sdkOrchestrator', 'critic', 'code', 'review', 'refutation'].includes(out.role)) return { error: '--role is not a known variant role' }
+  if (!['low', 'normal'].includes(out.priority)) return { error: '--priority must be low or normal' }
   if (out.runId && !/^\d+-\d+$/.test(out.runId)) return { error: 'internal run id is malformed' }
   // opencode's built-in effort axis; an unknown name falls back SILENTLY to the default on the opencode side, so it is validated here.
   if (out.variant !== undefined && out.variant !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(out.variant)) return { error: '--variant must be a plain variant name' }
@@ -636,7 +642,7 @@ async function main() {
       chmodSync(briefSnapshotDir, 0o700)
       writeFileSync(briefSnapshot, briefEvidence.bytes, { flag: 'wx', mode: 0o400 })
       const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256 }), 'utf8').toString('base64url')
-      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, '--priority', opts.priority, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       appendVariantLog(opts.log, variant)
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
@@ -701,6 +707,7 @@ async function main() {
   const progress = `wt-lane: starting ${opencodeBinary} in ${opts.dir}`
   process.stdout.write(`${progress}\n`)
   appendFileSync(fd, `${new Date().toISOString()} stage=opencode-spawn-start ${progress}\n`)
+  writeLaneStage(opts.log, applyLanePriority(opts.priority))
   const childSpawnedAt = Date.now()
   try {
     child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames)

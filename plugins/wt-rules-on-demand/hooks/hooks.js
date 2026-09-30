@@ -80,22 +80,27 @@ function writeTurn() {
   return { previous, release };
 }
 const key = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
+// Reserve the new context and detach the victim before any close I/O: a concurrent caller for the
+// same loop then receives the same object, and no second caller can pick the same victim.
 const context = async ($, loop) => {
-  if (!contexts.has(loop)) {
-    if (contexts.size >= MAX_CONTEXTS) {
-      const oldest = [...contexts.keys()].find((name) => name !== MAIN);
-      if (oldest) {
-        const evicted = contexts.get(oldest);
-         const closing = detachNext(evicted);
-         for (const pending of evicted.pending.splice(0)) await close($, pending, oldest, 'context evicted');
-         for (const pending of closing) await close($, pending, oldest, 'context evicted');
-        await closeCorrelation($, evicted, oldest);
-        contexts.delete(oldest);
-      }
+  const existing = contexts.get(loop);
+  if (existing) return existing;
+  let victim = null;
+  if (contexts.size >= MAX_CONTEXTS) {
+    const oldest = [...contexts.keys()].find((name) => name !== MAIN);
+    if (oldest) {
+      const evicted = contexts.get(oldest);
+      contexts.delete(oldest);
+      victim = { loop: oldest, evicted, closing: [...evicted.pending.splice(0), ...detachNext(evicted)] };
     }
-       contexts.set(loop, { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [] });
   }
-  return contexts.get(loop);
+  const created = { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [] };
+  contexts.set(loop, created);
+  if (victim) {
+    for (const pending of victim.closing) await close($, pending, victim.loop, 'context evicted');
+    await closeCorrelation($, victim.evicted, victim.loop);
+  }
+  return created;
 };
 async function rulesFor($, ctx, cwd) {
   if (ctx.rules) return ctx.rules;
@@ -108,9 +113,14 @@ async function notice($, message) {
   if (/failed|skipped|unavailable|dangling|cannot|exhausted/i.test(message)) void recordHealth($, null, message).catch(() => {});
   if (!logged.has(message)) { logged.add(message); await $.ui.log(`wt-rules-on-demand: ${message}`); }
 }
+const HEALTH_FIELDS = ['calls', 'errors', 'totalMs', 'maxMs', 'slow'];
+// A stored day may come from an older shape: every counter missing, non-numeric or negative starts at zero.
+const healthDay = (counts) => Object.fromEntries(HEALTH_FIELDS.map((field) => [field, Number.isFinite(counts?.[field]) && counts[field] >= 0 ? counts[field] : 0]));
+// A stored error entry without a timestamp string cannot be ordered, so it is dropped rather than blocking every flush.
+const healthErrors = (entries) => (Array.isArray(entries) ? entries : []).filter((entry) => typeof entry?.at === 'string');
 function mergeHealth(target, batch) {
   for (const [day, counts] of Object.entries(batch.days)) {
-    const entry = target.days[day] ?? { calls: 0, errors: 0, totalMs: 0, maxMs: 0, slow: 0 };
+    const entry = target.days[day] ?? healthDay(null);
     for (const field of ['calls', 'errors', 'totalMs', 'slow']) entry[field] += counts[field];
     entry.maxMs = Math.max(entry.maxMs, counts.maxMs);
     target.days[day] = entry;
@@ -128,8 +138,8 @@ async function flushHealth($) {
     pendingHealth = emptyHealth();
     try {
       const stored = await $.store.get('health');
-      const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, { ...counts }])),
-        lastErrors: [...stored?.lastErrors ?? []] };
+      const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, healthDay(counts)])),
+        lastErrors: healthErrors(stored?.lastErrors) };
       mergeHealth(health, batch);
       health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
       health.lastErrors = health.lastErrors.slice(-20);
@@ -366,32 +376,56 @@ async function safeVerdict($, pending, loop, value, evidence, reason) {
   try { await verdict($, pending, loop, value, evidence, reason); }
   catch (error) { await notice($, `verdict write failed: ${error.message}`).catch(() => {}); }
 }
-async function evaluate($, ctx, e, loop, measured) {
+// Claim every window synchronously before verdict I/O can interleave with another call.
+// A window whose decision throws stays open with every window not yet visited; the decisions taken
+// before it are still written, then the error propagates as it did before the split.
+function decideEvaluate(ctx, e, measured) {
   const remaining = [];
-  for (const pending of ctx.pending) {
-    const c = pending.rule.compliance;
-    pending.remaining--;
-      pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
-      if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
-        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, bashCommandVerdict(c, e.command ?? ''), summary(e));
-        measured.add(pending.rule.name);
-      }
-      else if (c.kind === 'tool-input') {
-        const { verdict: value, matchError } = toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
-        if (value === null) {
-          if (pending.remaining <= 0) await close($, pending, loop);
-          else remaining.push(pending);
-          continue;
-        }
-        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, value, summary(e), matchError);
-        measured.add(pending.rule.name);
-      }
-     else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) { pending.testSeen = true; if (pending.remaining <= 0) await close($, pending, loop); else remaining.push(pending); }
-      else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) await safeVerdict($, pending, loop, pending.testSeen ? 'followed' : 'not followed', summary(e));
-    else if (pending.remaining <= 0) await close($, pending, loop);
-    else remaining.push(pending);
+  const actions = [];
+  const windows = ctx.pending;
+  let error = null;
+  for (let index = 0; index < windows.length; index++) {
+    const pending = windows[index];
+    try { decideWindow(pending, e, measured, actions, remaining); }
+    catch (failure) { error = failure; remaining.push(...windows.slice(index)); break; }
   }
   ctx.pending = remaining;
+  return { actions, error };
+}
+function decideWindow(pending, e, measured, actions, remaining) {
+  const c = pending.rule.compliance;
+  pending.remaining--;
+  pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
+  if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
+    if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value: bashCommandVerdict(c, e.command ?? ''), evidence: summary(e) });
+    measured.add(pending.rule.name);
+  }
+  else if (c.kind === 'tool-input') {
+    const { verdict: value, matchError } = toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
+    if (value === null) {
+      if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+      else remaining.push(pending);
+      return;
+    }
+    if (!measured.has(pending.rule.name)) actions.push({ type: 'verdict', pending, value, evidence: summary(e), reason: matchError });
+    measured.add(pending.rule.name);
+  }
+  else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) {
+    pending.testSeen = true;
+    if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+    else remaining.push(pending);
+  }
+  else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) actions.push({ type: 'verdict', pending, value: pending.testSeen ? 'followed' : 'not followed', evidence: summary(e) });
+  else if (pending.remaining <= 0) actions.push({ type: 'close', pending });
+  else remaining.push(pending);
+}
+async function evaluate($, ctx, e, loop, measured) {
+  const { actions, error } = decideEvaluate(ctx, e, measured);
+  for (const action of actions) {
+    if (action.type === 'verdict') await safeVerdict($, action.pending, loop, action.value, action.evidence, action.reason);
+    else await close($, action.pending, loop);
+  }
+  if (error) throw error;
 }
 // Claim every window at call start before any verdict I/O can interleave with another call.
 function decideNext(ctx, e) {

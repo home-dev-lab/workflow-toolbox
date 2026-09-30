@@ -48,7 +48,7 @@
 // wave in flight and no cards to compare against.
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { handleHelpFlag } from './lib/cli-help.mjs';
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs';

@@ -112,21 +112,29 @@ export function worktreeActivity(root, cutoff, {
   return 'idle'
 }
 
-export function registeredWorktrees(root, { spawnSyncImpl = spawnSync } = {}) {
+function parseWorktreePorcelain(stdout) {
+  const worktrees = stdout
+    .split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length))
+  return worktrees.length > 0
+    ? { status: 'known', worktrees: [...new Set(worktrees)] }
+    : { status: 'unknown', worktrees: [] }
+}
+
+// `porcelainFile` replaces the git call with a file holding `git worktree list --porcelain` output.
+// It exists so a caller running in a child process (the queue gate hook under test) can pin the
+// enumeration instead of racing git against the timeout; an unreadable file is `unknown`, as git is.
+export function registeredWorktrees(root, { spawnSyncImpl = spawnSync, porcelainFile = null, readFileImpl = readFileSync } = {}) {
   if (!root) return { status: 'no-root', worktrees: [] }
   try {
+    if (porcelainFile) return parseWorktreePorcelain(readFileImpl(porcelainFile, 'utf8'))
     const result = spawnSyncImpl('git', ['-C', root, 'worktree', 'list', '--porcelain'], {
       encoding: 'utf8',
       timeout: 1_000,
     })
     if (result.status !== 0 || typeof result.stdout !== 'string') return { status: 'unknown', worktrees: [] }
-    const worktrees = result.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('worktree '))
-      .map((line) => line.slice('worktree '.length))
-    return worktrees.length > 0
-      ? { status: 'known', worktrees: [...new Set(worktrees)] }
-      : { status: 'unknown', worktrees: [] }
+    return parseWorktreePorcelain(result.stdout)
   } catch {
     return { status: 'unknown', worktrees: [] }
   }

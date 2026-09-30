@@ -31,7 +31,6 @@
 import { writeFile, rename, unlink, readFile } from 'node:fs/promises'
 import { writeSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded, defaultFlagPath } from './lib/service-flag.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'

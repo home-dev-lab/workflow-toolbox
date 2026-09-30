@@ -10,8 +10,8 @@ export function startupPayload(env) {
 }
 
 if (process.argv[1]?.endsWith('function-hooks-notice.mjs')) {
-  let input = '';
-  for await (const chunk of process.stdin) input += chunk;
+  // Drain stdin so the host's write never blocks; the notice does not depend on it.
+  for await (const _chunk of process.stdin) { /* discard */ }
   const payload = startupPayload(process.env);
   if (payload) process.stdout.write(`${JSON.stringify(payload)}\n`);
 }

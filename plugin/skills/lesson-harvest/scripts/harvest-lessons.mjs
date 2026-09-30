@@ -18,9 +18,9 @@
 //       "None." — a report missing the section entirely is malformed and needs a human to
 //       read it directly, not a silent skip)
 
-import { pathToFileURL } from 'node:url'
-
 import { readFileSync } from 'node:fs'
+
+import { isInvokedDirectly } from '../../../bin/lib/host/entry-guard.mjs'
 
 const HEADING_DEFAULT = 'Lessons for the memory'
 
@@ -134,6 +134,7 @@ function main() {
   process.exit(result.sectionFound ? 0 : 2)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Symlink-safe: a raw argv[1] comparison skips main() when the script is reached through a link.
+if (isInvokedDirectly(import.meta.url)) {
   main()
 }

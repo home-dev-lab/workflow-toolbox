@@ -69,6 +69,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
+import { isOnDemandDir, placementRoots as placementRootsFor, readRuleText } from '../../../bin/lib/host/adopt-placement.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -80,7 +81,6 @@ const BANNER_TOOL = 'workflow-toolbox'
 const SETTINGS_FILE = 'settings.json'
 const SETTINGS_TRACE_DIR = 'workflow-toolbox'
 const SETTINGS_TRACE_FILE = 'adopt-settings-trace.json'
-const SETTINGS_BACKUP_PREFIX = 'settings.json.workflow-toolbox.bak.'
 const ADOPT_JOURNAL_FILE = '.workflow-toolbox-adopt-journal.jsonl'
 
 // ⚠ THIS LIST HAS A TWIN: plugin/bin/lib/env-prerequisites.mjs, which the SessionStart
@@ -331,6 +331,16 @@ function discoverRuleItems(root) {
     .map((file) => ({ file }))
 }
 
+function ruleSpecPath(root, file) {
+  return path.join(root, 'rules', file.replace(/\.md$/, '.spec.json'))
+}
+
+// A shipped rule with an on-demand spec is the on-demand half. The same spec
+// supplies its trigger head below; no filename-only second classification.
+function isOnDemandRule(root, item) {
+  return readJsonObject(ruleSpecPath(root, item.file), 'on-demand spec').kind !== 'missing'
+}
+
 /** The pilot delegation suite, installed as editable project copies. Content is NOT
  *  inlined — it is READ from the plugin's agents/ dir at run time (the agent defs are
  *  their own single source). Each `file` is both the source basename under
@@ -376,6 +386,32 @@ function discoverRegisteredAgents(root) {
 
 function resolvedConfigRoot() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+}
+
+// The engine-owned on-demand and static roots for this run: the project is the cwd, the config dir is the
+// one --global resolves.
+function placementRoots() {
+  return placementRootsFor({ project: process.cwd(), config: resolvedConfigRoot() })
+}
+
+const inOnDemandStorage = (dir) => isOnDemandDir(dir, placementRoots())
+
+/** Why `targetFile` must not be written, or null. A rule `.md` without a shipped on-demand spec
+ *  is a static rule; on-demand storage never receives one. Non-`.md` files (temp files) pass. */
+function placementRefusal(targetFile) {
+  const file = path.basename(targetFile)
+  const dir = path.dirname(targetFile)
+  // Placement first: a static target never needs the plugin bundle to be located.
+  if (!file.endsWith('.md') || !inOnDemandStorage(dir) || isOnDemandRule(pluginRoot(), { file })) return null
+  return `refusing to write ${file} into ${dir}: that directory is on-demand rule storage ` +
+    `(an engine root: rules-on-demand by name or by filesystem identity), and ${file} has no ` +
+    `shipped on-demand spec, so it is a static rule. Target a static rules directory instead.`
+}
+
+/** The single placement chokepoint: every managed write and every verified move passes here. */
+function assertPlacement(targetFile) {
+  const refusal = placementRefusal(targetFile)
+  if (refusal) fail(refusal)
 }
 
 function formatMtime(mtime) {
@@ -599,7 +635,7 @@ function renderSpecHead(spec) {
 
 function shippedSpecHead(set, item, root, installedHead) {
   if (set.kind !== 'rules' || !installedHead) return null
-  const specFile = path.join(root, 'rules', item.file.replace(/\.md$/, '.spec.json'))
+  const specFile = ruleSpecPath(root, item.file)
   const read = readJsonObject(specFile, 'on-demand spec')
   if (read.kind === 'missing') return null
   if (read.kind !== 'ok') fail(`invalid shipped on-demand spec: ${specFile}`)
@@ -783,11 +819,36 @@ const { laneUnsandboxedAtStart, laneWritableForLaunch } = sandboxModule ?? { lan
   return import(pathToFileURL(integration).href)
 }`)
   adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { fileURLToPath, pathToFileURL } from 'node:url'")
-  const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
+  adopted = loadLauncherRuntimeLibs(adopted, src)
+  // ANY single- or double-quoted literal (or a template literal opening a call) that still starts with
+  // ./lib/ or ../lib/ (named, side-effect, dynamic or multi-line import; prose in comments is not a literal) would resolve next to the adopted copy, where no such directory exists.
+  const relativeRuntimeImport = adopted.match(/(?:['"]|\(\s*`)\.{1,2}\/lib\/[^'"`\n]*/)?.[0]
   if (relativeRuntimeImport) {
     fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)
   }
   return adopted
+}
+
+/** The launcher's own runtime helpers (the priority module) are loaded from the installed plugin root like
+ * the consent modules: an adopted copy has no `./lib/` neighbour. Each named export falls back to a function
+ * that throws the "older or incompatible plugin" refusal, so a plugin without a helper fails closed at use. */
+const LAUNCHER_RUNTIME_LIBS = ['lane-priority']
+function loadLauncherRuntimeLibs(adopted, src) {
+  let out = adopted
+  const loaders = []
+  for (const [index, lib] of LAUNCHER_RUNTIME_LIBS.entries()) {
+    const line = new RegExp(`^import \\{([^}]*)\\} from '\\./lib/host/${lib}\\.mjs'\\n`, 'm')
+    const match = out.match(line)
+    if (!match) fail(`launcher transformation could not find the ${lib} import in ${src}`)
+    const names = match[1].split(',').map((name) => name.trim()).filter(Boolean)
+    out = out.replace(line, '')
+    loaders.push(`const runtimeLibPath${index} = root ? path.join(root, 'bin', 'lib', 'host', '${lib}.mjs') : null\nconst runtimeLib${index} = runtimeLibPath${index} ? await import(pathToFileURL(runtimeLibPath${index}).href).catch(() => null) : null\nconst { ${names.join(', ')} } = Object.fromEntries(${JSON.stringify(names)}.map((name) => [name, runtimeLib${index}?.[name] ?? unavailableRuntimeExport]))\n`)
+  }
+  const anchor = out.indexOf('\nconst { ensureLaneHostDir, ')
+  const insertAt = anchor < 0 ? -1 : out.indexOf('\n', anchor + 1) + 1
+  if (insertAt <= 0) fail(`launcher transformation could not place the runtime helper loaders in ${src}`)
+  const unavailable = "function unavailableRuntimeExport() { throw new Error('the installed workflow-toolbox plugin is unavailable, older or incompatible; update it and re-adopt wt-lane.mjs') }\n"
+  return `${out.slice(0, insertAt)}${unavailable}${loaders.join('')}${out.slice(insertAt)}`
 }
 
 /** Resolve the plugin root the adopted wt-lane launcher will use. This intentionally mirrors
@@ -818,7 +879,7 @@ function adoptedLauncherPluginRoot(env = process.env) {
  * this preflight. */
 function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
   const moduleByVariable = new Map()
-  for (const match of adopted.matchAll(/const\s+(\w+)\s*=\s*path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
+  for (const match of adopted.matchAll(/const\s+(\w+)\s*=\s*(?:root\s*\?\s*)?path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
     const segments = [...match[2].matchAll(/'([^']+)'/g)].map((segment) => segment[1])
     if (segments.length > 0) moduleByVariable.set(match[1], path.join(runtimeRoot, ...segments))
   }
@@ -1136,6 +1197,7 @@ function adoptionDirectoryInfo(dir) {
 function adoptedFiles(set, dir, root) {
   return new Set(
     set.resolveItems(root)
+      .filter((item) => set.kind !== 'rules' || !inOnDemandStorage(dir) || isOnDemandRule(root, item))
       .filter((item) => hasAdoptionBanner(set, path.join(dir, item.file)))
       .map((item) => item.file),
   )
@@ -2127,6 +2189,7 @@ function managedWriteVerb(classification, force) {
 }
 
 function writeManagedFile(target, text, exclusive = false) {
+  assertPlacement(target)
   fs.writeFileSync(target, text, exclusive ? { flag: 'wx' } : undefined)
 }
 
@@ -2252,7 +2315,9 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   const nestedDir = explicitNestedTarget(set, dir, args)
   const onDemandDir = siblingOnDemandDir(set, dir, args)
   const alternateDirs = { nested: nestedDir, onDemand: onDemandDir }
-  const items = set.resolveItems(root)
+  const allItems = set.resolveItems(root)
+  const demand = set.kind === 'rules' && inOnDemandStorage(dir)
+  const items = demand ? allItems.filter((item) => isOnDemandRule(root, item)) : allItems
   if (args.file && !items.some((item) => item.file === args.file)) {
     fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
   }
@@ -2268,6 +2333,22 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   for (const item of items.filter((candidate) =>
     (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
     mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, alternateDirs))
+  }
+  if (demand && args.mode === 'check' && !args.file) {
+    for (const item of allItems.filter((candidate) => !isOnDemandRule(root, candidate))) {
+      try {
+        const target = path.join(dir, item.file)
+        const status = classify(target, set).state
+        if (status !== 'absent' && onDemandFrontmatter(readRuleText(target))) {
+          // Its own on-demand head is what the engine serves by: a deliberate migration.
+          process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
+        } else if (status !== 'absent') {
+          process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
+        }
+      } catch {
+        // An unreadable/non-file candidate cannot be diagnosed as a rule.
+      }
+    }
   }
   return state
 }
@@ -2641,6 +2722,7 @@ function migrateDryRun(dir, args) {
  *  filesystem error — the caller stops the whole run rather than continue past an unverified
  *  move. */
 function moveFileVerified(from, to) {
+  assertPlacement(to)
   const before = fs.readFileSync(from) // Buffer — byte-exact, unlike classify()'s 'utf8' read
   fs.mkdirSync(path.dirname(to), { recursive: true })
   try {
@@ -2758,6 +2840,9 @@ function executeMigration(dir, args) {
   }
   process.stdout.write(`[migrate --execute] flat root=${flatDir}  →  new location=${wtDir}\n`)
   const { moves, stays } = planMigrationItems(flatDir, wtDir, SETS.rules)
+  // Every destination is checked before the FIRST move: a refused one refuses the whole run.
+  const refused = moves.map((move) => placementRefusal(move.to)).find(Boolean)
+  if (refused) fail(`migrate --execute: nothing has been moved — ${refused}`)
   if (!migrationPreflight(moves, stays, args) || renderEmptyMigration(wtDir, moves, stays, args)) return
   const result = executeMigrationMoves(moves)
   if (!renderMigrationResult(wtDir, moves, stays, result)) return
@@ -2862,7 +2947,8 @@ function mergeSetState(state, result) {
 
 function managedSetGroups(set, fallbackDir, resolution, root) {
   if (!resolution) return new Map([[fallbackDir, null]])
-  const defaultDir = resolution.defaultDir || fallbackDir
+  const candidate = resolution.defaultDir
+  const defaultDir = candidate && !(set.kind === 'rules' && inOnDemandStorage(candidate)) ? candidate : fallbackDir
   const groups = new Map()
   for (const item of set.resolveItems(root)) {
     const dir = resolution.itemDirs.get(item.file) || defaultDir

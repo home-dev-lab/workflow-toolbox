@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCost, costReportSection, formatAggregate, matchLaneSessions } from '../../../../plugin/bin/lib/run-cost-core.mjs'
+import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCost, costReportSection, formatAggregate, matchLaneSessions, unknownRunCost } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { priceRunCost } from '../../../../plugin/bin/lib/model-prices.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -132,6 +132,7 @@ describe('run cost', () => {
 
     expect(cost.price_table).toMatchObject({ catalogue_file: missingCatalogue, catalogue_status: 'fallback', catalogue_reason: expect.stringContaining('not found') })
     expect(row.usd).toBe('price unknown')
+    expect(cost.coverage).toMatchObject({ status: 'incomplete', price_unknown_models: 1, missing_sources: 0 })
   })
 
   it('makes a mixed priced and unpriced run unknown and names the missing price beside the archive total', () => {
@@ -241,7 +242,7 @@ describe('run cost', () => {
   }
 
   it('reconciles the real transcript output undercount without marking the run incomplete', () => {
-    const cost = computeRunCost({ laneDir: realOutputUndercountLane(), worktree: '/work/real-run' })
+    const cost = computeRunCost({ laneDir: realOutputUndercountLane(), worktree: '/work/real-run', priceTable: JSON.parse(readFileSync(PRICE_TABLE, 'utf8')) })
 
     expect(cost.cross_checks.pilot_result).toMatchObject({
       agrees: true,
@@ -284,6 +285,58 @@ describe('run cost', () => {
     const aggregate = spawnSync(process.execPath, [CLI, reports], { encoding: 'utf8' })
     expect(aggregate.status).toBe(0)
     expect(aggregate.stdout).toContain('FULL | anthropic | 1 | complete | 1840 | 253587 | 10288682 | 134679 | not measured | 255427 | 390106')
+    expect(cost.coverage).toMatchObject({ status: 'complete', missing_sources: 0, inferred_usd: expect.any(Number) })
+    expect(cost.coverage.inferred_usd).toBeGreaterThan(0)
+    // The priced secondary model (modelUsage row outside every phase) is an included, unattributed source.
+    expect(cost.coverage.included_unattributed_sources).toBeGreaterThanOrEqual(1)
+  })
+
+  it('splits priced phase, inferred, and unmatched dollars from missing lane sources', () => {
+    const lane = root(); const worktree = '/work/coverage'
+    writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL' }))
+    writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: false, served_model: 'claude-opus-5' }))
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify({ fresh_tokens: 'unavailable', messages: [
+      { model: 'claude-opus-5', arrived_at: 1500, input: 1_000_000 },
+      { model: 'claude-opus-5', arrived_at: 4500, input: 1_000_000 },
+    ], result_totals: {} }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 7000,
+      phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: 2000 }],
+      lanes: [
+        { phase: 'critic', round: 1, executor: 'opencode', model: 'openai/gpt', started_at: 1200, ended_at: 1800 },
+        { phase: 'harden', round: 4, executor: 'opencode', model: 'openai/gpt', started_at: 3000, ended_at: null },
+      ],
+    }))
+    const sessions = [5000, 6000].map((time, i) => ({ id: `extra-${i}`, directory: worktree, model: { providerID: 'openai', id: 'gpt' }, tokens_input: 1_000_000, time_created: time, time_updated: time + 100 }))
+    const priceTable = { models: { 'claude-opus-5': { family: 'anthropic', input: 1, output: 1 }, 'openai/gpt': { family: 'openai', input: 2, output: 1 } } }
+    const cost = computeRunCost({ laneDir: lane, worktree, sessions, priceTable })
+    // Two lane windows with no session row, plus the absent terminal SDK result (usage 'unavailable'): three missing sources.
+    expect(cost.coverage).toEqual({ status: 'incomplete', attributed_usd: 1, inferred_usd: 1, unmatched_usd: 4, missing_sources: 3, included_unattributed_sources: 3, price_unknown_models: 0 })
+    expect(cost.totals.usd).toBe(6)
+    expect(cost.coverage.attributed_usd + cost.coverage.inferred_usd + cost.coverage.unmatched_usd).toBe(cost.totals.usd)
+    expect(costReportSection(cost)).toContain('Run total: $6.000000')
+    expect(costReportSection(cost)).toMatch(/Run total: [^\n]*attributed \$1\.000000[^\n]*inferred \$1\.000000[^\n]*unmatched \$4\.000000[^\n]*LOWER BOUND[^\n]*3 missing sources/)
+  })
+
+  it('attributes a priced lane phase that the lifecycle timeline does not list, so the dollar split covers the total', () => {
+    const lane = root(); const worktree = '/work/unlisted-phase'
+    writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL' }))
+    writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, served_model: 'claude-opus-5' }))
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 7000,
+      phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: 2000 }],
+      lanes: [{ phase: 'critic', round: 1, executor: 'opencode', model: 'openai/gpt', started_at: 1200, ended_at: 1800 }],
+    }))
+    const sessions = [{ id: 'critic-1', directory: worktree, model: { providerID: 'openai', id: 'gpt' }, tokens_input: 1_000_000, time_created: 1300, time_updated: 1700 }]
+    const priceTable = { models: { 'openai/gpt': { family: 'openai', input: 2, output: 1 } } }
+    const cost = computeRunCost({ laneDir: lane, worktree, sessions, priceTable })
+    expect(cost.totals.usd).toBe(2)
+    expect(cost.coverage).toMatchObject({ status: 'complete', attributed_usd: 2, inferred_usd: 0, unmatched_usd: 0 })
+  })
+
+  it('marks a failed cost computation as incomplete while retaining legacy report rendering', () => {
+    expect(unknownRunCost({ reason: 'unavailable' }).coverage).toEqual({ status: 'incomplete', missing_sources: 1 })
+    const legacy = { route: 'LITE', outcome: { status: 'complete' }, unknown: [], totals: { usd: 1 }, phases: [], cross_checks: {} }
+    expect(costReportSection(legacy)).toContain('Run total: $1.000000\n')
   })
 
   it('reconciles a positive terminal-result residual without an arbitrary share cutoff', () => {
@@ -328,6 +381,8 @@ describe('run cost', () => {
     expect(cost.unknown).toEqual(['SDK modelUsage has no key matching primary model claude-opus-5; model rows were not added because the primary cannot be identified safely'])
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed')).toBeUndefined()
     expect(cost.families.anthropic).toMatchObject({ input: 148, output: 134665, fresh_tokens: 388400 })
+    // The unmatched key's secondary-model rows were dropped, so the total misses them: coverage must say so.
+    expect(cost.coverage).toMatchObject({ status: 'incomplete', missing_sources: 1 })
   })
 
   it('records when the SDK model-usage cross-check is unavailable', () => {

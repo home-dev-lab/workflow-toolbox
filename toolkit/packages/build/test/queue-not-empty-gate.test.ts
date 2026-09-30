@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync, utimesSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -54,6 +54,7 @@ type Scaffold = {
   stateDir: string
   cwd: string
   transcriptPath: string
+  worktreeList: string
 }
 
 function scaffold(tag: string): Scaffold {
@@ -73,8 +74,14 @@ function scaffold(tag: string): Scaffold {
   }))
   if (spawnSync('git', ['init', '--quiet'], { cwd }).status !== 0) throw new Error('git init failed')
   writeFileSync(transcriptPath, '')
+  // The hook's real `git worktree list` has a 1 s timeout; a loaded runner can exceed it and turn
+  // every silent case into "enumeration failed". Pin the enumeration so no hook test depends on
+  // git's speed; the real git path keeps its own tests under `registeredWorktrees`.
+  const worktreeList = join(root, 'worktree-list.porcelain')
+  writeFileSync(worktreeList, `worktree ${cwd}\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/main\n\n`, 'utf8')
   const env: NodeJS.ProcessEnv = {
     ...process.env,
+    WT_QUEUE_GATE_WORKTREE_LIST_FILE: worktreeList,
     WT_QUEUE_GATE_DIR: stateDir,
     WT_QUEUE_GATE_PROC_ROOT: procRoot,
     // These fixtures provide a synthetic /proc tree; do not inherit the host OS provider.
@@ -88,7 +95,7 @@ function scaffold(tag: string): Scaffold {
     cwd,
     transcript_path: transcriptPath,
   }
-  return { env, payload, stateDir, cwd, transcriptPath }
+  return { env, payload, stateDir, cwd, transcriptPath, worktreeList }
 }
 
 function writeSnapshot(stateDir: string, cwd: string, snap: Record<string, unknown>): void {
@@ -147,9 +154,53 @@ describe('registeredWorktrees', () => {
     const { env, payload, stateDir, cwd } = scaffold('unavailable-worktree-enumeration')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
 
-    const r = runHook(payload, { ...env, PATH: '' })
+    const realGitEnv: NodeJS.ProcessEnv = { ...env, PATH: '' }
+    delete realGitEnv.WT_QUEUE_GATE_WORKTREE_LIST_FILE
+    const r = runHook(payload, realGitEnv)
     expect(r.code).toBe(0)
     expect(blockText(r)).toContain('Worktree activity is unknown — git worktree enumeration failed')
+  })
+
+  it('reads a pinned porcelain file instead of spawning git', () => {
+    const root = mkRoot('pinned-porcelain')
+    const list = join(root, 'list.porcelain')
+    writeFileSync(list, 'worktree /repo\nHEAD 1\nbranch refs/heads/main\n\nworktree /repo-lane\nHEAD 2\ndetached\n\n', 'utf8')
+    const spawnSyncImpl = vi.fn(() => ({ status: 0, stdout: 'worktree /from-git\n' }))
+    expect(registeredWorktrees('/repo', { porcelainFile: list, spawnSyncImpl }))
+      .toEqual({ status: 'known', worktrees: ['/repo', '/repo-lane'] })
+    expect(spawnSyncImpl).not.toHaveBeenCalled()
+  })
+
+  it('returns unknown when the pinned porcelain file is unreadable', () => {
+    const root = mkRoot('missing-porcelain')
+    expect(registeredWorktrees('/repo', { porcelainFile: join(root, 'absent.porcelain') }))
+      .toEqual({ status: 'unknown', worktrees: [] })
+  })
+
+  it('enumerates a real repository and its linked worktree through git, without a wall-clock bound', () => {
+    const root = mkRoot('real-git-worktrees')
+    const repo = join(root, 'repo')
+    const lane = join(root, 'lane')
+    mkdirSync(repo)
+    const git = (args: string[]) => expect(spawnSync('git', ['-c', 'commit.gpgSign=false', ...args], { cwd: repo }).status).toBe(0)
+    git(['init', '--quiet'])
+    writeFileSync(join(repo, 'seed.txt'), 'seed', 'utf8')
+    git(['add', 'seed.txt'])
+    git(['-c', 'user.email=queue-gate@example.test', '-c', 'user.name=Queue Gate', 'commit', '--quiet', '-m', 'seed'])
+    git(['worktree', 'add', '--quiet', '-b', 'lane-branch', lane])
+    // The real spawn, with only the 1 s production timeout removed: this lock proves parsing of
+    // real git output, and a slow host must not decide it.
+    const untimedSpawn = (command: string, args: string[], options: Record<string, unknown>) => {
+      const untimed = { ...options }
+      delete untimed.timeout
+      return spawnSync(command, args, untimed)
+    }
+    const scan = registeredWorktrees(repo, { spawnSyncImpl: untimedSpawn })
+    expect(scan.status).toBe('known')
+    // realpathSync.native, not realpathSync: on Windows the temp directory can be an 8.3 short
+    // name (C:\Users\RUNNER~1\…) that only the native call expands, while git reports the long one.
+    const canonical = (path: string) => realpathSync.native(path)
+    expect(scan.worktrees.map(canonical)).toEqual([canonical(repo), canonical(lane)])
   })
 })
 
@@ -437,23 +488,29 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
   })
 
   it('stays silent for a fresh file in another registered worktree with no subagent transcript', () => {
-    const { env, payload, stateDir, cwd } = scaffold('registered-worktree-activity')
+    const { env, payload, stateDir, cwd, worktreeList } = scaffold('registered-worktree-activity')
     const lane = join(dirname(cwd), 'registered-lane')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
-    rmSync(join(cwd, '.git'), { recursive: true, force: true })
-    expect(spawnSync('git', ['init', '--quiet'], { cwd }).status).toBe(0)
-    expect(spawnSync('git', ['config', 'user.email', 'queue-gate@example.test'], { cwd }).status).toBe(0)
-    expect(spawnSync('git', ['config', 'user.name', 'Queue Gate'], { cwd }).status).toBe(0)
-    writeFileSync(join(cwd, 'seed.txt'), 'seed', 'utf8')
-    expect(spawnSync('git', ['add', 'seed.txt'], { cwd }).status).toBe(0)
-    expect(spawnSync('git', ['-c', 'commit.gpgSign=false', 'commit', '--quiet', '-m', 'seed'], { cwd }).status).toBe(0)
-    expect(spawnSync('git', ['worktree', 'add', '--quiet', '-b', 'lane-branch', lane], { cwd }).status).toBe(0)
+    mkdirSync(lane)
+    appendFileSync(worktreeList, `worktree ${lane}\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/lane-branch\n\n`, 'utf8')
     writeFileSync(join(lane, 'lane-output.txt'), 'external lane wrote here', 'utf8')
-    agePath(join(cwd, 'seed.txt'))
 
     const r = runHook(payload, env)
     expect(r.code).toBe(0)
-    expect(blockText(r)).toBe('')
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+  })
+
+  it('blocks when the fresh file sits in a directory that is not a registered worktree', () => {
+    const { env, payload, stateDir, cwd } = scaffold('unregistered-sibling-activity')
+    const sibling = join(dirname(cwd), 'unregistered-lane')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(sibling)
+    writeFileSync(join(sibling, 'lane-output.txt'), 'written outside any registered worktree', 'utf8')
+
+    const r = runHook(payload, env)
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toContain('open work remains')
   })
 
   it('stays silent for a fresh non-terminal lane run log', () => {
