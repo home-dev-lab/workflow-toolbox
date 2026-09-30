@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +10,13 @@ import { judgeCases } from '../scripts/judge-cases.mjs';
 const script = fileURLToPath(new URL('../scripts/judge-cases.mjs', import.meta.url));
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'judge-portability-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  // Every fixture sits under a symlinked ancestor, so a lexical path never equals its physical one.
+  // That is the normal case on macOS (/var -> /private/var) and Windows (8.3 short names); Linux must see it too.
+  const physicalRoot = await mkdtemp(join(tmpdir(), 'judge-portability-'));
+  const aliasParent = await mkdtemp(join(tmpdir(), 'judge-portability-alias-'));
+  const root = join(aliasParent, 'root');
+  await symlink(physicalRoot, root, 'dir');
+  t.after(() => Promise.all([rm(physicalRoot, { recursive: true, force: true }), rm(aliasParent, { recursive: true, force: true })]));
   const rules = join(root, 'rules'), transcript = join(root, 'session.jsonl'), casesFile = join(root, 'cases.jsonl');
   await mkdir(rules);
   await writeFile(join(rules, 'r.md'), '---\non-demand:\n  triggers:\n    - kind: tool\n      tool: ^Agent$\n      unconditional: true\n---\nDo it.');
@@ -24,15 +29,20 @@ async function fixture(t) {
   return { root, transcript, casesFile, extract };
 }
 
-async function refusesBeforeCreation(f, out, safe, writer) {
+// The whole fixture tree, as entries (links listed, never followed): a refusal must leave it byte-for-byte unchanged.
+const snapshot = async (root) => (await readdir(await realpath(root), { recursive: true })).sort();
+
+async function refusesBeforeCreation(f, out, safe, writer, reason = /rollback input/i) {
+  const before = await snapshot(f.root);
   if (writer === 'judge')
-    await assert.rejects(() => judgeCases({ casesFile: f.casesFile, out, rollbackConfigDir: f.root }), /rollback input/i, out);
+    await assert.rejects(() => judgeCases({ casesFile: f.casesFile, out, rollbackConfigDir: f.root }), reason, out);
   else {
     const extracted = f.extract(out);
     assert.equal(extracted.status, 1, `${out}: ${extracted.stderr}`);
-    assert.match(extracted.stderr, /rollback input/i, out);
+    assert.match(extracted.stderr, reason, out);
   }
   assert.deepEqual(await readdir(safe), [], `${writer} created output at ${out}`);
+  assert.deepEqual(await snapshot(f.root), before, `${writer} created something while refusing ${out}`);
 }
 
 for (const writer of ['judge', 'extract']) for (const [label, segments] of [
@@ -69,7 +79,10 @@ for (const writer of ['judge', 'extract']) test(`${writer}: a protected link tar
   await symlink(safe, store, 'dir');
   const hop = join(f.root, 'hop');
   await symlink(`${store}/../safe`, hop, 'dir');
-  await refusesBeforeCreation(f, join(hop, 'new', 'out'), safe, writer);
+  // Win32 normalizes `..` lexically, so there the link never passes through store: any refusal is safe,
+  // and the unchanged fixture tree is what proves it. The exact reason is pinned on Linux, where CI runs every commit.
+  const reason = process.platform === 'linux' ? /rollback input/i : /rollback input|cannot traverse a symlink/i;
+  await refusesBeforeCreation(f, join(hop, 'new', 'out'), safe, writer, reason);
 });
 
 for (const writer of ['judge', 'extract']) for (const [label, segments] of [
@@ -111,7 +124,7 @@ test('relative ancestor links are usable and loops fail before creation', async 
   await symlink('../safe', relativeLink, 'dir');
   const out = join(relativeLink, 'out');
   const judged = await judgeCases({ casesFile: f.casesFile, out, rollbackConfigDir: f.root });
-  assert.ok(judged.path.startsWith(join(safe, 'out')), judged.path);
+  assert.ok(judged.path.startsWith(join(await realpath(safe), 'out')), judged.path);
   assert.equal(f.extract(out).status, 0);
   const loop = join(f.root, 'loop');
   await symlink(loop, loop, 'dir');
@@ -180,5 +193,5 @@ test('a rollback namespace reached through a symlinked config dir is compared ph
   assert.equal(await readFile(input, 'utf8'), bytes);
   const legitimate = join(linkConfig, 'judge-output');
   const judged = await judgeCases({ casesFile: f.casesFile, out: legitimate, rollbackConfigDir: linkConfig });
-  assert.ok(judged.path.startsWith(join(realConfig, 'judge-output')), judged.path);
+  assert.ok(judged.path.startsWith(join(await realpath(realConfig), 'judge-output')), judged.path);
 });
