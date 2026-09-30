@@ -2143,15 +2143,24 @@ function realDir(dir) {
   return resolved
 }
 
+/** The `.claude` directory of a PROJECT whose static rules directory `dir` is (`<p>/.claude/rules[/wt]`),
+ *  or null. A config profile root is never a project's, even when it is named `.claude`. */
+function projectClaudeDirOf(dir) {
+  const real = realDir(dir)
+  const claude = path.basename(real) === 'wt' && path.basename(path.dirname(real)) === 'rules'
+    ? path.dirname(path.dirname(real))
+    : path.basename(real) === 'rules' ? path.dirname(real) : null
+  if (!claude || path.basename(claude) !== '.claude') return null
+  const configRoots = new Set(discoveredConfigRoots().map(realDir))
+  return configRoots.has(claude) ? null : claude
+}
+
 /** The on-demand directories the engine serves beside static `dir`: its sibling, plus the active config
- *  profile's when `dir` is the project's (the engine loads the project and the active profile). */
+ *  profile's when `dir` belongs to a project (a session loads the project and the active profile). Decided
+ *  from the target itself, never from the working directory the installer runs in. */
 function servedOnDemandDirs(dir) {
-  const resolved = path.resolve(dir)
-  const dirs = [siblingOnDemandPath(resolved)]
-  const relative = path.relative(path.resolve(process.cwd(), '.claude'), resolved)
-  if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
-    dirs.push(path.join(resolvedConfigRoot(), 'rules-on-demand'))
-  }
+  const dirs = [siblingOnDemandPath(path.resolve(dir))]
+  if (projectClaudeDirOf(dir)) dirs.push(path.join(resolvedConfigRoot(), 'rules-on-demand'))
   return [...new Set(dirs.filter(Boolean).map((onDemand) => path.resolve(onDemand)))]
 }
 

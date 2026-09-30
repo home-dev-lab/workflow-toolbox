@@ -340,7 +340,9 @@ its real target are one target; a second real config directory is checked and re
 - **MIGRATED-ON-DEMAND** — a static rule absent here because it was moved into the on-demand
   directory served beside this one, where it carries its own on-demand head. `--install` writes
   nothing, even with `--force`: a static copy would load it twice. Delete the on-demand copy first
-  to bring it back as a static rule.
+  to bring it back as a static rule. When this rules directory is a link into another profile's,
+  the status says the rule is migrated there but not loaded by this profile; nothing is written
+  either, since the copy would land in that other profile.
 - **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real
   target) untouched. `--install --replace-symlinks` replaces the link with a managed copy in
   place (the former target preserved).
