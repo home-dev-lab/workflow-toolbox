@@ -5,28 +5,6 @@ export function createBudget({ maxDepth = 12, maxEntries = 20000, maxDirs = 2000
   return { maxDepth, maxEntries, maxDirs, maxBytes, entries: 0, dirs: 0, bytes: 0, exhausted: null }
 }
 
-function deletedSinceListing(item, fs, budget, errors) {
-  const parent = path.dirname(item.file), name = path.basename(item.file)
-  // The confirmation scan spends a directory visit, its own entry, and each name read.
-  if (++budget.dirs > budget.maxDirs) { budget.exhausted = 'dirs'; return false }
-  if (++budget.entries > budget.maxEntries) { budget.exhausted = 'entries'; return false }
-  let dir, absent = true, unchanged = true, readable = true
-  try {
-    dir = fs.opendirSync(parent)
-    let entry
-    while ((entry = dir.readSync())) {
-      if (++budget.entries > budget.maxEntries) { budget.exhausted = 'entries'; break }
-      if (entry.name === name) absent = false
-      if (!item.siblings.has(entry.name)) unchanged = false
-    }
-  } catch (error) { errors.push({ path: parent, code: error.code ?? 'IO' }); readable = false }
-  finally {
-    if (dir) try { dir.closeSync() } catch (error) { errors.push({ path: parent, code: error.code ?? 'IO' }); readable = false }
-  }
-  // New names could hide a renamed definition, even if the failed name disappeared.
-  return readable && !budget.exhausted && absent && unchanged
-}
-
 export function walkFiles(roots, { accept = () => true, budget = createBudget(), fs = nodeFs } = {}) {
   const files = [], errors = []
   const stack = [...new Set(roots)].reverse().map((root) => ({ root, file: root, rel: '', depth: 0, ancestors: new Set() }))
@@ -34,15 +12,9 @@ export function walkFiles(roots, { accept = () => true, budget = createBudget(),
     const item = stack.pop()
     // Count before lstat, including roots, dangling links and cycle edges.
     if (++budget.entries > budget.maxEntries) { budget.exhausted = 'entries'; break }
-    let link, stat
+    let stat
     try {
-      link = fs.lstatSync(item.file)
-    } catch (error) {
-      if (error.code === 'ENOENT' && (!item.rel || deletedSinceListing(item, fs, budget, errors))) continue
-      errors.push({ path: item.file, code: error.code ?? 'IO' })
-      continue
-    }
-    try {
+      const link = fs.lstatSync(item.file)
       stat = link.isSymbolicLink() ? fs.statSync(item.file) : link
     } catch (error) {
       if (error.code !== 'ENOENT' || item.rel) errors.push({ path: item.file, code: error.code ?? 'IO' })
@@ -70,10 +42,9 @@ export function walkFiles(roots, { accept = () => true, budget = createBudget(),
       finally { if (dir) try { dir.closeSync() } catch (error) { errors.push({ path: item.file, code: error.code ?? 'IO' }) } }
       if (budget.exhausted) break
       names.sort()
-      const siblings = new Set(names)
       for (let i = names.length - 1; i >= 0; i--) {
         const name = names[i]
-        stack.push({ root: item.root, file: path.join(item.file, name), rel: item.rel ? path.join(item.rel, name) : name, depth: item.depth + 1, ancestors, siblings })
+        stack.push({ root: item.root, file: path.join(item.file, name), rel: item.rel ? path.join(item.rel, name) : name, depth: item.depth + 1, ancestors })
       }
     } else if (stat.isFile()) {
       if (!item.rel || accept(item.rel, path.basename(item.file))) files.push({ root: item.root, file: item.file, rel: item.rel || path.basename(item.file) })

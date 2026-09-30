@@ -28,7 +28,7 @@ function withWalkFixture(run: (root: string, opts: object, unrelated: string) =>
 }
 
 describe('agent definitions', () => {
-  it('keeps the project winner when a child vanishes in an unrelated root', () => withWalkFixture((_root, opts, unrelated) => {
+  it('stays unresolved when a listed child is deleted in an unrelated root', () => withWalkFixture((_root, opts, unrelated) => {
     expect(resolveAgentDefinition('pilot', opts)).toMatchObject({ unresolved: expect.stringContaining('ineligible') })
     const vanished: string[] = []
     const walkFs = { ...fs, lstatSync: (file: string) => {
@@ -38,21 +38,78 @@ describe('agent definitions', () => {
     const result = resolveAgentDefinition('pilot', { ...opts, walkFs })
     expect(vanished).toEqual([unrelated])
     expect(fs.existsSync(unrelated)).toBe(false)
-    expect(result).toMatchObject({ scope: 'project', identity: 'pilot', data: { observer: 'watchdog' } })
+    expect(result).toEqual({ unresolved: `unreadable definition: ENOENT ${unrelated}` })
   }))
 
-  it('stays unresolved when a child is renamed in an unrelated root', () => withWalkFixture((_root, opts, unrelated) => {
-    const renamed = path.join(path.dirname(unrelated), 'lead.md')
+  it('stays unresolved when a definition moves into an already-visited directory in an unrelated root', () => withWalkFixture((_root, opts, unrelated) => {
+    fs.unlinkSync(unrelated)
+    const agents = path.dirname(unrelated), visited = path.join(agents, 'a')
+    const old = path.join(agents, 'z.md'), renamed = path.join(visited, 'moved.md')
+    const definition = '---\nname: pilot\ndescription: user worker\nobserver: other-watchdog\n---\n'
+    fs.mkdirSync(visited)
+    fs.writeFileSync(old, definition)
+    expect(fs.readdirSync(agents).sort()).toEqual(['a', 'z.md'])
     const moved: string[] = []
+    let visitedEmptyDirectory = false
     const walkFs = { ...fs, lstatSync: (file: string) => {
-      if (file === unrelated && !moved.length) { moved.push(file); fs.renameSync(file, renamed) }
+      if (file === old && !moved.length) {
+        expect(visitedEmptyDirectory).toBe(true)
+        moved.push(file)
+        fs.renameSync(file, renamed)
+      }
       return fs.lstatSync(file)
+    }, opendirSync: (dir: string) => {
+      if (dir === visited) {
+        expect(fs.readdirSync(dir)).toEqual([])
+        visitedEmptyDirectory = true
+      }
+      return fs.opendirSync(dir)
     } }
     const result = resolveAgentDefinition('pilot', { ...opts, walkFs })
-    expect(moved).toEqual([unrelated])
-    expect(fs.existsSync(unrelated)).toBe(false)
-    expect(fs.readFileSync(renamed, 'utf8')).toBe('---\nname: pilot\n---\n')
-    expect(result).toEqual({ unresolved: `unreadable definition: ENOENT ${unrelated}` })
+    expect(moved).toEqual([old])
+    expect(fs.existsSync(old)).toBe(false)
+    expect(fs.readdirSync(agents)).toEqual(['a'])
+    expect(fs.readFileSync(renamed, 'utf8')).toBe(definition)
+    expect(result).toEqual({ unresolved: `unreadable definition: ENOENT ${old}` })
+  }))
+
+  it.each(['root', 'child'])('stays unresolved when a symlinked agents %s is retargeted after visiting its child directory', (kind) => withWalkFixture((root, opts, unrelated) => {
+    fs.unlinkSync(unrelated)
+    const agents = path.dirname(unrelated), sourceA = path.join(root, 'source-a'), sourceB = path.join(root, 'source-b')
+    fs.mkdirSync(path.join(sourceA, 'a'), { recursive: true })
+    fs.mkdirSync(path.join(sourceB, 'a'), { recursive: true })
+    const definition = '---\nname: pilot\ndescription: user worker\nobserver: other-watchdog\n---\n'
+    fs.writeFileSync(path.join(sourceA, 'z.md'), definition)
+    fs.writeFileSync(path.join(sourceB, 'a', 'hidden.md'), definition)
+    const link = kind === 'root' ? agents : path.join(agents, 'linked')
+    if (kind === 'root') fs.rmdirSync(agents)
+    fs.symlinkSync(sourceA, link, 'dir')
+    const old = path.join(link, 'z.md'), visited = path.join(link, 'a')
+    expect(fs.readdirSync(link).sort()).toEqual(['a', 'z.md'])
+    let visitedEmptyDirectory = false
+    const retargeted: string[] = []
+    const walkFs = { ...fs, lstatSync: (file: string) => {
+      if (file === old && !retargeted.length) {
+        expect(visitedEmptyDirectory).toBe(true)
+        retargeted.push(file)
+        fs.unlinkSync(link)
+        fs.symlinkSync(sourceB, link, 'dir')
+      }
+      return fs.lstatSync(file)
+    }, opendirSync: (dir: string) => {
+      if (dir === visited) {
+        expect(fs.readdirSync(dir)).toEqual([])
+        visitedEmptyDirectory = true
+      }
+      return fs.opendirSync(dir)
+    } }
+    const result = resolveAgentDefinition('pilot', { ...opts, walkFs })
+    expect(retargeted).toEqual([old])
+    expect(fs.readlinkSync(link)).toBe(sourceB)
+    expect(fs.existsSync(old)).toBe(false)
+    expect(fs.readdirSync(link)).toEqual(['a'])
+    expect(fs.readFileSync(path.join(link, 'a', 'hidden.md'), 'utf8')).toBe(definition)
+    expect(result).toEqual({ unresolved: `unreadable definition: ENOENT ${old}` })
   }))
 
   it.skipIf(process.platform === 'win32')('ignores a non-agent FIFO but refuses an agent-named FIFO (requires POSIX mkfifo)', () => withWalkFixture((_root, opts, unrelated) => {

@@ -13,43 +13,6 @@ function withWalkRoot(run: (root: string) => void) {
 const acceptMarkdown = (_rel: string, name: string) => name.endsWith('.md')
 
 describe('bounded walk', () => {
-  it('ignores a listed child deleted before lstat after confirming its absence', () => withWalkRoot((root) => {
-    const gone = path.join(root, 'a-gone.md'), sibling = path.join(root, 'z-live.md')
-    fs.writeFileSync(gone, 'gone')
-    fs.writeFileSync(sibling, 'live')
-    const vanished: string[] = []
-    const injected = { ...fs, lstatSync: (file: string) => {
-      if (file === gone) { vanished.push(file); fs.unlinkSync(file) }
-      return fs.lstatSync(file)
-    } }
-    const result = walkFiles([root], { fs: injected, accept: acceptMarkdown })
-    expect(vanished).toEqual([gone])
-    expect(fs.existsSync(gone)).toBe(false)
-    expect(result).toEqual({ files: [{ root, file: sibling, rel: 'z-live.md' }], errors: [], exhausted: null })
-  }))
-
-  it('records ENOENT when a listed child is renamed before lstat', () => withWalkRoot((root) => {
-    const old = path.join(root, 'pilot.md'), renamed = path.join(root, 'lead.md')
-    fs.writeFileSync(old, 'agent')
-    const injected = { ...fs, lstatSync: (file: string) => {
-      if (file === old) fs.renameSync(old, renamed)
-      return fs.lstatSync(file)
-    } }
-    const result = walkFiles([root], { fs: injected })
-    expect(fs.existsSync(renamed)).toBe(true)
-    expect(result.errors).toEqual([{ path: old, code: 'ENOENT' }])
-  }))
-
-  it('records ENOENT when the failed child is still in the second listing', () => withWalkRoot((root) => {
-    const file = path.join(root, 'pilot.md')
-    fs.writeFileSync(file, 'agent')
-    const injected = { ...fs, lstatSync: (name: string) => {
-      if (name === file) throw Object.assign(new Error('unstatable name'), { code: 'ENOENT' })
-      return fs.lstatSync(name)
-    } }
-    expect(walkFiles([root], { fs: injected }).errors).toEqual([{ path: file, code: 'ENOENT' }])
-  }))
-
   it('keeps a dangling root absent while refusing a dangling non-agent child', () => withWalkRoot((root) => {
     const link = path.join(root, 'broken')
     fs.symlinkSync(path.join(root, 'missing'), link)
@@ -67,38 +30,6 @@ describe('bounded walk', () => {
     execFileSync('mkfifo', [pipe])
     expect(walkFiles([root], { accept: acceptMarkdown }).errors).toEqual([{ path: pipe, code: 'NOT_REGULAR' }])
     expect(walkFiles([pipe], { accept: () => false }).errors).toEqual([{ path: pipe, code: 'NOT_REGULAR' }])
-  }))
-
-  it.each(['dirs', 'entries'])('charges the confirmation listing to the %s budget', (limit) => withWalkRoot((root) => {
-    const gone = path.join(root, 'a-gone.md')
-    fs.writeFileSync(gone, 'gone')
-    fs.writeFileSync(path.join(root, 'z-live.md'), 'live')
-    const injected = { ...fs, lstatSync: (file: string) => {
-      if (file === gone) fs.unlinkSync(file)
-      return fs.lstatSync(file)
-    } }
-    const budget = createBudget(limit === 'dirs' ? { maxDirs: 1 } : { maxEntries: 3 })
-    expect(walkFiles([root], { fs: injected, budget }).exhausted).toBe(limit)
-  }))
-
-  it.each(['open', 'read', 'close'])('fails closed when the confirmation listing cannot %s', (failure) => withWalkRoot((root) => {
-    const gone = path.join(root, 'gone.md')
-    fs.writeFileSync(gone, 'gone')
-    let listings = 0
-    const denied = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }) }
-    const injected = { ...fs, lstatSync: (file: string) => {
-      if (file === gone) fs.unlinkSync(file)
-      return fs.lstatSync(file)
-    }, opendirSync: (dir: string) => {
-      const confirming = ++listings === 2
-      if (confirming && failure === 'open') denied()
-      const handle = fs.opendirSync(dir)
-      return {
-        readSync: () => confirming && failure === 'read' ? denied() : handle.readSync(),
-        closeSync: () => { handle.closeSync(); if (confirming && failure === 'close') denied() },
-      }
-    } }
-    expect(walkFiles([root], { fs: injected }).errors).toEqual([{ path: root, code: 'EACCES' }, { path: gone, code: 'ENOENT' }])
   }))
 
   it('enumerates seeded generated trees despite broken siblings and cycles', () => {
