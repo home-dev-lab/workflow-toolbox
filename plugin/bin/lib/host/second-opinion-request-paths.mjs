@@ -64,9 +64,13 @@ export function unreadEscape(value, home) {
   return Array.isArray(paths) ? paths.filter((p) => typeof p === 'string' && p.length > 0).map((p) => expandHome(p, home)) : []
 }
 
-export function requestDirectoryNote(directories) {
+// Like the refusal below, a READ entry is offered only for a directory the sandbox would accept: never $HOME,
+// an ancestor of it, root or host lane state.
+export function requestDirectoryNote(directories, home, env) {
   if (!directories.length) return null
-  return `NOTE: the request names ${directories.join(', ')}, a directory the reviewer cannot read inside the sandbox; the review runs without it. If its contents are needed, copy them under --repo or re-run with WT_LANE_SANDBOX_READ=${quoteRemedyWord(directories.join(':'), true)}.`
+  const entries = [...new Set(directories)].filter((named) => laneSandboxReadRemedyAllowed(named, { ...env, HOME: home }))
+  const read = entries.length ? ` or re-run with WT_LANE_SANDBOX_READ=${quoteRemedyWord(entries.join(':'), true)}` : ''
+  return `NOTE: the request names ${directories.join(', ')}, a directory the reviewer cannot read inside the sandbox; the review runs without it. If its contents are needed, copy them under --repo${read}.`
 }
 
 export function requestPathRefusal(missing, repo, home, env) {
