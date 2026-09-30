@@ -458,7 +458,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const deepActors = (actors) => (actors || []).flatMap((actor) => [actor, ...deepActors([...(actor.lanes || []), ...(actor.children || [])])]);
   const renderCardStages = (card, sessionId) => {
     // `sdkLifecycle` is the deciding field: lifecycle phases replace, rather than extend, the legacy dev cycle.
-    const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && ((actor.phase && actor.phase !== 'unknown') || actor.queue));
+    const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && ((actor.phase && actor.phase !== 'unknown') || actor.queue || actor.processPid));
     const key = `timeline:${sessionId}:${card.id}`;
     const selection = selected.get(key);
     if (pilot?.queue) return node(Box, { key, paddingLeft: 1 }, fixedText({ dimColor: true }, queueStatus(pilot.queue)));
@@ -504,6 +504,8 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         roundSummary = node(Text, { dimColor: true }, `Plan ↔ Critic: ${lowerBound}${pilot.criticRounds} ${unit}`);
       }
       const pilotLabel = pilot.label || 'SDK pilot';
+      const known = (value) => typeof value === 'string' && value.trim() !== '' && value !== 'unknown';
+      const currentPhaseLabel = known(pilot.phase) ? phaseLabel(pilot.phase) : 'starting';
       const pilotDetails = isExpanded ? renderOpenDetail(`detail-toggle:row:${pilot.id}`, `${pilotLabel} details`, () => actions.toggle(pilot.id),
         ...knownDetails(pilot).map((line) => node(Text, { dimColor: true }, line)),
         roundSummary,
@@ -513,6 +515,9 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
           control({ key: `detail-toggle:row:${pilot.id}`, plain: true, onPress: () => actions.toggle(pilot.id) }, `${isExpanded ? '▼' : '▶'} ${pilotLabel}`, isExpanded ? COLORS.actionOpen : COLORS.action),
           fixedText({ bold: true }, 'drives the stages below'),
+          currentPhaseLabel ? fixedText({}, `· ${currentPhaseLabel}`) : null,
+          known(pilot.phaseModel) ? fixedText({ dimColor: true }, `· ${pilot.phaseModel}`) : null,
+          known(pilot.elapsed) ? fixedText({ dimColor: true }, `· ${pilot.elapsed}`) : null,
           isExpanded && pilot.route ? fixedText({ dimColor: true }, `· route ${pilot.route}`) : null,
         ),
         pilotDetails,

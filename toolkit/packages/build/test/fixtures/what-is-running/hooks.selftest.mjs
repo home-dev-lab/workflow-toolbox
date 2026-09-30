@@ -3435,6 +3435,149 @@ await test('[Step 8 round 2 jitter] process refusals appear only after two conse
   assert(text.includes('Some running work could not be listed'));
 });
 
+function sdkRunnerFixture(name, id, { phaseLog, lifecycle, routeModels, runnerAlive = true, laneProcess = false, logHead = 'route=FULL model=opus effective=opus\n', writeLog = true, usage = null, admission = null }) {
+  const isolated = join(root, name);
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', clockTicks: 100 };
+  for (const dir of [join(isolatedPaths.configDir, 'plugins', 'store'), join(isolatedPaths.configDir, 'plugins', 'data'), isolatedPaths.livenessDir, isolatedPaths.procRoot]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(isolatedPaths.procRoot, 'uptime'), '20000.00 1000.00\n');
+  const worktree = join(isolatedPaths.suiteRoot, 'worktrees', name); const lane = join(worktree, '.lane'); mkdirSync(lane, { recursive: true });
+  writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: id, route: 'FULL', models: routeModels }));
+  writeFileSync(join(lane, 'card.md'), `# card ${id}. Show a silent SDK run\n`);
+  if (writeLog) writeFileSync(join(lane, 'sdk-pilot.log'), logHead + (phaseLog || ''));
+  if (lifecycle) writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify(lifecycle));
+  if (usage) writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage));
+  if (admission) { const host = laneHostDir(worktree); mkdirSync(host, { recursive: true }); writeFileSync(join(host, 'admission.json'), JSON.stringify(admission)); utimesSync(join(host, 'admission.json'), new Date('2026-09-12T12:00:00Z'), new Date('2026-09-12T12:00:00Z')); }
+  // Every file is 30 minutes old: nothing in the worktree is fresh, so only a live process can keep the row.
+  const old = new Date('2026-09-12T12:00:00Z');
+  for (const file of ['route.json', 'card.md', ...(writeLog ? ['sdk-pilot.log'] : []), ...(lifecycle ? ['lifecycle.json'] : []), ...(usage ? ['usage.json'] : [])]) utimesSync(join(lane, file), old, old);
+  utimesSync(lane, old, old); utimesSync(worktree, old, old);
+  const processes = [];
+  if (runnerAlive) processes.push([930, 1, ['node', '/plugin/bin/wt-pilot-runner.mjs', '--card', id, '--dir', worktree], 1820000]);
+  if (laneProcess) processes.push([931, 930, ['node', '/plugin/bin/wt-lane.mjs', '--worker', '--dir', worktree, '--model', 'openai/gpt-6-sol'], 1976000]);
+  for (const [pid, ppid, args, startTicks] of processes) {
+    mkdirSync(join(isolatedPaths.procRoot, String(pid)));
+    writeFileSync(join(isolatedPaths.procRoot, String(pid), 'status'), `PPid:\t${ppid}\n`);
+    writeFileSync(join(isolatedPaths.procRoot, String(pid), 'cmdline'), args.join('\0') + '\0');
+    writeFileSync(join(isolatedPaths.procRoot, String(pid), 'stat'), `${pid} (fixture) S ${ppid} ${Array(17).fill('0').join(' ')} ${startTicks}\n`);
+  }
+  return { isolatedPaths, worktree };
+}
+
+await test('[card 1874319379 INV1+INV3] a live SDK runner in an in-process phase with no fresh write stays listed, without a phantom lane', async () => {
+  const id = '1874319379915605690';
+  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
+  const alive = sdkRunnerFixture('sdk-silent-plan', id, { phaseLog: 'lifecycle: accepted phase=discovery\nlifecycle: accepted phase=plan\n', routeModels });
+  const actor = (await readSnapshot({ process: processCapability }, alive.isolatedPaths)).rows.find((item) => item.id === id);
+  assert(actor, 'the live runner keeps its row although nothing was written for 30 min');
+  assert.equal(actor.label, 'SDK pilot'); assert.equal(actor.phase, 'plan'); assert.equal(actor.elapsed, '30 min');
+  assert.deepEqual(actor.lanes, [], 'a runner alone must not produce a nested lane');
+  // Control readable in both outcomes: the same fixture without the runner process has no row.
+  const gone = sdkRunnerFixture('sdk-silent-plan-dead', id, { phaseLog: 'lifecycle: accepted phase=plan\n', routeModels, runnerAlive: false });
+  assert.equal((await readSnapshot({ process: processCapability }, gone.isolatedPaths)).rows.find((item) => item.id === id), undefined);
+});
+
+await test('[card 1874319379 INV2] a runner whose log ends on EXIT= is not listed even while its process lingers', async () => {
+  const id = '1874319379915605691';
+  const finished = sdkRunnerFixture('sdk-finished', id, { phaseLog: 'lifecycle: accepted phase=report\nEXIT=0\n', routeModels: {} });
+  assert.equal((await readSnapshot({ process: processCapability }, finished.isolatedPaths)).rows.find((item) => item.id === id), undefined);
+});
+
+await test('[card 1874319379 INV4] the SDK row carries the CURRENT phase model', async () => {
+  const { currentPhaseModel } = artifactHelpers;
+  const routeModels = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' };
+  assert.equal(currentPhaseModel('plan', { pilotModel: 'opus', routeModels, lanes: [] }), 'opus');
+  assert.equal(currentPhaseModel('verify', { pilotModel: 'opus', routeModels, lanes: [] }), 'opus');
+  assert.equal(currentPhaseModel('review', { pilotModel: 'opus', routeModels, lanes: [] }), 'openai/gpt-6-astra');
+  assert.equal(currentPhaseModel('tdd', { pilotModel: 'opus', routeModels, lanes: [] }), 'openai/gpt-6-sol');
+  assert.equal(currentPhaseModel('tdd', { pilotModel: 'opus', routeModels: { lane: 'terra' }, lanes: [] }), 'terra');
+  assert.equal(currentPhaseModel('refutation', { pilotModel: 'opus', routeModels: {}, lanes: [] }), 'unknown');
+  const lanes = [
+    { phase: 'critic', round: 1, state: 'completed', model: 'openai/gpt-6-luna', started_at: 1 },
+    { phase: 'critic', round: 2, state: 'running', model: 'openai/gpt-6-terra', started_at: 3 },
+    { phase: 'critic', round: 2, state: 'completed', model: 'openai/gpt-6-luna', started_at: 5 },
+  ];
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels, lanes }), 'openai/gpt-6-terra', 'a running lane wins');
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels, lanes: lanes.filter((lane) => lane.state !== 'running') }), 'openai/gpt-6-luna', 'else the latest lane of the phase');
+  assert.equal(currentPhaseModel(null, { pilotModel: 'opus', routeModels, lanes }), 'unknown');
+  assert.equal(currentPhaseModel('plan', { pilotModel: 'unknown', routeModels, lanes }), 'unknown');
+
+  const id = '1874319379915605692';
+  const now = Date.parse(paths.now);
+  const lifecycle = {
+    version: 1, started_at: now - 40 * 60000, ended_at: null,
+    phases: [
+      { phase: 'discovery', round: null, entered_at: now - 40 * 60000, exited_at: now - 35 * 60000, transition_id: 'discovery-1' },
+      { phase: 'review', round: 1, entered_at: now - 35 * 60000, exited_at: null, transition_id: 'review-1' },
+    ],
+    lanes: [{ phase: 'review', round: 1, state: 'running', executor: 'gpt-lane', model: 'openai/gpt-6-astra', started_at: now - 34 * 60000 }],
+  };
+  const fixture = sdkRunnerFixture('sdk-review-model', id, { lifecycle, routeModels: { review: 'openai/gpt-6-sol' }, laneProcess: true });
+  const actor = (await readSnapshot({ process: processCapability }, fixture.isolatedPaths)).rows.find((item) => item.id === id);
+  assert.equal(actor.phase, 'review'); assert.equal(actor.phaseModel, 'openai/gpt-6-astra'); assert.equal(actor.model, 'opus');
+});
+
+await test('[card 1874319379 INV5] the SDK pilot header names the current phase, its model and the run elapsed', async () => {
+  const id = '1874319379915605693';
+  const fixture = sdkRunnerFixture('sdk-header', id, { phaseLog: 'lifecycle: accepted phase=discovery\nlifecycle: accepted phase=plan\n', routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered');
+  assert.deepEqual(texts.slice(header + 1, header + 4), ['· Plan', '· opus', '· 30 min']);
+  const bareSnapshot = JSON.parse(JSON.stringify(snapshot, (_key, value) => (value && typeof value === 'object' && value.id === id && value.sdkLifecycle ? { ...value, phaseModel: 'unknown', elapsed: 'unknown' } : value)));
+  assert(JSON.stringify(bareSnapshot).includes('"phaseModel":"unknown"'), 'fixture rewrote the SDK actor');
+  const bare = await renderSnapshot(bareSnapshot);
+  const bareTexts = descendants(bare.tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const bareHeader = bareTexts.findIndex((text) => text === 'drives the stages below');
+  assert(bareHeader >= 0, 'SDK pilot header rendered for the bare row');
+  assert.equal(bareTexts[bareHeader + 1], '· Plan');
+  assert(!bareTexts.some((text) => /·\s*unknown/.test(text)), 'unknown never rendered');
+});
+
+await test('[card 1874319379 critic F4+F6] awaiting review has no current model; a legacy critic falls back to the review model', async () => {
+  const { currentPhaseModel } = artifactHelpers;
+  assert.equal(currentPhaseModel('awaiting_fidelity', { pilotModel: 'opus', routeModels: {}, lanes: [] }), 'unknown');
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels: { lane: 'terra', review: 'sol', refutation: 'astra' }, lanes: [] }), 'sol');
+  assert.equal(currentPhaseModel('critic', { pilotModel: 'opus', routeModels: { critic: 'luna', review: 'sol' }, lanes: [] }), 'luna');
+});
+
+await test('[card 1874319379 critic F3] an in-process phase shows the model the pilot was SERVED, even when the log lost its effective= line', async () => {
+  const id = '1874319379915605694';
+  const usage = { messages: [
+    { input: 1, output: 1, model: 'claude-opus-5', arrived_at: '2026-09-12T11:50:00Z' },
+    { input: 1, output: 1, model: 'claude-opus-5-5', arrived_at: '2026-09-12T11:59:00Z' },
+  ] };
+  const fixture = sdkRunnerFixture('sdk-served-model', id, { logHead: '', phaseLog: 'lifecycle: accepted phase=plan\n', routeModels: { critic: 'openai/gpt-6-sol' }, usage });
+  const actor = (await readSnapshot({ process: processCapability }, fixture.isolatedPaths)).rows.find((item) => item.id === id);
+  assert.equal(actor.phase, 'plan'); assert.equal(actor.phaseModel, 'claude-opus-5-5');
+});
+
+await test('[card 1874319379 critic F1] an admitted runner with no phase yet shows as a starting SDK pilot', async () => {
+  const id = '1874319379915605695';
+  const fixture = sdkRunnerFixture('sdk-starting', id, { writeLog: false, routeModels: {}, admission: { state: 'active', cardId: id } });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const actor = snapshot.rows.find((item) => item.id === id);
+  assert(actor, 'admitted live runner is collected');
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered while starting');
+  assert.equal(texts[header + 1], '· starting');
+});
+
+await test('[card 1874319379 critic F4+F5] a run waiting for arbiter review says so in the header, without a phase model', async () => {
+  const id = '1874319379915605696';
+  const fixture = sdkRunnerFixture('sdk-awaiting', id, { phaseLog: 'lifecycle: accepted phase=report\nlifecycle: accepted phase=awaiting_fidelity\n', routeModels: {} });
+  const snapshot = await readSnapshot({ process: processCapability }, fixture.isolatedPaths);
+  const { tree } = await renderSnapshot(snapshot);
+  const texts = descendants(tree, (item) => item.name === 'Text').map((item) => item.props.children.join(''));
+  const header = texts.findIndex((text) => text === 'drives the stages below');
+  assert(header >= 0, 'SDK pilot header rendered');
+  assert.deepEqual(texts.slice(header + 1, header + 3), ['· Waiting for arbiter review', '· 30 min']);
+  assert(!texts.some((text) => text.includes('awaiting_fidelity')));
+});
+
 rmSync(root, { recursive: true, force: true });
 console.log(`tests: ${testCount - failures.length}/${testCount}`);
 process.exitCode = failures.length ? 1 : 0;
