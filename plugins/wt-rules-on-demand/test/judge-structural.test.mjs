@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, symlink, readdir, rm, rename, stat
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { extractCases } from '../scripts/judge-extract.mjs';
 import { judgeCases, scoreCases } from '../scripts/judge-cases.mjs';
 import { RULE_CAP } from '../hooks/evidence.js';
@@ -90,7 +91,7 @@ test('judge and extract create exclusive output files, preserving rollback input
   await writeFile(f.casesFile, JSON.stringify({ caseId: 'a', rule: 'r.md', ruleText: 'Do it.', excerpt: '', facts: {}, governedActs: 0 }) + '\n');
   const projectRules = join(f.root, '.claude', 'rules-on-demand'); await mkdir(projectRules, { recursive: true });
   await writeFile(join(projectRules, 'r.md'), source());
-  const rollback = new URL('../scripts/rollback-check.mjs', import.meta.url).pathname;
+  const rollback = fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url));
   const decide = (mechanical) => spawnSync(process.execPath, [rollback, '--project', f.root, '--store', store, '--verdicts', archive, '--dry-run', '--json', ...(mechanical ? ['--mechanical-only'] : [])], { encoding: 'utf8' });
   const before = [decide(false), decide(true)].map((r) => { assert.equal(r.status, 0, r.stderr); return r.stdout; });
   await assert.rejects(() => judgeCases({ casesFile: f.casesFile, out: store }), /directory|output|judge/i);
@@ -126,7 +127,7 @@ test('one singly labelled case without a prediction is reported missing', async 
 
 test('extract --out cannot overwrite a store or traverse a symlink or lexical parent alias', async (t) => {
   const f = await fixture(t, [serve('a'), call('a')]);
-  const script = new URL('../scripts/judge-cases.mjs', import.meta.url).pathname;
+  const script = fileURLToPath(new URL('../scripts/judge-cases.mjs', import.meta.url));
   const store = join(f.root, 'store.json'), archive = join(f.root, 'archive.jsonl'), alias = join(f.root, 'alias');
   await writeFile(store, '{"compliance-verdicts-jsonl":""}');
   await writeFile(archive, 'archive\n');
@@ -177,11 +178,19 @@ test('swapping a run directory during the model call cannot redirect its open ou
   const moved = join(f.root, 'moved');
   const run = await judgeCases({ casesFile: f.casesFile, out: f.out, runner: async () => {
     const [runName] = await readdir(f.out);
+    if (process.platform === 'win32') {
+      await assert.rejects(() => rename(join(f.out, runName), moved), (error) => ['EPERM', 'EBUSY', 'EACCES'].includes(error.code));
+      return { answer: '{"verdict":"not followed","reason":"ok"}' };
+    }
     await rename(join(f.out, runName), moved);
     await symlink(victim, join(f.out, runName));
     return { answer: '{"verdict":"not followed","reason":"ok"}' };
   } });
   assert.equal(await readFile(store, 'utf8'), bytes);
+  if (process.platform === 'win32') {
+    assert.equal((await readRows(run.path))[0].verdict, 'not followed');
+    return;
+  }
   assert.equal((await readRows(join(moved, 'judgments.jsonl')))[0].verdict, 'not followed');
   assert.notEqual(run.path, join(moved, 'judgments.jsonl'));
 });
@@ -267,11 +276,11 @@ test('judge and extract refuse every rollback store and archive output namespace
   const archiveBytes = '{"rule":"r.md","verdict":"followed"}\n';
   await writeFile(existingArchive, archiveBytes);
   await writeFile(f.casesFile, JSON.stringify({ caseId: 'a', rule: 'r.md', governedActs: 0 }) + '\n');
-  const rollback = new URL('../scripts/rollback-check.mjs', import.meta.url).pathname;
+  const rollback = fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url));
   const check = () => spawnSync(process.execPath, [rollback, '--config-dir', f.root, '--user', '--project', f.root, '--dry-run', '--json'], { encoding: 'utf8' });
   const userRules = join(f.root, 'rules-on-demand'); await mkdir(userRules); await writeFile(join(userRules, 'r.md'), source());
   const before = check(); assert.equal(before.status, 0, before.stderr);
-  const script = new URL('../scripts/judge-cases.mjs', import.meta.url).pathname;
+  const script = fileURLToPath(new URL('../scripts/judge-cases.mjs', import.meta.url));
   for (const out of [storeDir, join(storeDir, 'wt-rules-on-demand_new.json'), join(storeDir, 'nested', 'other'), archiveDir, archive, existingArchive, join(archiveDir, 'nested', 'other')]) {
     await assert.rejects(() => judgeCases({ casesFile: f.casesFile, out, rollbackConfigDir: f.root }), /rollback input/i, out);
     const extracted = spawnSync(process.execPath, [script, 'extract', '--transcript', f.transcript, '--rules-dir', f.rules, '--config-dir', f.root, '--out', out], { encoding: 'utf8' });
@@ -300,10 +309,10 @@ test('another config rollback store and archive cannot be judge or extract outpu
   await writeFile(store, storeBytes); await writeFile(archive, archiveBytes);
   const userRules = join(other, 'rules-on-demand'); await mkdir(userRules); await writeFile(join(userRules, 'r.md'), source());
   await writeFile(f.casesFile, JSON.stringify({ caseId: 'a', rule: 'r.md', governedActs: 0 }) + '\n');
-  const rollback = new URL('../scripts/rollback-check.mjs', import.meta.url).pathname;
+  const rollback = fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url));
   const check = () => spawnSync(process.execPath, [rollback, '--config-dir', other, '--user', '--project', f.root, '--dry-run', '--json'], { encoding: 'utf8' });
   const before = check(); assert.equal(before.status, 0, before.stderr);
-  const script = new URL('../scripts/judge-cases.mjs', import.meta.url).pathname;
+  const script = fileURLToPath(new URL('../scripts/judge-cases.mjs', import.meta.url));
   for (const out of [join(storeDir, 'plain'), join(storeDir, 'wt-rules-on-demand_new.json'), join(archiveDir, 'plain'), join(archiveDir, 'compliance-verdicts-archive-3-4.jsonl')]) {
     await assert.rejects(() => judgeCases({ casesFile: f.casesFile, out, rollbackConfigDir: selected }), /rollback input/i, out);
     const extracted = spawnSync(process.execPath, [script, 'extract', '--transcript', f.transcript, '--rules-dir', f.rules, '--config-dir', selected, '--out', out], { encoding: 'utf8' });
@@ -320,7 +329,7 @@ test('another config rollback store and archive cannot be judge or extract outpu
 test('rollback input names in any output component are refused before creation', async (t) => {
   const f = await fixture(t, []);
   await writeFile(f.casesFile, JSON.stringify({ caseId: 'a', rule: 'r.md', governedActs: 0 }) + '\n');
-  const script = new URL('../scripts/judge-cases.mjs', import.meta.url).pathname;
+  const script = fileURLToPath(new URL('../scripts/judge-cases.mjs', import.meta.url));
   for (const name of ['wt-rules-on-demand_new.json', 'compliance-verdicts-archive-1-2.jsonl']) {
     const out = join(f.root, 'outside', name, 'nested');
     await assert.rejects(() => judgeCases({ casesFile: f.casesFile, out, rollbackConfigDir: join(f.root, 'selected') }), /rollback input/i, out);

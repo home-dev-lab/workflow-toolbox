@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, symlink, stat, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { extractCases } from '../scripts/judge-extract.mjs';
 import { judgeCases, scoreCases, cliRunner } from '../scripts/judge-cases.mjs';
 import { normalize } from '../scripts/transcript-verdicts.mjs';
@@ -221,7 +222,7 @@ test('judge writer refuses store, archive, symlink and nonjudge file; rollback u
   assert.equal(await readFile(store, 'utf8'), storeBytes);
   assert.equal(await readFile(archive, 'utf8'), archiveBytes);
   const { spawnSync } = await import('node:child_process');
-  const rollback = new URL('../scripts/rollback-check.mjs', import.meta.url).pathname;
+  const rollback = fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url));
   const projectRules = join(f.root, '.claude', 'rules-on-demand'); await mkdir(projectRules, { recursive: true });
   await writeFile(join(projectRules, 'r.md'), toolRule());
   const verdicts = join(f.root, 'verdicts.jsonl'); await writeFile(verdicts, '');
