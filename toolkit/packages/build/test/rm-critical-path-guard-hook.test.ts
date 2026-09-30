@@ -142,6 +142,23 @@ describe('review regression locks — parser', () => {
     expect(run("rm -rf '~'").denied).toBe(false)
     expect(run('rm -rf ~').denied).toBe(true)
   })
+  it('W1 reads a Windows-form home and working directory the way Git Bash spells them', () => {
+    // On win32 the hook receives `C:\...` from os.homedir() and the payload cwd, while the Bash
+    // commands it judges spell the same directories `/c/...`.
+    const ctx = { cwd: 'C:\\work\\project', home: 'C:\\Users\\tester' }
+    expect(scanRmCriticalPath('rm -rf ~', ctx)).not.toEqual([])
+    expect(scanRmCriticalPath('rm -rf /c/Users/tester', ctx)).not.toEqual([])
+    expect(scanRmCriticalPath('rm -rf .', ctx)).not.toEqual([])
+    expect(scanRmCriticalPath('rm -rf ..', ctx)).not.toEqual([])
+    expect(scanRmCriticalPath('rm -rf build', ctx)).toEqual([])
+    expect(scanRmCriticalPath('rm -rf /c/work/project/build', ctx)).toEqual([])
+    expect(scanRmCriticalPath('rm -rf ~/scratch', ctx)).toEqual([])
+  })
+  it('W2 treats a bare tilde as the home directory even when the home path is unknown', () => {
+    expect(scanRmCriticalPath('rm -rf ~', { cwd: '/work/project' })).not.toEqual([])
+    expect(scanRmCriticalPath('rm -rf ~/', { cwd: '/work/project' })).not.toEqual([])
+    expect(scanRmCriticalPath('rm -rf ~/scratch', { cwd: '/work/project' })).toEqual([])
+  })
   it('F13 judges the working directory at call time and reads built-in critical variables', () => {
     // The check compares literal targets with the directory the Bash call starts in; a `cd` inside
     // the command does not move it (replay of real sessions: six `cd X … rm -rf X` commands, no prompt).

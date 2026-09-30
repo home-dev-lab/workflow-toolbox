@@ -417,6 +417,8 @@ function literalVerdict(rawTarget, ctx) {
     if (resolved === '/' || (resolved && ctx.home && resolved === trimSlashes(ctx.home))) return resolved
     return null
   }
+  // A bare `~` is the home directory whatever its spelled form, known or not.
+  if (tilde && (t === '~' || t === '~/')) return ctx.home ? trimSlashes(ctx.home) : '~'
   const resolved = resolveLiteral(t, ctx.cwd, ctx.home, tilde)
   if (resolved === null) return null
   if (resolved === '/') return resolved
@@ -586,8 +588,21 @@ export function scanRmCriticalPath(command, { cwd = null, home = null, env = {} 
   const text = String(command ?? '')
   if (!/\brm(?:dir)?\b/.test(text)) return []
   const hits = []
-  scanScript(text, { cwd, home, env: env ?? {} }, 0, hits)
+  scanScript(text, { cwd: gitBashPath(cwd), home: gitBashPath(home), env: env ?? {} }, 0, hits)
   return hits
+}
+
+/**
+ * The hook's cwd and home come from the host: on win32 they read `C:\Users\x`. The Bash commands
+ * it judges run in Git Bash, which spells the same directory `/c/Users/x`. Comparing the two
+ * forms would miss every home or working-directory target, so a drive-letter path is rewritten
+ * to the Git Bash form. A POSIX path is returned unchanged.
+ */
+function gitBashPath(path) {
+  if (typeof path !== 'string') return path
+  const drive = /^([A-Za-z]):(?:[\\/]|$)/.exec(path)
+  if (!drive) return path
+  return `/${drive[1].toLowerCase()}/${path.slice(2).replace(/\\/g, '/').replace(/^\/+/, '')}`
 }
 
 /** Does `command` invoke rm/rmdir with a target the critical-path check could stop on? A target
