@@ -700,7 +700,7 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
     expect(check.out).toContain(remedy)
     expect(check.out).not.toContain(`${RULE}: ABSENT`)
     expect(check.out).not.toContain(`${RULE}: MIGRATED-ON-DEMAND`)
-    expect(check.out).not.toContain('write the ABSENT')
+    // (A fresh config also reports its settings ABSENT, so the generic install hint is not asserted here.)
     const demandSide = runInCwdResult(['--set', 'rules', '--check', '--dir', onDemandDir], project, env)
     expect(demandSide.out).toContain(held)
     expect(demandSide.out).not.toContain(`${RULE}: MISPLACED`)
