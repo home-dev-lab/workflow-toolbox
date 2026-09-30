@@ -46,6 +46,7 @@ import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { quoteRemedyWord } from './lib/remedy-quote.mjs'
+import { pluginRootState } from './lib/plugin-root-state.mjs'
 import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
 
@@ -210,7 +211,21 @@ function stripBanner(text) {
   const body = frontmatter.ok && /^on-demand\s*:/m.test(frontmatter.block)
     ? frontmatter.body
     : withoutBanner
-  return body.replace(/^[\r\n]+|[ \t\r\n]+$/gu, '')
+  return trimTrailingBlank(trimLeadingNewlines(body))
+}
+
+// Linear scans instead of anchored whitespace regexes, which backtrack super-linearly
+// on a long whitespace run.
+function trimLeadingNewlines(text) {
+  let start = 0
+  while (start < text.length && (text[start] === '\r' || text[start] === '\n')) start++
+  return text.slice(start)
+}
+
+function trimTrailingBlank(text) {
+  let end = text.length
+  while (end > 0 && ' \t\r\n'.includes(text[end - 1])) end--
+  return text.slice(0, end)
 }
 
 function contentDirection(file, finding, set) {
@@ -231,7 +246,7 @@ function contentDirection(file, finding, set) {
   const sourceDir = set === 'agents' ? 'agent-templates' : 'rules'
   try {
     const copy = stripBanner(fs.readFileSync(path.join(finding.location, file), 'utf8'))
-    const shipped = fs.readFileSync(path.join(HERE, '..', sourceDir, file), 'utf8').replace(/[ \t\r\n]+$/u, '')
+    const shipped = trimTrailingBlank(fs.readFileSync(path.join(HERE, '..', sourceDir, file), 'utf8'))
     const copyLines = new Set(copy.split(/\r?\n/))
     const shippedLines = new Set(shipped.split(/\r?\n/))
     const onlyCopy = [...copyLines].some((line) => !shippedLines.has(line))
@@ -411,6 +426,7 @@ export function main() {
 
   const root = typeof input.cwd === 'string' && input.cwd ? input.cwd : null
   if (!root) return // no cwd in payload → can't locate the project; stay silent
+  const rootState = pluginRootState({ ownRoot: path.join(HERE, '..'), projectDir: root, event })
 
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
   const roots = placementRoots({ project: root, config: configDir })
@@ -434,6 +450,7 @@ export function main() {
   ]
 
   const sections = []
+  const skipped = []
   for (const { set, subdirs } of SETS) {
     const maps = []
     for (const subdir of subdirs) {
@@ -445,7 +462,12 @@ export function main() {
 
     const files = new Set(maps.flatMap((m) => [...m.keys()]))
     const perFile = new Map()
-    for (const file of files) perFile.set(file, mergeAll(maps, file))
+    for (const file of files) {
+      const finding = mergeAll(maps, file)
+      if (rootState.kind === 'stale' && (finding.bucket === 'stale' || finding.bucket === 'ahead')) {
+        skipped.push(finding.location ? `${file} (${finding.location})` : file)
+      } else perFile.set(file, finding)
+    }
 
     const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
     let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
@@ -454,7 +476,8 @@ export function main() {
     if (built) sections.push(built)
   }
 
-  const message = sections.length ? sections.join('\n') : null
+  if (skipped.length) sections.push(`Comparison skipped for ${skipped.sort().join(', ')}: this session runs v${rootState.runningVersion} from ${rootState.runningRoot} while v${rootState.installedVersion} is installed at ${rootState.installedRoot}; comparing against the older running version would recommend a downgrade. Run /reload-plugins or restart first.`)
+  const message = sections.filter(Boolean).join('\n')
   if (!message) return // everything adopted & current somewhere → silent
 
   // After a push attempt, the reader needs to know WHY they are being told now: a
