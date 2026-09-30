@@ -69,7 +69,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { isOnDemandDir, placementRoots as placementRootsFor, readRuleText } from '../../../bin/lib/host/adopt-placement.mjs'
+import { firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -2131,17 +2131,7 @@ function siblingOnDemandPath(resolved) {
 }
 
 /** `dir` through its real path; a directory not created yet resolves through its parent. */
-function realDir(dir) {
-  const resolved = path.resolve(dir)
-  for (const [base, rest] of [[resolved, ''], [path.dirname(resolved), path.basename(resolved)]]) {
-    try {
-      return path.join(fs.realpathSync(base), rest)
-    } catch {
-      // Try the parent next; neither existing leaves the path as given.
-    }
-  }
-  return resolved
-}
+const realDir = realDirOrParent
 
 /** The `.claude` directory of a PROJECT whose static rules directory `dir` is (`<p>/.claude/rules[/wt]`),
  *  or null. The shape may show in the LEXICAL path or in the REAL one (a project `.claude` symlinked to
@@ -2175,30 +2165,9 @@ function siblingOnDemandDir(set, dir, args) {
 // here would drift from it. Loaded once by ensureOnDemandEngine(), before any decision needs it.
 let onDemandEngineState = null
 
-/** Where the engine's `hooks/runtime-rule.js` may live, in order. An explicit WT_RULES_ON_DEMAND_ROOT is the
- *  only candidate when set (a test seam, and an owner's override): it never falls through. */
+/** Where the engine's `hooks/runtime-rule.js` may live, in order (host lookup in adopt-placement.mjs). */
 function onDemandEngineCandidates() {
-  const file = (root) => path.join(root, 'hooks', 'runtime-rule.js')
-  if (process.env.WT_RULES_ON_DEMAND_ROOT) return [file(path.resolve(process.env.WT_RULES_ON_DEMAND_ROOT))]
-  const candidates = [file(path.join(pluginRoot(), '..', 'plugins', 'wt-rules-on-demand'))]
-  const configDir = resolvedConfigRoot()
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'))
-    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
-    const installPath = (name) => {
-      const entry = plugins[name]
-      return (Array.isArray(entry) ? entry[0] : entry)?.installPath
-    }
-    const engineKey = Object.keys(plugins).find((name) => name.startsWith('wt-rules-on-demand@'))
-    if (engineKey && typeof installPath(engineKey) === 'string') candidates.push(file(installPath(engineKey)))
-    const toolboxKey = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
-    if (toolboxKey) {
-      candidates.push(file(path.join(configDir, 'plugins', 'marketplaces', toolboxKey.slice(toolboxKey.indexOf('@') + 1), 'plugins', 'wt-rules-on-demand')))
-    }
-  } catch {
-    // No readable registry: the earlier candidates stand alone.
-  }
-  return candidates
+  return onDemandEngineFiles({ pluginRoot: pluginRoot(), configDir: resolvedConfigRoot() })
 }
 
 /** Import the engine's rule parser. Never throws: `{ parseRuntimeRule, source }` or `{ error }`. */
@@ -2209,7 +2178,7 @@ async function loadOnDemandEngine() {
   } catch (err) {
     return { error: `the rules-on-demand engine was not found (${err && err.message ? err.message : String(err)})` }
   }
-  const source = candidates.find((candidate) => fs.existsSync(candidate))
+  const source = firstExistingPath(candidates)
   if (!source) return { error: `the rules-on-demand engine was not found (tried ${candidates.join(', ')})` }
   try {
     const engine = await import(pathToFileURL(source).href)
@@ -2232,8 +2201,7 @@ function onDemandServeVerdict(target) {
   const engine = onDemandEngineState ?? { error: 'the rules-on-demand engine was not found (it was not loaded)' }
   if (engine.error) return { ok: false, reason: engine.error }
   try {
-    if (!fs.statSync(target).isFile()) return { ok: false, reason: 'not a regular file' }
-    engine.parseRuntimeRule(path.basename(target), fs.readFileSync(target, 'utf8'))
+    engine.parseRuntimeRule(path.basename(target), readRegularFileText(target))
     return { ok: true }
   } catch (err) {
     return { ok: false, reason: err && err.message ? err.message : String(err) }
