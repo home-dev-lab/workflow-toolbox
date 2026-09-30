@@ -38,6 +38,7 @@ export const spawningTestFiles = [
   'packages/build/test/bounded-walk.test.ts',
   'packages/build/test/cache-keepalive.test.ts',
   'packages/build/test/changelog-skill.test.ts',
+  'packages/build/test/changelog-union-merge.test.ts',
   'packages/build/test/changeset-gate.test.ts',
   'packages/build/test/claimed-test-check.test.ts',
   'packages/build/test/claude-executor.test.ts',
