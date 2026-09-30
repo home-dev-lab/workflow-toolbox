@@ -56,7 +56,7 @@ function fixture(tag: string) {
   const cfg = join(root, 'cfg')
   mkdirSync(home, { recursive: true })
   mkdirSync(cfg, { recursive: true })
-  return { root, proj, cfg, env: sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: cfg }) }
+  return { root, proj, cfg, env: sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: cfg, CLAUDE_PROJECT_DIR: proj }) }
 }
 
 function installInto(dir: string, script = INSTALL_RULES): void {
@@ -164,7 +164,74 @@ function runPostToolUsePushHook(
   return { stdout, context }
 }
 
+function staleRootFixture() {
+  const f = fixture('stale-root')
+  const installedRoot = join(f.root, 'cache', 'workflow-toolbox', '999.0.0')
+  mkdirSync(join(installedRoot, '.claude-plugin'), { recursive: true })
+  writeFileSync(join(installedRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({
+    ...JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8')), version: '999.0.0',
+  }))
+  mkdirSync(join(f.cfg, 'plugins'), { recursive: true })
+  writeFileSync(join(f.cfg, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: {
+    'workflow-toolbox@workflow-toolbox': [{ installPath: installedRoot, version: '999.0.0' }],
+  } }))
+  writeFileSync(join(f.cfg, 'settings.json'), JSON.stringify({ enabledPlugins: { 'workflow-toolbox@workflow-toolbox': true } }))
+  const dir = join(f.cfg, 'rules', 'wt')
+  installInto(dir)
+  ageManagedRule(join(dir, RULE))
+  const otherRules = readdirSync(dir).filter((name) => name.endsWith('.md') && name !== RULE && name !== ACT)
+  const missing = otherRules[0]
+  const ahead = otherRules[1]
+  expect(missing).toBeDefined()
+  expect(ahead).toBeDefined()
+  rmSync(join(dir, missing!))
+  writeManagedRule(join(dir, ahead!), readFileSync(join(REPO_ROOT, 'plugin/rules', ahead!), 'utf8') + '\nFUTURE SHIPPED LINE\n', '9999.0.0')
+  writeFileSync(join(dir, ACT), readFileSync(join(dir, ACT), 'utf8') + '\nMY LOCAL EDIT\n')
+  const inlineEnv = { ...f.env, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin'), CLAUDE_PLUGIN_DATA: join(f.cfg, 'plugins', 'data', 'workflow-toolbox-inline') }
+  const staleEnv = { ...inlineEnv, CLAUDE_PLUGIN_DATA: join(f.cfg, 'plugins', 'data', 'workflow-toolbox-workflow-toolbox') }
+  return { f, dir, missing: missing!, ahead: ahead!, installedRoot, inlineEnv, staleEnv }
+}
+
 describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
+  it('T5: a stale session skips version-dependent advice but retains missing and edited findings', () => {
+    const { f, dir, missing, ahead, installedRoot, inlineEnv, staleEnv } = staleRootFixture()
+    const control = runHook(f.proj, inlineEnv).context
+    expect(control).toContain(`${RULE} (${dir}): behind v`)
+    expect(control).toContain('SESSION ACTION: run')
+    expect(control).toContain(`${ahead} (${dir}): ahead of v`)
+    expect(control).toContain('SESSION ACTION: arbitrate this fork')
+
+    const context = runHook(f.proj, staleEnv).context
+    expect(context).toContain(`Comparison skipped for `)
+    expect(context).toContain(`${RULE} (${dir})`)
+    expect(context).toContain(`${ahead} (${dir})`)
+    expect(context).toContain(`v999.0.0 is installed at ${installedRoot}`)
+    expect(context).toContain('until /reload-plugins or a restart')
+    expect(context).not.toContain('downgrade')
+    expect(context).not.toMatch(/\bolder\b/)
+    expect(context).toContain('not reliable until /reload-plugins or a restart')
+    expect(context).toContain(`NOT installed here: ${missing}`)
+    expect(context).toContain(`Locally modified (supported, left untouched by any refresh): ${ACT} (${dir})`)
+    expect(context).toContain('SESSION ACTION: arbitrate the local edit')
+    expect(context).not.toContain('SESSION ACTION: run')
+    expect(context).not.toContain('SESSION ACTION: arbitrate this fork')
+    expect(context).not.toContain('NOTICE ONLY: hand this to the session that owns this directory: run')
+    // The adoption hook never prints the registry hook's message; the assertion that can fail is the single skip line.
+    expect(context.match(/Comparison skipped for /g)).toHaveLength(1)
+  })
+
+  it('T5 at PostToolUse: a stale root skips comparisons after a git push instead of recommending a downgrade', () => {
+    const { f, dir, ahead, staleEnv, inlineEnv } = staleRootFixture()
+    const control = runPostToolUsePushHook(f.proj, inlineEnv).context
+    expect(control).toContain(`${ahead} (${dir}): ahead of v`)
+    const context = runPostToolUsePushHook(f.proj, staleEnv).context
+    expect(context).toContain('Comparison skipped for ')
+    expect(context).toContain(`${ahead} (${dir})`)
+    expect(context).not.toContain('ahead of v')
+    expect(context).not.toContain('SESSION ACTION: run')
+    expect(context.match(/Comparison skipped for /g)).toHaveLength(1)
+  })
+
   it('reports an old static copy in the on-demand directory as a placement conflict, never a removal', () => {
     const f = fixture('misplaced-static')
     const staticDir = join(f.cfg, 'rules', 'wt')

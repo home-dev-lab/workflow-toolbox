@@ -118,7 +118,9 @@ describe('raw host primitive quality ratchet', () => {
     // The SDK account gate adds one; it reads the SDK's accountInfo() and performs no host operation.
     // The rm critical-path guard adds its hook and its shell-command parser; the hook reads stdin
     // and the home directory through bin/lib/host, and the parser's separators are shell syntax.
-    expect(result.perimeterFiles).toBe(252)
+    // The plugin-root classifier (plugin-root-state.mjs) adds one; its home-directory read goes
+    // through bin/lib/host.
+    expect(result.perimeterFiles).toBe(253)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

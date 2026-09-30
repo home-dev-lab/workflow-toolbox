@@ -18,9 +18,10 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // lane brief and lifecycle reads moved into the host lane directory helper; the launcher
 // also moved its host file-descriptor operations behind that helper. The clock-independent
 // gate-evidence check replaced its per-path stat calls with a git comparison. The plugin lint
-// pass removed an unused `homedir` import from wt-service-watch.mjs.
+// pass removed an unused `homedir` import from wt-service-watch.mjs. The plugin-root classifier
+// that replaced the duplicate-hook notice reads the home directory through host/home-directory.mjs.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1898
+export const HOST_PRIMITIVE_CEILING = 1897
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
