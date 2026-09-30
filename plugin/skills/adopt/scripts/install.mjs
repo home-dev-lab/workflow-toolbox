@@ -2146,10 +2146,8 @@ function realDir(dir) {
 /** The `.claude` directory of a PROJECT whose static rules directory `dir` is (`<p>/.claude/rules[/wt]`),
  *  or null. A config profile root is never a project's, even when it is named `.claude`. */
 function projectClaudeDirOf(dir) {
-  const real = realDir(dir)
-  const claude = path.basename(real) === 'wt' && path.basename(path.dirname(real)) === 'rules'
-    ? path.dirname(path.dirname(real))
-    : path.basename(real) === 'rules' ? path.dirname(real) : null
+  const rules = siblingOnDemandPath(realDir(dir))
+  const claude = rules ? path.dirname(rules) : null
   if (!claude || path.basename(claude) !== '.claude') return null
   const configRoots = new Set(discoveredConfigRoots().map(realDir))
   return configRoots.has(claude) ? null : claude
