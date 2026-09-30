@@ -525,6 +525,9 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
     expect(check.status, check.out).toBe(0)
     expect(check.out).toContain(`${RULE}: MIGRATED-ON-DEMAND`)
     expect(check.out).not.toContain(`${RULE}: ABSENT`)
+    // The installer cannot tell whether the engine is ENABLED in this profile, so the status must not claim the
+    // rule is served: it says where the rule was moved.
+    expect(check.out).not.toContain('MIGRATED-ON-DEMAND (served from')
   }
   // An explicit --dir install into a static dir exits non-zero for the spec-backed halves adopted in the sibling
   // on-demand dir (existing DUPLICATE contract); only the implicit modes are expected to exit 0 here.
@@ -583,7 +586,7 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
     const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
 
     const install = runInCwdResult(['--set', 'rules', '--install'], project, env)
-    expect(install.out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (served from ${migrated}`)
+    expect(install.out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (moved to ${migrated}`)
     expect(existsSync(join(project, '.claude', 'rules', 'wt', RULE))).toBe(false)
   })
 
@@ -654,7 +657,7 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
 
     const res = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--install', '--file', RULE, '--dir', projectRules], { cwd, encoding: 'utf8', env })
     const out = (res.stdout ?? '') + (res.stderr ?? '')
-    expect(out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (served from ${migrated}`)
+    expect(out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (moved to ${migrated}`)
     expect(existsSync(join(projectRules, RULE))).toBe(false)
   })
 
@@ -719,7 +722,7 @@ describe('adopt installer — static rule migrated to the sibling on-demand dir'
     // No exit-code assertion: an explicit --dir into a static dir exits non-zero for the adopted spec-backed siblings (prior contract).
     const res = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--install', '--file', RULE, '--dir', join(project, '.claude', 'rules', 'wt')], { cwd: project, encoding: 'utf8', env })
     const out = (res.stdout ?? '') + (res.stderr ?? '')
-    expect(out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (served from ${migrated}`)
+    expect(out).toContain(`${RULE}: SKIPPED — MIGRATED-ON-DEMAND (moved to ${migrated}`)
     expect(existsSync(join(storage, 'rules', 'wt', RULE))).toBe(false)
   })
 

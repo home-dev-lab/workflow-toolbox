@@ -338,7 +338,8 @@ its real target are one target; a second real config directory is checked and re
 
 - **ABSENT** — not installed; `--install` writes it.
 - **MIGRATED-ON-DEMAND** — a static rule absent here because it was moved into the on-demand
-  directory served beside this one, where it carries its own on-demand head. `--install` writes
+  directory beside this one, where it carries its own on-demand head (the status names where it was
+  moved; it does not check that the engine is enabled in this profile). `--install` writes
   nothing, even with `--force`: a static copy would load it twice. Delete the on-demand copy first
   to bring it back as a static rule. When this rules directory is a link into another profile's,
   the status says the rule is migrated there but not loaded by this profile; nothing is written

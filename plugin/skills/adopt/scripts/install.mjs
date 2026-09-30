@@ -2294,7 +2294,7 @@ function unservedOnDemandCopy(set, dir, item, root) {
 
 function migratedStatus({ target, served }) {
   return served
-    ? `MIGRATED-ON-DEMAND (served from ${target} with its own on-demand head; no static copy is written here)`
+    ? `MIGRATED-ON-DEMAND (moved to ${target} with an on-demand head the rules-on-demand engine accepts; no static copy is written here)`
     : `MIGRATED-ON-DEMAND (migrated to ${target} by the profile whose static rules directory this one links to; ` +
       'this profile does not load that on-demand directory, so the rule is not loaded here; no static copy is ' +
       'written, it would load twice there)'
