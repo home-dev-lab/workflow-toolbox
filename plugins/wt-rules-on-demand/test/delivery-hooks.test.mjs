@@ -41,6 +41,23 @@ test('two windows served by one call have unique ids, and window rows match jour
   assert.ok(f.stored.get('sessions').s.contexts['0'].lastClose, 'turn end records a close marker');
 });
 
+test('a slow turn close cannot regress the lastClose sequence of a newer turn', async () => {
+  const modelRule = rule('model').replace('kind: bash-command\n    act-regex: git push\n    require-regex: origin', 'kind: model\n    model: test\n    prompt: Check');
+  const f = host({ 'r.md': modelRule });
+  let release, entered;
+  const held = new Promise((resolve) => { release = resolve; });
+  const ready = new Promise((resolve) => { entered = resolve; });
+  f.$.model.classify = async () => { entered(); await held; return 'followed'; };
+  await f.event('tool.call', { tool: 'Agent' });
+  const first = f.event('turn.complete');
+  await ready;
+  await f.event('turn.complete');
+  const newer = { ...f.stored.get('sessions').s.contexts[0].lastClose };
+  release();
+  await first;
+  assert.equal(f.stored.get('sessions').s.contexts[0].lastClose.seq, newer.seq, 'late classifier must retain the larger close sequence');
+});
+
 test('served per-act verdict discharges the freshly dropped window', async () => {
   const f = host({ 'r.md': rule('r', 'Bash') });
   await f.event('tool.call', { tool: 'Bash', command: 'git push origin' });

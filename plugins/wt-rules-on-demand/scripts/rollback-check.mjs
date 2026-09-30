@@ -6,7 +6,7 @@ import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
 import { verdictPath, readVerdicts, pendingRules, recordRollback } from './verdict-record.mjs';
 import { rollbackStoreDirectory, rollbackArchiveDirectory, rollbackInputLocations } from './rollback-input-paths.mjs';
-import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
+import { journalDeliveries, joinDeliveries, mergeSessions } from './delivery-join.mjs';
 
 const args = process.argv.slice(2);
 const options = { project: process.cwd(), stores: [], verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
@@ -72,7 +72,7 @@ async function storePaths() {
   }
 }
 const stores = await Promise.all((await storePaths()).map(async (path) => JSON.parse(await readFile(resolve(path), 'utf8'))));
-const store = { sessions: Object.assign({}, ...stores.map((item) => item.sessions ?? {})) };
+const store = { sessions: mergeSessions(stores) };
 const verdictLines = stores.map((item) => String(item['compliance-verdicts-jsonl'] ?? ''));
 for (const item of stores) for (const [name, text] of Object.entries(item)) if (name.startsWith('compliance-verdicts-archive-')) verdictLines.push(String(text));
 const archiveDir = await assertSafeDataDir(rollbackArchiveDirectory(configDir));

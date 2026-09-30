@@ -128,3 +128,75 @@ test('every exact seeded control fails against its own broken counter', () => {
     assert.equal(seedExactControl(rows, sessions, {}, broken)[name], false, `${name} control detects a stuck counter`);
   }
 });
+
+test('multiple stores preserve shared-session journals in either order: anomaly is 1/2', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'svr-merge-'));
+  try {
+    const serves = [10, 20].map((seq) => ({ rule: 'r.md', ruleIdentity: 'user:r.md', deliveryId: `t-${seq}`, deliverySeq: seq, servingSeq: seq - 1, at: at(seq) }));
+    const judged = { ...serves[1], sessionId: 's', verdictId: 't-21', actSeq: 21, verdict: 'followed', decidedAt: at(22) };
+    const files = [join(root, 'a.json'), join(root, 'b.json')];
+    for (const [index, file] of files.entries()) await writeFile(file, JSON.stringify({
+      sessions: { s: { contexts: { 0: { complianceInjected: [serves[index]], lastClose: { token: 't', seq: 30 + index, at: at(30 + index) } } } } },
+      'compliance-verdicts-jsonl': index ? JSON.stringify(judged) : '',
+    }));
+    for (const order of [files, [...files].reverse()]) {
+      const { lines } = await capture([...order.flatMap((file) => ['--store', file]), '--archives', root, '--json']);
+      assert.deepEqual(JSON.parse(lines[0]).exact.anomaly, { count: 1, denominator: 2, rate: 0.5 }, 'shared session keeps both deliveries');
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+function exactFixture() {
+  const serve = { rule: 'r.md', ruleIdentity: 'user:r.md', deliveryId: 't-10', deliverySeq: 10, servingSeq: 9, at: at(10) };
+  return {
+    sessions: { s: { contexts: { 0: { complianceInjected: [serve], lastClose: { token: 't', seq: 30, at: at(30) } } } } },
+    rows: [{ ...serve, sessionId: 's', verdictId: 't-11', actSeq: 11, verdict: 'followed', decidedAt: at(12) }],
+  };
+}
+
+test('anomaly upper includes id-bearing verdicts from missing sessions', () => {
+  const { rows, sessions } = exactFixture();
+  const result = measureExact([...rows, { ...rows[0], sessionId: 'absent', deliveryId: 'absent-10' }], sessions);
+  assert.equal(result.sessionMissing.count, 1);
+  assert.equal(result.anomalyUpper.count, 1, 'missing-session claims contribute to the upper anomaly count');
+  assert.equal(result.anomaly.count, 0);
+});
+
+for (const name of ['duplicate', 'settled']) test(`${name} control rejects a headline anomaly stuck at zero`, () => {
+  const { rows, sessions } = exactFixture();
+  const broken = (...args) => { const result = measureExact(...args); result.anomaly.count = 0; return result; };
+  const controls = seedExactControl(rows, sessions, {}, broken);
+  assert.equal(controls[name], false, `${name} control detects a stuck headline anomaly`);
+  assert.equal(controls.open, true);
+  assert.equal(controls.copy, true);
+});
+
+test('archive populations include judged old deliveries exactly once as out of reach', () => {
+  const { rows, sessions } = exactFixture();
+  sessions.s.contexts[0].complianceInjected.push({ rule: 'legacy.md', at: at(1) }, { ...rows[0], deliveryId: 't-20', deliverySeq: 20, at: at(20) });
+  const result = measureExact(rows, sessions, { archivesRead: 1, archiveRows: [{ decidedAt: at(15) }] });
+  assert.equal(result.outOfReach, 1, 'judged delivery older than the archive bound is out of reach');
+  assert.equal(result.withId + result.withoutId + result.outOfReach, 3, 'each MAIN delivery belongs to one population');
+  assert.equal(result.withId, 1);
+  assert.equal(result.withoutId, 1);
+});
+
+test('open control seeds the newest MAIN context after compactions and later process closes', () => {
+  const { rows, sessions } = exactFixture();
+  sessions.s.contexts[0].lastClose = { token: 't', seq: 50, at: at(50) };
+  sessions.s.contexts[6] = { complianceInjected: [], lastClose: { token: 'new', seq: 70, at: at(70) } };
+  const original = structuredClone(sessions);
+  const measured = [];
+  const observe = (...args) => { const result = measureExact(...args); measured.push(result); return result; };
+  const control = seedExactControl(rows, sessions, {}, observe);
+  assert.equal(control.open, true, 'open control must seed an actually open window after compaction');
+  assert.equal(measured[4].unjudgedOpen.count, measured[0].unjudgedOpen.count + 1);
+  assert.equal(measured[4].anomaly.count, measured[0].anomaly.count);
+  assert.deepEqual(sessions, original, 'controls never modify the original store');
+});
+
+test('open control does not accidentally seed a same-act discharged window', () => {
+  const { rows, sessions } = exactFixture();
+  rows[0].actSeq = 30;
+  assert.equal(seedExactControl(rows, sessions).open, true, 'synthetic serving admission must be later than existing verdict acts');
+});

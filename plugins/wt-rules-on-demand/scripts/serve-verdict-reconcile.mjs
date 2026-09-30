@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configDirectory } from '../paths.js';
 import { qualityDataDir } from './rule-lifecycle-lib.mjs';
-import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
+import { journalDeliveries, joinDeliveries, mergeSessions } from './delivery-join.mjs';
 
 const archivePattern = /^compliance-verdicts-archive-\d+-\d+\.jsonl$/;
 export const LIMITS = [
@@ -151,7 +151,8 @@ export function measureExact(rows, sessions, options = {}) {
   const agentBucket = (group) => ratio([...group].filter((item) => agent.includes(item)).length, agent.length);
   const anomalous = new Set([...duplicates, ...discarded, ...conflicts, ...settled]);
   const upper = new Set([...anomalous, ...open, ...voided]);
-  const upperCount = [...upper].filter((item) => main.includes(item) || agent.includes(item)).length + joined.withoutDelivery.idMissing.length;
+  const upperCount = [...upper].filter((item) => main.includes(item) || agent.includes(item)).length
+    + joined.withoutDelivery.idMissing.length + joined.withoutDelivery.sessionMissing.length;
   return { bound: joined.bound, archivesRead: options.archivesRead ?? 0, outOfReach: joined.outOfReach, withId: main.length,
     withoutId: servesOf(sessions).filter((item) => !item.deliveryId).length,
     duplicateIds: bucket(duplicates), discardedIds: bucket(discarded), voidedIds: bucket(voided),
@@ -166,6 +167,22 @@ export function measureExact(rows, sessions, options = {}) {
 }
 
 // Each control changes exactly one independently measured quantity and detects a stuck counter.
+function seedOpenDelivery(rows, sessions, judged, options) {
+  const contexts = sessions[judged.sessionId].contexts;
+  const numeric = Object.keys(contexts).filter((key) => /^\d+$/.test(key)).sort((a, b) => Number(b) - Number(a));
+  const ctx = contexts[numeric[0] ?? judged.context];
+  const entries = journalDeliveries(sessions);
+  const sequences = [ctx.lastClose?.seq, ...entries.map((item) => item.deliverySeq), ...rows.map((row) => row.actSeq)];
+  const after = Math.max(0, ...sequences.filter(Number.isFinite)) + 2;
+  const times = [ctx.lastClose?.at, judged.at, ...entries.map((item) => item.at), ...(options.archiveRows ?? []).map((row) => row.decidedAt)];
+  const time = Math.max(0, ...times.map(Date.parse).filter(Number.isFinite)) + 1;
+  ctx.complianceInjected ??= [];
+  // Do not copy the old context's lastClose annotation into the new journal entry.
+  ctx.complianceInjected.push({ rule: judged.rule, ruleIdentity: judged.ruleIdentity,
+    deliveryId: judged.deliveryId.replace(/-\d+$/, () => `-${after}`), deliverySeq: after,
+    servingSeq: after - 1, at: new Date(time).toISOString() });
+}
+
 export function seedExactControl(rows, sessions, options = {}, measureFn = measureExact) {
   const serves = journalDeliveries(sessions).filter((item) => !item.context.startsWith('agent:'));
   const judged = serves.find((serve) => rows.some((row) => row.deliveryId === serve.deliveryId && row.sessionId === serve.sessionId));
@@ -177,13 +194,11 @@ export function seedExactControl(rows, sessions, options = {}, measureFn = measu
   const removed = run(rows.filter((item) => item !== row), sessions);
   const copy = run([...rows, { ...row }], sessions);
   const cloned = structuredClone(sessions);
-  const ctx = cloned[judged.sessionId].contexts[judged.context];
-  const after = Math.max(ctx.lastClose?.seq ?? 0, ...ctx.complianceInjected.map((item) => item.deliverySeq ?? 0)) + 1;
-  ctx.complianceInjected.push({ ...judged, deliveryId: judged.deliveryId.replace(/-\d+$/, () => `-${after}`), deliverySeq: after,
-    at: new Date(Math.max(Date.parse(ctx.lastClose?.at ?? judged.at), Date.parse(judged.at)) + 1).toISOString() });
+  seedOpenDelivery(rows, cloned, judged, options);
   const opened = run(rows, cloned);
   const plusOne = (result, name) => result[name].count === baseline[name].count + 1;
-  return { available: true, duplicate: plusOne(duplicate, 'duplicateIds'), settled: plusOne(removed, 'unjudgedSettled'),
+  return { available: true, duplicate: plusOne(duplicate, 'duplicateIds') && plusOne(duplicate, 'anomaly'),
+    settled: plusOne(removed, 'unjudgedSettled') && plusOne(removed, 'anomaly'),
     open: plusOne(opened, 'unjudgedOpen') && opened.anomaly.count === baseline.anomaly.count,
     copy: plusOne(copy, 'copies') && copy.anomaly.count === baseline.anomaly.count };
 }
@@ -227,7 +242,7 @@ async function inputs(options) {
   const archiveDir = options.archives || (!options.stores.length && configDir ? qualityDataDir(configDir) : '');
   const archives = archiveDir ? (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
     .filter((name) => archivePattern.test(name)).sort().map((name) => join(archiveDir, name)) : [];
-   const files = [], rows = [], sessions = {}, archiveRows = [];
+   const files = [], rows = [], stores = [], archiveRows = [];
    let archivesRead = archives.length;
   async function load(path) {
     const bytes = await readFile(path);
@@ -239,12 +254,12 @@ async function inputs(options) {
    } };
   for (const path of storePaths) {
     const store = JSON.parse(await load(path));
-    Object.assign(sessions, store.sessions ?? {});
+    stores.push(store);
     addLines(store['compliance-verdicts-jsonl']);
      for (const [key, value] of Object.entries(store)) if (key.startsWith('compliance-verdicts-archive-')) { addLines(value, true); archivesRead++; }
   }
    for (const path of archives) addLines(await load(path), true);
-   return { files, rows, sessions, archiveRows, archivesRead };
+   return { files, rows, sessions: mergeSessions(stores), archiveRows, archivesRead };
 }
 
 // Duplicate one singly matched serve's row and remove another's: a working join reports exactly one more duplicate

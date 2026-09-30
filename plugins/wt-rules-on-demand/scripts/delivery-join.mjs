@@ -1,10 +1,39 @@
 // Exact in-hook verdict/serve join. All filtering is reader-side; the journal and JSONL stay append-only.
 const number = (value) => typeof value === 'number' && Number.isFinite(value);
 const token = (id) => String(id ?? '').replace(/-\d+$/, '');
-const compatible = (claim, delivery) => claim.row.sessionId == null || delivery.sessionId == null || claim.row.sessionId === delivery.sessionId;
+const sameSession = (row, delivery) => row.sessionId == null || delivery.sessionId == null || row.sessionId === delivery.sessionId;
+const compatible = (claim, delivery) => sameSession(claim.row, delivery);
 const keyOf = (claim) => JSON.stringify([claim.deliveryId, claim.row.sessionId]);
 const order = (a, b) => (number(a.row.actSeq) ? a.row.actSeq : Infinity) - (number(b.row.actSeq) ? b.row.actSeq : Infinity)
   || String(a.row.decidedAt ?? '').localeCompare(String(b.row.decidedAt ?? '')) || a.index - b.index;
+
+function greaterClose(existing, incoming) {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  if (existing.token === incoming.token) return existing.seq >= incoming.seq ? existing : incoming;
+  return Date.parse(existing.at) >= Date.parse(incoming.at) ? existing : incoming;
+}
+
+export function mergeSessions(stores) {
+  const sessions = {};
+  for (const store of stores) for (const [id, session] of Object.entries(store.sessions ?? {})) {
+    const existing = sessions[id] ?? {};
+    const contexts = { ...existing.contexts };
+    for (const [key, context] of Object.entries(session.contexts ?? {})) {
+      const previous = contexts[key] ?? {};
+      const seen = new Set();
+      const complianceInjected = [...(previous.complianceInjected ?? []), ...(context.complianceInjected ?? [])].filter((entry) => {
+        if (!entry.deliveryId) return true;
+        if (seen.has(entry.deliveryId)) return false;
+        seen.add(entry.deliveryId);
+        return true;
+      });
+      contexts[key] = { ...previous, ...context, complianceInjected, lastClose: greaterClose(previous.lastClose, context.lastClose) };
+    }
+    sessions[id] = { ...existing, ...session, contexts };
+  }
+  return sessions;
+}
 
 export function journalDeliveries(sessions = {}) {
   const deliveries = [];
@@ -17,7 +46,7 @@ export function journalDeliveries(sessions = {}) {
 function classification(delivery, kept, contexts, tokenOf) {
   const session = delivery.sessionId;
   const identity = delivery.ruleIdentity ?? delivery.rule;
-  if (kept.some((row) => row.sessionId === session && (row.ruleIdentity ?? row.rule) === identity
+  if (kept.some((row) => sameSession(row, delivery) && (row.ruleIdentity ?? row.rule) === identity
     && tokenOf(row.verdictId) === tokenOf(delivery.deliveryId) && row.actSeq === delivery.servingSeq)) return 'dischargedBySameAct';
   const context = contexts?.[session]?.[delivery.context] ?? {};
   const close = delivery.lastClose ?? context.lastClose;
@@ -65,6 +94,7 @@ export function joinDeliveries(rows, deliveries, { archiveRows = [], archivesRea
   const withoutDelivery = { sessionMissing: [], idMissing: [] };
   const claims = [];
   original.forEach((row, index) => {
+    if (row.verdictId == null) return;
     const entries = [...(row.deliveryId ? [{ ...row, own: true }] : []), ...(Array.isArray(row.discharged) ? row.discharged.map((item) => ({ ...item, own: false })) : [])];
     for (const entry of entries) {
       if (!entry.deliveryId) continue;
@@ -89,14 +119,14 @@ export function joinDeliveries(rows, deliveries, { archiveRows = [], archivesRea
     duplicateIds.push(group[0].delivery ?? key);
     if (new Set(group.map((claim) => claim.row.verdict)).size > 1) conflicting.push(group[0].delivery ?? key);
   }
-  // Dropping a row removes every claim on it. Winners are recomputed until no own-claim loser remains.
-  let changed;
-  do {
-    changed = false;
-    for (const group of groupsOf(claims, dropped).values()) for (const claim of group.slice(1)) {
-      if (claim.own && !dropped.has(claim.index)) { dropped.add(claim.index); duplicateRows.push(claim.row); changed = true; }
-    }
-  } while (changed);
+  // Drop the earliest losing row, then recompute: its discharges cannot defeat later rows.
+  // Ordering the losers also makes this fixpoint independent of group insertion order.
+  while (true) {
+    const losers = [...groupsOf(claims, dropped).values()].flatMap((group) => group.slice(1)).filter((claim) => claim.own).sort(order);
+    if (!losers.length) break;
+    dropped.add(losers[0].index);
+    duplicateRows.push(losers[0].row);
+  }
   const kept = original.filter((_, index) => !dropped.has(index));
   const winners = new Set([...groupsOf(claims, dropped).values()].map((group) => group[0].delivery).filter(Boolean));
   const bound = archivesRead && archiveRows.length ? archiveRows.reduce((oldest, row) => {
@@ -106,8 +136,8 @@ export function joinDeliveries(rows, deliveries, { archiveRows = [], archivesRea
   let outOfReach = 0;
   const unjudged = [];
   for (const delivery of deliveries.filter((item) => item.deliveryId)) {
-    if (winners.has(delivery)) continue;
     if (bound !== null && Date.parse(delivery.at) < bound) { outOfReach++; continue; }
+    if (winners.has(delivery)) continue;
     const status = classification(delivery, kept, contexts, tokenOf);
     unjudged.push({ ...delivery, status });
   }

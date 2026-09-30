@@ -142,6 +142,7 @@ the ID prefix identifies that process's registration. No new store key is used.
 
 The readers join by ID and session before counting. Identical `verdictId`s
 within a session are storage copies; legacy rows without IDs remain counted.
+Rows without a `verdictId` create no delivery claims, even if they carry delivery fields.
 For each delivery, three rules apply: a delivery with **zero surviving claims**
 is unjudged; for **multiple claims**, the earliest valid `actSeq` wins (then
 decision time and input order), dropping other own-claim rows; a claim with
@@ -151,6 +152,10 @@ loses its other discharge claims too. `compliance-report.mjs` adds `unjudged`,
 the text output. `rollback-check.mjs` filters in-hook verdicts through the same
 join before applying its usual identity and rollback rules, and reports dropped
 row totals to stderr. On a legacy store, the new counts are zero.
+When reading multiple stores, shared session contexts retain all journals,
+deduplicating entries with a delivery ID while retaining ID-less entries. Close
+markers keep the larger sequence within a registration, or the later timestamp
+across registrations.
 
 Automatic rollback is unaffected: when `scripts/daily-rollback.mjs` applies
 (`--apply`), it invokes `scripts/rollback-check.mjs` with `--mechanical-only`
@@ -183,12 +188,16 @@ MAIN duplicate, discarded, conflicting and settled-unjudged deliveries divided
 by reachable MAIN deliveries with IDs; `anomalyUpper` additionally includes
 open windows, agents, voided deliveries and unmatched IDs. `--seed-control`
 checks duplicate, settled, open and copied-row counter changes.
+The duplicate and settled controls also require the headline anomaly count to
+increase by exactly one; open and copy controls require it to stay unchanged.
+The open control seeds the newest retained MAIN context after its close marker.
 
 Archived verdict rows bound what is observable: deliveries older than the
 oldest archived decision are `outOfReach`, rather than unjudged. A context's
 later close (or a newer MAIN generation) distinguishes settled missing verdicts
 from open windows; `open` also includes a process that died without a later
-close. An already-written evaluate verdict may precede a same-act window drop;
+close. The settled classification assumes one live process per session context.
+An already-written evaluate verdict may precede a same-act window drop;
 that delivery remains visible as unjudged. Serial calls issued together in one
 model message cannot be distinguished from later calls; a call that only
 consumes a window count writes no row for the act-before-delivery check, and a
