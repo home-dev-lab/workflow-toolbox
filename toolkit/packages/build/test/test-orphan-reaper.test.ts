@@ -119,7 +119,7 @@ describe.skipIf(process.platform === 'win32')('orphan reaper (Windows has no pro
       attempted.push(pid)
       if (pid === 101) throw Object.assign(new Error('denied'), { code: 'EPERM' })
     }
-    expect(reapTagged(tag, { procRoot: root, kill })).toEqual({ supported: true, killed: [102], errors: [{ pid: 101, code: 'EPERM' }] })
+    expect(reapTagged(tag, { platform: 'linux', procRoot: root, kill })).toEqual({ supported: true, killed: [102], errors: [{ pid: 101, code: 'EPERM' }] })
     expect(attempted).toContain(102)
     const registry = tempRoot()
     for (const pid of [101, 102]) writeFileSync(join(registry, String(pid)), 'start')
