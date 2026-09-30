@@ -315,7 +315,7 @@ it('D5 a notice naming one task and a status parses without tool-use-id or outpu
 it('D5 monitor events, Monitor stopped/ended and orphan summaries are skipped silently, queued or inbound', () => {
   for (const body of [monitorEvent, monitorStopped, monitorEnded, orphanMulti, orphanSingle]) {
     expect(detectRelays({ sessionId, main: [enqueue(body), inbound(0, body)], agents: {}, meta: {}, now: start + 100000 }))
-      .toEqual({ lines: [], degraded: [] })
+      .toEqual({ lines: [], degraded: [], stale: [] })
   }
 })
 
@@ -333,7 +333,7 @@ it('D5 FORWARD reaches the non-main parent of an agent notice with or without to
   }
   // the same notice queued (not yet delivered to main) is neither a WAKE nor a degraded read
   expect(detectRelays({ sessionId, main: [enqueue(agentDone(false))], agents: { [parent]: [assistant(-10)] }, meta, now: start + 100000 }))
-    .toEqual({ lines: [], degraded: [] })
+    .toEqual({ lines: [], degraded: [], stale: [] })
 })
 
 it('D5 WAKE falls back to the launch task id without a tool-use-id and names the task when there is no output file', () => {
@@ -458,7 +458,7 @@ it('fix5 #2 quoted Read/Grep launch text without a structured receipt is neither
   const { dir } = agentSession([quote, assistant(-100)])
   const projected = readAgents(dir)
   const input = { sessionId, main: [enqueue(notice('task1234'))], ...projected, now: start + 100000 }
-  expect(detectRelays(input)).toEqual({ lines: [], degraded: [] })
+  expect(detectRelays(input)).toEqual({ lines: [], degraded: [], stale: [] })
   const competing = 'aother1234567'
   const real = detectRelays({ ...input, agents: { ...projected.agents, [competing]: [launch('task1234'), assistant(-100)] } })
   expect(real.degraded).toEqual([])
@@ -469,7 +469,7 @@ it('fix5 #2 quoted Read/Grep launch text without a structured receipt is neither
 it('fix5 #2 structured receipt must agree with text and survives the slim projection', () => {
   const { dir } = agentSession([{ ...launch('task1234'), toolUseResult: { backgroundTaskId: 'different123' } }, assistant(-100)])
   const input = { sessionId, main: [enqueue(notice('task1234'))], ...readAgents(dir), now: start + 100000 }
-  expect(detectRelays(input)).toEqual({ lines: [], degraded: [] })
+  expect(detectRelays(input)).toEqual({ lines: [], degraded: [], stale: [] })
   writeFileSync(join(dir, 'subagents', `agent-${owner}.jsonl`), [launch('task1234'), assistant(-100)].map((r) => JSON.stringify(r)).join('\n') + '\n')
   const projected = readAgents(dir)
   expect(projected.agents[owner][0].toolUseResult.backgroundTaskId).toBe('task1234')
@@ -479,7 +479,7 @@ it('fix5 #2 structured receipt must agree with text and survives the slim projec
 it('fix5 #2 a main-owned tool-use-id never falls back to a subagent task-id match', () => {
   const result = detectRelays({ sessionId, main: [enqueue(notice('task1234', 'toolu_main123'))],
     agents: { [owner]: [launch('task1234'), assistant(-100)] }, meta: { [owner]: { agentType: 'worker' } }, now: start + 100000 })
-  expect(result).toEqual({ lines: [], degraded: [] })
+  expect(result).toEqual({ lines: [], degraded: [], stale: [] })
 })
 
 function scanScenario() {
@@ -595,7 +595,7 @@ it('fix5 #6 replay cannot attribute a completion to a launch dated after now', (
   const result = detectRelays({ sessionId, main: [enqueue(notice('task1234'))],
     agents: { [owner]: [{ ...launch('task1234'), timestamp: iso(100001) }, assistant(-100)] },
     meta: { [owner]: { agentType: 'worker' } }, now: start + 100000 })
-  expect(result).toEqual({ lines: [], degraded: [] })
+  expect(result).toEqual({ lines: [], degraded: [], stale: [] })
 })
 
 it('fix5 #6 a future competing launch does not make the past owner ambiguous', () => {
