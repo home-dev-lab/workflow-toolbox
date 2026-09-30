@@ -243,6 +243,18 @@ describe('second-opinion advisor', () => {
     expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', { ...env, HOME: '/home/reader' }, fs)).toBe(true)
   })
 
+  it('permits a READ remedy with literal backslashes in a POSIX HOME', () => {
+    const fs = { realpath: () => null }
+    const env = { HOME: '/home/a\\..\\b', PATH: '/usr/bin' }
+    expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', env, fs, 'linux')).toBe(true)
+    expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', env, fs, 'darwin')).toBe(true)
+  })
+
+  it('still suppresses a READ remedy for a Windows HOME with backslash parent traversal (control)', () => {
+    const fs = { realpath: () => null }
+    expect(laneSandboxReadRemedyAllowed('/outside/notes/a.md', { HOME: 'C:\\Users\\x\\..\\y' }, fs, 'win32')).toBe(false)
+  })
+
   // Resolving through the deepest existing ancestor must only ADD refusals. A missing child under a host-state link
   // that points outside state was forbidden by its lexical spelling and stays forbidden; a '..' spelling the
   // canonical view refuses to resolve stays forbidden under the macOS layout.

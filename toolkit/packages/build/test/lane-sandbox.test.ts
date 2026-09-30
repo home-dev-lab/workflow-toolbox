@@ -1,5 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, closeSync, constants, cpSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
@@ -18,13 +18,14 @@ import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../.
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')
 
-interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], droppedBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
+interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
+type NoticeDestination = ((text: string) => void) | number | { write: (text: string) => unknown }
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
   laneWritableForLaunch: (request: Record<string, unknown>) => (file: string) => boolean
-  announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
-  announceDroppedBinds: (plan: SandboxPlan, write: (text: string) => void) => void
+  announceUnsandboxedLane: (plan: SandboxPlan, write?: NoticeDestination) => void
+  announceDroppedBinds: (plan: SandboxPlan, write?: NoticeDestination) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
   suiteLockCli: (fs?: { isFile: (f: string) => boolean, isExecutable?: (f: string) => boolean }) => string
@@ -171,6 +172,146 @@ function plan(overrides: Record<string, unknown> = {}): SandboxPlan {
   const base = { profile: 'opencode', bin: '/opt/opencode/bin/opencode', args: ['run', 'x'], cwd: '/work/tree', env: { HOME, PATH: '/usr/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }
   return sandbox.resolveLaneSandbox({ ...base, ...overrides })
 }
+
+describe('lane sandbox caller argument and notice regressions', () => {
+  it.each([
+    ['inline', ['run', '--', '--dir=/']],
+    ['separate', ['run', '--', '--dir', '/']],
+  ])('ignores %s --dir positional text after the argument terminator', (_spelling, args) => {
+    expect(() => plan({ args }).dispose()).not.toThrow()
+  })
+
+  it.each([
+    ['inline', ['run', '--', `--file=${HOME}`]],
+    ['separate', ['run', '--', '--file', HOME]],
+    ['short', ['run', '--', '-f', HOME]],
+  ])('does not report %s file positional text after the argument terminator', (_spelling, args) => {
+    const p = plan({ args })
+    try { expect(p.droppedBinds).not.toContain(HOME) } finally { p.dispose() }
+  })
+
+  it('still reports a forbidden attachment before the argument terminator (control)', () => {
+    const p = plan({ args: ['run', `--file=${HOME}`, '--', 'x'] })
+    try { expect(p.droppedBinds).toEqual([HOME]) } finally { p.dispose() }
+  })
+
+  it.each([
+    ['inline', ['run', '--file=/work/tree/sub/../brief.md'], '/work/tree/sub/../brief.md'],
+    ['separate', ['run', '--file', '/work/tree/sub/../brief.md'], '/work/tree/sub/../brief.md'],
+    ['relative', ['run', '--file=sub/../brief.md'], 'sub/../brief.md'],
+    ['short', ['run', '-f', 'sub/../brief.md'], 'sub/../brief.md'],
+  ])('refuses %s file traversal with a remedy before acquiring resources', (_spelling, args, raw) => {
+    const fs = fakeFs()
+    const spawnFn = vi.fn(listening(fs))
+    const launch = () => plan({ args, fs, spawnFn })
+    expect(launch).toThrow(/pass a path without '\.\.'/)
+    expect(launch).toThrow(sandbox.LaneSandboxRefusal)
+    expect(launch).toThrow(String(raw))
+    expect(spawnFn).not.toHaveBeenCalled()
+    expect(fs.ensured).toEqual([])
+    expect(fs.copied).toEqual([])
+  })
+
+  it('accepts literal backslashes in a POSIX HOME in the plan and preflight', () => {
+    const env = { HOME: '/home/a\\..\\b', PATH: '/usr/bin' }
+    expect(() => plan({ env }).dispose()).not.toThrow()
+    for (const platform of ['linux', 'darwin']) {
+      const writable = sandbox.laneWritableForLaunch({ cwd: '/work/tree', env, optionEnv: {}, fs: fakeFs(), platform })
+      expect(writable('/work/tree/out.log')).toBe(true)
+    }
+  })
+
+  it('still refuses a POSIX HOME with a slash-separated parent segment (control)', () => {
+    expect(() => plan({ env: { HOME: '/home/x/../y', PATH: '/usr/bin' } })).toThrow(/refusing HOME/)
+  })
+
+  it.each(['readable', 'writable'])('reports relative caller %s entries as ignored, never as forbidden binds', (access) => {
+    const p = plan({ paths: { [access]: ['notes.md', 'notes.md'] } })
+    try {
+      expect(p.droppedBinds).not.toContain('notes.md')
+      expect(p.relativeBinds).toEqual(['notes.md'])
+      expect(p.line).toContain('; ignored relative caller binds notes.md (a bind needs an absolute path)')
+      expect(everyBind(p.wrap('opencode', [])[1])).not.toContain('notes.md')
+      expect(everyBind(p.wrap('opencode', [])[1])).not.toContain('/work/tree/notes.md')
+      const lines: string[] = []
+      sandbox.announceDroppedBinds(p, (text) => lines.push(text))
+      expect(lines).toEqual(['workflow-toolbox: lane sandbox ignored relative caller binds notes.md (a bind needs an absolute path)\n'])
+    } finally { p.dispose() }
+  })
+
+  it('routes dropped and refused-extra notices to a supplied stderr descriptor', () => {
+    const log = join(tempRoot('notice-fd'), 'stderr.log')
+    const fd = openSync(log, 'w')
+    const p = plan({ paths: { readable: [HOME] }, optionEnv: { WT_LANE_SANDBOX_READ: '/' } })
+    const parent = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      expect(() => sandbox.announceDroppedBinds(p, fd)).not.toThrow()
+      expect(readFileSync(log, 'utf8')).toBe(`workflow-toolbox: lane sandbox refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /\nworkflow-toolbox: lane sandbox dropped caller-named binds ${HOME} (/, $HOME, an ancestor of $HOME, or host lane state)\n`)
+      expect(parent).not.toHaveBeenCalled()
+    } finally { parent.mockRestore(); closeSync(fd); p.dispose() }
+  })
+
+  it('routes bind notices to a supplied stderr stream', () => {
+    const p = plan({ paths: { writable: [HOME] } })
+    const lines: string[] = []
+    try {
+      expect(() => sandbox.announceDroppedBinds(p, { write: (text) => lines.push(text) })).not.toThrow()
+      expect(lines).toEqual([`workflow-toolbox: lane sandbox dropped caller-named binds ${HOME} (/, $HOME, an ancestor of $HOME, or host lane state)\n`])
+    } finally { p.dispose() }
+  })
+
+  // The planner reads WT_LANE_SANDBOX from the process environment; an ambient `off` would give both
+  // forced platforms the same notice line, and the per-process dedupe would then swallow the second one.
+  function withoutAmbientSandboxSwitch<T>(body: () => T): T {
+    const prev = process.env.WT_LANE_SANDBOX
+    delete process.env.WT_LANE_SANDBOX
+    try { return body() } finally { if (prev === undefined) delete process.env.WT_LANE_SANDBOX; else process.env.WT_LANE_SANDBOX = prev }
+  }
+
+  it('spawnOpencode routes an unsandboxed notice to its supplied stderr descriptor', () => withoutAmbientSandboxSwitch(() => {
+    const log = join(tempRoot('unsandboxed-fd'), 'stderr.log')
+    const fd = openSync(log, 'w')
+    const parent = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const stub = (() => ({ status: 0, stdout: '', stderr: '' })) as unknown as typeof spawnSync
+    try {
+      const result = fence.spawnOpencode(stub, 'opencode', ['run', 'x'], { env: { HOME }, stdio: ['ignore', 'ignore', fd] }, 'aix')
+      expect(readFileSync(log, 'utf8')).toContain(`workflow-toolbox: ${result.laneSandbox?.line}\n`)
+      expect(parent).not.toHaveBeenCalled()
+    } finally { parent.mockRestore(); closeSync(fd) }
+  }))
+
+  it('spawnOpencode routes an unsandboxed notice to its supplied stderr stream', () => withoutAmbientSandboxSwitch(() => {
+    const lines: string[] = []
+    const stream = { write: (text: string) => lines.push(text) }
+    const parent = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const stub = (() => ({ status: 0, stdout: '', stderr: '' })) as unknown as typeof spawnSync
+    try {
+      const result = fence.spawnOpencode(stub, 'opencode', ['run', 'x'], { env: { HOME }, stdio: ['ignore', 'ignore', stream] }, 'sunos')
+      expect(lines).toEqual([`workflow-toolbox: ${result.laneSandbox?.line}\n`])
+      expect(parent).not.toHaveBeenCalled()
+    } finally { parent.mockRestore() }
+  }))
+
+  it('still collects a file whose name starts with a dash when it is spelled unambiguously', () => {
+    const p = plan({ args: ['run', '--file=-inline.md', '-f', './-dotted.md'] })
+    try {
+      expect(p.readable).toContain('/work/tree/-inline.md')
+      expect(p.readable).toContain('/work/tree/-dotted.md')
+    } finally { p.dispose() }
+  })
+
+  it.each([
+    ['repeated long flag', ['run', '--file', '--file', '/outside/a.md'], '--file'],
+    ['short flag', ['run', '--file', '-f', '/outside/a.md'], '-f'],
+    ['unrelated option', ['run', '--file', '--quiet', '--file', '/outside/a.md'], '--quiet'],
+  ])('does not collect a %s as a file value, and parses the next file normally', (_case, args, option) => {
+    const p = plan({ args })
+    try {
+      expect(p.readable).not.toContain(`/work/tree/${String(option)}`)
+      expect(p.readable).toContain('/outside/a.md')
+    } finally { p.dispose() }
+  })
+})
 
 describe('lane sandbox plan — availability and pass-through', () => {
   it('checks host identities against inside identities, ignoring nonexistent variants and refusing a failed probe', () => {
@@ -1558,6 +1699,30 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     } finally {
       spy.mockRestore()
       if (prev === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = prev
+    }
+  })
+
+  it('spawnOpencode writes dropped and refused-extra notices to the supplied stderr log', () => {
+    const root = tempRoot('spawn-notice-fd')
+    const home = join(root, 'home'); const w = join(root, 'w'); const run = join(root, 'run')
+    for (const dir of [home, w, run]) mkdirSync(dir, { recursive: true })
+    const log = join(root, 'stderr.log'); const fd = openSync(log, 'w')
+    const previousRuntime = process.env.XDG_RUNTIME_DIR
+    const previousRead = process.env.WT_LANE_SANDBOX_READ
+    process.env.XDG_RUNTIME_DIR = run
+    process.env.WT_LANE_SANDBOX_READ = '/'
+    const parent = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const stub = (() => ({ status: 0, stdout: '', stderr: '' })) as unknown as typeof spawnSync
+      const result = fence.spawnOpencode(stub, '/bin/true', [], { cwd: w, env: { PATH: process.env.PATH, HOME: home }, sandboxPaths: { readable: [home] }, stdio: ['ignore', 'ignore', fd] }, 'linux')
+      expect(result.laneSandbox?.kind).toBe('bwrap')
+      expect(readFileSync(log, 'utf8')).toContain(`lane sandbox dropped caller-named binds ${home}`)
+      expect(readFileSync(log, 'utf8')).toContain('lane sandbox refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /')
+      expect(parent).not.toHaveBeenCalled()
+    } finally {
+      parent.mockRestore(); closeSync(fd)
+      if (previousRuntime === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = previousRuntime
+      if (previousRead === undefined) delete process.env.WT_LANE_SANDBOX_READ; else process.env.WT_LANE_SANDBOX_READ = previousRead
     }
   })
 
