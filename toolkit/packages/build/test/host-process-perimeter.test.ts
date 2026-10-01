@@ -39,6 +39,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The shared whole-board find_cards page rule (find-cards-page.mjs) adds one process-table-free module.
     // The suite-lock bypass guard (wt-suite-lock-bypass-guard-hook.mjs) adds one process-table-free hook;
     // its platform and path helpers live in bin/lib/host.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 247, violations: [] })
+    // The cancelled-call relay guard hook adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 248, violations: [] })
   })
 })
