@@ -99,7 +99,7 @@ The archived artifacts are `.claude/reports/1861821660-lsp-probes/typescript/ava
 `.claude/reports/1861821660-lsp-probes/typescript/missing/`. The available arm passes only when
 `command -v` resolves and a diagnostic naming the planted error arrives.
 
-Available arm — PASS (2026-09-12, Linux, `command -v` → `/home/doublefx/.local/bin/typescript-language-server`, typescript-language-server 6.0.0): the harness debug log records `textDocument/publishDiagnostics` received and 4 diagnostic attachments delivered across the later tool results, and the session quoted `Expected 1 arguments, but got 0. [2554]`; 39566 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/typescript/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt, workspace-modules.txt).
+Available arm — PASS (2026-09-12, Linux, `command -v` → `~/.local/bin/typescript-language-server`, typescript-language-server 6.0.0): the harness debug log records `textDocument/publishDiagnostics` received and 4 diagnostic attachments delivered across the later tool results, and the session quoted `Expected 1 arguments, but got 0. [2554]`; 39566 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/typescript/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt, workspace-modules.txt).
 
 The missing arm passes only when no diagnostic arrives and the session ends normally.
 

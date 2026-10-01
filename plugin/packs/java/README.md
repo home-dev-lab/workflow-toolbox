@@ -85,7 +85,7 @@ diagnostics.
 Run `node toolkit/scripts/lsp-pack-probe.mjs java`. The available-binary and missing-binary arms
 archive under `.claude/reports/1861821660-lsp-probes/java/<arm>/`.
 
-Available arm — PASS (2026-09-12, Linux, `command -v` → `/home/doublefx/.local/bin/jdtls`, Eclipse JDT LS 1.61.0, `java` = Temurin 21.0.9 placed first on the probe's PATH): the harness debug log records `textDocument/publishDiagnostics` received and 1 diagnostic attachment(s) delivered, and the session quoted `Type mismatch`; 44786 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/java/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt).
+Available arm — PASS (2026-09-12, Linux, `command -v` → `~/.local/bin/jdtls`, Eclipse JDT LS 1.61.0, `java` = Temurin 21.0.9 placed first on the probe's PATH): the harness debug log records `textDocument/publishDiagnostics` received and 1 diagnostic attachment(s) delivered, and the session quoted `Type mismatch`; 44786 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/java/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt).
 
 Missing arm — PASS (same date; `command -v` → not found on the shim PATH, `node` and `claude` still resolving): the harness attempted to start the server and failed (`Failed to start LSP server`: the command is absent), no `publishDiagnostics` was received and 0 attachments were delivered, the session ended normally (exit 0, 59084 ms) with no diagnostic and no missing-command message — the declaration fails open; artifacts `.claude/reports/1861821660-lsp-probes/java/missing/`.
 
