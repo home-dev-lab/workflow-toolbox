@@ -7,13 +7,28 @@ const patterns = [
   ['brave-api-key', /(?<![A-Za-z0-9_-])BSA[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])/g],
   ['jwt', /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g],
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
-  ['assignment', /\b(?:password|token|secret)\s*=\s*(?![=])(?:"[^"]+"|'[^']+'|[^\s;,)}"']+)/gi],
-  ['op-output', /^\s*(?:password|token|secret|credential)\s*:\s*\S.+$/gim],
+  // The key-based kinds below match on ONE line ([ \t], never \s) and capture the value in a group: a
+  // detection is the value itself, never the key, the indentation or a following line (card
+  // 1876226877283108557 - "token:\n    type" became a held value and refused every text sharing it).
+  ['assignment', /\b(?:password|token|secret)[ \t]*=[ \t]*(?![=])(?:"([^"]+)"|'([^']+)'|([^\s;,)}"']+))/gi],
+  ['op-output', /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim],
   // A QUOTED key with a quoted value: a JSON body or a Python dict - `{"password": "..."}`. No other
   // pattern matches it: `assignment` needs `=` and `op-output` needs an unquoted key at a line start.
-  ['key-value', /(["'])(?:password|token|secret)\1\s*:\s*(?:"[^"\n]+"|'[^'\n]+')/gi],
-  ['environment-dump', /^\s*(?:\+\s*)?(?:export\s+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)\s*=\s*\S.+$/gm],
+  ['key-value', /(["'])(?:password|token|secret)\1[ \t]*:[ \t]*(?:"([^"\n]+)"|'([^'\n]+)')/gi],
+  ['environment-dump', /^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*?)[ \t]*$/gm],
 ];
+
+// Below this length a captured value is not distinctive: masking it would mask every "true" or "0" in
+// the output, and holding it would refuse ordinary text later. Such a value keeps its key, on its own line.
+export const DISTINCT_VALUE_FLOOR = 6;
+
+function capturedValue(match) {
+  const groups = match.slice(1).filter((group) => group !== undefined);
+  const value = groups.at(-1);
+  if (value === undefined || value === match[0]) return match[0];
+  if (value.length >= DISTINCT_VALUE_FLOOR) return value;
+  return match[0].replace(/^[ \t]*(?:\+[ \t]*)?/, '');
+}
 
 const sha = /\b[a-f0-9]{40}\b/gi;
 const uuid = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
@@ -113,7 +128,10 @@ function scannedConcealedDetections(text) {
       found.push({ kind: 'op-json-concealed', value: frame.value.serialized, secret: frame.value.decoded });
       return;
     }
-    const fragment = text.slice(frame.start, end);
+    // Fail-safe for a value that is not a JSON string (truncated or malformed output): the run of
+    // characters after "value": up to the next delimiter - never the whole object with its keys.
+    if (frame.valueAt === undefined) return;
+    const fragment = text.slice(frame.valueAt, end).match(/^[^,}\]\s]+/)?.[0];
     if (fragment) found.push({ kind: 'op-json-concealed', value: fragment, secret: fragment });
   };
 
@@ -136,7 +154,11 @@ function scannedConcealedDetections(text) {
     if (frame?.kind !== 'object' || text[next] !== ':') { cursor = key.end; continue; }
     next += 1;
     while (/\s/.test(text[next] ?? '')) next += 1;
-    if (text[next] !== '"') { cursor = next; continue; }
+    if (text[next] !== '"') {
+      if (key.decoded === 'value') frame.valueAt = next;
+      cursor = next;
+      continue;
+    }
 
     const value = jsonString(text, next);
     if (key.decoded === 'type' && value.decoded === 'CONCEALED') frame.concealed = true;
@@ -182,9 +204,10 @@ export function detections(text, command = '', only) {
     if (selected && !selected.has(kind)) continue;
     expression.lastIndex = 0;
     for (let match; (match = expression.exec(text));) {
-      const duplicatesConcealed = concealed.some(({ value }) => value.includes(match[0]) || match[0].includes(value));
+      const value = capturedValue(match);
+      const duplicatesConcealed = concealed.some((item) => item.value.includes(value) || value.includes(item.value));
       const sourceSyntax = kind === 'assignment' && sourceAssignment(text, match);
-      if (!sourceSyntax && !duplicatesConcealed && !overlaps(match.index, match.index + match[0].length, allowed)) found.push({ kind, value: match[0] });
+      if (!sourceSyntax && !duplicatesConcealed && !overlaps(match.index, match.index + match[0].length, allowed)) found.push({ kind, value });
     }
   }
   return found;
