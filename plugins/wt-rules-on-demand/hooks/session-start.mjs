@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { readdir, readFile, mkdir, writeFile, stat, rm, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { basename, delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ruleDirectories, configDirectory, projectRuleRoots, ancestorsOf, sameDirectory } from '../paths.js';
+import { ruleDirectories, configDirectory, projectRuleRoots, sameDirectory, worktreePlan } from '../paths.js';
 import { assertSafeDataDir, qualityDataDir } from '../scripts/rule-lifecycle-lib.mjs';
 import { atomicLatest } from '../scripts/quality-check.mjs';
 import { launchQuality } from '../scripts/launch-quality.mjs';
@@ -19,21 +19,24 @@ const config = configDirectory(process.env);
 if (process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS !== '1') process.stdout.write('wt-rules-on-demand: inactive: Function Hooks require CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1.\n');
 if (!config) { process.stdout.write('wt-rules-on-demand: HOME or USERPROFILE unavailable; config directory unknown.\n'); process.exit(0); }
 const paths = ruleDirectories(cwd, resolve(config));
-// The working tree holding `start` when it is a linked worktree: its `.git` file names a gitdir whose `commondir`
-// leads to the main repository. Read from the git files, never by spawning git; any failure means no exclusion.
+// The linked worktree holding `start`, read from git's own files by the plan shared with the hook (paths.js
+// worktreePlan); this command only fulfils its stat/read requests. Never spawns git; unknown is said, never guessed.
 async function linkedWorktree(start) {
-  for (const dir of ancestorsOf(start).reverse()) {
-    const dotGit = join(dir, '.git');
-    const info = await stat(dotGit).catch(() => null);
-    if (!info) continue;
-    if (!info.isFile()) return null;
+  const plan = worktreePlan(start);
+  let step = plan.next();
+  while (!step.done) {
+    const { op, path } = step.value;
+    let response;
     try {
-      const gitdir = resolve(dir, /^gitdir:\s*(.+)$/m.exec(await readFile(dotGit, 'utf8'))[1].trim());
-      const common = resolve(gitdir, (await readFile(join(gitdir, 'commondir'), 'utf8')).trim());
-      return basename(common) === '.git' ? { worktreeRoot: dir, mainRepoRoot: dirname(common) } : null;
-    } catch { return null; }
+      if (op === 'stat') { const info = await stat(path); response = { value: { kind: info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other' } }; }
+      else if (op === 'read') response = { value: await readFile(path, 'utf8') };
+      else throw new Error(`unknown plan request: ${op}`);
+    } catch (error) { response = { error }; }
+    step = plan.next(response);
   }
-  return null;
+  if (!step.value?.unknown) return step.value ?? {};
+  process.stdout.write(`wt-rules-on-demand: nested-worktree check unknown: ${step.value.unknown}\n`);
+  return {};
 }
 const configReal = await realpath(resolve(config)).catch(() => resolve(config));
 const projectRoots = [];

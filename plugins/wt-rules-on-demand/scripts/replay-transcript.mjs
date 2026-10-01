@@ -42,8 +42,9 @@ export async function replayTranscript({ transcriptText, configDir = configDirec
     ui: { log: async (text) => { logs.push(text); } },
     env: { get: async (name) => name === 'CLAUDE_CONFIG_DIR' ? configDir : process.env[name] },
     store: { get: async (key) => store[key], set: async (key, value) => { store[key] = value; } },
-    // The replayed session is rooted at its project: project rules come from it and its ancestors, as in the harness.
-    session: { id: async () => sessionId, messages: async () => messages, root: async () => resolve(projectRoot), repo: async () => null },
+    // The replayed session is rooted at its project: project rules come from it and its ancestors, minus a main
+    // checkout around a linked worktree, which the hook reads from the git files through this stub's `fs`.
+    session: { id: async () => sessionId, messages: async () => messages, root: async () => resolve(projectRoot) },
     fs: {
        list: async (path) => (await readdir(absolute(path), { withFileTypes: true })).map((entry) => {
          let kind = 'other';

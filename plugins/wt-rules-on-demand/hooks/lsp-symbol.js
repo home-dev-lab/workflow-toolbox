@@ -1,5 +1,5 @@
 // Pure symbol classifier and I/O plans. Only hooks.js fulfills these requests.
-import { normal, absolute, parentOf } from '../paths.js';
+import { normal, absolute, parentOf, joinSlash, notFound } from '../paths.js';
 const IDENT = '[A-Za-z_$][\\w$]*';
 const MODIFIER = /^(?:export|public|private|protected|internal|static|abstract|final|async|default|pub|override|open|data|sealed)\s+/;
 const DECL = new RegExp('^(?:function\\*?|class|interface|type|enum|const|let|var|def|fun|val|struct|trait|impl|record|object)\\s+' + `(${IDENT})\\s*(?:[=(<:{]\\s*)?$`);
@@ -38,21 +38,10 @@ export function extractSymbol(pattern) {
   return names.length && names.length <= 3 ? names.join('|') : null;
 }
 
-// Use slash paths internally (normal, absolute, parentOf come from paths.js).
-function pathOf(base, part) {
-  const text = normal(part);
-  const joined = absolute(text) ? text : `${normal(base)}/${text}`;
-  const prefix = /^([A-Za-z]:\/|\/\/[^/]+\/[^/]+|\/)/.exec(joined)?.[1] ?? '/';
-  const stack = [];
-  for (const piece of joined.slice(prefix.length).split('/')) {
-    if (piece === '..') stack.pop();
-    else if (piece && piece !== '.') stack.push(piece);
-  }
-  return prefix.replace(/\/$/, '') + '/' + stack.join('/');
-}
+// Use slash paths internally (normal, absolute, parentOf, joinSlash and notFound come from paths.js).
+const pathOf = joinSlash;
 const extension = (path) => /\.[^./]+$/.exec(normal(path))?.[0] ?? '';
-// Node errors carry a code; the Function Hooks host rejects a missing file with a message ending "failed: ENOENT".
-const missing = (error) => ['ENOENT', 'ENOTDIR'].includes(error?.code) || /(?:^|\bfailed: )(?:ENOENT|ENOTDIR)\b/.test(error?.message ?? '');
+const missing = notFound;
 // A response is either { value } or { error }; errors never disappear in the shell.
 function* request(op, path, options) {
   const response = yield { op, path, ...(options ? { options } : {}) };

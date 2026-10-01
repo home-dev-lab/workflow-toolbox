@@ -2,7 +2,7 @@ import { parseRuntimeRule } from './runtime-rule.js';
 import { maskReadOnlyMentions } from './bash-mention.js';
 import { bashCommandVerdict, isGovernedAct, classify } from './act-checks.js';
 import { toolInputVerdict, correlateTurn } from './declarative-checks.js';
-import { ruleDirectories, configDirectory, agentLoop, projectRuleRoots, ancestorsOf, sameDirectory, normal, absolute } from '../paths.js';
+import { ruleDirectories, configDirectory, agentLoop, projectRuleRoots, sameDirectory, normal, rawAbsolute, joinSlash, worktreePlan } from '../paths.js';
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-match.js';
 import { regexCallBudget } from './linear-regex.js';
@@ -110,23 +110,39 @@ const context = async ($, loop) => {
   return created;
 };
 // The session root decides the project rule set, whatever directory the event (a sub-agent's included) runs in.
+// The raw answer must be rooted (`/`, `X:\`, `X:/`, `\\server\share`): '', `C:`, `C:foo` or `\p` take the fallback.
 async function sessionRoot($, cwd) {
   try {
     const root = await $.session.root();
-    if (typeof root === 'string' && absolute(normal(root))) return { root: normal(root), fallback: false };
+    if (rawAbsolute(root)) return { root: normal(joinSlash('/', root)), fallback: false };
   } catch { /* An older host or a fixture without the capability throws here: fall back below, with a notice. */ }
   return { root: cwd, fallback: true };
 }
+// A root change that gives a name another identity makes that name servable again in the context.
+function publish(ctx, root, rules) {
+  if (ctx.rules && ctx.rulesRoot !== root) {
+    const before = new Map(ctx.rules.map((rule) => [rule.name, rule.identity]));
+    for (const rule of rules) if (before.has(rule.name) && before.get(rule.name) !== rule.identity) ctx.served.delete(rule.name);
+  }
+  ctx.rules = rules;
+  ctx.rulesRoot = root;
+}
 async function rulesFor($, ctx, cwd) {
-  const { root, fallback } = await sessionRoot($, cwd);
+  const found = await sessionRoot($, cwd);
+  let root = found.root;
+  if (found.fallback) {
+    if (!ctx.fallbackNoticed) { ctx.fallbackNoticed = true; await notice($, 'session root unavailable; project rules resolved from event cwd'); }
+    // A relative cwd ('.') names no place: keep what this context already resolved rather than reload.
+    if (!rawAbsolute(String(cwd)) && (ctx.loading || ctx.rules)) root = ctx.loading?.root ?? ctx.rulesRoot;
+  }
   if (ctx.rules && ctx.rulesRoot === root) return ctx.rules;
-  if (ctx.loading?.root !== root) ctx.loading = { root, promise: load($, root, fallback) };
+  if (ctx.loading?.root !== root) ctx.loading = { root, promise: load($, root, found.fallback) };
   const pending = ctx.loading;
   let rules;
   try { rules = await pending.promise; }
-  finally { if (ctx.loading === pending) ctx.loading = null; }
-  ctx.rules = rules;
-  ctx.rulesRoot = root;
+  catch (error) { if (ctx.loading === pending) ctx.loading = null; throw error; }
+  // Only the newest load publishes: one overtaken by a later root, or cleared by a compaction, keeps its result local.
+  if (ctx.loading === pending) { ctx.loading = null; publish(ctx, root, rules); }
   return rules;
 }
 async function notice($, message) {
@@ -215,16 +231,13 @@ async function realPathOf($, path) {
   try { return (await $.fs.stat(path, { resolve: true })).realPath ?? path; } catch { return path; }
 }
 const dotEntry = (dir, name) => `${dir === '/' ? '' : dir.replace(/\/$/, '')}/${name}`;
-// The nearest directory between the main repository (exclusive) and the session root holding a `.git` entry is a
-// separate working tree; none means the session runs in the main checkout itself.
-async function nestedWorkingTree($, root, mainRepoRoot) {
-  const chain = ancestorsOf(root);
-  if (!mainRepoRoot || !chain.some((dir) => sameDirectory(dir, mainRepoRoot)) || sameDirectory(root, mainRepoRoot)) return null;
-  for (const dir of chain.reverse()) {
-    if (sameDirectory(dir, mainRepoRoot)) return null;
-    if (await $.fs.stat(dotEntry(dir, '.git')).then(() => true, () => false)) return dir;
-  }
-  return null;
+// The linked worktree holding the root, from git's own files (paths.js worktreePlan); unknown is said, never guessed.
+async function linkedWorktree($, root) {
+  let tree;
+  try { tree = await runDetectorPlan($, worktreePlan(root)); } catch (error) { tree = { unknown: String(error?.message ?? error) }; }
+  if (!tree?.unknown) return tree ?? {};
+  await notice($, `nested-worktree check unknown: ${tree.unknown}`);
+  return {};
 }
 async function readCapped($, file) {
   const info = await $.fs.stat(file, { resolve: true });
@@ -233,16 +246,11 @@ async function readCapped($, file) {
   if (new TextEncoder().encode(text).length > RULE_CAP) throw new Error(`rule exceeds ${RULE_CAP} bytes`);
   return text;
 }
-async function mainRepositoryRoot($) {
-  try { return (await $.session.repo())?.root ?? null; } catch { return null; }
-}
 async function load($, root, fallback = false) {
   const env = { CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') };
   const config = configDirectory(env);
   if (!config) { await notice($, 'HOME and USERPROFILE unavailable; cannot locate user rules'); return []; }
-  if (fallback) await notice($, 'session root unavailable; project rules resolved from event cwd');
-  const mainRepoRoot = await mainRepositoryRoot($);
-  const worktreeRoot = await nestedWorkingTree($, root, mainRepoRoot);
+  const { mainRepoRoot = null, worktreeRoot = null } = await linkedWorktree($, root);
   let candidates = projectRuleRoots(root, { configDir: config, mainRepoRoot, worktreeRoot });
   if (!candidates.length && fallback) candidates = [root];
   const configReal = await realPathOf($, config);

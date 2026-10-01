@@ -28,6 +28,22 @@ export const normal = (path) => {
   return /^[A-Za-z]:$/.test(value) ? `${value}/` : value || '/';
 };
 export const absolute = (path) => /^(?:\/|[A-Za-z]:\/)/.test(path);
+// A raw spelling is absolute only when rooted: `/…`, `X:\` or `X:/`, `\\server\share`. `C:`, `C:foo` and `\p` are not.
+export const rawAbsolute = (path) => typeof path === 'string' && /^(?:\/|[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/.test(path);
+// Join `part` onto `base` and collapse `.` and `..`, never above the drive, UNC share or `/` root.
+export function joinSlash(base, part) {
+  const text = normal(part);
+  const joined = absolute(text) ? text : `${normal(base)}/${text}`;
+  const prefix = /^([A-Za-z]:\/|\/\/[^/]+\/[^/]+|\/)/.exec(joined)?.[1] ?? '/';
+  const stack = [];
+  for (const piece of joined.slice(prefix.length).split('/')) {
+    if (piece === '..') stack.pop();
+    else if (piece && piece !== '.') stack.push(piece);
+  }
+  return prefix.replace(/\/$/, '') + '/' + stack.join('/');
+}
+// Node errors carry a code; the Function Hooks host rejects a missing file with a message ending "failed: ENOENT".
+export const notFound = (error) => ['ENOENT', 'ENOTDIR'].includes(error?.code) || /(?:^|\bfailed: )(?:ENOENT|ENOTDIR)\b/.test(error?.message ?? '');
 export const parentOf = (path) => {
   const p = normal(path);
   if (/^(?:[A-Za-z]:\/|\/\/[^/]+\/[^/]+)$/.test(p)) return p;
@@ -37,9 +53,8 @@ export const parentOf = (path) => {
 
 // Every directory from the filesystem root down to `path` itself, root first; a relative path has none.
 export function ancestorsOf(path) {
-  if (typeof path !== 'string' || !path) return [];
-  let dir = normal(path);
-  if (!absolute(dir)) return [];
+  if (!rawAbsolute(path)) return [];
+  let dir = normal(joinSlash('/', path));
   const chain = [dir];
   for (let parent = parentOf(dir); parent !== dir; dir = parent, parent = parentOf(dir)) chain.unshift(parent);
   return chain;
@@ -69,4 +84,44 @@ export function projectRuleRoots(sessionRoot, { configDir = null, mainRepoRoot =
     if (nested && within(dir, mainRepoRoot) && !within(dir, worktreeRoot)) return false;
     return true;
   });
+}
+
+const failure = (error) => error?.code ?? /\b(E[A-Z]{2,})\b/.exec(String(error?.message ?? ''))?.[1] ?? String(error?.message ?? error).slice(0, 120);
+// The linked worktree holding `sessionRoot`, read from git's own files: the nearest `.git` entry upward; a FILE whose
+// `gitdir:` directory holds a `commondir` resolving to a directory named `.git` is a linked worktree, and that `.git`'s
+// parent is the main checkout. A `.git` directory, a gitdir without `commondir` (a submodule), a common directory not
+// named `.git` (a bare store), or no `.git` at all: null. Any other failure: { unknown: reason }, never a guess.
+// A plan: it yields { op: 'stat' | 'read', path } requests and receives { value } or { error }; the caller does the I/O.
+export function* worktreePlan(sessionRoot) {
+  for (const dir of ancestorsOf(sessionRoot).reverse()) {
+    const dotGit = joinSlash(dir, '.git');
+    const entry = yield { op: 'stat', path: dotGit, options: { resolve: true } };
+    if (entry.error) {
+      if (notFound(entry.error)) continue;
+      return { unknown: `stat ${dotGit} failed: ${failure(entry.error)}` };
+    }
+    if (entry.value?.kind === 'dir') return null;
+    if (entry.value?.kind !== 'file') return { unknown: `${dotGit} is neither a file nor a directory` };
+    const text = yield { op: 'read', path: dotGit };
+    if (text.error) return { unknown: `read ${dotGit} failed: ${failure(text.error)}` };
+    const target = /^gitdir:[ \t]*(\S.*?)\s*$/m.exec(String(text.value))?.[1];
+    if (!target) return { unknown: `malformed ${dotGit}` };
+    const gitdir = joinSlash(dir, target);
+    const commondirFile = joinSlash(gitdir, 'commondir');
+    const common = yield { op: 'read', path: commondirFile };
+    if (common.error) {
+      if (!notFound(common.error)) return { unknown: `read ${commondirFile} failed: ${failure(common.error)}` };
+      const holder = yield { op: 'stat', path: gitdir };
+      if (holder.error) return { unknown: notFound(holder.error) ? `gitdir ${gitdir} named by ${dotGit} is missing` : `stat ${gitdir} failed: ${failure(holder.error)}` };
+      return null;
+    }
+    const relative = String(common.value).trim();
+    if (!relative) return { unknown: `malformed ${commondirFile}` };
+    const commonDir = joinSlash(gitdir, relative);
+    if (commonDir.split('/').at(-1) !== '.git') return null;
+    const check = yield { op: 'stat', path: commonDir };
+    if (check.error || check.value?.kind !== 'dir') return { unknown: `common directory ${commonDir} named by ${commondirFile} is ${check.error ? `unreadable: ${failure(check.error)}` : 'not a directory'}` };
+    return { worktreeRoot: normal(dir), mainRepoRoot: parentOf(commonDir) };
+  }
+  return null;
 }
