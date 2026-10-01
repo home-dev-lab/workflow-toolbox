@@ -142,7 +142,11 @@ function mergeEvicted(name, previous, next) {
 }
 
 // Archive texts, each under ARCHIVE_PART_BYTES: verdict lines as JSONL, store keys as `{ format, key, archivedAt, value }`.
-export function archiveTexts(name, evicted, archivedAt = new Date().toISOString()) {
+// A split id when the caller gives none: random part and counter, never a constant (hooks.js passes its segment-id
+// generator, drawn from the module's 52-bit random owner).
+let splitCounter = 0;
+const randomSplitId = () => `split-${Math.floor(Math.random() * 2 ** 52).toString(36)}-${(splitCounter++).toString(36)}`;
+export function archiveTexts(name, evicted, archivedAt = new Date().toISOString(), { splitId = randomSplitId } = {}) {
   if (name === VERDICTS) {
     const parts = [];
     let part = [], bytes = 0;
@@ -156,23 +160,57 @@ export function archiveTexts(name, evicted, archivedAt = new Date().toISOString(
     return parts;
   }
   // Sessions are format 2: `value` is the list of units. Served and health stay format 1: `value` is the key's value.
-  if (name === 'sessions') return chunk(evicted, (part) => JSON.stringify({ format: 2, key: name, archivedAt, value: part }), [], (part, unit) => part.push(unit));
+  // Every part, its envelope included, stays within ARCHIVE_PART_BYTES (the host rejects a file write over 4 MiB).
+  if (name === 'sessions') {
+    const text = (part) => JSON.stringify({ format: 2, key: name, archivedAt, value: part });
+    const room = ARCHIVE_PART_BYTES - byteLength(text([]));
+    return chunk(evicted.flatMap((unit) => splitUnit(unit, room, splitId)), text, room, [], (part, unit) => part.push(unit));
+  }
   const text = (value) => JSON.stringify({ format: 1, key: name, archivedAt, value });
-  if (name === 'served') return chunk(Object.entries(evicted).map(([key, item]) => ({ [key]: item })), text, {}, (part, unit) => Object.assign(part, unit));
+  if (name === 'served') return chunk(Object.entries(evicted).map(([key, item]) => ({ [key]: item })), text, ARCHIVE_PART_BYTES - byteLength(text({})), {}, (part, unit) => Object.assign(part, unit));
   return [].concat(evicted).map(text);
 }
-function chunk(units, text, empty, add) {
+// Units packed into parts, each part's units plus one separator byte per unit within `room` bytes.
+function chunk(units, text, room, empty, add) {
   const parts = [];
   let part = null, bytes = 0;
   for (const unit of units) {
-    const size = byteLength(JSON.stringify(unit));
-    if (part && bytes + size > ARCHIVE_PART_BYTES) { parts.push(text(part)); part = null; bytes = 0; }
+    const size = byteLength(JSON.stringify(unit)) + 1;
+    if (part && bytes + size > room) { parts.push(text(part)); part = null; bytes = 0; }
     part ??= Array.isArray(empty) ? [] : {};
     add(part, unit);
     bytes += size;
   }
   if (part) parts.push(text(part));
   return parts;
+}
+// A context unit larger than one part is split into PIECES of one context: the first holds every field but the rows,
+// each next one holds rows only, and every piece carries `split: { id, index, of }`. Readers concatenate the pieces of
+// one split id, in index order, back into the one context before any segment join: pieces are fragments, never copies
+// (two identical rows on either side of a boundary are two rows). A single row larger than a part stays whole.
+export function splitUnit(unit, room, splitId = randomSplitId) {
+  if (!unit?.context || byteLength(JSON.stringify(unit)) + 1 <= room) return [unit];
+  const id = String(splitId());
+  room -= byteLength(JSON.stringify({ split: { id, index: 999_999, of: 999_999 } }));
+  const context = { ...unit.context, seg: unit.context.seg ?? legacyContextSeg(unit.sessionId, unit.key) };
+  const rowFields = Object.keys(context).filter((field) => Array.isArray(context[field]));
+  const head = { ...context };
+  for (const field of rowFields) head[field] = [];
+  const pieces = [{ ...unit, context: head }];
+  let bytes = byteLength(JSON.stringify(pieces[0])) + 1;
+  for (const field of rowFields) for (const row of unit.context[field]) {
+    const size = byteLength(JSON.stringify(row)) + 1;
+    let piece = pieces.at(-1);
+    if (bytes + size + byteLength(JSON.stringify(field)) + 3 > room) {
+      piece = { ...unit, context: { seg: context.seg, ...(context.last === undefined ? {} : { last: context.last }) } };
+      pieces.push(piece);
+      bytes = byteLength(JSON.stringify(piece)) + 1;
+    }
+    if (!piece.context[field]) { piece.context[field] = []; bytes += byteLength(JSON.stringify(field)) + 3; }
+    piece.context[field].push(row);
+    bytes += size;
+  }
+  return pieces.map((piece, index) => ({ ...piece, split: { id, index, of: pieces.length } }));
 }
 
 // The quality data directory's physical path must not sit in a rules or git directory, as for the verdict rotation.
@@ -185,9 +223,11 @@ const numbersOf = (family, name) => name.slice(family.prefix.length, -family.suf
 export const isArchive = (family, name) => name.startsWith(family.prefix) && name.endsWith(family.suffix)
   && numbersOf(family, name).length === 2 && numbersOf(family, name).every((n) => Number.isSafeInteger(n) && n >= 0);
 export const archiveName = (family, time, sequence) => `${family.prefix}${time}-${sequence}${family.suffix}`;
-// The numeric sequence part of an archive name: the writer's owner number (from its pid, see hooks.js) above a counter
-// of SEQUENCE_SPAN, so two processes writing in the same millisecond never produce one name.
-export const SEQUENCE_SPAN = 1_000_000;
+// The numeric sequence part of an archive name: the writer's random owner number (OWNER_BITS bits, see hooks.js) above a
+// counter of SEQUENCE_SPAN, so two writers (processes or module instances) in one millisecond do not produce one name;
+// the largest value, 2^43 x 1000, stays below 2^53.
+export const SEQUENCE_SPAN = 1000;
+export const OWNER_BITS = 43;
 export const sequenceNumber = (owner, counter) => owner * SEQUENCE_SPAN + (counter % SEQUENCE_SPAN);
 
 // The archives of one family to remove: everything past the family's retained bytes on disk, newest kept first (a

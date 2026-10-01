@@ -9,6 +9,7 @@ import { register, resetForSelftest } from '../hooks/hooks.js';
 import { measureInputs } from '../scripts/quality-check.mjs';
 
 export const HOST_STORE_LIMIT = 4_194_304;
+export const HOST_FILE_LIMIT = 4 * 1024 * 1024;
 const copy = (value) => (value === undefined ? undefined : JSON.parse(JSON.stringify(value)));
 
 export function hostStore(initial = {}, { limit = HOST_STORE_LIMIT, refuse = () => null } = {}) {
@@ -36,7 +37,12 @@ export function hostStore(initial = {}, { limit = HOST_STORE_LIMIT, refuse = () 
 // The Function Hooks `$.fs` surface over the real filesystem: what an archive write leaves is what a reader reads.
 export const realFs = {
   read: async (path) => readFile(path, 'utf8'),
-  write: async (path, text) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, text); },
+  // The host contract (index.d.ts, `$.fs`): "A read or write over 4 MiB rejects".
+  write: async (path, text) => {
+    if (Buffer.byteLength(String(text)) > HOST_FILE_LIMIT) throw new Error(`write of ${Buffer.byteLength(String(text))} bytes is over 4 MiB`);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, text);
+  },
   remove: async (path) => rm(path, { force: false }),
   exists: async (path) => lstat(path).then(() => true, () => false),
   list: async (path) => Promise.all((await readdir(path, { withFileTypes: true })).map(async (entry) => {
