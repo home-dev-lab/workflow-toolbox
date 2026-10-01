@@ -123,8 +123,9 @@ describe('raw host primitive quality ratchet', () => {
     // their filesystem primitives live in bin/lib/host, so the primitive ceiling stays unchanged.
     // The shipped Depends-on parser (depends-on-parser.mjs) adds one pure module with no host operation.
     // The shared find_cards page rule (find-cards-page.mjs) adds one pure module with no host operation.
+    // The suite-lock bypass guard adds its hook; its platform and temp-root reads live in bin/lib/host.
     // The cancelled-call relay guard adds its hook; its file access lives in bin/lib/host.
-    expect(result.perimeterFiles).toBe(258)
+    expect(result.perimeterFiles).toBe(259)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
