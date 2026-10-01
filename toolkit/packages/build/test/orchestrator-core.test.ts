@@ -398,9 +398,41 @@ describe('orchestrator driver', () => {
     const f = repoFixture(cards)
     const result = await runOrchestrator({ ...f.options, cards: undefined, missionList: 'Next', missionLabels: [] }, f)
     expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['2'])
-    expect(result.skipped).toEqual([{ id: '1', reason: 'malformed Depends-on line "../../../outside"' }])
-    expect(readFileSync(f.report, 'utf8')).toContain('skipped=1 (malformed Depends-on line "../../../outside")')
+    expect(result.skipped).toEqual([{ id: '1', reason: 'malformed Depends-on line "Depends-on: ../../../outside"' }])
+    expect(readFileSync(f.report, 'utf8')).toContain('skipped=1 (malformed Depends-on line "Depends-on: ../../../outside")')
     expect(f.moves).toEqual(['2:In Progress'])
+  })
+
+  it('I8: a mission card whose dependency does not exist is skipped by name while a Depends-on: none card still runs', async () => {
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: #1875344230742754904\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]
+    const f = repoFixture(cards)
+    const board = { ...f.board, getCard: async (id: string) => { if (id === '1875344230742754904') throw new BoardUnavailable('Request failed with status code 404', 404); return f.board.getCard(id) } }
+    const result = await runOrchestrator({ ...f.options, cards: undefined, missionList: 'Next', missionLabels: [] }, { ...f, board })
+    expect(result.stopReason).not.toBe('board unavailable')
+    expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['2'])
+    expect(result.skipped).toEqual([{ id: '1', reason: 'dependency 1875344230742754904 not found' }])
+    expect(readFileSync(f.report, 'utf8')).toContain('skipped=1 (dependency 1875344230742754904 not found)')
+  })
+
+  it('I3: a transport failure while reading a dependency stays fatal (board unavailable), never a skip', async () => {
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: #1875344230742754904\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]
+    const f = repoFixture(cards)
+    const board = { ...f.board, getCard: async () => { const error = new BoardUnavailable('HTTP 404', 404); error.transport = true; throw error } }
+    const result = await runOrchestrator({ ...f.options, cards: undefined, missionList: 'Next', missionLabels: [] }, { ...f, board })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' })
+    expect(f.moves).toEqual([])
+  })
+
+  it.each([
+    ['a non-transport 503', () => new BoardUnavailable('Request failed with status code 503', 503)],
+    ['a non-transport error with no status', () => new BoardUnavailable('malformed MCP result JSON')],
+  ])('F1: %s while reading a mission dependency stops the wave as board unavailable', async (_label, failure) => {
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: #1875344230742754904\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]
+    const f = repoFixture(cards)
+    const board = { ...f.board, getCard: async () => { throw failure() } }
+    const result = await runOrchestrator({ ...f.options, cards: undefined, missionList: 'Next', missionLabels: [] }, { ...f, board })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' })
+    expect(f.moves).toEqual([])
   })
 
   it('R2-2 lock: a worker that fails does not let the report be emitted before the other worker\'s board mutations are recorded', async () => {
@@ -521,13 +553,13 @@ describe('orchestrator driver', () => {
   })
 
   it('applies all three mission label axes and Done dependencies fail-closed', async () => {
-    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'mission'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards)
-    const board = { ...f.board, getCard: async (id: string) => id === '9' ? { id: '9', listName: 'Done' } : f.board.getCard(id) }; const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', missionLabels: ['mission'] }, { ...f, board }); expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1'])
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9999\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'mission'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards)
+    const board = { ...f.board, getCard: async (id: string) => id === '9999' ? { id: '9999', listName: 'Done' } : f.board.getCard(id) }; const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', missionLabels: ['mission'] }, { ...f, board }); expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1'])
   })
 
   it('re-scans a mission after each card and removes cards that cease to be eligible', async () => {
-    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards); let scans = 0
-    const board = { ...f.board, getCard: async (id: string) => id === '9' ? { id: '9', listName: 'Done' } : f.board.getCard(id), findCards: async (args: { limit: number, offset: number }) => { scans += 1; const visible = scans === 1 ? cards : cards.slice(0, 1); return { cards: visible.slice(args.offset, args.offset + args.limit), total: visible.length } } }
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9999\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards); let scans = 0
+    const board = { ...f.board, getCard: async (id: string) => id === '9999' ? { id: '9999', listName: 'Done' } : f.board.getCard(id), findCards: async (args: { limit: number, offset: number }) => { scans += 1; const visible = scans === 1 ? cards : cards.slice(0, 1); return { cards: visible.slice(args.offset, args.offset + args.limit), total: visible.length } } }
     const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', missionLabels: ['mission'] }, { ...f, board }); expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1']); expect(scans).toBeGreaterThanOrEqual(2)
   })
 
