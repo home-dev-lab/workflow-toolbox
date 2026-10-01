@@ -1709,9 +1709,111 @@ describe('wt-lane --priority and the removed --attach', () => {
     remedy(parse([...base, '--attach=note.md']).error)
     remedy(parse([...base, '--attach']).error)
   })
+  it('refuses --owner pilot without --owner-token, naming the remedy, and accepts it with one', () => {
+    for (const args of [['--owner', 'pilot'], ['--owner', 'pilot', '--owner-token', '']]) {
+      const error = parse([...base, ...args]).error
+      expect(error).toContain('--owner pilot requires --owner-token <token>')
+      expect(error).toContain('abandon is unreachable')
+      expect(error).toContain(`node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"`)
+    }
+    const accepted = parse([...base, '--owner', 'pilot', '--owner-token', 'pilot-token'])
+    expect(accepted.error).toBeUndefined()
+    expect(accepted).toMatchObject({ owner: 'pilot', ownerToken: 'pilot-token' })
+    expect(parse(base).error).toBeUndefined()
+  })
+  it('parses --allow-missing-install as a deliberate skip, off by default', () => {
+    expect(parse(base).allowMissingInstall).toBe(false)
+    expect(parse([...base, '--allow-missing-install']).allowMissingInstall).toBe(true)
+  })
   it('leaves every other unknown argument on the generic message', () => {
     expect(parse([...base, '--attached', 'x']).error).toBe('unknown argument: --attached')
     expect(parse([...base, '--bogus']).error).toBe('unknown argument: --bogus')
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose dependencies are not installed (a sandboxed lane cannot install them)', () => {
+  const SPAWNED = 'echo spawned > "$PWD/spawned"'
+  const LOCK = 'lockfileVersion: 9.0\nimporters: {}\n'
+  const spawned = (f: ReturnType<typeof fixture>) => { waitForFile(join(f.dir, 'spawned')); return existsSync(join(f.dir, 'spawned')) }
+  const pnpmProject = (dir: string, installed: string | null) => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), LOCK)
+    if (installed !== null) { mkdirSync(join(dir, 'node_modules', '.pnpm'), { recursive: true }); writeFileSync(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), installed) }
+  }
+  const refusedFor = (result: ReturnType<typeof run>, dir: string, command: string) => {
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stderr).toContain(`wt-lane: Refused: dependencies of ${dir} are not installed`)
+    expect(result.stderr).toContain('a lane cannot install them inside its sandbox')
+    expect(result.stderr).toContain(`Run on the host first: (cd ${dir} && ${command})`)
+  }
+
+  it('refuses a pnpm project with no install, naming the directory and the exact command, and spawns nothing', () => {
+    const f = fixture(SPAWNED)
+    pnpmProject(join(f.dir, 'toolkit'), null)
+    const result = run(f)
+    refusedFor(result, join(f.dir, 'toolkit'), 'pnpm install --offline --frozen-lockfile')
+    expect(result.stderr).toContain('node_modules/.pnpm/lock.yaml is missing')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
+  it('refuses a pnpm install made from another lockfile', () => {
+    const f = fixture(SPAWNED)
+    pnpmProject(join(f.dir, 'toolkit'), 'lockfileVersion: 9.0\nimporters: { old: {} }\n')
+    const result = run(f)
+    refusedFor(result, join(f.dir, 'toolkit'), 'pnpm install --offline --frozen-lockfile')
+    expect(result.stderr).toContain('node_modules/.pnpm/lock.yaml differs from pnpm-lock.yaml')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
+  it('refuses the lane directory itself when it is the pnpm project', () => {
+    const f = fixture(SPAWNED)
+    pnpmProject(f.dir, null)
+    refusedFor(run(f), f.dir, 'pnpm install --offline --frozen-lockfile')
+  })
+  it('refuses an npm project with no install and names npm ci', () => {
+    const f = fixture(SPAWNED)
+    mkdirSync(join(f.dir, 'app')); writeFileSync(join(f.dir, 'app', 'package-lock.json'), '{}\n')
+    const result = run(f)
+    refusedFor(result, join(f.dir, 'app'), 'npm ci --offline')
+    expect(result.stderr).toContain('node_modules/.package-lock.json is missing')
+  })
+  it('launches when every lockfile has its matching install, and ignores hidden and node_modules directories', () => {
+    const f = fixture(SPAWNED)
+    pnpmProject(join(f.dir, 'toolkit'), LOCK)
+    mkdirSync(join(f.dir, 'app', 'node_modules'), { recursive: true }); writeFileSync(join(f.dir, 'app', 'package-lock.json'), '{}\n'); writeFileSync(join(f.dir, 'app', 'node_modules', '.package-lock.json'), '{}\n')
+    pnpmProject(join(f.dir, '.cache-project'), null)
+    pnpmProject(join(f.dir, 'node_modules'), null)
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it('launches when pnpm-lock.yaml is checked out with CRLF line ends and pnpm\'s own copy is LF', () => {
+    const f = fixture(SPAWNED)
+    const dir = join(f.dir, 'toolkit')
+    pnpmProject(dir, LOCK)
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), LOCK.replace(/\n/g, '\r\n'))
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it('still refuses a CRLF lockfile whose content differs from the installed copy', () => {
+    const f = fixture(SPAWNED)
+    const dir = join(f.dir, 'toolkit')
+    pnpmProject(dir, LOCK)
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\r\nimporters: { other: {} }\r\n')
+    refusedFor(run(f), dir, 'pnpm install --offline --frozen-lockfile')
+  })
+  it('launches past a missing install under --allow-missing-install', () => {
+    const f = fixture(SPAWNED)
+    pnpmProject(join(f.dir, 'toolkit'), null)
+    const result = run(f, ['--allow-missing-install'])
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it('refuses --owner pilot without a token at launch with exit 2 and spawns nothing', () => {
+    const f = fixture(SPAWNED)
+    const result = run(f, ['--owner', 'pilot'])
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('--owner pilot requires --owner-token <token>')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
 })
 
