@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { configDirectory } from '../paths.js';
 import { qualityDataDir } from './rule-lifecycle-lib.mjs';
 import { journalDeliveries, joinDeliveries, mergeSessions } from './delivery-join.mjs';
+import { readStoreArchives, withArchivedSessions } from './store-archives.mjs';
 
 const archivePattern = /^compliance-verdicts-archive-\d+-\d+\.jsonl$/;
 export const LIMITS = [
@@ -267,7 +268,9 @@ async function inputs(options) {
      for (const [key, value] of Object.entries(store)) if (key.startsWith('compliance-verdicts-archive-')) { addLines(value, true); archivesRead++; }
   }
    for (const path of archives) addLines(await load(path), true);
-   return { files, rows, sessions: mergeSessions(stores), archiveRows, archivesRead };
+   // Contexts moved out of an over-budget store, from the same archive directory: named snapshots without --archives read none.
+   const storeArchives = await readStoreArchives(archiveDir, load);
+   return { files, rows, sessions: withArchivedSessions(storeArchives, mergeSessions(stores)), archiveRows, archivesRead };
 }
 
 // Duplicate one singly matched serve's row and remove another's: a working join reports exactly one more duplicate

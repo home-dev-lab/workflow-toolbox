@@ -9,8 +9,10 @@ import { readFile } from 'node:fs/promises';
 import { scanTranscripts, summarise } from './transcript-verdicts.mjs';
 import { measureRules, ruleId } from './quality-measures.mjs';
 import { createHash } from 'node:crypto';
+import { rollbackArchiveDirectory } from './rollback-input-paths.mjs';
+import { readStoreArchives, withArchivedSessions } from './store-archives.mjs';
 
-async function measureInputs(configDirs, scopes, target) {
+export async function measureInputs(configDirs, scopes, target) {
   const stores = [];
   const profiles = [];
   let storeBytes = 0;
@@ -26,7 +28,10 @@ async function measureInputs(configDirs, scopes, target) {
       stores.push(item);
       storeBytes += info.size;
     }
-    profiles.push({ configDir: config, recorded: !!item?.health, health: item?.health ?? null, sessions: item?.sessions ?? {} });
+    // Contexts the hook moved out of an over-budget store are summed back with the live ones of this profile.
+    const archives = await readStoreArchives(rollbackArchiveDirectory(config));
+    if (item && archives.length) item.sessions = withArchivedSessions(archives, item.sessions);
+    profiles.push({ configDir: config, recorded: !!item?.health, health: item?.health ?? null, sessions: item ? item.sessions ?? {} : withArchivedSessions(archives, {}) });
   }
   const ledger = {};
   for (const scope of scopes) {
