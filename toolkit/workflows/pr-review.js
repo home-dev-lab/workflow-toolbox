@@ -2735,6 +2735,7 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-command-repeat-check.mjs",
         "plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs",
         "plugin/bin/wt-rm-critical-path-guard-hook.mjs",
+        "plugin/bin/wt-suite-lock-bypass-guard-hook.mjs",
         "plugin/bin/wt-zsh-word-split-guard-hook.mjs",
         "plugin/bin/wt-var-colon-modifier-guard-hook.mjs",
         "plugin/bin/wt-merge-chain-guard-hook.mjs",

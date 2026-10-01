@@ -355,6 +355,16 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'rm -f $G/*.log' },
       }
+    case 'wt-suite-lock-bypass-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        agent_id: 'agent-implementer-1',
+        agent_type: 'general-purpose',
+        transcript_path: sandbox.transcriptPath,
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'WT_SUITE_LOCK=0 pnpm test' },
+      }
     case 'wt-zsh-word-split-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
