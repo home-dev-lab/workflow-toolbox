@@ -411,14 +411,22 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
     const root = tempRoot()
     let flips = 0
     let ticket = ''
-    const beforeAcquire = () => { if (flips < 400) { flips += 1; ticket = seedLightTicket(root) } }
+    // The seam keeps flipping for ten times the wait, so only the deadline can end the loop in time: the
+    // count of flips before it does not depend on how fast this machine runs (a small CPU slice per flip,
+    // a one-second wait). Past that bound the seam stops, so a missing deadline check fails this test
+    // (the lock is acquired) instead of looping forever and holding the real suite lock.
+    const started = Date.now()
+    const beforeAcquire = () => {
+      if (Date.now() - started > 10_000) return
+      flips += 1
+      ticket = seedLightTicket(root)
+    }
     const afterHandBack = () => {
       if (ticket) { rmSync(ticket, { force: true }); rmSync(ticket.replace(/\.json$/, '.ticket'), { force: true }) }
       ticket = ''
-      for (let spin = 0; spin < 3_000_000; spin += 1) Math.sqrt(spin) // CPU work, not a wait: slows each flip so the bounded seam outlasts waitS
+      for (let spin = 0; spin < 200_000; spin += 1) Math.sqrt(spin) // CPU work, not a wait
     }
-    const started = Date.now()
-    expect(await outcome(root, { argv: ['E'], waitS: 0.2, beforeAcquire, afterHandBack })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    expect(await outcome(root, { argv: ['E'], waitS: 1, beforeAcquire, afterHandBack })).toBe('WT_SUITE_LOCK_TIMEOUT')
     expect(flips, 'the seam flipped the order at least twice').toBeGreaterThan(1)
     expect(Date.now() - started).toBeLessThan(5_000)
   }, 20_000)
