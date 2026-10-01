@@ -21,7 +21,7 @@ const OUTBOUND_FIELDS = {
 // A held value shorter than this also occurs by chance INSIDE ordinary identifiers: measured on fixtures (5,000
 // random values per length against card ids, issue keys, channel ids and prose), 4 digits matched 6% of the
 // time and 5 digits 0.7%, 6 characters of any class never. So a short held value counts only where it stands
-// alone - no letter or digit touching either side: `pin=7342` is refused, card `1876734226877283108` is not.
+// alone - no letter or digit touching either side: `pin=7342` is refused, a long numeric id such as `187673422687728310` is not.
 // Skipping short values altogether let a whole PIN and its base64 leave (critic-xhigh and Astra at 578fd20e).
 export const HELD_VALUE_FLOOR = 6;
 const ALNUM = /[A-Za-z0-9]/;
