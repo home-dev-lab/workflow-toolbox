@@ -7,12 +7,14 @@ import { createHash } from 'node:crypto';
 import { verdictPath, readVerdicts, pendingRules, recordRollback } from './verdict-record.mjs';
 import { rollbackStoreDirectory, rollbackArchiveDirectory, rollbackInputLocations } from './rollback-input-paths.mjs';
 import { journalDeliveries, joinDeliveries, mergeSessions } from './delivery-join.mjs';
+import { readStoreArchives, withArchivedSessions } from './store-archives.mjs';
 
 const args = process.argv.slice(2);
-const options = { project: process.cwd(), stores: [], verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
+const options = { project: process.cwd(), stores: [], storeArchiveDir: '', verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === '--project') options.project = args[++index] ?? '';
   else if (args[index] === '--store') options.stores.push(args[++index] ?? '');
+  else if (args[index] === '--store-archives') options.storeArchiveDir = args[++index] ?? '';
   else if (args[index] === '--verdicts') options.verdictFiles.push(args[++index] ?? '');
   else if (args[index] === '--json') options.json = true;
   else if (args[index] === '--dry-run') options.dryRun = true;
@@ -72,10 +74,13 @@ async function storePaths() {
   }
 }
 const stores = await Promise.all((await storePaths()).map(async (path) => JSON.parse(await readFile(resolve(path), 'utf8'))));
-const store = { sessions: mergeSessions(stores) };
+const archiveDir = await assertSafeDataDir(rollbackArchiveDirectory(configDir));
+// Contexts the hook moved out of an over-budget store are summed back with their live segment: from the config dir's
+// quality data for the default store, and for a named --store only from --store-archives (never another store's).
+const storeKeyDir = options.stores.length ? options.storeArchiveDir : archiveDir;
+const store = { sessions: withArchivedSessions(await readStoreArchives(storeKeyDir), mergeSessions(stores)) };
 const verdictLines = stores.map((item) => String(item['compliance-verdicts-jsonl'] ?? ''));
 for (const item of stores) for (const [name, text] of Object.entries(item)) if (name.startsWith('compliance-verdicts-archive-')) verdictLines.push(String(text));
-const archiveDir = await assertSafeDataDir(rollbackArchiveDirectory(configDir));
 for (const name of (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
   .filter((item) => rollbackInputLocations[1].namePattern.test(item)).sort()) verdictLines.push(await readFile(join(archiveDir, name), 'utf8'));
 const joined = joinDeliveries(verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line)), journalDeliveries(store.sessions), {

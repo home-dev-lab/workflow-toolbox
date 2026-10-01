@@ -7,20 +7,27 @@ import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-match.js';
 import { regexCallBudget } from './linear-regex.js';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
+import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archiveTexts, familyOf, archiveName, retentionVictims,
+  unsafeQualityPath, isSizeRefusal, jsonLength, property, sequenceNumber } from './store-budget.js';
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
 
 const MAIN = 'main';
-const MAX_BYTES = 3_500_000;
 const MAX_CONTEXTS = 64;
 let contexts = new Map();
 let queue = Promise.resolve();
 let reserve = false;
 let limit = 1;
 let enabled = false;
-let counter = 0;
 let currentMain = 0;
+let archiveSequence = 0;
+let storeSwept = false;
+// This module instance's owner number, in archive names and segment ids: its pid times 1000, plus a random part for
+// two instances under one pid; a host without a pid draws the whole number.
+const owner = (typeof process !== 'undefined' && Number.isSafeInteger(process.pid) ? process.pid : Math.floor(Math.random() * 4_000_000)) * 1000 + Math.floor(Math.random() * 1000);
+let segSequence = 0;
+const newSeg = () => `${owner.toString(36)}-${Date.now().toString(36)}-${(segSequence++).toString(36)}`;
 let sequence = 0;
 const processPrefix = () => (typeof process !== 'undefined' ? `${process.pid}-` : '');
 const newToken = () => processPrefix() + Date.now().toString(36);
@@ -156,6 +163,107 @@ async function notice($, message) {
   if (/failed|skipped|unavailable|dangling|cannot|exhausted/i.test(message)) void recordHealth($, null, message).catch(() => {});
   if (!logged.has(message)) { logged.add(message); await $.ui.log(`wt-rules-on-demand: ${message}`); }
 }
+// Store writes stay under per-key budgets (store-budget.js): what a budget pushes out is written to an archive file in
+// the quality data directory first, where every reader reads it back. Host I/O lives here, the plans are pure there.
+async function qualityDirectory($) {
+  const config = configDirectory({ CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') });
+  if (!config) throw new Error('cannot locate quality data for store archives');
+  const directory = `${config}/plugins/data/wt-rules-on-demand/quality`;
+  let physical = directory;
+  try { physical = (await $.fs.stat(directory, { resolve: true })).realPath ?? directory; } catch { /* Not created yet: its spelling is checked. */ }
+  if (unsafeQualityPath(physical)) throw new Error('unsafe quality data directory');
+  return directory;
+}
+async function freshArchivePath($, directory, family) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const path = `${directory}/${archiveName(family, Date.now(), sequenceNumber(owner, archiveSequence++))}`;
+    let taken = false;
+    try { taken = await $.fs.exists(path); } catch { /* A host without exists: the name is new by its time and sequence. */ }
+    if (!taken) return path;
+  }
+  throw new Error('no free archive name');
+}
+// A write the host rejected may have left part of the file: it is removed, so no reader parses a broken archive.
+async function removePartial($, path, error) {
+  try { await $.fs.remove(path); }
+  catch (removal) {
+    let left = true;
+    try { left = await $.fs.exists(path); } catch { /* Unknown: reported as left. */ }
+    if (left) throw new Error(`archive write failed (${error.message}) and its partial file ${path} could not be removed: ${removal.message}`);
+  }
+  throw error;
+}
+// Every complete archive stays, whatever happens next: a store write rejected after it may have committed, and readers
+// count each segment once (verdict rows by id), so a copy left both archived and live is never counted twice.
+async function writeArchives($, name, evicted) {
+  const directory = await qualityDirectory($);
+  const written = [];
+  for (const text of archiveTexts(name, evicted)) {
+    const path = await freshArchivePath($, directory, familyOf(name));
+    try { await $.fs.write(path, text); }
+    catch (error) { await removePartial($, path, error); }
+    written.push(path);
+  }
+  return { directory, written };
+}
+async function retainArchives($, directory, family) {
+  let entries = [];
+  try { entries = await $.fs.list(directory); } catch { return; }
+  for (const name of retentionVictims(entries, family)) await $.fs.remove(`${directory}/${name}`);
+}
+// Archive what the budget pushes out, then write. A rejected write is returned with the value it tried, so a retry
+// starts from that value and never archives the same part twice.
+async function setBounded($, name, value, budget, keep) {
+  const { value: kept, evicted } = shrink(name, value, budget, keep);
+  const archive = evicted ? await writeArchives($, name, evicted) : null;
+  try { await $.store.set(name, kept); }
+  catch (error) { return { kept, error }; }
+  if (archive && Number.isFinite(familyOf(name).retained)) {
+    try { await retainArchives($, archive.directory, familyOf(name)); }
+    catch (error) { await notice($, `archive retention failed: ${error.message}`); }
+  }
+  return { kept };
+}
+// Bring every budgeted key under its budget: each write here shrinks the store, so it succeeds even on a store already
+// at the limit. Runs before the first write after the hook loads, and again after the host refuses a write for size.
+async function sweepStore($, except = null) {
+  storeSwept = true;
+  let keys = Object.keys(STORE_BUDGETS);
+  try { keys = await $.store.keys(); } catch { /* A host without keys: the budgeted keys are swept, foreign ones go uncounted. */ }
+  for (const name of Object.keys(STORE_BUDGETS)) {
+    if (!keys.includes(name) || name === except) continue;
+    const value = await $.store.get(name);
+    if (value === undefined || jsonLength(value) <= STORE_BUDGETS[name]) continue;
+    const { error } = await setBounded($, name, value, STORE_BUDGETS[name], null);
+    if (error) throw error;
+  }
+  const foreign = keys.filter((name) => !Object.hasOwn(STORE_BUDGETS, name));
+  let size = 0;
+  for (const name of foreign) size += property(name, await $.store.get(name));
+  if (size > FOREIGN_KEYS_BUDGET) await notice($, `store keys this version never writes hold ${size} characters (${foreign.join(', ')}); counted, never evicted`);
+}
+// A sweep that cannot archive leaves its key as it is and says so; the write it precedes is still attempted. The key
+// being written is not swept: its caller already holds its value, and that value is the one shrunk and written.
+async function sweepQuietly($, except) {
+  try { await sweepStore($, except); }
+  catch (error) { await notice($, `store sweep failed: ${error.message}`); }
+}
+// The one write path of a budgeted key. A size refusal (another writer grew the store) sweeps every key, then retries
+// under a budget halved each time: more moves to the archives, nothing is dropped. Any other failure is thrown as is.
+async function setWithin($, name, value, keep = null) {
+  if (!Object.hasOwn(STORE_BUDGETS, name)) throw new Error(`store key without a budget: ${name}`);
+  if (!storeSwept) await sweepQuietly($, name);
+  let failure, current = value;
+  for (let budget = STORE_BUDGETS[name]; budget >= MIN_BUDGET; budget = Math.floor(budget / 2)) {
+    const { kept, error } = await setBounded($, name, current, budget, keep);
+    if (!error) return kept;
+    failure = error;
+    if (!isSizeRefusal(error)) throw error;
+    current = kept;
+    if (budget === STORE_BUDGETS[name]) await sweepQuietly($, name);
+  }
+  throw failure;
+}
 const HEALTH_FIELDS = ['calls', 'errors', 'totalMs', 'maxMs', 'slow'];
 // A stored day may come from an older shape: every counter missing, non-numeric or negative starts at zero.
 const healthDay = (counts) => Object.fromEntries(HEALTH_FIELDS.map((field) => [field, Number.isFinite(counts?.[field]) && counts[field] >= 0 ? counts[field] : 0]));
@@ -186,7 +294,7 @@ async function flushHealth($) {
       mergeHealth(health, batch);
       health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
       health.lastErrors = health.lastErrors.slice(-20);
-      await $.store.set('health', health);
+      await setWithin($, 'health', health);
       lastHealthFlush = Date.now();
     } catch (error) {
       mergeHealth(pendingHealth, batch);
@@ -385,18 +493,19 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
       const served = await $.store.get('served') ?? {};
        for (const rule of names) {
          const name = typeof rule === 'string' ? rule : rule.name;
-        const item = served[key(name)] ?? { count: 0, byChannel: {} };
+        const item = served[key(name)] ?? { count: 0, byChannel: {}, seg: newSeg() };
          item.count++; item.last = now; item.byChannel[channel] = (item.byChannel[channel] ?? 0) + 1;
         served[key(name)] = item;
       }
-      if (names.length) await $.store.set('served', served);
+      if (names.length) await setWithin($, 'served', served);
       const id = await sessionId($);
       if (!id) return;
       const sessions = await $.store.get('sessions') ?? {};
       const session = sessions[id] ?? { first: now, contexts: {} };
       session.last = now;
       const ck = loop === MAIN ? String(currentMain) : `agent:${loop}`;
-      const ctx = session.contexts[ck] ?? { served: {}, suppressedCap: {}, governedActs: [], complianceInjected: [] };
+      const ctx = session.contexts[ck] ?? { served: {}, suppressedCap: {}, governedActs: [], complianceInjected: [], seg: newSeg() };
+      ctx.last = now;
       for (const rule of names) {
         const name = typeof rule === 'string' ? rule : rule.name;
         ctx.served[key(name)] = (ctx.served[key(name)] ?? 0) + 1;
@@ -423,11 +532,8 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
        }
       session.contexts[ck] = ctx;
       sessions[id] = session;
-       const ordered = Object.entries(sessions).sort((a, b) => b[1].last.localeCompare(a[1].last));
-       for (let count = Math.min(50, ordered.length); count >= 1; count = Math.floor(count / 2)) {
-         try { await $.store.set('sessions', Object.fromEntries(ordered.slice(0, count))); break; }
-         catch (error) { if (count === 1) throw error; }
-       }
+      // Over its budget, the oldest contexts move to an archive file first; this context moves last.
+      await setWithin($, 'sessions', sessions, { id, ck, newSeg });
      } catch (error) { await notice($, `journal write failed: ${error.message}`).catch(() => {}); }
    } finally { turn.release(); }
 }
@@ -440,24 +546,10 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
    const turn = writeTurn();
    await turn.previous.catch(() => {});
    try {
-    const old = String(await $.store.get('compliance-verdicts-jsonl') ?? '');
+    const old = String(await $.store.get(VERDICTS) ?? '');
     const line = `${JSON.stringify(record)}\n`;
-    if (new TextEncoder().encode(old + line).length > MAX_BYTES && old) {
-      const config = configDirectory({ CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') });
-      if (!config) throw new Error('cannot locate quality data for verdict rotation');
-      const directory = `${config}/plugins/data/wt-rules-on-demand/quality`;
-      const physical = await $.fs.stat(directory, { resolve: true }).then((info) => info.realPath ?? directory).catch(() => directory);
-      if (/(^|[\\/])(?:rules|rules-on-demand|\.git)(?:[\\/]|$)/.test(physical)) throw new Error('unsafe quality data directory');
-      const path = `${directory}/compliance-verdicts-archive-${Date.now()}-${counter++}.jsonl`;
-      await $.fs.write(path, old);
-      await $.store.set('compliance-verdicts-jsonl', line);
-      const numbers = (name) => name.slice('compliance-verdicts-archive-'.length, -'.jsonl'.length).split('-').map(Number);
-      const files = (await list($, directory)).map((item) => item.name)
-        .filter((name) => name.startsWith('compliance-verdicts-archive-') && name.endsWith('.jsonl')
-          && numbers(name).length === 2 && numbers(name).every((n) => Number.isSafeInteger(n) && n >= 0))
-        .sort((a, b) => numbers(a)[0] - numbers(b)[0] || numbers(a)[1] - numbers(b)[1]);
-      for (const name of files.slice(0, -14)) await $.fs.remove(`${directory}/${name}`);
-    } else await $.store.set('compliance-verdicts-jsonl', old + line);
+    // Over its budget, every older line moves to a verdict archive in quality data before the new line is written.
+    await setWithin($, VERDICTS, old + line, { line });
    } finally { turn.release(); }
 }
  async function safeVerdict($, pending, loop, value, evidence, reason, act) {
@@ -629,6 +721,8 @@ export const register = (on, options, clock = Date.now) => {
     if (Number.isInteger(envLimit) && envLimit > 0) limit = envLimit;
   }
   contexts = new Map();
+  archiveSequence = 0;
+  storeSwept = false;
   pendingHealth = emptyHealth();
   lastHealthFlush = Date.now();
   on('prompt.context', promptContextEvent);
@@ -815,4 +909,4 @@ async function turnCompleteWork($, e, next) {
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
 }
 
-export function resetForSelftest() { contexts = new Map(); queue = Promise.resolve(); counter = 0; currentMain = 0; sequence = 0; token = newToken(); logged.clear(); pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest() { contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

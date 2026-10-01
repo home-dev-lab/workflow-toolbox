@@ -8,7 +8,9 @@
 // declared": compliance `none`, no compliance block, or no rule file found). A declared
 // rule that was served yet has no verdict row is flagged in `note`, never left silent.
 //
-//   node compliance-report.mjs [--store <file>] [--project <dir>] [--config-dir <dir>] [--json]
+//   node compliance-report.mjs [--store <file> [--store-archives <dir>]] [--project <dir>] [--config-dir <dir>] [--json]
+// Store-key archives (what the hook moved out of an over-budget store) come from the config dir's quality data on the
+// default store, and for a named --store only from --store-archives: a snapshot is never mixed with another store's.
 // Default rules dirs: <cwd>/.claude/rules-on-demand and <config dir>/rules-on-demand.
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -16,9 +18,11 @@ import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
+import { readStoreArchives, withArchivedServed, withArchivedSessions } from './store-archives.mjs';
 
 const args = process.argv.slice(2);
 let storePath = '';
+let storeArchiveDir = '';
 let json = false;
 let project = process.cwd();
 let configOverride = '';
@@ -26,6 +30,7 @@ const overrides = [];
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === '--json') json = true;
   else if (args[index] === '--store') storePath = args[++index] ?? '';
+  else if (args[index] === '--store-archives') storeArchiveDir = args[++index] ?? '';
   else if (args[index] === '--project') project = args[++index] ?? '';
   else if (args[index] === '--config-dir') configOverride = args[++index] ?? '';
   else if (args[index] === '--rules-dir') overrides.push(args[++index] ?? '');
@@ -42,6 +47,8 @@ const archiveDir = await assertSafeDataDir(qualityDataDir(configDir, {}));
 const archiveFiles = (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
   .filter((name) => /^compliance-verdicts-archive-\d+-\d+\.jsonl$/.test(name)).sort();
 const archiveLines = await Promise.all(archiveFiles.map((name) => readFile(join(archiveDir, name), 'utf8')));
+// Served counters and contexts the hook moved out of an over-budget store, summed back with the live ones.
+const storeKeyArchives = await readStoreArchives(storePath ? storeArchiveDir : archiveDir);
 
 // Same key the hook uses for its served counters (hooks.js keyOf).
 const keyOf = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
@@ -84,8 +91,8 @@ let storeArchives = [];
 try {
   const store = JSON.parse(source);
   lines = [String(store['compliance-verdicts-jsonl'] ?? ''), ...archiveLines, ...Object.entries(store).filter(([name]) => name.startsWith('compliance-verdicts-archive-')).map(([, text]) => String(text))].join('\n');
-  servedCounters = store.served && typeof store.served === 'object' ? store.served : {};
-  sessions = store.sessions ?? {};
+  servedCounters = withArchivedServed(storeKeyArchives, store.served && typeof store.served === 'object' ? store.served : {});
+  sessions = withArchivedSessions(storeKeyArchives, store.sessions ?? {});
   storeArchives = Object.entries(store).filter(([name]) => name.startsWith('compliance-verdicts-archive-')).map(([, text]) => String(text));
 } catch {
   lines = [source, ...archiveLines].join('\n');

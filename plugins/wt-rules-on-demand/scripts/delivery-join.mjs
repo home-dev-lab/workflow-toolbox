@@ -1,4 +1,5 @@
 // Exact in-hook verdict/serve join. All filtering is reader-side; the journal and JSONL stay append-only.
+import { contextLast, legacyContextSeg, legacyServedSeg } from '../hooks/store-budget.js';
 const number = (value) => typeof value === 'number' && Number.isFinite(value);
 const token = (id) => String(id ?? '').replace(/-\d+$/, '');
 const sameSession = (row, delivery) => row.sessionId == null || delivery.sessionId == null || row.sessionId === delivery.sessionId;
@@ -48,6 +49,104 @@ export function mergeSessions(stores) {
   return sessions;
 }
 
+// The hook moves the oldest contexts of an over-budget `sessions` key to archive files: one context can then live in
+// several archives plus the live store, each holding a disjoint SEGMENT of its rows. Segments are SUMMED (counters
+// added, rows concatenated, governed acts merged by rule identity, close markers merged), unlike mergeSessions, which
+// merges COPIES of one store (mirror directories) and must not double count them.
+const COUNTER_FIELDS = ['served', 'suppressedCap', 'servedIdentity', 'suppressedIdentity'];
+const later = (a, b) => (String(b ?? '') > String(a ?? '') ? b : a);
+const earlier = (a, b) => (a == null || (b != null && String(b) < String(a)) ? b : a);
+function sumCounters(a = {}, b = {}) {
+  const out = { ...a };
+  for (const [key, count] of Object.entries(b ?? {})) out[key] = (Number(out[key]) || 0) + (Number(count) || 0);
+  return out;
+}
+function sumActs(a = [], b = []) {
+  const byRule = new Map();
+  for (const act of [...a, ...b]) {
+    const id = act?.ruleIdentity ?? act?.rule;
+    const existing = byRule.get(id);
+    if (!existing) { byRule.set(id, { ...act }); continue; }
+    existing.count = (Number(existing.count) || 0) + (Number(act.count) || 0);
+    existing.at = earlier(existing.at, act.at);
+    existing.last = later(existing.last, act.last);
+  }
+  return [...byRule.values()];
+}
+export function sumContexts(a = {}, b = {}) {
+  const out = { ...a, ...b };
+  for (const field of COUNTER_FIELDS) if (a[field] || b[field]) out[field] = sumCounters(a[field], b[field]);
+  const seen = new Set();
+  out.complianceInjected = [...(a.complianceInjected ?? []), ...(b.complianceInjected ?? [])].filter((entry) => {
+    if (!entry?.deliveryId) return true;
+    if (seen.has(entry.deliveryId)) return false;
+    seen.add(entry.deliveryId);
+    return true;
+  });
+  out.governedActs = sumActs(a.governedActs, b.governedActs);
+  if (a.triggerErrors || b.triggerErrors) out.triggerErrors = [...(a.triggerErrors ?? []), ...(b.triggerErrors ?? [])];
+  const closeMarkers = mergeCloseMarkers(a, b);
+  if (closeMarkers.length) { out.closeMarkers = closeMarkers; out.lastClose = closeMarkers.reduce(greaterClose, undefined); }
+  if (a.last || b.last) out.last = later(a.last, b.last);
+  return out;
+}
+// One copy of a segment per (session, context, seg) or (rule, seg): the one written last, which holds every row of the
+// others (a segment only grows until it is evicted); equal stamps fall to the longer, then the greater, JSON text.
+const segmentText = (value) => JSON.stringify(value) ?? '';
+function newerCopy(a, b, lastOf) {
+  const order = String(lastOf(a) ?? '').localeCompare(String(lastOf(b) ?? '')) || segmentText(a).length - segmentText(b).length
+    || segmentText(a).localeCompare(segmentText(b));
+  return order >= 0 ? a : b;
+}
+// Segments in any order: archives and the live store, mirrors already merged. Copies of one segment count once (an
+// archive written before a store write that never landed, or two processes archiving one value); distinct segments of
+// a context are summed, oldest first.
+export function sumSessions(segments) {
+  const sessions = {};
+  const copies = new Map();
+  for (const segment of segments) for (const [id, session] of Object.entries(segment ?? {})) {
+    const existing = sessions[id];
+    const fields = { ...session };
+    delete fields.contexts;
+    sessions[id] = existing ? { ...existing, ...fields, first: earlier(existing.first, session.first), last: later(existing.last, session.last) } : { ...fields };
+    for (const [key, context] of Object.entries(session?.contexts ?? {})) {
+      const slot = JSON.stringify([id, key]);
+      if (!copies.has(slot)) copies.set(slot, { id, key, bySeg: new Map() });
+      const { bySeg } = copies.get(slot);
+      const seg = context?.seg ?? legacyContextSeg(id, key);
+      bySeg.set(seg, bySeg.has(seg) ? newerCopy(bySeg.get(seg), context, (ctx) => contextLast(ctx, session)) : context);
+    }
+  }
+  for (const session of Object.values(sessions)) session.contexts = {};
+  for (const { id, key, bySeg } of copies.values()) {
+    const parts = [...bySeg.entries()].sort(([segA, a], [segB, b]) => String(contextLast(a, sessions[id]) ?? '').localeCompare(String(contextLast(b, sessions[id]) ?? '')) || segA.localeCompare(segB))
+      .map(([, context]) => context);
+    sessions[id].contexts[key] = parts.length === 1 ? parts[0] : parts.reduce((sum, context) => sumContexts(sum, context));
+  }
+  return sessions;
+}
+export function sumServed(segments) {
+  const copies = new Map();
+  for (const segment of segments) for (const [key, item] of Object.entries(segment ?? {})) {
+    if (!copies.has(key)) copies.set(key, new Map());
+    const bySeg = copies.get(key);
+    const seg = item?.seg ?? legacyServedSeg(key);
+    bySeg.set(seg, bySeg.has(seg) ? newerCopy(bySeg.get(seg), item, (copy) => copy?.last) : item);
+  }
+  const served = {};
+  for (const [key, bySeg] of copies) {
+    const items = [...bySeg.entries()].sort(([segA, a], [segB, b]) => String(a?.last ?? '').localeCompare(String(b?.last ?? '')) || segA.localeCompare(segB))
+      .map(([, item]) => item);
+    served[key] = items.slice(1).reduce((sum, item) => ({ ...sum, ...item, count: (Number(sum.count) || 0) + (Number(item?.count) || 0),
+      last: later(sum.last, item?.last), byChannel: sumCounters(sum.byChannel, item?.byChannel) }), { ...items[0] });
+  }
+  return served;
+}
+// The parsed store archives of one key as segments for sumSessions / sumServed. A sessions archive of format 2 holds a
+// list of units `{ sessionId, first, last, key, context }`; format 1 holds the key's value itself.
+const unitSegment = ({ sessionId, first, last, key, context }) => ({ [sessionId]: { first, last, contexts: key == null ? {} : { [key]: context } } });
+export const archivedSegments = (archives, key) => archives.filter((archive) => archive?.key === key)
+  .flatMap((archive) => (Array.isArray(archive.value) ? archive.value.map(unitSegment) : [archive.value ?? {}]));
 export function journalDeliveries(sessions = {}) {
   const deliveries = [];
   for (const [sessionId, session] of Object.entries(sessions)) for (const [context, data] of Object.entries(session.contexts ?? {})) {
