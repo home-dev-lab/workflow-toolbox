@@ -77,7 +77,7 @@ export function sumContexts(a = {}, b = {}) {
 // value. The join is idempotent, commutative and associative, so copies reconcile the same whatever their order,
 // number or timing. Precondition: copies of one segment are snapshots of ONE writer's history (a later copy holds
 // every increment an earlier one made). Two writers incrementing one counter from the same base break it: the join
-// keeps one increment, the cross-process lost update tracked on card 1876157338902070808.
+// keeps one increment, the cross-process lost update left to the append-only journal follow-up.
 const jsonOf = (value) => JSON.stringify(value) ?? '';
 const greaterValue = (a, b) => (jsonOf(b) > jsonOf(a) ? b : a);
 function maxCounters(a = {}, b = {}) {

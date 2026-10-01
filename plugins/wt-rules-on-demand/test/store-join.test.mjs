@@ -112,8 +112,8 @@ test('J1: a legacy served counter tied on its timestamp, or continued under a cl
 
 test('known limit: concurrent increments of one counter from the same base lose one under max', () => {
   // Two writers each read the same copy of a segment (count 5) and add one: the true value is 7, the join keeps 6. This
-  // is the pre-existing cross-process lost update (read-modify-write on one store key), tracked on card
-  // 1876157338902070808 and NOT fixed here; the join's precondition is that copies of a segment come from one writer.
+  // is the pre-existing cross-process lost update (read-modify-write on one store key), left to the
+  // append-only journal follow-up and NOT fixed here; the join's precondition is that copies of a segment come from one writer.
   const base = 5;
   const a = { r: { count: base + 1, last: at(1), seg: 'x' } }, b = { r: { count: base + 1, last: at(2), seg: 'x' } };
   assert.equal(sumServed([a, b]).r.count, base + 1);
