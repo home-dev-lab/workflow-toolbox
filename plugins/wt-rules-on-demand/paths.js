@@ -33,14 +33,17 @@ export const rawAbsolute = (path) => typeof path === 'string' && /^(?:\/|[A-Za-z
 // Join `part` onto `base` and collapse `.` and `..`, never above the drive, UNC share or `/` root.
 export function joinSlash(base, part) {
   const text = normal(part);
-  const joined = absolute(text) ? text : `${normal(base)}/${text}`;
+  const root = normal(base);
+  const joined = absolute(text) ? text : `${root.endsWith('/') ? root.slice(0, -1) : root}/${text}`;
   const prefix = /^([A-Za-z]:\/|\/\/[^/]+\/[^/]+|\/)/.exec(joined)?.[1] ?? '/';
   const stack = [];
   for (const piece of joined.slice(prefix.length).split('/')) {
     if (piece === '..') stack.pop();
     else if (piece && piece !== '.') stack.push(piece);
   }
-  return prefix.replace(/\/$/, '') + '/' + stack.join('/');
+  const head = prefix.replace(/\/$/, '');
+  if (stack.length) return `${head}/${stack.join('/')}`;
+  return prefix.startsWith('//') ? head : prefix;
 }
 // Node errors carry a code; the Function Hooks host rejects a missing file with a message ending "failed: ENOENT".
 export const notFound = (error) => ['ENOENT', 'ENOTDIR'].includes(error?.code) || /(?:^|\bfailed: )(?:ENOENT|ENOTDIR)\b/.test(error?.message ?? '');

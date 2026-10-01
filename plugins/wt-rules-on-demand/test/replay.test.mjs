@@ -38,3 +38,18 @@ test('replay of a session rooted in a worktree nested in its main checkout leave
   const result = await replayTranscript({ transcriptText: JSON.stringify(row), configDir: config, projectRoot: wt });
   assert.deepEqual(Object.keys(result.store.served).sort(), ['own.md']);
 });
+
+test('replay reports a .git that is neither a file nor a directory as such, never reads it', { skip: process.platform === 'win32' && 'unix sockets stand in for a special file' }, async (t) => {
+  const { createServer } = await import('node:net');
+  const root = await mkdtemp(join(tmpdir(), 'rod-rs-'));
+  const server = createServer();
+  t.after(async () => { await new Promise((resolve) => server.close(resolve)); await rm(root, { recursive: true, force: true }); });
+  const project = join(root, 'p');
+  const config = join(root, 'c');
+  await mkdir(join(project, '.claude/rules-on-demand'), { recursive: true });
+  await mkdir(config, { recursive: true });
+  await new Promise((resolve) => server.listen(join(project, '.git'), resolve));
+  const row = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'fixture-use', name: 'Agent', input: {} }] }, sessionId: 'fixture-session' };
+  const result = await replayTranscript({ transcriptText: JSON.stringify(row), configDir: config, projectRoot: project });
+  assert.ok(result.logs.some((line) => /nested-worktree check unknown: .*\.git is neither a file nor a directory/.test(line)), result.logs.join('\n'));
+});

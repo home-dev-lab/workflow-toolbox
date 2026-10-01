@@ -270,7 +270,7 @@ for (const raw of ['', 'C:', 'C:foo', '\\p\\x', 'rel/a']) {
   });
 }
 
-test('F5: in fallback, one load and one health error per context, whatever cwd spelling the events carry', async () => {
+test('F5: in fallback, a relative cwd (.) reuses the context set: one load and one health error per context', async () => {
   const h = host({ rootThrows: true, files: { '/sample-project/.claude/rules-on-demand/proj.md': ruleText('Project rule.') } });
   const fallbackErrors = () => h.health().filter((entry) => entry.message.includes('session root unavailable')).length;
   await h.call({ cwd: '/sample-project' });
@@ -317,4 +317,76 @@ test('T11: after compaction, a main context whose cwd drifted into a nested work
   assert.deepEqual(servedNames(await h.call({ cwd: '/sample-project' })), ['proj.md']);
   await h.handlers.get('session.compact')(h.$, {}, async () => ({}));
   assert.deepEqual(servedNames(await h.call({ cwd: wt })), ['proj.md']);
+});
+
+test('G1: a name served under one identity is servable again under another, even across a root without it', async () => {
+  const h = host({ root: '/sample-a', files: {
+    '/sample-a/.claude/rules-on-demand/shared.md': ruleText('A body.'),
+    '/sample-b/.claude/rules-on-demand/other.md': ruleText('B other.'),
+    '/sample-c/.claude/rules-on-demand/shared.md': ruleText('C body.'),
+  } });
+  assert.match((await h.call({ cwd: '/sample-a' })).deny ?? '', /A body\./);
+  h.setRoot('/sample-b');
+  await h.call({ cwd: '/sample-b' });
+  h.setRoot('/sample-c');
+  assert.match((await h.call({ cwd: '/sample-c' })).deny ?? '', /C body\./);
+});
+
+test('G2: a root change that keeps a rule identity does not serve it again', async () => {
+  const h = host({ root: '/sample-common/a', files: {
+    '/sample-common/.claude/rules-on-demand/shared.md': ruleText('Common body.'),
+    '/sample-common/b/.claude/rules-on-demand/b.md': ruleText('B only.'),
+  } });
+  assert.deepEqual(servedNames(await h.call({ cwd: '/sample-common/a' })), ['shared.md']);
+  h.setRoot('/sample-common/b');
+  assert.deepEqual(servedNames(await h.call({ cwd: '/sample-common/b' })), ['b.md']);
+});
+
+test('G3: a cache hit for the published root retires a load still in flight for another root', async () => {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const h = host({ root: '/sample-a', gate: async (load) => { if (load === 2) await held; }, files: {
+    '/sample-a/.claude/rules-on-demand/a.md': ruleText('A.'),
+    '/sample-b/.claude/rules-on-demand/b.md': ruleText('B.'),
+  } });
+  await h.call({ cwd: '/sample-a' });
+  h.setRoot('/sample-b');
+  const second = h.call({ cwd: '/sample-b' });
+  while (h.calls.loads < 2) await tick();
+  h.setRoot('/sample-a');
+  await h.call({ cwd: '/sample-a' });
+  release();
+  await second;
+  await h.call({ cwd: '/sample-a' });
+  assert.equal(h.calls.loads, 2, 'the retired /sample-b load published and forced a reload of /sample-a');
+});
+
+test('G4: in fallback, spellings of one absolute cwd share one load', async () => {
+  const h = host({ rootThrows: true, files: {
+    '/sample-project/.claude/rules-on-demand/proj.md': ruleText('Project rule.'),
+    'C:/sample-win/.claude/rules-on-demand/win.md': ruleText('Windows rule.'),
+  } });
+  for (const cwd of ['/sample-project', '/sample-project/', '/sample-project/./', '/sample-x/../sample-project']) await h.call({ cwd });
+  assert.equal(h.calls.loads, 1);
+  for (const cwd of ['C:\\sample-win', 'C:/sample-win', 'C:\\sample-win\\']) await h.call({ agentId: 'w', cwd });
+  assert.equal(h.calls.loads, 2);
+  assert.deepEqual(h.identities('agent:w'), ['project:C:/sample-win/.claude/rules-on-demand:win.md']);
+});
+
+test('G1b: a claim made from an overtaken load does not block the same name in the newest set', async () => {
+  const gates = [];
+  const opened = [new Promise((resolve) => { gates[0] = resolve; }), new Promise((resolve) => { gates[1] = resolve; })];
+  const h = host({ root: '/sample-a', gate: async (load) => { if (load <= 2) await opened[load - 1]; }, files: {
+    '/sample-a/.claude/rules-on-demand/shared.md': ruleText('A body.'),
+    '/sample-b/.claude/rules-on-demand/shared.md': ruleText('B body.'),
+  } });
+  const first = h.call({ cwd: '/sample-a' });
+  while (h.calls.loads < 1) await tick();
+  h.setRoot('/sample-b');
+  const second = h.call({ cwd: '/sample-b' });
+  while (h.calls.loads < 2) await tick();
+  gates[0]();
+  assert.match((await first).deny ?? '', /A body\./);
+  gates[1]();
+  assert.match((await second).deny ?? '', /B body\./);
 });

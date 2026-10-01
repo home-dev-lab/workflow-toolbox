@@ -116,17 +116,19 @@ async function sessionRoot($, cwd) {
     const root = await $.session.root();
     if (rawAbsolute(root)) return { root: normal(joinSlash('/', root)), fallback: false };
   } catch { /* An older host or a fixture without the capability throws here: fall back below, with a notice. */ }
-  return { root: cwd, fallback: true };
+  // An absolute cwd is normalised so `/x/`, `/x/.` and `C:\x` share the cache entry of `/x` and `C:/x`.
+  return { root: rawAbsolute(cwd) ? normal(joinSlash('/', cwd)) : cwd, fallback: true };
 }
-// A root change that gives a name another identity makes that name servable again in the context.
 function publish(ctx, root, rules) {
-  if (ctx.rules && ctx.rulesRoot !== root) {
-    const before = new Map(ctx.rules.map((rule) => [rule.name, rule.identity]));
-    for (const rule of rules) if (before.has(rule.name) && before.get(rule.name) !== rule.identity) ctx.served.delete(rule.name);
-  }
   ctx.rules = rules;
   ctx.rulesRoot = root;
 }
+// A rule counts as served in a context only when the SAME identity was served: a same-name rule from another root
+// (another file) is a different rule, whatever was served or published in between.
+const servedAs = (ctx, rule) => {
+  const state = ctx.served.get(rule.name);
+  return state && state.identity === rule.identity ? state : undefined;
+};
 async function rulesFor($, ctx, cwd) {
   const found = await sessionRoot($, cwd);
   let root = found.root;
@@ -135,7 +137,11 @@ async function rulesFor($, ctx, cwd) {
     // A relative cwd ('.') names no place: keep what this context already resolved rather than reload.
     if (!rawAbsolute(String(cwd)) && (ctx.loading || ctx.rules)) root = ctx.loading?.root ?? ctx.rulesRoot;
   }
-  if (ctx.rules && ctx.rulesRoot === root) return ctx.rules;
+  if (ctx.rules && ctx.rulesRoot === root) {
+    // The published root is current again: a load still in flight for another root is retired, never published.
+    if (ctx.loading && ctx.loading.root !== root) ctx.loading = null;
+    return ctx.rules;
+  }
   if (ctx.loading?.root !== root) ctx.loading = { root, promise: load($, root, found.fallback) };
   const pending = ctx.loading;
   let rules;
@@ -587,14 +593,14 @@ function servedVerdict(c, e) {
 }
  async function closeCorrelation($, ctx, loop, actSeq) {
   const events = [...ctx.correlation, { kind: 'turn' }];
-    for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation' && ctx.served.has(rule.name)) {
+    for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation' && servedAs(ctx, rule)) {
       try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail, { seq: actSeq }); }
      catch (error) { await notice($, `${rule.name}: correlation failed: ${error.message}`).catch(() => {}); }
    }
   ctx.correlation = [];
 }
 const eligible = (ctx, rule) => {
-  const state = ctx.served.get(rule.name);
+  const state = servedAs(ctx, rule);
   const minutes = Number((typeof process !== 'undefined' && process.env?.WT_ROD_RESERVE_MIN) || 30);
   return !state || (reserve && state.count < limit && Date.now() - state.at >= minutes * 60_000);
 };
@@ -603,7 +609,7 @@ async function progress($, message) {
   try { await $.ui.log(message); } catch { /* A progress line is best effort. */ }
 }
 function claim(ctx, rules) {
-  for (const rule of rules) { const state = ctx.served.get(rule.name); ctx.served.set(rule.name, { count: (state?.count ?? 0) + 1, at: Date.now() }); }
+  for (const rule of rules) { const state = servedAs(ctx, rule); ctx.served.set(rule.name, { count: (state?.count ?? 0) + 1, at: Date.now(), identity: rule.identity }); }
 }
 
 /** @type {import('claude-code').Register} */
@@ -760,7 +766,7 @@ async function turnCompleteWork($, e, next) {
       }
       const beforeMatched = new Set();
         const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched });
-      const before = chosen.filter((rule) => beforeMatched.has(rule.name) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !ctx.served.has(rule.name)));
+      const before = chosen.filter((rule) => beforeMatched.has(rule.name) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !servedAs(ctx, rule)));
       await journal($, [], loop, [], [], [], { triggerErrors: [...new Map(triggerErrors.map((error) => [JSON.stringify(error), error])).values()] });
       if (budget.exhausted) await progress($, exhaustionNotice(budget));
     if (before.length) {
@@ -790,14 +796,14 @@ async function turnCompleteWork($, e, next) {
       const injected = inject(ctx, ride, `tool.call:${e.tool}`, admission, e);
        await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
        const classified = classify(e.tool, e.input ?? e);
-        for (const rule of rules) if (rule.compliance?.kind === 'check' && ctx.served.has(rule.name)) {
+        for (const rule of rules) if (rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
          for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
            await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
               item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e), undefined, { seq: admission });
        }
       for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
      // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
-      for (const rule of rules) if (ctx.served.has(rule.name)) {
+      for (const rule of rules) if (servedAs(ctx, rule)) {
        const { verdict: value, matchError } = servedVerdict(rule.compliance, e);
        if (value === null) continue;
        const discharged = ctx.pending.filter((pending) => pending.rule === rule);
