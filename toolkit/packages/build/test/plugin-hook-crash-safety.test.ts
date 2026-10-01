@@ -55,6 +55,7 @@ function makeSandbox(tag: string): Sandbox {
       XDG_STATE_HOME: stateDir,
       CLAUDE_CONFIG_DIR: configDir,
       WT_OUTBOUND_GUARD_DIR: join(stateDir, 'outbound-guard'),
+      WT_CANCELLED_CALL_RELAY_DIR: join(stateDir, 'cancelled-call-relay'),
       WT_HOOK_DRIFT_DIR: join(stateDir, 'hook-drift'),
       WT_QUEUE_GATE_DIR: join(stateDir, 'queue-gate'),
       WT_VERIFIER_MARKER_DIR: join(stateDir, 'verifier-markers'),
@@ -193,6 +194,15 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
       }
     case 'wt-model-fallback-hook.mjs':
       return { hook_event_name: 'SubagentStop', agent_id: 'agent-test', agent_transcript_path: 'missing.jsonl' }
+    case 'wt-cancelled-call-relay-guard-hook.mjs':
+      return {
+        hook_event_name: 'SubagentStop',
+        session_id: 'selftest-session',
+        agent_id: 'agent-selftest-1',
+        agent_type: 'general',
+        cwd: sandbox.projectDir,
+        transcript_path: sandbox.transcriptPath,
+      }
     case 'wt-pilot-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

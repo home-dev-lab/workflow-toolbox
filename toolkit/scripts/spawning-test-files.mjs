@@ -38,6 +38,7 @@ export const spawningTestFiles = [
   'packages/build/test/autonomy-watch.test.ts',
   'packages/build/test/bounded-walk.test.ts',
   'packages/build/test/cache-keepalive.test.ts',
+  'packages/build/test/cancelled-call-relay-guard-hook.test.ts',
   'packages/build/test/changelog-skill.test.ts',
   'packages/build/test/changelog-union-merge.test.ts',
   'packages/build/test/changeset-gate.test.ts',
