@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { copyFile, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hostStore, hookFixture, readerTotals, HOST_STORE_LIMIT } from './store-host-fake.mjs';
+import { hostStore, hookFixture, readerTotals, exhaustedBudgetClock, HOST_STORE_LIMIT } from './store-host-fake.mjs';
 import { STORE_ARCHIVE } from '../hooks/store-budget.js';
 import { readStoreArchives, withArchivedSessions } from '../scripts/store-archives.mjs';
 
@@ -47,7 +47,8 @@ async function runSequence(seed, root) {
     plan = null;
     return refusal;
   } });
-  let f = await hookFixture(root, store);
+  // An 'error' action needs an exhausted regex budget, not the 64M-step scan that reaches it.
+  let f = await hookFixture(root, store, { triggerClock: exhaustedBudgetClock() });
   const rules = join(f.config, 'rules-on-demand');
   await writeFile(join(rules, 'budget.md'), promptRule);
   const acked = new Set();
@@ -82,7 +83,7 @@ async function runSequence(seed, root) {
     } else if (action === 'reload') {
       const hooks = await import(`../hooks/hooks.js?class=${++reloads}`);
       const logs = f.logs;
-      f = await hookFixture(root, store, { hooks });
+      f = await hookFixture(root, store, { hooks, triggerClock: exhaustedBudgetClock() });
       f.logs.unshift(...logs);
     }
     }

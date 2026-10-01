@@ -58,8 +58,14 @@ export const realFs = {
 
 export const bashRule = `---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: 'git push'\n  compliance:\n    kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'\n---\nCheck destination.\n`;
 
-// One registered hook over a real config dir and project, with the given store.
-export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest } } = {}) {
+// A trigger clock that jumps past the regex call budget's 2 s deadline on every read: the budget is exhausted at its
+// first check, before any scanning. Tests that only need an exhausted-budget trigger error get one in microseconds
+// instead of running the 64M-step scan (~0.4 s per call) to reach the same error.
+export const exhaustedBudgetClock = () => { let t = 0; return () => (t += 5000); };
+
+// One registered hook over a real config dir and project, with the given store. `triggerClock` is passed to register as
+// the regex budget's clock (default: the real Date.now).
+export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock } = {}) {
   const config = join(root, 'config'), project = join(root, 'project');
   await mkdir(join(config, 'rules-on-demand'), { recursive: true });
   await mkdir(project, { recursive: true });
@@ -67,7 +73,7 @@ export async function hookFixture(root, store, { sessionId = 'sample-session', f
   await writeFile(join(config, 'rules-on-demand-ledger.jsonl'), `${JSON.stringify({ action: 'migrate', rule: 'sample.md', time: '2020-01-01T00:00:00.000Z' })}\n`);
   hooks.resetForSelftest();
   const handlers = new Map();
-  hooks.register((event, handler) => handlers.set(event, handler), { enabled: true });
+  hooks.register((event, handler) => handlers.set(event, handler), { enabled: true }, triggerClock);
   const logs = [];
   const $ = {
     env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: config, HOME: root })[name] },
