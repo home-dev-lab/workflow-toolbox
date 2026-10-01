@@ -284,7 +284,8 @@ function captureBacktick(src, start, nested, emit) {
   return end === -1 ? src.length : end
 }
 
-function shellUnquote(word) {
+/** Remove one level of shell quoting and backslash escapes from a word `parseStatements` returned. */
+export function shellUnquote(word) {
   let quote = null
   let result = ''
   for (let i = 0; i < word.length; i += 1) {
