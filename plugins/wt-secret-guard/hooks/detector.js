@@ -9,7 +9,7 @@ const patterns = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
   // The key-based kinds below match on ONE line ([ \t], never \s) and capture the value in a group: a
   // detection is the value itself, never the key, the indentation or a following line (card
-  // 1876226877283108557 - "token:\n    type" became a held value and refused every text sharing it).
+  // the over-wide capture case - "token:\n    type" became a held value and refused every text sharing it).
   ['assignment', /\b(?:password|token|secret)[ \t]*=[ \t]*(?![=])(?:"([^"]+)"|'([^']+)'|([^\s;,)}"']+))/gi],
   ['op-output', /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim],
   // A QUOTED key with a quoted value: a JSON body or a Python dict - `{"password": "..."}`. No other
