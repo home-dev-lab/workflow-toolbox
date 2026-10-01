@@ -30,6 +30,8 @@ function violations(source, name = 'hooks.js') {
   for (const match of source.matchAll(/\$\.env\.get\(([^)]*)\)/g)) {
     if (!/^['"]/.test(match[1].trimStart())) errors.push(`non-literal env name: ${match[0]}`);
   }
+  // The validator requires $.noun.event(...) at the call site: a member read as a value (typeof, a test, a reference) is refused.
+  for (const match of source.matchAll(/\$\.\w+\.\w+(?!\w|\s*\()/g)) errors.push(`$ member used as a value: ${match[0]}`);
   for (const [label, pattern] of [['computed/member $ argument', memberCall], ['object-property $ function', propertyFunction]]) {
     for (const match of source.matchAll(pattern)) errors.push(`${label}: ${match[0]}`);
   }
@@ -57,6 +59,8 @@ test('host-shape scanner catches forbidden computed calls and captured expressio
   assert.match(violations('function servedExtensions($, env) {}', 'lsp-symbol.js').join('\n'), /outside hooks.js/);
   assert.match(violations('await $.fs.read(file)', 'lsp-symbol.js').join('\n'), /outside hooks.js/);
   assert.match(violations('value = await $.env.get(path);').join('\n'), /non-literal env name/);
+  assert.match(violations("const keys = typeof $.store.keys === 'function' ? await $.store.keys() : [];").join('\n'), /used as a value/);
+  assert.match(violations('if ($.fs.exists) await $.fs.exists(path);').join('\n'), /used as a value/);
   assert.deepEqual(violations("await detect($, e); await $.fs.read(path); await $.env.get('PATH');"), []);
 });
 

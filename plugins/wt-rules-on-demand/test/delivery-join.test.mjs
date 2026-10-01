@@ -32,7 +32,8 @@ test('session merge preserves contexts, deduplicates ids, retains legacy entries
     const identified = merged[0].complianceInjected.filter((item) => item.deliveryId);
     assert.equal(identified.length, 2, 'merged journal contains exactly two id-bearing entries');
     assert.deepEqual(new Set(identified.map((item) => item.deliveryId)), new Set(['a', 'b']));
-    assert.equal(merged[0].complianceInjected.filter((item) => !item.deliveryId).length, 2);
+    // Mirror COPIES of one legacy entry are one entry: the segment join keeps the most any single copy holds.
+    assert.equal(merged[0].complianceInjected.filter((item) => !item.deliveryId).length, 1);
     assert.equal(merged[0].lastClose.seq, 4);
     assert.equal(merged[1].lastClose.token, 'new');
     assert.ok(merged['agent:x']);

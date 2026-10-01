@@ -472,19 +472,26 @@ test('compaction closes pending verdict rather than losing it', async () => {
   assert.equal(JSON.parse(f.stored.get('compliance-verdicts-jsonl')).reason, 'compaction');
 });
 
-test('journal retries a size failure with fewer older sessions', async () => {
+// The host refused this store for size: older sessions move to archives, retried under a halved budget, and none is dropped.
+test('journal answers a host size refusal by archiving older sessions, never dropping one', async () => {
   const f = fixture();
   f.files.set('/sample-config/rules-on-demand/sample.md', rule(false));
   f.stored.set('sessions', Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`old-${i}`, { last: '2020-01-01T00:00:00.000Z', contexts: {} }])));
+  const archives = new Map();
+  f.$.fs.write = async (path, text) => archives.set(path, text);
+  f.$.fs.remove = async (path) => archives.delete(path);
   const original = f.$.store.set;
   const originalGet = f.$.store.get;
   f.$.store.get = async (name) => name === 'sessions' ? structuredClone(await originalGet(name)) : originalGet(name);
   f.$.store.set = async (name, value) => {
-    if (name === 'sessions' && Object.keys(value).length > 30) throw new Error('store size exceeded');
+    if (name === 'sessions' && Object.keys(value).length > 30) throw new Error('the store would be 4194537 characters, over the 4194304 limit');
     return original(name, value);
   };
   await f.call({});
+  assert.deepEqual(f.logs.filter((line) => /write failed/.test(line)), []);
   assert.ok(f.stored.get('sessions')['sample-session']);
+  const archived = [...archives.values()].flatMap((text) => { const { value } = JSON.parse(text); return Array.isArray(value) ? value.map((unit) => unit.sessionId) : Object.keys(value); });
+  assert.deepEqual([...Object.keys(f.stored.get('sessions')), ...archived].sort(), [...Array.from({ length: 40 }, (_, i) => `old-${i}`), 'sample-session'].sort());
 });
 
 const overBudget = '(?:[a]{1024}){4}b';
