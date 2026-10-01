@@ -524,7 +524,7 @@ describe('wt-suite-lock CLI', () => {
     for (const command of ['status', 'run']) {
       const result = spawnSync('zsh', ['-c', '"$WT_SUITE_LOCK_CMD" "$1"', 'zsh', command], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH}`, WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin },
+        env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH}`, WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
       })
       expect(result.error, 'zsh spawn itself failed rather than the child exiting').toBeUndefined()
       expect(result.status).toBe(7)
@@ -574,7 +574,7 @@ describe('wt-suite-lock-run runner', () => {
   it('takes the suite lock itself while the child runs, and a second runner waits for it', async () => {
     const root = tempRoot('runner-takes-lock')
     const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {
-      env: { ...process.env, WT_SUITE_LOCK_DIR: root },
+      env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
@@ -805,7 +805,7 @@ releaseSuiteLock(lease)
     const root = tempRoot('excl-bwrap')
     const log = join(root, 'events.log')
     const mark = (name: string, holdMs: number) => `const f=require('fs');f.appendFileSync(${JSON.stringify(log)},'${name} START '+Date.now()+'\\n');setTimeout(()=>f.appendFileSync(${JSON.stringify(log)},'${name} END '+Date.now()+'\\n'),${holdMs})`
-    const env = { ...process.env, WT_SUITE_LOCK_DIR: root }
+    const env = { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
     const host = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', mark('HOST', 3000)], { env, stdio: 'ignore' })
     const hostDone = new Promise((resolve) => host.once('exit', resolve))
     // Same reasoning as the sibling non-bwrap test: HOST's own START event already proves the lock

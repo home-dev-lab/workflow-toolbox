@@ -45,10 +45,10 @@ export function runGate(name, root, lease, spawnGate = spawn) {
       process.off('SIGTERM', terminate)
       resolve(lost ? 75 : spawnFailed ? 2 : code ?? (signal === 'SIGINT' ? 130 : 143))
     }
-    lease.lost?.then(() => {
+    lease.lost?.then((reason) => {
       if (finished) return
       lost = true
-      process.stderr.write(`certification ${name}: broker lease lost; stopping gate\n`)
+      process.stderr.write(`certification ${name}: broker lease lost (${reason || 'broker gone'}); stopping gate\n`)
       cancelForcedStop = stopChildForLostSuiteLock(child)
     })
     process.on('SIGINT', interrupt)
