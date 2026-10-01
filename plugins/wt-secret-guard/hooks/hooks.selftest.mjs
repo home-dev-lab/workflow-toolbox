@@ -3474,5 +3474,38 @@ await test('V67 value-map lookup agrees with the old vault scan', async () => {
   assert.equal(tokenize('assignment', value), oldToken, 'value-map lookup chose a different token than the old vault scan');
   testRestoreVault(baseline);
 });
+// An errored call's `result` is its error text. The host checks a hook's changed `result` against the tool's output
+// schema, which a bare string fails ("expected object, received string"), so a scrubbed error must not go back as
+// `{ result }`. The value is assembled at run time so this file never carries a detectable literal.
+const erroredValue = ['xox', 'b-1234567890', '12-abcdefghij'].join('');
+const erroredCore = (text, extra = {}) => ({ isError: true, result: text, text, ref: 7, ...extra });
+await test('a scrubbed errored Bash result goes back as a refusal carrying the scrubbed error text', async () => {
+  const answer = await bash($, { tool: 'Bash', command: 'sh -c "exit 1"' }, async () => erroredCore(`Exit code 1\ntok ${erroredValue}`, { context: ['rule text from below'] }));
+  assert.equal(JSON.stringify(answer).includes(erroredValue), false, 'raw value reached the answer');
+  assert.equal(answer.result, undefined, 'a string result would fail the host output-schema check');
+  assert.equal(typeof answer.deny, 'string');
+  assert.match(answer.deny, /Exit code 1/);
+  assert.match(answer.deny, /secret:slack-token#/);
+  assert.match(answer.deny, /rule text from below/, 'context from the hooks beneath was dropped');
+});
+await test('a scrubbed errored Grep result goes back as a refusal carrying the scrubbed error text', async () => {
+  const answer = await hookForTool('Grep')($, { tool: 'Grep', pattern: 'x' }, async () => erroredCore(`grep failed near ${erroredValue}`));
+  assert.equal(JSON.stringify(answer).includes(erroredValue), false, 'raw value reached the answer');
+  assert.equal(answer.result, undefined, 'a string result would fail the host output-schema check');
+  assert.match(answer.deny, /grep failed near secret:slack-token#/);
+});
+await test('an errored result with nothing to scrub is returned as core made it', async () => {
+  const core = erroredCore('Exit code 1\nplain failure');
+  const answer = await bash($, { tool: 'Bash', command: 'sh -c "exit 1"' }, async () => core);
+  assert.equal(answer.deny, undefined);
+  assert.equal(answer.result, core.result);
+  assert.equal(answer.ref, core.ref);
+});
+await test('a scrubbed successful result keeps its typed record', async () => {
+  const answer = await bash($, { tool: 'Bash', command: 'true' }, async () => ({ result: { stdout: `tok ${erroredValue}\n`, stderr: '', interrupted: false }, text: `tok ${erroredValue}\n`, ref: 8 }));
+  assert.equal(answer.deny, undefined);
+  assert.equal(typeof answer.result, 'object');
+  assert.match(answer.result.stdout, /secret:slack-token#/);
+});
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);

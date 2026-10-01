@@ -67,12 +67,23 @@ async function scrubInbound($, event, next) {
   return next({ ...event, text: `${text}\n\n${notice}` });
 }
 
+// An errored call carries its error text as `result`. Once that text is scrubbed the answer is no longer core's,
+// and the host checks a changed `result` against the tool's output schema, which a bare string fails
+// ("expected object, received string"): the call would be lost and its real error hidden. A refusal is the
+// one answer that delivers an error without that check, so the scrubbed text, plus any context from the hooks
+// beneath, goes back that way. An errored answer whose result is unchanged keeps core's own record.
+function erroredAnswer(original, answer) {
+  if (!answer || answer.deny !== undefined || answer.isError !== true || answer.result === original?.result) return answer;
+  const text = typeof answer.text === 'string' ? answer.text : typeof answer.result === 'string' ? answer.result : JSON.stringify(answer.result ?? '');
+  return { deny: [text, ...(Array.isArray(answer.context) ? answer.context : [])].join('\n\n') };
+}
+
 async function scrubToolResult($, event, next) {
   const response = await next(event);
   const cleaned = scrub(response, '');
   await publish(journalHost($));
   if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-  return withNotes(cleaned.value, 0, cleaned.entropy, cleaned.changed);
+  return erroredAnswer(response, withNotes(cleaned.value, 0, cleaned.entropy, cleaned.changed));
 }
 
 async function measuredRead($, event, next, surface) {
@@ -151,7 +162,7 @@ export const register = (on, options) => {
       const cleaned = scrub(response, rewrite.command, true, substituted);
       await publish(audit);
       if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-      return withNotes(cleaned.value, rewrite.count, cleaned.entropy, cleaned.changed);
+      return erroredAnswer(response, withNotes(cleaned.value, rewrite.count, cleaned.entropy, cleaned.changed));
     };
     if (!config().secretFileReadWarnings) {
       await appendEvent(audit, { surface: 'bash', action: 'policy-disabled', ruleId: 'policy', commandClass: 'bash', toolUseId: event.tool_use_id });
