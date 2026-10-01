@@ -35,7 +35,31 @@ function requestFrom(line) {
   return { argv: request.argv, waitS, light: request.light === true }
 }
 
-export function createSuiteLockBroker({ label = '' } = {}) {
+// A lane-owned hold is bounded: a lane command that can never finish (an install with no registry
+// access, a hung watcher) must not keep every other session's suite waiting. 2700 s equals the lock's
+// default wait; a full suite alone takes well under it. The HOST sets another bound with
+// WT_LANE_SUITE_LOCK_MAX_HOLD_S (the lane cannot: the broker runs outside its sandbox).
+export const DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S = 2700
+export const LANE_SUITE_LOCK_MAX_HOLD_ENV = 'WT_LANE_SUITE_LOCK_MAX_HOLD_S'
+
+// A timer longer than 2^31 - 1 ms fires at once, so the bound stops there (about 24.8 days).
+const MAX_HOLD_CEILING_S = 2_147_483
+
+function validMaxHold(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= MAX_HOLD_CEILING_S
+}
+
+// Unset or blank → the default; anything else must read as a finite number of seconds above 0.
+export function laneSuiteLockMaxHoldSeconds(env = process.env) {
+  const raw = env?.[LANE_SUITE_LOCK_MAX_HOLD_ENV]
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S
+  const value = Number(String(raw).trim())
+  if (!validMaxHold(value)) throw new Error(`${LANE_SUITE_LOCK_MAX_HOLD_ENV} must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${JSON.stringify(String(raw))})`)
+  return value
+}
+
+export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S } = {}) {
+  if (!validMaxHold(maxHoldS)) throw new Error(`maxHoldS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(maxHoldS)})`)
   let active = 0
   const releases = new Set()
   const server = net.createServer((socket) => {
@@ -45,6 +69,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
     let closed = false
     let requested = false
     let released = false
+    let holdTimer = null
     const controller = new AbortController()
     const release = () => {
       if (released) return
@@ -56,7 +81,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
     releases.add(release)
     const finish = () => {
       if (closed) return
-      closed = true; active -= 1; clearTimeout(timer); release()
+      closed = true; active -= 1; clearTimeout(timer); clearTimeout(holdTimer); release()
     }
     // The answer is final, so the served slot is freed now, not when the rejected client goes away.
     const error = (message) => { requested = true; finish(); rejectConnection(socket, message) }
@@ -95,6 +120,16 @@ export function createSuiteLockBroker({ label = '' } = {}) {
         if (closed) { releaseSuiteLock(acquired); return }
         lease = acquired
         socket.write(`granted ${lease.holder.leaseId}\n`)
+        holdTimer = setTimeout(() => {
+          if (closed) return
+          const text = `hold bound: lane lease released after ${maxHoldS} s (${LANE_SUITE_LOCK_MAX_HOLD_ENV}); command ${JSON.stringify(request.argv)} stopped`
+          if (!socket.destroyed) socket.write(`error ${text.replace(/[\r\n]/g, ' ')}\n`)
+          release()
+          if (!socket.destroyed) socket.end()
+          process.stderr.write(`workflow-toolbox: lane suite-lock broker: ${text}\n`)
+          finish()
+        }, maxHoldS * 1000)
+        holdTimer.unref?.()
       } catch (cause) {
         if (!closed && cause?.code !== 'ABORT_ERR') error(`${cause?.message ?? String(cause)}; requested command ${JSON.stringify(request?.argv ?? 'unavailable')}`)
       }
@@ -111,7 +146,13 @@ function main() {
   parseHelperArguments(process.argv.slice(2), options, {
     '--label': (value) => { options.label = String(value ?? '') },
   })
-  const server = createSuiteLockBroker({ label: options.label })
+  let maxHoldS
+  try { maxHoldS = laneSuiteLockMaxHoldSeconds(process.env) } catch (error) {
+    // Refused before listening: no socket, no readiness marker, so the launch refuses the lane.
+    process.stderr.write(`workflow-toolbox: lane suite-lock broker refused to start: ${error.message}\n`)
+    process.exit(2)
+  }
+  const server = createSuiteLockBroker({ label: options.label, maxHoldS })
   // A broker that is going away releases every lock it holds first, so the next waiter is not left
   // to wait for its pid to read dead; each lane client then sees its lease lost and stops its suite.
   runLaneHelper({ server, options, name: 'suite-lock broker', beforeExit: () => server.releaseAll() })

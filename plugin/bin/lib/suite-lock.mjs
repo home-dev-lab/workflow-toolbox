@@ -490,11 +490,14 @@ function requestBrokerSuiteLock(socketPath, options) {
     let granted = false
     let released = false
     let resolveLost
+    // Resolves with the REASON the granted lease was lost: the broker's own error text (its hold bound)
+    // when one arrives after the grant, 'broker gone' when the socket closes. The first reason wins.
     const lost = new Promise((done) => { resolveLost = done })
-    const fail = (error) => {
+    const lose = (reason) => { if (!released) resolveLost(reason) }
+    const fail = (error, reason = 'broker gone') => {
       socket.destroy()
       if (settled) {
-        if (!released) resolveLost()
+        lose(reason)
         return
       }
       settled = true
@@ -524,7 +527,7 @@ function requestBrokerSuiteLock(socketPath, options) {
           else if (options.light === true && isOlderBrokerRefusal(line)) error.code = 'WT_SUITE_LOCK_BROKER_OLDER'
           // A saturated broker refuses a request it cannot queue: a named refusal, like a timeout (exit 75).
           else if (line.startsWith('error busy: ')) error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
-          fail(error)
+          fail(error, line.slice(6))
         }
         else if (line.startsWith('granted ') && !settled) {
           settled = true; granted = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
@@ -533,7 +536,7 @@ function requestBrokerSuiteLock(socketPath, options) {
       }
     })
     socket.once('error', (error) => fail(new Error(`suite lock broker ${socketPath}: ${error.message}`)))
-    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else if (!released) resolveLost() })
+    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else lose('broker gone') })
     if (options.signal?.aborted) fail(abortError())
   })
 }

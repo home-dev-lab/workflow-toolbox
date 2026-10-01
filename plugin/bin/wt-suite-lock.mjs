@@ -98,9 +98,9 @@ function spawnCommand(command, leaseLost = null, marker = null) {
     const forwardTerminate = () => forward('SIGTERM')
     process.once('SIGINT', forwardInterrupt)
     process.once('SIGTERM', forwardTerminate)
-    leaseLost?.then(() => {
+    leaseLost?.then((reason) => {
       lockLost = true
-      process.stderr.write('wt-suite-lock: suite lock lost (broker gone); command stopped\n')
+      process.stderr.write(`wt-suite-lock: suite lock lost (${reason || 'broker gone'}); command stopped\n`)
       cancelForcedStop = stopChildForLostSuiteLock(child)
     })
     child.once('error', reject)

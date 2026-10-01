@@ -2,7 +2,8 @@
 // wt-lane.mjs -- detached, one-command external opencode lane launcher.
 
 import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { readFileSync as readLaneLog } from 'node:fs'
+// readdirSync rides on this line, not the one above: the adopt installer rewrites that one verbatim.
+import { readFileSync as readLaneLog, readdirSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
@@ -45,12 +46,12 @@ async function loadIntegrationModule() {
 const ATTACH_REMOVED = '--attach was removed: compose the extra text into the brief file, or expose a read-only path to the lane with WT_LANE_SANDBOX_READ'
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--priority low|normal]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal]\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
 export function parse(argv) {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null, priority: 'low' }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low' }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -71,6 +72,7 @@ export function parse(argv) {
     else if (arg === '--variant') { out.variant = argv[++i] ?? null; out.variantExplicit = true }
     else if (arg === '--allow-unknown-variant') out.allowUnknownVariant = true
     else if (arg === '--allow-no-git') out.allowNoGit = true
+    else if (arg === '--allow-missing-install') out.allowMissingInstall = true
     else if (arg === '--priority') out.priority = argv[++i] ?? null
     else if (arg === '--attach' || arg.startsWith('--attach=')) return { error: ATTACH_REMOVED }
     else if (arg === '--run-id') out.runId = argv[++i] ?? null
@@ -84,6 +86,7 @@ export function parse(argv) {
   if (!Number.isSafeInteger(out.maxExtensions) || out.maxExtensions < 0) return { error: '--max-extensions must be a non-negative integer' }
   if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return { error: '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB' }
   if (!['session', 'pilot'].includes(out.owner)) return { error: '--owner must be session or pilot' }
+  if (out.owner === 'pilot' && !out.ownerToken) return { error: OWNER_TOKEN_REQUIRED }
   if (out.role && !['pilot', 'pilotHard', 'orchestrator', 'sdkPilot', 'sdkPilotHard', 'sdkOrchestrator', 'critic', 'code', 'review', 'refutation'].includes(out.role)) return { error: '--role is not a known variant role' }
   if (!['low', 'normal'].includes(out.priority)) return { error: '--priority must be low or normal' }
   if (out.runId && !/^\d+-\d+$/.test(out.runId)) return { error: 'internal run id is malformed' }
@@ -277,6 +280,41 @@ export function checkGitWorktree(dir) {
   return true
 }
 
+// The owner keeps custody of the token: a generated one printed here could land in a log the lane reads.
+const OWNER_TOKEN_REQUIRED = `--owner pilot requires --owner-token <token>: without it wt-lane-control can never verify the pilot, so abandon is unreachable; generate one with: node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"`
+
+function shellPath(value) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.split("'").join("'\\''")}'`
+}
+
+// A sandboxed lane has no registry egress, so an install it starts can never finish (and may hold the
+// suite lock meanwhile). The launch therefore refuses a project whose lockfile has no matching install,
+// for the lane dir and each immediate non-hidden subdirectory. pnpm writes a byte copy of the lockfile
+// to node_modules/.pnpm/lock.yaml at install; npm writes node_modules/.package-lock.json. Yarn: not
+// checked. Pure fs, inlined for the same reason as HARDENED_GIT_CONFIG above.
+export function missingInstallRefusal(dir, fs = { existsSync, readdirSync, readFileSync }) {
+  let entries = []
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { /* the lane dir is checked elsewhere */ }
+  const candidates = [dir, ...entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules').map((entry) => path.join(dir, entry.name)).sort()]
+  for (const candidate of candidates) {
+    let problem = null
+    let command = null
+    const pnpmLock = path.join(candidate, 'pnpm-lock.yaml')
+    const npmLock = path.join(candidate, 'package-lock.json')
+    if (fs.existsSync(pnpmLock)) {
+      const installed = path.join(candidate, 'node_modules', '.pnpm', 'lock.yaml')
+      command = 'pnpm install --offline --frozen-lockfile'
+      if (!fs.existsSync(installed)) problem = 'node_modules/.pnpm/lock.yaml is missing'
+      else if (!fs.readFileSync(installed).equals(fs.readFileSync(pnpmLock))) problem = 'node_modules/.pnpm/lock.yaml differs from pnpm-lock.yaml'
+    } else if (fs.existsSync(npmLock)) {
+      command = 'npm ci --offline'
+      if (!fs.existsSync(path.join(candidate, 'node_modules', '.package-lock.json'))) problem = 'node_modules/.package-lock.json is missing'
+    }
+    if (problem) return `Refused: dependencies of ${candidate} are not installed (${problem}); a lane cannot install them inside its sandbox. Run on the host first: (cd ${shellPath(candidate)} && ${command}), or pass --allow-missing-install for a lane that needs no dependencies.`
+  }
+  return null
+}
+
 function writeEnvLog(dir) {
   const lines = [`CLAUDE_CODE_SESSION_ID=${process.env.CLAUDE_CODE_SESSION_ID ?? ''}`, `SSH_AUTH_SOCK=${process.env.SSH_AUTH_SOCK ? 'present' : 'absent'}`]
   try {
@@ -442,6 +480,10 @@ async function main() {
     }
   }
   if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
+  if (!worker && !opts.allowMissingInstall) {
+    const refusal = missingInstallRefusal(opts.dir)
+    if (refusal) { process.stderr.write(`wt-lane: ${refusal}\n`); return 1 }
+  }
 
   // Invoke the same consent resolver and wording as the PreToolUse gate before a node wrapper
   // can bypass its text matcher.
