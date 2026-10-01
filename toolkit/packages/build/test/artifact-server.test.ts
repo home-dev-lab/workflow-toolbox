@@ -229,10 +229,15 @@ function dumpComplete(stdout: string) {
   return stdout.trimEnd().endsWith('</html>')
 }
 
+// Counts the signals stopBrowser actually sends, so a lock can prove an exited browser was never signalled: a
+// SIGKILLed process can still answer kill(pid, 0) as a zombie until it is reaped, so liveness cannot prove it.
+let browserSignals = 0
+
 function stopBrowser(child: ChildProcess) {
   // Once the browser has exited its pid may be reused: signalling that pid's group or tree could reach an
   // unrelated process, so an exited browser is never signalled.
   if (!child.pid || child.exitCode !== null || child.signalCode !== null) return
+  browserSignals += 1
   // POSIX: the browser leads its own process group, so its renderer and utility processes go with it. SIGKILL,
   // because a browser stuck in its own shutdown is the case being stopped. Windows: the process tree.
   if (process.platform === 'win32') { killWindowsTree(child.pid); return }
@@ -2291,13 +2296,14 @@ describe('review decisions: serving security matrix', () => {
       `writeFileSync(${JSON.stringify(holderPidFile)}, String(holder.pid))`,
       'process.exit(0)',
     ].join('\n'))
-    await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 3_000 }))
-      .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 3000 ms \(stdout 0 bytes, browser exited, stdout still open\)/)
-    const holderPid = Number(readFileSync(holderPidFile, 'utf8'))
+    const signalsBefore = browserSignals
+    const holderPid = () => Number(readFileSync(holderPidFile, 'utf8'))
     try {
-      expect(pidAlive(holderPid)).toBe(true)
+      await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 3_000 }))
+        .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 3000 ms \(stdout 0 bytes, browser exited, stdout still open\)/)
+      expect(browserSignals).toBe(signalsBefore)
     } finally {
-      try { process.kill(holderPid, 'SIGKILL') } catch { /* already gone */ }
+      try { process.kill(holderPid(), 'SIGKILL') } catch { /* already gone */ }
     }
   }, 20_000)
 
