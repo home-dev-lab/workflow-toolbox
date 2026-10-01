@@ -292,6 +292,12 @@ function shellPath(value) {
 // for the lane dir and each immediate non-hidden subdirectory. pnpm writes a byte copy of the lockfile
 // to node_modules/.pnpm/lock.yaml at install; npm writes node_modules/.package-lock.json. Yarn: not
 // checked. Pure fs, inlined for the same reason as HARDENED_GIT_CONFIG above.
+// A Windows checkout with core.autocrlf writes pnpm-lock.yaml with CRLF while pnpm's own copy stays LF:
+// line ends are the only difference ignored.
+function lineEndsLf(bytes) {
+  return bytes.toString('utf8').replace(/\r\n/g, '\n')
+}
+
 export function missingInstallRefusal(dir, fs = { existsSync, readdirSync, readFileSync }) {
   let entries = []
   try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { /* the lane dir is checked elsewhere */ }
@@ -305,7 +311,7 @@ export function missingInstallRefusal(dir, fs = { existsSync, readdirSync, readF
       const installed = path.join(candidate, 'node_modules', '.pnpm', 'lock.yaml')
       command = 'pnpm install --offline --frozen-lockfile'
       if (!fs.existsSync(installed)) problem = 'node_modules/.pnpm/lock.yaml is missing'
-      else if (!fs.readFileSync(installed).equals(fs.readFileSync(pnpmLock))) problem = 'node_modules/.pnpm/lock.yaml differs from pnpm-lock.yaml'
+      else if (lineEndsLf(fs.readFileSync(installed)) !== lineEndsLf(fs.readFileSync(pnpmLock))) problem = 'node_modules/.pnpm/lock.yaml differs from pnpm-lock.yaml'
     } else if (fs.existsSync(npmLock)) {
       command = 'npm ci --offline'
       if (!fs.existsSync(path.join(candidate, 'node_modules', '.package-lock.json'))) problem = 'node_modules/.package-lock.json is missing'

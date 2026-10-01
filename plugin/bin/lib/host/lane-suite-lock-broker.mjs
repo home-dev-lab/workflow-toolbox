@@ -41,6 +41,9 @@ function requestFrom(line) {
 // WT_LANE_SUITE_LOCK_MAX_HOLD_S (the lane cannot: the broker runs outside its sandbox).
 export const DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S = 2700
 export const LANE_SUITE_LOCK_MAX_HOLD_ENV = 'WT_LANE_SUITE_LOCK_MAX_HOLD_S'
+// After the hold bound the lock stays held until the client closes (its command tree has stopped), and
+// at most this long: a suspended or wedged client never keeps it beyond the grace.
+export const DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S = 30
 
 // A timer longer than 2^31 - 1 ms fires at once, so the bound stops there (about 24.8 days).
 const MAX_HOLD_CEILING_S = 2_147_483
@@ -58,8 +61,9 @@ export function laneSuiteLockMaxHoldSeconds(env = process.env) {
   return value
 }
 
-export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S } = {}) {
+export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, stopGraceS = DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S } = {}) {
   if (!validMaxHold(maxHoldS)) throw new Error(`maxHoldS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(maxHoldS)})`)
+  if (!validMaxHold(stopGraceS)) throw new Error(`stopGraceS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(stopGraceS)})`)
   let active = 0
   const releases = new Set()
   const server = net.createServer((socket) => {
@@ -70,6 +74,8 @@ export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUIT
     let requested = false
     let released = false
     let holdTimer = null
+    let graceTimer = null
+    let expiredAt = null
     const controller = new AbortController()
     const release = () => {
       if (released) return
@@ -81,7 +87,9 @@ export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUIT
     releases.add(release)
     const finish = () => {
       if (closed) return
-      closed = true; active -= 1; clearTimeout(timer); clearTimeout(holdTimer); release()
+      closed = true; active -= 1; clearTimeout(timer); clearTimeout(holdTimer); clearTimeout(graceTimer)
+      if (expiredAt !== null && lease && !released) process.stderr.write(`workflow-toolbox: lane suite-lock broker: hold-bound lease released after its client closed, ${((Date.now() - expiredAt) / 1000).toFixed(1)} s after the bound\n`)
+      release()
     }
     // The answer is final, so the served slot is freed now, not when the rejected client goes away.
     const error = (message) => { requested = true; finish(); rejectConnection(socket, message) }
@@ -122,12 +130,20 @@ export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUIT
         socket.write(`granted ${lease.holder.leaseId}\n`)
         holdTimer = setTimeout(() => {
           if (closed) return
-          const text = `hold bound: lane lease released after ${maxHoldS} s (${LANE_SUITE_LOCK_MAX_HOLD_ENV}); command ${JSON.stringify(request.argv)} stopped`
+          expiredAt = Date.now()
+          // The lock is NOT released here: the command may still run. It is released when the client
+          // closes (it does so once its command tree has stopped) or when the stop grace runs out.
+          const text = `hold bound: lane lease expired after ${maxHoldS} s (${LANE_SUITE_LOCK_MAX_HOLD_ENV}); command ${JSON.stringify(request.argv)} must stop; the lock is released once it has stopped, at most ${stopGraceS} s from now`
           if (!socket.destroyed) socket.write(`error ${text.replace(/[\r\n]/g, ' ')}\n`)
-          release()
-          if (!socket.destroyed) socket.end()
           process.stderr.write(`workflow-toolbox: lane suite-lock broker: ${text}\n`)
-          finish()
+          graceTimer = setTimeout(() => {
+            if (closed) return
+            process.stderr.write(`workflow-toolbox: lane suite-lock broker: hold-bound lease released after the ${stopGraceS} s stop grace; its client did not close; command ${JSON.stringify(request.argv)}\n`)
+            release()
+            socket.destroy()
+            finish()
+          }, stopGraceS * 1000)
+          graceTimer.unref?.()
         }, maxHoldS * 1000)
         holdTimer.unref?.()
       } catch (cause) {
