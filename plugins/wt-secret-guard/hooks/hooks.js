@@ -10,7 +10,7 @@ import { scrub } from './scrub.js';
 import { applySecretReadGuard } from './secret-read-guard.js';
 import { verdictForBash, verdictForPath } from './secret-read-policy.js';
 import { knownTokens, replacementFor, testState, tokenize } from './token-vault.js';
-import { classifyOutbound } from './outbound-tools.js';
+import { classifyOutbound, describeFindings } from './outbound-tools.js';
 import { maskAssistantRender, maskTurnStep } from './assistant-stream.js';
 import { REDACTION_NOTE } from './constants.js';
 
@@ -100,6 +100,8 @@ async function measuredRead($, event, next, surface) {
 async function refuseRawOutbound($, event) {
   const classified = await classifyOutbound({}, event);
   if (!classified.findings.length) return null;
+  // Described before the findings are tokenised below: a pattern match must read as its detector, not as a held value.
+  const described = describeFindings(event, classified.findings);
   const replacements = classified.findings.map(({ kind, value, secret = value }) => ({ raw: value, token: tokenize(kind, secret) }));
   if (event.agentId) await $.ui.log('wt-secret-guard: denied subagent input; subagent transcript location is unmeasured, so persisted input could not be repaired.');
   else await scrubToolUseStorage(storageHost($), replacements, event.tool_use_id);
@@ -111,7 +113,7 @@ async function refuseRawOutbound($, event) {
   const guidance = classified.surface === 'bash'
     ? ' Use a supported secret reference instead.'
     : ' Remove the raw value from the outbound content.';
-  return { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input.${guidance}` };
+  return { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input: ${described.join('; ')}.${guidance}` };
 }
 
 async function guardedOutbound($, event, next) {

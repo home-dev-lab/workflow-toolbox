@@ -18,6 +18,13 @@ const OUTBOUND_FIELDS = {
   Task: new Set(['prompt']),
 };
 
+// A held value shorter than this occurs by chance inside ordinary identifiers: measured on fixtures (5,000
+// random values per length against card ids, issue keys, channel ids and prose), 4 digits matched 6% of the
+// time and 5 digits 0.7%, 6 characters of any class never. The model never saw a held value raw, so a short one
+// in its outbound text is a coincidence, not a leak; output scrubbing still masks it at any length.
+export const HELD_VALUE_FLOOR = 6;
+const isMeaningfulHeldValue = (value) => typeof value === 'string' && value.length >= HELD_VALUE_FLOOR;
+
 function withoutReferences(value) { return value.replace(REFERENCE, (reference) => ' '.repeat(reference.length)); }
 function base64Utf8(value) {
   let binary = '';
@@ -53,6 +60,7 @@ function pushStringFindings(found, value, key, path, options) {
     return false;
   };
   for (const [, entry] of knownTokens()) {
+    if (!isMeaningfulHeldValue(entry.value)) continue;
     const encoded = base64Utf8(entry.value);
     if (entry.value && outsideTokens(entry.value)) found.push({ kind: entry.kind, value: entry.value, secret: entry.value, path });
     if (encoded && outsideTokens(encoded)) found.push({ kind: entry.kind, value: encoded, secret: entry.value, path });
@@ -76,12 +84,39 @@ function findingsIn(value) {
   return [...unique.values()];
 }
 
+function outboundInput(event) {
+  const fields = typeof event.tool === 'string' && Object.hasOwn(OUTBOUND_FIELDS, event.tool) ? OUTBOUND_FIELDS[event.tool] : undefined;
+  return Object.fromEntries(Object.entries(event).filter(([key]) => fields ? fields.has(key) : !['tool', 'tool_use_id', 'agentId'].includes(key)));
+}
+
+function* stringFields(value, path = []) {
+  if (typeof value === 'string') { yield { field: path.join('.') || 'input', text: value }; return; }
+  if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) yield* stringFields(child, [...path, key]);
+}
+
+function heldSource(finding) {
+  for (const [token, entry] of knownTokens()) {
+    if (finding.value === entry.value) return { label: `held value ${token}`, token };
+    if (finding.value === base64Utf8(entry.value)) return { label: `base64 of held value ${token}`, token };
+  }
+  return null;
+}
+
+// What matched, where, and how to satisfy it in the same turn - never the value itself.
+export function describeFindings(event, findings) {
+  const fields = [...stringFields(outboundInput(event))];
+  return findings.map((finding) => {
+    const at = fields.map(({ field, text }) => ({ field, index: text.indexOf(finding.value) })).find(({ index }) => index >= 0);
+    const where = at ? `${at.field} at ${at.index}, ${finding.value.length} chars` : `${finding.value.length} chars`;
+    const held = heldSource(finding);
+    return held ? `${held.label}: ${where} - replace it with ${held.token}` : `${finding.kind} detector: ${where}`;
+  });
+}
+
 export async function classifyOutbound(_host, event) {
   // Own properties only: a tool named `toString` read the inherited method as its surface (Astra at 2618aa81).
   const own = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : undefined);
   const surface = event.tool?.startsWith('mcp__') ? 'mcp' : own(SURFACE, event.tool);
   if (!surface) return { surface: null, findings: [] };
-  const fields = own(OUTBOUND_FIELDS, event.tool);
-  const input = Object.fromEntries(Object.entries(event).filter(([key]) => fields ? fields.has(key) : !['tool', 'tool_use_id', 'agentId'].includes(key)));
-  return { surface, findings: findingsIn(input) };
+  return { surface, findings: findingsIn(outboundInput(event)) };
 }

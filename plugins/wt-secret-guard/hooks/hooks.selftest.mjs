@@ -3507,5 +3507,53 @@ await test('a scrubbed successful result keeps its typed record', async () => {
   assert.equal(typeof answer.result, 'object');
   assert.match(answer.result.stdout, /secret:slack-token#/);
 });
+// An outbound refusal must say WHAT matched, never the value, so the session can satisfy it in the same turn,
+// and a held value too short to mean anything must not refuse an ordinary identifier that happens to contain it.
+await test('a held value shorter than the coincidence floor does not refuse an id that contains it', async () => {
+  const { testRestoreVault, testVaultSnapshot } = await import('./token-vault.js');
+  const baseline = testVaultSnapshot();
+  tokenize('op-json-concealed', '7342');
+  const prompt = 'Review card 1876734226877283108 and SRCLOUD-11328, then post to D055EUXJRJ6.';
+  const result = await hookForTool('Agent')($, { tool: 'Agent', prompt, agentId: 'fixture' }, async () => ({ text: 'spawned' }));
+  testRestoreVault(baseline);
+  assert.equal(result?.deny, undefined, `refused on a short held value: ${result?.deny}`);
+});
+await test('a refusal on a held value names its token, field, position and length, never the value', async () => {
+  const { testRestoreVault, testVaultSnapshot } = await import('./token-vault.js');
+  const baseline = testVaultSnapshot();
+  const held = 'fixture-held-9f3k2';
+  const token = tokenize('onepassword', held);
+  const prompt = `Use ${held} to log in.`;
+  const result = await hookForTool('Agent')($, { tool: 'Agent', prompt, agentId: 'fixture' }, async () => ({ text: 'spawned' }));
+  testRestoreVault(baseline);
+  assert.ok(result?.deny, 'a long held value was not refused');
+  assert.equal(result.deny.includes(held), false, 'the refusal printed the value');
+  assert.ok(result.deny.includes(`held value ${token}`), result.deny);
+  assert.match(result.deny, /prompt at 4, 18 chars/);
+  assert.ok(result.deny.includes(`replace it with ${token}`), 'no same-turn remedy');
+});
+await test('a refusal on the base64 of a held value says so', async () => {
+  const { testRestoreVault, testVaultSnapshot } = await import('./token-vault.js');
+  const baseline = testVaultSnapshot();
+  const held = 'fixture-held-base64-77';
+  const token = tokenize('onepassword', held);
+  const encoded = Buffer.from(held).toString('base64');
+  const result = await hookForTool('Agent')($, { tool: 'Agent', prompt: `blob ${encoded}`, agentId: 'fixture' }, async () => ({ text: 'spawned' }));
+  testRestoreVault(baseline);
+  assert.ok(result?.deny, 'the base64 form was not refused');
+  assert.equal(result.deny.includes(encoded), false, 'the refusal printed the encoded value');
+  assert.ok(result.deny.includes(`base64 of held value ${token}`), result.deny);
+  assert.match(result.deny, new RegExp(`prompt at 5, ${encoded.length} chars`));
+});
+await test('a refusal on a detector pattern names the detector, position and length, never the value', async () => {
+  // A value no earlier lock has put in the vault: a held one is rightly named as held instead.
+  const raw = ['xox', 'p-5551234567', '89-qrstuvwxyz'].join('');
+  const prompt = `token is ${raw} ok`;
+  const result = await hookForTool('Agent')($, { tool: 'Agent', prompt, agentId: 'fixture' }, async () => ({ text: 'spawned' }));
+  assert.ok(result?.deny, 'the pattern was not refused');
+  assert.equal(result.deny.includes(raw), false, 'the refusal printed the value');
+  assert.match(result.deny, new RegExp(`slack-token detector: prompt at 9, ${raw.length} chars`));
+  assert.match(result.deny, /Remove the raw value/);
+});
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);
