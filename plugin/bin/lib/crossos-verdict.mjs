@@ -29,7 +29,9 @@ export const ciBranchFor = (sha) => `card/ci-${sha.slice(0, 12)}`
 export const EVIDENCE_FIELDS = 'event,headBranch,headSha,status,conclusion,jobs'
 
 // The ONLY producer of a green verdict. Green needs positive evidence about exactly this commit: a dispatched run on
-// its own card/ci branch at its sha, completed, with a successful ubuntu, windows and macos job. Absent, foreign or
+// its own card/ci branch at its sha, completed, with a successful ubuntu, windows and macos job (Windows runs as
+// several shard jobs, `matrix (windows-latest, 1)` and so on; green needs EVERY job of the run to have succeeded,
+// so one failed shard is red). Absent, foreign or
 // partial evidence is unchecked, pending or red, never green. Callers pass evidence read live from GitHub
 // (freshEvidence); a stored record is never evidence.
 export function verdictFromEvidence(run, sha) {
