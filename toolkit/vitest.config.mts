@@ -123,7 +123,7 @@ export default defineConfig({
         '../plugin/bin/**/*fixture*',
       ],
       // Windows skips ~176 POSIX-only tests (Linux skips 14), so its coverage is a different
-      // denominator, not a regression; the thresholds judge Linux and macOS only.
+      // denominator, not a regression; the thresholds judge Linux only (the macOS shards run no coverage).
       thresholds: process.platform === 'win32' ? undefined : {
         // ratchet 2026-09-18: 0.3 points below the child-process-aware observed floor
         // (76.69 / 67.81 / 77.85 / 73.91). A threshold pinned at the exact floor fails on the first timed-out or
