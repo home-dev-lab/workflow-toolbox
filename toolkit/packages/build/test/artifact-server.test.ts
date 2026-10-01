@@ -230,7 +230,9 @@ function dumpComplete(stdout: string) {
 }
 
 function stopBrowser(child: ChildProcess) {
-  if (!child.pid) return
+  // Once the browser has exited its pid may be reused: signalling that pid's group or tree could reach an
+  // unrelated process, so an exited browser is never signalled.
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return
   // POSIX: the browser leads its own process group, so its renderer and utility processes go with it. SIGKILL,
   // because a browser stuck in its own shutdown is the case being stopped. Windows: the process tree.
   if (process.platform === 'win32') { killWindowsTree(child.pid); return }
@@ -284,7 +286,7 @@ function renderInChrome(url: string, options: { browser?: BrowserCommand, boundM
       if (dumpedAt) { stopAfterDump(Date.now() - dumpedAt); return }
       finish()
       stopBrowser(child)
-      reject(new Error(`Chrome produced no complete DOM for ${url} within ${boundMs} ms (stdout ${stdout.length} bytes, exit not seen); stderr tail:\n${stderr.slice(-2_000)}`))
+      reject(new Error(`Chrome produced no complete DOM for ${url} within ${boundMs} ms (stdout ${stdout.length} bytes, ${child.exitCode !== null || child.signalCode !== null ? 'browser exited, stdout still open' : 'exit not seen'}); stderr tail:\n${stderr.slice(-2_000)}`))
     }, boundMs)
     child.once('error', (error) => {
       if (settled) return
@@ -2276,6 +2278,27 @@ describe('review decisions: serving security matrix', () => {
     const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 5_000, exitGraceMs: 60_000 })
     expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
     await waitFor(() => pidAlive(result.pid!) ? null : true)
+  }, 20_000)
+
+  it('never signals a browser that already exited, even when its output stays open', async () => {
+    const holderPidFile = join(temporaryDir('fake-browser-holder'), 'holder.pid')
+    // The browser exits at once without a dump; a process it started keeps its stdout open, so the render can only
+    // end on its bound. Its group is the exited browser's pid: signalling it is what a reused pid would turn unsafe.
+    const browser = fakeBrowser([
+      "import { spawn } from 'node:child_process'",
+      "import { writeFileSync } from 'node:fs'",
+      "const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'] })",
+      `writeFileSync(${JSON.stringify(holderPidFile)}, String(holder.pid))`,
+      'process.exit(0)',
+    ].join('\n'))
+    await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 3_000 }))
+      .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 3000 ms \(stdout 0 bytes, browser exited, stdout still open\)/)
+    const holderPid = Number(readFileSync(holderPidFile, 'utf8'))
+    try {
+      expect(pidAlive(holderPid)).toBe(true)
+    } finally {
+      try { process.kill(holderPid, 'SIGKILL') } catch { /* already gone */ }
+    }
   }, 20_000)
 
   it('keeps the exit code of a browser that exits by itself after its dump', async () => {
