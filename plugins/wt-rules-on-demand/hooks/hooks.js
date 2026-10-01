@@ -123,8 +123,9 @@ function publish(ctx, root, rules) {
   ctx.rules = rules;
   ctx.rulesRoot = root;
 }
-// A rule counts as served in a context only when the SAME identity was served: a same-name rule from another root
-// (another file) is a different rule, whatever was served or published in between.
+// A rule counts as served in a context only when its identity matches the LAST copy of that name served there: a
+// same-name rule from another root (another file) is a different rule. Only one copy per name is remembered, so a
+// root that moves back and forth (fallback mode) serves each copy again on every switch.
 const servedAs = (ctx, rule) => {
   const state = ctx.served.get(rule.name);
   return state && state.identity === rule.identity ? state : undefined;
