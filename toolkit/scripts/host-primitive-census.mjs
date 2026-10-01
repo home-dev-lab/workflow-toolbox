@@ -22,8 +22,9 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // that replaced the duplicate-hook notice reads the home directory through host/home-directory.mjs.
 // The board-pointer walk and the worktree remover's canonical path moved into host/board-pointer.mjs; the
 // retention helpers read the platform from host/platform.mjs.
+// The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1894
+export const HOST_PRIMITIVE_CEILING = 1893
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

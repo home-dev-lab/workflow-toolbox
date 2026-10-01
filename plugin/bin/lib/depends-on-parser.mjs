@@ -35,13 +35,21 @@ function segmentIds(segment) {
   return bare ? [bare[1]] : []
 }
 
+// `none` declares no dependency only as the WHOLE value (any case). After it may come only a run
+// of whitespace and the characters . , ; : ! ` * _ ~, then at most one parenthesised note with no
+// nested parentheses, then another such run: `none`, `none.`, `**none**`, `none (standalone).`.
+// Anything else after `none` — `none until #<id> lands`, `none - later` — makes the line
+// unparseable, so the card is held rather than read as independent.
+const WHOLE_NONE = /^none[\s.,;:!`*_~]*(?:\([^()]*\)[\s.,;:!`*_~]*)?$/i
+
 export function parseDependsOn(description) {
   const ids = new Set()
   const unparseable = []
   for (const { original, text } of declaringLines(description)) {
     // `**Depends-on:** none` leaves the closing emphasis in front of the value.
     const remainder = text.slice('Depends-on:'.length).replace(/^[\s`*_]+/, '')
-    if (/^none\b/i.test(remainder)) continue
+    if (WHOLE_NONE.test(remainder)) continue
+    if (/^none\b/i.test(remainder)) { unparseable.push(original); continue }
     let found = false
     // Parentheses go first: a comma inside a title must never split it into a segment of its own.
     for (const segment of outsideParentheses(remainder).split(',')) {

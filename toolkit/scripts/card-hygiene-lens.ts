@@ -10,12 +10,12 @@
 // to be wired by either a hook or a skill instruction in a follow-up. That open
 // follow-up is intentional, not an oversight.
 //
+// Depends-on lines are read by the plugin's shipped parser, the one every picker
+// shares; an unreadable line on an open card is a broken-dependency finding.
+//
 // KNOWN LIMITATIONS (found by cross-family review, 2026-07-27, disclosed rather
 // than fixed — none of them silently manufacture a false-clean verdict, only
 // under- or mis-attribute noise):
-//   → `Depends-on: #12 (follow-up to #34)` extracts BOTH #12 and #34 as
-//     dependencies — a `#<id>` appearing in explanatory prose after the marker,
-//     not just as a genuine second dependency, is indistinguishable from one.
 //   → a card whose MCP response omits `listName` is normalized to `''` by
 //     `planka-mcp-client.ts`, which this lens then treats as "not closed" —
 //     silent under-detection of chain-coherence, not a fabricated pass.
@@ -26,6 +26,7 @@
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { parseDependsOn } from '../../plugin/bin/lib/depends-on-parser.mjs'
 import { EFFORT_VALUES, PRIORITY_VALUES, TYPE_VALUES } from './label-intent-lens.ts'
 import { fetchBoardCards, type BoardCard } from './planka-mcp-client.ts'
 
@@ -55,19 +56,6 @@ export interface BoardHygieneResult {
 }
 
 const CLOSED_LISTS = new Set(['Done', 'NotDoing'])
-const DEPENDS_ON = /depends-on\s*:([^\r\n]*)/gi
-const CARD_ID = /#(\d+)\b/g
-
-function dependencyIds(description: string | undefined): string[] {
-  const ids: string[] = []
-  for (const declaration of (description ?? '').matchAll(DEPENDS_ON)) {
-    for (const match of (declaration[1] ?? '').matchAll(CARD_ID)) {
-      const id = match[1]
-      if (id !== undefined) ids.push(id)
-    }
-  }
-  return ids
-}
 
 function canonicalCycle(cycle: string[]): string[] {
   let best = cycle
@@ -117,7 +105,7 @@ export function checkBoardHygiene(cards: BoardCard[]): BoardHygieneResult {
   const dependencies = new Map(
     cards.map((card) => [
       card.id,
-      [...new Set(dependencyIds(card.description))],
+      parseDependsOn(card.description).ids,
     ]),
   )
   const resultById = new Map<string, CardHygieneResult>()
@@ -165,6 +153,16 @@ export function checkBoardHygiene(cards: BoardCard[]): BoardHygieneResult {
       for (const axis of missingAxes) {
         if (!axis.missing) continue
         result.findings.push({ cardId: card.id, kind: 'missing-label', message: axis.message })
+      }
+    }
+
+    if (!CLOSED_LISTS.has(card.listName)) {
+      for (const line of parseDependsOn(description).unparseable) {
+        result.findings.push({
+          cardId: card.id,
+          kind: 'broken-dependency',
+          message: `Depends-on line cannot be read: "${line}"`,
+        })
       }
     }
 

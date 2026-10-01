@@ -24,8 +24,9 @@ function harness(before = true) {
   const store = new Map();
   const $ = { env: { get: async (key) => key === 'CLAUDE_CONFIG_DIR' ? '/fixture-config' : undefined },
     fs: { list: async (dir) => dir === '/fixture-config/rules-on-demand' ? [{ kind: 'file', name: 'sample.md' }] : [], read: async () => body,
-      stat: async (path) => ({ kind: 'file', size: 200, realPath: path }) },
-    ui: { log: async () => {} }, session: { id: async () => 'fixture', messages: async () => [] },
+      // No checkout here: a `.git` lookup is not found, as on a real host.
+      stat: async (path) => { if (path.endsWith('/.git')) throw Object.assign(new Error(`stat ${path} failed: ENOENT`), { code: 'ENOENT' }); return { kind: 'file', size: 200, realPath: path }; } },
+    ui: { log: async () => {} }, session: { id: async () => 'fixture', root: async () => '/fixture-project', messages: async () => [] },
     store: { get: async (key) => store.get(key), set: async (key, value) => store.set(key, value) } };
   const call = (args = {}, next = async () => ({})) => handlers.get('tool.call')($, { tool: 'Agent', cwd: '/fixture-project', ...args }, next);
   return { call, $, store, setBody: (value) => { body = value; } };
