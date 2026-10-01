@@ -1226,9 +1226,9 @@ describe('SDK pilot runner', () => {
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, injected_turns: 3, reason: 'pilot ended its turn 3 times without progress' } })
     expect(result.summary.partial).toMatchObject({ reason: 'pilot ended its turn 3 times without progress' })
     expect(readFileSync(join(result.summary.archive.path, 'summary.json'), 'utf8')).toContain('pilot ended its turn 3 times without progress')
-  // This case performs runner archive I/O and several spawned model-resolution probes; hosted
-  // Windows cannot reliably complete that process work inside Vitest's former 2-second budget.
-  }, 5_000)
+  // Real runner archive I/O and spawned model-resolution probes: hosted Windows took 5322 ms here on a cross-os
+  // tag run, so no per-test budget below the suite's testTimeout (20 s, vitest.config.mts) is kept on this case.
+  })
 
   it('stops a fake pilot at the next phase boundary and retains its timeout partial', async () => {
     const f = fixture(); let fireTimeout: (() => void) | undefined; let heads = 0; const attempted: string[] = []
