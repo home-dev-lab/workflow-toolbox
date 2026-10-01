@@ -1565,10 +1565,11 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
       hooks?: Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>>
     }
     const groups = manifest.hooks?.['SubagentStop'] ?? []
-    expect(groups).toHaveLength(2)
-    expect(groups.map((group) => group.matcher)).toEqual(['*', '*'])
+    expect(groups).toHaveLength(3)
+    expect(groups.map((group) => group.matcher)).toEqual(['*', '*', '*'])
     expect(groups.flatMap((group) => group.hooks ?? []).map((hook) => hook.command ?? '').join('\n')).toContain('wt-outbound-guard-hook.mjs')
     expect(groups.flatMap((group) => group.hooks ?? []).map((hook) => hook.command ?? '').join('\n')).toContain('wt-model-fallback-hook.mjs')
+    expect(groups.flatMap((group) => group.hooks ?? []).map((hook) => hook.command ?? '').join('\n')).toContain('wt-cancelled-call-relay-guard-hook.mjs')
   })
 
   it('SessionStart registers the delegation, registry, lane-consent, and unsynced-buffer hooks', () => {

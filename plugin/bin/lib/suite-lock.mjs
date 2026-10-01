@@ -490,11 +490,16 @@ function requestBrokerSuiteLock(socketPath, options) {
     let granted = false
     let released = false
     let resolveLost
+    // Resolves with the REASON the granted lease was lost: the broker's own error text (its hold bound)
+    // when one arrives after the grant, 'broker gone' when the socket closes. The first reason wins.
+    // After a hold bound the socket stays OPEN: the broker releases the lock when it closes, which the
+    // holder does (releaseSuiteLock) only once its command tree has stopped.
     const lost = new Promise((done) => { resolveLost = done })
+    const lose = (reason) => { if (!released) resolveLost(reason) }
     const fail = (error) => {
       socket.destroy()
       if (settled) {
-        if (!released) resolveLost()
+        lose('broker gone')
         return
       }
       settled = true
@@ -518,6 +523,7 @@ function requestBrokerSuiteLock(socketPath, options) {
         const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
         if (settled && !granted) { socket.destroy(); return }
         if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
+        else if (line.startsWith('error ') && granted) lose(line.slice(6))
         else if (line.startsWith('error ')) {
           const error = new Error(`suite lock broker ${socketPath}: ${line.slice(6)}; inspect with wt-suite-lock status`)
           if (line.includes('timed out waiting')) error.code = 'WT_SUITE_LOCK_TIMEOUT'
@@ -533,7 +539,7 @@ function requestBrokerSuiteLock(socketPath, options) {
       }
     })
     socket.once('error', (error) => fail(new Error(`suite lock broker ${socketPath}: ${error.message}`)))
-    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else if (!released) resolveLost() })
+    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else lose('broker gone') })
     if (options.signal?.aborted) fail(abortError())
   })
 }

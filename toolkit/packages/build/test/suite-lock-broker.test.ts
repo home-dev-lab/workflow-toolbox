@@ -9,7 +9,7 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { acquireSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { createSuiteLockBroker } from '../../../../plugin/bin/lib/host/lane-suite-lock-broker.mjs'
+import { createSuiteLockBroker, DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S, laneSuiteLockMaxHoldSeconds } from '../../../../plugin/bin/lib/host/lane-suite-lock-broker.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BROKER = join(ROOT, 'plugin/bin/lib/host/lane-suite-lock-broker.mjs')
@@ -23,6 +23,19 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+// A child's exit, or a named failure once the wall-clock bound passes.
+function exitWithin(child: ReturnType<typeof spawn>, timeoutMs: number) {
+  return new Promise<number | null>((resolve, reject) => {
+    if (child.exitCode !== null) { resolve(child.exitCode); return }
+    const timer = setTimeout(() => reject(new Error(`process ${child.pid} still running after ${timeoutMs}ms`)), timeoutMs)
+    child.once('exit', (code) => { clearTimeout(timer); resolve(code) })
+  })
+}
+
+function processGone(pid: number) {
+  try { process.kill(pid, 0); return false } catch { return true }
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
   while (!predicate()) {
@@ -31,10 +44,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
   }
 }
 
-async function startBroker(parent = process.pid) {
+async function startBroker(parent = process.pid, env: NodeJS.ProcessEnv = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lock-broker-')); roots.push(root)
   const socket = join(root, 'broker.sock')
-  const child = spawn(process.execPath, [BROKER, '--socket', socket, '--parent', String(parent), '--label', 'test-lane'], { env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks'), WT_SUITE_LOCK_BROKER: '' }), stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [BROKER, '--socket', socket, '--parent', String(parent), '--label', 'test-lane'], { env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...env }), stdio: ['ignore', 'pipe', 'pipe'] })
   children.push(child)
   await waitFor(() => existsSync(`${socket}.ready`))
   return { root, socket, child, lock: join(root, 'locks', 'lock.d', 'holder.json') }
@@ -72,7 +85,7 @@ function connect(socketPath: string, request?: unknown, allowHalfOpen = false) {
 const granted = (text: string) => /(?:^|\n)granted [^\n]+\n/.test(text)
 const errorReply = (text: string) => /^error [^\n]*\n/.test(text)
 
-async function localBroker() {
+async function localBroker(options: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lock-local-broker-')); roots.push(root)
   const address = join(root, 'broker.sock')
   const previous = process.env.WT_SUITE_LOCK_DIR
@@ -81,7 +94,7 @@ async function localBroker() {
   process.env.WT_SUITE_LOCK_DIR = join(root, 'locks')
   process.env.WT_SUITE_LOCK_BROKER = ''
   delete process.env.WT_SUITE_LEASE
-  const server = createSuiteLockBroker() as net.Server
+  const server = createSuiteLockBroker(options) as net.Server
   await new Promise<void>((resolve) => server.listen(address, resolve))
   return { address, server, restore: () => {
     if (previous === undefined) delete process.env.WT_SUITE_LOCK_DIR; else process.env.WT_SUITE_LOCK_DIR = previous
@@ -292,19 +305,27 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     } finally { peer?.destroy(); server.close() }
   })
 
-  it('destroys the client socket and reports lease loss on an error line after a grant', async () => {
+  // The broker releases the lock when this socket closes, so after a post-grant error line (its hold
+  // bound) the client reports the loss with the broker's reason and keeps the socket open; the holder
+  // closes it through releaseSuiteLock once its command tree has stopped.
+  it('reports lease loss with the broker\'s reason on an error line after a grant, and keeps the socket open until released', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lock-revoked-')); roots.push(root)
     const address = join(root, 'broker.sock')
     let peer: net.Socket | undefined
+    let peerEnded = false
     const server = net.createServer((socket) => {
       peer = socket
+      socket.once('end', () => { peerEnded = true })
       socket.once('data', () => socket.write('granted lease-1\nerror revoked\n'))
     })
     try {
       await new Promise<void>((resolve) => server.listen(address, resolve))
       const lease = await acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 2 })
-      await lease.lost
-      expect(lease.socket.destroyed).toBe(true)
+      expect(await lease.lost).toBe('revoked')
+      expect(lease.socket.destroyed).toBe(false)
+      expect(peerEnded).toBe(false)
+      releaseSuiteLock(lease)
+      await waitFor(() => peerEnded, 15_000)
     } finally { peer?.destroy(); server.close() }
   })
 
@@ -494,6 +515,113 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     await waitFor(() => !existsSync(broker.lock) && closed)
   })
 
+  it('bounds a lane hold: past WT_LANE_SUITE_LOCK_MAX_HOLD_S the lease is released, the hung command stops with exit 75 naming the bound, and the next waiter acquires', async () => {
+    const broker = await startBroker(process.pid, { WT_LANE_SUITE_LOCK_MAX_HOLD_S: '1' })
+    let brokerStderr = ''; broker.child.stderr!.on('data', (chunk) => { brokerStderr += String(chunk) })
+    const marker = join(broker.root, 'hung-pid')
+    // Stands in for a `pnpm install` that can never finish: it never exits on its own.
+    const hung = `require('fs').writeFileSync(${JSON.stringify(marker)}, String(process.pid));setInterval(()=>{},1000)`
+    const laneEnv = sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' })
+    const run = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', hung], { env: laneEnv, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(run)
+    let stderr = ''; run.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+    await waitFor(() => existsSync(marker) && readFileSync(marker, 'utf8') !== '', 20_000)
+    const hungPid = Number(readFileSync(marker, 'utf8'))
+    const next = spawn(process.execPath, [CLI, 'run', '--wait-s', '15', '--', process.execPath, '-e', 'process.stdout.write("next")'], { env: laneEnv, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(next)
+    let nextStdout = ''; next.stdout!.on('data', (chunk) => { nextStdout += String(chunk) })
+    expect(await exitWithin(run, 10_000)).toBe(75)
+    expect(stderr).toMatch(/wt-suite-lock: suite lock lost \(hold bound: lane lease expired after 1 s \(WT_LANE_SUITE_LOCK_MAX_HOLD_S\); command \[[^\n]*\] must stop[^\n]*\); command stopped/)
+    expect(brokerStderr).toContain('hold bound: lane lease expired after 1 s')
+    expect(brokerStderr).toContain('released after its client closed')
+    await waitFor(() => processGone(hungPid), 20_000)
+    expect(await exitWithin(next, 10_000)).toBe(0)
+    expect(nextStdout).toBe('next')
+    await waitFor(() => !existsSync(broker.lock), 15_000)
+  }, 30_000)
+
+  // A wrapper (the shape of `bash -c 'cd toolkit && pnpm test'`) whose grandchild appends a timestamp every
+  // 100 ms. After the hold bound, the next suite on the same lock root must start only once that
+  // grandchild has stopped writing: the lease is released after the whole tree is gone, never before.
+  async function overlapAfterHoldBound(grandchildIgnoresTerm: boolean) {
+    const broker = await startBroker(process.pid, { WT_LANE_SUITE_LOCK_MAX_HOLD_S: '1' })
+    const ticks = join(broker.root, 'ticks')
+    const pidFile = join(broker.root, 'grandchild-pid')
+    const started = join(broker.root, 'waiter-start')
+    const grandchild = `const f=require('fs');${grandchildIgnoresTerm ? "process.on('SIGTERM',()=>{});" : ''}f.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setInterval(()=>f.appendFileSync(${JSON.stringify(ticks)},Date.now()+'\\n'),100)`
+    const wrapper = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore'});setInterval(()=>{},1000)`
+    const run = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', wrapper], { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(run)
+    let stderr = ''; run.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+    await waitFor(() => existsSync(pidFile) && readFileSync(pidFile, 'utf8') !== '', 20_000)
+    const grandchildPid = Number(readFileSync(pidFile, 'utf8'))
+    try {
+      // The next suite waits on the lock root directly, as a host session would.
+      const waiter = spawn(process.execPath, [CLI, 'run', '--wait-s', '25', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(started)},String(Date.now()))`], { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(waiter)
+      let waiterStderr = ''; waiter.stderr!.on('data', (chunk) => { waiterStderr += String(chunk) })
+      expect(await exitWithin(waiter, 25_000), waiterStderr).toBe(0)
+      const waiterStart = Number(readFileSync(started, 'utf8'))
+      // Five tick periods: a grandchild still alive has written after waiterStart by now.
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const lastTick = Math.max(...readFileSync(ticks, 'utf8').trim().split('\n').map(Number))
+      expect(lastTick, `grandchild still wrote ${lastTick - waiterStart} ms after the next suite started`).toBeLessThan(waiterStart)
+      expect(processGone(grandchildPid)).toBe(true)
+      expect(await exitWithin(run, 10_000)).toBe(75)
+      expect(stderr).toContain('suite lock lost (hold bound:')
+    } finally {
+      if (!processGone(grandchildPid)) process.kill(grandchildPid, 'SIGKILL')
+    }
+  }
+
+  it('after a hold bound, the next suite starts only once the lane command\'s whole tree has stopped (wrapper + grandchild)', async () => {
+    await overlapAfterHoldBound(false)
+  }, 45_000)
+
+  it('after a hold bound, a grandchild that ignores SIGTERM is killed with its group even though the wrapper exits first', async () => {
+    await overlapAfterHoldBound(true)
+  }, 45_000)
+
+  it('a client that takes the grant and never closes keeps the lock through the stop grace, and loses it right after', async () => {
+    expect(DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S).toBe(30)
+    expect(() => createSuiteLockBroker({ stopGraceS: 0 })).toThrow(/stopGraceS/)
+    const { address, server, restore } = await localBroker({ maxHoldS: 0.3, stopGraceS: 1.5 })
+    const lock = join(process.env.WT_SUITE_LOCK_DIR!, 'lock.d', 'holder.json')
+    try {
+      // Suspended or wedged client: it reads nothing back and never closes.
+      const client = connect(address, { argv: ['pnpm', 'install'], waitS: 2 })
+      await client.waitForReply(granted)
+      await client.waitForReply((text) => text.includes('error hold bound:'), 15_000)
+      const boundAt = Date.now()
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
+      expect(existsSync(lock), 'lock released before the stop grace while the client may still run').toBe(true)
+      await waitFor(() => !existsSync(lock), 4_000)
+      const releasedAfter = Date.now() - boundAt
+      expect(releasedAfter).toBeGreaterThanOrEqual(1_000)
+      await waitFor(() => client.socket.destroyed, 15_000)
+    } finally {
+      server.close(); restore()
+    }
+  }, 20_000)
+
+  it('reads the hold bound from WT_LANE_SUITE_LOCK_MAX_HOLD_S and refuses an invalid one', () => {
+    expect(DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S).toBe(2700)
+    expect(laneSuiteLockMaxHoldSeconds({})).toBe(2700)
+    expect(laneSuiteLockMaxHoldSeconds({ WT_LANE_SUITE_LOCK_MAX_HOLD_S: '' })).toBe(2700)
+    expect(laneSuiteLockMaxHoldSeconds({ WT_LANE_SUITE_LOCK_MAX_HOLD_S: '90' })).toBe(90)
+    expect(laneSuiteLockMaxHoldSeconds({ WT_LANE_SUITE_LOCK_MAX_HOLD_S: '0.5' })).toBe(0.5)
+    for (const bad of ['0', '-3', 'abc', 'Infinity', 'NaN', '12s', '3000000']) {
+      expect(() => laneSuiteLockMaxHoldSeconds({ WT_LANE_SUITE_LOCK_MAX_HOLD_S: bad }), bad).toThrow(/WT_LANE_SUITE_LOCK_MAX_HOLD_S must be a finite number of seconds above 0/)
+    }
+    expect(() => createSuiteLockBroker({ maxHoldS: 0 })).toThrow(/maxHoldS/)
+  })
+
+  it('refuses to start, naming the variable, when WT_LANE_SUITE_LOCK_MAX_HOLD_S is invalid', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-broker-bad-')); roots.push(root)
+    const socket = join(root, 'broker.sock')
+    const result = spawnSync(process.execPath, [BROKER, '--socket', socket, '--parent', String(process.pid)], { env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_LANE_SUITE_LOCK_MAX_HOLD_S: 'forever' }), encoding: 'utf8', timeout: 20_000 })
+    expect(result.status, result.stderr).not.toBe(0)
+    expect(result.status).not.toBeNull()
+    expect(result.stderr).toContain('WT_LANE_SUITE_LOCK_MAX_HOLD_S must be a finite number of seconds above 0')
+    expect(existsSync(`${socket}.ready`)).toBe(false)
+  })
+
   it('isolates malformed, oversized, timed-out, and excess clients', async () => {
     const broker = await startBroker()
     for (const request of ['{bad', `${'x'.repeat(4097)}`]) {
@@ -532,7 +660,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const status = await new Promise<number | null>((resolve) => run.once('exit', resolve))
     expect(status).toBe(75)
     expect(stderr).toContain('suite lock lost (broker gone); command stopped')
-    const reclaimed = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '1', '--', process.execPath, '-e', 'process.stdout.write("reclaimed")'], { encoding: 'utf8', env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'locks'), WT_SUITE_LOCK_BROKER: '' }) })
+    const reclaimed = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '1', '--', process.execPath, '-e', 'process.stdout.write("reclaimed")'], { encoding: 'utf8', env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }) })
     expect(reclaimed.status, reclaimed.stderr).toBe(0)
     expect(reclaimed.stdout).toBe('reclaimed')
   }, 10_000)

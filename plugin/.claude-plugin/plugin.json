@@ -410,6 +410,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-suite-lock-bypass-guard-hook.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-zsh-word-split-guard-hook.mjs\""
           }
         ]
@@ -891,6 +900,16 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-outbound-guard-hook.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-cancelled-call-relay-guard-hook.mjs\"",
+            "timeout": 15
           }
         ]
       }

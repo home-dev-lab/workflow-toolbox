@@ -123,7 +123,7 @@ Two consequences worth knowing before you type one:
 
 Raw outbound values are refused rather than silently changing a requested destination. Exact reference spans (`op://`, `secret:env:`, `secret:file:`, `${NAME}`, and existing redaction tokens) pass unchanged, but do not exempt adjacent raw values. Bash token rehydration and `secret:file:` expansion bind encoded data to fixed shell code rather than evaluating the secret as shell source. The executed child still receives the raw value. This can expose the value through process metadata or child output; returned output is scrubbed, but operating-system process inspection is outside the guard.
 
-Outbound detection also matches raw values already held in the in-memory vault and their base64 encodings. It does not reconstruct values split across fields or expressions, and it does not decode arbitrary encodings; those remain detection-evasion limits.
+Outbound detection also matches raw values already held in the in-memory vault and their base64 encodings. A held value shorter than 6 characters counts only where it stands alone, with no letter or digit on either side: `pin=7342` is refused, an identifier that merely contains those digits is not. A refusal names the matched kind or held token, the field and the position, never the value; a field name that is itself secret-bearing is printed as `<key>`. Key-based detectors (`password: …`, `token=…`, `"secret": "…"`, `API_TOKEN=…`) capture the value on its own line only, never the key, the indentation or a following line. It does not reconstruct values split across fields or expressions, and it does not decode arbitrary encodings; those remain detection-evasion limits.
 
 ## Context limitation
 
