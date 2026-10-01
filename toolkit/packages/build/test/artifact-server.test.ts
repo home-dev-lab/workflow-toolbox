@@ -2268,14 +2268,14 @@ describe('review decisions: serving security matrix', () => {
     expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
     expect(result.stdout).toContain('data-script="ran"')
     const helperPid = Number(readFileSync(helperPidFile, 'utf8'))
-    await waitFor(() => pidAlive(result.pid!) || pidAlive(helperPid) ? null : true, 5_000)
+    await waitFor(() => pidAlive(result.pid!) || pidAlive(helperPid) ? null : true)
   }, 20_000)
 
   it('accepts a complete dump when the render bound expires during the exit grace', async () => {
     const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"ran\"></body></html>\\n'); setInterval(() => {}, 1000)\n")
     const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 5_000, exitGraceMs: 60_000 })
     expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
-    await waitFor(() => pidAlive(result.pid!) ? null : true, 5_000)
+    await waitFor(() => pidAlive(result.pid!) ? null : true)
   }, 20_000)
 
   it('keeps the exit code of a browser that exits by itself after its dump', async () => {
