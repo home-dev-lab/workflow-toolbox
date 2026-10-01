@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, readArchives, archivedUnits, shrinkDeliveries } from './store-host-fake.mjs';
-import { STORE_BUDGETS, VERDICTS, VERDICT_ARCHIVE, STORE_ARCHIVE, SEQUENCE_SPAN, legacyContextSeg, legacyServedSeg, shrink } from '../hooks/store-budget.js';
+import { STORE_BUDGETS, VERDICTS, VERDICT_ARCHIVE, STORE_ARCHIVE, legacyContextSeg, legacyServedSeg, shrink } from '../hooks/store-budget.js';
 
 const failures = (logs) => logs.filter((line) => /write failed|sweep failed/.test(line));
 const minus = (after, before) => Object.fromEntries(Object.keys(after).map((key) => [key, after[key] - before[key]]));
@@ -119,7 +119,7 @@ test('R1: a verdict write refused for size after another writer grew the key arc
 
 // R2 / R3 --------------------------------------------------------------------------------------------------------------
 
-test('R2: an archive write rejected half-way leaves no file a reader would parse; R3: every archive name carries the writer pid', async (t) => {
+test('R2: an archive write rejected half-way leaves no file a reader would parse; R3: every archive name keeps the reader pattern', async (t) => {
   const delta = await actDelta(t);
   const root = await sandbox(t, 'rod-r2-');
   let failOnce = true;
@@ -141,8 +141,7 @@ test('R2: an archive write rejected half-way leaves no file a reader would parse
   assert.ok(names.length >= 1);
   for (const name of names) {
     JSON.parse(await readFile(join(f.quality, name), 'utf8'));
-    const sequence = Number(name.match(/-(\d+)\.json$/)[1]);
-    assert.equal(Math.floor(sequence / SEQUENCE_SPAN / 1000), process.pid, `${name}: the sequence part names this pid`);
+    assert.ok(Number.isSafeInteger(Number(name.match(/-(\d+)\.json$/)[1])), name);
     assert.match(name, /^rod-store-archive-\d+-\d+\.json$/);
   }
   assert.deepEqual(await readerTotals(f, store.snapshot()), plus(before, delta));

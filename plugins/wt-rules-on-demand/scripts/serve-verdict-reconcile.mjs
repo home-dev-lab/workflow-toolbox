@@ -6,10 +6,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configDirectory } from '../paths.js';
 import { qualityDataDir } from './rule-lifecycle-lib.mjs';
-import { journalDeliveries, joinDeliveries, mergeSessions } from './delivery-join.mjs';
-import { readStoreArchives, withArchivedSessions } from './store-archives.mjs';
+import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
+import { readStoreArchives, readVerdictArchives, reportUnreadable, withArchivedSessions } from './store-archives.mjs';
 
-const archivePattern = /^compliance-verdicts-archive-\d+-\d+\.jsonl$/;
 export const LIMITS = [
   'which verdict belongs to which serve when two serves of one rule share a context within the tolerance (rows carry no delivery id)',
   'whether two rows with identical key are one decision written twice or two decisions (rows carry no decision id)',
@@ -249,10 +248,8 @@ async function inputs(options) {
   const storePaths = options.stores.length ? options.stores : [await defaultStorePath(configDir)];
   // Named snapshots read only the archives named beside them: ambient archives would mix in another state of the store.
   const archiveDir = options.archives || (!options.stores.length && configDir ? qualityDataDir(configDir) : '');
-  const archives = archiveDir ? (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
-    .filter((name) => archivePattern.test(name)).sort().map((name) => join(archiveDir, name)) : [];
    const files = [], rows = [], stores = [], archiveRows = [];
-   let archivesRead = archives.length;
+   let archivesRead = 0;
   async function load(path) {
     const bytes = await readFile(path);
     files.push({ path: resolve(path), bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
@@ -267,10 +264,14 @@ async function inputs(options) {
     addLines(store['compliance-verdicts-jsonl']);
      for (const [key, value] of Object.entries(store)) if (key.startsWith('compliance-verdicts-archive-')) { addLines(value, true); archivesRead++; }
   }
-   for (const path of archives) addLines(await load(path), true);
+   // The stores were read above, before the archive directory is listed (store-archives.mjs).
+   const verdictArchives = await readVerdictArchives(archiveDir, load);
+   archivesRead += verdictArchives.texts.length;
+   for (const text of verdictArchives.texts) addLines(text, true);
    // Contexts moved out of an over-budget store, from the same archive directory: named snapshots without --archives read none.
    const storeArchives = await readStoreArchives(archiveDir, load);
-   return { files, rows, sessions: withArchivedSessions(storeArchives, mergeSessions(stores)), archiveRows, archivesRead };
+   const unreadableArchives = reportUnreadable('serve-verdict-reconcile', [...verdictArchives.unreadable, ...storeArchives.unreadable]);
+   return { files, rows, sessions: withArchivedSessions(storeArchives.archives, ...stores.map((store) => store.sessions)), archiveRows, archivesRead, unreadableArchives };
 }
 
 // Duplicate one singly matched serve's row and remove another's: a working join reports exactly one more duplicate
@@ -292,13 +293,13 @@ export async function main(args = process.argv.slice(2)) {
   let options;
   try { options = parseArgs(args); } catch (error) { console.error(error.message); return 2; }
   try {
-     const { files, rows, sessions, archiveRows, archivesRead } = await inputs(options);
+     const { files, rows, sessions, archiveRows, archivesRead, unreadableArchives } = await inputs(options);
      const result = measure(rows, sessions, options);
      const control = options.seedControl ? seedControl(rows, sessions, options) : null;
      const exactOptions = { archiveRows, archivesRead };
      const exact = measureExact(rows, sessions, exactOptions);
      const exactControl = options.seedControl && exact.withId ? seedExactControl(rows, sessions, exactOptions) : null;
-     if (options.json) console.log(JSON.stringify({ files, result, exact, limits: [...(exact.withoutId ? LIMITS : []), ...EXACT_LIMITS], control, exactControl }, null, 2));
+     if (options.json) console.log(JSON.stringify({ files, result, exact, limits: [...(exact.withoutId ? LIMITS : []), ...EXACT_LIMITS], control, exactControl, unreadableArchives }, null, 2));
     else {
       for (const file of files) console.log(`INPUT ${file.path} bytes=${file.bytes} sha256=${file.sha256}`);
       console.log(`NAIVE ${JSON.stringify({ counts: result.naive, rates: result.naiveRates })}`);

@@ -8,7 +8,7 @@ import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-
 import { regexCallBudget } from './linear-regex.js';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
 import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archiveTexts, familyOf, archiveName, retentionVictims,
-  unsafeQualityPath, isSizeRefusal, jsonLength, property, sequenceNumber } from './store-budget.js';
+  unsafeQualityPath, isSizeRefusal, jsonLength, property, sequenceNumber, OWNER_BITS } from './store-budget.js';
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
@@ -23,11 +23,13 @@ let enabled = false;
 let currentMain = 0;
 let archiveSequence = 0;
 let storeSwept = false;
-// This module instance's owner number, in archive names and segment ids: its pid times 1000, plus a random part for
-// two instances under one pid; a host without a pid draws the whole number.
-const owner = (typeof process !== 'undefined' && Number.isSafeInteger(process.pid) ? process.pid : Math.floor(Math.random() * 4_000_000)) * 1000 + Math.floor(Math.random() * 1000);
+// This module instance's owners, drawn once per load so two instances under one pid (a hot reload) differ as much as
+// two separate hosts do: OWNER_BITS random bits in archive names (the most that keep the name's number a safe integer), and
+// 52 in segment ids, which are strings.
+const owner = Math.floor(Math.random() * 2 ** OWNER_BITS);
+const segOwner = Math.floor(Math.random() * 2 ** 52).toString(36).padStart(11, '0');
 let segSequence = 0;
-const newSeg = () => `${owner.toString(36)}-${Date.now().toString(36)}-${(segSequence++).toString(36)}`;
+const newSeg = () => `${segOwner}-${Date.now().toString(36)}-${(segSequence++).toString(36)}`;
 let sequence = 0;
 const processPrefix = () => (typeof process !== 'undefined' ? `${process.pid}-` : '');
 const newToken = () => processPrefix() + Date.now().toString(36);
@@ -198,7 +200,7 @@ async function removePartial($, path, error) {
 async function writeArchives($, name, evicted) {
   const directory = await qualityDirectory($);
   const written = [];
-  for (const text of archiveTexts(name, evicted)) {
+  for (const text of archiveTexts(name, evicted, undefined, { splitId: newSeg })) {
     const path = await freshArchivePath($, directory, familyOf(name));
     try { await $.fs.write(path, text); }
     catch (error) { await removePartial($, path, error); }
@@ -248,6 +250,24 @@ async function sweepQuietly($, except) {
   try { await sweepStore($, except); }
   catch (error) { await notice($, `store sweep failed: ${error.message}`); }
 }
+// A write refused (for any reason but size) after its archives were written leaves the store at the value before it,
+// while the archives already hold what it added. The next write of that key starts from the value this one tried, as
+// long as the store still holds what it held at the refusal: rebuilding on the rolled-back value would count again, from
+// the old count, what the archive already counts (a counter's copies join by maximum). A store changed in between by
+// another writer is taken as it is.
+const unsaved = new Map();
+async function remember($, name, value) {
+  try { unsaved.set(name, { base: JSON.stringify((await $.store.get(name)) ?? null), value }); }
+  catch { unsaved.delete(name); }
+}
+async function readKey($, name) {
+  const value = await $.store.get(name);
+  const carried = unsaved.get(name);
+  if (!carried) return value;
+  if (JSON.stringify(value ?? null) === carried.base) return JSON.parse(JSON.stringify(carried.value));
+  unsaved.delete(name);
+  return value;
+}
 // The one write path of a budgeted key. A size refusal (another writer grew the store) sweeps every key, then retries
 // under a budget halved each time: more moves to the archives, nothing is dropped. Any other failure is thrown as is.
 async function setWithin($, name, value, keep = null) {
@@ -256,12 +276,13 @@ async function setWithin($, name, value, keep = null) {
   let failure, current = value;
   for (let budget = STORE_BUDGETS[name]; budget >= MIN_BUDGET; budget = Math.floor(budget / 2)) {
     const { kept, error } = await setBounded($, name, current, budget, keep);
-    if (!error) return kept;
+    if (!error) { unsaved.delete(name); return kept; }
     failure = error;
-    if (!isSizeRefusal(error)) throw error;
     current = kept;
+    if (!isSizeRefusal(error)) break;
     if (budget === STORE_BUDGETS[name]) await sweepQuietly($, name);
   }
+  await remember($, name, current);
   throw failure;
 }
 const HEALTH_FIELDS = ['calls', 'errors', 'totalMs', 'maxMs', 'slow'];
@@ -280,9 +301,13 @@ function mergeHealth(target, batch) {
   target.lastErrors = target.lastErrors.sort((a, b) => a.at.localeCompare(b.at)).slice(-20);
   if (Object.hasOwn(target, 'calls')) target.calls += batch.calls;
 }
+// An error recorded while a health flush writes (its sweep or archive failing, say) is kept for the next flush and never
+// schedules one: otherwise a store that cannot archive turns each failed flush into the next one, without end.
+let healthFlushing = 0;
 async function flushHealth($) {
   const turn = writeTurn();
   await turn.previous.catch(() => {});
+  healthFlushing++;
   try {
     if (!pendingHealth.calls && !pendingHealth.lastErrors.length) return;
     const batch = pendingHealth;
@@ -300,7 +325,7 @@ async function flushHealth($) {
       mergeHealth(pendingHealth, batch);
       throw error;
     }
-  } finally { turn.release(); }
+  } finally { healthFlushing--; turn.release(); }
 }
 function recordHealth($, elapsed, error = null, work = '') {
   const at = new Date().toISOString(), day = at.slice(0, 10);
@@ -314,6 +339,7 @@ function recordHealth($, elapsed, error = null, work = '') {
   }
   if (error) { entry.errors++; pendingHealth.lastErrors.push({ at, message: String(error).slice(0, 160) }); pendingHealth.lastErrors = pendingHealth.lastErrors.slice(-20); }
   pendingHealth.days[day] = entry;
+  if (error && healthFlushing) return Promise.resolve();
   if (work === 'turn.complete' || error || pendingHealth.calls >= 50 || Date.now() - lastHealthFlush >= 60_000) return flushHealth($);
   return Promise.resolve();
 }
@@ -490,7 +516,7 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
   try {
      try {
       const now = new Date().toISOString();
-      const served = await $.store.get('served') ?? {};
+      const served = await readKey($, 'served') ?? {};
        for (const rule of names) {
          const name = typeof rule === 'string' ? rule : rule.name;
         const item = served[key(name)] ?? { count: 0, byChannel: {}, seg: newSeg() };
@@ -500,7 +526,7 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
       if (names.length) await setWithin($, 'served', served);
       const id = await sessionId($);
       if (!id) return;
-      const sessions = await $.store.get('sessions') ?? {};
+      const sessions = await readKey($, 'sessions') ?? {};
       const session = sessions[id] ?? { first: now, contexts: {} };
       session.last = now;
       const ck = loop === MAIN ? String(currentMain) : `agent:${loop}`;
@@ -525,7 +551,9 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
         if (advancesClose(ctx.lastClose, closeMark)) ctx.lastClose = { token, seq: closeMark.seq, at: now };
        if (triggerErrors.length) {
          ctx.triggerErrors ??= [];
-         ctx.triggerErrors.push(...triggerErrors.map((error) => ({ ...error, at: now, channel })));
+         // Each new row carries an event id from the unique-id generator (random owner, per-load counter), never from the
+         // stored context: a refused write rolls the store back, and an id derived from it would be issued twice.
+         ctx.triggerErrors.push(...triggerErrors.map((error) => ({ ...error, at: now, channel, eid: newSeg() })));
           // Retain every error from this call, even when a mass serve exceeds
           // the usual 100-row history cap; older rows yield first.
           ctx.triggerErrors = ctx.triggerErrors.slice(-Math.max(100, triggerErrors.length));
@@ -546,7 +574,7 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
    const turn = writeTurn();
    await turn.previous.catch(() => {});
    try {
-    const old = String(await $.store.get(VERDICTS) ?? '');
+    const old = String(await readKey($, VERDICTS) ?? '');
     const line = `${JSON.stringify(record)}\n`;
     // Over its budget, every older line moves to a verdict archive in quality data before the new line is written.
     await setWithin($, VERDICTS, old + line, { line });
@@ -909,4 +937,4 @@ async function turnCompleteWork($, e, next) {
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
 }
 
-export function resetForSelftest() { contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest() { unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

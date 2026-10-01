@@ -10,11 +10,12 @@ import { scanTranscripts, summarise } from './transcript-verdicts.mjs';
 import { measureRules, ruleId } from './quality-measures.mjs';
 import { createHash } from 'node:crypto';
 import { rollbackArchiveDirectory } from './rollback-input-paths.mjs';
-import { readStoreArchives, withArchivedSessions } from './store-archives.mjs';
+import { readStoreArchives, reportUnreadable, withArchivedSessions } from './store-archives.mjs';
 
 export async function measureInputs(configDirs, scopes, target) {
   const stores = [];
   const profiles = [];
+  const unreadableArchives = [];
   let storeBytes = 0;
   for (const config of configDirs) {
     const dir = join(config, 'plugins', 'store');
@@ -28,8 +29,10 @@ export async function measureInputs(configDirs, scopes, target) {
       stores.push(item);
       storeBytes += info.size;
     }
-    // Contexts the hook moved out of an over-budget store are summed back with the live ones of this profile.
-    const archives = await readStoreArchives(rollbackArchiveDirectory(config));
+    // Contexts the hook moved out of an over-budget store are summed back with the live ones of this profile. The store
+    // was read above, before this directory is listed (store-archives.mjs).
+    const { archives, unreadable } = await readStoreArchives(rollbackArchiveDirectory(config));
+    unreadableArchives.push(...reportUnreadable('quality-check', unreadable));
     if (item && archives.length) item.sessions = withArchivedSessions(archives, item.sessions);
     profiles.push({ configDir: config, recorded: !!item?.health, health: item?.health ?? null, sessions: item ? item.sessions ?? {} : withArchivedSessions(archives, {}) });
   }
@@ -80,7 +83,7 @@ export async function measureInputs(configDirs, scopes, target) {
     health.lastErrors.push(...item.health.lastErrors ?? []);
   }
   return { ledger, previousState, pluginRulesDir,
-    store: { health, profiles, sessions: Object.assign({}, ...stores.map((item) => item.sessions ?? {})) }, storeBytes: stores.length ? storeBytes : null };
+    store: { health, profiles, sessions: Object.assign({}, ...stores.map((item) => item.sessions ?? {})), unreadableArchives }, storeBytes: stores.length ? storeBytes : null };
 }
 
 export async function qualityCheck({ configDirs, projectsDirs, project, followedRoots = [], dataDir, days = 7, since, volume = 20, verdictPath: privateVerdictPath }) {

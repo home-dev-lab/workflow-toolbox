@@ -6,8 +6,8 @@ import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
 import { verdictPath, readVerdicts, pendingRules, recordRollback } from './verdict-record.mjs';
 import { rollbackStoreDirectory, rollbackArchiveDirectory, rollbackInputLocations } from './rollback-input-paths.mjs';
-import { journalDeliveries, joinDeliveries, mergeSessions } from './delivery-join.mjs';
-import { readStoreArchives, withArchivedSessions } from './store-archives.mjs';
+import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
+import { readStoreArchives, readVerdictArchives, reportUnreadable, withArchivedSessions } from './store-archives.mjs';
 
 const args = process.argv.slice(2);
 const options = { project: process.cwd(), stores: [], storeArchiveDir: '', verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
@@ -78,11 +78,15 @@ const archiveDir = await assertSafeDataDir(rollbackArchiveDirectory(configDir));
 // Contexts the hook moved out of an over-budget store are summed back with their live segment: from the config dir's
 // quality data for the default store, and for a named --store only from --store-archives (never another store's).
 const storeKeyDir = options.stores.length ? options.storeArchiveDir : archiveDir;
-const store = { sessions: withArchivedSessions(await readStoreArchives(storeKeyDir), mergeSessions(stores)) };
+// Every store copy (mirrors included) and every archive is a segment source of the same join (delivery-join.mjs). The
+// stores were read above, before this directory is listed (store-archives.mjs).
+const storeKeyRead = await readStoreArchives(storeKeyDir);
+const store = { sessions: withArchivedSessions(storeKeyRead.archives, ...stores.map((item) => item.sessions)) };
 const verdictLines = stores.map((item) => String(item['compliance-verdicts-jsonl'] ?? ''));
 for (const item of stores) for (const [name, text] of Object.entries(item)) if (name.startsWith('compliance-verdicts-archive-')) verdictLines.push(String(text));
-for (const name of (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
-  .filter((item) => rollbackInputLocations[1].namePattern.test(item)).sort()) verdictLines.push(await readFile(join(archiveDir, name), 'utf8'));
+const verdictArchives = await readVerdictArchives(archiveDir);
+verdictLines.push(...verdictArchives.texts);
+const unreadableArchives = reportUnreadable('rollback-check', [...storeKeyRead.unreadable, ...verdictArchives.unreadable]);
 const joined = joinDeliveries(verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line)), journalDeliveries(store.sessions), {
   contexts: Object.fromEntries(Object.entries(store.sessions).map(([id, session]) => [id, session.contexts ?? {}])), sessionOf: store.sessions });
 const verdicts = joined.rows;
@@ -233,7 +237,7 @@ for (const row of pending) {
   const priorState = row.priorState ? `changed since ${row.priorState}` : 'new';
   console.error(`rollback-check: pending ${row.rule}: ${priorState}`);
 }
-if (options.json) console.log(JSON.stringify(results));
+if (options.json) console.log(JSON.stringify(results.map((result) => ({ ...result, unreadableArchives }))));
 
 // A refused revert is not a clean run: the rollback it would have made did not happen.
 if (refused && !options.dryRun) process.exitCode = 3;

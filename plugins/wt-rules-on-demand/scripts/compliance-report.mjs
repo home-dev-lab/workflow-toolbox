@@ -18,7 +18,7 @@ import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
-import { readStoreArchives, withArchivedServed, withArchivedSessions } from './store-archives.mjs';
+import { readStoreArchives, readVerdictArchives, reportUnreadable, withArchivedServed, withArchivedSessions } from './store-archives.mjs';
 
 const args = process.argv.slice(2);
 let storePath = '';
@@ -44,11 +44,6 @@ if (!configDir) throw new Error('HOME or USERPROFILE required to locate config d
 const locations = ruleDirectories(project, configDir);
 const rulesDirs = overrides.length ? overrides : [locations.project, locations.user];
 const archiveDir = await assertSafeDataDir(qualityDataDir(configDir, {}));
-const archiveFiles = (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
-  .filter((name) => /^compliance-verdicts-archive-\d+-\d+\.jsonl$/.test(name)).sort();
-const archiveLines = await Promise.all(archiveFiles.map((name) => readFile(join(archiveDir, name), 'utf8')));
-// Served counters and contexts the hook moved out of an over-budget store, summed back with the live ones.
-const storeKeyArchives = await readStoreArchives(storePath ? storeArchiveDir : archiveDir);
 
 // Same key the hook uses for its served counters (hooks.js keyOf).
 const keyOf = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
@@ -82,8 +77,17 @@ async function declaredChecks() {
   return declared;
 }
 
+const namedStore = Boolean(storePath);
 storePath ||= await defaultStorePath();
+// The store is read BEFORE the archive directory is listed (store-archives.mjs): an eviction in between leaves a
+// segment in both, counted once, never in neither.
 const source = await readFile(storePath, 'utf8');
+const verdictArchives = await readVerdictArchives(archiveDir);
+const archiveLines = verdictArchives.texts;
+// Served counters and contexts the hook moved out of an over-budget store, summed back with the live ones.
+const storeKeyRead = await readStoreArchives(namedStore ? storeArchiveDir : archiveDir);
+const storeKeyArchives = storeKeyRead.archives;
+const unreadableArchives = reportUnreadable('compliance-report', [...verdictArchives.unreadable, ...storeKeyRead.unreadable]);
 let lines;
 let servedCounters = {};
 let sessions = {};
@@ -134,7 +138,7 @@ for (const [name, counts] of Object.entries(report)) {
 }
 
 if (json) {
-  console.log(JSON.stringify(report, null, 2));
+  console.log(JSON.stringify({ ...report, unreadableArchives }, null, 2));
 } else {
    console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunregistered check\tunknown\tfollow rate\tnote\tunjudged\tduplicateRows\tdiscarded\tcopies');
   for (const [rule, counts] of Object.entries(report).sort(([a], [b]) => a.localeCompare(b))) {
