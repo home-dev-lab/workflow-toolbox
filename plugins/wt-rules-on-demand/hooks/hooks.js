@@ -2,11 +2,11 @@ import { parseRuntimeRule } from './runtime-rule.js';
 import { maskReadOnlyMentions } from './bash-mention.js';
 import { bashCommandVerdict, isGovernedAct, classify } from './act-checks.js';
 import { toolInputVerdict, correlateTurn } from './declarative-checks.js';
-import { ruleDirectories, configDirectory, agentLoop } from '../paths.js';
+import { ruleDirectories, configDirectory, agentLoop, projectRuleRoots, ancestorsOf, sameDirectory, normal, absolute } from '../paths.js';
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-match.js';
 import { regexCallBudget } from './linear-regex.js';
-import { sameRule } from '../duplicate-rule.js';
+import { sameRule, ruleBody } from '../duplicate-rule.js';
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
@@ -109,12 +109,25 @@ const context = async ($, loop) => {
   }
   return created;
 };
+// The session root decides the project rule set, whatever directory the event (a sub-agent's included) runs in.
+async function sessionRoot($, cwd) {
+  try {
+    const root = await $.session.root();
+    if (typeof root === 'string' && absolute(normal(root))) return { root: normal(root), fallback: false };
+  } catch { /* An older host or a fixture without the capability throws here: fall back below, with a notice. */ }
+  return { root: cwd, fallback: true };
+}
 async function rulesFor($, ctx, cwd) {
-  if (ctx.rules) return ctx.rules;
-  ctx.loading ??= load($, cwd);
-  try { ctx.rules = await ctx.loading; }
-  finally { ctx.loading = null; }
-  return ctx.rules;
+  const { root, fallback } = await sessionRoot($, cwd);
+  if (ctx.rules && ctx.rulesRoot === root) return ctx.rules;
+  if (ctx.loading?.root !== root) ctx.loading = { root, promise: load($, root, fallback) };
+  const pending = ctx.loading;
+  let rules;
+  try { rules = await pending.promise; }
+  finally { if (ctx.loading === pending) ctx.loading = null; }
+  ctx.rules = rules;
+  ctx.rulesRoot = root;
+  return rules;
 }
 async function notice($, message) {
   if (/failed|skipped|unavailable|dangling|cannot|exhausted/i.test(message)) void recordHealth($, null, message).catch(() => {});
@@ -184,11 +197,13 @@ async function entryKind($, path, entry) {
 }
 async function staticRules($, root, depth = 0, visited = new Set()) {
   if (depth > 32) return [];
-  const physical = await $.fs.stat(root, { resolve: true }).then((info) => info.realPath ?? root).catch(() => root);
+  const entries = await list($, root);
+  if (!entries.length) return [];
+  const physical = await realPathOf($, root);
   if (visited.has(physical)) return [];
   visited.add(physical);
   const files = [];
-  for (const entry of await list($, root)) {
+  for (const entry of entries) {
     const path = `${root}/${entry.name}`;
     const kind = await entryKind($, path, entry);
     if (kind === 'file' && entry.name.endsWith('.md')) files.push({ name: entry.name, path });
@@ -196,38 +211,85 @@ async function staticRules($, root, depth = 0, visited = new Set()) {
   }
   return files;
 }
-async function load($, cwd) {
+async function realPathOf($, path) {
+  try { return (await $.fs.stat(path, { resolve: true })).realPath ?? path; } catch { return path; }
+}
+const dotEntry = (dir, name) => `${dir === '/' ? '' : dir.replace(/\/$/, '')}/${name}`;
+// The nearest directory between the main repository (exclusive) and the session root holding a `.git` entry is a
+// separate working tree; none means the session runs in the main checkout itself.
+async function nestedWorkingTree($, root, mainRepoRoot) {
+  const chain = ancestorsOf(root);
+  if (!mainRepoRoot || !chain.some((dir) => sameDirectory(dir, mainRepoRoot)) || sameDirectory(root, mainRepoRoot)) return null;
+  for (const dir of chain.reverse()) {
+    if (sameDirectory(dir, mainRepoRoot)) return null;
+    if (await $.fs.stat(dotEntry(dir, '.git')).then(() => true, () => false)) return dir;
+  }
+  return null;
+}
+async function readCapped($, file) {
+  const info = await $.fs.stat(file, { resolve: true });
+  if (info.size > RULE_CAP) throw new Error(`rule exceeds ${RULE_CAP} bytes`);
+  const text = await $.fs.read(file);
+  if (new TextEncoder().encode(text).length > RULE_CAP) throw new Error(`rule exceeds ${RULE_CAP} bytes`);
+  return text;
+}
+async function mainRepositoryRoot($) {
+  try { return (await $.session.repo())?.root ?? null; } catch { return null; }
+}
+async function load($, root, fallback = false) {
   const env = { CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') };
   const config = configDirectory(env);
   if (!config) { await notice($, 'HOME and USERPROFILE unavailable; cannot locate user rules'); return []; }
-  const paths = ruleDirectories(cwd, config);
-   const staticFiles = (await Promise.all([staticRules($, paths.projectStatic), staticRules($, paths.userStatic)])).flat();
-  const rules = [];
-  for (const [scope, dir] of [['user', paths.user], ['project', paths.project]]) {
+  if (fallback) await notice($, 'session root unavailable; project rules resolved from event cwd');
+  const mainRepoRoot = await mainRepositoryRoot($);
+  const worktreeRoot = await nestedWorkingTree($, root, mainRepoRoot);
+  let candidates = projectRuleRoots(root, { configDir: config, mainRepoRoot, worktreeRoot });
+  if (!candidates.length && fallback) candidates = [root];
+  const configReal = await realPathOf($, config);
+  // One stat per ancestor: an absent `.claude` costs nothing more, and one that IS the config directory is user scope.
+  const roots = [];
+  for (const dir of candidates) {
+    const claude = dotEntry(dir, '.claude');
+    const real = await $.fs.stat(claude, { resolve: true }).then((info) => info.realPath ?? claude, () => null);
+    if (real !== null && !sameDirectory(real, configReal)) roots.push(dir);
+  }
+  const user = ruleDirectories(root, config);
+  const staticDirs = [...roots.map((item) => ruleDirectories(item, config).projectStatic), user.userStatic];
+  const staticFiles = [];
+  for (const dir of staticDirs) staticFiles.push(...await staticRules($, dir));
+  // Every copy of a name, user first, then project directories root first: the last one is the nearest, and wins.
+  const copies = new Map();
+  const physicalDirs = new Map();
+  for (const [scope, dir] of [['user', user.user], ...roots.map((item) => ['project', ruleDirectories(item, config).project])]) {
     for (const entry of await list($, dir)) {
       const file = `${dir}/${entry.name}`;
       const kind = await entryKind($, file, entry);
       if (kind !== 'file' || !entry.name.endsWith('.md')) continue;
-      try {
-        const info = await $.fs.stat(file, { resolve: true });
-        if (info.size > RULE_CAP) throw new Error(`rule exceeds ${RULE_CAP} bytes`);
-        const text = await $.fs.read(file);
-        if (new TextEncoder().encode(text).length > RULE_CAP) throw new Error(`rule exceeds ${RULE_CAP} bytes`);
-        const duplicates = staticFiles.filter((item) => item.name === entry.name);
-        let suppressed = false;
-        for (const item of duplicates) {
-          const equal = sameRule(await $.fs.read(item.path), text);
-          if (equal) suppressed = true;
-          await notice($, equal ? `loaded twice: ${item.path} and ${file}; the on-demand copy is not served` : `same name, different rule: ${item.path} and ${file}`);
-        }
-        if (suppressed) continue;
-        const physical = await $.fs.stat(dir, { resolve: true }).then((stat) => stat.realPath ?? dir).catch(() => dir);
-        rules.push({ ...parseRuntimeRule(entry.name, text), identity: `${scope}:${physical}:${entry.name}` });
-      }
-       catch (error) { await notice($, `skipped ${file}: ${error.message}`).catch(() => {}); }
+      if (!copies.has(entry.name)) copies.set(entry.name, []);
+      copies.get(entry.name).push({ scope, dir, file });
     }
   }
-  return [...new Map(rules.map((rule) => [rule.name, rule])).values()];
+  const rules = [];
+  for (const [name, found] of copies) {
+    const winner = found.at(-1);
+    try {
+      const text = await readCapped($, winner.file);
+      for (const outer of found.slice(0, -1)) {
+        const other = await readCapped($, outer.file).catch(() => null);
+        if (other !== null && ruleBody(other, true) !== ruleBody(text, true)) await notice($, `shadowed: ${outer.file} by ${winner.file}`);
+      }
+      let suppressed = false;
+      for (const item of staticFiles.filter((candidate) => candidate.name === name)) {
+        const equal = sameRule(await $.fs.read(item.path), text);
+        if (equal) suppressed = true;
+        await notice($, equal ? `loaded twice: ${item.path} and ${winner.file}; the on-demand copy is not served` : `same name, different rule: ${item.path} and ${winner.file}`);
+      }
+      if (suppressed) continue;
+      if (!physicalDirs.has(winner.dir)) physicalDirs.set(winner.dir, await realPathOf($, winner.dir));
+      rules.push({ ...parseRuntimeRule(name, text), identity: `${winner.scope}:${physicalDirs.get(winner.dir)}:${name}` });
+    } catch (error) { await notice($, `skipped ${winner.file}: ${error.message}`).catch(() => {}); }
+  }
+  return rules;
 }
 const textOf = (event) => {
   if (event.input !== undefined) return argumentEvidence(event.input);
@@ -622,10 +684,10 @@ async function sessionCompactWork($, e, next) {
      if (!enabled) return next(e);
      const admission = ++sequence;
     const ctx = await context($, MAIN);
-     await rulesFor($, ctx, e.cwd ?? '.');
+     const rules = await rulesFor($, ctx, e.cwd ?? '.');
        const triggerErrors = [];
         const budget = regexCallBudget(triggerClock);
-          const candidates = await selected($, ctx, ctx.rules, e, true, { errors: triggerErrors, budget });
+          const candidates = await selected($, ctx, rules, e, true, { errors: triggerErrors, budget });
         await journal($, [], MAIN, [], [], [], { channel: 'prompt.submit', triggerErrors });
         if (budget.exhausted) await progress($, exhaustionNotice(budget));
       while (true) {
@@ -675,8 +737,7 @@ async function turnCompleteWork($, e, next) {
     const existing = contexts.get(loop);
     const nextRecords = existing ? decideNext(existing, e) : [];
     const ctx = await context($, loop);
-       await rulesFor($, ctx, e.cwd ?? '.');
-       const rules = ctx.rules;
+       const rules = await rulesFor($, ctx, e.cwd ?? '.');
           for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission });
       const measured = new Set();
       await evaluate($, ctx, e, loop, measured, admission);

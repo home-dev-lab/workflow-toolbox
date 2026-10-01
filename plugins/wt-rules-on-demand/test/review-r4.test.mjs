@@ -25,7 +25,7 @@ function harness(before = true) {
   const $ = { env: { get: async (key) => key === 'CLAUDE_CONFIG_DIR' ? '/fixture-config' : undefined },
     fs: { list: async (dir) => dir === '/fixture-config/rules-on-demand' ? [{ kind: 'file', name: 'sample.md' }] : [], read: async () => body,
       stat: async (path) => ({ kind: 'file', size: 200, realPath: path }) },
-    ui: { log: async () => {} }, session: { id: async () => 'fixture', messages: async () => [] },
+    ui: { log: async () => {} }, session: { id: async () => 'fixture', root: async () => '/fixture-project', messages: async () => [] },
     store: { get: async (key) => store.get(key), set: async (key, value) => store.set(key, value) } };
   const call = (args = {}, next = async () => ({})) => handlers.get('tool.call')($, { tool: 'Agent', cwd: '/fixture-project', ...args }, next);
   return { call, $, store, setBody: (value) => { body = value; } };

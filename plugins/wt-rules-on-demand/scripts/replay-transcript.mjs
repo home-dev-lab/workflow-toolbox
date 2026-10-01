@@ -42,7 +42,8 @@ export async function replayTranscript({ transcriptText, configDir = configDirec
     ui: { log: async (text) => { logs.push(text); } },
     env: { get: async (name) => name === 'CLAUDE_CONFIG_DIR' ? configDir : process.env[name] },
     store: { get: async (key) => store[key], set: async (key, value) => { store[key] = value; } },
-    session: { id: async () => sessionId, messages: async () => messages },
+    // The replayed session is rooted at its project: project rules come from it and its ancestors, as in the harness.
+    session: { id: async () => sessionId, messages: async () => messages, root: async () => resolve(projectRoot), repo: async () => null },
     fs: {
        list: async (path) => (await readdir(absolute(path), { withFileTypes: true })).map((entry) => {
          let kind = 'other';
