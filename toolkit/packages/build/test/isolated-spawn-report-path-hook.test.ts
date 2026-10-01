@@ -49,11 +49,11 @@ describe('wt-isolated-spawn-report-path-hook', () => {
     const r = run({
       name: 'port-guards',
       isolation: 'worktree',
-      prompt: 'Write your report to /home/doublefx/projects/wt-suite/.claude/reports/x.md when done.',
+      prompt: 'Write your report to /home/dev/projects/wt-suite/.claude/reports/x.md when done.',
     })
     expect(r.warned).toBe(true)
     expect(r.stdout).toContain('1 absolute write path(s).')
-    expect(r.stdout).not.toContain('/home/doublefx/projects/wt-suite/.claude/reports/x.md')
+    expect(r.stdout).not.toContain('/home/dev/projects/wt-suite/.claude/reports/x.md')
     expect(r.status).toBe(0)
   })
 
@@ -78,7 +78,7 @@ describe('wt-isolated-spawn-report-path-hook', () => {
     const r = run({
       name: 'port-guards',
       isolation: 'worktree',
-      prompt: 'Write your report to /home/doublefx/projects/wt-suite/worktrees/port-guards/report.md.',
+      prompt: 'Write your report to /home/dev/projects/wt-suite/worktrees/port-guards/report.md.',
     })
     expect(r.warned).toBe(false)
     expect(r.stdout).toBe('')
@@ -87,7 +87,7 @@ describe('wt-isolated-spawn-report-path-hook', () => {
   it('SILENT: no isolation at all', () => {
     const r = run({
       name: 'anon',
-      prompt: 'Write your report to /home/doublefx/projects/report.md.',
+      prompt: 'Write your report to /home/dev/projects/report.md.',
     })
     expect(r.warned).toBe(false)
     expect(r.stdout).toBe('')

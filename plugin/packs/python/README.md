@@ -68,7 +68,7 @@ arms.
 
 Available-binary arm:
 
-Available arm — PASS (2026-09-12, Linux, `command -v` → `/home/doublefx/miniconda3/bin/pyright-langserver`, pyright-langserver 1.1.408 (`pyright --version`; `pyright-langserver --version` prints only a connection error): the harness debug log records `textDocument/publishDiagnostics` received and 1 diagnostic attachment delivered, and the session quoted `Argument missing for parameter`; 39287 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/python/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt, workspace-modules.txt).
+Available arm — PASS (2026-09-12, Linux, `command -v` → `~/miniconda3/bin/pyright-langserver`, pyright-langserver 1.1.408 (`pyright --version`; `pyright-langserver --version` prints only a connection error): the harness debug log records `textDocument/publishDiagnostics` received and 1 diagnostic attachment delivered, and the session quoted `Argument missing for parameter`; 39287 ms wall time for the headless session; artifacts `.claude/reports/1861821660-lsp-probes/python/available/` (stdout.log, stderr.log, debug.log, elapsed-ms.txt, command-v.txt, version.txt, workspace-modules.txt).
 
 Missing-binary arm:
 

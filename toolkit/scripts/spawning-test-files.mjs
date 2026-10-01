@@ -129,6 +129,7 @@ export const spawningTestFiles = [
   'packages/build/test/pr-review-lock-enumeration.test.ts',
   'packages/build/test/prior-art-index.test.ts',
   'packages/build/test/prior-art-launch-guard-hook.test.ts',
+  'packages/build/test/private-id-sweep.test.ts',
   'packages/build/test/probe-claim-guard-hook.test.ts',
   'packages/build/test/propagation-reminder-hook.test.ts',
   'packages/build/test/push-guard-hook.test.ts',

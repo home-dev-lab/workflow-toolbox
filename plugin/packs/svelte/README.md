@@ -39,7 +39,7 @@ Navigation fixtures are `probe/nav/definitions.svelte`, `probe/nav/use.svelte`, 
 `probe/nav/expected-navigation.json`.
 
 Available arm — PASS (2026-09-12, Linux, `command -v` →
-`/home/doublefx/.local/bin/svelteserver`): the harness debug log records a delivered diagnostic and
+`~/.local/bin/svelteserver`): the harness debug log records a delivered diagnostic and
 the session quoted `Type 'string' is not assignable to type 'number'`; 44,202 ms wall time.
 Artifacts: `.claude/reports/1862700000-lsp-probes/svelte/available/`.
 
