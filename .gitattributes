@@ -15,7 +15,11 @@ probes/host-platform/evidence/** -text -eol
 
 # Every card adds its plugin changelog entry at the same place (under `## [Unreleased]`), so two
 # merged branches always conflict there, and the only right resolution is to keep both. Git's
-# built-in `union` driver does that without asking; it needs no configuration on any OS. It keeps
-# both versions of a line the two sides edited differently, and it cannot see a release moving
-# lines under a version heading: released sections are locked by plugin-version-changelog.test.ts.
+# built-in `union` driver does that without asking; it needs no configuration on any OS. Git reads
+# this line from the checkout doing the merge, so it applies once the receiving branch carries it.
+# Union never drops a line, and so it also keeps what one side removed or reworded: a reverted
+# entry stays, a reworded one appears twice, with no stop to catch it. It cannot see a release
+# moving entries under a version heading either. The frozen-section lock in
+# plugin-version-changelog.test.ts covers only a merge into a branch other than main, and only
+# where a local `main` ref exists.
 plugin/CHANGELOG.md merge=union

@@ -7,9 +7,10 @@
 // fixture without the attribute still conflicts, so a green run cannot come from a fixture that
 // never collided.
 //
-// What union does NOT do: it keeps both versions of a line that the two sides edited differently,
-// and it cannot tell that a release moved lines under a version heading. Released sections are
-// guarded by plugin-version-changelog.test.ts; reworded Unreleased bullets are reviewed at release.
+// What union does NOT do: it never drops a line, so a line one side removed or reworded next to
+// the other side's insertion survives (a reverted entry stays, a reworded one appears twice), and
+// it cannot tell that a release moved lines under a version heading. Neither case is locked here;
+// the `.gitattributes` comment states what does and does not guard them.
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,20 +36,13 @@ const BASE = [
   '',
 ].join('\n')
 
-// A fixture repository must not inherit this machine's signing or identity configuration.
-const GIT_ENV = {
-  ...process.env,
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_NOSYSTEM: '1',
-  GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
-  GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
-}
-
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
+// The suite's git-config-isolation setup already points every git child at a neutral global
+// config with an identity and no signing, so fixture commits need no environment of their own.
 function git(cwd: string, args: string[]) {
-  return spawnSync('git', args, { cwd, env: GIT_ENV, encoding: 'utf8' })
+  return spawnSync('git', args, { cwd, encoding: 'utf8' })
 }
 
 function ok(cwd: string, args: string[]) {
