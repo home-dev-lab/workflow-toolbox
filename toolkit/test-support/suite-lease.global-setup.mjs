@@ -55,8 +55,8 @@ export default async function setup(project) {
   // The broker socket must not itself keep an otherwise finished Vitest process alive.
   lease.socket?.unref?.()
   process.once('exit', () => releaseSuiteLock(lease))
-  lease.lost?.then(() => {
-    process.stderr.write('vitest: suite lease lost (broker gone); stopping run\n')
+  lease.lost?.then((reason) => {
+    process.stderr.write(`vitest: suite lease lost (${reason || 'broker gone'}); stopping run\n`)
     process.exitCode = 75
     process.kill(process.pid, 'SIGTERM')
   })

@@ -45,6 +45,58 @@ turn of counters may be lost if the process dies before a flush. Concurrent
 sessions sharing a store may lose a measurement: health and served counters
 remain **lower bounds** under concurrent sessions.
 
+The host refuses a store whose whole JSON text exceeds 4 MiB (4,194,304
+characters), so every key the hook writes has a budget in that same measure
+(`hooks/store-budget.js`): verdict lines 1.2M, sessions 2.0M, served counters
+0.2M, health 50k, keys this version never writes 50k, leaving about 0.69M free.
+Before its first write the hook brings every other over-budget key back under
+its budget, so a store already at the limit takes the next write of any kind. A key
+over its budget is cut to 60% of it: the oldest verdict lines, the contexts with
+the oldest activity (the one being written last; alone over the budget, it moves
+out and restarts empty) or the rules served longest ago are first written to
+`rod-store-archive-<ms>-<n>.json` (store keys) or
+`compliance-verdicts-archive-<ms>-<n>.jsonl` (verdict lines) in the quality data
+directory, then removed from the store. An archive is never deleted after a
+rejected store write (the write may have committed); only a file whose own write
+failed is removed, so no reader parses a partial archive. After a refused write the
+next write of that key starts from the value the refused one tried, as long as the
+store still holds what it held at the refusal, so nothing the archive already
+counts is counted again from the rolled-back value; a reload of the hook in
+between starts from the store. Every context and
+served counter carries a segment id (`seg`), new when it is created and when it
+restarts empty after an eviction; a unit from before segments gets
+`legacy:<session>:<context>` (or `legacy:served:<rule>`) when archived.
+`rollback-check`, `compliance-report`, `serve-verdict-reconcile` and
+`quality-check` read those archives AFTER reading the store (an eviction in
+between leaves a segment in both places, never in neither) and JOIN the copies
+of each segment, wherever they come from (the store, its mirrors given as several
+`--store`, archives, a crash or a second session leaving the same segment twice):
+counters take their per-key maximum, rows their union by identity (delivery id;
+for trigger errors the event id `eid` the hook stamps on every new row, drawn
+like segment ids from a random owner and a per-load counter, never from the
+stored context; else the
+row itself, kept as many times as one copy holds it, so identical id-less rows
+written before event ids reconcile by the most any one copy holds), governed acts
+their maximum count, `last` the latest. The
+join gives one result whatever the order, number or timing of the copies. Its
+precondition is that copies of one segment come from one writer: two sessions
+incrementing one counter from the same copy keep one increment (the store's
+pre-existing cross-session lost update). The distinct segments of a context are
+then SUMMED (counters added, rows concatenated, governed acts merged by rule
+identity, close markers merged). An archive that does not parse is skipped, named
+on stderr and in the reader's JSON (`unreadableArchives`), never fatal: its rows
+are still in the store. A context larger than one archive part (3 MB, under the
+host's 4 MiB file limit) is written as several pieces stamped
+`split: { id, index, of }`; readers join the copies of one piece (an archive file
+copied, read twice), then concatenate the pieces of one split back into
+the one context before any join (a split with a piece missing is read from the
+pieces present, as one copy, and named in `unreadableArchives`). With `--store <snapshot>`, `compliance-report` and
+`rollback-check` read store-key archives only from `--store-archives <dir>`, none
+without it; with no `--store` they read the config directory's. Verdict archives
+keep their newest files up to 49 MB on disk, the verdict history the earlier
+14 × 3.5 MB rotation kept. Store-key archives are never deleted: they hold the
+only copy of what left the store, about 0.2 MB a day on the measured store.
+
 `quality-check.mjs` adds reporting-only continuous measures to `quality-DATE.json`
 and `latest.json`: per-rule trigger misses (unmatched/engine/unattributable),
 delivery noise, served versus static bytes (tokens estimated as bytes/4),
@@ -212,8 +264,9 @@ model message cannot be distinguished from later calls; a call that only
 consumes a window count writes no row for the act-before-delivery check, and a
 refused call can settle other rules' windows. Legacy serves without IDs cannot
 be joined exactly. Each verdict row grows by roughly 100 bytes, bringing
-rotation at the 3.5 MB limit sooner and shortening the history held by 14
-archives. The script prints these limits on every run.
+rotation sooner; archives are kept by volume (49 MB), so the rows of history
+kept do not depend on how often the store rotates. The script prints these
+limits on every run.
 
 Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
 from a host timer or cron job; the plugin ships no scheduler. This entry point

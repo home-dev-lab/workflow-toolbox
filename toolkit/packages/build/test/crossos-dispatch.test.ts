@@ -649,6 +649,20 @@ describe('green only from positive evidence', () => {
     expect(result.incomplete).toBe(false)
     expect(result.reason).toBe('1 of 3 jobs failed (matrix (windows-latest))')
   })
+  it('a Windows run split into shard jobs is green only when every shard succeeded', () => {
+    const sharded = () => {
+      const run = positive()
+      run.jobs = ['matrix (ubuntu-latest)', 'matrix (macos-latest)', 'matrix (windows-latest, 1)', 'matrix (windows-latest, 2)']
+        .map((name) => ({ name, conclusion: 'success' }))
+      return run
+    }
+    expect(verdictFromEvidence(sharded(), sha).verdict).toBe('green')
+    const failed = sharded(); failed.jobs[3] = { name: 'matrix (windows-latest, 2)', conclusion: 'failure' }
+    const result = verdictFromEvidence(failed, sha)
+    expect(result.verdict).toBe('red')
+    expect(result.incomplete).toBe(false)
+    expect(result.reason).toBe('1 of 4 jobs failed (matrix (windows-latest, 2))')
+  })
   it('a genuinely missing job is still incomplete, never read as a job failure', () => {
     const dropped = positive(); dropped.jobs.splice(1, 1)
     const result = verdictFromEvidence(dropped, sha)

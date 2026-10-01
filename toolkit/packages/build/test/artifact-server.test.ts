@@ -491,10 +491,12 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
   return state
 }
 
-function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET'): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
+// `freshConnection` opens a new socket for the request instead of reusing a pooled keep-alive socket of Node's global agent
+// (keep-alive by default since Node 19), which a server that is closing its side can reset under load.
+function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET', options: { freshConnection?: boolean } = {}): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolvePromise, reject) => {
     const headers = host === undefined ? {} : { Host: host }
-    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined }, (response) => {
+    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined, ...(options.freshConnection ? { agent: false } : {}) }, (response) => {
       let body = ''
       response.setEncoding('utf8')
       response.on('data', (chunk) => { body += chunk })
@@ -1770,10 +1772,18 @@ describe('review decisions: filesystem roots and URLs', () => {
     }))
     await waitForState(stateHome, (state) => state.roots.length === 1)
 
+    // An upstream failure must be ANSWERED, never left as an unhandled rejection: the client below has no timeout, so an
+    // unanswered request only ends at the test timeout (measured 20 s on a hosted Windows run, `read ECONNRESET`), with the
+    // cause unnamed. The upstream request uses a fresh connection, not a pooled keep-alive socket.
     const proxy = createServer(async (_request, response) => {
-      const upstream = await rawRequest(port, '/', `localhost:${port}`)
-      response.writeHead(upstream.status, { 'content-type': 'text/html' })
-      response.end(upstream.body)
+      try {
+        const upstream = await rawRequest(port, '/', `localhost:${port}`, '127.0.0.1', 'GET', { freshConnection: true })
+        response.writeHead(upstream.status, { 'content-type': 'text/html' })
+        response.end(upstream.body)
+      } catch (error) {
+        response.writeHead(502, { 'content-type': 'text/plain' })
+        response.end(`upstream request failed: ${(error as Error).message}`)
+      }
     })
     await new Promise<void>((resolve, reject) => {
       proxy.once('error', reject)
@@ -1783,7 +1793,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy has no TCP port')
     try {
       const index = await rawRequest(proxyAddress.port, '/serve-mount/', `localhost:${proxyAddress.port}`)
-      expect(index.status).toBe(200)
+      expect(index.status, index.body).toBe(200)
       const href = /<a href="([^"]+)">reports\/<\/a>/.exec(index.body)?.[1]
       expect(href).toBe('reports/')
       expect(new URL(href!, `http://localhost:${port}/`).href).toBe(`http://localhost:${port}/reports/`)
