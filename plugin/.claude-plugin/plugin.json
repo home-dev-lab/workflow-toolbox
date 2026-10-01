@@ -884,6 +884,16 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-outbound-guard-hook.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-cancelled-call-relay-guard-hook.mjs\"",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "Stop": [

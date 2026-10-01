@@ -36,6 +36,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The plugin-root classifier (plugin-root-state.mjs) adds one process-table-free module; the wake
     // observer and its one-shot replay add two more.
     // The shipped Depends-on parser (depends-on-parser.mjs) adds one process-table-free module.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 245, violations: [] })
+    // The cancelled-call relay guard hook adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 246, violations: [] })
   })
 })

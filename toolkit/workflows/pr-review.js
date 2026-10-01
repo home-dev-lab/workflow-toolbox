@@ -2715,6 +2715,7 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-outbound-guard-hook.mjs",
         "plugin/bin/wt-model-fallback-check.mjs",
         "plugin/bin/wt-model-fallback-hook.mjs",
+        "plugin/bin/wt-cancelled-call-relay-guard-hook.mjs",
         "plugin/bin/wt-probe-claim-guard-hook.mjs",
         "plugin/bin/wt-queue-not-empty-gate-hook.mjs",
         "plugin/bin/wt-observer-pairing-guard-hook.mjs",
