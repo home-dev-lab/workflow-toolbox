@@ -131,7 +131,7 @@ function agentRoots(root, budget, errors, context, marketplace, name, registryDi
   }
 }
 
-function agentDefinitionCandidates(type, { cwd = process.cwd(), configDir, env = process.env, pluginRoot = OWN_ROOT, budget = createBudget(), readDefinition = readFrontmatterFile } = {}) {
+function agentDefinitionCandidates(type, { cwd = process.cwd(), configDir, env = process.env, pluginRoot = OWN_ROOT, budget = createBudget(), readDefinition = readFrontmatterFile, walkFs } = {}) {
   const candidates = []
   const errors = []
   const scoped = type.includes(':')
@@ -142,9 +142,9 @@ function agentDefinitionCandidates(type, { cwd = process.cwd(), configDir, env =
   let unresolved = null
   if (!leaf || leaf === '.' || leaf === '..' || leaf.includes('\0') || /[/\\]/.test(leaf) || segments.some((segment) => !segment || segment === '.' || segment === '..' || /[/\\\0]/.test(segment))) return { candidates, unresolved: null, errors }
   const processRoot = (root, scope, rank, pluginBase = '', speculative = false, installation = '', applicability = null) => {
-    const walked = walkFiles([root], { budget, accept: (_rel, name) => name.endsWith('.md') })
+    const walked = walkFiles([root], { budget, fs: walkFs, accept: (_rel, name) => name.endsWith('.md') })
     errors.push(...walked.errors)
-    if (walked.errors.length) unresolved ||= `unreadable definition: ${leaf}`
+    if (walked.errors.length) unresolved ||= `unreadable definition: ${walked.errors[0].code} ${walked.errors[0].path}`
     if (walked.exhausted) unresolved = `budget: ${walked.exhausted}`
     for (const { file, rel } of walked.files) {
       const basename = path.basename(file, '.md')

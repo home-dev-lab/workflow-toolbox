@@ -32,6 +32,16 @@ describe('shipped dependency convention (T4)', () => {
     expect(hasDependsOnLine('**Depends-on:** none')).toBe(true)
   })
 
+  it('I2: accepts none only as the whole value, with trailing punctuation or a parenthesised note', () => {
+    for (const line of ['Depends-on: none', '**Depends-on:** none', 'Depends-on: none.', 'Depends-on: none (standalone)', 'Depends-on: **none**', 'Depends-on: None (standalone).']) {
+      expect(parseDependsOn(line), line).toEqual({ ids: [], unparseable: [] })
+    }
+    expect(parseDependsOn('Depends-on: none until #1875344230742754904 lands')).toEqual({ ids: [], unparseable: ['Depends-on: none until #1875344230742754904 lands'] })
+    expect(parseDependsOn('Depends-on: none, #1875344230742754904')).toEqual({ ids: [], unparseable: ['Depends-on: none, #1875344230742754904'] })
+    expect(parseDependsOn('Depends-on: none yet')).toEqual({ ids: [], unparseable: ['Depends-on: none yet'] })
+    expect(triageCardDependencies([{ id: '100090', description: 'Depends-on: none until #100010 lands' }], new Set(['100010'])).blocked.map((c: { id: string }) => c.id)).toEqual(['100090'])
+  })
+
   it('keeps the first 4+-digit run per comma segment, so a number in a title is not an id', () => {
     expect(parseDependsOn('Depends-on: #100010 (fix 2026 regression)')).toEqual({ ids: ['100010'], unparseable: [] })
   })

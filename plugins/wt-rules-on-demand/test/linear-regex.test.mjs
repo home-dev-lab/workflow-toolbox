@@ -27,6 +27,57 @@ const semanticCases = [
   ['lazy boundary repetition', '\\S+?(?:\\b ??){2}', '', 'a 1'],
 ];
 
+const nativeCode = `const {parentPort} = require('node:worker_threads'); parentPort.on('message', ({source, flags, subject}) => {
+  try { const regex = new RegExp(source, flags); const matched = regex.test(subject); const exec = regex.exec(subject);
+    parentPort.postMessage({matched, index: exec?.index, text: exec?.[0], group: exec?.[1]}); }
+  catch(error) { parentPort.postMessage({error: error.message}); }
+});`;
+
+// Native RegExp answers come from one worker, asked case by case. The timer starts once the
+// worker is online and only detects a HANG: a case left unanswered for stallMs rejects, naming
+// the case. It is never skipped, so machine load can slow a run but cannot shrink what it compares.
+// A worker that throws or exits rejects at once with its own cause. `slowestMs` is reported so a
+// run shows how far its slowest answer stayed from the stall threshold.
+async function nativeOracle(stallMs, code = nativeCode) {
+  const worker = new Worker(code, { eval: true });
+  await new Promise((resolve, reject) => { worker.once('online', resolve); worker.once('error', reject); });
+  const oracle = { slowestMs: 0, close: () => worker.terminate() };
+  oracle.ask = (source, flags, subject) => new Promise((resolve, reject) => {
+    const label = `/${source}/${flags} ${JSON.stringify(subject)}`;
+    const started = performance.now();
+    let timer;
+    const settle = (finish, value) => {
+      clearTimeout(timer);
+      worker.off('message', onMessage).off('error', onError).off('exit', onExit);
+      finish(value);
+    };
+    const onMessage = (answer) => { oracle.slowestMs = Math.max(oracle.slowestMs, performance.now() - started); settle(resolve, answer); };
+    const onError = (error) => settle(reject, new Error(`native oracle worker failed on ${label}: ${error.message}`));
+    const onExit = (exitCode) => settle(reject, new Error(`native oracle worker exited with code ${exitCode} on ${label}`));
+    timer = setTimeout(() => {
+      settle(reject, new Error(`native oracle stalled ${stallMs} ms on ${label}: a native hang, never a skipped case`));
+      void worker.terminate();
+    }, stallMs);
+    worker.on('message', onMessage).on('error', onError).on('exit', onExit);
+    worker.postMessage({ source, flags, subject });
+  });
+  return oracle;
+}
+
+test('a native oracle worker that fails after start reports its cause, never a hang', async () => {
+  for (const [code, cause] of [
+    ["require('node:worker_threads').parentPort.on('message', () => { throw new Error('injected failure'); });", /injected failure/],
+    ["require('node:worker_threads').parentPort.on('message', () => process.exit(3));", /exited with code 3/],
+  ]) {
+    const oracle = await nativeOracle(10000, code);
+    const started = Date.now();
+    try {
+      await assert.rejects(oracle.ask('a', '', 'a'), (error) => cause.test(error.message) && !/stalled/.test(error.message));
+      assert.ok(Date.now() - started < 10000, 'the failure is reported when it happens, not when the stall timer fires');
+    } finally { await oracle.close(); }
+  }
+});
+
 test('membership matchers expose test but refuse match extents', () => {
   const matcher = safeRegex('membership', '(a)', '');
   assert.equal(matcher.test('a'), true);
@@ -99,21 +150,20 @@ test('seeded short-subject lookaround and repetition differential, both matcher 
     const source = body(0), flags = ['', 'i', 'm', 's', 'u', 'im', 'su'][random(7)];
     patterns.push([source, flags, Array.from({ length: 6 }, () => Array.from({ length: random(9) }, () => alphabet[random(alphabet.length)]).join(''))]);
   }
-  const code = `const {parentPort} = require('node:worker_threads'); parentPort.on('message', ({source, flags, subject}) => {
-    try { const regex = new RegExp(source, flags); const matched = regex.test(subject); const exec = regex.exec(subject);
-      parentPort.postMessage({matched, index: exec?.index, text: exec?.[0], group: exec?.[1]}); }
-    catch(error) { parentPort.postMessage({error: error.message}); }
-  });`;
-  let worker = new Worker(code, { eval: true }), compared = 0, captureCompared = 0, captureRefusals = 0, timeouts = 0;
-  const oracle = (source, flags, subject) => new Promise((resolve) => {
-    const timer = setTimeout(() => { worker.removeAllListeners('message'); void worker.terminate(); worker = new Worker(code, { eval: true }); timeouts++; resolve(null); }, 100);
-    worker.once('message', (answer) => { clearTimeout(timer); resolve(answer); });
-    worker.postMessage({ source, flags, subject });
-  });
+  // Subjects are at most eight code units, so a native answer takes microseconds; 10 s without
+  // one is a hang, and it fails the test instead of silently shrinking the comparison.
+  const oracle = await nativeOracle(10000);
+  let cases = 0, nativeErrors = 0, compared = 0, captureCompared = 0, captureRefusals = 0;
   try {
     for (const [source, flags, subjects] of patterns) for (const subject of subjects) {
-      const expected = await oracle(source, flags, subject);
-      if (expected === null || expected.error) continue;
+      cases++;
+      const expected = await oracle.ask(source, flags, subject);
+      if (expected.error) {
+        // A pattern native RegExp rejects must be rejected by the linear engine too, never skipped.
+        assert.throws(() => compile(source, flags), `native rejects /${source}/${flags}: ${expected.error}`);
+        nativeErrors++;
+        continue;
+      }
       const regex = compile(source, flags);
       assert.equal(regex.test(subject), expected.matched, `test /${source}/${flags} ${JSON.stringify(subject)}`);
       try {
@@ -128,8 +178,8 @@ test('seeded short-subject lookaround and repetition differential, both matcher 
       }
       compared++;
     }
-  } finally { await worker.terminate(); }
-  t.diagnostic(`seeded patterns=${patterns.length} compared=${compared} capture compared=${captureCompared} capture refusals=${captureRefusals} native timeouts=${timeouts}`);
+  } finally { await oracle.close(); }
+  t.diagnostic(`seeded patterns=${patterns.length} cases=${cases} compared=${compared} native errors=${nativeErrors} capture compared=${captureCompared} capture refusals=${captureRefusals} slowest native answer=${oracle.slowestMs.toFixed(1)} ms`);
   assert.ok(compared >= 280);
   assert.ok(captureCompared > 0);
   assert.ok(captureRefusals > 0);
@@ -330,47 +380,42 @@ test('seeded generated patterns compare test in membership and exec in capture m
     '(?<=a+)b', '(?!.*?x)a', '(a)?b', 'a.*b|(a)',
   ]);
   while (patterns.size < 16) patterns.add(make());
-  let compared = 0, captureCompared = 0, captureRefusals = 0, timeouts = 0;
+  let compared = 0, captureCompared = 0, captureRefusals = 0;
   const subjects = ['', 'aab', 'ab ba', 'a'.repeat(20) + '!'];
-  const oracle = (source, subject, flags) => new Promise((resolve) => {
-    const worker = new Worker(`
-      const {parentPort, workerData} = require('node:worker_threads');
-      const {source, subject, flags} = workerData;
+  // Subjects are at most 21 code units and the corpus holds no catastrophic native case, so
+  // 10 s without an answer is a hang; it fails the test rather than dropping the case.
+  const oracle = await nativeOracle(10000);
+  try {
+    for (const source of patterns) for (const subject of subjects) {
+      const flags = source.includes('(K)') ? 'iu' : '';
+      const expected = await oracle.ask(source, flags, subject);
+      assert.equal(expected.error, undefined, `${source}: ${expected.error}`);
+      const linear = safeRegex('generated', source, flags);
+      assert.equal(linear.test(subject), expected.matched, `${source}: ${JSON.stringify(subject)}`);
       try {
-        const regex = new RegExp(source, flags);
-        const yes = regex.test(subject), match = regex.exec(subject);
-        parentPort.postMessage({yes, capture: [match?.index, match?.[0], match?.[1]]});
-      } catch (error) {parentPort.postMessage({error: error.message});}
-    `, { eval: true, workerData: { source, subject, flags } });
-    const timer = setTimeout(() => { void worker.terminate(); resolve(null); }, 500);
-    worker.once('message', (value) => { clearTimeout(timer); void worker.terminate(); resolve(value); });
-    worker.once('error', (error) => { clearTimeout(timer); resolve({ error: error.message }); });
-  });
-  for (const source of patterns) for (const subject of subjects) {
-    const flags = source.includes('(K)') ? 'iu' : '';
-    const expected = await oracle(source, subject, flags);
-    if (expected === null) { timeouts++; continue; }
-    assert.equal(expected.error, undefined, `${source}: ${expected.error}`);
-    const linear = safeRegex('generated', source, flags);
-    assert.equal(linear.test(subject), expected.yes, `${source}: ${JSON.stringify(subject)}`);
-    try {
-      const captured = safeRegex('generated', source, flags, { capture: true });
-      assert.equal(captured.test(subject), expected.yes, `${source}: capture test ${JSON.stringify(subject)}`);
-      const match = captured.exec(subject);
-      assert.deepEqual([match?.index, match?.[0], match?.[1]], expected.capture, `${source}: ${JSON.stringify(subject)}`);
-      captureCompared++;
-    } catch (error) {
-      if (!/nullable quantified body|group 1 inside repetition/.test(error.message)) throw error;
-      captureRefusals++;
+        const captured = safeRegex('generated', source, flags, { capture: true });
+        assert.equal(captured.test(subject), expected.matched, `${source}: capture test ${JSON.stringify(subject)}`);
+        const match = captured.exec(subject);
+        assert.deepEqual([match?.index, match?.[0], match?.[1]], [expected.index, expected.text, expected.group], `${source}: ${JSON.stringify(subject)}`);
+        captureCompared++;
+      } catch (error) {
+        if (!/nullable quantified body|group 1 inside repetition/.test(error.message)) throw error;
+        captureRefusals++;
+      }
+      compared++;
     }
-    compared++;
-  }
-  // The corpus also contains a deliberately slow native case. A timeout is
-  // explicitly counted, never treated as an equal verdict.
-  if (await oracle('^(?:a*){24}b$', 'a'.repeat(24), '') === null) timeouts++;
-  t.diagnostic(`native oracle compared=${compared} capture compared=${captureCompared} capture refusals=${captureRefusals} timeouts=${timeouts}`);
-  assert.ok(compared >= 55);
-  assert.ok(timeouts >= 1);
+  } finally { await oracle.close(); }
+  t.diagnostic(`native oracle compared=${compared} capture compared=${captureCompared} capture refusals=${captureRefusals} slowest native answer=${oracle.slowestMs.toFixed(1)} ms`);
+  assert.equal(compared, patterns.size * subjects.length);
+});
+
+test('a native oracle case that never answers fails the comparison and is never counted as skipped', async () => {
+  // A deliberately catastrophic native case: load can only make it slower, never faster,
+  // so the stall is certain on any machine and the verdict does not depend on its speed.
+  const oracle = await nativeOracle(500);
+  try {
+    await assert.rejects(oracle.ask('^(?:a*){24}b$', '', 'a'.repeat(24)), /native oracle stalled 500 ms on \/\^\(\?:a\*\)\{24\}b\$\/ "a{24}"/);
+  } finally { await oracle.close(); }
 });
 
 test('capture-mode refusals tell the rule author what to write instead', () => {

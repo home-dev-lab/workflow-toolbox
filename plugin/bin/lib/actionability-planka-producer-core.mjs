@@ -18,6 +18,7 @@
 
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { triageCardDependencies } from './depends-on-parser.mjs'
+import { readWholeBoardPage } from './find-cards-page.mjs'
 
 const BOARD_POINTER_RELATIVE = '.claude/planka.json'
 
@@ -149,26 +150,11 @@ export function extractCards({ toolName, toolInput, toolResponse, readSpilledFil
     // The current schema is paginated. A page is complete only when it starts at zero and
     // contains every card named by `total`; otherwise the producer records a refusal rather
     // than turning a plausible subset into a board-wide count. Legacy array responses remain
-    // accepted only when the call itself did not request pagination.
-    let rawCards
-    if (Array.isArray(parsed)) {
-      if (ti.limit !== undefined || ti.offset !== undefined) {
-        return { ok: false, reason: 'find_cards paginated response has no total — result is a subset, not the whole board' }
-      }
-      rawCards = parsed
-    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.cards)) {
-      const total = parsed.total
-      const offset = parsed.offset
-      if (!Number.isInteger(total) || total < 0 || !Number.isInteger(offset) || offset < 0) {
-        return { ok: false, reason: 'find_cards response has invalid pagination metadata' }
-      }
-      if (offset !== 0 || parsed.cards.length !== total) {
-        return { ok: false, reason: `find_cards page contains ${parsed.cards.length} of ${total} cards at offset ${offset} — result is a subset, not the whole board` }
-      }
-      rawCards = parsed.cards
-    } else {
-      return { ok: false, reason: 'find_cards response has no cards[] array' }
-    }
+    // accepted only when the call itself did not request pagination. The rule lives in
+    // find-cards-page.mjs, shared with toolkit/scripts/planka-mcp-client.ts.
+    const page = readWholeBoardPage(parsed, { paginationRequested: ti.limit !== undefined || ti.offset !== undefined })
+    if (!page.ok) return { ok: false, reason: page.reason }
+    const rawCards = page.cards
     if (ti.includeDescription === false) {
       return { ok: false, reason: 'find_cards omitted descriptions — dependency completeness cannot be proved' }
     }
