@@ -208,23 +208,95 @@ type Discovery = {
 
 const CHROME = process.env.CHROME_BIN ?? ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync)
 
-function renderInChrome(url: string) {
-  if (!CHROME) throw new Error('Chrome/Chromium is unavailable')
-  return new Promise<{ code: number | null, stdout: string, stderr: string }>((resolve, reject) => {
+type BrowserCommand = { command: string, args: string[] }
+type RenderResult = {
+  // completed: the browser printed the whole --dump-dom serialization. stoppedAfterDump: it had not exited
+  // EXIT_GRACE_MS after that, so the helper stopped it and its exit code says nothing about the page.
+  completed: boolean, stoppedAfterDump: boolean, code: number | null, pid: number | undefined, stdout: string, stderr: string
+}
+// Per-render bound. Not derived from a tail distribution (none is recorded): green runs of the whole test took up to
+// 10.3 s on hosted Ubuntu (cross-OS runs 36747716994 and 36811210122) and one render 0.7-3.9 s locally under CPU load;
+// the bound is about twice the slowest green, and its message names the render stage when it fires.
+const RENDER_BOUND_MS = 20_000
+// A browser still alive this long after printing its complete DOM is stopped, and the test log says so.
+const EXIT_GRACE_MS = 2_000
+// The state wait keeps waitForState's default; the two renders run in parallel; the margin lets the render bound
+// fire before the runner's own timeout so a stall is reported as a render stall, not as a bare test timeout.
+const STATE_WAIT_MS = 15_000
+const SECURITY_MATRIX_TEST_BOUND_MS = STATE_WAIT_MS + RENDER_BOUND_MS + 3_000
+
+function dumpComplete(stdout: string) {
+  return stdout.trimEnd().endsWith('</html>')
+}
+
+function stopBrowser(child: ChildProcess) {
+  if (!child.pid) return
+  // POSIX: the browser leads its own process group, so its renderer and utility processes go with it. SIGKILL,
+  // because a browser stuck in its own shutdown is the case being stopped. Windows: the process tree.
+  if (process.platform === 'win32') { killWindowsTree(child.pid); return }
+  try { process.kill(-child.pid, 'SIGKILL') } catch { child.kill('SIGKILL') }
+}
+
+function renderInChrome(url: string, options: { browser?: BrowserCommand, boundMs?: number, exitGraceMs?: number } = {}) {
+  const browser = options.browser ?? (CHROME ? { command: CHROME, args: [] } : null)
+  if (!browser) throw new Error('Chrome/Chromium is unavailable')
+  const boundMs = options.boundMs ?? RENDER_BOUND_MS
+  const exitGraceMs = options.exitGraceMs ?? EXIT_GRACE_MS
+  return new Promise<RenderResult>((resolve, reject) => {
     const profile = temporaryDir('chrome-profile')
-    const child = spawn(CHROME, [
-      '--headless=new', '--no-sandbox', '--disable-gpu', `--user-data-dir=${profile}`,
+    const child = spawn(browser.command, [
+      ...browser.args, '--headless=new', '--no-sandbox', '--disable-gpu', `--user-data-dir=${profile}`,
       '--dump-dom', '--virtual-time-budget=2000', url,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] })
+    ], { stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
     children.add(child)
     let stdout = ''
     let stderr = ''
-    child.stdout?.on('data', (chunk) => { stdout += String(chunk) })
+    let stdoutEnded = false
+    let settled = false
+    let grace: ReturnType<typeof setTimeout> | undefined
+    const finish = () => { settled = true; clearTimeout(bound); clearTimeout(grace) }
+    const settle = (result: Omit<RenderResult, 'pid' | 'stdout' | 'stderr'>) => {
+      if (settled) return
+      finish()
+      resolve({ ...result, pid: child.pid, stdout, stderr })
+    }
+    // Headless Chrome can print its complete serialization and then never exit. The dump is the browser's own
+    // completion signal: a browser that has not exited shortly after it is stopped, and the log records it.
+    const stopAfterDump = (waitedMs: number) => {
+      console.error(`renderInChrome: ${url} printed its complete DOM and had not exited after ${waitedMs} ms; stopping it. stderr tail:\n${stderr.slice(-2_000)}`)
+      settle({ completed: true, stoppedAfterDump: true, code: null })
+      stopBrowser(child)
+    }
+    let dumpedAt = 0
+    child.stdout?.on('data', (chunk) => {
+      stdout += String(chunk)
+      if (!settled && dumpComplete(stdout)) {
+        if (grace) return
+        dumpedAt = Date.now()
+        grace = setTimeout(() => stopAfterDump(exitGraceMs), exitGraceMs)
+      }
+    })
+    child.stdout?.once('end', () => { stdoutEnded = true })
     child.stderr?.on('data', (chunk) => { stderr += String(chunk) })
-    child.once('error', reject)
+    const bound = setTimeout(() => {
+      if (settled) return
+      // A dump completed inside the exit grace is a complete render, even when the bound comes first.
+      if (dumpedAt) { stopAfterDump(Date.now() - dumpedAt); return }
+      finish()
+      stopBrowser(child)
+      reject(new Error(`Chrome produced no complete DOM for ${url} within ${boundMs} ms (stdout ${stdout.length} bytes, exit not seen); stderr tail:\n${stderr.slice(-2_000)}`))
+    }, boundMs)
+    child.once('error', (error) => {
+      if (settled) return
+      finish()
+      reject(error)
+    })
     child.once('exit', (code) => {
       children.delete(child)
-      resolve({ code, stdout, stderr })
+      // 'exit' can fire while stdout is still open; the dump is read once stdout has ended (bounded by the render).
+      const done = () => settle({ completed: dumpComplete(stdout), stoppedAfterDump: false, code })
+      if (stdoutEnded || !child.stdout) done()
+      else child.stdout.once('end', done)
     })
   })
 }
@@ -2169,6 +2241,56 @@ describe('owner decision 5: Tailscale access', () => {
 })
 
 describe('review decisions: serving security matrix', () => {
+  // Headless Chrome can print its complete --dump-dom serialization and then never exit. These fakes stand in for
+  // that browser on every platform: the render must end on the dump itself, and a browser that never dumps must
+  // fail with a message naming the render stage rather than leave the test to a bare runner timeout.
+  function fakeBrowser(source: string): BrowserCommand {
+    const script = join(temporaryDir('fake-browser'), 'browser.mjs')
+    writeFileSync(script, source)
+    return { command: process.execPath, args: [script] }
+  }
+
+  it('ends a render on a complete DOM dump and stops a browser that never exits, helpers included', async () => {
+    const helperPidFile = join(temporaryDir('fake-browser-helper'), 'helper.pid')
+    // Ignores SIGTERM like a browser hung in its own shutdown, and keeps a helper process alive like a renderer.
+    const browser = fakeBrowser([
+      "import { spawn } from 'node:child_process'",
+      "import { writeFileSync } from 'node:fs'",
+      "process.on('SIGTERM', () => {})",
+      "const helper = spawn(process.execPath, ['-e', \"process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)\"], { stdio: 'ignore' })",
+      `writeFileSync(${JSON.stringify(helperPidFile)}, String(helper.pid))`,
+      "process.stdout.write('<html><head></head><body data-script=\"ran\"></body></html>\\n')",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const started = Date.now()
+    const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 10_000 })
+    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
+    expect(result.stdout).toContain('data-script="ran"')
+    const helperPid = Number(readFileSync(helperPidFile, 'utf8'))
+    await waitFor(() => pidAlive(result.pid!) || pidAlive(helperPid) ? null : true, 5_000)
+  }, 20_000)
+
+  it('accepts a complete dump when the render bound expires during the exit grace', async () => {
+    const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"ran\"></body></html>\\n'); setInterval(() => {}, 1000)\n")
+    const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 5_000, exitGraceMs: 60_000 })
+    expect(result).toMatchObject({ completed: true, stoppedAfterDump: true, code: null })
+    await waitFor(() => pidAlive(result.pid!) ? null : true, 5_000)
+  }, 20_000)
+
+  it('keeps the exit code of a browser that exits by itself after its dump', async () => {
+    const browser = fakeBrowser("process.stdout.write('<html><head></head><body data-script=\"not-run\"></body></html>\\n', () => process.exit(0))\n")
+    const result = await renderInChrome('http://localhost/never-fetched', { browser, boundMs: 10_000 })
+    expect(result).toMatchObject({ completed: true, stoppedAfterDump: false, code: 0 })
+    expect(result.stdout).toContain('data-script="not-run"')
+  }, 20_000)
+
+  it('names the render stage when a browser never produces a complete DOM', async () => {
+    const browser = fakeBrowser("process.stdout.write('<html><head></head><body>'); setInterval(() => {}, 1000)\n")
+    await expect(renderInChrome('http://localhost/never-fetched', { browser, boundMs: 1_500 }))
+      .rejects.toThrow(/no complete DOM for http:\/\/localhost\/never-fetched within 1500 ms/)
+  }, 20_000)
+
   it.skipIf(!CHROME)('runs only marked rich HTML scripts while Chrome blocks fetch and external images', async () => {
     const project = temporaryDir('rich-project')
     const root = temporaryDir('rich-root')
@@ -2192,26 +2314,38 @@ describe('review decisions: serving security matrix', () => {
       spawnEnsure(project, baseEnv(stateHome, {
         WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
       }))
-      await waitForState(stateHome, (state) => state.roots.length === 1)
-      const [rich, plain] = await Promise.all([
+      await waitForState(stateHome, (state) => state.roots.length === 1, STATE_WAIT_MS)
+      const renders = await Promise.allSettled([
         renderInChrome(`http://localhost:${reservation.port}/artifacts/rich.html`),
         renderInChrome(`http://localhost:${reservation.port}/artifacts/plain.html`),
       ])
-      expect(rich.code, rich.stderr).toBe(0)
+      // Both renders' diagnoses are kept: a stall in one must not hide what the other saw.
+      const [richRender, plainRender] = renders
+      if (richRender.status === 'rejected' || plainRender.status === 'rejected') {
+        throw new Error(renders.flatMap((render) => render.status === 'rejected' ? [String(render.reason)] : []).join('\n---\n'))
+      }
+      const rich = richRender.value
+      const plain = plainRender.value
+      // A browser that exited on its own must have exited cleanly; one stopped after its complete dump has no code.
+      expect(rich.completed, rich.stderr).toBe(true)
+      expect(rich.stoppedAfterDump || rich.code === 0, rich.stderr).toBe(true)
       expect(rich.stdout).toContain('data-script="ran"')
       expect(rich.stdout).toContain('data-fetch="blocked"')
       expect(rich.stdout).toContain('data-image="blocked"')
       expect(rich.stdout).toContain('data-done="yes"')
-      expect(plain.code, plain.stderr).toBe(0)
+      expect(plain.completed, plain.stderr).toBe(true)
+      expect(plain.stoppedAfterDump || plain.code === 0, plain.stderr).toBe(true)
       expect(plain.stdout).toContain('data-script="not-run"')
       expect(plain.stdout).not.toContain('data-script="ran"')
       expect(sinkPaths.filter((path) => path === '/fetch' || path === '/image'), `sink saw: ${sinkPaths.join(', ')}`).toEqual([])
     } finally {
+      // A probing artifact server or a stopped browser can leave a connection open; close() alone would wait on it.
+      sink.closeAllConnections()
       await closeServer(sink)
     }
-  // Real-host test, bound measured: Ubuntu run 36056224538 was still running at the old
-  // 20.299 s limit; the same two-browser render completed locally in 0.988 s (round 14).
-  }, 30_000)
+  // Real-host test. Ubuntu runs 36056224538 (old 20.299 s limit) and 36869769306 (30 s) timed out with no assertion
+  // failing; the bound is now the sum of its named stages, so the next stall names the stage it happened in.
+  }, SECURITY_MATRIX_TEST_BOUND_MS)
 
   it('[B-02][E-02][E-03] serves each type with CSP and rejects aliases, traversal, hosts, and methods', async () => {
     const project = temporaryDir('security-project')
