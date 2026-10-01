@@ -264,6 +264,10 @@ Runs `wt-memory-index-check.mjs` once per session against the current project's 
 
 Records spawn edges from `PostToolUse` records and nudges a subagent that is about to stop without having delivered a message. A closing failure leaves the registry entry open, preserving the unanswered-spawn signal rather than hiding it. It nudges at most once per agent per session, does not nudge the main loop, and never rewrites anything. Internal errors fail open with one stderr trace.
 
+### `wt-cancelled-call-relay-guard-hook.mjs` — cancelled-call relay guard (SubagentStop)
+
+When the harness cancels one of a delegate's tool calls, the delegate receives the same generic "The user doesn't want to take this action right now. STOP…" text as a declined prompt. On the delegate's stop, this hook reads the tail (4 MB) of the delegate's own transcript; if the newest result marked `toolDenialKind: "cancelled"` with that text was not followed by a `SendMessage`, it blocks the stop once and asks for one relay line to the spawner, background work kept running. It blocks at most once per stop cycle and per cancelled call, and not again when a message sent after its nudge is itself cancelled. It ignores the main loop, `user-rejected` refusals, agents without a messaging tool, and Workflow subagents. A missing, lagging or unreadable transcript makes it silent. Each block is counted in the guard journal. Node filesystem/path APIs only; works on Linux, macOS and Windows.
+
 ### `wt-probe-claim-guard-hook.mjs` — probe-provenance validator (PreToolUse)
 
 Intercepts `SendMessage` and validates a leading `PROBE-CLAIM` stanza when one is present. It denies malformed stanzas, missing `claim`, `set`, `instrument`, or `self-exclusion` fields, and hollow self-exclusions, so later readers can reconstruct what was scanned and whether the probe counted itself. Ordinary messages and undeclared probe-derived claims pass through; recognizing undeclared claims is explicitly outside this prototype's coverage. Internal failures use the fail-open hook wrapper.
