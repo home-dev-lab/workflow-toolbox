@@ -258,16 +258,25 @@ it.each([
   const directory = root()
   const holder = await acquireSuiteLock({ root: directory, argv: ['certification'] })
   const queued = () => (existsSync(join(directory, 'queue.d')) ? readdirSync(join(directory, 'queue.d')).filter((entry) => entry.endsWith('.json')) : [])
-  const child = spawn(process.execPath, ['node_modules/vitest/vitest.mjs', ...args, '-t', 'sanitises untrusted holder fields'], {
+  // The nested run shares this toolkit's config, whose coverage directory is the one the enclosing
+  // `pnpm test --coverage` writes into: a nested `--coverage` run cleans it and the enclosing run then
+  // fails reading its own coverage files. Every nested run gets its own coverage directory.
+  const sharedCoverageTmp = join(ROOT, 'toolkit', '.lane', 'coverage', '.tmp')
+  mkdirSync(sharedCoverageTmp, { recursive: true })
+  const sentinel = join(sharedCoverageTmp, `nested-run-sentinel-${process.pid}-${Date.now()}.json`)
+  writeFileSync(sentinel, '{}')
+  const child = spawn(process.execPath, ['node_modules/vitest/vitest.mjs', ...args, `--coverage.reportsDirectory=${join(directory, 'coverage')}`, '-t', 'sanitises untrusted holder fields'], {
     cwd: join(ROOT, 'toolkit'), env: { ...envFor(directory), CI: '1', WT_VITEST_MAX_WORKERS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
   })
   try {
     await waitFor(() => queued().length === 1, 15_000)
     const record = JSON.parse(readFileSync(join(directory, 'queue.d', queued()[0]!), 'utf8')) as { light?: boolean }
     expect(record.light === true, 'the queue ticket of the Vitest global setup').toBe(light)
+    expect(existsSync(sentinel), 'the nested run left the enclosing coverage directory alone').toBe(true)
   } finally {
     child.kill('SIGKILL')
     releaseSuiteLock(holder)
+    rmSync(sentinel, { force: true })
   }
 }, 30_000)
 
