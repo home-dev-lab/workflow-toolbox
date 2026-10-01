@@ -292,7 +292,7 @@ test('host hook records daily calls, bounded errors and slow calls on the store'
   register((name, handler) => handlers.set(name, handler), { enabled: true });
   const $ = { env: { get: async (key) => key === 'CLAUDE_CONFIG_DIR' ? '/fixture/config' : null },
     fs: { list: async () => [], stat: async () => ({ kind: 'dir' }) }, ui: { log: async () => {} },
-    store: { get: async (key) => stored.get(key), set: async (key, value) => stored.set(key, value) }, session: { id: async () => 'one', messages: async () => [] } };
+    store: { get: async (key) => stored.get(key), set: async (key, value) => stored.set(key, value) }, session: { id: async () => 'one', root: async () => '/fixture', messages: async () => [] } };
   await handlers.get('tool.call')($, { tool: 'Agent' }, async () => ({}));
   await assert.rejects(handlers.get('tool.call')($, { tool: 'Agent' }, async () => { throw new Error('host error'); }), /host error/);
   await handlers.get('turn.complete')($, {}, async () => ({}));
@@ -487,7 +487,7 @@ test('hook health bounds errors and days, excludes downstream latency, and survi
     register((name, handler) => handlers.set(name, handler), { enabled: true });
     const $ = { env: { get: async (key) => key === 'CLAUDE_CONFIG_DIR' ? '/fixture/config' : null },
       fs: { list: async () => [{ name: 'bad.md', kind: 'file' }], stat: async (path) => ({ kind: path.endsWith('.md') ? 'file' : 'dir', size: 999999 }) },
-      ui: { log: async () => {} }, session: { id: async () => 'one', messages: async () => { tick += 110; return [{ role: 'assistant' }]; } },
+      ui: { log: async () => {} }, session: { id: async () => 'one', root: async () => '/fixture', messages: async () => { tick += 110; return [{ role: 'assistant' }]; } },
       store: { get: async (key) => { if (key === 'health' && failHealth) { failHealth = false; throw new Error('health unavailable'); } return stored.get(key); },
         set: async (key, value) => stored.set(key, value) } };
     for (let n = 0; n < 32; n++) {
@@ -522,7 +522,7 @@ test('a failed health store read cannot discard a served rule or its compliance 
     fs: { list: async (path) => path.endsWith('rules-on-demand') ? [{ name: 'a.md', kind: 'file' }] : [],
       stat: async (path) => ({ kind: path.endsWith('.md') ? 'file' : 'dir', size: 100 }),
       read: async () => text.replace("check: 'gate-background'", "check: 'agent-model'") },
-    ui: { log: async () => {} }, session: { id: async () => 'one' },
+    ui: { log: async () => {} }, session: { id: async () => 'one', root: async () => '/fixture' },
     store: { get: async (key) => { if (key === 'health' && failHealth) { failHealth = false; throw new Error('health read failed'); } return stored.get(key); },
       set: async (key, value) => stored.set(key, value) } };
   await handlers.get('tool.call')($, { tool: 'Agent', input: { model: 'sonnet' }, cwd: '/fixture' }, async () => ({}));

@@ -42,7 +42,9 @@ export async function replayTranscript({ transcriptText, configDir = configDirec
     ui: { log: async (text) => { logs.push(text); } },
     env: { get: async (name) => name === 'CLAUDE_CONFIG_DIR' ? configDir : process.env[name] },
     store: { get: async (key) => store[key], set: async (key, value) => { store[key] = value; } },
-    session: { id: async () => sessionId, messages: async () => messages },
+    // The replayed session is rooted at its project: project rules come from it and its ancestors, minus a main
+    // checkout around a linked worktree, which the hook reads from the git files through this stub's `fs`.
+    session: { id: async () => sessionId, messages: async () => messages, root: async () => resolve(projectRoot) },
     fs: {
        list: async (path) => (await readdir(absolute(path), { withFileTypes: true })).map((entry) => {
          let kind = 'other';
@@ -50,7 +52,11 @@ export async function replayTranscript({ transcriptText, configDir = configDirec
          else if (entry.isDirectory()) kind = 'dir';
          return { name: entry.name, kind, isLink: entry.isSymbolicLink() };
        }),
-       stat: async (path) => ({ kind: (await stat(absolute(path))).isDirectory() ? 'dir' : 'file', size: (await stat(absolute(path))).size, realPath: await realpath(absolute(path)) }),
+       stat: async (path) => {
+         const info = await stat(absolute(path));
+         // A special file (socket, FIFO, device) is `other`, as the host and the startup command report it.
+         return { kind: info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other', size: info.size, realPath: await realpath(absolute(path)) };
+       },
       read: async (path) => readFile(absolute(path), 'utf8'),
       write: async () => { throw new Error('replay never writes files'); },
     },

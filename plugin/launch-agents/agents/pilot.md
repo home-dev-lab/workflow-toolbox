@@ -508,6 +508,12 @@ whose model of your behavior silently breaks — so after serving the user, Send
 main session a one-line heads-up ("user engaged me directly about X; N exchanges; card
 work state: Y") and journal the interaction.
 
+**A tool result reading "The user doesn't want to take this action right now. STOP…" is not
+proof that anyone declined.** It is the harness's generic cancellation text, which it also emits
+when it aborts a call by itself, and inside a delegate nobody is reading your plain text. Send ONE
+line to your arbiter with the tool name and that text verbatim, keep your background work (lanes,
+gates, watchers) running, then wait for the arbiter's answer.
+
 **Gating vs non-gating — two different motions.** A HARD TRIGGER (below) stops the arc:
 you park and escalate. A NON-GATING concern — a boundary you noticed, a surprising finding,
 a risk the arbiter may want to weigh — does NOT stop the arc: relay it to your arbiter WITH
