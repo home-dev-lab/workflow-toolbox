@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hostStore, hookFixture, readerTotals } from './store-host-fake.mjs';
+import { hostStore, hookFixture, readerTotals, exhaustedBudgetClock } from './store-host-fake.mjs';
 import { STORE_ARCHIVE, archiveTexts, splitUnit } from '../hooks/store-budget.js';
 import { archivedSegments, sumSessions } from '../scripts/delivery-join.mjs';
 import { readStoreArchives } from '../scripts/store-archives.mjs';
@@ -86,7 +86,8 @@ const promptRule = `---\non-demand:\n  triggers:\n    - kind: 'prompt'\n      re
 test('K2/K4b: 101 trigger errors written under a clock that goes back, one snapshot evicted, read back as 101; every new row carries eid', async (t) => {
   const root = await sandbox(t, 'rod-k2-');
   const store = hostStore();
-  const f = await hookFixture(root, store);
+  // The error rows need an exhausted regex budget, not the scan that reaches it: the budget clock exhausts it at once.
+  const f = await hookFixture(root, store, { triggerClock: exhaustedBudgetClock() });
   await writeFile(join(f.config, 'rules-on-demand', 'sample.md'), promptRule);
   const RealDate = Date;
   let clock = Date.parse(AT);
