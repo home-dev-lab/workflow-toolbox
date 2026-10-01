@@ -8,7 +8,7 @@ import { resolvedBinary } from './resolved-binary.mjs'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
 import { readFrontmatterFile } from './frontmatter.mjs'
-import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
+import { announceDroppedBinds, announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 
 // The launcher reaches the suite-lock CLI through this module, so an adopted launcher (which
 // loads it from the installed plugin root) resolves the CLI of that same plugin.
@@ -65,9 +65,10 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
   const { sandboxPaths, readonlyCwd, ...rest } = options
   const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
   // A bridge that dies mid-run reports on the same stream as the lane's own stderr (its run log).
-  const diagnostics = Array.isArray(rest.stdio) && typeof rest.stdio[2] === 'number' ? rest.stdio[2] : undefined
+  const diagnostics = Array.isArray(rest.stdio) ? rest.stdio[2] : undefined
   const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform, readonlyCwd, diagnostics })
-  announceUnsandboxedLane(sandbox)
+  announceUnsandboxedLane(sandbox, diagnostics)
+  announceDroppedBinds(sandbox, diagnostics)
   const [command, commandArgs] = sandbox.wrap(bin, args)
   let child
   // A synchronous spawn failure (ENOENT on bwrap, EAGAIN) must still tear the bridges down.
