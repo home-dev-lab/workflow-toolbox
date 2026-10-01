@@ -239,6 +239,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this SessionStart Planka degraded-mode reminder under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-session-env-dedup-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this SessionStart session-env duplicate-export cleanup and size alarm under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-arc-watch.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this monitor, its terminal-state output and attributable completion relay under Shipped Hooks, Guards & Monitors.',
@@ -1088,6 +1093,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-adopt-rules-check-hook.mjs',
       'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
       'plugin/bin/wt-unsynced-buffer-hook.mjs',
+      'plugin/bin/wt-session-env-dedup-hook.mjs',
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
       'plugin/bin/wt-lane-consent-gate-hook.mjs',

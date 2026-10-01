@@ -123,7 +123,8 @@ describe('raw host primitive quality ratchet', () => {
     // their filesystem primitives live in bin/lib/host, so the primitive ceiling stays unchanged.
     // The shipped Depends-on parser (depends-on-parser.mjs) adds one pure module with no host operation.
     // The shared find_cards page rule (find-cards-page.mjs) adds one pure module with no host operation.
-    expect(result.perimeterFiles).toBe(257)
+    // The session-env dedup hook adds one perimeter file; its filesystem primitives live in bin/lib/host.
+    expect(result.perimeterFiles).toBe(258)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
