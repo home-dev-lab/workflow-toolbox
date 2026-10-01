@@ -188,9 +188,34 @@ describe('review regression locks — parser', () => {
     expect(run('xargs -0 rm -rf').denied).toBe(false)
   })
   it('F17 scans a large glob in linear time', () => {
-    const start = performance.now()
-    scanRmCriticalPath(`rm -f /${'*'.repeat(80000)}/file`, { cwd: '/work/project' })
-    expect(performance.now() - start).toBeLessThan(200)
+    // Measured in CPU time (the thread's where Node exposes it), never wall clock: a wall-clock bound
+    // reads machine load. One scan of 160k stars is compared with eight scans of 20k, the same number
+    // of characters: a linear scan costs about the same on both sides, a quadratic one about 8x more
+    // on the single long scan. The 3x margin plus 25 ms absorbs timer granularity (about 16 ms on
+    // Windows) and noise; the 1 s ceiling catches a slow scan whose growth looks linear. A linear
+    // scan of 160k stars costs a few ms.
+    const cpuMs = (): number => {
+      const usage = typeof process.threadCpuUsage === 'function' ? process.threadCpuUsage() : process.cpuUsage()
+      return (usage.user + usage.system) / 1000
+    }
+    const scanCost = (stars: number, times: number): number => {
+      const command = `rm -f /${'*'.repeat(stars)}/file`
+      const before = cpuMs()
+      for (let i = 0; i < times; i++) scanRmCriticalPath(command, { cwd: '/work/project' })
+      return cpuMs() - before
+    }
+    const ceilingMs = 1000
+    scanCost(1000, 1) // warm-up
+    const longRuns: number[] = []
+    const shortRuns: number[] = []
+    for (let round = 0; round < 3; round++) {
+      longRuns.push(scanCost(160_000, 1))
+      expect(longRuns[round], `one scan of 160k stars took ${longRuns[round]} CPU ms`).toBeLessThan(ceilingMs)
+      shortRuns.push(scanCost(20_000, 8))
+    }
+    const long = Math.min(...longRuns)
+    const short = Math.min(...shortRuns)
+    expect(long, `1 x 160k: ${long} CPU ms, 8 x 20k: ${short} CPU ms`).toBeLessThanOrEqual(3 * short + 25)
   })
   it('F18 scans trap strings but ignores incidental rm text on PermissionRequest', () => {
     expect(run("trap 'rm -f $X/*.log' EXIT").denied).toBe(true)
