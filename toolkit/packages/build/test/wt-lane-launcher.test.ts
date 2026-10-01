@@ -1785,6 +1785,22 @@ describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose 
     expect(result.status, result.stderr).toBe(0)
     expect(spawned(f)).toBe(true)
   })
+  it('launches when pnpm-lock.yaml is checked out with CRLF line ends and pnpm\'s own copy is LF', () => {
+    const f = fixture(SPAWNED)
+    const dir = join(f.dir, 'toolkit')
+    pnpmProject(dir, LOCK)
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), LOCK.replace(/\n/g, '\r\n'))
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it('still refuses a CRLF lockfile whose content differs from the installed copy', () => {
+    const f = fixture(SPAWNED)
+    const dir = join(f.dir, 'toolkit')
+    pnpmProject(dir, LOCK)
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\r\nimporters: { other: {} }\r\n')
+    refusedFor(run(f), dir, 'pnpm install --offline --frozen-lockfile')
+  })
   it('launches past a missing install under --allow-missing-install', () => {
     const f = fixture(SPAWNED)
     pnpmProject(join(f.dir, 'toolkit'), null)

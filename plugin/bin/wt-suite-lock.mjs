@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
-import { signalCoveredCommand, stopChildForLostSuiteLock } from './lib/host/suite-lock-host.mjs'
+import { coveredCommandSpawnOptions, signalCoveredCommand, stopCoveredCommandTree } from './lib/host/suite-lock-host.mjs'
 import {
   DEFAULT_SUITE_LOCK_STALE_S,
   DEFAULT_SUITE_LOCK_WAIT_S,
@@ -79,19 +79,22 @@ function spawnCommand(command, leaseLost = null, marker = null) {
   return new Promise((resolve, reject) => {
     const refusal = windowsShimArgumentRefusal(command)
     if (refusal) { reject(new Error(refusal)); return }
+    // A broker lease's command gets its own process group (POSIX), so losing the lease stops its whole tree.
+    const group = Boolean(leaseLost)
     const child = spawn(command[0], command.slice(1), {
       stdio: 'inherit',
       ...(marker ? { env: { ...process.env, WT_SUITE_LEASE: marker } } : {}),
       // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
       // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
       shell: spawnNeedsShell(command[0]),
+      ...coveredCommandSpawnOptions({ broker: group }),
     })
     let forwardedSignal = null
     let lockLost = false
-    let cancelForcedStop = null
+    let treeStopped = null
     const forward = (signal) => {
       forwardedSignal = signal
-      if (marker) signalCoveredCommand(child, signal)
+      if (marker) signalCoveredCommand(child, signal, { group })
       else child.kill(signal)
     }
     const forwardInterrupt = () => forward('SIGINT')
@@ -101,14 +104,14 @@ function spawnCommand(command, leaseLost = null, marker = null) {
     leaseLost?.then((reason) => {
       lockLost = true
       process.stderr.write(`wt-suite-lock: suite lock lost (${reason || 'broker gone'}); command stopped\n`)
-      cancelForcedStop = stopChildForLostSuiteLock(child)
+      // The lease is released (the broker socket closed, by the caller's finally) only once this resolves.
+      treeStopped = stopCoveredCommandTree(child, { group })
     })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
       process.removeListener('SIGINT', forwardInterrupt)
       process.removeListener('SIGTERM', forwardTerminate)
-      cancelForcedStop?.()
-      if (lockLost) { resolve(75); return }
+      if (lockLost) { treeStopped.then(() => resolve(75)); return }
       if (code !== null) resolve(code)
       else resolve((signal ?? forwardedSignal) === 'SIGINT' ? 130 : 143)
     })
