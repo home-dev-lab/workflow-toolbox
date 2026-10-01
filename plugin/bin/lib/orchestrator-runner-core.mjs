@@ -7,6 +7,8 @@ import { gateEnvironment, treeSignature } from './gate-evidence.mjs'
 import { createSdkJudge } from './orchestrator-judge.mjs'
 import { createWaveServer } from './wave-lifecycle-server.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
+import { BoardUnavailable } from './board-http-client.mjs'
+import { hasDependsOnLine, parseDependsOn } from './depends-on-parser.mjs'
 
 const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, maxCards: Infinity, maxMinutes: Infinity, missionLabels: [], hard: [] }
 const ELIGIBLE_LISTS = new Set(['Backlog', 'Next', 'In Progress'])
@@ -114,25 +116,42 @@ function firstSymlink(root) {
   return null
 }
 
-// Returns null when the card is eligible, otherwise the reason it is skipped — every skip is
+// A dependency the board says does not exist: get_card answers nothing usable, or refuses with a
+// non-transport 404. Every other refusal (transport, any other status) is a real outage and stays fatal.
+async function fetchDependency(board, id) {
+  let response
+  try { response = await board.getCard(id) }
+  catch (error) {
+    if (error instanceof BoardUnavailable && error.transport !== true && error.status === 404) return null
+    throw error
+  }
+  return CARD_ID.test(String(response?.id ?? '')) ? response : null
+}
+
+// Returns null when a mission card is eligible, otherwise the reason it is skipped — every skip is
 // named in the report (Sol round 2: a malformed Depends-on line used to make a card vanish silently).
-async function ineligibleReason(card, requiredLabels, board, known) {
+// The Depends-on line is read by the shipped parser, the same one every other picker uses: no line is
+// "not checked", never pickable; an unreadable line or a missing dependency skips this card only.
+export async function missionIneligibilityReason(card, requiredLabels, board, known = new Map()) {
   const all = labels(card)
   if (!['P0', 'P1', 'P2'].some((label) => all.includes(label))) return 'no priority label'
   if (!['feature', 'chore', 'bug', 'research'].some((label) => all.includes(label))) return 'no type label'
   if (!['effort:S', 'effort:M', 'effort:L'].some((label) => all.includes(label))) return 'no effort label'
   if (!requiredLabels.every((label) => all.includes(label))) return `missing mission label ${requiredLabels.find((label) => !all.includes(label))}`
-  const lines = String(card.description ?? card.text ?? '').split(/\r?\n/).filter((line) => /^\s*Depends-on:/i.test(line))
-  for (const line of lines) {
-    const value = line.replace(/^\s*Depends-on:\s*/i, '').trim()
-    if (/^none$/i.test(value)) continue
-    const match = /^#?(\d+)$/.exec(value)
-    if (!match) return `malformed Depends-on line "${value}"`
-    if (!CARD_ID.test(match[1])) throw new Error(`board unavailable: malformed card id ${match[1]}`)
-    let dependency = known.get(match[1])
-    if (!dependency) { dependency = validateBoardCard(await board.getCard(match[1])); known.set(match[1], dependency) }
+  const description = String(card.description ?? card.text ?? '')
+  if (!hasDependsOnLine(description)) return 'no Depends-on line (not checked)'
+  const { ids, unparseable } = parseDependsOn(description)
+  if (unparseable.length > 0) return `malformed Depends-on line "${unparseable[0]}"`
+  for (const id of ids) {
+    if (!CARD_ID.test(id)) return `dependency id ${id} is not a valid card id`
+    let dependency = known.get(id)
+    if (!dependency) {
+      dependency = await fetchDependency(board, id)
+      if (!dependency) return `dependency ${id} not found`
+      known.set(id, dependency)
+    }
     const dependencyList = await resolveListName(board, dependency)
-    if (dependencyList !== 'Done') return `dependency ${match[1]} is ${dependencyList || 'unknown'}, not Done`
+    if (dependencyList !== 'Done') return `dependency ${id} is ${dependencyList || 'unknown'}, not Done`
   }
   return null
 }
@@ -258,7 +277,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       const known = new Map(all.map((card) => [String(card.id), card]))
       const eligible = []
       for (const card of all) {
-        const reason = await ineligibleReason(card, options.missionLabels, board, known)
+        const reason = await missionIneligibilityReason(card, options.missionLabels, board, known)
         if (reason) { if (!skipped.some((entry) => entry.id === String(card.id))) skipped.push({ id: String(card.id), reason }) }
         else eligible.push(card)
       }
@@ -266,6 +285,7 @@ export async function runOrchestrator(input, dependencies = {}) {
     }
     let candidates
     if (options.cards) {
+      // Explicit cards are the caller's selection, not the orchestrator's pick: no Depends-on check here.
       candidates = []
       for (const id of [...new Set(options.cards.map(String))]) {
         const response = await board.getCard(id)
@@ -337,7 +357,7 @@ export async function runOrchestrator(input, dependencies = {}) {
         if (!options.missionList) continue
         try {
           const routedCard = validateBoardCard(await board.getCard(String(routed.id)))
-          routed.missionAssessment = await ineligibleReason(routedCard, options.missionLabels, board, new Map([[String(routed.id), routedCard]])) ?? 'eligible for mission'
+          routed.missionAssessment = await missionIneligibilityReason(routedCard, options.missionLabels, board, new Map([[String(routed.id), routedCard]])) ?? 'eligible for mission'
         } catch (error) { routed.missionAssessment = `board unavailable: ${errorText(error)}` }
       }
       const beforeGates = treeSignature(worktree)

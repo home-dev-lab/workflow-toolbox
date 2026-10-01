@@ -7,16 +7,18 @@
 // actual CHOICE among pickable cards remains a human/orchestrator judgment call
 // and is never made here.
 //
-// KNOWN LIMITATIONS (found by cross-family review, 2026-07-27, disclosed rather
-// than fixed — same shape as card-hygiene-lens.ts, which shares this parsing):
-//   → `Depends-on: #12 (see also #34)` extracts BOTH ids as dependencies; a
-//     `#<id>` in explanatory prose is indistinguishable from a real dependency.
+// Depends-on lines are read by the plugin's shipped parser, the one every picker
+// shares: a card with no line is "not checked" (unjudgeable), never pickable.
+//
+// KNOWN LIMITATION (found by cross-family review, 2026-07-27, disclosed rather
+// than fixed):
 //   → `Backlog`/`Next`/`Done` are matched by exact, hardcoded name — this script
 //     assumes THIS project's board convention; a board with different list
 //     names needs `CANDIDATE_LISTS`/the `'Done'` check updated, not auto-detected.
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { hasDependsOnLine, parseDependsOn } from '../../plugin/bin/lib/depends-on-parser.mjs'
 import { CATEGORY_VALUES } from './card-hygiene-lens.ts'
 import { PRIORITY_VALUES } from './label-intent-lens.ts'
 import { fetchBoardCards, type BoardCard } from './planka-mcp-client.ts'
@@ -51,20 +53,8 @@ export interface PickableResult {
 }
 
 const CANDIDATE_LISTS = new Set(['Backlog', 'Next'])
-const DEPENDS_ON = /depends-on\s*:([^\r\n]*)/gi
-const CARD_ID = /#(\d+)\b/g
+const NO_LINE_REASON = 'no Depends-on line: not checked (add one; "Depends-on: none" qualifies)'
 const HARD_DEADLINE = /^hard-deadline\s*:\s*([^\r\n]*)/im
-
-function dependencyIds(description: string): string[] {
-  const ids: string[] = []
-  for (const declaration of description.matchAll(DEPENDS_ON)) {
-    for (const match of (declaration[1] ?? '').matchAll(CARD_ID)) {
-      const id = match[1]
-      if (id !== undefined) ids.push(id)
-    }
-  }
-  return [...new Set(ids)]
-}
 
 function listExclusionReason(listName: string): string {
   if (listName === 'In Progress') return 'already claimed'
@@ -88,7 +78,17 @@ export function computePickable(cards: BoardCard[]): PickableResult {
       continue
     }
 
-    const dependencies = dependencyIds(card.description)
+    const declared = hasDependsOnLine(card.description)
+    const { ids: dependencies, unparseable } = parseDependsOn(card.description)
+    if (unparseable.length > 0) {
+      result.excluded.push({
+        cardId: card.id,
+        name: card.name,
+        reason: `unparseable Depends-on line: ${unparseable.map((line) => `"${line}"`).join('; ')}`,
+      })
+      continue
+    }
+
     const dependencyFailures: string[] = []
     for (const dependencyId of dependencies) {
       const dependency = cardsById.get(dependencyId)
@@ -112,17 +112,17 @@ export function computePickable(cards: BoardCard[]): PickableResult {
 
     const categories = CATEGORY_VALUES.filter((category) => card.labels.includes(category))
     const priorities = PRIORITY_VALUES.filter((priority) => card.labels.includes(priority))
-    const labelProblems: string[] = []
-    if (categories.length === 0) labelProblems.push('no category label')
-    if (categories.length > 1) labelProblems.push(`multiple category labels: ${categories.join(', ')}`)
-    if (priorities.length === 0) labelProblems.push('no priority label')
-    if (priorities.length > 1) labelProblems.push(`multiple priority labels: ${priorities.join(', ')}`)
+    const unjudgeableReasons: string[] = declared ? [] : [NO_LINE_REASON]
+    if (categories.length === 0) unjudgeableReasons.push('no category label')
+    if (categories.length > 1) unjudgeableReasons.push(`multiple category labels: ${categories.join(', ')}`)
+    if (priorities.length === 0) unjudgeableReasons.push('no priority label')
+    if (priorities.length > 1) unjudgeableReasons.push(`multiple priority labels: ${priorities.join(', ')}`)
 
-    if (labelProblems.length > 0) {
+    if (unjudgeableReasons.length > 0) {
       result.unjudgeable.push({
         cardId: card.id,
         name: card.name,
-        reason: labelProblems.join('; '),
+        reason: unjudgeableReasons.join('; '),
       })
       continue
     }
@@ -137,7 +137,7 @@ export function computePickable(cards: BoardCard[]): PickableResult {
       category,
       priority,
       ...(hardDeadline === undefined ? {} : { hardDeadline }),
-      reason: dependencies.length === 0 ? 'no dependencies' : `all ${dependencies.length} dependencies Done`,
+      reason: dependencies.length === 0 ? 'Depends-on: none' : `all ${dependencies.length} dependencies Done`,
     })
   }
 

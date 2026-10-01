@@ -105,6 +105,22 @@ async function mcpRequest(
   }
 }
 
+// find_cards answered a bare array until the Planka MCP server started paging it: the live
+// server returned `{ total, offset, limit, cards }` on 2026-10-01 (limit null, every card in one
+// page). Both shapes are read; a page that stops short of `total` is refused, never returned as the
+// whole board, since every consumer would then read a missing dependency as "does not exist".
+function cardsOf(parsed: unknown): RawCard[] {
+  if (Array.isArray(parsed)) return parsed as RawCard[]
+  if (typeof parsed !== 'object' || parsed === null) throw new Error('expected an array or a paged object')
+  const page = parsed as { cards?: unknown, total?: unknown, offset?: unknown }
+  if (!Array.isArray(page.cards)) throw new Error('expected an array or a paged object with a cards array')
+  const offset = typeof page.offset === 'number' ? page.offset : 0
+  if (offset !== 0 || (typeof page.total === 'number' && page.cards.length < page.total)) {
+    throw new Error(`partial page: ${page.cards.length} cards from offset ${offset} of ${page.total}`)
+  }
+  return page.cards as RawCard[]
+}
+
 export async function fetchBoardCards(opts: FetchBoardOptions): Promise<BoardCard[]> {
   const mcpUrl = opts.mcpUrl ?? DEFAULT_MCP_URL
   const initialized = await mcpRequest(
@@ -145,9 +161,7 @@ export async function fetchBoardCards(opts: FetchBoardOptions): Promise<BoardCar
 
   let cards: RawCard[]
   try {
-    const parsed = JSON.parse(textItem.text) as unknown
-    if (!Array.isArray(parsed)) throw new Error('expected an array')
-    cards = parsed as RawCard[]
+    cards = cardsOf(JSON.parse(textItem.text) as unknown)
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : ''
     throw new Error(`tools/call result content is not parseable JSON${detail}`)
