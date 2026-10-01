@@ -109,11 +109,14 @@ jobs:
           echo "shard 1/2: ${{ steps.mac_shard_1.outcome }} · shard 2/2: ${{ steps.mac_shard_2.outcome }}"
           test "${{ steps.mac_shard_1.outcome }}" = "success" && test "${{ steps.mac_shard_2.outcome }}" = "success"
         timeout-minutes: 1
-      # Windows measured 2026-09, eight runs: the full suite step took 1217-1724 s (coverage and build included);
-      # the two macOS shards split the same suite 61-66 % / 34-39 % by time, so the worst Windows shard is
-      # about 0.66 x 1724 s = 19 min, and 28 minutes is ~1.5x that. The shards run coverage without thresholds
-      # so the custom coverage provider's merge and cleanup path stays exercised on Windows. Shard 1 (the heavy
-      # half) carries nothing else; shard 2 carries the diagnostic step and the typecheck, quality, lint and smoke steps.
+      # Windows measured before sharding (eight runs, 2026-09): the full suite step took 1217-1724 s (coverage and
+      # build included). First sharded run (cross-os run 36811210122): shard 1 test step 885 s (job 935 s), shard 2
+      # test step 642 s (job 978 s). Budgets: shard 1 28 min, shard 2 20 min, each ~1.9x the measured step. Shard 2
+      # also carries the Diagnose step (8 min, `always()`): setup ~3 min + 20 + 8 = 31 min fits the 35-minute job, so a
+      # hung suite still leaves room for the process table and the artifact upload (shard 1: 3 + 28 = 31). The shards
+      # run coverage without thresholds so the custom coverage provider's merge and cleanup path stays exercised on
+      # Windows. Shard 1 carries nothing else; shard 2 carries the diagnostic step and the typecheck, quality, lint
+      # and smoke steps.
       - name: Test (Windows shard ${{ matrix.shard }}/2)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
@@ -124,7 +127,7 @@ jobs:
           New-Item -ItemType Directory -Force ci-diagnostics | Out-Null
           pnpm test:shard --shard=${{ matrix.shard }}/2 --coverage 2>&1 | Tee-Object ci-diagnostics/vitest-shard-${{ matrix.shard }}-of-2.log
           exit $LASTEXITCODE
-        timeout-minutes: 28
+        timeout-minutes: ${{ matrix.shard == 1 && 28 || 20 }}
       # Dispatcher step contract: names beginning "Diagnose " are diagnostic and never gate the job;
       # every other step, including the continue-on-error macOS shards, is gating. Keep diagnostic
       # step names under that prefix so job logs can distinguish them from blocking failures.
