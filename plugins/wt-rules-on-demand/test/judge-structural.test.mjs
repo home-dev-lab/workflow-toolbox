@@ -330,7 +330,7 @@ test('rollback input names in any output component are refused before creation',
   const f = await fixture(t, []);
   await writeFile(f.casesFile, JSON.stringify({ caseId: 'a', rule: 'r.md', governedActs: 0 }) + '\n');
   const script = fileURLToPath(new URL('../scripts/judge-cases.mjs', import.meta.url));
-  for (const name of ['wt-rules-on-demand_new.json', 'compliance-verdicts-archive-1-2.jsonl']) {
+  for (const name of ['wt-rules-on-demand_new.json', 'compliance-verdicts-archive-1-2.jsonl', 'rod-store-archive-1-2.json']) {
     const out = join(f.root, 'outside', name, 'nested');
     await assert.rejects(() => judgeCases({ casesFile: f.casesFile, out, rollbackConfigDir: join(f.root, 'selected') }), /rollback input/i, out);
     const extracted = spawnSync(process.execPath, [script, 'extract', '--transcript', f.transcript, '--rules-dir', f.rules, '--config-dir', join(f.root, 'selected'), '--out', out], { encoding: 'utf8' });
