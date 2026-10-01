@@ -15,6 +15,7 @@ const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 const GUARD = 'wt-suite-lock-bypass-guard-hook.mjs'
 const BYPASS_TEXT = 'Never bypass the machine suite lock'
 const ISOLATED_TEXT = 'An isolated lock dir is legitimate only for a bounded mutation or red-proof run'
+const GUARD_TAG = '[workflow-toolbox suite-lock bypass guard]'
 
 let scratch: string
 let journalDir: string
@@ -88,6 +89,8 @@ function expectWarned(command: string, cls: string, opts: RunOptions = {}) {
   expect(r.status, r.stderr).toBe(0)
   expect(r.stderr).not.toContain('FAILED OPEN')
   expect(r.out?.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
+  // A warning the sub-agent cannot read is no warning: the context must carry the guard's own text.
+  expect(r.context).toContain(GUARD_TAG)
   expect(r.out?.hookSpecificOutput).not.toHaveProperty('permissionDecision')
   expect(r.stdout).not.toMatch(/"(?:deny|allow)"/)
   const entries = journal()
@@ -95,6 +98,8 @@ function expectWarned(command: string, cls: string, opts: RunOptions = {}) {
   for (const entry of entries) {
     expect(entry).toMatchObject({ guard: GUARD, decision: 'warned' })
     expect((entry.evidence as Record<string, unknown>)?.agentType).toBe(opts.agentType ?? 'general-purpose')
+    // The tool_use_id lets a reviewer find the call in the transcript and adjudicate the warning.
+    expect((entry.evidence as Record<string, unknown>)?.toolUseId).toBe('toolu_test')
   }
   return r
 }
@@ -137,6 +142,11 @@ describe('wt-suite-lock-bypass-guard-hook — lock-disabled (WT_SUITE_LOCK=0)', 
     ['cmd /k', 'cmd /k "set WT_SUITE_LOCK=0&& pnpm test"'],
     ['Git Bash cmd //c', 'cmd //c "set WT_SUITE_LOCK=0&& pnpm test"'],
     ['cmd set /a arithmetic assignment', 'cmd /c "set /a WT_SUITE_LOCK=0&& pnpm test"'],
+    ['double-quoted env argument', 'env "WT_SUITE_LOCK=0" pnpm test'],
+    ['single-quoted env argument', "env 'WT_SUITE_LOCK=0' pnpm test"],
+    ['double-quoted export argument', 'export "WT_SUITE_LOCK=0"; pnpm test'],
+    ['setsid wrapper', 'setsid env WT_SUITE_LOCK=0 pnpm test'],
+    ['bash with long options before -c', 'bash --noprofile --norc -c "WT_SUITE_LOCK=0 pnpm test"'],
   ])('warns for the %s form', (_form, command) => {
     const r = expectWarned(command, 'lock-disabled')
     expect(r.context).toContain(BYPASS_TEXT)
@@ -160,6 +170,7 @@ describe('wt-suite-lock-bypass-guard-hook — lock-disabled (WT_SUITE_LOCK=0)', 
     ['heredoc body', "cat > /tmp/notes.md <<'EOF'\nWT_SUITE_LOCK=0 pnpm test\nEOF"],
     ['comment', 'pnpm test # not WT_SUITE_LOCK=0'],
     ['cmd set /p reads its value from input', 'cmd /c "set /p WT_SUITE_LOCK=Value?&& pnpm test"'],
+    ['a fully quoted prefix word is a command name, not an assignment', '"WT_SUITE_LOCK=0" pnpm test'],
     ['unrelated command', 'git status'],
   ])('stays silent: %s', (_why, command) => {
     expectSilent(command)
@@ -174,6 +185,7 @@ describe('wt-suite-lock-bypass-guard-hook — lock directory', () => {
     ['HOME expansion', 'WT_SUITE_LOCK_DIR="$HOME/lock" pnpm test'],
     ['braced HOME expansion', 'WT_SUITE_LOCK_DIR=${HOME}/lock pnpm test'],
     ['Windows drive path', `pwsh -c '$env:WT_SUITE_LOCK_DIR = "C:\\Users\\u\\lock"; pnpm test'`],
+    ['single-quoted export argument', "export 'WT_SUITE_LOCK_DIR=/x'; pnpm test"],
   ])('warns lock-dir-elsewhere for a %s', (_why, command) => {
     const r = expectWarned(command, 'lock-dir-elsewhere')
     expect(r.context).toContain(BYPASS_TEXT)
@@ -216,6 +228,17 @@ describe('wt-suite-lock-bypass-guard-hook — forged lease', () => {
   it('stays silent for an empty lease', () => {
     expectSilent('WT_SUITE_LEASE= pnpm test')
   })
+
+  // Forwarding a variable as itself changes nothing the lock reads, so no class fires.
+  it.each([
+    ['double-quoted lease', 'WT_SUITE_LEASE="$WT_SUITE_LEASE" pnpm test'],
+    ['braced lease', 'WT_SUITE_LEASE=${WT_SUITE_LEASE} pnpm test'],
+    ['exported braced lock dir', 'export WT_SUITE_LOCK_DIR="${WT_SUITE_LOCK_DIR}"; pnpm test'],
+    ['PowerShell lease', "pwsh -c '$env:WT_SUITE_LEASE = $env:WT_SUITE_LEASE; pnpm test'"],
+    ['cmd lease', 'cmd /c "set WT_SUITE_LEASE=%WT_SUITE_LEASE%&& pnpm test"'],
+  ])('stays silent when a variable is forwarded as itself: %s', (_why, command) => {
+    expectSilent(command)
+  })
 })
 
 describe('wt-suite-lock-bypass-guard-hook — forced release and stale reclaim', () => {
@@ -223,6 +246,8 @@ describe('wt-suite-lock-bypass-guard-hook — forced release and stale reclaim',
     ['bare CLI', 'wt-suite-lock release --force'],
     ['node script path', 'node plugin/bin/wt-suite-lock.mjs release --force'],
     ['after cd', 'cd toolkit && node ../plugin/bin/wt-suite-lock.mjs release --force'],
+    ['PowerShell script', "pwsh -c 'node plugin/bin/wt-suite-lock.mjs release --force'"],
+    ['cmd script', 'cmd /c "node plugin/bin/wt-suite-lock.mjs release --force"'],
   ])('warns lock-released-forced for the %s', (_why, command) => {
     const r = expectWarned(command, 'lock-released-forced')
     expect(r.context).toContain(BYPASS_TEXT)
@@ -239,13 +264,18 @@ describe('wt-suite-lock-bypass-guard-hook — forced release and stale reclaim',
 
   it.each([
     ['run', 'node ../plugin/bin/wt-suite-lock.mjs run --stale-s 0 -- pnpm test'],
-    ['release', 'wt-suite-lock release --stale-s=0'],
+    ['release', 'wt-suite-lock release --stale-s 0'],
+    ['PowerShell script', "pwsh -c 'wt-suite-lock release --stale-s 0'"],
   ])('warns lock-stale-reclaim for %s --stale-s 0 only on win32', (_why, command) => {
     expectWarned(command, 'lock-stale-reclaim', { env: { WT_SUITE_LOCK_BYPASS_GUARD_PLATFORM: 'win32' } })
   })
 
-  it('stays silent for a non-zero stale bound on win32', () => {
-    expectSilent('wt-suite-lock run --stale-s 600 -- pnpm test', { env: { WT_SUITE_LOCK_BYPASS_GUARD_PLATFORM: 'win32' } })
+  it.each([
+    ['a non-zero stale bound', 'wt-suite-lock run --stale-s 600 -- pnpm test'],
+    // The lock CLI reads only the separate `--stale-s N` form; `--stale-s=0` is an unknown argument.
+    ['the equals form the lock CLI does not read', 'wt-suite-lock release --stale-s=0'],
+  ])('stays silent on win32 for %s', (_why, command) => {
+    expectSilent(command, { env: { WT_SUITE_LOCK_BYPASS_GUARD_PLATFORM: 'win32' } })
   })
 })
 
@@ -284,6 +314,7 @@ describe('wt-suite-lock-bypass-guard-hook — state root moved under a locked ga
     ['USERPROFILE on linux, where it does not move the lock', 'USERPROFILE=/tmp/u vitest run', LINUX],
     ['LOCALAPPDATA on darwin', 'export LOCALAPPDATA=/tmp/l; pnpm -r test', DARWIN],
     ['HOME on win32, where the home directory comes from USERPROFILE', 'HOME=/tmp/h pnpm test', WIN32],
+    ['HOME forwarded as itself', 'HOME="$HOME" pnpm test', LINUX],
   ])('stays silent for %s', (_why, command, env) => {
     expectSilent(command, { env })
   })
@@ -364,7 +395,17 @@ describe('wt-suite-lock-bypass-guard-hook — who is covered', () => {
   it('journals one record per distinct class and names every class in one message', () => {
     const r = run("WT_SUITE_LOCK=0 WT_SUITE_LEASE='x|y' pnpm test")
     expect(r.context).toContain(BYPASS_TEXT)
+    expect(r.context).toContain('switches the machine suite lock off')
+    expect(r.context).toContain('claims a suite lease this command does not hold')
     expect(journal().map((entry) => entry.class).sort()).toEqual(['lease-forged', 'lock-disabled'])
+  })
+
+  it('journals the tool_use_id and never the command text', () => {
+    const command = "WT_SUITE_LEASE='secret-marker-value|abc' pnpm test"
+    expectWarned(command, 'lease-forged')
+    const raw = JSON.stringify(journal())
+    expect(raw).toContain('toolu_test')
+    expect(raw).not.toContain('secret-marker-value')
   })
 
   it('is registered as a PreToolUse hook on Bash in the plugin manifest', () => {

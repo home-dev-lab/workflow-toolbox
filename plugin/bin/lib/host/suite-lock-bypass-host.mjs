@@ -16,12 +16,12 @@ export function suiteLockBypassGuardPlatform(env = process.env) {
   return typeof forced === 'string' && KNOWN_PLATFORMS.has(forced) ? forced : hostPlatform
 }
 
-const POSIX_TEMP_EXPANSION = /^(?:\$TMPDIR|\$\{TMPDIR)(?![A-Za-z0-9_])/
-const WINDOWS_TEMP_EXPANSION = /^(?:%TEMP%|%TMP%|\$env:TEMP(?![A-Za-z0-9_])|\$env:TMP(?![A-Za-z0-9_]))/i
-const MKTEMP = /^(?:\$\(|`)\s*mktemp(?![A-Za-z0-9_-])/
+const POSIX_TEMP_EXPANSION = /^(?:\$TMPDIR|\$\{TMPDIR)(?!\w)/
+const WINDOWS_TEMP_EXPANSION = /^(?:%TEMP%|%TMP%|\$env:TEMP(?!\w)|\$env:TMP(?!\w))/i
+const MKTEMP = /^(?:\$\(|`)\s*mktemp(?!\w|-)/
 // The home directory is never the temporary root: `$HOME/…`, `${HOME}/…`, `%USERPROFILE%…`, `$env:USERPROFILE…`.
-const HOME_EXPANSION = /^(?:\$HOME(?![A-Za-z0-9_])|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE(?![A-Za-z0-9_]))/i
-const OTHER_EXPANSION = /[$`]|%[A-Za-z_][A-Za-z0-9_]*%/
+const HOME_EXPANSION = /^(?:\$HOME(?!\w)|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE(?!\w))/i
+const OTHER_EXPANSION = /[$`]|%[A-Za-z_]\w*%/
 const WINDOWS_ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\\\\)/
 
 function tempRoots(api) {
