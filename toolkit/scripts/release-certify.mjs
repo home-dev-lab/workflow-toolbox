@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { availableParallelism, loadavg } from 'node:os'
 import { join } from 'node:path'
 import { acquireSuiteLock, releaseSuiteLock, spawnNeedsShell, suiteLeaseMarker } from '../../plugin/bin/lib/suite-lock.mjs'
-import { signalCoveredCommand, stopChildForLostSuiteLock } from '../../plugin/bin/lib/host/suite-lock-host.mjs'
+import { coveredCommandSpawnOptions, signalCoveredCommand, stopCoveredCommandTree } from '../../plugin/bin/lib/host/suite-lock-host.mjs'
 
 export function sampleLoad({ platform = process.platform, cores = availableParallelism, read = readFileSync, osLoad = loadavg } = {}) {
   let capacity = null
@@ -29,27 +29,30 @@ export function sampleLoad({ platform = process.platform, cores = availableParal
 
 export function runGate(name, root, lease, spawnGate = spawn) {
   return new Promise((resolve) => {
-    const child = spawnGate('pnpm', [name], { cwd: root, stdio: 'inherit', shell: spawnNeedsShell('pnpm'), env: { ...process.env, WT_SUITE_LEASE: suiteLeaseMarker(lease) } })
+    // Under a broker lease the gate gets its own process group (POSIX), so a lost lease stops its whole tree.
+    const group = Boolean(lease?.broker)
+    const child = spawnGate('pnpm', [name], { cwd: root, stdio: 'inherit', shell: spawnNeedsShell('pnpm'), env: { ...process.env, WT_SUITE_LEASE: suiteLeaseMarker(lease) }, ...coveredCommandSpawnOptions({ broker: group }) })
     let spawnFailed = false
     let lost = false
-    let cancelForcedStop
+    let treeStopped = null
     let finished = false
-    const forward = (signal) => signalCoveredCommand(child, signal)
+    const forward = (signal) => signalCoveredCommand(child, signal, { group })
     const interrupt = () => forward('SIGINT')
     const terminate = () => forward('SIGTERM')
     const finish = (code, signal) => {
       if (finished) return
       finished = true
-      cancelForcedStop?.()
       process.off('SIGINT', interrupt)
       process.off('SIGTERM', terminate)
-      resolve(lost ? 75 : spawnFailed ? 2 : code ?? (signal === 'SIGINT' ? 130 : 143))
+      // A lost lease resolves only once the gate's whole tree has stopped: the caller then releases.
+      if (lost) { treeStopped.then(() => resolve(75)); return }
+      resolve(spawnFailed ? 2 : code ?? (signal === 'SIGINT' ? 130 : 143))
     }
-    lease.lost?.then(() => {
+    lease.lost?.then((reason) => {
       if (finished) return
       lost = true
-      process.stderr.write(`certification ${name}: broker lease lost; stopping gate\n`)
-      cancelForcedStop = stopChildForLostSuiteLock(child)
+      process.stderr.write(`certification ${name}: broker lease lost (${reason || 'broker gone'}); stopping gate\n`)
+      treeStopped = stopCoveredCommandTree(child, { group })
     })
     process.on('SIGINT', interrupt)
     process.on('SIGTERM', terminate)
