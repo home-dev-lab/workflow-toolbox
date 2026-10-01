@@ -443,8 +443,9 @@ one priority label (`P0|P1|P2`), one type label (`feature|chore|bug|research`), 
 (`effort:S|effort:M|effort:L`), every requested mission label, and a `Depends-on:` line
 (`Depends-on: none` included) read by the plugin's shipped dependency parser, every referenced card
 being Done. A card with no such line is skipped as not checked, an unreadable line skips the card
-and the report quotes it, and a referenced card the board does not have skips that card only (the
-rest of the wave runs); a board that cannot be reached still stops the wave. Explicit `--cards` are
+and the report quotes it, and a referenced card the board reports as not found (404) skips that card only
+(the rest of the wave runs), as does an id beyond the board's 64-bit id range; any other board
+failure, an unreadable `get_card` answer included, stops the wave. Explicit `--cards` are
 the caller's selection and are not checked against `Depends-on:`. The driver snapshots each eligible card, creates its
 wave-qualified worktree and push/merge fence, runs its pilot, reruns typecheck/lint/test, checks the
 clean tree and pilot report, freezes and verifies fidelity, and archives the diff and receipts.

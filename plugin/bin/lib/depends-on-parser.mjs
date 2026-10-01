@@ -35,9 +35,10 @@ function segmentIds(segment) {
   return bare ? [bare[1]] : []
 }
 
-// `none` declares no dependency only as the WHOLE value, optionally followed by trailing
-// punctuation or decoration and/or one parenthesised note: `none`, `none.`, `**none**`,
-// `none (standalone)`. Anything else after `none` — `none until #<id> lands` — makes the line
+// `none` declares no dependency only as the WHOLE value (any case). After it may come only a run
+// of whitespace and the characters . , ; : ! ` * _ ~, then at most one parenthesised note with no
+// nested parentheses, then another such run: `none`, `none.`, `**none**`, `none (standalone).`.
+// Anything else after `none` — `none until #<id> lands`, `none - later` — makes the line
 // unparseable, so the card is held rather than read as independent.
 const WHOLE_NONE = /^none[\s.,;:!`*_~]*(?:\([^()]*\)[\s.,;:!`*_~]*)?$/i
 

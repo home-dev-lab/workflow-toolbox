@@ -5,6 +5,8 @@
  * empty or default value.
  */
 
+import { readWholeBoardPage } from '../../plugin/bin/lib/find-cards-page.mjs'
+
 export interface BoardCard {
   id: string
   name: string
@@ -21,6 +23,7 @@ export interface FetchBoardOptions {
 interface JsonRpcResponse {
   result?: {
     content?: unknown
+    isError?: unknown
   }
   error?: unknown
 }
@@ -107,17 +110,14 @@ async function mcpRequest(
 
 // find_cards answered a bare array until the Planka MCP server started paging it: the live
 // server returned `{ total, offset, limit, cards }` on 2026-10-01 (limit null, every card in one
-// page). Both shapes are read; a page that stops short of `total` is refused, never returned as the
-// whole board, since every consumer would then read a missing dependency as "does not exist".
+// page). A page is read as the whole board only under the actionability producer's rule, shared in
+// plugin/bin/lib/find-cards-page.mjs: integer `total` and `offset` >= 0, `offset` 0, and exactly
+// `total` cards. Anything else is refused, since every consumer would otherwise read a dependency
+// missing from a partial page as "does not exist". This call never asks for pagination, so a bare
+// array is still accepted.
 function cardsOf(parsed: unknown): RawCard[] {
-  if (Array.isArray(parsed)) return parsed as RawCard[]
-  if (typeof parsed !== 'object' || parsed === null) throw new Error('expected an array or a paged object')
-  const page = parsed as { cards?: unknown, total?: unknown, offset?: unknown }
-  if (!Array.isArray(page.cards)) throw new Error('expected an array or a paged object with a cards array')
-  const offset = typeof page.offset === 'number' ? page.offset : 0
-  if (offset !== 0 || (typeof page.total === 'number' && page.cards.length < page.total)) {
-    throw new Error(`partial page: ${page.cards.length} cards from offset ${offset} of ${page.total}`)
-  }
+  const page = readWholeBoardPage(parsed)
+  if (!page.ok) throw new Error(`find_cards result refused: ${page.reason}`)
   return page.cards as RawCard[]
 }
 
@@ -159,13 +159,18 @@ export async function fetchBoardCards(opts: FetchBoardOptions): Promise<BoardCar
     throw new Error(`tools/call result content is not parseable JSON: ${bodyPreview(toolResponse.body)}`)
   }
 
-  let cards: RawCard[]
+  if (toolResponse.parsed?.result?.isError === true) {
+    throw new Error(`find_cards returned an error: ${bodyPreview(textItem.text)}`)
+  }
+
+  let parsed: unknown
   try {
-    cards = cardsOf(JSON.parse(textItem.text) as unknown)
+    parsed = JSON.parse(textItem.text) as unknown
   } catch (error) {
     const detail = error instanceof Error ? `: ${error.message}` : ''
     throw new Error(`tools/call result content is not parseable JSON${detail}`)
   }
+  const cards = cardsOf(parsed)
 
   return cards.map((card) => ({
     id: card.id,

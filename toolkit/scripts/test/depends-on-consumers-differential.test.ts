@@ -1,6 +1,15 @@
-// One table of card descriptions, fed to every consumer of the Depends-on convention: the
-// orchestrator's mission pick, pickable-cards, the card-hygiene lens and the shipped triage. Each
-// row must get the SAME verdict (pick / refuse) and the SAME dependency ids from every one of them.
+// One table of card descriptions, fed to every consumer of the Depends-on convention. What is
+// compared, per consumer:
+//   - orchestrator mission pick (missionIneligibilityReason, fake board): pick/refuse, and the ids it
+//     asked the board for;
+//   - pickable-cards (computePickable): pick/refuse, and the ids named in its exclusion reason when
+//     every board card is moved out of Done;
+//   - shipped triage (triageCardDependencies): pick/refuse, and its id set probed through the done
+//     set (Done = exactly the expected ids picks the card; dropping any one of them blocks it);
+//   - card-hygiene lens (checkBoardHygiene): the dependency edges its findings and advisories name,
+//     and whether it raises a broken-dependency finding.
+// Only the DEPENDENCY verdict is compared: every subject card carries the labels each picker
+// requires, since label policies differ between pickers by design.
 // A card with no Depends-on line is "not checked": every picker refuses it.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -80,6 +89,22 @@ function pickableVerdict(description: string) {
   return { pick: picked !== undefined, reason: picked?.reason ?? [...result.excluded, ...result.unjudgeable].find((card) => card.cardId === SUBJECT)?.reason }
 }
 
+// Every board card moved out of Done: the exclusion reason then names each dependency id it read.
+function pickableIds(description: string): string[] {
+  const subject: BoardCard = { id: SUBJECT, name: 'Subject', description, labels: ['P1', 'feature', 'effort:M', 'product'], listName: 'Backlog' }
+  const board = boardCards.map((card) => ({ ...card, listName: 'In Progress' }))
+  const reason = computePickable([...board, subject]).excluded.find((card) => card.cardId === SUBJECT)?.reason ?? ''
+  if (reason.startsWith('unparseable Depends-on line')) return []
+  return [...new Set([...reason.matchAll(/#(\d{4,})/g)].map((match) => match[1]!))].sort()
+}
+
+// The id set triage reads, probed through the done set: with Done = exactly the expected ids the
+// card is recommendable, and dropping any one of them blocks it.
+function triageReadsExactly(description: string, ids: string[]): boolean {
+  const recommendable = (done: string[]) => triageCardDependencies([{ id: SUBJECT, description }], done).recommendable.length === 1
+  return recommendable(ids) && ids.every((id) => !recommendable(ids.filter((other) => other !== id)))
+}
+
 function triageVerdict(description: string) {
   const done = boardCards.filter((card) => card.listName === 'Done').map((card) => card.id)
   const result = triageCardDependencies([{ id: SUBJECT, description }], done)
@@ -112,6 +137,8 @@ describe('Depends-on consumers agree (differential, one table)', () => {
     expect(orchestrator.ids, 'orchestrator dependency reads').toEqual(expectedIds)
     expect(lens.ids, 'lens dependency edges').toEqual(expectedIds)
     expect(lens.flagged, 'lens broken-dependency finding').toBe(row.lensFlags)
+    if (row.ids.length > 0 || row.pick) expect(pickableIds(row.description), 'pickable dependency ids').toEqual(expectedIds)
+    if (row.pick) expect(triageReadsExactly(row.description, row.ids), 'triage dependency ids').toBe(true)
     if (row.pick) expect(pickable.reason).toBe(row.ids.length === 0 ? 'Depends-on: none' : `all ${row.ids.length} dependencies Done`)
   })
 
@@ -135,6 +162,49 @@ describe('Depends-on consumers agree (differential, one table)', () => {
     const { pick, reason } = await orchestratorVerdict(`Depends-on: #${tooLong}`)
     expect(pick).toBe(false)
     expect(reason).toContain(tooLong)
+  })
+})
+
+describe('orchestrator mission eligibility — what the board answers about a dependency', () => {
+  const missionCard = (description: string | undefined, text?: string) => ({ id: SUBJECT, listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description, ...(text === undefined ? {} : { text }) })
+  const boardAnswering = (answer: () => Promise<unknown>) => ({ getCard: answer })
+
+  it('F2: reads the description only — a card with no description is not checked, whatever its text says', async () => {
+    expect(await missionIneligibilityReason(missionCard(undefined, 'Depends-on: none'), [], fakeBoard())).toBe('no Depends-on line (not checked)')
+  })
+
+  it.each([
+    ['20 digits', '99999999999999999999'],
+    ['19 digits above the signed 64-bit maximum', '9223372036854775808'],
+  ])('F3: an id that cannot be a Planka card id (%s) skips the card without asking the board', async (_label, id) => {
+    const board = fakeBoard()
+    expect(await missionIneligibilityReason(missionCard(`Depends-on: #${id}`), [], board)).toBe(`dependency id ${id} is not a valid card id`)
+    expect(board.requested).toEqual([])
+  })
+
+  it('F3: the signed 64-bit maximum itself is a card id (asked, then not found)', async () => {
+    expect(await missionIneligibilityReason(missionCard('Depends-on: #9223372036854775807'), [], fakeBoard())).toBe('dependency 9223372036854775807 not found')
+  })
+
+  it.each([
+    ['null', async () => null],
+    ['an empty object', async () => ({})],
+    ['a wrapped card', async () => ({ card: { id: DONE_A, listName: 'Done' } })],
+  ])('F1: a get_card answer with no valid top-level id (%s) is a board failure, never "not found"', async (_label, answer) => {
+    await expect(missionIneligibilityReason(missionCard(`Depends-on: #${DONE_A}`), [], boardAnswering(answer))).rejects.toThrow(`board unavailable: malformed get_card answer for ${DONE_A}`)
+  })
+
+  it('F1: a get_card answer naming another card is a board failure', async () => {
+    await expect(missionIneligibilityReason(missionCard(`Depends-on: #${DONE_A}`), [], boardAnswering(async () => ({ id: DONE_B, listName: 'Done' })))).rejects.toThrow(new RegExp(`^board unavailable: .*${DONE_B}.*${DONE_A}`))
+  })
+
+  it.each([
+    ['a non-transport 503', () => new BoardUnavailable('Request failed with status code 503', 503)],
+    ['a BoardUnavailable with no status', () => new BoardUnavailable('malformed MCP result JSON')],
+    ['a transport 404', () => Object.assign(new BoardUnavailable('HTTP 404', 404), { transport: true })],
+    ['a plain error', () => new Error('socket hang up')],
+  ])('F1: %s while reading a dependency is a board failure, never a skip', async (_label, failure) => {
+    await expect(missionIneligibilityReason(missionCard(`Depends-on: #${DONE_A}`), [], boardAnswering(async () => { throw failure() }))).rejects.toThrow(/^board unavailable: /)
   })
 })
 

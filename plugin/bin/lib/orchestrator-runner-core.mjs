@@ -116,17 +116,27 @@ function firstSymlink(root) {
   return null
 }
 
-// A dependency the board says does not exist: get_card answers nothing usable, or refuses with a
-// non-transport 404. Every other refusal (transport, any other status) is a real outage and stays fatal.
+// Returns null ONLY when the board answers that the card does not exist: a non-transport
+// BoardUnavailable with status 404. Every other outcome is fatal (board unavailable): a transport
+// error, any other status, an error with no status, a non-board error, an answer with no valid
+// top-level card id (null, {}, a wrapped { card }), or a card whose id is not the one requested.
 async function fetchDependency(board, id) {
   let response
   try { response = await board.getCard(id) }
   catch (error) {
     if (error instanceof BoardUnavailable && error.transport !== true && error.status === 404) return null
-    throw error
+    throw error instanceof BoardUnavailable ? error : new Error(`board unavailable: ${errorText(error)}`)
   }
-  return CARD_ID.test(String(response?.id ?? '')) ? response : null
+  const answered = String(response?.id ?? '')
+  if (!CARD_ID.test(answered)) throw new Error(`board unavailable: malformed get_card answer for ${id}`)
+  if (answered !== id) throw new Error(`board unavailable: get_card answered card ${answered} for ${id}`)
+  return response
 }
+
+// Planka card ids are signed 64-bit integers: at most 19 digits and no larger than 2^63 - 1. The
+// board refuses a larger id with a 400, which would otherwise stop the whole wave.
+const MAX_PLANKA_CARD_ID = 9223372036854775807n
+const isPlankaCardId = (id) => /^\d{1,19}$/.test(id) && BigInt(id) <= MAX_PLANKA_CARD_ID
 
 // Returns null when a mission card is eligible, otherwise the reason it is skipped — every skip is
 // named in the report (Sol round 2: a malformed Depends-on line used to make a card vanish silently).
@@ -138,12 +148,13 @@ export async function missionIneligibilityReason(card, requiredLabels, board, kn
   if (!['feature', 'chore', 'bug', 'research'].some((label) => all.includes(label))) return 'no type label'
   if (!['effort:S', 'effort:M', 'effort:L'].some((label) => all.includes(label))) return 'no effort label'
   if (!requiredLabels.every((label) => all.includes(label))) return `missing mission label ${requiredLabels.find((label) => !all.includes(label))}`
-  const description = String(card.description ?? card.text ?? '')
+  // The description only, as every other consumer reads it: a card with none is not checked.
+  const description = String(card.description ?? '')
   if (!hasDependsOnLine(description)) return 'no Depends-on line (not checked)'
   const { ids, unparseable } = parseDependsOn(description)
   if (unparseable.length > 0) return `malformed Depends-on line "${unparseable[0]}"`
   for (const id of ids) {
-    if (!CARD_ID.test(id)) return `dependency id ${id} is not a valid card id`
+    if (!isPlankaCardId(id)) return `dependency id ${id} is not a valid card id`
     let dependency = known.get(id)
     if (!dependency) {
       dependency = await fetchDependency(board, id)

@@ -423,6 +423,18 @@ describe('orchestrator driver', () => {
     expect(f.moves).toEqual([])
   })
 
+  it.each([
+    ['a non-transport 503', () => new BoardUnavailable('Request failed with status code 503', 503)],
+    ['a non-transport error with no status', () => new BoardUnavailable('malformed MCP result JSON')],
+  ])('F1: %s while reading a mission dependency stops the wave as board unavailable', async (_label, failure) => {
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: #1875344230742754904\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]
+    const f = repoFixture(cards)
+    const board = { ...f.board, getCard: async () => { throw failure() } }
+    const result = await runOrchestrator({ ...f.options, cards: undefined, missionList: 'Next', missionLabels: [] }, { ...f, board })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' })
+    expect(f.moves).toEqual([])
+  })
+
   it('R2-2 lock: a worker that fails does not let the report be emitted before the other worker\'s board mutations are recorded', async () => {
     const f = repoFixture([{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }])
     let release: () => void = () => {}
