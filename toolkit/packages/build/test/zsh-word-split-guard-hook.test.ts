@@ -70,15 +70,15 @@ const analyzerCases: Array<[string, string, string[]]> = [
   ['use before any assignment is not ours', 'kill $L; L="1 2"', []],
   ['unassigned variable', 'for x in $SOME_LIST; do echo "$x"; done', []],
   ['test with unquoted list', 'L="a b"; [ -n $L ] && echo yes', []],
-  ['real: git log', 'git -C /home/doublefx/projects/wt-suite/workflow-toolbox log --oneline -5', []],
-  ['real: pnpm gate with EXIT marker', 'cd /home/doublefx/projects/wt-suite/workflow-toolbox/toolkit && pnpm test > /tmp/g.log 2>&1; echo EXIT=$? >> /tmp/g.log', []],
+  ['real: git log', 'git -C /home/dev/projects/wt-suite/workflow-toolbox log --oneline -5', []],
+  ['real: pnpm gate with EXIT marker', 'cd /home/dev/projects/wt-suite/workflow-toolbox/toolkit && pnpm test > /tmp/g.log 2>&1; echo EXIT=$? >> /tmp/g.log', []],
   ['real: node board script', 'node .claude/scripts/board-list.mjs --list "In Progress" --json | head', []],
   ['real: branch var', 'B=$(git branch --show-current); echo "$B"; git log --oneline "$B" -3', []],
   ['real: node --check loop', 'for f in toolkit/scripts/*.mjs; do node --check "$f" || echo "bad $f"; done', []],
   ['real: lane launcher', 'node ~/.claude/scripts/wt-lane.mjs --dir /x/wt --model openai/gpt-5.6-sol --brief /x/wt/.lane/brief.md --timeout 5400', []],
   ['real: commit -F file', 'git -C /x/wt add -A && git -C /x/wt commit -F /tmp/msg.txt', []],
   ['real: pnpm typecheck with pipe', 'pnpm typecheck 2>&1 | tail -20', []],
-  ['real: worktree add', 'git -C workflow-toolbox worktree add /home/doublefx/projects/wt-suite/.claude/worktrees/foo -b card/123-foo develop', []],
+  ['real: worktree add', 'git -C workflow-toolbox worktree add /home/dev/projects/wt-suite/.claude/worktrees/foo -b card/123-foo develop', []],
   ['real: jq over a file', `jq -r '.hooks.PreToolUse[] | .matcher' ~/.claude/settings.json | sort | uniq -c`, []],
 ]
 

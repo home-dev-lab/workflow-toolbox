@@ -15,13 +15,13 @@ CalculatorTest > addsNumbers() FAILED
 
 > Task :test FAILED
 
-[Incubating] Problems report is available at: file:///home/doublefx/projects/wt-suite/.claude/worktrees/testnames-1870598751/.lane/fixture-capture/gradle/build/reports/problems/problems-report.html
+[Incubating] Problems report is available at: file:///home/dev/projects/wt-suite/.claude/worktrees/testnames-1870598751/.lane/fixture-capture/gradle/build/reports/problems/problems-report.html
 
 FAILURE: Build failed with an exception.
 
 * What went wrong:
 Execution failed for task ':test'.
-> There were failing tests. See the report at: file:///home/doublefx/projects/wt-suite/.claude/worktrees/testnames-1870598751/.lane/fixture-capture/gradle/build/reports/tests/test/index.html
+> There were failing tests. See the report at: file:///home/dev/projects/wt-suite/.claude/worktrees/testnames-1870598751/.lane/fixture-capture/gradle/build/reports/tests/test/index.html
 
 * Try:
 > Run with --scan to get full insights.
