@@ -744,7 +744,10 @@ describe('suite lock queue — round 2', () => {
     expect(Date.now() - started).toBeLessThan(2000)
     const abandoned = tempRoot('r2-f8-abandoned')
     seedStaleHolder(abandoned, 120_000)
-    expect(await attempt({ root: abandoned })).toBe('acquired')
+    // The reclaim takes two waiter iterations by design, each with queue-file I/O. A 0.2 s wait left no
+    // margin on a loaded Windows runner (timed out after 430 and 743 ms, cross-OS run 36984414559), so
+    // this case gets a 2 s budget; the fresh case above keeps 0.2 s, since it is the on-schedule check.
+    expect(await attempt({ root: abandoned, waitS: 2 })).toBe('acquired')
   }, 10_000)
 })
 
