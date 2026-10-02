@@ -23,20 +23,25 @@ Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; 
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
-With `settingSources: []` still in force, each SDK session's initial prompt carries a "Repository
+With `settingSources: []` still in force, the pilot's first prompt and each Claude executor lane prompt carry a "Repository
 contributor instructions" section built only from the repository's own committed files. It never reads
 the user's `~/.claude` rules nor the session's project rules (`.claude/rules`); the runner as a whole is
 not machine-independent, because it still reads the knowledge-base index and the optional project rules
 manifest.
 
-- **Source.** The committed tree at `HEAD`, read through `git ls-tree` and `git cat-file` with the
-  hardened git flags, never the working tree. A lane that rewrites `CLAUDE.md` mid-run cannot change what
-  the next lane receives, and no symlink, FIFO or device on disk can be followed.
+- **Source.** A pinned commit, read through `git ls-tree` and `git cat-file` with the hardened git flags,
+  never the working tree. The pilot's first prompt reads `HEAD` before any lane runs. Each Claude executor
+  lane is launched with `--repo-commit <sha>` (7 to 64 hex characters, anything else is refused), the
+  commit the run was constructed from, so a lane that rewrites its worktree's `.git` or `CLAUDE.md`
+  cannot change what the next lane receives; the plan-phase checks use the same commit. No symlink,
+  FIFO or device on disk can be followed.
 - **Root guides.** `CLAUDE.md`, then `AGENTS.md`, injected as content between `BEGIN`/`END repository
-  guide` markers under their absolute paths. A symlink guide is resolved once, only when it is a relative
+  guide <nonce>` markers under their absolute paths. The nonce is the first 12 hex characters of the
+  SHA-256 of the guide's content, so guide text cannot forge its own closing marker. A symlink guide is resolved once, only when it is a relative
   path that stays inside the tree and names a regular file; its target is injected once under the
   target's path. Any other symlink is reported as not followed, and its target is never read.
-- **Folder guides.** Nested `CLAUDE.md` and `AGENTS.md` files are listed as paths only (at most 20, then
+- **Folder guides.** Nested `CLAUDE.md` and `AGENTS.md` regular files (symlinks and submodule entries are
+  skipped) are listed as paths only (at most 20, then
   a remainder count) with the instruction to read the one for a folder before changing files there.
 - **Declared gates.** The `test`, `typecheck`, `lint`, `quality`, `check`, `validate`, `verify` and
   `build` scripts of the root `package.json` and of each depth-1 `<dir>/package.json`, with the package
@@ -44,18 +49,31 @@ manifest.
   lines; an unparseable `package.json` is named. The runner lists these commands; it does not run them.
 - **Plugin validation.** One `claude plugin validate <dir> --strict` line per directory (at most 20)
   holding a `.claude-plugin/plugin.json` or `.claude-plugin/marketplace.json`, at any depth.
-- **Budget.** The whole section is capped at 40,000 characters. The lists are reserved first; the guides
-  share the rest in order, and a guide over its share is cut at a line boundary and ends with a
-  `[truncated at N of M characters; read the rest at <path>]` marker.
+- **Budget.** The whole section, markers and notices included, is capped at 40,000 characters. The lists
+  are reserved first (notes at most 20 lines, then a remainder count); the guides share the rest in order,
+  and a guide over its share is cut at a line boundary and ends with a
+  `[truncated at N of M characters; read the rest with `git show <sha>:<path>`]` marker.
+- **Repository text is data.** Every repository value placed in the section (gate name, working
+  directory, command, folder and script names, paths, symlink targets) is cut at 200 characters, and CR,
+  LF, NUL and other control characters in it become spaces, so repository text cannot start a line or a
+  heading of its own. A `package.json` whose JSON is not an object is reported like invalid JSON.
 - **Declared gate file.** The gates of a root `.wt-gates.json` are listed first, with their working
   directory and the file as source.
 - **At the plan phase.** Entering `plan` (first round and every revision), the transition result also
   carries "Repository-declared checks for your plan (authoritative)": the gate and plugin-validation
   lines above, and the instruction to assign every check outside the repository's lifecycle gate set to
-  the tdd lane in the plan's Gates, or to say why it does not apply. Lifecycle gates are typecheck, lint
-  and test, plus quality when the current `toolkit/package.json` declares a non-empty `scripts.quality`.
-- **Failure.** When git cannot answer (not a repository, no commit), the prompt says `Repository
-  instructions unavailable: <reason>.` and falls back to the earlier pointer lines to the root guides.
+  the tdd lane in the plan's Gates. A check the guide makes mandatory for the kind of change is never marked
+  not applicable, and when the guide and the declared gate file name different commands for one gate, the
+  plan runs both; only a check the guide does not mandate may be left out, with a one-line reason.
+  Lifecycle gates are typecheck, lint and test, plus quality when the current `toolkit/package.json`
+  declares a non-empty `scripts.quality`.
+- **Failure.** When git cannot answer (not a repository, no commit, unknown pinned commit) or anything
+  unexpected is thrown while collecting or formatting, the prompt says `Repository instructions
+  unavailable: <reason>.` and falls back to the earlier pointer lines to the root guides; the plan-phase
+  checks are then empty. The runner never fails because of this section.
+- **`--stop-after`.** The LITE route leaves only `discovery`, `tdd` and `verify`; a stop-after phase the
+  card's route never leaves is refused at the start of the run, before any query, naming the route and the
+  phases it does leave.
 
 The orchestrator judge and the second-opinion lane keep the pointer-only form.
 

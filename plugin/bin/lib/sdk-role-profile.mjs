@@ -43,10 +43,16 @@ export function isPreInitNotice(message) {
 // Content of the repository's contributor guide(s), read from the committed tree through git, plus the gate
 // commands and plugin validation the repository declares. When git cannot answer, the failure is stated and the
 // pointer lines of withRepositoryGuide remain, so the prompt never carries less than the pointer-only form.
-export function withRepositoryInstructions(worktree, prompt, { collect = collectRepositoryInstructions } = {}) {
-  const collected = collect(worktree)
-  if (!collected.available) return `Repository instructions unavailable: ${collected.reason}.\n\n${withRepositoryGuide(worktree, prompt)}`
-  return `${formatRepositoryInstructions(collected, worktree)}\n\n${prompt}`
+export function withRepositoryInstructions(worktree, prompt, { collect = collectRepositoryInstructions, commit = undefined } = {}) {
+  let section
+  try {
+    const collected = collect(worktree, commit ? { commit } : undefined)
+    section = collected.available ? formatRepositoryInstructions(collected, worktree) : { reason: collected.reason }
+  } catch (error) {
+    section = { reason: String(error?.message ?? error).split('\n')[0].slice(0, 200) }
+  }
+  if (typeof section === 'string') return `${section}\n\n${prompt}`
+  return `Repository instructions unavailable: ${section.reason}.\n\n${withRepositoryGuide(worktree, prompt)}`
 }
 
 const CONTEXT_MODE_TOOLS = Object.freeze({

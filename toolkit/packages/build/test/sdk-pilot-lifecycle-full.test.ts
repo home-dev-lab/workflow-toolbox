@@ -256,6 +256,19 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(calls.every((call) => call.briefText.includes('fiches are claims to verify against the current code, never evidence by themselves'))).toBe(true)
   })
 
+  it('passes the run construction base to every Claude SDK lane as --repo-commit, and to no GPT lane', async () => {
+    const claude = fullLifecycle({ executor: 'claude-sdk', models: { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' } })
+    edgeConfig(claude, { critic: { verdict: 'approved' } })
+    await claude.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await claude.artifact({ kind: 'plan', content: plan }); await claude.transition({ phase: 'plan', tool_use_id: 'plan' }); await claude.artifact({ kind: 'critic-brief', content: 'critic\n' }); await claude.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    const claudeCalls = readFileSync(claude.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(claudeCalls.length).toBeGreaterThan(0)
+    for (const call of claudeCalls) expect(call.argv.slice(call.argv.indexOf('--repo-commit'), call.argv.indexOf('--repo-commit') + 2)).toEqual(['--repo-commit', claude.base])
+    const gpt = fullLifecycle()
+    edgeConfig(gpt, { critic: { verdict: 'approved' } })
+    await gpt.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await gpt.artifact({ kind: 'plan', content: plan }); await gpt.transition({ phase: 'plan', tool_use_id: 'plan' }); await gpt.artifact({ kind: 'critic-brief', content: 'critic\n' }); await gpt.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(readFileSync(gpt.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).every((call) => !call.argv.includes('--repo-commit'))).toBe(true)
+  })
+
   it('selects both production launchers by phase model, including tdd as code', () => {
     expect(phaseLaunchPlan('refutation', 'opus', 'gpt-lane')).toMatchObject({ executor: 'claude-sdk', script: 'wt-claude-executor.mjs', args: ['--variant', 'xhigh', '--variant-origin', 'role base', '--role', 'refutation'] })
     expect(phaseLaunchPlan('tdd', 'openai/gpt-6.1-sol', 'claude-sdk')).toMatchObject({ executor: 'gpt-lane', script: 'wt-lane.mjs', args: ['--role', 'code'] })

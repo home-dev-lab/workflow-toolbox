@@ -68,6 +68,14 @@ const PLANKA_TOOLS = new Set([
 // A piece-test option: the run ends at the boundary leaving this phase. `report` is the end already.
 const STOP_AFTER_PHASES = PHASES.filter((phase) => phase !== 'report')
 
+// LITE goes discovery -> tdd and verify -> report (lifecycle-state-machine.mjs), so plan, critic, review and
+// refutation are never left: a stop there would let the whole run through without stopping.
+const ROUTE_LEAVES = Object.freeze({ LITE: Object.freeze(['discovery', 'tdd', 'verify']), FULL: STOP_AFTER_PHASES })
+
+function assertStopAfterReachable(route, stopAfter) {
+  if (stopAfter && !ROUTE_LEAVES[route].includes(stopAfter)) throw new Error(`--stop-after ${stopAfter} is never reached on the ${route} route; it leaves only these phases: ${ROUTE_LEAVES[route].join(', ')}`)
+}
+
 export function parsePilotRunnerArgs(argv) {
   const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false, stopAfter: null }
   for (let i = 0; i < argv.length; i += 1) {
@@ -777,6 +785,7 @@ export async function runPilot(options, dependencies) {
   const boardContract = loadBoardContract(options.boardContract, readFile)
   assertCardDefinitionOfDone(cardText)
   const routing = deriveRoute(cardText)
+  assertStopAfterReachable(routing.route, options.stopAfter)
   const contractWarning = missingBoardContractWarning(boardContract, routing.route, contract)
   if (contractWarning) log(contractWarning)
   const timeoutExplicit = options.timeoutExplicit === true

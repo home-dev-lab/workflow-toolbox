@@ -974,6 +974,7 @@ export function createLifecycleStateMachine({
     executor,
     executorEnv,
     knowledgeBaseIndex: knowledgeBase.path,
+    constructionBase,
     frozenModels,
     state,
     laneBriefContexts,
@@ -1255,7 +1256,7 @@ export function createLifecycleStateMachine({
         })
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT
-      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}${withLeadingBreak(declaredChecksForPhase(next, root, { gateNames: next === 'plan' ? [...resolveLifecycleGates(root)] : [] }))}`
+      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}${withLeadingBreak(declaredChecksForPhase(next, root, { commit: constructionBase, gateNames: next === 'plan' ? [...resolveLifecycleGates(root)] : [] }))}`
     const transitionedAt = now()
     state.phase = next
     state.handled.set(event.tool_use_id, { shape, result })

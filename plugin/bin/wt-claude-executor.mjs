@@ -64,7 +64,7 @@ async function worker(options) {
       abortController,
       env: claudeExecutorEnv(process.env),
     }, sdkRole)
-    const stream = query({ prompt: withRepositoryInstructions(options.dir, launch.prompt), options: queryOptions })
+    const stream = query({ prompt: withRepositoryInstructions(options.dir, launch.prompt, { commit: options.repoCommit ?? undefined }), options: queryOptions })
     for await (const message of stream) {
       modelTracker.observe(message)
       if (!initReceiptSeen && isPreInitNotice(message)) continue
