@@ -66,6 +66,14 @@ function withNotes(result, rewrites, tokenised = false) {
   return { ...result, text: typeof result.text === 'string' ? `${result.text}\n${notes.join('\n')}` : notes.join('\n') };
 }
 
+// A tool result's `text` is core's rendering, which the host never reads back from a hook (measured: a note
+// appended there did not reach the model). The notes go in `context`, which the model reads after the result.
+function withResultNotes(result, rewrites, tokenised = false) {
+  if (!result || result.deny || (!rewrites && !tokenised)) return result;
+  const context = Array.isArray(result.context) ? result.context : [];
+  return { ...result, context: [...context, ...noteLines(rewrites, tokenised)] };
+}
+
 async function scrubInbound($, event, next) {
   const privateText = typeof event.text === 'string' ? redactConfirmationCodes(event.text) : event.text;
   if (privateText !== event.text) event = { ...event, text: privateText };
@@ -88,7 +96,7 @@ async function scrubInbound($, event, next) {
 // the assembled refusal is scrubbed once more: joining the context could rebuild a held value no single piece held.
 function erroredAnswer(original, cleaned, rewrites = 0) {
   const answer = cleaned.value;
-  const unchanged = () => withNotes(answer, rewrites, cleaned.changed);
+  const unchanged = () => withResultNotes(answer, rewrites, cleaned.changed);
   if (!isErrorAnswer(answer)) return unchanged();
   if (JSON.stringify(answer.result ?? null) === JSON.stringify(original?.result ?? null)) return unchanged();
   const body = typeof answer.result === 'string' ? answer.result : JSON.stringify(answer.result ?? '');

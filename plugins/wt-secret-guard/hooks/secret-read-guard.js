@@ -11,5 +11,14 @@ export async function applySecretReadGuard(host, event, next, verdict, surface) 
   const result = await next(event);
   if (!verdict.hit) return result;
   await appendEvent(host, { surface, action: 'would-block', ruleId: verdict.ruleId, pathClass: verdict.pathClass, commandClass: verdict.commandClass, toolUseId: event.tool_use_id, dedupeKey: event.tool_use_id ? `${event.tool_use_id}:would-block` : undefined });
-  return { ...result, text: typeof result?.text === 'string' ? `${result.text}\n${WARNING}` : WARNING };
+  return withWarning(result);
+}
+
+// The host types a refusal as `{ deny }` alone and renders an answered call from core's own messages, so a
+// warning in `text` is dropped on both. It travels inside the refusal, or in `context` after the result.
+function withWarning(result) {
+  if (!result || typeof result !== 'object') return result;
+  if (typeof result.deny === 'string') return { deny: `${result.deny}\n${WARNING}` };
+  const context = Array.isArray(result.context) ? result.context : [];
+  return { ...result, context: [...context, WARNING] };
 }
