@@ -10,7 +10,7 @@
 // head (a Vitest config whose global setup takes the lease, or a package script wrapping it). A
 // covered start that will QUEUE next to runners that are all the lock holder, a queued waiter, or
 // their descendants is not contention: journalled `silent`, class `lock-queued-start`. Membership is
-// positive evidence only (pids in holder.json and the queue tickets); a runner it cannot place counts
+// positive evidence only (live pids in holder.json and the queue tickets); a runner it cannot place counts
 // as outside. A start outside the lock, or running inside an inherited lease, is classified next to any
 // runner. A version or help query is not a run; every start in the command is judged, and the least
 // covered one decides.
@@ -20,7 +20,7 @@
 // text, so a firing can be classified from the record alone. `warned` means a journal-only
 // detection, not proof of a delivered notice. A sub-agent (not a Workflow worker) whose run
 // is `uncovered` on a machine that uses the lock is journalled `uncovered-delegate-start` when no
-// runner is alive; `bypassed` is left to the suite-lock bypass guard. Never a permission decision
+// runner is alive; `bypassed` is left to the suite-lock bypass guard when solo. Never a permission decision
 // except the role-closed refusal when enumeration is unavailable.
 
 import { execFileSync } from 'node:child_process'
@@ -159,16 +159,16 @@ function startKind(starts) {
 function enumerationUnavailable(input, starts, reason) {
   const closed = process.env.WT_SDK_ROLE_GUARD_FAILURE === 'closed'
   const message = `could not enumerate existing test-runner processes: ${reason}. This is unknown, not a zero count.`
+  const spoke = closed && deny(input, message)
   recordGuardEvent({
     guard: GUARD,
-    decision: closed ? 'blocked' : 'warned',
+    decision: closed ? (spoke ? 'blocked' : 'silent') : 'warned',
     class: 'enumeration-unavailable',
     reason: startReason(starts, input),
     session: input.session_id,
     agent: input.agent_id,
     evidence: { status: 'unavailable', kind: startKind(starts), starts: starts.length },
   })
-  if (closed) deny(input, message)
 }
 
 function main() {

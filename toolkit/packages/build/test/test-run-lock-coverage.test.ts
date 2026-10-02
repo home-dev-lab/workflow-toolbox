@@ -83,6 +83,52 @@ describe('parseTestRunStart', () => {
   it('an exported WT_SUITE_LOCK=0 earlier in the command is a bypass', () => {
     expect(parseTestRunStart('export WT_SUITE_LOCK=0; pnpm vitest run a')).toMatchObject({ bypass: true })
   })
+
+  it.each(['WT_SUITE_LOCK_DIR=/tmp/iso', 'WT_SUITE_LEASE=x', 'WT_SUITE_LOCK_BROKER=x', 'HOME=/tmp/h', 'XDG_STATE_HOME=/tmp/x', 'LOCALAPPDATA=C:/x', 'USERPROFILE=C:/x', 'WT_SUITE_LOCK="0"', 'env HOME=/tmp/h', 'sudo WT_SUITE_LEASE=x'])(
+    'treats a runner assignment as a bypass: %s', (prefix) => {
+      const start = parseTestRunStart(`${prefix} pnpm vitest run x`, '/r')
+      expect(lockCoverage({ ...start, readText: fakeFiles({ '/r/vitest.config.mts': LEASED_CONFIG }), env: {} })).toBe('bypassed')
+    },
+  )
+
+  it.each(['WT_SUITE_LOCK_DIR=/tmp/iso', 'HOME=/tmp/h', 'WT_SUITE_LEASE=x'])(
+    'treats earlier exports as bypasses: %s', (assignment) => {
+      const start = parseTestRunStart(`export ${assignment}; pnpm vitest run x`, '/r')
+      expect(lockCoverage({ ...start, readText: fakeFiles({ '/r/vitest.config.mts': LEASED_CONFIG }), env: {} })).toBe('bypassed')
+    },
+  )
+
+  it.each(["WT_SUITE_LOCK=''", 'WT_SUITE_LOCK=""', 'WT_SUITE_LOCK=$VALUE'])(
+    'treats an unresolved lock setting as unknown: %s', (assignment) => {
+      const start = parseTestRunStart(`${assignment} pnpm vitest run x`, '/r')
+      expect(lockCoverage({ ...start, readText: fakeFiles({ '/r/vitest.config.mts': LEASED_CONFIG }), env: {} })).toBe('unknown')
+    },
+  )
+
+  it.each(['then', 'do', 'else', 'elif', 'if', 'while', 'until', 'command', 'time', '!'])(
+    'recognises a runner after the %s prefix', (prefix) => {
+      expect(parseTestRunStart(`${prefix} pnpm test`)).toMatchObject({ kind: 'pnpm-test' })
+    },
+  )
+
+  it.each(['env pnpm test', 'sudo pnpm test', 'pnpm test -- -v'])(
+    'recognises %s as a start', (command) => {
+      expect(parseTestRunStart(command)).toMatchObject({ kind: 'pnpm-test' })
+    },
+  )
+
+  it('recognises assignments following shell prefixes', () => {
+    const start = parseTestRunStart('then env HOME=/tmp/h pnpm vitest run x', '/r')
+    expect(lockCoverage({ ...start, readText: fakeFiles({ '/r/vitest.config.mts': LEASED_CONFIG }), env: {} })).toBe('bypassed')
+  })
+
+  it('splits background runs and ignores comments but preserves redirects', () => {
+    expect(parseTestRunStarts('pnpm test & pnpm vitest run x # vitest run y\npnpm test')).toHaveLength(3)
+    expect(parseTestRunStarts('pnpm test 2>&1 &> out')).toHaveLength(1)
+    expect(parseTestRunStarts('# pnpm test\npnpm test')).toHaveLength(1)
+    expect(parseTestRunStarts('pnpm vitest run a#b && pnpm test')).toHaveLength(2)
+    expect(parseTestRunStarts('n=$#; pnpm test')).toHaveLength(1)
+  })
 })
 
 describe('lockCoverage', () => {

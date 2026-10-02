@@ -28,10 +28,18 @@ const PNPM_DIR_FLAG = /^(?:-C|--dir)$/
 // Split points that start a new command word, kept so the walk knows when a subshell or group opens
 // or closes: a `cd` inside one does not move the directory of what follows it.
 // A brace is a group only as its own word (`{ cmd; }`), never inside `${NAME}`.
-const TOKEN = /(&&|\|\||;|\||\n|\$\(|\(|\)|(?<![$\w])\{(?=\s)|(?<=[\s;])\})/
+const TOKEN = /(&&|\|\||;|\||\n|(?<![>&])&(?![&>])|\$\(|\(|\)|(?<![$\w])\{(?=\s)|(?<=[\s;])\})/
 const OPENERS = new Set(['$(', '(', '{'])
 const CLOSERS = new Set([')', '}'])
 const COVERAGE_ORDER = ['bypassed', 'uncovered', 'unknown', 'inherited-lease', 'lease-script', 'lease-config']
+const LOCK_DOMAIN = new Set(['WT_SUITE_LOCK_DIR', 'WT_SUITE_LEASE', 'WT_SUITE_LOCK_BROKER', 'HOME', 'XDG_STATE_HOME', 'LOCALAPPDATA', 'USERPROFILE'])
+
+function assignmentCoverage(name, value) {
+  if (LOCK_DOMAIN.has(name)) return 'bypassed'
+  if (name !== 'WT_SUITE_LOCK') return null
+  if (value === '0') return 'bypassed'
+  return /['"$]/.test(value) ? 'unknown' : null
+}
 
 function words(text) {
   return text.trim().split(/\s+/).filter(Boolean)
@@ -46,10 +54,19 @@ function leadingAssignments(segment) {
   const assigned = {}
   let rest = segment.trim()
   for (;;) {
-    const match = rest.match(/^(?:(?:sudo|env)\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\S*)\s*/)
+    const match = rest.match(/^(?:(?:sudo|env)\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\S*)(?:\s+|$)/)
     if (!match) return { assigned, rest }
     assigned[match[1]] = match[2]
     rest = rest.slice(match[0].length)
+  }
+}
+
+function commandHead(segment) {
+  let rest = segment.trim()
+  for (;;) {
+    const next = rest.replace(/^(?:(?:then|do|else|elif|if|while|until|command|time|env|sudo|!)\s+)/, '')
+    if (next === rest) return rest
+    rest = next
   }
 }
 
@@ -95,7 +112,8 @@ function startOf(runner, rest, assigned, state) {
     head: rest.trim(),
     kind: runner.kind,
     dir: runner.dir === null ? state.dir : resolveFrom(state.dir, expand(runner.dir, state.vars, state.home)),
-    bypass: state.exportedBypass || assigned.WT_SUITE_LOCK === '0',
+    bypass: state.exportedAssignment === 'bypassed' || Object.entries(assigned).some(([name, value]) => assignmentCoverage(name, value) === 'bypassed'),
+    assignment: Object.entries(assigned).map(([name, value]) => assignmentCoverage(name, value)).find(Boolean) ?? state.exportedAssignment,
     watch: runner.kind === 'vitest' && (args[0] === 'watch' || args[0] === 'dev' || args.some((arg) => WATCH_FLAGS.has(arg))),
     explicitConfig: runner.kind === 'vitest' && args.some((arg) => UNREADABLE_CONFIG_FLAGS.test(arg)),
   }
@@ -109,27 +127,33 @@ function startOf(runner, rest, assigned, state) {
  */
 export function parseTestRunStarts(command, cwd = null, home = null) {
   if (typeof command !== 'string' || !command) return []
-  const state = { dir: cwd, vars: {}, home, exportedBypass: false }
+  const state = { dir: cwd, vars: {}, home, exportedAssignment: null }
   const stack = []
   const starts = []
-  for (const token of stripNonCode(command).split(TOKEN)) {
+  for (const token of stripNonCode(command.replace(/\bWT_SUITE_LOCK=(['"])0\1/g, 'WT_SUITE_LOCK=0')).replace(/(^|[\s;&|()])#[^\n]*/gm, '$1').split(TOKEN)) {
     if (OPENERS.has(token)) { stack.push(state.dir); continue }
     if (CLOSERS.has(token)) { if (stack.length) state.dir = stack.pop(); continue }
-    if (/^\s*export\s+WT_SUITE_LOCK=0(?:\s|$)/.test(token)) state.exportedBypass = true
-    const { assigned, rest } = leadingAssignments(token)
+    const { assigned, rest } = leadingAssignments(commandHead(token))
     if (!rest) {
       for (const [name, value] of Object.entries(assigned)) state.vars[name] = expand(value, state.vars, home) ?? `$${name}`
       continue
     }
-    if (/^(?:pushd|popd)(?:\s|$)/.test(rest)) { state.dir = null; continue }
-    if (/^cd(?:\s|$)/.test(rest)) {
-      const cd = rest.match(/^cd\s+([^\s-]\S*)\s*$/)
+    if (/^export\s+/.test(rest)) {
+      for (const exported of rest.slice(7).matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=(\S*)/g)) {
+        state.exportedAssignment = assignmentCoverage(exported[1], exported[2]) ?? state.exportedAssignment
+      }
+      continue
+    }
+    const head = commandHead(rest)
+    if (/^(?:pushd|popd)(?:\s|$)/.test(head)) { state.dir = null; continue }
+    if (/^cd(?:\s|$)/.test(head)) {
+      const cd = head.match(/^cd\s+([^\s-]\S*)\s*$/)
       state.dir = cd ? resolveFrom(state.dir, expand(cd[1], state.vars, home)) : null
       continue
     }
-    const runner = runnerOf(rest)
-    if (!runner || runner.args.some((arg) => META_FLAGS.has(arg))) continue
-    starts.push(startOf(runner, rest, assigned, state))
+    const runner = runnerOf(head)
+    if (!runner || runner.args.slice(0, Math.max(0, runner.args.indexOf('--') === -1 ? runner.args.length : runner.args.indexOf('--'))).some((arg) => META_FLAGS.has(arg))) continue
+    starts.push(startOf(runner, head, assigned, state))
   }
   return starts
 }
@@ -182,8 +206,9 @@ function configCoverage(dir, readText) {
  * @returns {'bypassed'|'inherited-lease'|'lease-config'|'lease-script'|'uncovered'|'unknown'}
  *   `inherited-lease` runs at once inside the holder's lease: it is covered, but it does not queue.
  */
-export function lockCoverage({ dir, kind, bypass = false, watch = false, explicitConfig = false, readText, env = {} }) {
-  if (bypass || env.WT_SUITE_LOCK === '0') return 'bypassed'
+export function lockCoverage({ dir, kind, bypass = false, assignment = null, watch = false, explicitConfig = false, readText, env = {} }) {
+  if (bypass || assignment === 'bypassed' || env.WT_SUITE_LOCK === '0') return 'bypassed'
+  if (assignment === 'unknown') return 'unknown'
   if (watch) return 'uncovered'
   if (typeof env.WT_SUITE_LEASE === 'string' && env.WT_SUITE_LEASE) return 'inherited-lease'
   if (!dir || explicitConfig || kind === 'pnpm-recursive-test') return 'unknown'
@@ -202,11 +227,6 @@ export function worstCoverage(coverages) {
 /** Covered and waiting its turn: the holder's runners and the waiters ahead cannot overlap it. */
 export function isQueued(coverage) {
   return coverage === 'lease-config' || coverage === 'lease-script'
-}
-
-/** Under a lease, queued or inherited. */
-export function isCovered(coverage) {
-  return isQueued(coverage) || coverage === 'inherited-lease'
 }
 
 /**
