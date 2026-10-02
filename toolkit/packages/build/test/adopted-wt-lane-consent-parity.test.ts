@@ -321,7 +321,8 @@ describe('adopted wt-lane consent resolver', () => {
     const acknowledged = runChild('adopted wt-lane stale-brief acknowledgement', [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600', '--acknowledge-stale-brief'], f.env)
     expect(acknowledged.status, acknowledged.stderr).toBe(0)
     expect(acknowledged.stdout).toMatch(/brief_sha256=[0-9a-f]{64}\n/)
-  })
+    // Windows worst 22689 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 57_000)
 
   it('refuses an unlisted model through the plugin runtime before the adopted launcher spawns', () => {
     const f = fixture()
@@ -338,7 +339,8 @@ describe('adopted wt-lane consent resolver', () => {
       pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: true, lane_models: 'openai/gpt-5.6-luna' } } },
     }))
     expect(launch(f).status).toBe(0)
-  })
+    // Windows worst 26791 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 67_000)
 
   it('uses the real resolver for account and project consent fixtures', () => {
     for (const account of CONSENT_ACCOUNTS) {
@@ -380,7 +382,8 @@ describe('adopted wt-lane consent resolver', () => {
     expect(started.status, started.stderr).toBe(0)
     for (const worker of workers) await waitForWorkerExit(worker)
     expect(laneLogTail(f.project, 40)).toContain('worker-early-failure-probe')
-  })
+    // Windows worst 16418 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 42_000)
 
   it('forces the fence in an adopted launcher child', () => {
     const f = fixture()
@@ -404,7 +407,8 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     expect(existsSync(seen), `the lane child never wrote ${seen}; lane log tail: ${laneLogTail(f.project, 20)}`).toBe(true)
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
-  })
+    // Windows worst 22579 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 57_000)
 
   it('hands the adopted lane child an executable WT_SUITE_LOCK_CMD for the installed plugin suite-lock runner', () => {
     const f = fixture()

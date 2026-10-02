@@ -1073,7 +1073,8 @@ describe('owner decision 2: discovery and one instance', () => {
     await waitFor(async () => (await health(state)).registeredSessions === 2 ? true : null, 10_000)
     expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
     expect(spawnReceipts(spawnLog)).toHaveLength(1)
-  }, 45_000)
+    // Windows worst 33677 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 45000 ms).
+  }, 85_000)
 
   it('releases only its token file and cannot delete a replacement claim', async () => {
     const { project } = projectWithRoots('owned-startup-claim')
@@ -1220,7 +1221,8 @@ describe('owner decision 2: discovery and one instance', () => {
     expect(output.stdout().match(/retry stopped/gi)).toHaveLength(1)
     expect(monitor.exitCode).toBeNull()
     expect(readdirSync(registrationsPath(stateHome))).toHaveLength(1)
-  }, 22_000)
+    // Windows worst 14940 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 22000 ms).
+  }, 38_000)
 
   it('preserves the retry window while deferring, then serves after the holder dies', async () => {
     const { project } = projectWithRoots('startup-retry-window-bound')
@@ -1361,7 +1363,8 @@ describe('owner decision 2: discovery and one instance', () => {
       return (JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as { pid: number }).pid
     })
     expect(registeredPids).toContain(contender.pid)
-  }, 18_000)
+    // Windows worst 11458 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 18000 ms).
+  }, 29_000)
 
   it('reports a lost claim and preserves its registration and keepalive', async () => {
     const { project } = projectWithRoots('startup-claim-lost')
@@ -1527,7 +1530,8 @@ describe('owner decision 2: discovery and one instance', () => {
     expect(spawnReceipts(spawnLog)).toHaveLength(1)
     await stopChild(holder)
     expect(state.port).toBe(port)
-  }, 25_000)
+    // Windows worst 18035 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 25000 ms).
+  }, 46_000)
 
   it('[A-02] probes all candidates before starting after a fallback port becomes free', async () => {
     const { project } = projectWithRoots('fallback')
@@ -1759,7 +1763,8 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     } finally {
       await closeServer(foreign)
     }
-  }, 18_000)
+    // Windows worst 13936 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 18000 ms).
+  }, 35_000)
 
   it('[V3-stop-refused][V3-force] refuses stop/restart with registrations and allows both with --force', async () => {
     const { project } = projectWithRoots('controls')
@@ -1837,7 +1842,8 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect((await rawRequest(port, '/beta/b.txt', `localhost:${port}`)).status).toBe(200)
     expect((await rawRequest(port, '/__wt-artifact-server/register?session=x', `localhost:${port}`)).status).toBe(404)
     expect((await rawRequest(port, '/__wt-artifact-server/deregister?session=x', `localhost:${port}`)).status).toBe(404)
-  })
+    // Windows worst 14464 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 37_000)
 
   it('keeps root-index links inside a proxy path while preserving the unprefixed destination', async () => {
     const project = temporaryDir('relative-index-project')
@@ -2536,7 +2542,8 @@ describe('review decisions: serving security matrix', () => {
     renameSync(rootA, moved)
     symlinkSync(rootB, rootA)
     expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(403)
-  })
+    // Windows worst 19422 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 49_000)
 
   it('[E-02] rejects a root whose own canonical basename is denied', async () => {
     const project = temporaryDir('denied-root-project')
