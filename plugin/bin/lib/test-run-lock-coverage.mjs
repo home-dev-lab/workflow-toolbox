@@ -28,9 +28,9 @@ const PNPM_DIR_FLAG = /^(?:-C|--dir)$/
 // Split points that start a new command word, kept so the walk knows when a subshell or group opens
 // or closes: a `cd` inside one does not move the directory of what follows it.
 // A brace is a group only as its own word (`{ cmd; }`), never inside `${NAME}`.
-const SEPARATORS = ['&&', '\\|\\|', ';', '\\|', '\\n', '(?<![>&])&(?![&>])']
-const GROUP_MARKS = ['\\$\\(', '\\(', '\\)', '(?<![$\\w])\\{(?=\\s)', '(?<=[\\s;])\\}']
-const TOKEN = new RegExp(`(${[...SEPARATORS, ...GROUP_MARKS].join('|')})`)
+const SEPARATORS = [/&&/, /\|\|/, /;/, /\|/, /\n/, /(?<![>&])&(?![&>])/]
+const GROUP_MARKS = [/\$\(/, /\(/, /\)/, /(?<![$\w])\{(?=\s)/, /(?<=[\s;])\}/]
+const TOKEN = new RegExp(`(${[...SEPARATORS, ...GROUP_MARKS].map((part) => part.source).join('|')})`)
 const OPENERS = new Set(['$(', '(', '{'])
 const CLOSERS = new Set([')', '}'])
 const COVERAGE_ORDER = ['bypassed', 'uncovered', 'unknown', 'inherited-lease', 'lease-script', 'lease-config']
