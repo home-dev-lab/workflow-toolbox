@@ -10,6 +10,8 @@ import { Worker } from 'node:worker_threads';
 import { argumentEvidence, bounded } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { discoverFiles } from './discover-files.mjs';
+import { claudeVersion, modsOnByDefault } from './claude-version.mjs';
+import { ACTIVITY_DAYS, recentActivity } from './engine-activity.mjs';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 
 const [command, subject, ...remaining] = process.argv.slice(2);
@@ -198,8 +200,26 @@ async function assertProfiles() {
     let settings;
     try { settings = JSON.parse(await readFile(join(dir, 'settings.json'), 'utf8')); }
     catch { throw new Error(`profile ${dir}: settings.json missing or invalid; use --assume-loaded ${dir} only with explicit verification`); }
-    if (!Object.entries(settings.enabledPlugins ?? {}).some(([name, active]) => name.startsWith('wt-rules-on-demand@') && active === true)) throw new Error(`profile ${dir}: plugin not enabled`);
-    if (settings.env?.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS !== '1' && process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS !== '1') throw new Error(`profile ${dir}: Function Hooks not enabled`);
+    if (settings.disableAllHooks === true) throw new Error(`profile ${dir}: hooks disabled (disableAllHooks); no rule would be served`);
+    const plugins = Object.entries(settings.enabledPlugins ?? {}).filter(([name]) => name.startsWith('wt-rules-on-demand@'));
+    const switchedOff = Object.entries(settings.pluginConfigs ?? {}).filter(([name, value]) => name.startsWith('wt-rules-on-demand@') && value?.options?.enabled === false).map(([name]) => name);
+    // An explicit engine-off in this profile's user settings wins over any evidence of earlier activity.
+    if (switchedOff.length) throw new Error(`profile ${dir}: engine switched off (pluginConfigs["${switchedOff[0]}"].options.enabled is false)`);
+    // Evidence next: the engine records health only while it runs enabled (hooks.js trackedEvent), so a recent health
+    // day in this profile's store shows mods ran with the engine on there, however the plugin was loaded (enabledPlugins,
+    // or --plugin-dir, whose store is wt-rules-on-demand_inline-*). It covers the launches that wrote it, not every
+    // future launch, and not settings this command cannot read (managed settings, --settings, launch flags).
+    const active = await recentActivity(dir, new Set(plugins.filter(([, on]) => on === false).map(([name]) => name.slice(name.indexOf('@') + 1))));
+    if (active) { console.error(`rules: profile ${dir}: engine active on ${active.day} (${active.store})`); continue; }
+    const listed = plugins.filter(([, on]) => on === true).map(([name]) => name);
+    if (!listed.length) throw new Error(`profile ${dir}: plugin not enabled in settings.json and no engine health day in the last ${ACTIVITY_DAYS} days in plugins/store; use --assume-loaded ${dir} only with explicit verification`);
+    if (!listed.some((name) => settings.pluginConfigs?.[name]?.options?.enabled === true)) throw new Error(`profile ${dir}: engine not enabled (pluginConfigs["${listed[0]}"].options.enabled is not true); use --assume-loaded ${dir} only with explicit verification`);
+    // Claude Code 2.1.287 and later load mods by default and ignore CLAUDE_CODE_ENABLE_FUNCTION_HOOKS; for older builds
+    // loading is not predictable from the variable, so they need it set. The build is the one running this command.
+    const version = claudeVersion(process.env)?.version ?? null;
+    if (modsOnByDefault(version)) continue;
+    if (settings.env?.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS === '1' || process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS === '1') continue;
+    throw new Error(`profile ${dir}: Function Hooks not known to be on: Claude Code ${version ?? 'version unknown'}; 2.1.287 and later load mods by default, older builds may need CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1; verify, then pass --assume-loaded ${dir}`);
   }
 }
 

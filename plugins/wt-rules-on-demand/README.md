@@ -20,6 +20,23 @@ node /path/to/wt-rules-on-demand/scripts/rules.mjs prove-triggers rule-at-act.md
 node /path/to/wt-rules-on-demand/scripts/rules.mjs migrate rule-at-act.md --project /path/to/project --spec rule-at-act.spec.json --proof proof.json
 ```
 
+A user-scope `migrate --user` first checks that the engine serves rules in every
+profile it writes to (`--config-dir`, each `--mirror-dir`). A profile whose
+`settings.json` sets `disableAllHooks`, or sets the engine's `enabled` option to
+false, is refused. Otherwise it passes when its own store,
+`<profile>/plugins/store/wt-rules-on-demand_<source>-<hash>.json`, counts engine
+calls on one of the last 7 UTC days: the engine records those only while it runs
+enabled, so this covers a plugin loaded with `--plugin-dir`, for the launches that
+wrote them. Without that record, `settings.json` must list the plugin in
+`enabledPlugins` with `pluginConfigs["<id>"].options.enabled` true, and Function
+Hooks must be on: Claude Code 2.1.287 and later load mods by default (the running
+version is read from the `CLAUDE_CODE_EXECPATH` and `AI_AGENT` variables Claude Code
+sets for its commands); an older or unknown build needs
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. The check reads the profile's own
+`settings.json` only: managed settings, `--settings` and launch flags such as
+`--safe-mode` are not seen. `--assume-loaded <dir>` skips a profile you have
+verified by hand.
+
 An explicit `--no-proof "reason"` marks the rule unproven. `revert` returns a
 rule to static; `retire <rule.md> --reason "reason"` archives it without deleting
 its content. Only explicit CLI actions move rule files. The daily quality check
