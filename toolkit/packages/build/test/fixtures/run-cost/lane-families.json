@@ -29,7 +29,7 @@
       "route": "FULL",
       "executor": "gpt-lane"
     },
-    "worktree": "/home/doublefx/projects/wt-suite/.claude/worktrees/sdkrunB-1866229328",
+    "worktree": "/home/dev/projects/wt-suite/.claude/worktrees/sdkrunB-1866229328",
     "lane": {
       "phase": "critic",
       "round": 1,
@@ -40,7 +40,7 @@
     },
     "session": {
       "id": "ses_f4fa8645fffe4hQrraM0vmx6BP",
-      "directory": "/home/doublefx/projects/wt-suite/.claude/worktrees/sdkrunB-1866229328",
+      "directory": "/home/dev/projects/wt-suite/.claude/worktrees/sdkrunB-1866229328",
       "model": "{\"id\":\"gpt-5.6-sol\",\"providerID\":\"openai\",\"variant\":\"default\"}",
       "tokens_input": 85338,
       "tokens_output": 3483,
