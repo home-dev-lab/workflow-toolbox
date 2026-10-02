@@ -121,6 +121,77 @@ async function waitForConnections(server: net.Server, count: number, timeoutMs =
 // (plugin/bin/lib/suite-lock.mjs:319). These tests listen on a unix-socket path under tmpdir, which
 // Windows runners do not serve (every test timed out there), so they run on POSIX hosts only.
 describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires unix-domain sockets; broker is Linux-sandbox-only]', () => {
+  it('renews the client budget only for queue progress while a fake broker grants after five seconds', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-progress-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    const server = net.createServer((socket) => socket.once('data', () => {
+      // A strictly better place every 0.4 s: 14 tickets ahead down to 1, then the grant at 5.2 s.
+      let ahead = 14
+      socket.write(`progress ${ahead} 15\n`)
+      const interval = setInterval(() => { if (ahead > 1) { ahead -= 1; socket.write(`progress ${ahead} 15\n`) } }, 400)
+      const grant = setTimeout(() => { clearInterval(interval); socket.write('granted late-lease\n') }, 5200)
+      socket.once('close', () => { clearInterval(interval); clearTimeout(grant) })
+    }))
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    try {
+      const lease = await acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })
+      expect(lease.holder.leaseId).toBe('late-lease')
+      releaseSuiteLock(lease)
+    } finally { server.close() }
+  }, 15_000)
+
+  // A faulty broker repeating the same (or a worse, or an impossible) place renews nothing: the client's
+  // own watchdog still ends the wait about waitS + 2 s after the last real improvement.
+  it('does not renew the client deadline for repeated, worse or impossible progress lines', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-dup-progress-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    const lines = ['progress 2 4', 'progress 3 4', 'progress 1 1', 'progress -1 4', 'progress 1.5 4', 'progress 9999999999 99999999999']
+    const server = net.createServer((socket) => socket.once('data', () => {
+      socket.write('progress 2 4\n')
+      let index = 0
+      const interval = setInterval(() => { socket.write(`${lines[index % lines.length]}\n`); index += 1 }, 200)
+      socket.once('close', () => clearInterval(interval))
+    }))
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    try {
+      const start = Date.now()
+      await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+      expect(Date.now() - start).toBeLessThan(5000)
+    } finally { server.close() }
+  }, 8000)
+
+  it('does not renew the client deadline for wait-only notices', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-wait-only-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    const server = net.createServer((socket) => socket.once('data', () => {
+      socket.write('wait still queued\n')
+      const interval = setInterval(() => socket.write('wait still queued\n'), 400)
+      socket.once('close', () => clearInterval(interval))
+    }))
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    try {
+      const start = Date.now()
+      await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+      expect(Date.now() - start).toBeGreaterThanOrEqual(2900)
+      expect(Date.now() - start).toBeLessThan(5000)
+    } finally { server.close() }
+  }, 8000)
+
+  it('forwards a real broker queue improvement as a progress line', async () => {
+    const broker = await startBroker()
+    const first = connect(broker.socket, { argv: ['first'], waitS: 5 })
+    const second = connect(broker.socket, { argv: ['second'], waitS: 5 })
+    const third = connect(broker.socket, { argv: ['third'], waitS: 5 })
+    try {
+      await first.waitForReply(granted)
+      await second.waitForReply((text) => text.includes('progress 0 1\n'))
+      await third.waitForReply((text) => text.includes('progress 1 2\n'))
+      first.socket.end()
+      await second.waitForReply(granted)
+      await third.waitForReply((text) => text.includes('progress 0 1\n'))
+    } finally { first.socket.destroy(); second.socket.destroy(); third.socket.destroy() }
+  }, 12_000)
+
   it('reuses the one exclusive lease across project setups through the current broker', async () => {
     const broker = await startBroker()
     const script = `import setup from ${JSON.stringify(new URL(`file://${GLOBAL_SETUP}`).href)};const teardown=await setup();if(await setup()!==undefined)throw Error('nested setup acquired again');teardown();process.stdout.write('teardown done\\n');process.stdin.once('data',()=>{})`
@@ -128,7 +199,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     let stdout = ''; child.stdout!.on('data', (data) => { stdout += String(data) })
     await waitFor(() => stdout.includes('teardown done'))
     expect(readFileSync(broker.lock, 'utf8')).toContain('vitest')
-    const competitor = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.15', '--', process.execPath, '-e', ''], { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }), encoding: 'utf8', timeout: 2000 })
+    const competitor = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.15', '--stale-s', '0.15', '--', process.execPath, '-e', ''], { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }), encoding: 'utf8', timeout: 2000 })
     expect(competitor.status, competitor.stderr).toBe(75)
     expect(child.exitCode).toBeNull()
     child.stdin!.end('exit')
