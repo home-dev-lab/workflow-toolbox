@@ -14,6 +14,15 @@ export function limitsFor(contextTokens = 1000000) {
   return { contextTokens, perFileLimit, totalLimit: Math.max(120000, perFileLimit) };
 }
 
+// A YAML list item or scalar without its dash and quotes.
+function scalarValue(value) {
+  let text = value.trim();
+  while (text.startsWith('-')) text = text.slice(1).trim();
+  if (text.startsWith("'") || text.startsWith('"')) text = text.slice(1);
+  if (text.endsWith("'") || text.endsWith('"')) text = text.slice(0, -1);
+  return text.trim();
+}
+
 export function instructionContent(raw) {
   let text = raw;
   let conditional = false;
@@ -22,11 +31,11 @@ export function instructionContent(raw) {
     if (end) {
       const offset = text.indexOf('\n') + 1;
       const header = text.slice(offset, offset + end.index);
-      const paths = /^paths:\s*(.*)$/m.exec(header);
+      const paths = /^paths:([^\n]*)$/m.exec(header);
       if (paths) {
         const next = header.slice(header.indexOf(paths[0]) + paths[0].length).split('\n');
         const values = [paths[1], ...next.filter((line) => /^\s*-\s+/.test(line)).map((line) => line.replace(/^\s*-\s+/, ''))]
-          .map((value) => value.trim().replace(/^[-\s]*['"]?|['"]?\s*$/g, '').replace(/\/\*\*$/, '')) .filter(Boolean);
+          .map((value) => scalarValue(value).replace(/\/\*\*$/, '')).filter(Boolean);
         conditional = values.some((value) => value !== '**');
       }
       text = text.slice(offset + end.index + end[0].length).replace(/^\r?\n/, '');
@@ -34,7 +43,7 @@ export function instructionContent(raw) {
   }
   let fenced = false, comment = false, block = '';
   let result = '';
-  for (const line of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+  for (const line of text.split(/(?<=\n)/).filter(Boolean)) {
     if (!comment && /^\s*(```|~~~)/.test(line)) fenced = !fenced;
     if (!fenced && (comment || /^\s*<!--/.test(line))) {
       block += line;
@@ -56,12 +65,18 @@ async function walkMarkdown(dir, errors, visited = new Set()) {
   visited.add(real);
   let entries;
   try { entries = await readdir(dir, { withFileTypes: true }); }
-  catch (error) { if (!missing(error)) errors.push(`${dir}: ${error.message}`); return []; }
+  catch (error) {
+    if (!missing(error)) errors.push(`${dir}: ${error.message}`);
+    return [];
+  }
   const files = [];
   for (const entry of entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))) {
     const path = join(dir, entry.name);
     let directory = entry.isDirectory();
-    if (entry.isSymbolicLink()) directory = await stat(path).then((info) => info.isDirectory(), (error) => { if (!missing(error)) errors.push(`${path}: ${error.message}`); return false; });
+    if (entry.isSymbolicLink()) directory = await stat(path).then((info) => info.isDirectory(), (error) => {
+      if (!missing(error)) errors.push(`${path}: ${error.message}`);
+      return false;
+    });
     if (directory) files.push(...await walkMarkdown(path, errors, visited));
     else if (entry.name.endsWith('.md')) files.push(path);
   }
@@ -114,7 +129,10 @@ export async function staticPrefix({ configDir, cwd, top, managedDir = managedDe
         if (info.size > 4 * 1024 * 1024 || !info.isFile()) return;
         raw = await readFile(path, 'utf8');
       } else raw = rawOverride;
-    } catch (error) { if (!missing(error)) errors.push(`${path}: ${error.message}`); return; }
+    } catch (error) {
+      if (!missing(error)) errors.push(`${path}: ${error.message}`);
+      return;
+    }
     seen.add(physical);
     const { content, conditional } = instructionContent(raw);
     if (conditional || !content.trim()) return;
@@ -130,7 +148,10 @@ export async function staticPrefix({ configDir, cwd, top, managedDir = managedDe
       if (!/^(?:\.\/|~\/|\/|[A-Za-z0-9._-])/.test(name)) continue;
       const target = name.startsWith('~/') ? resolve(homedir(), name.slice(2)) : resolve(dirname(path), name);
       if (!['.md', '.txt'].includes(extname(target).toLowerCase())) continue;
-      const actual = await realpath(target).catch((error) => { if (!missing(error)) errors.push(`${target}: ${error.message}`); return target; });
+      const actual = await realpath(target).catch((error) => {
+        if (!missing(error)) errors.push(`${target}: ${error.message}`);
+        return target;
+      });
       if (type !== 'user' && type !== 'managed' && !inside(actual, cwdReal)) { skippedImports.push(target); continue; }
       await add(target, type, depth + 1);
     }
@@ -250,7 +271,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const report = await measureStaticPrefix(options);
     if (json) console.log(JSON.stringify(report));
     else {
-      for (const check of report.checks) console.log(`${check.status}: ${check.totalChars} chars in ${check.fileCount} files${check.loadedChars > check.totalChars ? ` (${check.loadedChars} chars loaded, files over the per-file limit included)` : ''}, limit ${check.totalLimit} — ${check.configDir} at ${check.root}; largest: ${check.largest.map((item) => `${item.path} (${item.chars})`).join(', ')}`);
+      for (const check of report.checks) {
+        const loaded = check.loadedChars > check.totalChars ? ` (${check.loadedChars} chars loaded, files over the per-file limit included)` : '';
+        const largest = check.largest.map((item) => `${item.path} (${item.chars})`).join(', ');
+        console.log(`${check.status}: ${check.totalChars} chars in ${check.fileCount} files${loaded}, limit ${check.totalLimit} — ${check.configDir} at ${check.root}; largest: ${largest}`);
+      }
       for (const file of report.unresolved) console.log(`unresolved: ${file}`);
     }
     process.exitCode = { ok: 0, warn: 2, unknown: 3, over: 4 }[report.status];

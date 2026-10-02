@@ -35,13 +35,18 @@ if (config) {
     const stale = !prefix.finishedAt || !Number.isFinite(Date.parse(prefix.finishedAt)) || now - Date.parse(prefix.finishedAt) > 36 * 3600000;
     const sized = ['over', 'warn'].includes(status) && (!stale || status === 'over');
     const name = (item) => `${basename(String(item?.path ?? 'unknown'))} (${item?.chars})`;
-    const line = (item) => `${item?.totalChars} chars in ${item?.fileCount} files (limit ${item?.totalLimit ?? prefix.limit})${item?.loadedChars > item?.totalChars ? `; ${item.loadedChars} chars loaded` : ''}`;
+    const line = (item) => {
+      const loaded = item?.loadedChars > item?.totalChars ? `; ${item.loadedChars} chars loaded` : '';
+      return `${item?.totalChars} chars in ${item?.fileCount} files (limit ${item?.totalLimit ?? prefix.limit})${loaded}`;
+    };
     const where = (item) => `${item?.configDir} at ${item?.root}${item === own ? '' : " (no measurement for this session's directory)"}${stale ? ' (stale)' : ''}`;
     let detail;
     if (sized) {
       const largest = (check?.largest ?? []).filter(Boolean).map(name).join(', ');
       const big = (check?.files ?? []).filter((item) => item?.overFileLimit).map(name).join(', ');
-      detail = `${status === 'over' ? 'over' : 'near'} the limit: ${line(check)}${big ? `; over the per-file limit: ${big}` : ''}${largest ? `; largest: ${largest}` : ''}; ${where(check)}; ${file}`;
+      const bigText = big ? `; over the per-file limit: ${big}` : '';
+      const largestText = largest ? `; largest: ${largest}` : '';
+      detail = `${status === 'over' ? 'over' : 'near'} the limit: ${line(check)}${bigText}${largestText}; ${where(check)}; ${file}`;
     } else if (stale) detail = `last measured ${prefix.finishedAt}, stale; ${file}`;
     else if (status === 'error') detail = `measurement failed: ${prefix.error}; ${file}`;
     else if (status === 'unknown') detail = `measurement incomplete: ${check?.errors?.[0] ?? prefix.error ?? 'unknown read error'}; ${file}`;

@@ -278,7 +278,7 @@ test('SessionStart surfaces a prefix over the limit from the last nightly run, e
 });
 
 test('SessionStart says so when the prefix measurement failed, is stale, or is missing after a nightly run', async (t) => {
-  const { home, config, project } = await machine(t);
+  const { config, project } = await machine(t);
   const silent = await hookRun(config, project);
   assert.doesNotMatch(silent.stdout, /static instruction prefix/, 'no nightly at all: silent');
   await put(join(qualityDataDir(config, {}), 'daily-rollback-latest.json'), JSON.stringify({ finishedAt: new Date().toISOString() }));
