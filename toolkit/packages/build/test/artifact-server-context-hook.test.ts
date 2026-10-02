@@ -38,32 +38,37 @@ afterEach(async () => {
   for (const dir of temporaryDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
+async function liveServerFixture() {
+  const stateHome = fixture()
+  const reports = join(fixture(), 'reports')
+  mkdirSync(reports)
+  const report = join(reports, 'report.md')
+  writeFileSync(report, '# report')
+  const server = createServer((_request, response) => {
+    response.setHeader('content-type', 'application/json')
+    response.end(JSON.stringify({
+      service: 'workflow-toolbox-artifact-server', version: 'test', pid: process.pid,
+      uid: typeof process.getuid === 'function' ? process.getuid() : userInfo().username,
+      port: (server.address() as { port: number }).port, registeredSessions: 1,
+    }))
+  })
+  servers.push(server)
+  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+  const port = (server.address() as { port: number }).port
+  const stateDir = join(stateHome, 'wt-artifact-server')
+  mkdirSync(stateDir, { recursive: true })
+  const discovery = join(stateDir, 'server.json')
+  writeFileSync(discovery, JSON.stringify({
+    version: 'test', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl: null,
+    roots: [{ name: 'reports', path: reports }], startedAt: new Date().toISOString(),
+  }))
+  chmodSync(discovery, 0o600)
+  return { stateHome, report, port }
+}
+
 describe('artifact server SessionStart context', () => {
   it('tells a fresh session how to turn an absolute report path into a link when the server is live', async () => {
-    const stateHome = fixture()
-    const reports = join(fixture(), 'reports')
-    mkdirSync(reports)
-    const report = join(reports, 'report.md')
-    writeFileSync(report, '# report')
-    const server = createServer((_request, response) => {
-      response.setHeader('content-type', 'application/json')
-      response.end(JSON.stringify({
-        service: 'workflow-toolbox-artifact-server', version: 'test', pid: process.pid,
-        uid: typeof process.getuid === 'function' ? process.getuid() : userInfo().username,
-        port: (server.address() as { port: number }).port, registeredSessions: 1,
-      }))
-    })
-    servers.push(server)
-    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
-    const port = (server.address() as { port: number }).port
-    const stateDir = join(stateHome, 'wt-artifact-server')
-    mkdirSync(stateDir, { recursive: true })
-    const discovery = join(stateDir, 'server.json')
-    writeFileSync(discovery, JSON.stringify({
-      version: 'test', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl: null,
-      roots: [{ name: 'reports', path: reports }], startedAt: new Date().toISOString(),
-    }))
-    chmodSync(discovery, 0o600)
+    const { stateHome, report, port } = await liveServerFixture()
 
     const hook = await runHook(stateHome)
     expect(hook.status).toBe(0)
@@ -77,6 +82,23 @@ describe('artifact server SessionStart context', () => {
     })
     expect(url.status).toBe(0)
     expect(url.stdout.trim()).toBe(`http://localhost:${port}/reports/report.md`)
+  })
+
+  it('announces a command the session shell can run as written, without CLAUDE_PLUGIN_ROOT', async () => {
+    const { stateHome, report, port } = await liveServerFixture()
+    const hook = await runHook(stateHome)
+    const context = (JSON.parse(hook.stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
+    const announced = /run (node .+?) and hand over/.exec(context)?.[1]
+    expect(announced).toBeDefined()
+    const shellEnv: NodeJS.ProcessEnv = { ...process.env, XDG_STATE_HOME: stateHome }
+    delete shellEnv.CLAUDE_PLUGIN_ROOT
+    const run = spawnSync(String(announced).replace('<absolute-file-path>', report), {
+      encoding: 'utf8', shell: true, env: shellEnv,
+    })
+    expect(run.stderr).toBe('')
+    expect(run.status).toBe(0)
+    expect(run.stdout.trim()).toBe(`http://localhost:${port}/reports/report.md`)
+    expect(context).not.toContain('${')
   })
 
   it('reports unknown without link instructions when the server is stopped', async () => {
