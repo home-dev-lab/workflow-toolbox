@@ -215,7 +215,7 @@ test('J3: an eviction between a reader\'s store read and its archive listing cha
   const plan = { storePath: f.storePath, quality: f.quality, name: `${STORE_ARCHIVE.prefix}9999-1${STORE_ARCHIVE.suffix}`, sessionId: 's', key: 'agent:x' };
   const preload = fileURLToPath(new URL('./fixtures/evict-between-reads.mjs', import.meta.url));
   for (const moment of ['before-store-read', 'after-first-listing']) {
-    const raced = await readerCounts(f, { NODE_OPTIONS: `--import=${preload}`, ROD_EVICT_BETWEEN_READS: JSON.stringify({ ...plan, moment }) });
+    const raced = await readerCounts(f, { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`, ROD_EVICT_BETWEEN_READS: JSON.stringify({ ...plan, moment }) });
     assert.deepEqual(raced.counts, before.counts, `eviction ${moment}`);
   }
 });
