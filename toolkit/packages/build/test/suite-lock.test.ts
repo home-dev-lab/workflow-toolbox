@@ -498,7 +498,8 @@ describe('wt-suite-lock CLI', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(5900)
     expect(second.stderr()).toMatch(/waiting for suite lock: position 1 of 1, holder pid \d+ \(.+\) since \d\d:\d\d/)
     expect(existsSync(join(root, 'lock.d'))).toBe(false)
-  }, 10_000)
+    // Windows worst 6359 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 10000 ms).
+  }, 16_000)
 
   it('reports status as JSON and release refuses a live holder without force', async () => {
     const root = tempRoot('operator')

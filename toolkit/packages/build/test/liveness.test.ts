@@ -425,7 +425,8 @@ describe('wt-arc-watch liveness integration', () => {
       t: 'stop', name: 'pilot-idle', at: '2026-09-12T07:01:00.000Z',
     }])
     expect(closed).not.toContain('IDLE pilot-idle')
-  }, 30_000)
+    // Windows worst 22046 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 30000 ms).
+  }, 56_000)
 
   it('Invariant 1: no liveness file behaves exactly like the old STALE path', async () => {
     const out = await runWatchScenario({
@@ -450,7 +451,8 @@ describe('wt-arc-watch liveness integration', () => {
     })
     expect(out).toContain('ARC WATCH ARMED')
     expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
-  }, 12_000)
+    // Windows worst 7533 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+  }, 19_000)
 
   it('a clean end_turn never silences an agent whose liveness file says its mission is not complete', async () => {
     // An agent that ends its turn waiting on a background task that never wakes it ends cleanly too;
@@ -577,7 +579,8 @@ describe('wt-arc-watch liveness integration', () => {
     expect(out).toContain('ARC WATCH ARMED')
     expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0.2+ min')
     expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
-  }, 12_000)
+    // Windows worst 11023 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+  }, 28_000)
 
   // Review finding (same source): correlation by filename alone is not sufficient proof — the
   // record's OWN declared identity must agree with the candidate key it was looked up under.
@@ -629,7 +632,8 @@ describe('wt-arc-watch liveness integration', () => {
     expect(out).toContain('ARC WATCH ARMED')
     expect(out).not.toContain('STALE:')
     expect(out).not.toContain('IDLE-MID-MISSION:')
-  }, 12_000)
+    // Windows worst 7526 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+  }, 19_000)
 
   it('silences legitimate lane waits only when the declared worktree shows recent real activity', async () => {
     const dir = tmpRoot('wt-liveness-lane-active')
@@ -656,7 +660,8 @@ describe('wt-arc-watch liveness integration', () => {
     expect(out).toContain('ARC WATCH ARMED')
     expect(out).not.toContain('STALE:')
     expect(out).not.toContain('IDLE-MID-MISSION:')
-  }, 12_000)
+    // Windows worst 11029 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+  }, 28_000)
 
   it('correlates by transcript raw id when no declared name exists and emits IDLE-MID-MISSION', async () => {
     const dir = tmpRoot('wt-liveness-raw-id')
@@ -842,7 +847,8 @@ describe('wt-arc-watch liveness integration', () => {
       'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh (foreign to this project)',
       'WAITING-ON-SPAWNER: pilot/cached-refresh — card:refresh',
     ])
-  }, 15_000)
+    // Windows worst 12527 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
+  }, 32_000)
 
   it('keeps the same emission count while labeling uncorrelatable records as project unknown', async () => {
     const dir = tmpRoot('wt-liveness-emission-count')
@@ -878,7 +884,8 @@ describe('wt-arc-watch liveness integration', () => {
     const emissionCount = out.split('\n').filter((line) => /^(WAITING-ON-SPAWNER|UNCORRELATABLE): /.test(line)).length
     expect(emissionCount).toBe(2)
     expect(out).toContain('UNCORRELATABLE: mission:uncorrelated count — liveness file declares no correlation key, cannot be matched to a transcript (project unknown)')
-  }, 12_000)
+    // Windows worst 7521 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
+  }, 19_000)
 
   it('emits UNCORRELATABLE once per distinct updatedAt for tier-none records', async () => {
     const dir = tmpRoot('wt-liveness-uncorrelatable')
@@ -928,7 +935,8 @@ describe('wt-arc-watch liveness integration', () => {
 
     const marker = 'UNCORRELATABLE: mission:uncorrelated — liveness file declares no correlation key, cannot be matched to a transcript \(project unknown\)'
     expect(out.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'))).toHaveLength(2)
-  }, 15_000)
+    // Windows worst 12525 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 15000 ms).
+  }, 32_000)
 })
 
 describe('test harness sanity', () => {
