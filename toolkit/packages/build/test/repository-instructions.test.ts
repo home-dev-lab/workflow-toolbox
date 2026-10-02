@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -15,16 +15,24 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 type Entry = string | { link: string }
 const git = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' })
 
-// Builds a committed repository in a temp directory. A `{ link }` entry is a symlink the commit stores as mode 120000.
+// Builds a committed repository in a temp directory. A `{ link }` entry is a symlink the commit stores as mode 120000,
+// written straight into the index so the fixture is the same on a host that cannot create symlinks (Windows).
 function repo(files: Record<string, Entry>, { commit = true } = {}) {
   const base = mkdtempSync(join(tmpdir(), 'wt-repo-instructions-')); roots.push(base)
   const root = join(base, 'repo'); mkdirSync(root)
   git(root, 'init', '-q'); git(root, 'config', 'user.email', 'test@example.invalid'); git(root, 'config', 'user.name', 'Test'); git(root, 'config', 'commit.gpgSign', 'false')
   for (const [name, entry] of Object.entries(files)) {
     const file = join(root, ...name.split('/')); mkdirSync(dirname(file), { recursive: true })
-    if (typeof entry === 'string') writeFileSync(file, entry); else symlinkSync(entry.link, file)
+    if (typeof entry === 'string') writeFileSync(file, entry)
   }
-  if (commit) { git(root, 'add', '-A'); git(root, 'commit', '-qm', 'base') }
+  if (!commit) return { base, root }
+  git(root, 'add', '-A')
+  for (const [name, entry] of Object.entries(files)) {
+    if (typeof entry === 'string') continue
+    const blob = spawnSync('git', ['hash-object', '-w', '--stdin'], { cwd: root, input: entry.link, encoding: 'utf8' }).stdout.trim()
+    git(root, 'update-index', '--add', '--cacheinfo', `120000,${blob},${name}`)
+  }
+  git(root, 'commit', '-qm', 'base')
   return { base, root }
 }
 const build = (root: string, prompt = 'THE BRIEF', options: Record<string, unknown> = {}) => withRepositoryInstructions(root, prompt, options) as string
@@ -258,7 +266,7 @@ describe('repository instructions from the committed tree', () => {
     expect(out).toContain('… and 10 more')
   })
 
-  it('F5 the hardened git flags keep a planted core.fsmonitor from running', () => {
+  it.skipIf(process.platform === 'win32')('F5 the hardened git flags keep a planted core.fsmonitor from running (POSIX sh fsmonitor script)', () => {
     const { base, root } = repo({ 'CLAUDE.md': 'G\n' })
     const sentinel = join(base, 'fsmonitor-ran'); const script = join(base, 'fsmonitor.sh')
     writeFileSync(script, `#!/bin/sh\ntouch ${JSON.stringify(sentinel)}\nprintf '\\0'\n`); chmodSync(script, 0o755)
@@ -268,7 +276,7 @@ describe('repository instructions from the committed tree', () => {
     expect(existsSync(sentinel)).toBe(false)
   })
 
-  it('F5 every host git call carries the hardening flags (read-only plumbing never runs fsmonitor, so the argv is the lock)', () => {
+  it.skipIf(process.platform === 'win32')('F5 every host git call carries the hardening flags (read-only plumbing never runs fsmonitor, so the argv is the lock; POSIX sh PATH shim)', () => {
     const { base, root } = repo({ 'CLAUDE.md': 'G\n' })
     const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim()
     const shimDir = join(base, 'shim'); mkdirSync(shimDir)
