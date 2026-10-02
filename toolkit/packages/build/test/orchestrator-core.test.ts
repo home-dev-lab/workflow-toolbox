@@ -679,6 +679,14 @@ describe('SDK orchestrator judge', () => {
     await expect(accepted({ row: { id: '1' } })).resolves.toBe(false)
   })
 
+  it('tolerates a commands_changed notice that precedes the judge initialization receipt', async () => {
+    const f = repoFixture(); const waveDir = join(f.root, '.waves', 'commands-first'); mkdirSync(waveDir, { recursive: true })
+    const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
+    waveServer.setCardState('1', 'piloting'); waveServer.setCardState('1', 'judging')
+    const judge = createSdkJudge({ query: () => (async function* () { yield { type: 'system', subtype: 'commands_changed', commands: [] }; yield judgeInit(); throw new Error('stream broke after init') })(), models: { orchestrator: { value: 'opus' } }, waveDir, waveServer, contract: '# contract' })
+    await expect(judge({ row: { id: '1' } })).rejects.toThrow('stream broke after init')
+  })
+
   it('F11 emits accumulated judge warnings when the SDK iterator throws', async () => {
     const f = repoFixture(); const waveDir = join(f.root, '.waves', 'warning-on-error'); mkdirSync(waveDir, { recursive: true })
     const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
