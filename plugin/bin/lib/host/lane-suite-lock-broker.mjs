@@ -124,6 +124,7 @@ export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUIT
           ...(request.light ? { light: true } : {}),
           signal: controller.signal,
           onWait: (line) => { if (!socket.destroyed) socket.write(`wait ${line}\n`) },
+          onProgress: ({ ahead, total }) => { if (!socket.destroyed) socket.write(`progress ${ahead} ${total}\n`) },
         })
         if (closed) { releaseSuiteLock(acquired); return }
         lease = acquired

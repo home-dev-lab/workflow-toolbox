@@ -332,7 +332,7 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
     writeFileSync(`${base}.json`, JSON.stringify({ ...OLD_CLIENT_RECORD, startedAt: new Date().toISOString() }))
     return `${base}.json`
   }
-  const outcome = (root: string, options: Record<string, unknown>) => acquireSuiteLock({ root, waitS: 1.5, pollMs: 10, insideSandbox: false, ...options }).then(
+   const outcome = (root: string, options: Record<string, unknown>) => acquireSuiteLock({ root, waitS: 1.5, staleS: 1.5, pollMs: 10, insideSandbox: false, ...options }).then(
     (lease: { holder: unknown }) => { releaseSuiteLock(lease); return 'acquired' },
     (error: { code?: string }) => error.code,
   )
@@ -386,7 +386,7 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
     let reclaimed = false
     const publishA = () => { if (reclaimed) return; writeFileSync(join(lockDir, 'holder.json'), JSON.stringify({ ...OLD_CLIENT_RECORD, argv: ['A'], startedAt: new Date().toISOString(), leaseId: 'A-lease' })) }
     const libUrl = new URL('../../../../plugin/bin/lib/suite-lock.mjs', import.meta.url).href
-    const script = `import { acquireSuiteLock } from ${JSON.stringify(libUrl)};try{await acquireSuiteLock({root:${JSON.stringify(root)},light:true,waitS:0.6,pollMs:10,insideSandbox:false});process.stdout.write('granted')}catch(e){process.stdout.write(String(e.code))}`
+     const script = `import { acquireSuiteLock } from ${JSON.stringify(libUrl)};try{await acquireSuiteLock({root:${JSON.stringify(root)},light:true,waitS:0.6,staleS:0.6,pollMs:10,insideSandbox:false});process.stdout.write('granted')}catch(e){process.stdout.write(String(e.code))}`
     let lightResult = ''
     const runLight = () => { if (reclaimed) return; reclaimed = true; lightResult = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: isolatedEnv(root), encoding: 'utf8', timeout: 20_000 }).stdout }
     const reclaimer = await outcome(root, { argv: ['B'], waitS: 2, beforeReclaimRemoval: publishA, afterLockAside: runLight })
@@ -450,7 +450,7 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
     const root = tempRoot()
     deadHolderIn(root)
     const libUrl = new URL('../../../../plugin/bin/lib/suite-lock.mjs', import.meta.url).href
-    const script = `import { acquireSuiteLock } from ${JSON.stringify(libUrl)};try{await acquireSuiteLock({root:${JSON.stringify(root)},light:true,waitS:0.6,pollMs:10,insideSandbox:false});process.stdout.write('granted')}catch(e){process.stdout.write(String(e.code))}`
+     const script = `import { acquireSuiteLock } from ${JSON.stringify(libUrl)};try{await acquireSuiteLock({root:${JSON.stringify(root)},light:true,waitS:0.6,staleS:0.6,pollMs:10,insideSandbox:false});process.stdout.write('granted')}catch(e){process.stdout.write(String(e.code))}`
     let during = ''
     const result = operatorReleaseSuiteLock({ root, afterLockAside: () => { during = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: isolatedEnv(root), encoding: 'utf8', timeout: 20_000 }).stdout } })
     expect(result.released).toBe(true)
