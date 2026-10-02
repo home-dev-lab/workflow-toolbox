@@ -50,6 +50,8 @@ const commonTestConfig = {
     './test-support/child-process-coverage.setup.ts',
     // SIGKILL skips in-process cleanup; tag children so an external watchdog can reap detached keepalives.
     './test-support/orphan-reaper.setup.ts',
+    // A held keepalive and everything its wrapper started stop when the test ends, not when the run does.
+    './test-support/held-processes.setup.ts',
     // Every git child reads a suite-owned global config, never the machine's, and cannot reach
     // the machine's SSH agent (card 1838017282 — see the file's own header).
     './test-support/git-config-isolation.setup.ts',

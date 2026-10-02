@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
+import { spawnHeld, stopHeld } from '../../../test-support/held-processes.mjs'
 // @ts-expect-error Node script under toolkit/scripts/
 import * as certification from '../../../scripts/release-certify.mjs'
 const { certify, sampleLoad } = certification
@@ -44,14 +46,19 @@ function runner(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) 
   })
 }
 
+// Held: the runner's own child stays in its process group, so stopping the runner stops that child too.
 function runAsync(args: string[], root: string) {
-  const child = spawn(process.execPath, [CLI, ...args], {
+  const child = spawnHeld(process.execPath, [CLI, ...args], {
     env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stderr = ''
-  child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+  child.stderr!.on('data', (chunk: Buffer) => { stderr += String(chunk) })
   return { child, stderr: () => stderr, done: new Promise<number | null>((resolve) => child.once('exit', resolve)) }
+}
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
@@ -182,7 +189,7 @@ describe('package gate lease boundary', () => {
     const root = tempRoot('gate-boundary')
     const env = { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
     const marker = join(root, 'exclusive-started')
-    const holder = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes');setInterval(()=>{},1000)`], { env, stdio: 'ignore' })
+    const holder = spawnHeld(process.execPath, [CLI, 'run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes');setInterval(()=>{},1000)`], { env, stdio: 'ignore' })
     const clients: Array<ReturnType<typeof spawn>> = []
     try {
       await waitFor(() => existsSync(marker), 15_000)
@@ -208,7 +215,7 @@ describe('package gate lease boundary', () => {
       expect(await vitest.done, vitest.stderr()).toBe(0)
       expect(await typecheck.done, typecheck.stderr()).toBe(0)
     } finally {
-      holder.kill('SIGKILL')
+      stopHeld(holder)
       for (const client of clients) if (client.exitCode === null) client.kill('SIGKILL')
     }
   }, 180_000)
@@ -467,15 +474,18 @@ describe('wt-suite-lock CLI', () => {
   it('times out with 75 and never runs the command', async () => {
     const root = tempRoot('timeout')
     const marker = join(root, 'ran')
-    const owner = runAsync(['run', '--', process.execPath, '-e', 'setInterval(()=>{},1000)'], root)
+    const holderPid = join(root, 'holder.pid')
+    const owner = runAsync(['run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(holderPid)}, String(process.pid));setInterval(()=>{},1000)`], root)
     try {
       await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
       const result = cli(['run', '--wait-s', '0.05', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
       expect(result.status).toBe(75)
       expect(result.stderr).toContain('timed out waiting for suite lock: holder pid')
       expect(existsSync(marker)).toBe(false)
-    } finally { owner.child.kill('SIGKILL'); await owner.done }
-  })
+    } finally { stopHeld(owner.child); await owner.done }
+    // The runner dies by SIGKILL and cannot forward it: its keepalive child must still be gone.
+    await waitFor(() => existsSync(holderPid) && !processAlive(Number(readFileSync(holderPid, 'utf8'))), 15_000)
+  }, 30_000)
 
   it('bypasses visibly and runs when WT_SUITE_LOCK=0', () => {
     const root = tempRoot('bypass')

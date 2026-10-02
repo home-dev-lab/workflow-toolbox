@@ -67,6 +67,7 @@ export const spawningTestFiles = [
   'packages/build/test/guard-journal.test.ts',
   'packages/build/test/guard-observe-mode.test.ts',
   'packages/build/test/guard-recurrence-hook.test.ts',
+  'packages/build/test/held-processes.test.ts',
   'packages/build/test/host-adapter.contract.test.ts',
   'packages/build/test/intake-triage.test.ts',
   'packages/build/test/isolated-spawn-report-path-hook.test.ts',
