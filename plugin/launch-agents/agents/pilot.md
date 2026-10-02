@@ -742,6 +742,14 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   `TMPDIR`, so any shell command run afterward (e.g. `pnpm test`) inherits the polluted
   value and fixtures doing `mkdtempSync(join(tmpdir(), ...))` write INTO the project tree
   instead of `/tmp`.
+- **Scratch goes in a directory only you own**: every temporary file you create — a
+  mutation backup (`.orig`), a red-proof script, a captured log — lives in
+  `T=$(mktemp -d)` or under your own worktree or report directory, and you clean it with
+  `rm -rf "${T:?}"`. Never name scratch `/tmp/<short-prefix>-*` and never clean with a
+  glob directly under the temp root (`rm -rf /tmp/b8-*`): round and card prefixes are
+  reused by every agent running at the same time, so the glob also deletes their files, and
+  a lost mutation backup can leave a source tree mutated. The plugin's tmp-glob rm guard
+  warns on that glob form. Every brief you write carries this instruction.
 - **Push-scope guard, mechanical — not just vigilance**: nothing lands in a publishable
   tree beyond what was actually authorized; the tree at publish time must be the one
   described to the user, never a superset. Before any push, run

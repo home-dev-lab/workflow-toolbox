@@ -682,6 +682,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse find-newermt-format warn-only guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-tmp-glob-rm-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse temp-root rm glob warn-only guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-git-commit-backtick-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse git-commit-backtick warn-only guard under Shipped Hooks, Guards & Monitors.',
@@ -1203,6 +1208,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-main-guard-hook.mjs',
       'plugin/bin/wt-pipestatus-bash-only-guard-hook.mjs',
       'plugin/bin/wt-find-newermt-format-guard-hook.mjs',
+      'plugin/bin/wt-tmp-glob-rm-guard-hook.mjs',
       'plugin/bin/wt-git-commit-backtick-guard-hook.mjs',
       'plugin/bin/wt-guard-journal-scan.mjs',
       'plugin/bin/wt-isolated-spawn-report-path-hook.mjs',

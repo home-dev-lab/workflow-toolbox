@@ -188,7 +188,7 @@ describe('host primitive declaration data', () => {
 })
 
 describe('host primitive shell grammar exemption', () => {
-  it('reads separators in the declared shell-command parser as shell syntax, but still counts its host access', () => {
+  it('reads separators in the declared shell-command and rm-target parsers as shell syntax, but still counts their host access', () => {
     const root = fixturePlugin()
     writeFileSync(join(root, 'bin', 'lib', 'rm-critical-path-core.mjs'), [
       "import { readFileSync } from 'node:fs'",
@@ -196,11 +196,18 @@ describe('host primitive shell grammar exemption', () => {
       "const isRoot = (p) => p === '/'",
     ].join('\n'))
     writeFileSync(join(root, 'bin', 'lib', 'other.mjs'), "const isRoot = (p) => p === '/'\n")
+    writeFileSync(join(root, 'bin', 'wt-tmp-glob-rm-guard-hook.mjs'), [
+      "import { readFileSync } from 'node:fs'",
+      "const isEscape = (c) => c === '\\\\'",
+      "readFileSync('/tmp/literal')",
+    ].join('\n'))
 
     const primitives = scanHostPrimitives(root).findings.map(({ file, primitive }) => `${file} ${primitive}`)
     expect(primitives).toEqual([
       'bin/lib/other.mjs hard-coded path separator',
       'bin/lib/rm-critical-path-core.mjs fs import',
+      'bin/wt-tmp-glob-rm-guard-hook.mjs fs import',
+      'bin/wt-tmp-glob-rm-guard-hook.mjs readFileSync',
     ])
   })
 

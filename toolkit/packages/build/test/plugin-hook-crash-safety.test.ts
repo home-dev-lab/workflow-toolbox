@@ -445,6 +445,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'find . -newermt "5 minutes ago"' },
       }
+    case 'wt-tmp-glob-rm-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /tmp/b8-*' },
+      }
     case 'wt-git-commit-backtick-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',

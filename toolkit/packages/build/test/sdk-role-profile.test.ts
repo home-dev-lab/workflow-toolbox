@@ -50,6 +50,7 @@ const requiredGuards = [
   'wt-concurrent-test-guard-hook.mjs', 'wt-piped-gate-exit-code-guard-hook.mjs',
   'wt-pgrep-env-dump-guard-hook.mjs', 'wt-git-commit-backtick-guard-hook.mjs',
   'wt-var-colon-modifier-guard-hook.mjs', 'wt-find-newermt-format-guard-hook.mjs',
+  'wt-tmp-glob-rm-guard-hook.mjs',
   'wt-pipestatus-bash-only-guard-hook.mjs', 'wt-missing-package-script-guard-hook.mjs',
   'wt-main-guard-hook.mjs', 'wt-gate-evidence-guard-hook.mjs',
   'wt-stale-date-guard-hook.mjs', 'wt-rule-convention-guard-hook.mjs',

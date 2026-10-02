@@ -82,6 +82,7 @@ const WRITER_GUARDS = Object.freeze([
   { script: 'wt-git-commit-backtick-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'prevent shell substitution in commit messages' },
   { script: 'wt-var-colon-modifier-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'catch zsh variable modifier ambiguity' },
   { script: 'wt-find-newermt-format-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'catch malformed find date operands' },
+  { script: 'wt-tmp-glob-rm-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'warn before temp-root globs remove other agents scratch' },
   { script: 'wt-pipestatus-bash-only-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'keep PIPESTATUS checks in bash' },
   { script: 'wt-missing-package-script-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'refuse package scripts absent from the manifest' },
   { script: 'wt-main-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'protect integration-only operations on main' },

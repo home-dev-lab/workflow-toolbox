@@ -172,6 +172,11 @@ describe('WT_GUARD_MODE=observe', () => {
       contains: 'find-newermt guard',
     },
     {
+      hook: 'wt-tmp-glob-rm-guard-hook.mjs',
+      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm -rf /tmp/b8-*' } } }),
+      contains: 'tmp-glob-rm guard',
+    },
+    {
       hook: 'wt-git-commit-backtick-guard-hook.mjs',
       make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git commit -m "the default `stretch` applied"' } } }),
       contains: 'backtick guard',

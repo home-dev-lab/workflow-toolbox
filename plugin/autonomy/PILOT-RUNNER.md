@@ -140,9 +140,9 @@ source. Their library-controlled persistent context storage outside the worktree
 to worktree confinement.
 The writer's model-authored shell work gets done through `Bash`, where sandbox availability is
 mandatory, per-command sandbox escape is disabled and denied by authorization, and the writer guards
-apply. The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
+apply. The writer set is the guards named in `sdk-role-profile.mjs`: shell correctness guards for
 unquoted globs, merge chains, concurrent tests, piped gate status, process-environment dumps,
-commit backticks, zsh colon modifiers, `find -newermt`, `PIPESTATUS`, and absent package scripts;
+commit backticks, zsh colon modifiers, `find -newermt`, temp-root `rm` globs, `PIPESTATUS`, and absent package scripts;
 plus main, gate-evidence, stale-date, rule-convention, and shipped-twin checks. Each SDK callback
 spawns the original shipped script with the native hook payload unchanged and returns its JSON
 decision unchanged. A role-launched guard forces its otherwise fail-open wrapper to exit non-zero on
