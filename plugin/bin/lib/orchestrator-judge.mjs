@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { confinedToWorktree } from './pilot-runner-core.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, repositoryGuidePaths, withRepositoryGuide } from './sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, repositoryGuidePaths, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 
@@ -119,6 +119,7 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
       try {
         for await (const message of stream) {
           modelTracker.observe(message)
+          if (!initReceiptSeen && isPreInitNotice(message)) continue
           if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
             throw new Error(`SDK judge initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
           }

@@ -28,7 +28,7 @@ import { decidePilotRun } from '../../../../plugin/bin/lib/host/pilot-decision-s
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { PROFILE_AUTH_KEYS } from '../../../../plugin/bin/lib/sdk-account-check.mjs'
 // Production resolveExecutorProfile always resolves a model per role; a lane launch needs it to pick its family's variant base.
-const GPT_LANE_MODELS = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }
+const GPT_LANE_MODELS = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
 const CONTEXT_MODE_TOOLS = {
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
@@ -1226,9 +1226,9 @@ describe('SDK pilot runner', () => {
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, injected_turns: 3, reason: 'pilot ended its turn 3 times without progress' } })
     expect(result.summary.partial).toMatchObject({ reason: 'pilot ended its turn 3 times without progress' })
     expect(readFileSync(join(result.summary.archive.path, 'summary.json'), 'utf8')).toContain('pilot ended its turn 3 times without progress')
-  // This case performs runner archive I/O and several spawned model-resolution probes; hosted
-  // Windows cannot reliably complete that process work inside Vitest's former 2-second budget.
-  }, 5_000)
+  // Real runner archive I/O and spawned model-resolution probes: hosted Windows took 5322 ms here on a cross-os
+  // tag run, so no per-test budget below the suite's testTimeout (20 s, vitest.config.mts) is kept on this case.
+  })
 
   it('stops a fake pilot at the next phase boundary and retains its timeout partial', async () => {
     const f = fixture(); let fireTimeout: (() => void) | undefined; let heads = 0; const attempted: string[] = []
@@ -1492,10 +1492,13 @@ describe('SDK pilot runner', () => {
 
   // The SDK can emit an account-level `rate_limit_event` BEFORE its init message (measured on a fresh
   // account window). It carries no model output, so it must not count as "another message first".
-  it('tolerates a rate_limit_event that precedes the initialization receipt', async () => {
+  it.each([
+    ['a rate_limit_event', { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }],
+    ['a commands_changed notice', { type: 'system', subtype: 'commands_changed', commands: [] }],
+  ])('tolerates %s that precedes the initialization receipt', async (_name, notice) => {
     const f = fixture()
     const rateLimitedFirst = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
+      yield notice
       yield initMessage()
       await prompt.next()
     })()
@@ -1714,7 +1717,7 @@ describe('SDK pilot runner', () => {
     const query = () => (async function* () { yield initMessage() })()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
       query, env, resolvePilotModels: models, log: () => {},
-      resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' } }),
+      resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'opus' } }),
     })
     expect(result.summary.executor_variants).toEqual({
       critic: { value: 'max', origin: 'role base', executor: 'gpt-lane' },

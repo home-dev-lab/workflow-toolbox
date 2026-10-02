@@ -1,7 +1,7 @@
 // GUARD (card: temp dirs leaking into the wt-suite umbrella root — never a git repo, so no
 // .gitignore can hide them). Root cause investigated 2026-07-27: `os.tmpdir()` in a
 // short-lived hook/tool process was observed resolving to
-// `/home/doublefx/projects/wt-suite` instead of `/tmp` at least 4 times within one hour
+// `~/projects/wt-suite` instead of `/tmp` at least 4 times within one hour
 // (marker files `wt-verifier-denies-*` written by plugin/bin/wt-verifier-cli-guard-hook.mjs's
 // markerDir(), which trusts `process.env.TMPDIR || os.tmpdir()` unconditionally). The three
 // live top-level `claude` CLI processes at investigation time all had a correct
@@ -12,13 +12,14 @@
 // prefix-based check (e.g. only `prov-*`/`cap-reg-*`) that would have missed `tsx-1000` and
 // `node-compile-cache`, the two entries that actually proved the os.tmpdir() misresolution.
 //
-// This machine-specific path only exists on doublefx's box — the test SKIPS (not fails) when
+// This machine-specific path only exists on the maintainer's machine — the test SKIPS (not fails) when
 // it's absent, so it never breaks CI or another contributor's checkout.
 import { describe, expect, it } from 'vitest'
 import { mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-const WT_SUITE_ROOT = '/home/doublefx/projects/wt-suite'
+const WT_SUITE_ROOT = join(homedir(), 'projects', 'wt-suite')
 
 // Whitelist: everything that has a legitimate, committed reason to live at the umbrella
 // root. Anything else — a temp dir, a stray cache, a misrouted os.tmpdir() write — fails.

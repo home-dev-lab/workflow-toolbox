@@ -1,6 +1,6 @@
 {
   "provenance": {
-    "source": "/home/doublefx/projects/wt-suite/.claude/worktrees/sdk-e2e-1863152845/.lane/sdk-transcript.json",
+    "source": "/home/dev/projects/wt-suite/.claude/worktrees/sdk-e2e-1863152845/.lane/sdk-transcript.json",
     "captured_at": "2026-09-15T00:38:40.268Z",
     "note": "Static extraction from the real transcript. assistant_message_usage_sum is the latest-copy-per-message_id sum written by the runner."
   },

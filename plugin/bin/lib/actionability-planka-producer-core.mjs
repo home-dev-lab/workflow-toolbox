@@ -17,6 +17,8 @@
 // countedScope string describing the scan, even when the caller does not ask.
 
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { triageCardDependencies } from './depends-on-parser.mjs'
+import { readWholeBoardPage } from './find-cards-page.mjs'
 
 const BOARD_POINTER_RELATIVE = '.claude/planka.json'
 
@@ -78,7 +80,7 @@ function normalizeCard(raw) {
 
 /**
  * @param {{ toolName: string, toolInput: unknown, toolResponse: unknown, readSpilledFile?: (path: string) => string | null }} input
- * @returns {{ ok: true, cards: Array<{id:string,name:string,description:string,listName:string,position:number}> } | { ok: false, reason: string }}
+ * @returns {{ ok: true, cards: Array<{id:string,name:string,description:string,listName:string,position:number}>, missingDescriptionKeys: number } | { ok: false, reason: string }}
  */
 export function extractCards({ toolName, toolInput, toolResponse, readSpilledFile }) {
   const ti = toolInput && typeof toolInput === 'object' ? toolInput : {}
@@ -115,6 +117,7 @@ export function extractCards({ toolName, toolInput, toolResponse, readSpilledFil
     const lists = Array.isArray(parsed?.lists) ? parsed.lists : null
     if (!lists) return { ok: false, reason: 'get_board response has no lists[] array' }
     const cards = []
+    let missingDescriptionKeys = 0
     for (const list of lists) {
       const listName = typeof list?.name === 'string' ? list.name : ''
       // A list with no `cards` array at all is a TRUNCATED/malformed response, not a
@@ -131,9 +134,10 @@ export function extractCards({ toolName, toolInput, toolResponse, readSpilledFil
         // complete when it is not. Fail the extraction instead of guessing.
         if (!card) return { ok: false, reason: `unreadable card in list ${JSON.stringify(listName)} — missing/invalid id` }
         cards.push({ ...card, listName: card.listName || listName })
+        if (!Object.hasOwn(raw, 'description')) missingDescriptionKeys += 1
       }
     }
-    return { ok: true, cards }
+    return { ok: true, cards, missingDescriptionKeys }
   }
 
   if (toolName === 'mcp__planka__find_cards') {
@@ -146,39 +150,46 @@ export function extractCards({ toolName, toolInput, toolResponse, readSpilledFil
     // The current schema is paginated. A page is complete only when it starts at zero and
     // contains every card named by `total`; otherwise the producer records a refusal rather
     // than turning a plausible subset into a board-wide count. Legacy array responses remain
-    // accepted only when the call itself did not request pagination.
-    let rawCards
-    if (Array.isArray(parsed)) {
-      if (ti.limit !== undefined || ti.offset !== undefined) {
-        return { ok: false, reason: 'find_cards paginated response has no total — result is a subset, not the whole board' }
-      }
-      rawCards = parsed
-    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.cards)) {
-      const total = parsed.total
-      const offset = parsed.offset
-      if (!Number.isInteger(total) || total < 0 || !Number.isInteger(offset) || offset < 0) {
-        return { ok: false, reason: 'find_cards response has invalid pagination metadata' }
-      }
-      if (offset !== 0 || parsed.cards.length !== total) {
-        return { ok: false, reason: `find_cards page contains ${parsed.cards.length} of ${total} cards at offset ${offset} — result is a subset, not the whole board` }
-      }
-      rawCards = parsed.cards
-    } else {
-      return { ok: false, reason: 'find_cards response has no cards[] array' }
-    }
+    // accepted only when the call itself did not request pagination. The rule lives in
+    // find-cards-page.mjs, shared with toolkit/scripts/planka-mcp-client.ts.
+    const page = readWholeBoardPage(parsed, { paginationRequested: ti.limit !== undefined || ti.offset !== undefined })
+    if (!page.ok) return { ok: false, reason: page.reason }
+    const rawCards = page.cards
     if (ti.includeDescription === false) {
       return { ok: false, reason: 'find_cards omitted descriptions — dependency completeness cannot be proved' }
     }
     const cards = []
+    let missingDescriptionKeys = 0
     for (const raw of rawCards) {
       const card = normalizeCard(raw)
       if (!card) return { ok: false, reason: 'unreadable card in find_cards response — missing/invalid id' }
       cards.push(card)
+      if (!Object.hasOwn(raw, 'description')) missingDescriptionKeys += 1
     }
-    return { ok: true, cards }
+    return { ok: true, cards, missingDescriptionKeys }
   }
 
   return { ok: false, reason: `unsupported tool_name ${toolName}` }
+}
+
+const DESCRIPTIONS_MISSING = 'descriptions are missing, so dependency completeness cannot be proved'
+
+// A second, separate question from extractCards(): does this COMPLETE card set carry the
+// descriptions a Depends-on count needs? Kept out of extraction on purpose — the prior-art
+// title index needs only id/name/list and is still written from a read this check refuses.
+// EVERY card must carry the `description` key: a summary read (get_board cardsSummary, or
+// find_cards includeDescription:false) omits it, and normalizeCard() would otherwise read the
+// gap as an empty description and yield a confident wrong count. A null or '' value is a real,
+// empty description and stays readable.
+export function checkDescriptionsPresent({ toolName, toolInput, extraction }) {
+  const ti = toolInput && typeof toolInput === 'object' ? toolInput : {}
+  if (toolName === 'mcp__planka__get_board' && ti.cardsSummary) {
+    return { ok: false, reason: `get_board called with cardsSummary: ${DESCRIPTIONS_MISSING}` }
+  }
+  if (extraction.missingDescriptionKeys > 0) {
+    return { ok: false, reason: `${extraction.missingDescriptionKeys} of ${extraction.cards.length} cards have no description field: ${DESCRIPTIONS_MISSING}` }
+  }
+  return { ok: true }
 }
 
 /**
@@ -187,13 +198,14 @@ export function extractCards({ toolName, toolInput, toolResponse, readSpilledFil
  *   resolveDeps: (description: string) => { ids: string[], unparseable: string[] },
  *   boardId?: string,
  *   now: number,
+ *   parserKind?: string,
  * }} input
  * @returns {{
  *   at: number, actionable: number, next: string, workPossible: true, reason: '',
- *   blockedUntil: null, inFlightUntil: null, countedScope: string,
+ *   blockedUntil: null, inFlightUntil: null, undeclared: number, countedScope: string,
  * }}
  */
-export function computeSnapshot({ cards, resolveDeps, boardId, now }) {
+export function computeSnapshot({ cards, resolveDeps, boardId, now, parserKind = 'project parser' }) {
   const doneIds = new Set(
     cards.filter((c) => DONE_LISTS.has(normalizeListName(c.listName))).map((c) => c.id),
   )
@@ -201,30 +213,24 @@ export function computeSnapshot({ cards, resolveDeps, boardId, now }) {
     .filter((c) => STARTABLE_LISTS.has(normalizeListName(c.listName)))
     .sort((a, b) => a.position - b.position)
 
-  let actionableCount = 0
-  let unresolvedCount = 0
-  let firstActionable = null
-  for (const card of startable) {
-    const { ids, unparseable } = resolveDeps(card.description)
-    const resolved = unparseable.length === 0 && ids.every((id) => doneIds.has(id))
-    if (resolved) {
-      actionableCount += 1
-      if (!firstActionable) firstActionable = card
-    } else {
-      unresolvedCount += 1
-    }
-  }
+  const { recommendable, notChecked, blocked } = triageCardDependencies(startable, doneIds, resolveDeps)
+  const actionableCount = recommendable.length
+  const unresolvedCount = blocked.length
+  const undeclared = notChecked.length
+  const firstActionable = recommendable[0] ?? null
 
   const next = firstActionable ? `#${firstActionable.id} ${firstActionable.name}`.trim() : ''
   const scanned = startable.length
   const countedScope =
     `Backlog+Next cards${boardId ? ` on board ${boardId}` : ''}: ${scanned} scanned, ` +
     `${actionableCount} with every Depends-on resolved to a card in Done, ` +
-    `${unresolvedCount} unresolved/unparseable/blocked; Done pool: ${doneIds.size} cards.`
+    `${unresolvedCount} unresolved/unparseable/blocked, ${undeclared} with no Depends-on line; ` +
+    `Done pool: ${doneIds.size} cards; ${parserKind}.`
 
   return {
     at: now,
     actionable: actionableCount,
+    undeclared,
     next,
     workPossible: true,
     reason: '',

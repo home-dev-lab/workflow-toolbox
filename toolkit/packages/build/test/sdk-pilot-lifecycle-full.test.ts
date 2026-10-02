@@ -55,7 +55,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
 
   it('selects both production launchers by phase model, including tdd as code', () => {
     expect(phaseLaunchPlan('refutation', 'opus', 'gpt-lane')).toMatchObject({ executor: 'claude-sdk', script: 'wt-claude-executor.mjs', args: ['--variant', 'xhigh', '--variant-origin', 'role base', '--role', 'refutation'] })
-    expect(phaseLaunchPlan('tdd', 'openai/gpt-6-sol', 'claude-sdk')).toMatchObject({ executor: 'gpt-lane', script: 'wt-lane.mjs', args: ['--role', 'code'] })
+    expect(phaseLaunchPlan('tdd', 'openai/gpt-6.1-sol', 'claude-sdk')).toMatchObject({ executor: 'gpt-lane', script: 'wt-lane.mjs', args: ['--role', 'code'] })
     expect(phaseLaunchPlan('tdd', 'sonnet', 'gpt-lane')).toMatchObject({ executor: 'claude-sdk', script: 'wt-claude-executor.mjs', args: ['--variant', 'medium', '--variant-origin', 'role base', '--role', 'tdd'] })
     expect(phaseLaunchPlan('review', 'openai/gpt-6-astra', 'claude-sdk')).toMatchObject({ executor: 'gpt-lane', script: 'wt-lane.mjs', args: ['--role', 'review'] })
     expect(phaseLaunchPlan('tdd', 'test-model', 'claude-sdk').executor).toBe('claude-sdk')
@@ -63,7 +63,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
 
   it('records the launched family per lane and route in a mixed FULL lifecycle', async () => {
     const index = join(tmpdir(), 'mixed-memory', 'MEMORY.md')
-    const lifecycle = fullLifecycle({ models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' }, knowledgeBase: { path: index, checkedPath: index } })
+    const lifecycle = fullLifecycle({ models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'opus' }, knowledgeBase: { path: index, checkedPath: index } })
     const route = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'route.json'), 'utf8'))
     expect(route.executors).toEqual({ critic: 'gpt-lane', code: 'gpt-lane', review: 'gpt-lane', refutation: 'claude-sdk' })
     await reachReview(lifecycle)

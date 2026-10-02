@@ -8,7 +8,9 @@
 // declared": compliance `none`, no compliance block, or no rule file found). A declared
 // rule that was served yet has no verdict row is flagged in `note`, never left silent.
 //
-//   node compliance-report.mjs [--store <file>] [--project <dir>] [--config-dir <dir>] [--json]
+//   node compliance-report.mjs [--store <file> [--store-archives <dir>]] [--project <dir>] [--config-dir <dir>] [--json]
+// Store-key archives (what the hook moved out of an over-budget store) come from the config dir's quality data on the
+// default store, and for a named --store only from --store-archives: a snapshot is never mixed with another store's.
 // Default rules dirs: <cwd>/.claude/rules-on-demand and <config dir>/rules-on-demand.
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -16,9 +18,11 @@ import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 import { journalDeliveries, joinDeliveries } from './delivery-join.mjs';
+import { readStoreArchives, readVerdictArchives, reportUnreadable, withArchivedServed, withArchivedSessions } from './store-archives.mjs';
 
 const args = process.argv.slice(2);
 let storePath = '';
+let storeArchiveDir = '';
 let json = false;
 let project = process.cwd();
 let configOverride = '';
@@ -26,6 +30,7 @@ const overrides = [];
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === '--json') json = true;
   else if (args[index] === '--store') storePath = args[++index] ?? '';
+  else if (args[index] === '--store-archives') storeArchiveDir = args[++index] ?? '';
   else if (args[index] === '--project') project = args[++index] ?? '';
   else if (args[index] === '--config-dir') configOverride = args[++index] ?? '';
   else if (args[index] === '--rules-dir') overrides.push(args[++index] ?? '');
@@ -39,9 +44,6 @@ if (!configDir) throw new Error('HOME or USERPROFILE required to locate config d
 const locations = ruleDirectories(project, configDir);
 const rulesDirs = overrides.length ? overrides : [locations.project, locations.user];
 const archiveDir = await assertSafeDataDir(qualityDataDir(configDir, {}));
-const archiveFiles = (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
-  .filter((name) => /^compliance-verdicts-archive-\d+-\d+\.jsonl$/.test(name)).sort();
-const archiveLines = await Promise.all(archiveFiles.map((name) => readFile(join(archiveDir, name), 'utf8')));
 
 // Same key the hook uses for its served counters (hooks.js keyOf).
 const keyOf = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
@@ -75,8 +77,17 @@ async function declaredChecks() {
   return declared;
 }
 
+const namedStore = Boolean(storePath);
 storePath ||= await defaultStorePath();
+// The store is read BEFORE the archive directory is listed (store-archives.mjs): an eviction in between leaves a
+// segment in both, counted once, never in neither.
 const source = await readFile(storePath, 'utf8');
+const verdictArchives = await readVerdictArchives(archiveDir);
+const archiveLines = verdictArchives.texts;
+// Served counters and contexts the hook moved out of an over-budget store, summed back with the live ones.
+const storeKeyRead = await readStoreArchives(namedStore ? storeArchiveDir : archiveDir);
+const storeKeyArchives = storeKeyRead.archives;
+const unreadableArchives = reportUnreadable('compliance-report', [...verdictArchives.unreadable, ...storeKeyRead.unreadable]);
 let lines;
 let servedCounters = {};
 let sessions = {};
@@ -84,8 +95,8 @@ let storeArchives = [];
 try {
   const store = JSON.parse(source);
   lines = [String(store['compliance-verdicts-jsonl'] ?? ''), ...archiveLines, ...Object.entries(store).filter(([name]) => name.startsWith('compliance-verdicts-archive-')).map(([, text]) => String(text))].join('\n');
-  servedCounters = store.served && typeof store.served === 'object' ? store.served : {};
-  sessions = store.sessions ?? {};
+  servedCounters = withArchivedServed(storeKeyArchives, store.served && typeof store.served === 'object' ? store.served : {});
+  sessions = withArchivedSessions(storeKeyArchives, store.sessions ?? {});
   storeArchives = Object.entries(store).filter(([name]) => name.startsWith('compliance-verdicts-archive-')).map(([, text]) => String(text));
 } catch {
   lines = [source, ...archiveLines].join('\n');
@@ -127,7 +138,7 @@ for (const [name, counts] of Object.entries(report)) {
 }
 
 if (json) {
-  console.log(JSON.stringify(report, null, 2));
+  console.log(JSON.stringify({ ...report, unreadableArchives }, null, 2));
 } else {
    console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunregistered check\tunknown\tfollow rate\tnote\tunjudged\tduplicateRows\tdiscarded\tcopies');
   for (const [rule, counts] of Object.entries(report).sort(([a], [b]) => a.localeCompare(b))) {

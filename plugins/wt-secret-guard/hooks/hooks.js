@@ -2,15 +2,15 @@
 // Composition root and dependency inversion: wire pure policies to host capabilities in order.
 import { configure, config } from './config.js';
 import { detections } from './detector.js';
-import { appendEvent, publish } from './journal.js';
+import { appendEvent, publish, publishRefusals } from './journal.js';
 import { scrubPromptStorage, scrubToolUseStorage } from './prompt-storage-host.js';
 import { resolveReference as resolveRuntimeReference, rewriteReferences } from './reference-runtime.js';
 import { planReferences } from './references.js';
-import { scrub } from './scrub.js';
+import { scrub, scrubSettled } from './scrub.js';
 import { applySecretReadGuard } from './secret-read-guard.js';
 import { verdictForBash, verdictForPath } from './secret-read-policy.js';
 import { knownTokens, replacementFor, testState, tokenize } from './token-vault.js';
-import { classifyOutbound } from './outbound-tools.js';
+import { classifyOutbound, describeFindings } from './outbound-tools.js';
 import { maskAssistantRender, maskTurnStep } from './assistant-stream.js';
 import { REDACTION_NOTE } from './constants.js';
 
@@ -48,12 +48,17 @@ function inboundNotice(found) {
   return `[wt-secret-guard: A credential was detected in this message. Its value has been withheld from this session to stop us from spreading it. This cannot unsend anything; the only remedy is revocation.${provider}]`;
 }
 
-function withNotes(result, rewrites, entropy, tokenised = false) {
-  if (!result || result.deny || (!rewrites && !entropy && !tokenised)) return result;
+function noteLines(rewrites, entropy, tokenised) {
   const notes = [];
   if (tokenised) notes.push(REDACTION_NOTE);
   if (rewrites) notes.push(`[wt-secret-guard: rewrote ${rewrites} secret reference${rewrites === 1 ? '' : 's'}]`);
   if (entropy) notes.push(`[wt-secret-guard: ${entropy} candidate${entropy === 1 ? '' : 's'} not tokenised - entropy only]`);
+  return notes;
+}
+
+function withNotes(result, rewrites, entropy, tokenised = false) {
+  if (!result || result.deny || (!rewrites && !entropy && !tokenised)) return result;
+  const notes = noteLines(rewrites, entropy, tokenised);
   return { ...result, text: typeof result.text === 'string' ? `${result.text}\n${notes.join('\n')}` : notes.join('\n') };
 }
 
@@ -67,12 +72,32 @@ async function scrubInbound($, event, next) {
   return next({ ...event, text: `${text}\n\n${notice}` });
 }
 
+// An errored call carries its error text as `result`. Once that text is scrubbed the answer is no longer core's,
+// and the host checks a changed `result` against the tool's output schema, which a bare string fails
+// ("expected object, received string"): the call would be lost and its real error hidden. A refusal is the
+// one answer that delivers an error without that check, so the scrubbed text, plus any context from the hooks
+// beneath, goes back that way. An errored answer whose result is unchanged keeps core's own record; the host
+// compares serialised values, and scrub rebuilds every object, so identity would call an untouched one changed.
+// The refusal carries the error itself (`result`), never a display `text` that may be empty or unrelated, and
+// the assembled refusal is scrubbed once more: joining the context could rebuild a held value no single piece held.
+function erroredAnswer(original, cleaned, rewrites = 0) {
+  const answer = cleaned.value;
+  const unchanged = () => withNotes(answer, rewrites, cleaned.entropy, cleaned.changed);
+  if (!answer || answer.deny !== undefined || answer.isError !== true) return unchanged();
+  if (JSON.stringify(answer.result ?? null) === JSON.stringify(original?.result ?? null)) return unchanged();
+  const body = typeof answer.result === 'string' ? answer.result : JSON.stringify(answer.result ?? '');
+  const context = Array.isArray(answer.context) ? answer.context.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))) : [];
+  const assembled = scrubSettled([body, ...context].join('\n\n'), '');
+  return { deny: [assembled.value, ...noteLines(rewrites, assembled.entropy, true)].join('\n') };
+}
+
 async function scrubToolResult($, event, next) {
   const response = await next(event);
-  const cleaned = scrub(response, '');
+  const cleaned = scrubSettled(response, '');
+  const answer = erroredAnswer(response, cleaned);
   await publish(journalHost($));
   if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-  return withNotes(cleaned.value, 0, cleaned.entropy, cleaned.changed);
+  return answer;
 }
 
 async function measuredRead($, event, next, surface) {
@@ -89,6 +114,8 @@ async function measuredRead($, event, next, surface) {
 async function refuseRawOutbound($, event) {
   const classified = await classifyOutbound({}, event);
   if (!classified.findings.length) return null;
+  // Described before the findings are tokenised below: a pattern match must read as its detector, not as a held value.
+  const described = describeFindings(event, classified.findings);
   const replacements = classified.findings.map(({ kind, value, secret = value }) => ({ raw: value, token: tokenize(kind, secret) }));
   if (event.agentId) await $.ui.log('wt-secret-guard: denied subagent input; subagent transcript location is unmeasured, so persisted input could not be repaired.');
   else await scrubToolUseStorage(storageHost($), replacements, event.tool_use_id);
@@ -100,7 +127,7 @@ async function refuseRawOutbound($, event) {
   const guidance = classified.surface === 'bash'
     ? ' Use a supported secret reference instead.'
     : ' Remove the raw value from the outbound content.';
-  return { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input.${guidance}` };
+  return { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input: ${described.join('; ')}.${guidance}` };
 }
 
 async function guardedOutbound($, event, next) {
@@ -111,6 +138,7 @@ async function guardedOutbound($, event, next) {
 
 async function warnHookAttachment($, event, next) {
   const cleaned = scrub(event, '');
+  await publish(journalHost($));
   if (event.origin?.kind === 'hook' && event.origin?.event === 'SessionStart' && cleaned.changed) {
     await appendEvent(journalHost($), { surface: 'attachment', action: 'warned', dedupeKey: `attachment:${event.index ?? 'session-start'}` });
     await $.ui.log('wt-secret-guard: detected and scrubbed a SessionStart hook attachment; model-side propagation of attachment rewrites is unproven. Remove the value from the source hook or consumer store.');
@@ -141,6 +169,7 @@ export const register = (on, options) => {
     const execute = async (originalEvent) => {
       // The rewrite prefetches every 1Password value and binds it into the command as data.
       const rewrite = await rewriteReferences(references, originalCommand);
+      await publishRefusals(audit);
       if (rewrite.prefetchFailed) return { deny: 'wt-secret-guard refused Bash execution because a 1Password reference could not be prefetched.' };
       if (rewrite.invalidReference) {
         return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word or as the whole contents of a quoted word. A reference inside a heredoc body is left as text.` };
@@ -148,10 +177,11 @@ export const register = (on, options) => {
       // Every value the guard puts into this command is masked in its output, whatever its kind.
       const substituted = new Set(rewrite.substituted);
       const response = await next(rewrite.command === originalCommand ? originalEvent : { ...originalEvent, command: rewrite.command });
-      const cleaned = scrub(response, rewrite.command, true, substituted);
+      const cleaned = scrubSettled(response, rewrite.command, true, substituted);
+      const answer = erroredAnswer(response, cleaned, rewrite.count);
       await publish(audit);
       if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-      return withNotes(cleaned.value, rewrite.count, cleaned.entropy, cleaned.changed);
+      return answer;
     };
     if (!config().secretFileReadWarnings) {
       await appendEvent(audit, { surface: 'bash', action: 'policy-disabled', ruleId: 'policy', commandClass: 'bash', toolUseId: event.tool_use_id });
@@ -174,17 +204,23 @@ export const register = (on, options) => {
   on('turn.step', async function* ($, event, next) {
     const correlation = event.turnId ?? event.index;
     const stream = maskTurnStep(event, next, REDACTION_NOTE, () => appendEvent(journalHost($), { surface: 'assistant', action: 'masked', dedupeKey: correlation ? `assistant:${correlation}` : undefined }));
-    for (;;) {
-      const step = await stream.next();
-      if (step.done) return step.value;
-      yield step.value;
-    }
+    try {
+      for (;;) {
+        const step = await stream.next();
+        await publish(journalHost($));
+        if (step.done) return step.value;
+        yield step.value;
+      }
+    } finally { await stream.return(); await publish(journalHost($)); }
   });
-  on('ui.render', { component: 'AssistantMessage' }, ($, event, next) => maskAssistantRender(event, next));
+  on('ui.render', { component: 'AssistantMessage' }, async ($, event, next) => {
+    try { return await maskAssistantRender(event, next); } finally { await publish(journalHost($)); }
+  });
   on('prompt.submit', async ($, event, next) => {
     const cleaned = scrub(event, '');
+    const detected = new Set(typeof event.text === 'string' ? detections(event.text).map(({ value, secret = value }) => secret) : []);
     const replacements = typeof event.text === 'string'
-      ? [...knownTokens()].filter(([, entry]) => event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
+      ? [...knownTokens()].filter(([, entry]) => (!entry.ephemeral || detected.has(entry.value)) && event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
       : [];
     await publish(journalHost($));
     if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);

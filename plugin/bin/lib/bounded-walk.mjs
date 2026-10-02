@@ -1,5 +1,5 @@
-import nodeFs from 'node:fs'
 import path from 'node:path'
+import { walkFilesystem as nodeFs } from './host/walk-filesystem.mjs'
 
 export function createBudget({ maxDepth = 12, maxEntries = 20000, maxDirs = 2000, maxBytes = 8 * 1024 * 1024 } = {}) {
   return { maxDepth, maxEntries, maxDirs, maxBytes, entries: 0, dirs: 0, bytes: 0, exhausted: null }
@@ -48,7 +48,7 @@ export function walkFiles(roots, { accept = () => true, budget = createBudget(),
       }
     } else if (stat.isFile()) {
       if (!item.rel || accept(item.rel, path.basename(item.file))) files.push({ root: item.root, file: item.file, rel: item.rel || path.basename(item.file) })
-    } else errors.push({ path: item.file, code: 'NOT_REGULAR' })
+    } else if (!item.rel || accept(item.rel, path.basename(item.file))) errors.push({ path: item.file, code: 'NOT_REGULAR' })
   }
   return { files, errors, exhausted: budget.exhausted }
 }

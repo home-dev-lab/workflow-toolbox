@@ -4,10 +4,10 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
-import { snapshotPath, stateRoot } from './lib/actionability-state-paths.mjs'
+import { projectStatePath, snapshotPath, stateRoot } from './lib/actionability-state-paths.mjs'
 import { createBoardClient } from './lib/board-http-client.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
-import { produceSnapshot } from './wt-actionable-snapshot-producer-hook.mjs'
+import { produceSnapshot, recordBoardReadFailure } from './wt-actionable-snapshot-producer-hook.mjs'
 
 const PAGE_SIZE = 10
 const DEFAULT_ENDPOINT = 'http://localhost:25478/mcp'
@@ -49,7 +49,13 @@ export async function collectCompleteCards(fetchPage) {
   return cards
 }
 
-export async function refreshSnapshot({ cwd = process.cwd(), endpoint = process.env.BOARD_LIST_MCP_URL || DEFAULT_ENDPOINT } = {}) {
+// A missing or unreadable file reads as null, which every caller below treats as failure.
+function readJsonOrNull(path) {
+  try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
+}
+
+// `produce` is a seam for tests; the CLI always uses the real producer.
+export async function refreshSnapshot({ cwd = process.cwd(), endpoint = process.env.BOARD_LIST_MCP_URL || DEFAULT_ENDPOINT, produce = produceSnapshot } = {}) {
   const projectDir = resolveBoardProjectDir(resolve(cwd), (path) => {
     try { readFileSync(path); return true } catch { return false }
   })
@@ -58,18 +64,32 @@ export async function refreshSnapshot({ cwd = process.cwd(), endpoint = process.
   const boardId = typeof pointer.boardId === 'string' ? pointer.boardId : ''
   if (!boardId) throw new Error('.claude/planka.json has no boardId')
 
-  const client = createBoardClient({ url: endpoint, boardId })
-  const cards = await collectCompleteCards((offset, limit) => client.findCards({ limit, offset, includeDescription: true }))
+  let cards
+  try {
+    const client = createBoardClient({ url: endpoint, boardId })
+    cards = await collectCompleteCards((offset, limit) => client.findCards({ limit, offset, includeDescription: true }))
+  } catch (error) {
+    // Only a failed request is unreachable; an answer that cannot be read (bad JSON, a JSON-RPC or
+    // tool error, a missing field) came from an endpoint that answers, so it is a failed read.
+    const reason = error?.transport === true ? 'board-unreachable' : 'board-read-failed'
+    const detail = (error instanceof Error ? error.message : String(error)).replace(/^board unavailable: /, '')
+    recordBoardReadFailure(projectDir, reason, detail)
+    throw error
+  }
   const startedAt = Date.now()
-  produceSnapshot({
+  produce({
     hook_event_name: 'PostToolUse',
     tool_name: 'mcp__planka__find_cards',
     tool_input: { boardId },
     tool_response: { content: [{ type: 'text', text: JSON.stringify(cards) }] },
     cwd: projectDir,
   })
-  const snapshot = JSON.parse(readFileSync(snapshotPath(stateRoot(), projectDir), 'utf8'))
-  if (typeof snapshot.at !== 'number' || snapshot.at < startedAt) throw new Error('producer did not write a fresh snapshot')
+  const state = readJsonOrNull(projectStatePath(stateRoot(), projectDir))
+  if (state?.lastOutcome !== 'snapshot-written' || !Number.isFinite(state.heartbeatAt) || state.heartbeatAt < startedAt) {
+    throw new Error(`producer did not write a fresh snapshot (${state?.lastReason || state?.lastOutcome || 'no producer state'})`)
+  }
+  const snapshot = readJsonOrNull(snapshotPath(stateRoot(), projectDir))
+  if (!Number.isFinite(snapshot?.at) || snapshot.at < startedAt) throw new Error('producer did not write a fresh snapshot (snapshot missing or stale)')
   return { cards: cards.length, actionable: snapshot.actionable }
 }
 

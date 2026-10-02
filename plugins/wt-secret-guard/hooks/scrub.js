@@ -112,6 +112,19 @@ export function scrub(value, command, includeOptional = true, substituted = new 
   return { value, changed: false, entropy: 0 };
 }
 
+// One pass scrubs the fields of an object in order, so a value a LATER field revealed (a concealed JSON
+// in an error's context) stayed raw in an earlier field. Passes repeat until nothing changes; each pass only
+// adds tokens, and an issued token is never scrubbed again, so this ends - the bound is a backstop.
+export function scrubSettled(value, command, includeOptional = true, substituted = new Set()) {
+  let current = scrub(value, command, includeOptional, substituted);
+  let changed = current.changed;
+  for (let pass = 1; current.changed && pass < 4; pass += 1) {
+    current = scrub(current.value, command, includeOptional, substituted);
+    changed ||= current.changed;
+  }
+  return { value: current.value, changed, entropy: current.entropy };
+}
+
 export function testScrubWithVaultOccurrences(value, command, includeOptional, vaultOccurrences, substituted = new Set()) {
   return replaceKnown(value, command, includeOptional, substituted, vaultOccurrences);
 }

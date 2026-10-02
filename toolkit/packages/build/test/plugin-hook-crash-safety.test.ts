@@ -55,6 +55,7 @@ function makeSandbox(tag: string): Sandbox {
       XDG_STATE_HOME: stateDir,
       CLAUDE_CONFIG_DIR: configDir,
       WT_OUTBOUND_GUARD_DIR: join(stateDir, 'outbound-guard'),
+      WT_CANCELLED_CALL_RELAY_DIR: join(stateDir, 'cancelled-call-relay'),
       WT_HOOK_DRIFT_DIR: join(stateDir, 'hook-drift'),
       WT_QUEUE_GATE_DIR: join(stateDir, 'queue-gate'),
       WT_VERIFIER_MARKER_DIR: join(stateDir, 'verifier-markers'),
@@ -110,6 +111,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
     case 'wt-unsynced-buffer-hook.mjs':
       return {
         hook_event_name: 'SessionStart',
+        cwd: sandbox.projectDir,
+      }
+    // No CLAUDE_ENV_FILE in this sandbox: the legible-no-op path (Windows, other harnesses).
+    case 'wt-session-env-dedup-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        session_id: 'selftest-session',
         cwd: sandbox.projectDir,
       }
     // No WT_GUARD_JOURNAL_DIR in this sandbox and the real journal path (under sandbox.env's
@@ -193,6 +201,15 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
       }
     case 'wt-model-fallback-hook.mjs':
       return { hook_event_name: 'SubagentStop', agent_id: 'agent-test', agent_transcript_path: 'missing.jsonl' }
+    case 'wt-cancelled-call-relay-guard-hook.mjs':
+      return {
+        hook_event_name: 'SubagentStop',
+        session_id: 'selftest-session',
+        agent_id: 'agent-selftest-1',
+        agent_type: 'general',
+        cwd: sandbox.projectDir,
+        transcript_path: sandbox.transcriptPath,
+      }
     case 'wt-pilot-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
@@ -355,6 +372,16 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'rm -f $G/*.log' },
       }
+    case 'wt-suite-lock-bypass-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        agent_id: 'agent-implementer-1',
+        agent_type: 'general-purpose',
+        transcript_path: sandbox.transcriptPath,
+        cwd: sandbox.projectDir,
+        tool_input: { command: 'WT_SUITE_LOCK=0 pnpm test' },
+      }
     case 'wt-zsh-word-split-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
@@ -454,10 +481,9 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_input: { file_path: join(sandbox.projectDir, 'plugin', 'bin', 'foo-hook.mjs') },
       }
     case 'wt-actionable-snapshot-producer-hook.mjs':
-      // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook
-      // must no-op cleanly rather than crash, which is exactly what a project without the
-      // dependency-parser convention should see (see actionability-planka-producer.test.ts
-      // for the full write/no-write behavior matrix).
+      // No .claude/scripts/lib/depends-on-parser.mjs in this sandbox project — the hook falls
+      // back to the parser shipped with the plugin and must exit cleanly rather than crash
+      // (see actionability-planka-producer.test.ts for the full write/no-write behavior matrix).
       return {
         hook_event_name: 'PostToolUse',
         tool_name: 'mcp__planka__get_board',
