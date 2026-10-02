@@ -33,6 +33,12 @@ export function withRepositoryGuide(worktree, prompt) {
   return pointers.length > 0 ? `${pointers.join('\n')}\n\n${prompt}` : prompt
 }
 
+// Messages the SDK may send BEFORE its init receipt that carry no model output: an account rate-limit notice,
+// and the slash-command list push (`system/commands_changed`). They must not count as "another message first".
+export function isPreInitNotice(message) {
+  return message?.type === 'rate_limit_event' || (message?.type === 'system' && message?.subtype === 'commands_changed')
+}
+
 const CONTEXT_MODE_TOOLS = Object.freeze({
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`,
   doctor: `${CONTEXT_PREFIX}ctx_doctor`,
