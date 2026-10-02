@@ -35,7 +35,7 @@ describe('coverage artifact freshness', () => {
   })
 
   it('accepts a different commit that carries the same tree (a merge or a message-only amend)', () => {
-    expect(coverageFreshness(stampAt({ commit: OLDER.commit, tree: HEAD.tree }), HEAD)).toEqual({ ok: true, warning: null })
+    expect(coverageFreshness(stampAt({ commit: OLDER.commit, tree: HEAD.tree }), HEAD)).toEqual({ ok: true })
   })
 
   it('refuses an artifact with no provenance stamp, as written before stamps existed', () => {
@@ -56,11 +56,10 @@ describe('coverage artifact freshness', () => {
     expect(coverageFreshness(stampAt(HEAD, { filtered: undefined }), HEAD).ok).toBe(false)
   })
 
-  it('accepts an artifact measured at HEAD, and warns when that tree had uncommitted changes', () => {
-    expect(coverageFreshness(stampAt(HEAD), HEAD)).toEqual({ ok: true, warning: null })
-    const dirty = coverageFreshness(stampAt(HEAD, { dirty: true }), HEAD)
-    expect(dirty.ok).toBe(true)
-    expect(dirty.warning).toContain('uncommitted')
+  it('accepts an artifact measured at HEAD from a committed tree only', () => {
+    expect(coverageFreshness(stampAt(HEAD), HEAD)).toEqual({ ok: true })
+    expect(coverageFreshness(stampAt(HEAD, { dirty: true }), HEAD).reason).toMatch(/uncommitted.*pnpm quality:coverage/s)
+    expect(coverageFreshness(stampAt(HEAD, { dirty: null }), HEAD).ok).toBe(false)
   })
 
   it('makes delta and baseline fail instead of printing numbers from an older run', () => {

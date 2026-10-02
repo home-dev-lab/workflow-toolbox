@@ -1,9 +1,9 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { disableChildProcessCoverage, enableChildProcessCoverage, runIsFiltered } from '../child-process-coverage-provider.mjs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import coverageModule, { disableChildProcessCoverage, enableChildProcessCoverage, ranWholeSuite, runIsFiltered } from '../child-process-coverage-provider.mjs'
 import { readTreeIdentity, writeCoverageStamp } from '../coverage-stamp.mjs'
 
 const roots: string[] = []
@@ -54,7 +54,9 @@ describe('coverage provenance stamp', () => {
     const repo = repoWithOneCommit()
     const commit = git(repo, 'rev-parse', 'HEAD').stdout.trim()
     const tree = git(repo, 'rev-parse', 'HEAD^{tree}').stdout.trim()
-    const reports = join(repo, 'reports')
+    // Outside the repository, so only the edit below can make the tree dirty.
+    const reports = mkdtempSync(join(tmpdir(), 'wt-coverage-stamp-reports-'))
+    roots.push(reports)
 
     const clean = readTreeIdentity(repo)
     expect(clean).toEqual({ commit, tree, dirty: false })
@@ -87,13 +89,123 @@ describe('coverage provenance stamp', () => {
   })
 
   it('classifies a filtered run from the Vitest context and the test mode', () => {
-    const ctx = (over: Record<string, unknown> = {}, config: Record<string, unknown> = {}) => ({ filenamePattern: undefined, config: { project: [], ...config }, ...over })
+    const ctx = (over: Record<string, unknown> = {}, config: Record<string, unknown> = {}) => ({ filenamePattern: undefined, config: { project: [], changed: false, cliExclude: null, ...config }, ...over })
     expect(runIsFiltered(ctx(), {})).toBe(false)
     expect(runIsFiltered(ctx(), { WT_TEST_MODE: 'all' })).toBe(false)
     expect(runIsFiltered(ctx({ filenamePattern: ['quality'] }), {})).toBe(true)
-    expect(runIsFiltered(ctx({}, { testNamePattern: /x/ }), {})).toBe(true)
-    expect(runIsFiltered(ctx({}, { project: ['parallel'] }), {})).toBe(true)
+    for (const config of [
+      { testNamePattern: /x/ }, { project: ['parallel'] }, { shard: { index: 1, count: 2 } }, { changed: 'HEAD~1' },
+      { related: ['a.ts'] }, { cliExclude: ['b.test.ts'] }, { coverage: { changed: 'main' } },
+    ]) expect(runIsFiltered(ctx({}, config), {}), JSON.stringify(config)).toBe(true)
     expect(runIsFiltered(ctx(), { WT_TEST_MODE: 'quarantine' })).toBe(true)
     expect(runIsFiltered({ config: { project: [] } }, {})).toBeNull()
+  })
+
+  it('removes an older stamp when the new one cannot be written', () => {
+    const reports = mkdtempSync(join(tmpdir(), 'wt-coverage-stamp-blocked-'))
+    roots.push(reports)
+    // A directory where the stamp file belongs makes the write fail.
+    mkdirSync(join(reports, 'coverage-stamp.json', 'older'), { recursive: true })
+    const identity = { commit: 'c'.repeat(40), tree: 'a'.repeat(40), dirty: false }
+    expect(() => writeCoverageStamp(reports, { start: identity, end: identity, filtered: false })).not.toThrow()
+    expect(existsSync(join(reports, 'coverage-stamp.json'))).toBe(false)
+  })
+})
+
+describe('whole-suite check', () => {
+  const spec = (project: string, moduleId: string) => ({ project: { name: project }, moduleId })
+  const ctxRunning = (ran: Array<[string, string]>, suite: ReturnType<typeof spec>[]) => ({
+    state: { getFiles: () => ran.map(([projectName, filepath]) => ({ projectName, filepath })) },
+    globTestSpecifications: async () => suite,
+  })
+
+  it('is true only when every test file of every project ran', async () => {
+    const suite = [spec('unit', '/s/a.test.ts'), spec('unit', '/s/b.test.ts'), spec('spawn', '/s/a.test.ts')]
+    expect(await ranWholeSuite(ctxRunning([['unit', '/s/a.test.ts'], ['unit', '/s/b.test.ts'], ['spawn', '/s/a.test.ts']], suite))).toBe(true)
+    // A shard, a bail or any selection: one file of one project did not run.
+    expect(await ranWholeSuite(ctxRunning([['unit', '/s/a.test.ts'], ['unit', '/s/b.test.ts']], suite))).toBe(false)
+    expect(await ranWholeSuite(ctxRunning([], []))).toBe(false)
+  })
+
+  it('is unknown when Vitest cannot answer', async () => {
+    expect(await ranWholeSuite({})).toBeNull()
+    expect(await ranWholeSuite({ state: { getFiles: () => [] }, globTestSpecifications: async () => { throw new Error('no') } })).toBeNull()
+  })
+})
+
+describe('coverage provider stamping', () => {
+  async function providerIn(root: string) {
+    const provider = await coverageModule.getProvider() as unknown as Record<string, unknown>
+    // Outside the repository, as `.lane/` is ignored in the real one: the reports must not make the tree dirty.
+    const scratch = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-reports-'))
+    roots.push(scratch)
+    const reports = join(scratch, 'reports')
+    const coverageFiles = join(scratch, 'coverage-files')
+    mkdirSync(coverageFiles)
+    mkdirSync(reports)
+    writeFileSync(join(reports, 'coverage-summary.json'), '{}')
+    Object.assign(provider, {
+      options: { reportsDirectory: reports },
+      coverageFilesDirectory: coverageFiles,
+      ctx: {
+        filenamePattern: undefined,
+        config: { root, project: [] },
+        state: { getFiles: () => [{ projectName: 'unit', filepath: '/suite/a.test.ts' }] },
+        globTestSpecifications: async () => [{ project: { name: 'unit' }, moduleId: '/suite/a.test.ts' }],
+      },
+      treeAtStart: readTreeIdentity(root),
+      generateReports: async () => {},
+    })
+    return { provider: provider as { reportCoverage: (map: unknown, options: unknown) => Promise<void>, mergeReports: (maps: unknown[]) => Promise<void> }, reports }
+  }
+
+  it('stamps the reports of an unfiltered run with the tree it measured', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-'))
+    roots.push(root)
+    spawnSync('git', ['init', '-q'], { cwd: root })
+    spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'one'], { cwd: root })
+    const { provider, reports } = await providerIn(root)
+    await provider.reportCoverage(undefined, { allTestsRun: true })
+    const stamp = JSON.parse(readFileSync(join(reports, 'coverage-stamp.json'), 'utf8'))
+    expect(stamp.tree).toMatch(/^[0-9a-f]{40}$/)
+    expect(stamp).toMatchObject({ dirty: false, filtered: false })
+  })
+
+  it('stamps a run that left a test file unrun as partial', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-partial-'))
+    roots.push(root)
+    const { provider, reports } = await providerIn(root)
+    const ctx = (provider as unknown as { ctx: Record<string, unknown> }).ctx
+    ctx.globTestSpecifications = async () => [{ project: { name: 'unit' }, moduleId: '/suite/a.test.ts' }, { project: { name: 'unit' }, moduleId: '/suite/b.test.ts' }]
+    await provider.reportCoverage(undefined, { allTestsRun: true })
+    expect(JSON.parse(readFileSync(join(reports, 'coverage-stamp.json'), 'utf8')).filtered).toBe(true)
+  })
+
+  it('removes an older stamp when a coverage run starts', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-init-'))
+    roots.push(root)
+    const reports = join(root, 'reports')
+    mkdirSync(reports)
+    writeFileSync(join(reports, 'coverage-stamp.json'), '{"tree":"older"}')
+    const provider = await coverageModule.getProvider() as unknown as { initialize: (ctx: unknown) => void, childInstrument: unknown }
+    const base = Object.getPrototypeOf(Object.getPrototypeOf(provider))
+    const spy = vi.spyOn(base, 'initialize').mockImplementation(function (this: { options: unknown }) {
+      this.options = { reportsDirectory: reports }
+    })
+    try {
+      provider.initialize({ config: { root } })
+    } finally {
+      spy.mockRestore()
+      disableChildProcessCoverage(provider.childInstrument as never)
+    }
+    expect(existsSync(join(reports, 'coverage-stamp.json'))).toBe(false)
+  })
+
+  it('stamps merged reports as unknown, so quality.mjs refuses them', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-merge-'))
+    roots.push(root)
+    const { provider, reports } = await providerIn(root)
+    await provider.mergeReports([])
+    expect(JSON.parse(readFileSync(join(reports, 'coverage-stamp.json'), 'utf8')).filtered).toBeNull()
   })
 })

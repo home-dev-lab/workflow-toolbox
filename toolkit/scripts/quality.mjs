@@ -210,7 +210,6 @@ function assertCoverageFresh({ coverage, stamp, current }) {
   if (!existsSync(coverage)) throw new Error(`Missing ${relative(TOOLKIT_ROOT, coverage)}; run pnpm quality:coverage first`)
   const verdict = coverageFreshness(readStamp(stamp), current)
   if (!verdict.ok) throw new Error(`Stale coverage artifact ${relative(TOOLKIT_ROOT, coverage)}: ${verdict.reason}`)
-  if (verdict.warning) console.error(`Warning: ${verdict.warning}`)
 }
 
 export function readCoverage({ coverage = COVERAGE, stamp = COVERAGE_STAMP, current = readTreeIdentity(REPO_ROOT) } = {}) {
