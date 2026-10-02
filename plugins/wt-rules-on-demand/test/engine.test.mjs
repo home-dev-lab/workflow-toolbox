@@ -525,7 +525,8 @@ for (const [name, lines, event, pattern, length] of [
   ['path', `    - kind: 'path'\n      tool: '^Write$'\n      regex: '${overBudget}'`, { tool: 'Write', path: longMiss }, overBudget, 16000],
   ['path tool selector', `    - kind: 'path'\n      tool: '${overBudget}'\n      regex: 'never'`, { tool: longMiss, path: 'unmatched' }, overBudget, 16000],
 ]) test(`over-budget ${name} trigger serves and journals the failure`, async () => {
-  const f = fixture();
+  // Frozen clock: the 2000 ms shared wall deadline can never fire under machine load, so the per-regex step limit is the only bound.
+  const f = fixture({ clock: () => 0 });
   f.files.set('/sample-config/rules-on-demand/sample.md', triggerRule(lines));
   const result = await f.call(event);
   assert.match(result.context?.[0], /Budget rule body/);
