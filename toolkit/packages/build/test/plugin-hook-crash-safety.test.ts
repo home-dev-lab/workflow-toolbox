@@ -113,6 +113,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
+    // No CLAUDE_ENV_FILE in this sandbox: the legible-no-op path (Windows, other harnesses).
+    case 'wt-session-env-dedup-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+      }
     // No WT_GUARD_JOURNAL_DIR in this sandbox and the real journal path (under sandbox.env's
     // HOME) does not exist — the exact "no guard has ever fired" case this hook must meet with
     // silence, never a crash.

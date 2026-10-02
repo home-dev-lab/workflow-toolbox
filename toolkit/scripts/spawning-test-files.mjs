@@ -154,6 +154,7 @@ export const spawningTestFiles = [
   'packages/build/test/second-opinion.test.ts',
   'packages/build/test/secret-guard-native-helpers.test.ts',
   'packages/build/test/service-watch.test.ts',
+  'packages/build/test/session-env-dedup-hook.test.ts',
   'packages/build/test/session-role.test.ts',
   'packages/build/test/session-start-duplicate-hooks.test.ts',
   'packages/build/test/shipped-deep-search.test.ts',

@@ -2572,6 +2572,7 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-adopt-rules-check-hook.mjs",
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
         "plugin/bin/wt-unsynced-buffer-hook.mjs",
+        "plugin/bin/wt-session-env-dedup-hook.mjs",
         "plugin/bin/wt-guard-recurrence-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-lane-consent-gate-hook.mjs",
