@@ -51,8 +51,8 @@ describe('coverage artifact freshness', () => {
     expect(coverageFreshness(stampAt(HEAD), { commit: null, tree: null, dirty: null }).ok).toBe(false)
   })
 
-  it('refuses a filtered run, and a run that did not record whether it was filtered', () => {
-    expect(coverageFreshness(stampAt(HEAD, { filtered: true }), HEAD).reason).toMatch(/filtered.*pnpm quality:coverage/s)
+  it('refuses a partial run, and a run that did not record whether it ran the whole suite', () => {
+    expect(coverageFreshness(stampAt(HEAD, { filtered: true }), HEAD).reason).toMatch(/whole suite.*pnpm quality:coverage/s)
     expect(coverageFreshness(stampAt(HEAD, { filtered: undefined }), HEAD).ok).toBe(false)
   })
 
