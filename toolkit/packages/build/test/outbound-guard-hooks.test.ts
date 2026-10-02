@@ -1582,6 +1582,7 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
     expect(commands.some((c) => c.includes('wt-session-start-registry-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-lane-consent-check-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-unsynced-buffer-hook.mjs'))).toBe(true)
+    expect(commands.some((c) => c.includes('wt-session-env-dedup-hook.mjs'))).toBe(true)
   })
 
   it('all three referenced scripts exist in plugin/bin/', () => {
