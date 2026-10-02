@@ -487,6 +487,16 @@ function initialLifecycleState() {
   }
 }
 
+// What a later phase session is primed with: copies of the lifecycle's own records, never live references.
+function defineSessionAccessors(server, { sessionServer, state, timeline, route }) {
+  Object.defineProperties(server, {
+    sessionServer: { value: sessionServer },
+    ledger: { value: () => structuredClone({ planRound: state.planRound, reviewRound: state.reviewRound, priorCriticRounds: state.priorCriticRounds, nonBlockingFindings: state.nonBlockingFindings, priorReviewRounds: state.priorReviewRounds, unresolvedFindings: state.unresolvedFindings, dodDisputes: state.dodDisputes }) },
+    timeline: { value: () => structuredClone({ route, phases: timeline.phases, lanes: timeline.lanes, routed_cards: timeline.routed_cards }) },
+    acceptedTransitions: { value: () => [...state.handled.values()].filter((entry) => entry.result.startsWith('accepted phase=')).map((entry) => ({ from: JSON.parse(entry.shape).phase, next: /^accepted phase=(\w+)/.exec(entry.result)[1], result: entry.result })) },
+  })
+}
+
 function freezeLifecycleModels(models, executor) {
   const frozenModels = Object.freeze(models.code
     ? { critic: models.review, ...models }
@@ -1271,7 +1281,10 @@ export function createLifecycleStateMachine({
       return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
     }
   }
-  const server = createSdkMcpServer({
+  // One MCP instance per SDK query (phase session) over this one state: the SDK connects an instance per query and an
+  // instance still attached to an ending query cannot connect again. A later session's transition ids are namespaced,
+  // because a fresh session numbers its ids itself and must never replay an earlier session's transition.
+  const sessionServer = (session = 1) => createSdkMcpServer({
     name: LIFECYCLE_SERVER_NAME,
     version: '1.0.0',
     tools: [
@@ -1290,7 +1303,7 @@ export function createLifecycleStateMachine({
           content: [
             {
               type: 'text',
-              text: await queued(() => transition(args)),
+              text: await queued(() => transition(session > 1 && typeof args.tool_use_id === 'string' && args.tool_use_id ? { ...args, tool_use_id: `s${session}:${args.tool_use_id}` } : args)),
             },
           ],
         }),
@@ -1346,6 +1359,8 @@ export function createLifecycleStateMachine({
       ),
     ],
   })
+  const server = sessionServer()
+  defineSessionAccessors(server, { sessionServer, state, timeline, route: frozenRoute })
   Object.defineProperty(server, 'lifecycle', { value: lifecycle })
   Object.defineProperty(server, 'state', {
     value: () => Object.freeze({

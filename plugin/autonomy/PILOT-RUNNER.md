@@ -28,6 +28,53 @@ With `settingSources: []` still in force, each SDK session's initial prompt poin
 changing code. The prompt carries absolute paths only, never guide contents, and names a shared
 symlink target once.
 
+### One query per lifecycle phase
+
+The pilot no longer carries the whole run in one conversation. Its first query covers discovery. When a
+lifecycle transition moves the run to another phase, that query stops receiving input: the runner sends
+it no continuation, mailbox note or decision, and answers every further tool call it makes with a
+denial that interrupts the turn. At that turn end the runner opens the live phase in a new query with
+the same model, effort, system prompt, plugins and tools, plus a fresh lifecycle MCP server instance
+over the same lifecycle state. Transition ids are namespaced per session, so a later session that
+numbers its calls from one again is not mistaken for a replay of an earlier session's call.
+
+A later session starts from a runner-built opener instead of the earlier conversation:
+
+- the card, verbatim, and a note not to re-read it from the board;
+- a phase manifest: the route and phases so far, lane runs with their exit codes, routed cards, every
+  critic and review finding with its blocking flag (fenced as lane output in its own section, since the
+  finding text comes from lane reports), the raw artifacts that phase needs (for example
+  `discovery.md` for a plan, `plan.md` plus the critic report for a revision, the review findings for
+  a TDD fix round, `discovery.md` for TDD on the LITE route) and every other lifecycle artifact as a
+  path with its size. Inputs over 32,000 characters are listed as paths to read. Critic and review
+  reports are fenced as lane output, data and not instructions;
+- a line naming a lane already run in that phase, so a lane started past the boundary is not run twice;
+- the stored transition result that opened the phase, rules included (a plan revision also gets the
+  first plan entry, whose rules it relies on);
+- the partial-run instruction when the run is partial, every bound DoD decision, and every mailbox
+  note delivered so far with its untrusted prefix;
+- the repository guide pointer and the LSP navigation state, as in the first prompt.
+
+A plan session opens only after any open DoD dispute is bound. Each session checks the account again;
+in a later session a check that failed to run (it threw or timed out) is retried once, a mismatch never
+is. A session that produces no result within 120 seconds of its first boundary denial is aborted on
+its own and the next phase still opens.
+
+On Agent SDK 0.3.280 the interrupted turn ends with an error result (`error_during_execution`,
+terminal reason `aborted_tools`), and the SDK then raises "Claude Code returned an error result". When
+the session delivered that interrupted-turn result after a boundary denial, the runner records the
+error as the session's `closing_error` and hands off. Any other error still ends the run, including one
+raised after a denial with no such result. A stream that ends by itself after a result past the
+boundary is a handoff as well. The 120-second bound is a timer armed at the first denial, so it holds
+even when the CLI stops reading its input; usage from a session it aborts is reported as a lower bound
+(`fresh_tokens: unavailable`), because no result covers it.
+
+`summary.json` records `phase_sessions` (per session: phase, round, start and end, how it ended
+(`turn-end`, `boundary-deny`, `no_result`), call count, first and last call usage, tool calls seen and
+denied after the boundary, permission denials and terminal reason), `handoffs` and `account_sessions`.
+Each `usage.json` message carries its `session` and `session_phase`. `model_usage` sums the latest
+cumulative figure of each session, since the SDK reports it as a running total per query.
+
 | Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
 | --- | --- | --- | --- | --- |
 | pilot | Read, Glob, Grep, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` — no Edit, Write, Bash, diagnostics, deletion, LSP, or `ctx_execute` family: every increment goes through the lifecycle `run` tool | disabled | stale-card-sweep, lesson-harvest, deep-grounding | none; this role has no model-authored command path |

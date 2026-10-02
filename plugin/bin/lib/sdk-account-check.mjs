@@ -75,7 +75,9 @@ const EMPTY_GATE_TIMERS = {}
 // The whole account gate of one pilot run. It lives here, outside runPilot, so runPilot keeps its
 // complexity ceiling: runPilot only wraps its prompt, opens the stream through open(), and asks
 // errorToRethrow()/reasonAfterError()/summary() in its catch and summary.
-export function createAccountGate({ expectAccount, launchEnv, profileEnv, log, timers = EMPTY_GATE_TIMERS }) {
+// retryUnavailable: a later phase session of the same run re-checks once when the check itself failed (threw or
+// timed out), never on a mismatch, so one slow check late in a run does not fail a run already verified once.
+export function createAccountGate({ expectAccount, launchEnv, profileEnv, log, timers = EMPTY_GATE_TIMERS, retryUnavailable = false }) {
   const expected = (expectAccount ?? launchEnv?.WT_PILOT_EXPECT_ACCOUNT ?? '').trim() || null
   const profileOverride = expected ? profileAccountOverride(profileEnv ?? {}) : null
   let resolveGate
@@ -93,7 +95,12 @@ export function createAccountGate({ expectAccount, launchEnv, profileEnv, log, t
         throw new AccountRefusal(decision.line)
       }
       const stream = startQuery()
-      settle(await checkSdkAccount(stream, expected, timers))
+      let checked = await checkSdkAccount(stream, expected, timers)
+      if (retryUnavailable && checked.verdict === 'unavailable') {
+        log(`${checked.line}; retrying once`)
+        checked = await checkSdkAccount(stream, expected, timers)
+      }
+      settle(checked)
       if (decision.allowed) return stream
       abortController.abort()
       await closeRefusedAccountStream(stream, log)
