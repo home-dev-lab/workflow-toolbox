@@ -5,6 +5,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- `wt-rules-on-demand` now measures the static instruction prefix, the instruction files Claude Code loads at every session start, the way the harness counts them (frontmatter and HTML comment blocks removed, path-scoped rules left out, each file counted once). Run `node scripts/prefix-size.mjs` for one line per profile and recently used project. The nightly `daily-rollback.mjs` records the result per profile, sends one notification when a check is over the limit (150,000 characters on a 1M-token context window), and exits 4 on an otherwise clean night. The SessionStart hook reports an over-limit, near-limit, failed or stale measurement for the session's own project, and names a check over the limit elsewhere. A file over the per-file limit, which the harness leaves out of its combined count but still loads, makes the check at least near the limit.
+
 ## [0.190.0] - 2026-10-02
 
 ### Quality

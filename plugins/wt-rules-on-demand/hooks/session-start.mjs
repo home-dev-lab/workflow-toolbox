@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { readdir, readFile, mkdir, writeFile, stat, rm, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { delimiter, join, resolve } from 'node:path';
+import { basename, delimiter, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ruleDirectories, configDirectory, projectRuleRoots, sameDirectory, worktreePlan } from '../paths.js';
+import { ruleDirectories, configDirectory, projectRuleRoots, sameDirectory } from '../paths.js';
+import { linkedWorktree } from '../scripts/worktree-node.mjs';
 import { assertSafeDataDir, qualityDataDir } from '../scripts/rule-lifecycle-lib.mjs';
 import { atomicLatest } from '../scripts/quality-check.mjs';
 import { launchQuality } from '../scripts/launch-quality.mjs';
@@ -16,31 +17,58 @@ const event = JSON.parse(input || '{}');
 if (event.source && event.source !== 'startup') process.exit(0);
 const cwd = resolve(event.cwd || process.cwd());
 const config = configDirectory(process.env);
+if (config) {
+  const dir = qualityDataDir(config, {});
+  const file = join(dir, 'static-prefix-latest.json');
+  const now = process.env.WT_ROD_NOW ? Date.parse(process.env.WT_ROD_NOW) : Date.now();
+  let prefix;
+  try { prefix = JSON.parse(await readFile(file, 'utf8')); } catch { /* No measurement yet. */ }
+  if (prefix) {
+   try {
+    // The session's own check first (its config dir, the deepest measured root containing cwd); else the worst one.
+    const inside = (root) => typeof root === 'string' && (cwd === resolve(root) || cwd.startsWith(resolve(root).replace(/[\\/]$/, '') + sep));
+    const checks = (prefix.checks ?? []).filter((item) => item && typeof item === 'object');
+    const own = checks.filter((item) => typeof item.configDir === 'string' && resolve(item.configDir) === resolve(config) && inside(item.root))
+      .sort((a, b) => resolve(b.root).length - resolve(a.root).length)[0];
+    const check = own ?? checks[0];
+    const status = own?.status ?? prefix.status;
+    const stale = !prefix.finishedAt || !Number.isFinite(Date.parse(prefix.finishedAt)) || now - Date.parse(prefix.finishedAt) > 36 * 3600000;
+    const sized = ['over', 'warn'].includes(status) && (!stale || status === 'over');
+    const name = (item) => `${basename(String(item?.path ?? 'unknown'))} (${item?.chars})`;
+    const line = (item) => `${item?.totalChars} chars in ${item?.fileCount} files (limit ${item?.totalLimit ?? prefix.limit})${item?.loadedChars > item?.totalChars ? `; ${item.loadedChars} chars loaded` : ''}`;
+    const where = (item) => `${item?.configDir} at ${item?.root}${item === own ? '' : " (no measurement for this session's directory)"}${stale ? ' (stale)' : ''}`;
+    let detail;
+    if (sized) {
+      const largest = (check?.largest ?? []).filter(Boolean).map(name).join(', ');
+      const big = (check?.files ?? []).filter((item) => item?.overFileLimit).map(name).join(', ');
+      detail = `${status === 'over' ? 'over' : 'near'} the limit: ${line(check)}${big ? `; over the per-file limit: ${big}` : ''}${largest ? `; largest: ${largest}` : ''}; ${where(check)}; ${file}`;
+    } else if (stale) detail = `last measured ${prefix.finishedAt}, stale; ${file}`;
+    else if (status === 'error') detail = `measurement failed: ${prefix.error}; ${file}`;
+    else if (status === 'unknown') detail = `measurement incomplete: ${check?.errors?.[0] ?? prefix.error ?? 'unknown read error'}; ${file}`;
+    if (detail) process.stdout.write(`rules-on-demand: static instruction prefix${sized ? ' ' : ': '}${detail}\n`);
+    // The session's own prefix may be fine while another project or profile is over or unmeasured: say so too.
+    const worst = checks[0];
+    if (own && prefix.status === 'over' && status !== 'over' && worst)
+      process.stdout.write(`rules-on-demand: static instruction prefix over the limit elsewhere: ${line(worst)}; ${worst.configDir} at ${worst.root}${stale ? ' (stale)' : ''}; ${file}\n`);
+    const incomplete = checks.find((item) => item.status === 'unknown');
+    if (own && status !== 'unknown' && incomplete && ['over', 'unknown'].includes(prefix.status) && !stale)
+      process.stdout.write(`rules-on-demand: static instruction prefix measurement incomplete elsewhere: ${incomplete.errors?.[0] ?? 'unknown read error'}; ${incomplete.configDir} at ${incomplete.root}; ${file}\n`);
+   } catch (error) { process.stdout.write(`rules-on-demand: static instruction prefix: unreadable record (${error.message}); ${file}\n`); }
+  } else {
+    try { await stat(join(dir, 'daily-rollback-latest.json')); process.stdout.write(`rules-on-demand: static instruction prefix: not measured by the last nightly run; ${dir}\n`); }
+    catch { /* No nightly report. */ }
+  }
+}
 if (process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS !== '1') process.stdout.write('wt-rules-on-demand: inactive: Function Hooks require CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1.\n');
 if (!config) { process.stdout.write('wt-rules-on-demand: HOME or USERPROFILE unavailable; config directory unknown.\n'); process.exit(0); }
 const paths = ruleDirectories(cwd, resolve(config));
 // The linked worktree holding `start`, read from git's own files by the plan shared with the hook (paths.js
 // worktreePlan); this command only fulfils its stat/read requests. Never spawns git; unknown is said, never guessed.
-async function linkedWorktree(start) {
-  const plan = worktreePlan(start);
-  let step = plan.next();
-  while (!step.done) {
-    const { op, path } = step.value;
-    let response;
-    try {
-      if (op === 'stat') { const info = await stat(path); response = { value: { kind: info.isDirectory() ? 'dir' : info.isFile() ? 'file' : 'other' } }; }
-      else if (op === 'read') response = { value: await readFile(path, 'utf8') };
-      else throw new Error(`unknown plan request: ${op}`);
-    } catch (error) { response = { error }; }
-    step = plan.next(response);
-  }
-  if (!step.value?.unknown) return step.value ?? {};
-  process.stdout.write(`wt-rules-on-demand: nested-worktree check unknown: ${step.value.unknown}\n`);
-  return {};
-}
+const worktree = await linkedWorktree(cwd);
+if (worktree.unknown) process.stdout.write(`wt-rules-on-demand: nested-worktree check unknown: ${worktree.unknown}\n`);
 const configReal = await realpath(resolve(config)).catch(() => resolve(config));
 const projectRoots = [];
-for (const dir of projectRuleRoots(cwd, { configDir: resolve(config), ...await linkedWorktree(cwd) })) {
+for (const dir of projectRuleRoots(cwd, { configDir: resolve(config), ...worktree })) {
   const real = await realpath(join(dir, '.claude')).catch(() => null);
   if (real !== null && !sameDirectory(real, configReal)) projectRoots.push(dir);
 }
