@@ -25,14 +25,13 @@ let archiveSequence = 0;
 let storeSwept = false;
 // This module instance's owners, drawn once per load so two instances under one pid (a hot reload) differ as much as
 // two separate hosts do: OWNER_BITS random bits in archive names (the most that keep the name's number a safe integer), and
-// 52 in segment ids, which are strings.
+// 52 in segment ids, which are strings. Delivery/verdict tokens use the same generator, redrawn on registration.
 const owner = Math.floor(Math.random() * 2 ** OWNER_BITS);
-const segOwner = Math.floor(Math.random() * 2 ** 52).toString(36).padStart(11, '0');
+const newToken = () => Math.floor(Math.random() * 2 ** 52).toString(36).padStart(11, '0');
+const segOwner = newToken();
 let segSequence = 0;
 const newSeg = () => `${segOwner}-${Date.now().toString(36)}-${(segSequence++).toString(36)}`;
 let sequence = 0;
-const processPrefix = () => (typeof process !== 'undefined' ? `${process.pid}-` : '');
-const newToken = () => processPrefix() + Date.now().toString(36);
 let token = newToken();
 const deliveryFields = ({ deliveryId, deliverySeq, servingSeq }) => ({ deliveryId, deliverySeq, servingSeq });
 const advancesClose = (previous, closeMark) => closeMark && !(previous?.token === token && previous.seq >= closeMark.seq);
