@@ -161,6 +161,38 @@ export function executableSegments(command) {
     ...headOf(segment.words), start: segment.start })).filter((segment) => segment.head);
 }
 
+// Bare shell assignments (`NAME=value`, optionally after `export`) and `unset NAME`, in command order, with the offset
+// of their segment. Only an unconditional top-level statement counts: one inside `( )`, an `if`/loop/`case`/`{ }` body,
+// a pipeline, a background job or after `&&`/`||` may not have run, or ran in a subshell. A prefix assignment
+// (`NAME=value cmd`) sets the command's environment, not the shell variable, and is left out too.
+const OPENERS = new Set(['if', 'while', 'until', 'for', 'case', 'select', '{']);
+const CLOSERS = new Set(['fi', 'done', 'esac', '}']);
+export function shellAssignments(command) {
+  const found = [];
+  const text = String(command ?? '');
+  let parens = 0, blocks = 0, previous = '', end = 0;
+  for (const segment of scan(text)) {
+    // Empty segments are dropped by scan(), so the parentheses are counted in the text between kept segments.
+    const gap = text.slice(end, segment.start);
+    parens = Math.max(0, parens + (gap.match(/\(/g)?.length ?? 0) - (gap.match(/\)/g)?.length ?? 0));
+    end = segment.end;
+    const first = segment.words[0];
+    const top = parens === 0 && blocks === 0 && ['', ';', '\n'].includes(previous) && !['|', '&', '|&', '(', ')'].includes(segment.sep);
+    if (OPENERS.has(first)) blocks += 1;
+    else if (CLOSERS.has(first) && blocks > 0) blocks -= 1;
+    previous = segment.sep;
+    if (!top) continue;
+    if (first === 'unset') { for (const name of segment.words.slice(1).filter((word) => !word.startsWith('-'))) found.push({ start: segment.start, name, unset: true }); continue; }
+    const words = first === 'export' ? segment.words.slice(1) : segment.words;
+    if (!words.length || !words.every((word) => /^[A-Za-z_]\w*=/.test(word))) continue;
+    for (const word of words) {
+      const at = word.indexOf('=');
+      found.push({ start: segment.start, name: word.slice(0, at), value: word.slice(at + 1) });
+    }
+  }
+  return found;
+}
+
 export function executableHeads(command) {
   return executableSegments(command).flatMap((part) => /^(?:sh|bash)$/.test(part.head) && part.args[0] === '-c'
     ? executableSegments(part.args[1] ?? '') : [part]);

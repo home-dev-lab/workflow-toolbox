@@ -1,5 +1,5 @@
-import { argumentEvidence, bounded } from './evidence.js';
-import { executableSegments, maskReadOnlyMentions } from './bash-mention.js';
+import { argumentEvidence, bounded, SUBJECT_CAP } from './evidence.js';
+import { executableSegments, maskReadOnlyMentions, shellAssignments } from './bash-mention.js';
 
 const test = (regex, text) => { regex.lastIndex = 0; return regex.test(bounded(text)); };
 const capture = (regex, text) => { regex.lastIndex = 0; return regex.exec(bounded(text))?.[1] ?? null; };
@@ -60,14 +60,47 @@ function judgeToolInput(compliance, event) {
     && (!compliance.minimumKey || Number(event.input?.[compliance.minimumKey]) >= compliance.minimumValue) ? 'followed' : 'not followed';
 }
 
+// Substitutes `$NAME` / `${NAME}` the way the shell would: never inside single quotes or after a backslash, and never
+// past the subject cap (a self-doubling value stays bounded).
+function expand(text, vars) {
+  let output = '', quoted = false, i = 0;
+  while (i < text.length && output.length < SUBJECT_CAP) {
+    const c = text[i];
+    if (c === '\\' && !quoted) { output += text.slice(i, i + 2); i += 2; continue; }
+    if (c === "'" && !quoted) {
+      const close = text.indexOf("'", i + 1);
+      const stop = close < 0 ? text.length : close + 1;
+      output += text.slice(i, stop); i = stop; continue;
+    }
+    if (c === '"') quoted = !quoted;
+    const match = c === '$' ? /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/.exec(text.slice(i)) : null;
+    if (match && vars.has(match[1] ?? match[2])) { output += vars.get(match[1] ?? match[2]); i += match[0].length; continue; }
+    output += c; i += 1;
+  }
+  return bounded(output);
+}
+
+// Each governed segment also carries `expanded`: its text with the variables assigned by EARLIER segments of the same
+// command substituted (last assignment wins), so `W=<path>; git worktree add "$W"` is judged on the path it uses.
 export function bashSegments(compliance, command) {
-  return executableSegments(maskReadOnlyMentions(bounded(command))).filter((part) => test(compliance.act, `${part.head} ${part.args.join(' ')}`) || test(compliance.act, part.text));
+  const text = maskReadOnlyMentions(bounded(command));
+  const assignments = shellAssignments(text);
+  return executableSegments(text).filter((part) => test(compliance.act, `${part.head} ${part.args.join(' ')}`) || test(compliance.act, part.text))
+    .map((part) => {
+      const vars = new Map();
+      for (const { start, name, value, unset } of assignments) {
+        if (start >= part.start) break;
+        if (unset) vars.delete(name); else vars.set(name, expand(value, vars));
+      }
+      const expanded = expand(part.text, vars);
+      return expanded === part.text ? part : { ...part, expanded };
+    });
 }
 
 export function segmentVerdict(compliance, segment) {
   if (compliance.exempt && test(compliance.exempt, `${segment.head} ${segment.args.join(' ')}`)) return 'not applicable';
-  const text = bounded(segment.text);
-  const satisfied = compliance.require ? test(compliance.require, text) : compliance.requireAll.every((part) => text.includes(part));
+  const meets = (text) => compliance.require ? test(compliance.require, text) : compliance.requireAll.every((part) => text.includes(part));
+  const satisfied = meets(bounded(segment.text)) || typeof segment.expanded === 'string' && meets(bounded(segment.expanded));
   return satisfied && (!compliance.forbidPipe || segment.sep !== '|' && segment.sep !== '|&') ? 'followed' : 'not followed';
 }
 

@@ -150,3 +150,41 @@ test('turn correlation pairs a confirmed later message with the spawned identity
   assert.equal(correlateTurn(c, [spawn, result, message, { kind: 'result', id: 'b', text: 'ok' }])[0].verdict, 'unresolved');
   assert.deepEqual(correlateTurn(c, [{ ...spawn, input: { subagent_type: 'other' } }, result, { kind: 'turn' }]), []);
 });
+
+test('bash-command judges a path held in a shell variable assigned earlier in the same command', () => {
+  const c = rule("    kind: bash-command\n    act-regex: '(?:^|[;&|(]\\s*|\\n\\s*)git\\s+(?:-C\\s+\\S+\\s+)?worktree\\s+add\\b'\n    require-regex: '\\.claude/worktrees/'\n    flags: 'm'\n    window: 1\n    on-close: not applicable").compliance;
+  assert.equal(bashCommandVerdict(c, 'git worktree add /repo/.claude/worktrees/a -b a'), 'followed');
+  // The idiom that dominated the measured "not followed" rows: the path is assigned first, then used.
+  assert.equal(bashCommandVerdict(c, 'W=/repo/.claude/worktrees/a; git worktree add "$W" -b a'), 'followed');
+  assert.equal(bashCommandVerdict(c, 'export W="/repo/.claude/worktrees/a"\ngit worktree add ${W} -b a'), 'followed');
+  assert.equal(bashCommandVerdict(c, "R=/repo; W=$R/.claude/worktrees/a && git worktree add \"$W\""), 'followed');
+  // Never a free pass: the variable must really hold a compliant path, and the last assignment before the act wins.
+  assert.equal(bashCommandVerdict(c, 'W=/tmp/a; git worktree add "$W"'), 'not followed');
+  assert.equal(bashCommandVerdict(c, 'W=/repo/.claude/worktrees/a; W=/tmp/a; git worktree add "$W"'), 'not followed');
+  assert.equal(bashCommandVerdict(c, 'git worktree add "$W"; W=/repo/.claude/worktrees/a'), 'not followed');
+  assert.equal(bashCommandVerdict(c, 'git worktree add "$UNSET"'), 'not followed');
+  const [segment] = bashSegments(c, 'W=/repo/.claude/worktrees/a; git worktree add "$W"');
+  assert.equal(segmentVerdict(c, segment), 'followed');
+});
+
+test('a variable substituted into a bash-command check must really hold its value when the act runs', () => {
+  const c = rule("    kind: bash-command\n    act-regex: '(?:^|[;&|(]\\s*|\\n\\s*)git\\s+(?:-C\\s+\\S+\\s+)?worktree\\s+add\\b'\n    require-regex: '\\.claude/worktrees/'\n    flags: 'm'\n    window: 1\n    on-close: not applicable").compliance;
+  const path = '/repo/.claude/worktrees/a';
+  for (const command of [
+    `(W=${path}); git worktree add "$W"`,
+    `(cd /x; W=${path}; true); git worktree add "$W"`,
+    `W=${path} | git worktree add "$W"`,
+    `W=${path} & git worktree add "$W"`,
+    `W=${path}; unset W; git worktree add "$W"`,
+    `[ -d x ] && W=${path}; git worktree add "$W"`,
+    `[ -d x ] || W=${path}; git worktree add "$W"`,
+    `if [ -d x ]; then W=${path}; fi; git worktree add "$W"`,
+    `W=${path}; git worktree add '$W'`,
+    `W=${path}; git worktree add \\$W`,
+  ]) assert.equal(bashCommandVerdict(c, command), 'not followed', command);
+  assert.equal(bashCommandVerdict(c, `W=${path}\ngit worktree add "$W"`), 'followed');
+  assert.equal(bashCommandVerdict(c, `W=${path} && git worktree add "$W"`), 'followed');
+  // A self-doubling value stays bounded instead of exhausting memory.
+  const blowUp = `A=xx;${'A=$A$A;'.repeat(28)}git worktree add /x`;
+  assert.equal(bashCommandVerdict(c, blowUp), 'not followed');
+});
