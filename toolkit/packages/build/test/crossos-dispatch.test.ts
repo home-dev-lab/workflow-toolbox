@@ -416,6 +416,105 @@ describe('cross-OS dispatch', () => {
     expect(() => readFileSync(authPathOf(f.dir))).toThrow()
   })
 
+  it('reports each job and each OS as it concludes, before the slowest Windows shard, and keeps the final result', async () => {
+    const f = publicFixture(); const fake = fakeGh(f); const out = output()
+    const log = readFileSync(join(fixtureDir, 'sample-job-log-excerpt.txt'), 'utf8')
+    // The REST log of the same job: `<timestamp> <text>` lines with no job or step column (GitHub prepends a byte-order mark).
+    const rawLog = `\uFEFF${log.split('\n').filter(Boolean).map((line) => line.split('\t').slice(2).join('\t')).join('\n')}\n`
+    // Step times recover the step. Every line falls in one second shared by three steps: a skipped step, the test step
+    // that ends there, and a diagnostic step that starts there. The lines belong to the test step, so they stay gating.
+    const steps = { steps: [
+      { name: 'Set up job', conclusion: 'success', started_at: '2026-09-26T19:00:00Z', completed_at: '2026-09-26T19:00:01Z' },
+      { name: 'Typecheck', conclusion: 'skipped', started_at: '2026-09-26T19:56:27Z', completed_at: '2026-09-26T19:56:27Z' },
+      { name: 'Test (macOS shard 2/2)', conclusion: 'failure', started_at: '2026-09-26T19:56:27Z', completed_at: '2026-09-26T19:56:27Z' },
+      { name: 'Diagnose artifact-server fork (Windows)', conclusion: 'success', started_at: '2026-09-26T19:56:27Z', completed_at: '2026-09-26T19:56:30Z' },
+    ] }
+    const job = (databaseId: number, name: string, conclusion: string, completedAt: string) => ({ databaseId, name, status: conclusion ? 'completed' : 'in_progress', conclusion, completedAt })
+    // GitHub lists jobs in matrix order, not conclusion order: the first poll sees three concluded jobs out of order.
+    const early = [job(41, 'matrix (windows-latest, 1)', 'success', '2026-10-02T07:33:34Z'), job(42, 'matrix (ubuntu-latest)', 'failure', '2026-10-02T07:34:24Z'), job(43, 'matrix (macos-latest)', 'success', '2026-10-02T07:34:35Z')]
+    const polls = [
+      { status: 'in_progress', conclusion: '', jobs: [early[2], early[1], early[0], job(44, 'matrix (windows-latest, 2)', '', '')] },
+      { status: 'in_progress', conclusion: '', jobs: [early[2], early[1], early[0], job(44, 'matrix (windows-latest, 2)', '', '')] },
+      { status: 'completed', conclusion: 'failure', jobs: [early[2], early[1], early[0], job(44, 'matrix (windows-latest, 2)', 'success', '2026-10-02T07:38:06Z')] },
+    ]
+    let poll = 0; const fetches: string[] = []
+    const io = { ...fake.io, sleep: async () => { out.lines.push('SLEEP') }, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'gh' && args[0] === 'api') {
+        fetches.push(`api ${args[1]}`)
+        if (args[1] === 'repos/owner/repo/actions/jobs/42') return { status: 0, stdout: JSON.stringify(steps), stderr: '' }
+        if (args[1] === 'repos/owner/repo/actions/jobs/42/logs') return { status: 0, stdout: rawLog, stderr: '' }
+        return { status: 1, stdout: '', stderr: `unexpected ${args[1]}` }
+      }
+      if (program === 'gh' && args.includes('--job')) {
+        fetches.push(`view ${args[args.indexOf('--job') + 1]}`)
+        // As gh 2.45 does: no job log at all while the run is in progress.
+        if (poll < polls.length) return { status: 1, stdout: '', stderr: 'run 23 is still in progress; logs will be available when it is complete' }
+        return { status: 0, stdout: log, stderr: '' }
+      }
+      const result = fake.io.run(program, args, opts)
+      if (program !== 'gh' || args[1] !== 'view' || !result.stdout.includes('headSha')) return result
+      const state = polls[Math.min(poll++, polls.length - 1)]
+      return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), ...state }) }
+    } }
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print }), out.lines.join('\n')).toBe(1)
+    const at = (line: string) => { const index = out.lines.indexOf(line); expect(index, `${line}\n---\n${out.lines.join('\n')}`).toBeGreaterThanOrEqual(0); return index }
+    const firstSleep = out.lines.indexOf('SLEEP')
+    const testName = 'packages/build/test/sdk-pilot-lifecycle-server.test.ts > runner-hosted SDK pilot lifecycle > the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]'
+    const draft = join(f.dir, '.git/wt-crossos', `${f.host}.ubuntu.card.md`)
+    // Conclusion order, all printed on the first poll, before any wait for the second Windows shard.
+    const ordered = [
+      at('EARLY JOB matrix (windows-latest, 1): green (1/4 concluded)'),
+      at('EARLY JOB matrix (ubuntu-latest): red conclusion=failure (2/4 concluded)'),
+      at(`EARLY TEST matrix (ubuntu-latest) [gating step: Test (macOS shard 2/2)] ${testName}`),
+      at('EARLY JOB matrix (macos-latest): green (3/4 concluded)'),
+      at('EARLY OS ubuntu: red (matrix (ubuntu-latest))'),
+      at(`EARLY CARD DRAFT ubuntu: ${draft}`),
+      at('EARLY OS macos: green (matrix (macos-latest))'),
+      firstSleep,
+      // Windows is reported only once its last shard concludes, after the waits.
+      at('EARLY JOB matrix (windows-latest, 2): green (4/4 concluded)'),
+      at('EARLY OS windows: green (matrix (windows-latest, 1), matrix (windows-latest, 2))'),
+      // The final summary is unchanged and reads gh's own log once the run has completed.
+      at('JOB matrix (ubuntu-latest): failure'),
+      at(`FAILED TEST [gating step: Test (macOS shard 2/2)] ${testName}`),
+      out.lines.length - 1,
+    ]
+    expect(ordered).toEqual([...ordered].sort((a, b) => a - b))
+    expect(out.lines.filter((line) => line.startsWith('EARLY OS ')).length).toBe(3)
+    expect(readFileSync(draft, 'utf8')).toContain(testName)
+    expect(existsSync(join(f.dir, '.git/wt-crossos', `${f.host}.macos.card.md`))).toBe(false)
+    expect(fetches).toEqual(['api repos/owner/repo/actions/jobs/42', 'api repos/owner/repo/actions/jobs/42/logs', 'view 42'])
+    expect(out.lines.join('\n')).toContain(`BLOCKER: host-layer merge ${f.host} is red on cross-os run 23; gating failed tests: ${testName} [Test (macOS shard 2/2)]`)
+    expect(out.lines.at(-1)).toBe('RESULT: red')
+  })
+
+  it('keeps the verdict and deletes the branch when an early report fails', async () => {
+    const f = publicFixture(); const fake = fakeGh(f, 'failure'); const out = output(); let polls = 0
+    const io = { ...fake.io, writeText(path: string, text: string, exclusive?: boolean) {
+      if (path.endsWith('.ubuntu.card.md')) throw new Error('disk full')
+      return commandIO.writeText(path, text, exclusive)
+    }, run(program: string, args: string[], opts: { cwd: string }) {
+      const result = fake.io.run(program, args, opts)
+      if (program !== 'gh' || args[1] !== 'view' || args.includes('--job')) return result
+      const run = JSON.parse(result.stdout)
+      // A malformed first poll throws inside the early report; the run itself carries on.
+      if (polls++ === 0) return { ...result, stdout: JSON.stringify({ ...run, status: 'in_progress', conclusion: '', jobs: [null] }) }
+      // Ubuntu, the first OS reported, fails too, and its early draft cannot be written.
+      run.jobs = run.jobs.map((job: { name: string }) => (job.name.includes('ubuntu') ? { ...job, conclusion: 'failure' } : job))
+      return { ...result, stdout: JSON.stringify(run) }
+    } }
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print }), out.lines.join('\n')).toBe(1)
+    expect(out.lines.filter((line) => line.startsWith('EARLY REPORT UNAVAILABLE: '))).toHaveLength(1)
+    expect(out.lines).toContain('EARLY REPORT UNAVAILABLE ubuntu: disk full')
+    // One OS that cannot be reported never stops the others.
+    expect(out.lines).toContain('EARLY OS windows: green (matrix (windows-latest))')
+    expect(out.lines).toContain('EARLY OS macos: red (matrix (macos-latest))')
+    expect(existsSync(join(f.dir, '.git/wt-crossos', `${f.host}.macos.card.md`))).toBe(true)
+    expect(out.lines.join('\n')).toContain('BLOCKER: host-layer merge')
+    expect(out.lines.at(-1)).toBe('RESULT: red')
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
+  })
+
   it('refuses an existing authorization with its metadata and does not remove it', async () => {
     const f = publicFixture(); const { io } = fakeGh(f); const out = output()
     const path = authPathOf(f.dir)

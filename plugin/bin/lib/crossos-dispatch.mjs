@@ -65,6 +65,72 @@ function reportSuccessfulDiagnostics(ctx, jobs) {
     for (const item of diagnostic) ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`)
   }
 }
+// `gh run view --job --log` refuses while the run is in progress (gh 2.45: "run N is still in progress; logs will be
+// available when it is complete"), so an early log comes from the REST job endpoints. The raw log has no step column:
+// each line goes to the step that ran during that second (step times have one-second precision). In the second where
+// one step ends and the next starts, the EARLIER step wins: test runners print their failures last, and a failure
+// misread as gating fails closed. The result is shaped like gh's own `job<TAB>step<TAB>line`, so extractFailedTests
+// reads both. The final summary still reads gh's own log after completion.
+function earlyJobLog(ctx, job) {
+  const base = `repos/${ctx.slug}/actions/jobs/${job.databaseId}`
+  const steps = (JSON.parse(checked(ctx.io, ctx.cwd, 'gh', ['api', base])).steps ?? [])
+    .filter((step) => step.conclusion !== 'skipped' && step.started_at)
+    .map((step) => ({ name: step.name, start: Date.parse(step.started_at), end: step.completed_at ? Date.parse(step.completed_at) : Infinity }))
+  return checked(ctx.io, ctx.cwd, 'gh', ['api', `${base}/logs`]).split('\n').map((line) => {
+    const second = Math.floor(Date.parse(line.slice(0, line.indexOf(' '))) / 1000) * 1000
+    const started = steps.filter((candidate) => candidate.start <= second)
+    const step = (started.find((candidate) => candidate.end >= second) ?? started.at(-1))?.name ?? '(unknown step)'
+    return `${job.name}\t${step}\t${line}`
+  }).join('\n')
+}
+
+const OS_NAMES = ['ubuntu', 'windows', 'macos']
+const concluded = (job) => (job.status ? job.status === 'completed' : Boolean(job.conclusion))
+const byCompletion = (a, b) => String(a.completedAt ?? '').localeCompare(String(b.completedAt ?? ''))
+
+function announceJob(ctx, record, job, count, total) {
+  const verdict = job.conclusion === 'success' ? 'green' : `red conclusion=${job.conclusion}`
+  ctx.print(`EARLY JOB ${job.name}: ${verdict} (${count}/${total} concluded)`)
+  if (job.conclusion === 'success') return []
+  let gating = []
+  try { gating = extractFailedTests(earlyJobLog(ctx, job)).filter((item) => item.gating) }
+  catch (error) { ctx.print(`EARLY LOG UNAVAILABLE ${job.name}: ${error.message}`) }
+  if (!gating.length) ctx.print(`EARLY TEST ${job.name} (none extracted — read ${record.url}/job/${job.databaseId})`)
+  for (const item of gating) ctx.print(`EARLY TEST ${job.name} [gating step: ${item.step}] ${item.test}`)
+  return gating
+}
+
+function announceOs(ctx, record, os, jobs, failures) {
+  const failed = jobs.filter((job) => job.conclusion !== 'success')
+  ctx.print(`EARLY OS ${os}: ${failed.length ? 'red' : 'green'} (${jobs.map((job) => job.name).join(', ')})`)
+  if (!failed.length) return
+  const tests = failed.flatMap((job) => failures.get(job.databaseId) ?? [])
+  const jobLines = failed.map((job) => '- ' + job.name + ': ' + job.conclusion).join('\n')
+  const testLines = tests.map((item) => '- ' + item.test + ' (gating step: ' + item.step + ')').join('\n') || '- None extracted; read the failed job logs.'
+  const draft = `# Cross-OS failure on ${record.sha} (${os})\n\nEarly draft, written when ${os} concluded; the complete draft is ${record.sha}.card.md, written when the run completes.\n\nRun: ${record.url}\n\n${jobLines}\n\nBlocking failed tests (gating steps):\n${testLines}\n`
+  const path = ctx.io.join(ctx.store, `${record.sha}.${os}.card.md`)
+  ctx.io.mkdirp(ctx.store)
+  ctx.io.writeText(path, draft)
+  ctx.print(`EARLY CARD DRAFT ${os}: ${path}`)
+}
+
+// Reports each job, then each OS, the moment it concludes, so a slow OS never delays reading the others. Every line is
+// advisory: one OS that cannot be reported never stops the others, and the final summary is unchanged.
+function announceConcluded(ctx, record, run, seen) {
+  const jobs = run.jobs ?? []
+  const fresh = jobs.filter((job) => concluded(job) && !seen.jobs.has(job.databaseId)).sort(byCompletion)
+  for (const job of fresh) {
+    seen.jobs.add(job.databaseId)
+    seen.failures.set(job.databaseId, announceJob(ctx, record, job, seen.jobs.size, jobs.length))
+  }
+  for (const os of OS_NAMES) {
+    const osJobs = jobs.filter((job) => String(job.name).toLowerCase().includes(os))
+    if (seen.os.has(os) || !osJobs.length || !osJobs.every(concluded)) continue
+    seen.os.add(os)
+    try { announceOs(ctx, record, os, osJobs, seen.failures) } catch (error) { ctx.print(`EARLY REPORT UNAVAILABLE ${os}: ${error.message}`) }
+  }
+}
+
 function save(ctx, record) {
   const text = `${JSON.stringify(record, null, 2)}\n`
   ctx.io.mkdirp(ctx.store)
@@ -190,8 +256,11 @@ async function collect(ctx, record) {
   if (!record.runId) throw failure(`no run id recorded for ${record.sha}`)
   const deadline = ctx.io.now() + Number(ctx.args.timeoutMin) * 60000
   let run
+  const seen = { jobs: new Set(), os: new Set(), failures: new Map() }
   for (;;) {
     run = freshEvidence(ctx, record.runId)
+    // Early lines are advisory: a failure here must never change the verdict nor strand the temporary branch.
+    try { announceConcluded(ctx, record, run, seen) } catch (error) { ctx.print(`EARLY REPORT UNAVAILABLE: ${error.message}`) }
     if (run.status === 'completed') break
     if (ctx.io.now() >= deadline) {
       record.status = 'timed_out'; save(ctx, record)
