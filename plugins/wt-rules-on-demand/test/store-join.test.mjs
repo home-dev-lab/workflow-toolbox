@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, HOST_FILE_LIMIT } from './store-host-fake.mjs';
 import { STORE_BUDGETS, STORE_ARCHIVE, ARCHIVE_PART_BYTES, archiveTexts, jsonLength } from '../hooks/store-budget.js';
 import { sumSessions, sumServed, mergeSessions, archivedSegments } from '../scripts/delivery-join.mjs';
@@ -158,7 +158,7 @@ async function readerCounts(f, env = {}) {
   const report = await run([script('compliance-report.mjs'), '--config-dir', f.config, '--rules-dir', join(f.config, 'rules-on-demand'), '--json']);
   const reconcile = await run([script('serve-verdict-reconcile.mjs'), '--config-dir', f.config, '--json']);
   const rollback = await run([script('rollback-check.mjs'), '--user', '--config-dir', f.config, '--dry-run', '--json']);
-  const quality = await run(['--input-type=module', '-e', `import { measureInputs } from ${JSON.stringify(script('quality-check.mjs'))};
+  const quality = await run(['--input-type=module', '-e', `import { measureInputs } from ${JSON.stringify(pathToFileURL(script('quality-check.mjs')).href)};
     const inputs = await measureInputs([${JSON.stringify(f.config)}], [], ${JSON.stringify(join(f.config, 'measures'))});
     const contexts = Object.values(inputs.store.profiles[0].sessions).flatMap((session) => Object.values(session.contexts ?? {}));
     console.log(JSON.stringify({ deliveries: contexts.reduce((n, ctx) => n + (ctx.complianceInjected?.length ?? 0), 0),

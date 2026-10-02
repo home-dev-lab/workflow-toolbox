@@ -2285,7 +2285,13 @@ describe('review decisions: serving security matrix', () => {
     await waitFor(() => pidAlive(result.pid!) ? null : true)
   }, 20_000)
 
-  it('never signals a browser that already exited, even when its output stays open', async () => {
+  it('never signals a browser that already exited, even when its output stays open', async (ctx) => {
+    // On Windows the process the fake browser starts does not keep the inherited stdout pipe open after the browser
+    // exits (cross-os run 36963718515: the render resolved on exit instead of reaching its bound), so this scenario
+    // cannot be built there. The guard itself is platform-neutral; the direct stopBrowser locks below run everywhere.
+    if (process.platform === 'win32') {
+      ctx.skip('POSIX-only fixture: a grandchild holding the inherited stdout pipe open past its parent exit')
+    }
     const holderPidFile = join(temporaryDir('fake-browser-holder'), 'holder.pid')
     // The browser exits at once without a dump; a process it started keeps its stdout open, so the render can only
     // end on its bound. Its group is the exited browser's pid: signalling it is what a reused pid would turn unsafe.
@@ -2304,6 +2310,27 @@ describe('review decisions: serving security matrix', () => {
       expect(browserSignals).toBe(signalsBefore)
     } finally {
       try { process.kill(holderPid(), 'SIGKILL') } catch { /* already gone */ }
+    }
+  }, 20_000)
+
+  it('stopBrowser sends no signal to a browser process that has already exited', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore', detached: process.platform !== 'win32' })
+    await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    const signalsBefore = browserSignals
+    stopBrowser(child)
+    expect(browserSignals).toBe(signalsBefore)
+  }, 20_000)
+
+  it('stopBrowser signals a browser process that is still running', async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: process.platform !== 'win32' })
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    const signalsBefore = browserSignals
+    try {
+      stopBrowser(child)
+      expect(browserSignals).toBe(signalsBefore + 1)
+      await exited
+    } finally {
+      try { child.kill('SIGKILL') } catch { /* already gone */ }
     }
   }, 20_000)
 
