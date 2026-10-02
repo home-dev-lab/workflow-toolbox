@@ -71,6 +71,15 @@ function run(
   return { out: result.stdout ?? '', err: result.stderr ?? '', code: result.status }
 }
 
+// Deduplication replaces the file by renaming over it while the hook still holds the old inode open. Windows refuses
+// to rename over a file that has an open handle, so the hook disables deduplication there and leaves every file
+// untouched; the tests below that need a rewrite run on POSIX only, and the win32 degraded path has its own tests.
+const POSIX_ONLY_REASON =
+  'POSIX-only: deduplication renames over a file the hook holds open, which Windows refuses; win32 degrades to a no-op (see the degraded-path tests)'
+function posixOnly(ctx: { skip: (note?: string) => void }): void {
+  if (process.platform === 'win32') ctx.skip(POSIX_ONLY_REASON)
+}
+
 const L = {
   a: "export OPENAI_CODEX_SESSION_ID='abc-123'\n",
   b: "export CODEX_COMPANION_SESSION_ID='abc-123'\n",
@@ -78,7 +87,8 @@ const L = {
 }
 
 describe('wt-session-env-dedup-hook', () => {
-  it('collapses 300 repeats of three codex lines to the three distinct lines', () => {
+  it('collapses 300 repeats of three codex lines to the three distinct lines', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     writeFileSync(file, (L.a + L.b + L.c).repeat(300))
@@ -89,7 +99,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(file, 'utf8')).toBe(L.a + L.b + L.c)
   })
 
-  it('keeps the last occurrence and preserves a value with an embedded quote byte-identically', () => {
+  it('keeps the last occurrence and preserves a value with an embedded quote byte-identically', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     const tricky = `export NOTE='it'"'"'s fine'\n`
@@ -100,7 +111,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(file, 'utf8')).toBe(L.a + tricky + L.b)
   })
 
-  it('A=1, A=2, A=1 becomes A=2, A=1', () => {
+  it('A=1, A=2, A=1 becomes A=2, A=1', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     writeFileSync(file, 'export A=1\nexport A=2\nexport A=1\n')
@@ -136,7 +148,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(file, 'utf8')).toBe(content)
   })
 
-  it('keeps comments and blank lines in place, and preserves a missing trailing newline', () => {
+  it('keeps comments and blank lines in place, and preserves a missing trailing newline', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     writeFileSync(file, '# head\nexport A=1\n\n# mid\nexport B=2\nexport A=1')
@@ -146,7 +159,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(file, 'utf8')).toBe('# head\n\n# mid\nexport B=2\nexport A=1')
   })
 
-  it('dedups the resumed session directory too, and touches no other session, symlink or foreign name', () => {
+  it('dedups the resumed session directory too, and touches no other session, symlink or foreign name', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const pre = fx.dir('old-session')
     const resumed = fx.dir('resumed-session')
@@ -174,7 +188,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(target, 'utf8')).toBe(dup)
   })
 
-  it('ignores an unsafe session_id', () => {
+  it('ignores an unsafe session_id', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     writeFileSync(file, L.a.repeat(2))
@@ -236,7 +251,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(run(file, 's1')).toEqual({ out: '', err: '', code: 0 })
   })
 
-  it('counts size after dedup, so a deduplicated directory does not alarm', () => {
+  it('counts size after dedup, so a deduplicated directory does not alarm', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     writeFileSync(file, (L.a + L.b + L.c).repeat(2000))
@@ -281,7 +297,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(existsSync(fresh)).toBe(true)
   })
 
-  it('does not crash on a directory named like a hook file', () => {
+  it('does not crash on a directory named like a hook file', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const d = fx.dir('s1')
     mkdirSync(join(d, 'sessionstart-hook-1.sh'))
@@ -292,7 +309,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(real, 'utf8')).toBe(L.a)
   })
 
-  it('carries bytes a parallel hook appends to the old inode between the rename and the final fstat', () => {
+  it('carries bytes a parallel hook appends to the old inode between the rename and the final fstat', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     writeFileSync(file, L.a.repeat(3))
@@ -314,7 +332,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(existsSync(tmp)).toBe(false)
   })
 
-  it('writes the carried tail through the inode it created, never through the path', () => {
+  it('writes the carried tail through the inode it created, never through the path', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
     writeFileSync(file, L.a.repeat(3))
@@ -341,7 +360,8 @@ describe('wt-session-env-dedup-hook', () => {
     }
   })
 
-  it('does not touch a session-env directory that is not under the active config directory', () => {
+  it('does not touch a session-env directory that is not under the active config directory', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const foreign = join(fx.root, 'project', 'session-env', 's1')
     mkdirSync(foreign, { recursive: true })
@@ -354,7 +374,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(file, 'utf8')).toBe(L.a)
   })
 
-  it('stops deduplicating past the byte budget but keeps earlier files cleaned', () => {
+  it('stops deduplicating past the byte budget but keeps earlier files cleaned', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const d = fx.dir('s1')
     const first = join(d, 'sessionstart-hook-1.sh')
@@ -368,7 +389,8 @@ describe('wt-session-env-dedup-hook', () => {
     expect(readFileSync(second, 'utf8')).toBe(L.b.repeat(4))
   })
 
-  it('caps the files considered per directory', () => {
+  it('caps the files considered per directory', (ctx) => {
+    posixOnly(ctx)
     const fx = fixture()
     const d = fx.dir('s1')
     const first = join(d, 'sessionstart-hook-1.sh')
@@ -380,6 +402,55 @@ describe('wt-session-env-dedup-hook', () => {
 
     expect(readFileSync(first, 'utf8')).toBe(L.a)
     expect(readFileSync(second, 'utf8')).toBe(L.b.repeat(3))
+  })
+
+  it('on win32 leaves a duplicated file byte-identical and creates no temp file', () => {
+    const fx = fixture()
+    const d = fx.dir('s1')
+    const file = join(d, 'sessionstart-hook-1.sh')
+    writeFileSync(file, L.a.repeat(3))
+    const tmp = join(fx.envRoot, '.wt-session-env-dedup-s1-sessionstart-hook-1.sh-1-abcdef01.tmp')
+
+    expect(dedupFile(file, tmp, { platform: 'win32' })).toBe(false)
+    expect(runSessionEnvDedup(file, 's1', { configDir: fx.root, platform: 'win32' })).toBeNull()
+
+    expect(readFileSync(file, 'utf8')).toBe(L.a.repeat(3))
+    expect(readdirSync(fx.envRoot)).toEqual(['s1'])
+    expect(readdirSync(d)).toEqual(['sessionstart-hook-1.sh'])
+  })
+
+  it('on win32 still alarms over 64 KiB and says deduplication is unavailable on this platform', () => {
+    const fx = fixture()
+    const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
+    const body = (L.a + L.b + L.c).repeat(2000)
+    writeFileSync(file, body)
+
+    const text = runSessionEnvDedup(file, 's1', { configDir: fx.root, platform: 'win32' })
+
+    expect(text).toContain(`${Buffer.byteLength(body)} bytes`)
+    expect(text).toContain('Deduplication is unavailable on this platform')
+    expect(readFileSync(file, 'utf8')).toBe(body)
+  })
+
+  it('does not name the platform limit where deduplication runs', () => {
+    const fx = fixture()
+    const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
+    writeFileSync(file, 'echo "padding"\n'.repeat(5000))
+
+    const text = runSessionEnvDedup(file, 's1', { configDir: fx.root, platform: 'linux' })
+
+    expect(text).not.toContain('unavailable on this platform')
+  })
+
+  it('through the real hook on this platform: dedups on POSIX, leaves the file byte-identical on win32', () => {
+    const fx = fixture()
+    const file = join(fx.dir('s1'), 'sessionstart-hook-1.sh')
+    writeFileSync(file, L.a.repeat(3))
+
+    const r = run(file, 's1')
+
+    expect(r).toMatchObject({ out: '', code: 0 })
+    expect(readFileSync(file, 'utf8')).toBe(process.platform === 'win32' ? L.a.repeat(3) : L.a)
   })
 
   it('counts every hook file for the alarm, including those past the per-directory dedup cap', () => {

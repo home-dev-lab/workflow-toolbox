@@ -19,6 +19,13 @@ const ALARM_BYTES = 65536
 const STALE_TMP_MS = 60_000
 const TMP_PREFIX = '.wt-session-env-dedup-'
 
+// The rewrite renames over the file while this process still holds the old inode open, so a byte a parallel hook
+// appends late can be carried over. Windows refuses to rename over a file that has an open handle, so there the
+// hook rewrites no hook file, and the alarm says deduplication is unavailable.
+function dedupSupported(platform) {
+  return platform !== 'win32'
+}
+
 export function readStdinJson() {
   try {
     const parsed = JSON.parse(fs.readFileSync(0, 'utf8'))
@@ -115,8 +122,10 @@ function dedupText(text) {
 // harness sources. `hooks.afterRename` runs between the rename and the final fstat of the old fd
 // (a test seam for the tail carry); `hooks.budget` ({ remaining }) bounds the bytes read across
 // calls. The carried tail is written through the fd of the inode this call created, never by path.
+// `hooks.platform` (default: process.platform) is the platform seam; on win32 nothing is read or written.
 // Returns true when the file was rewritten.
 export function dedupFile(file, tmp, hooks = {}) {
+  if (!dedupSupported(hooks.platform ?? process.platform)) return false
   let fd
   let out
   let tmpMade = false
@@ -211,7 +220,7 @@ function removeStaleTemps(dir) {
 }
 
 // Counts every hook file the harness sources, not only the ones the dedup cap let through.
-function alarmText(dir) {
+function alarmText(dir, platform) {
   const sized = []
   for (const file of hookFiles(dir, Number.POSITIVE_INFINITY)) {
     try {
@@ -231,17 +240,21 @@ function alarmText(dir) {
     `[wt] session-env ${dir} holds ${total} bytes in its sessionstart-hook files (alarm above ${ALARM_BYTES}). ` +
     `Largest: ${top}. Files that could not be deduplicated contain non-literal lines, exceed 8 MiB, or could not be rewritten. ` +
     'Claude Code inlines these files into every Bash command and Linux refuses a single argument over 128 KiB (E2BIG). ' +
-    'The harness reads them only at a session start or switch, so once the plugin that writes them is fixed a restart is needed.'
+    'The harness reads them only at a session start or switch, so once the plugin that writes them is fixed a restart is needed.' +
+    (dedupSupported(platform)
+      ? ''
+      : ' Deduplication is unavailable on this platform (Windows cannot replace a file another handle holds open), so these files were left as they are.')
   )
 }
 
 // Deduplicates the current session's env files and returns the alarm text (or null). `opts` is the
-// test seam: configDir, home, maxTotalBytes, maxFiles (defaults: the real environment and bounds).
+// test seam: configDir, home, maxTotalBytes, maxFiles, platform (defaults: the real environment and bounds).
 export function runSessionEnvDedup(envFile, sessionId, opts = {}) {
   const config = {
     configDir: opts.configDir ?? process.env.CLAUDE_CONFIG_DIR,
     home: opts.home ?? os.homedir(),
   }
+  const platform = opts.platform ?? process.platform
   const maxFiles = opts.maxFiles ?? MAX_FILES_PER_DIR
   const budget = { remaining: opts.maxTotalBytes ?? MAX_TOTAL_BYTES }
   const alarms = []
@@ -251,9 +264,9 @@ export function runSessionEnvDedup(envFile, sessionId, opts = {}) {
     for (const file of hookFiles(dir, maxFiles)) {
       const suffix = `${process.pid}-${crypto.randomBytes(4).toString('hex')}`
       const tmp = path.join(path.dirname(dir), `${TMP_PREFIX}${name}-${path.basename(file)}-${suffix}.tmp`)
-      dedupFile(file, tmp, { budget })
+      dedupFile(file, tmp, { budget, platform })
     }
-    const text = alarmText(dir)
+    const text = alarmText(dir, platform)
     if (text) alarms.push(text)
   }
   return alarms.length > 0 ? alarms.join(' ') : null

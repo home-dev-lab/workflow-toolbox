@@ -8,8 +8,10 @@
 // export lines (last occurrence wins, so every variable keeps its final value) from the current
 // session's directory and warns when the directory is still over 64 KiB.
 //
-// Advisory and best effort: every path exits 0; no CLAUDE_ENV_FILE (Windows, other harnesses) or
-// one that is not a hook env file under a `session-env` directory is a silent no-op.
+// Advisory and best effort: every path exits 0; no CLAUDE_ENV_FILE (other harnesses) or one that is
+// not a hook env file under a `session-env` directory is a silent no-op. On Windows nothing is
+// rewritten (the rename-over-an-open-file the rewrite relies on is refused there); the size alarm
+// still runs and says deduplication is unavailable on this platform.
 // The file operations live in lib/host/session-env-dedup.mjs.
 
 import { readStdinJson, runSessionEnvDedup } from './lib/host/session-env-dedup.mjs'
