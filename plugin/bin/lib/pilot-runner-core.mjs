@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
-import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
+import { MAX_CRITIC_ROUNDS, PHASES, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
@@ -14,7 +14,7 @@ import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBase
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 import { createBoardClient } from './board-http-client.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryInstructions } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
 import { bindPilotDecision, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotBinding, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
@@ -25,7 +25,6 @@ import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 import { createAccountGate } from './sdk-account-check.mjs'
 import { phaseManifest, phaseOpener, phaseRules } from './pilot-phase-session.mjs'
 import { bindingDecisionsSection } from './lifecycle-dod-dispute.mjs'
-import { withRepositoryGuide as withGuidePointer } from './sdk-role-profile.mjs'
 import { assertCleanPilotStart } from './lifecycle-selection.mjs'
 import { resolveLifecycleGates } from './lifecycle-gates.mjs'
 
@@ -66,8 +65,11 @@ const PLANKA_TOOLS = new Set([
   'mcp__planka__add_label_to_card',
 ])
 
+// A piece-test option: the run ends at the boundary leaving this phase. `report` is the end already.
+const STOP_AFTER_PHASES = PHASES.filter((phase) => phase !== 'report')
+
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false, stopAfter: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -89,6 +91,10 @@ export function parsePilotRunnerArgs(argv) {
       options.pluginDirs.push(resolve(pluginDir))
     }
     else if (arg === '--timeout') { options.timeout = Number(argv[++i]); options.timeoutExplicit = true }
+    else if (arg === '--stop-after') {
+      options.stopAfter = argv[++i] ?? null
+      if (!STOP_AFTER_PHASES.includes(options.stopAfter)) return { error: `--stop-after must be one of: ${STOP_AFTER_PHASES.join(', ')}` }
+    }
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
@@ -852,7 +858,7 @@ export async function runPilot(options, dependencies) {
   let timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
   const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, stopAfterPhase: options.stopAfter, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const phaseSessions = []
   // A session aborted after assistant usage but before its result leaves usage no result covers.
   const usageUnclosed = () => lastAssistantUsageIndex > lastResultIndex || phaseSessions.some((item) => item.uncovered && item.ended_by === 'no_result')
@@ -875,7 +881,7 @@ export async function runPilot(options, dependencies) {
   async function* prompt() {
     const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${GROUNDING_INITIAL_PROMPT} ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.${planShapeLine(routing.route)}`
-    yield { type: 'user', message: { role: 'user', content: withRepositoryGuide(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
+    yield { type: 'user', message: { role: 'user', content: withRepositoryInstructions(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
     yield* phaseFollowUps(phaseRuntime, session)
   }
 
@@ -914,7 +920,7 @@ export async function runPilot(options, dependencies) {
       manifest: phaseManifest({ phase: current.phase, laneDir: join(options.dir, '.lane'), ledger, timeline: lifecycleServer.timeline() }),
       rules: phaseRules(lifecycleServer.acceptedTransitions(), current.phase), notice,
     })
-    return { type: 'user', message: { role: 'user', content: withGuidePointer(options.dir, content) } }
+    return { type: 'user', message: { role: 'user', content: withRepositoryInstructions(options.dir, content) } }
   }
   async function* phasePrompt(current) {
     // A plan session never opens on an unbound DoD dispute: the opener carries the binding.

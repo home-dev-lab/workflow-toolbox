@@ -21,6 +21,9 @@ import { bindingDecisionsSection, createDodEscalation, criticFindingAfterNoReblo
 import { pathWithin } from './host/path-within.mjs'
 import { focusedLifecycleGateHint, resolveLifecycleGates } from './lifecycle-gates.mjs'
 import { snapshotSelectedTree } from './lifecycle-selection.mjs'
+import { declaredChecksForPhase } from './host/repo-instructions.mjs'
+
+const withLeadingBreak = (text) => (text ? `\n\n${text}` : '')
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -820,6 +823,7 @@ export function createLifecycleStateMachine({
   routeFinding = null,
   resolveRoutedFinding = null,
   onBoundaryStop = null,
+  stopAfterPhase = null,
   dodDecisions = {},
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
@@ -1003,6 +1007,11 @@ export function createLifecycleStateMachine({
   const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
   const run = guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun)
   const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
+  // The piece-test stop: leaving the named phase requests the same boundary stop a timeout does.
+  const stopRequestedAt = (phase) => {
+    if (stopAfterPhase === phase) requestStop(`stop-after ${phase}`)
+    return Boolean(state.pendingStop)
+  }
   function transition(event) {
     if (state.stopped) return stoppedRefusal()
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
@@ -1237,7 +1246,7 @@ export function createLifecycleStateMachine({
       next = 'awaiting_fidelity'
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
-    if (state.pendingStop) return stopAtBoundary(event)
+    if (stopRequestedAt(state.phase)) return stopAtBoundary(event)
     const phaseRules = next === 'awaiting_fidelity'
       ? ''
       : composeRules(activeRules, {
@@ -1246,7 +1255,7 @@ export function createLifecycleStateMachine({
         })
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT
-      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}`
+      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}${withLeadingBreak(declaredChecksForPhase(next, root, { gateNames: next === 'plan' ? [...resolveLifecycleGates(root)] : [] }))}`
     const transitionedAt = now()
     state.phase = next
     state.handled.set(event.tool_use_id, { shape, result })

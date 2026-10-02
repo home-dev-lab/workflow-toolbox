@@ -23,10 +23,41 @@ Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; 
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
-With `settingSources: []` still in force, each SDK session's initial prompt points to the root
-`CLAUDE.md` and `AGENTS.md` files that exist and tells the agent to read them before planning or
-changing code. The prompt carries absolute paths only, never guide contents, and names a shared
-symlink target once.
+With `settingSources: []` still in force, each SDK session's initial prompt carries a "Repository
+contributor instructions" section built only from the repository's own committed files. It never reads
+the user's `~/.claude` rules nor the session's project rules (`.claude/rules`); the runner as a whole is
+not machine-independent, because it still reads the knowledge-base index and the optional project rules
+manifest.
+
+- **Source.** The committed tree at `HEAD`, read through `git ls-tree` and `git cat-file` with the
+  hardened git flags, never the working tree. A lane that rewrites `CLAUDE.md` mid-run cannot change what
+  the next lane receives, and no symlink, FIFO or device on disk can be followed.
+- **Root guides.** `CLAUDE.md`, then `AGENTS.md`, injected as content between `BEGIN`/`END repository
+  guide` markers under their absolute paths. A symlink guide is resolved once, only when it is a relative
+  path that stays inside the tree and names a regular file; its target is injected once under the
+  target's path. Any other symlink is reported as not followed, and its target is never read.
+- **Folder guides.** Nested `CLAUDE.md` and `AGENTS.md` files are listed as paths only (at most 20, then
+  a remainder count) with the instruction to read the one for a folder before changing files there.
+- **Declared gates.** The `test`, `typecheck`, `lint`, `quality`, `check`, `validate`, `verify` and
+  `build` scripts of the root `package.json` and of each depth-1 `<dir>/package.json`, with the package
+  manager (the `packageManager` field, else the lockfile, else npm) and the source file. Capped at 40
+  lines; an unparseable `package.json` is named. The runner lists these commands; it does not run them.
+- **Plugin validation.** One `claude plugin validate <dir> --strict` line per directory (at most 20)
+  holding a `.claude-plugin/plugin.json` or `.claude-plugin/marketplace.json`, at any depth.
+- **Budget.** The whole section is capped at 40,000 characters. The lists are reserved first; the guides
+  share the rest in order, and a guide over its share is cut at a line boundary and ends with a
+  `[truncated at N of M characters; read the rest at <path>]` marker.
+- **Declared gate file.** The gates of a root `.wt-gates.json` are listed first, with their working
+  directory and the file as source.
+- **At the plan phase.** Entering `plan` (first round and every revision), the transition result also
+  carries "Repository-declared checks for your plan (authoritative)": the gate and plugin-validation
+  lines above, and the instruction to assign every check outside the repository's lifecycle gate set to
+  the tdd lane in the plan's Gates, or to say why it does not apply. Lifecycle gates are typecheck, lint
+  and test, plus quality when the current `toolkit/package.json` declares a non-empty `scripts.quality`.
+- **Failure.** When git cannot answer (not a repository, no commit), the prompt says `Repository
+  instructions unavailable: <reason>.` and falls back to the earlier pointer lines to the root guides.
+
+The orchestrator judge and the second-opinion lane keep the pointer-only form.
 
 ### One query per lifecycle phase
 
@@ -53,7 +84,7 @@ A later session starts from a runner-built opener instead of the earlier convers
   first plan entry, whose rules it relies on);
 - the partial-run instruction when the run is partial, every bound DoD decision, and every mailbox
   note delivered so far with its untrusted prefix;
-- the repository guide pointer and the LSP navigation state, as in the first prompt.
+- the repository contributor instructions and the LSP navigation state, as in the first prompt.
 
 A plan session opens only after any open DoD dispute is bound. Each session checks the account again;
 in a later session a check that failed to run (it threw or timed out) is retried once, a mismatch never
@@ -474,7 +505,10 @@ start, never by archive path. Malformed usage exits 2.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--board-contract <json file>`, `--knowledge-base-index`, repeatable
 `--plugin-dir <absolute-path>`, `--profile-env`, `--expect-account <email>`, `--contract`,
-`--hard`, `--mailbox`, and `--timeout <seconds>`; `--lane-silence` is not accepted. The runner uses Node path semantics on
+`--hard`, `--mailbox`, `--timeout <seconds>`, and `--stop-after <phase>`; `--lane-silence` is not accepted.
+`--stop-after` is a piece-test option: `discovery`, `plan`, `critic`, `tdd`, `verify`, `review` or
+`refutation` ends the run at the boundary leaving that phase, with the usual partial report (reason
+`stop-after <phase>`), so one changed phase can be replayed without a whole run. The runner uses Node path semantics on
 Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.
 The board contract is `{ boardId, listId, labels: { priority: {P0,P1,P2}, type:
