@@ -15,7 +15,7 @@ export async function applySecretReadGuard(host, event, next, verdict, surface) 
 }
 
 // A refusal can come before anything ran (an unreadable reference), so its warning never claims execution.
-export const REFUSAL_WARNING = '[wt-secret-guard: WOULD BLOCK; this command can read a credential file.]';
+const REFUSAL_WARNING = '[wt-secret-guard: WOULD BLOCK; this command can read a credential file.]';
 
 // The host types a refusal as `{ deny }` alone, and builds what the model reads of an answered call from its
 // `result` (core's own messages when `ref` is handed back), never from a hook's `text`. So the warning travels
