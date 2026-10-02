@@ -32,9 +32,14 @@ Read in order; stop as soon as you have enough.
    AND the `planka` MCP is reachable — the **board is the backlog**: read its lists/cards/labels
    via the MCP (discover exact tool names with `ToolSearch`, `query: "planka"`). Map the standard
    lists: `In Progress` → in-flight, `Next`/`Backlog` → the bench (`Next` = higher priority),
-   `Blocked` → blocked, `Done` → recently accomplished. Priority/type/effort **labels** and any
-   `Depends-on: #<id>` lines in card descriptions drive ranking — **never recommend a card whose
-   dependencies aren't all `Done`**; flag it as a blocked chain instead. **Otherwise** (no
+   `Blocked` → blocked, `Done` → recently accomplished. Priority/type/effort **labels** and the
+   `Depends-on:` lines in card descriptions drive ranking. Recommend a `Next`/`Backlog` card only
+   when its description has a `Depends-on:` line and every card it names is `Done`
+   (`Depends-on: none` qualifies). **Never recommend a card whose dependencies aren't all `Done`**;
+   flag it as a blocked chain instead. **Also never recommend a card with no `Depends-on:` line.**
+   Never drop a card that has no `Depends-on:` line: list each one, with its card id, in the
+   **not checked: add a Depends-on line** section (see Output). This is the same rule the
+   actionability Stop gate counts by. **Otherwise** (no
    pointer, or the MCP is down) fall back to **.claude/progress.md** if it exists: parse
    whatever status structure it actually uses — common patterns are labeled sections (active /
    pending / blocked / done) or a flat list with inline status markers — and look for some kind
@@ -141,6 +146,12 @@ continues **2, 3, …** in usefulness order — so the user can follow up by dig
 2", "let's do option 3"). Emit BOTH the `Option N` (conversational anchor) and the `#id` (tracker
 anchor). Numbering is per-invocation. Locked-for-later items are still numbered but flagged.
 
+**When no bench card qualifies** (every `Next`/`Backlog` card is blocked or has no `Depends-on:`
+line): When no bench card qualifies, say plainly that no card is startable and emit no `Option N` handle.
+Then emit the "not checked: add a Depends-on line" section if it exists; otherwise list the blocked
+chains. There is no top recommendation in that case; the Option 1 rule below applies only when a card
+qualifies.
+
 **Top recommendation** (always Option 1): the single best pick given conversation + priority +
 dependencies. Cover — *the situation* (who/what/since-when/what it unblocks) then *the concrete
 first action* (file to open, command to run, person to ping). In narrative mode write this as
@@ -151,13 +162,20 @@ verbatim if it has one, else t-shirt size S/M/L.
 **Other tracks / short-list**: the bench, ranked, each line **self-describing** — `#647` means
 nothing; `#647 — the monthly inventory-snapshot cron` does. Never collapse to a row of bare codes.
 
+**not checked: add a Depends-on line** — Emit this section if and only if at least one
+`Next`/`Backlog` card has no `Depends-on:` line, under exactly that title, after the short-list
+when there is one. List every such card with its card id and a self-describing title. State the
+one action that makes it startable: add `Depends-on: none` when the card is independent, or one
+`Depends-on: #<id> (<title>)` line per dependency. These cards carry no `Option N` handle.
+
 ## Rules
 
 - **Self-describing references** — never a bare `#id`/SHA; carry the substance in ≤8 words.
 - **Read-only** — never edit the board, `progress.md`, or any task state. The user mutates it via
   the board's own tools, `planka-tracking`, or manual edits.
 - **Respect blockers & dependencies** — skip `Blocked` items and any card with an unsatisfied
-  `Depends-on:` unless there's evidence the blocker cleared.
+  `Depends-on:` unless there's evidence the blocker cleared; never recommend a card with no
+  `Depends-on:` line, and list it under "not checked: add a Depends-on line" instead of dropping it.
 - **Critical path / P0 beats the bench**, unless the user just finished an equivalent item.
 - **Flow from what was just done.**
 - **Recommendation, not a menu** — pick one, defend it briefly, rank the rest. Orientation-first

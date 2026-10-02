@@ -16,12 +16,8 @@
 // project's own auto-loaded memory index the day it was needed, and the spawn happened anyway.
 // A text does not stop a gesture.
 //
-// WHY IT CHECKS cwd. `isolation: worktree` needs the SPAWNING session's working directory to be
-// inside a git repository — not the repo being targeted. On an umbrella project holding several
-// repos, the same spawn succeeds or fails depending on where the shell sits. Refusing a named
-// spawn there would demand a fix that cannot be applied, and a guard that is red on legitimate
-// work is a guard people route around. So: refuse only where the remedy exists; elsewhere say
-// what will be lost and allow.
+// Outside a repository worktree isolation is unavailable, but dropping the name is always
+// possible. Named non-isolated teammates also miss wakeups from their own background work.
 //
 // Any internal error → fail open with one stderr trace. A guard that can break a spawn because of
 // its own bug is worse than the gap it closes.
@@ -43,16 +39,17 @@ function readInput() {
 /** Walk up from `dir` looking for a `.git` entry — a file too, so worktrees and submodules
  *  count. Bounded by reaching the filesystem root. */
 function insideGitRepo(dir) {
-  try {
-    let current = path.resolve(dir)
-    for (;;) {
-      if (fs.existsSync(path.join(current, '.git'))) return true
-      const parent = path.dirname(current)
-      if (parent === current) return false
-      current = parent
+  let current = path.resolve(dir)
+  for (;;) {
+    try {
+      fs.statSync(path.join(current, '.git'))
+      return true
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
     }
-  } catch {
-    return false
+    const parent = path.dirname(current)
+    if (parent === current) return false
+    current = parent
   }
 }
 
@@ -70,37 +67,14 @@ function main() {
   const type = typeof ti.subagent_type === 'string' ? ti.subagent_type : 'this agent'
   const cwd = typeof input.cwd === 'string' ? input.cwd : ''
 
-  // No git repo under the session's cwd ⇒ `isolation` would itself fail, so there is no fix to
-  // demand. Say what is being lost and get out of the way.
-  if (!cwd || !insideGitRepo(cwd)) {
-    recordGuardEvent({
-      guard: 'wt-spawn-shape-guard-hook.mjs',
-      decision: 'warned',
-      session: input.session_id,
-      agent: input.agent_id,
-      class: 'named-without-isolation-no-repo',
-      reason: `"${name}" (${type}) named without isolation, no git repo at cwd`,
-      cwd,
-    })
-    if (typeof input.agent_id === 'string' && input.agent_id) return
-    process.stdout.write(
-      JSON.stringify({
-        systemMessage:
-          `[workflow-toolbox spawn-shape] "${name}" (${type}) is named without isolation, so ` +
-          `its observer will NOT be attached — and nothing will report that. isolation is ` +
-          `unavailable here because the session's cwd is not inside a git repository, so this ` +
-          `is allowed. cd into the target repo first if you want the pairing.`,
-      }),
-    )
-    return
-  }
+  const inRepo = cwd && insideGitRepo(cwd)
 
   recordGuardEvent({
     guard: 'wt-spawn-shape-guard-hook.mjs',
     decision: 'blocked',
     session: input.session_id,
     agent: input.agent_id,
-    class: 'named-without-isolation',
+    class: inRepo ? 'named-without-isolation' : 'named-without-isolation-no-repo',
     reason: `"${name}" (${type}) named but not isolated`,
     cwd,
   })
@@ -111,15 +85,12 @@ function main() {
         permissionDecision: 'deny',
         permissionDecisionReason:
           `[workflow-toolbox spawn-shape] Refused: "${name}" (${type}) is named but not ` +
-          `isolated. A named spawn is rerouted to the in-process-teammate path, which rebuilds ` +
-          `the definition and never reads its observer: — the watchdog is silently never ` +
-          `attached, and the agent's own report will honestly say "no observer findings". ` +
-          `Two fixes, and they are NOT interchangeable — pick by what this agent will do: ` +
-          `if it hands an increment to an EXTERNAL EXECUTOR LANE (a CLI bridge) and then waits, ` +
-          `DROP THE NAME (spawn anonymously; address it later by the raw id the spawn returns), ` +
-          `because an isolated worktree sitting unchanged while the lane still writes in it gets ` +
-          `reaped out from under that lane. Otherwise add isolation: "worktree" to keep the name ` +
-          `AND the pairing.`,
+          `isolated. The in-process teammate loses its observer and is not woken by its own ` +
+          `background tasks. Drop name (spawn anonymously; address it by the returned raw id) — ` +
+          `prefer this when the agent will hand work to an external lane and then wait, because ` +
+          `an isolated worktree left unchanged while the lane writes in it can be reaped` +
+          (inRepo ? `; otherwise add isolation: "worktree" to keep the name and observer.` :
+            `. isolation: "worktree" is unavailable because cwd is not in a git repository.`),
       },
     }),
   )

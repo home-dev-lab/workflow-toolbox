@@ -8,7 +8,7 @@ function card(id: string, overrides: Partial<BoardCard> = {}): BoardCard {
   return {
     id,
     name: `Card ${id}`,
-    description: 'Card description',
+    description: 'Card description\nDepends-on: none',
     labels: PICKABLE_LABELS,
     listName: 'Backlog',
     ...overrides,
@@ -16,52 +16,89 @@ function card(id: string, overrides: Partial<BoardCard> = {}): BoardCard {
 }
 
 describe('pickable-cards', () => {
-  it('makes a Backlog card with no dependencies pickable', () => {
-    const result = computePickable([card('1')])
+  it('makes a Backlog card declaring Depends-on: none pickable', () => {
+    const result = computePickable([card('1000')])
 
     expect(result.pickable).toEqual([
       {
-        cardId: '1',
-        name: 'Card 1',
+        cardId: '1000',
+        name: 'Card 1000',
         category: 'product',
         priority: 'P1',
-        reason: 'no dependencies',
+        reason: 'Depends-on: none',
       },
     ])
     expect(result.excluded).toEqual([])
     expect(result.unjudgeable).toEqual([])
   })
 
-  it('makes a Next card pickable when all dependencies are Done', () => {
+  it('I4: a card with no Depends-on line is unjudgeable (not checked), never pickable', () => {
+    const result = computePickable([card('1000', { description: 'Card description' })])
+
+    expect(result).toEqual({
+      pickable: [],
+      excluded: [],
+      unjudgeable: [
+        { cardId: '1000', name: 'Card 1000', reason: 'no Depends-on line: not checked (add one; "Depends-on: none" qualifies)' },
+      ],
+    })
+  })
+
+  it('I4: an unparseable Depends-on line excludes the card and quotes the line', () => {
+    const result = computePickable([card('1000', { description: 'Depends-on: TBD' })])
+
+    expect(result.excluded).toEqual([
+      { cardId: '1000', name: 'Card 1000', reason: 'unparseable Depends-on line: "Depends-on: TBD"' },
+    ])
+    expect(result.pickable).toEqual([])
+  })
+
+  it('I4: only the shipped parser decides the ids — a parenthesised mention is not a dependency, a bare id is', () => {
     const result = computePickable([
-      card('1', { listName: 'Done' }),
-      card('2', { listName: 'Next', description: 'Depends-on: #1' }),
+      card('1000', { listName: 'Done' }),
+      card('3400', { listName: 'In Progress' }),
+      card('2000', { description: 'Depends-on: #1000 (see also #3400)' }),
+      card('2100', { description: 'Depends-on: 3400' }),
     ])
 
-    expect(result.pickable[0]).toMatchObject({ cardId: '2', reason: 'all 1 dependencies Done' })
+    expect(result.pickable.map(({ cardId }) => cardId)).toEqual(['2000'])
+    expect(result.excluded).toContainEqual({
+      cardId: '2100',
+      name: 'Card 2100',
+      reason: 'depends on #3400 (Card 3400), not yet Done (currently: In Progress)',
+    })
+  })
+
+  it('makes a Next card pickable when all dependencies are Done', () => {
+    const result = computePickable([
+      card('1000', { listName: 'Done' }),
+      card('2000', { listName: 'Next', description: 'Depends-on: #1000' }),
+    ])
+
+    expect(result.pickable[0]).toMatchObject({ cardId: '2000', reason: 'all 1 dependencies Done' })
   })
 
   it('excludes a card whose dependency is not Done and names the blocker', () => {
     const result = computePickable([
-      card('1', { name: 'Blocking card', listName: 'In Progress' }),
-      card('2', { description: 'Depends-on: #1' }),
+      card('1000', { name: 'Blocking card', listName: 'In Progress' }),
+      card('2000', { description: 'Depends-on: #1000' }),
     ])
 
     expect(result.excluded).toContainEqual({
-      cardId: '2',
-      name: 'Card 2',
-      reason: 'depends on #1 (Blocking card), not yet Done (currently: In Progress)',
+      cardId: '2000',
+      name: 'Card 2000',
+      reason: 'depends on #1000 (Blocking card), not yet Done (currently: In Progress)',
     })
   })
 
   it('excludes a card whose dependency does not exist', () => {
-    const result = computePickable([card('1', { description: 'Depends-on: #999' })])
+    const result = computePickable([card('1000', { description: 'Depends-on: #9999' })])
 
     expect(result.excluded).toEqual([
       {
-        cardId: '1',
-        name: 'Card 1',
-        reason: 'depends on #999, which does not exist on this board',
+        cardId: '1000',
+        name: 'Card 1000',
+        reason: 'depends on #9999, which does not exist on this board',
       },
     ])
   })
@@ -97,7 +134,7 @@ describe('pickable-cards', () => {
     const result = computePickable([
       card('1', { labels: ['P0', 'process'] }),
       card('2', {
-        description: 'Hard-DEADLINE: before launch',
+        description: 'Hard-DEADLINE: before launch\nDepends-on: none',
         labels: ['P2', 'product'],
       }),
     ])

@@ -16,9 +16,11 @@
 //                         as possibly empty.
 //   variable-root-child   `$D/usr` (a known top-level name) where D is not assigned here and not set in the
 //                         inherited environment: empty D removes `/name`, a top-level directory.
+//   substitution-target   a recursive `rm` whose target is only command substitutions (`$(cat f)`, `"$(…)"/`).
+//   positional-glob       a glob or further segment under a positional parameter (`$1/*`).
 //   derived-directory     the target is a variable this command set from the working directory
 //                         (`$PWD`, `$(pwd)`, `$(git rev-parse …)`, `$(dirname $x)`, `$(cd … )`)
-//                         or from `$X/name` with X possibly empty. A `${D:?}` guard does not help
+//                         or from `$X/name` or `$X/$Y` with a possibly empty prefix. A `${D:?}` guard does not help
 //                         because D is not empty: only a literal path avoids the prompt.
 //   literal-critical-path `/`, a top-level directory, the home directory, the working directory
 //                         or one of its parents, written literally.
@@ -34,14 +36,19 @@ const NAME = '[A-Za-z_][A-Za-z0-9_]*'
 // `${D:-$E}` — every form that can still expand to empty. `${D:?}` is deliberately absent.
 const EMPTYABLE_REF = String.raw`\$(?:\{(${NAME})(?::?-(?:["']{2}|"?\$\{?${NAME}\}?"?)?)?\}|(${NAME}))`
 const GLOB_UNDER_VAR = new RegExp(String.raw`^["']*${EMPTYABLE_REF}["']*\\?\/(?:[*?[{]|\$|\/|["']|$)`)
+const GLOB_UNDER_POSITIONAL = new RegExp(String.raw`^["']*\$(?:\{(\d+|[@*!])(?::?-(?:["']{2}|"?\$\{?${NAME}\}?"?)?)?\}|([\d@*!]))["']*\\?\/(?:[*?[{]|\$|\/|["']|$)`)
+// The start of a shell statement: beginning of text, or after a separator, then blanks.
+const STATEMENT_START = String.raw`(?:^|[;&|(\n])[ \t]*`
+const FUNCTION_DEFINITION = new RegExp(String.raw`${STATEMENT_START}(?:function[ \t]+${NAME}|${NAME}[ \t]*\([ \t]*\))`)
+const NONEMPTY_POSITIONALS = new RegExp(String.raw`${STATEMENT_START}set[ \t]+--[ \t]+(?!["']{2}(?:[\s;&|]|$)|["']?\$)[^\s;&|]`)
+// Claude Code 2.1.285's Njt pattern: a whole variable reference, optionally `:?`/`-` guarded, optionally quoted.
+const WHOLE_VARIABLE = new RegExp(String.raw`^["']*\$(?:\{(${NAME})(?::?[?-][^}]*)?\}|(${NAME}))["']*$`)
 // The top-level directory names the harness knows (it only reads `$D/name` as a critical path for these).
 const TOP_LEVEL_NAMES = 'bin|boot|dev|etc|home|lib|lib32|lib64|libx32|media|mnt|opt|proc|root|run|sbin|srv|sys|tmp|usr|var|snap|nix|lost\\+found|private|cores|Applications|Library|System|Users|Volumes|Windows|ProgramData|cygdrive'
 const ROOT_CHILD = new RegExp(String.raw`^["']*\$(?:\{(${NAME})\}|(${NAME}))["']*\/+(${TOP_LEVEL_NAMES})(?:\/+\*+)*\/*["']*$`, 'i')
-// The whole word is one variable, optionally followed by slashes, dots or stars (`$D`, `"$D"/`,
-// `${D:?}/*`) — the shape the harness reads as "remove what D holds".
+// Retain the existing PWD/HOME whole-variable critical-path check.
 const WHOLE_VAR = new RegExp(String.raw`^["']*\$(?:\{(${NAME})(?::?[?-][^}]*)?\}|(${NAME}))["']*[/*.]*$`)
 const NON_LITERAL = /[$`*?[{~]/
-const GUARDED_PREFIX =new RegExp(String.raw`^["']*\$\{(${NAME}):\?[^}]*\}`)
 const NORMALLY_SET =new Set(['HOME', 'PWD', 'OLDPWD', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'TMPDIR', 'USERPROFILE'])
 const PREFIX_WORDS = new Set([
   'sudo', 'doas', 'exec', 'command', 'env', 'nice', 'nohup', 'time', 'timeout', 'stdbuf', 'setsid',
@@ -277,7 +284,8 @@ function captureBacktick(src, start, nested, emit) {
   return end === -1 ? src.length : end
 }
 
-function shellUnquote(word) {
+/** Remove one level of shell quoting and backslash escapes from a word `parseStatements` returned. */
+export function shellUnquote(word) {
   let quote = null
   let result = ''
   for (let i = 0; i < word.length; i += 1) {
@@ -303,31 +311,36 @@ function classifyValue(rawValue, vars, mayBeUnset) {
   const sub = /^\$\((.*)\)$/s.exec(v)?.[1] ?? /^`(.*)`$/s.exec(v)?.[1]
   if (sub !== undefined) {
     const s = sub.trim()
-    if (/^pwd(?:\s|$)/.test(s)) return { kind: 'derived', becomes: 'prints the current directory' }
-    if (/^git\s+rev-parse\b/.test(s)) return { kind: 'derived', becomes: 'prints a git value such as the repository root' }
-    if (/^cd\b/.test(s)) return { kind: 'derived', becomes: 'prints the current directory when its input is empty' }
+    if (/^pwd(?:\s|$)/.test(s)) return { kind: 'derived', becomes: 'prints the current directory', value: rawValue }
+    if (/^git\s+rev-parse\b/.test(s)) return { kind: 'derived', becomes: 'prints a git value such as the repository root', value: rawValue }
+    if (/^cd\b/.test(s)) return { kind: 'derived', becomes: 'prints the current directory when its input is empty', value: rawValue }
     if (/^dirname\b/.test(s)) {
       const arg = /^dirname\s+(?:-\S+\s+)*(\S+)/.exec(s)?.[1]
       if (arg === undefined || /[$`]/.test(arg) || /^(?:""|'')$/.test(arg)) {
-        return { kind: 'derived', becomes: 'prints the current directory when its input is empty' }
+        return { kind: 'derived', becomes: 'prints the current directory when its input is empty', value: rawValue }
       }
     }
     return { kind: 'set' }
   }
-  const whole = /^\$\{?([A-Za-z_]\w*)\}?\/*$/.exec(v)?.[1]
-  if (whole === 'PWD') return { kind: 'derived', becomes: 'is the current directory' }
-  if (whole !== undefined) {
-    const prev = vars.get(whole)
-    if (prev?.kind === 'derived') return prev
-    if (mayBeUnset(whole)) return { kind: 'empty' }
-    return { kind: 'set' }
-  }
+  // The harness checks `$X/<top-level-name>` and `$VAR/` followed by `$`, a glob, `/`, a quote or the end
+  // BEFORE its whole-variable-copy rule, so a trailing-slash value (`A=$W/`) is judged here first.
   const child = ROOT_CHILD.exec(v)
   if (child) {
     const name = child[1] ?? child[2]
     if (mayBeUnset(name) && child[3] !== '.' && child[3] !== '..') {
-      return { kind: 'derived', becomes: `is /${child[3]} when the variable in it is empty` }
+      return { kind: 'derived', becomes: `is /${child[3]} when the variable in it is empty`, value: rawValue }
     }
+  }
+  if ((!/[$`]/.test(rawValue) || /^"?\$\{?[A-Za-z_]/.test(rawValue)) && GLOB_UNDER_VAR.test(rawValue)) {
+    return { kind: 'derived', becomes: 'is the filesystem root when the variable in it is empty', value: rawValue }
+  }
+  const whole = /^\$\{?([A-Za-z_]\w*)\}?\/*$/.exec(v)?.[1]
+  if (whole === 'PWD') return { kind: 'derived', becomes: 'is the current directory', value: rawValue }
+  if (whole !== undefined) {
+    const prev = vars.get(whole)
+    if (prev?.kind === 'derived') return { ...prev, value: rawValue }
+    if (mayBeUnset(whole)) return { kind: 'empty' }
+    return { kind: 'set' }
   }
   const last = /\/([^\s/$`"')}]+)"?$/.exec(v)?.[1]
   if (last !== undefined && !/^[.?*[\]{}]+$/.test(last)) return { kind: 'set' }
@@ -373,6 +386,64 @@ function targetsOf(words, start) {
     targets.push(i)
   }
   return targets
+}
+
+/** Does `rm` carry a recursive flag before `--` (`-r`, `-rf`, `-fR`, `--recursive`)? */
+function isRecursiveRm(words, start) {
+  for (let i = start; i < words.length; i += 1) {
+    if (words[i] === '--') return false
+    const w = shellUnquote(words[i])
+    if (/^--r/.test(w) || /^-[a-zA-Z]*[rR]/.test(w)) return true
+  }
+  return false
+}
+
+/** Replace actual command substitutions, recording whether any were present. Quotes and escapes are
+ * removed too, unless `keepQuoting` is set: then only the substitutions change and every other
+ * character (quotes, backslashes) stays as written. */
+function stripSubstitutions(word, replacement = '\0', keepQuoting = false) {
+  let out = ''
+  let quote = null
+  let found = false
+  let i = 0
+  while (i < word.length) {
+    const c = word[i]
+    let next = i + 1
+    if (quote === "'") {
+      if (c === "'") quote = null
+      if (c !== "'" || keepQuoting) out += c
+    } else if (c === '\\' && i + 1 < word.length) {
+      out += keepQuoting ? c + word[i + 1] : word[i + 1]
+      next = i + 2
+    } else if (c === '"') {
+      quote = quote === '"' ? null : '"'
+      if (keepQuoting) out += c
+    } else if (c === "'" && quote === null) {
+      quote = "'"
+      if (keepQuoting) out += c
+    } else if (c === '$' && word[i + 1] === '(' && word[i + 2] !== '(') {
+      out += replacement
+      found = true
+      next = captureParen(word, i + 1, [], () => {}) + 1
+    } else if (c === '`') {
+      out += replacement
+      found = true
+      next = captureBacktick(word, i, [], () => {}) + 1
+    } else {
+      out += c
+    }
+    i = next
+  }
+  return { text: out, found }
+}
+
+/** Is the word, once quotes are removed, only command substitutions optionally followed by `/`, `*` or `.`?
+ * The harness cannot resolve such a target before it runs, so it asks — but only when no other `$`
+ * expansion is left anywhere in the rm statement (measured: `rm -rf $(cat $T/f) $T/dn` runs unasked). */
+function isSubstitutionTarget(word, statementWords) {
+  const stripped = stripSubstitutions(word)
+  if (!stripped.found || !/^(?:\0[/*.]*)+$/.test(stripped.text)) return false
+  return !statementWords.some((w) => stripSubstitutions(w).text.includes('$'))
 }
 
 function isAncestorOrSelf(dir, cwd) {
@@ -452,11 +523,28 @@ function firstDollarIsQuoted(word) {
   return false
 }
 
-function judgeTarget(target, ctx, vars, mayBeUnset) {
+// Claude Code 2.1.285's Ajt: discard trailing quotes and a terminal slash/dot/star suffix.
+function trimDerivedSuffix(target) {
+  let n = target.length
+  while (n > 0 && /["']/.test(target[n - 1])) n -= 1
+  let r = n
+  while (r > 0 && /[/*.]/.test(target[r - 1])) r -= 1
+  return r < n && target[r] === '/' ? target.slice(0, r) : target
+}
+
+// Claude Code 2.1.285's Njt: accept only a whole variable after Ajt.
+function derivedTargetName(target) {
+  const match = WHOLE_VARIABLE.exec(target)
+  return match === null ? undefined : match[1] ?? match[2]
+}
+
+function judgeTarget(target, ctx, vars, mayBeUnset, positionals) {
   if (firstDollarIsQuoted(target)) {
     const resolved = literalVerdict(target, ctx)
     return resolved === null ? null : { rule: 'literal-critical-path', target, rewrite: null, resolved }
   }
+  const positional = positionals && GLOB_UNDER_POSITIONAL.exec(stripSubstitutions(target, '', true).text)
+  if (positional) return { rule: 'positional-glob', target, variable: positional[1] ?? positional[2], rewrite: null }
   const glob = GLOB_UNDER_VAR.exec(target)
   if (glob) {
     const name = glob[1] ?? glob[2]
@@ -473,22 +561,16 @@ function judgeTarget(target, ctx, vars, mayBeUnset) {
     }
   }
   const whole = WHOLE_VAR.exec(target)
-  if (whole) {
-    const name = whole[1] ?? whole[2]
-    if (name === 'PWD' || name === 'HOME') {
-      const resolved = name === 'HOME' ? ctx.home : ctx.cwd
-      if (resolved) return { rule: 'literal-critical-path', target, rewrite: null, resolved }
-    }
-    const info = vars.get(name)
-    if (info?.kind === 'derived') {
-      return { rule: 'derived-directory', target, variable: name, rewrite: null, derived: info }
-    }
+  if (whole && (whole[1] ?? whole[2]) === 'PWD' && ctx.cwd) {
+    return { rule: 'literal-critical-path', target, rewrite: null, resolved: ctx.cwd }
   }
-  // A guarded derived variable followed by more path (`"${M:?}"/*.log`): the guard does not help
-  // because M is not empty, and the glob or name after it does not make the target safe.
-  const guarded = GUARDED_PREFIX.exec(target)?.[1]
-  if (guarded && vars.get(guarded)?.kind === 'derived') {
-    return { rule: 'derived-directory', target, variable: guarded, rewrite: null, derived: vars.get(guarded) }
+  if (whole && (whole[1] ?? whole[2]) === 'HOME' && ctx.home) {
+    return { rule: 'literal-critical-path', target, rewrite: null, resolved: ctx.home }
+  }
+  const name = derivedTargetName(trimDerivedSuffix(target))
+  const info = vars.get(name)
+  if (info?.kind === 'derived') {
+    return { rule: 'derived-directory', target, variable: name, rewrite: null, derived: info }
   }
   const critical = literalVerdict(target, ctx)
   if (critical !== null) return { rule: 'literal-critical-path', target, rewrite: null, resolved: critical }
@@ -503,6 +585,9 @@ function scanScript(text, ctx, depth, hits, reparsed = false, inherited = new Ma
   const vars = new Map(inherited)
   const scopes = []
   let cwd = ctx.cwd
+  const positionals = !reparsed && depth === 0 &&
+    !FUNCTION_DEFINITION.test(source.text.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '')) &&
+    !NONEMPTY_POSITIONALS.test(source.text)
   let previousSep = ''
   let nestedIndex = 0
   nested.sort((a, b) => a.start - b.start)
@@ -555,10 +640,13 @@ function scanScript(text, ctx, depth, hits, reparsed = false, inherited = new Ma
     const name = commandName(words[c])
     if (name === 'rm' || name === 'rmdir') {
       if (invocations) invocations.found = true
+      const isRecursive = name === 'rm' && isRecursiveRm(words, c + 1)
       for (const j of targetsOf(words, c + 1)) {
         const target = words[j]
         if (invocations && (reparsed || NON_LITERAL.test(target))) invocations.nonLiteral = true
-        const hit = judgeTarget(target, { ...ctx, cwd }, vars, mayBeUnset)
+        const hit = name === 'rm' && isRecursive && isSubstitutionTarget(target, words.slice(c))
+          ? { rule: 'substitution-target', target, rewrite: null }
+          : judgeTarget(target, { ...ctx, cwd }, vars, mayBeUnset, positionals)
         if (hit) hits.push({ ...hit, rewrite: reparsed ? null : hit.rewrite, reparsed, command: name, statement: words.join(' '), ...(reparsed ? {} : { start: positions[j].start, end: positions[j].end }) })
       }
     }
@@ -638,9 +726,15 @@ export function describeRemedy(command, hits) {
         complete = false
         lines.push(`\`${h.target}\`: use a literal absolute path — ${rewriteFailureReason(h)}`)
       }
+    } else if (h.rule === 'substitution-target') {
+      complete = false
+      lines.push(`\`${h.target}\`: the target is the output of a command substitution and cannot be checked before it runs — run the substitution on its own first, then remove the literal paths it prints (or use the literal path)`)
+    } else if (h.rule === 'positional-glob') {
+      complete = false
+      lines.push(`\`${h.target}\`: use a literal absolute path, or bind $${h.variable} and write \`\${${h.variable}:?}\``)
     } else if (h.rule === 'derived-directory') {
       complete = false
-      lines.push(`\`${h.target}\`: use a literal absolute path — $${h.variable} is set in this command from a value that ${h.derived.becomes}, and a \`\${${h.variable}:?}\` guard does not help because it is not empty; if that path is the working directory or one of its parents it stays critical in any spelling — change to its parent directory first and remove it by its literal path`)
+      lines.push(`\`${h.target}\`: use a literal absolute path you type yourself — $${h.variable} is set in this command from a value that ${h.derived.becomes}, and a \`\${${h.variable}:?}\` guard does not help because it is not empty; if that path is the working directory or one of its parents it stays critical in any spelling — change to its parent directory first and remove it by its literal path`)
     } else {
       complete = false
       lines.push(`\`${h.target}\` resolves to ${h.resolved}, a critical path (the filesystem root, a top-level directory, the home directory, or the working directory or one of its parents): remove only the specific children you mean, by literal path`)

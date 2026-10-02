@@ -89,6 +89,70 @@ describe('fetchBoardCards', () => {
     await expect(fetchBoardCards({ boardId: 'board-1' })).resolves.toEqual(cards)
   })
 
+  function stubFindCards(payload: unknown, isError = false): void {
+    const text = typeof payload === 'string' && isError ? payload : JSON.stringify(payload)
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }), 200, 'session-1'))
+        .mockResolvedValueOnce(response('', 202))
+        .mockResolvedValueOnce(
+          response(JSON.stringify({ jsonrpc: '2.0', id: 2, result: { ...(isError ? { isError: true } : {}), content: [{ type: 'text', text }] } })),
+        ),
+    )
+  }
+
+  it('I6: reads the paged find_cards shape the live Planka server returns ({ total, offset, limit, cards })', async () => {
+    const cards = [{ id: '1875473607941948577', name: 'Paged card', description: 'Depends-on: none', labels: [{ name: 'P1' }], listName: 'Next' }]
+    stubFindCards({ total: 1, offset: 0, limit: null, cards })
+
+    await expect(fetchBoardCards({ boardId: 'board-1' })).resolves.toEqual([
+      { id: '1875473607941948577', name: 'Paged card', description: 'Depends-on: none', labels: ['P1'], listName: 'Next' },
+    ])
+  })
+
+  it('I6: refuses a partial page rather than returning it as the whole board', async () => {
+    stubFindCards({ total: 3, offset: 0, limit: 1, cards: [{ id: '1', name: 'a', listName: 'Next' }] })
+    await expect(fetchBoardCards({ boardId: 'board-1' })).rejects.toThrow(
+      'find_cards result refused: find_cards page contains 1 of 3 cards at offset 0 — result is a subset, not the whole board',
+    )
+  })
+
+  it.each([
+    ['an object without cards', { total: 0 }],
+    ['a cards field that is not an array', { cards: {} }],
+    ['a string', 'cards'],
+    ['null', null],
+  ])('I6: still refuses %s', async (_label, payload) => {
+    stubFindCards(payload)
+    await expect(fetchBoardCards({ boardId: 'board-1' })).rejects.toThrow(
+      'find_cards result refused: find_cards response has no cards[] array',
+    )
+  })
+
+  it.each([
+    ['string metadata', { total: '1', offset: '0', cards: [{ id: '1', name: 'a', listName: 'Next' }] }],
+    ['a missing total', { offset: 0, cards: [{ id: '1', name: 'a', listName: 'Next' }] }],
+    ['a cards array with no metadata', { cards: [] }],
+    ['a negative offset', { total: 0, offset: -1, cards: [] }],
+  ])('F4: refuses a page with %s, by the same rule as the actionability producer', async (_label, payload) => {
+    stubFindCards(payload)
+    await expect(fetchBoardCards({ boardId: 'board-1' })).rejects.toThrow(
+      'find_cards result refused: find_cards response has invalid pagination metadata',
+    )
+  })
+
+  it('F4: refuses a page that does not start at offset 0', async () => {
+    stubFindCards({ total: 2, offset: 1, cards: [{ id: '1', name: 'a', listName: 'Next' }] })
+    await expect(fetchBoardCards({ boardId: 'board-1' })).rejects.toThrow('find_cards page contains 1 of 2 cards at offset 1')
+  })
+
+  it('F4: throws when the find_cards tool result is an error', async () => {
+    stubFindCards('Request failed with status code 500', true)
+    await expect(fetchBoardCards({ boardId: 'board-1' })).rejects.toThrow('find_cards returned an error: Request failed with status code 500')
+  })
+
   it('throws when initialize returns a non-200 status', async () => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(response('not available', 503)))
 

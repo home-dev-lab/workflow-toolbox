@@ -33,21 +33,21 @@ describe('card-hygiene-lens', () => {
 
   it('reports a Depends-on target that does not exist on the board', () => {
     const result = checkBoardHygiene([
-      card('1', { description: 'Depends-on: #999 (missing)' }),
+      card('1', { description: 'Depends-on: #9999 (missing)' }),
     ])
 
     expect(result.results[0]?.findings).toContainEqual({
       cardId: '1',
       kind: 'broken-dependency',
-      message: 'Depends-on target #999 does not exist on this board',
+      message: 'Depends-on target #9999 does not exist on this board',
     })
   })
 
   it('accepts all existing Depends-on targets, including multiple ids on one line', () => {
     const result = checkBoardHygiene([
-      card('1', { description: 'Depends-on: #2 (first) and #3 (second)' }),
-      card('2'),
-      card('3'),
+      card('1001', { description: 'Depends-on: #1002 (first) and #1003 (second)' }),
+      card('1002'),
+      card('1003'),
     ])
 
     expect(result).toEqual({ ok: true, results: [] })
@@ -55,22 +55,22 @@ describe('card-hygiene-lens', () => {
 
   it('advises an open dependent chasing Done but ignores a closed dependent', () => {
     const result = checkBoardHygiene([
-      card('1', { listName: 'Done' }),
-      card('2', { description: 'Depends-on: #1' }),
-      card('3', { description: 'depends-ON: #1', listName: 'NotDoing' }),
+      card('1001', { listName: 'Done' }),
+      card('1002', { description: 'Depends-on: #1001' }),
+      card('1003', { description: 'depends-ON: #1001', listName: 'NotDoing' }),
     ])
 
     expect(result.ok).toBe(true)
     expect(result.results).toEqual([
       {
-        cardId: '2',
+        cardId: '1002',
         findings: [],
         advisories: [
           {
-            cardId: '2',
+            cardId: '1002',
             kind: 'chain-coherence',
             message:
-              'card #2 declares Depends-on: #1, whose target is closed (list: Done) — review whether the dependency still applies',
+              'card #1002 declares Depends-on: #1001, whose target is closed (list: Done) — review whether the dependency still applies',
           },
         ],
       },
@@ -79,28 +79,28 @@ describe('card-hygiene-lens', () => {
 
   it('flags a permanent-block finding when an open card depends on a NotDoing target', () => {
     const result = checkBoardHygiene([
-      card('1', { listName: 'NotDoing' }),
-      card('2', { description: 'Depends-on: #1' }),
+      card('1001', { listName: 'NotDoing' }),
+      card('1002', { description: 'Depends-on: #1001' }),
     ])
 
     expect(result.ok).toBe(false)
-    const card2 = result.results.find((entry) => entry.cardId === '2')
+    const card2 = result.results.find((entry) => entry.cardId === '1002')
     expect(card2?.advisories).toEqual([])
     expect(card2?.findings).toContainEqual({
-      cardId: '2',
+      cardId: '1002',
       kind: 'permanent-block',
-      message: expect.stringContaining('#2'),
+      message: expect.stringContaining('#1002'),
     })
     const finding = card2?.findings.find((entry) => entry.kind === 'permanent-block')
-    expect(finding?.message).toContain('#1')
-    expect(finding?.message).toContain('Card 1')
+    expect(finding?.message).toContain('#1001')
+    expect(finding?.message).toContain('Card 1001')
   })
 
   it('does not flag permanent-block for a NotDoing target when the dependent is itself closed', () => {
     const result = checkBoardHygiene([
-      card('1', { listName: 'NotDoing' }),
-      card('2', { description: 'Depends-on: #1', listName: 'NotDoing' }),
-      card('3', { description: 'Depends-on: #1', listName: 'Done' }),
+      card('1001', { listName: 'NotDoing' }),
+      card('1002', { description: 'Depends-on: #1001', listName: 'NotDoing' }),
+      card('1003', { description: 'Depends-on: #1001', listName: 'Done' }),
     ])
 
     const findings = result.results.flatMap(({ findings }) => findings)
@@ -109,8 +109,8 @@ describe('card-hygiene-lens', () => {
 
   it('reports a two-card dependency cycle exactly once', () => {
     const result = checkBoardHygiene([
-      card('1', { description: 'Depends-on: #2' }),
-      card('2', { description: 'Depends-on: #1' }),
+      card('1001', { description: 'Depends-on: #1002' }),
+      card('1002', { description: 'Depends-on: #1001' }),
     ])
     const cycleFindings = result.results.flatMap(({ findings }) => {
       return findings.filter(({ kind }) => kind === 'dependency-cycle')
@@ -118,18 +118,18 @@ describe('card-hygiene-lens', () => {
 
     expect(cycleFindings).toEqual([
       {
-        cardId: '1',
+        cardId: '1001',
         kind: 'dependency-cycle',
-        message: 'dependency cycle: #1 -> #2 -> #1',
+        message: 'dependency cycle: #1001 -> #1002 -> #1001',
       },
     ])
   })
 
   it('reports a longer dependency chain cycle (A -> B -> C -> A), not just a 2-card one', () => {
     const result = checkBoardHygiene([
-      card('1', { description: 'Depends-on: #2' }),
-      card('2', { description: 'Depends-on: #3' }),
-      card('3', { description: 'Depends-on: #1' }),
+      card('1001', { description: 'Depends-on: #1002' }),
+      card('1002', { description: 'Depends-on: #1003' }),
+      card('1003', { description: 'Depends-on: #1001' }),
     ])
     const cycleFindings = result.results.flatMap(({ findings }) => {
       return findings.filter(({ kind }) => kind === 'dependency-cycle')
@@ -137,9 +137,9 @@ describe('card-hygiene-lens', () => {
 
     expect(cycleFindings).toEqual([
       {
-        cardId: '1',
+        cardId: '1001',
         kind: 'dependency-cycle',
-        message: 'dependency cycle: #1 -> #2 -> #3 -> #1',
+        message: 'dependency cycle: #1001 -> #1002 -> #1003 -> #1001',
       },
     ])
   })
@@ -167,11 +167,35 @@ describe('card-hygiene-lens', () => {
     })
   })
 
+  it('I5: an unreadable Depends-on line on an open card is a broken-dependency finding naming the line', () => {
+    const result = checkBoardHygiene([card('1001', { description: 'Depends-on: TBD' })])
+
+    expect(result.ok).toBe(false)
+    expect(result.results[0]?.findings).toEqual([
+      { cardId: '1001', kind: 'broken-dependency', message: 'Depends-on line cannot be read: "Depends-on: TBD"' },
+    ])
+  })
+
+  it('I5: an unreadable Depends-on line on a closed card adds no finding', () => {
+    const result = checkBoardHygiene([
+      card('1001', { description: 'Depends-on: TBD', listName: 'Done' }),
+      card('1002', { description: 'Depends-on: none until #1001 lands', listName: 'NotDoing' }),
+    ])
+
+    expect(result).toEqual({ ok: true, results: [] })
+  })
+
+  it('I5: a #id mentioned inside parentheses is not a dependency edge', () => {
+    const result = checkBoardHygiene([card('1001', { description: 'Depends-on: none (see also #9999)' })])
+
+    expect(result).toEqual({ ok: true, results: [] })
+  })
+
   it('returns complete silence for a fully healthy board', () => {
     const result = checkBoardHygiene([
-      card('1', { description: 'Foundation card' }),
-      card('2', { description: 'Depends-on: #1' }),
-      card('3', { description: 'Independent work' }),
+      card('1001', { description: 'Foundation card' }),
+      card('1002', { description: 'Depends-on: #1001' }),
+      card('1003', { description: 'Independent work' }),
     ])
 
     expect(result).toEqual({ ok: true, results: [] })

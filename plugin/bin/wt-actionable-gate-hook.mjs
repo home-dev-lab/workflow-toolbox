@@ -88,6 +88,8 @@ function readProjectState(path) {
       optedIn: true,
       heartbeatAt: finiteNumber(parsed.heartbeatAt) ? parsed.heartbeatAt : null,
       lastOutcome: typeof parsed.lastOutcome === 'string' ? parsed.lastOutcome : '',
+      lastReason: typeof parsed.lastReason === 'string' ? parsed.lastReason : '',
+      lastDetail: typeof parsed.lastDetail === 'string' ? parsed.lastDetail : '',
     }
   } catch {
     return { optedIn: false }
@@ -115,6 +117,7 @@ function normalizeSnapshot(parsed) {
   if (!isSnapshotObject(parsed)) return null
   const at = parsed.at
   const actionable = parsed.actionable
+  const undeclared = parsed.undeclared
   const next = parsed.next
   const workPossible = parsed.workPossible
   const reason = parsed.reason
@@ -122,19 +125,20 @@ function normalizeSnapshot(parsed) {
   const inFlightUntil = parsed.inFlightUntil
   if (!finiteNumber(at)) return null
   if (!finiteNumber(actionable) || actionable < 0) return null
+  if (undeclared !== undefined && (!Number.isInteger(undeclared) || undeclared < 0)) return null
   if (typeof next !== 'string') return null
   if (typeof workPossible !== 'boolean') return null
   if (typeof reason !== 'string') return null
   if (!(blockedUntil === null || finiteNumber(blockedUntil))) return null
   if (!(inFlightUntil === null || finiteNumber(inFlightUntil))) return null
-  return { status: 'present', at, actionable, next, workPossible, reason, blockedUntil, inFlightUntil }
+  return { status: 'present', at, actionable, undeclared, next, workPossible, reason, blockedUntil, inFlightUntil }
 }
 
 function readSnapshot(root, cwd, now) {
   const snapPath = snapshotPath(root, cwd)
   const projectState = readProjectState(projectStatePath(root, cwd))
   if (!existsSync(snapPath)) {
-    return projectState.optedIn ? { status: 'missing', producer: projectState } : { status: 'never' }
+    return projectState.optedIn ? { status: 'missing', producer: projectState, file: snapPath } : { status: 'never' }
   }
 
   try {
@@ -145,7 +149,7 @@ function readSnapshot(root, cwd, now) {
 
   try {
     const normalized = normalizeSnapshot(readJson(snapPath))
-    return normalized ? { ...normalized, producer: projectState } : { status: 'invalid' }
+    return normalized ? { ...normalized, producer: projectState, file: snapPath } : { status: 'invalid' }
   } catch {
     return { status: 'invalid' }
   }
@@ -340,36 +344,96 @@ function formatSnapshotAge(ageMs) {
   return `${days} day${days === 1 ? '' : 's'}`
 }
 
+// One sentence, portable first: an unfiltered board read works over any MCP transport, while the
+// command needs the local HTTP endpoint. cardsSummary must be off: a summary read carries no
+// descriptions, and the producer refuses it.
+function refreshSteps() {
+  return `read the whole board once with an unfiltered get_board with cardsSummary off, or run exactly: ${ACTIONABLE_REFRESH_COMMAND}`
+}
+
+function refreshRemedy() {
+  return `To refresh the board snapshot, ${refreshSteps()}`
+}
+
+function producerFailureRemedy(snapshot) {
+  const producer = snapshot?.producer
+  const reason = (producer?.lastReason || producer?.lastOutcome || 'unavailable').replace(/[\r\n]+/g, ' ')
+  const projectParser = join('.claude', 'scripts', 'lib', 'depends-on-parser.mjs')
+  if (reason === 'snapshot-computation-failed' || reason === 'snapshot-invalid') {
+    return { reason, text: `fix or remove the project's ${projectParser} (its output could not be used)` }
+  }
+  if (reason === 'board-unreachable') {
+    return { reason, text: `Check that the board endpoint answers, then refresh the board snapshot: ${refreshSteps()}` }
+  }
+  if (reason === 'board-read-failed') {
+    const detail = (producer?.lastDetail || 'no detail recorded').replace(/[\r\n]+/g, ' ')
+    return { reason, text: `The board endpoint answered with an unreadable result (${detail}). Fix what the endpoint returns, then refresh the board snapshot: ${refreshSteps()}` }
+  }
+  if (reason === 'snapshot-write-failed') {
+    return { reason, text: `Make this snapshot file writable: ${snapshot?.file || 'unknown path'}` }
+  }
+  return { reason, text: refreshRemedy() }
+}
+
+// Why the board has no usable measurement, told from the producer's own last record. Only a
+// genuinely old heartbeat is called stale: no heartbeat is legacy evidence, a fresh heartbeat
+// still marked `reading` is a board read that never finished, and a fresh `snapshot-written`
+// heartbeat beside a missing file is a snapshot that disappeared after it was written.
+function unmeasuredText(failure, producer, now, snapshot) {
+  if (failure) return `Actionability producer wrote no snapshot at its last board read (${failure.reason}). ${failure.text}`
+  if (!finiteNumber(producer?.heartbeatAt)) {
+    return `Actionability state cannot be distinguished from legacy snapshot evidence. ${refreshRemedy()}`
+  }
+  if (producer.lastOutcome === 'reading' && now - producer.heartbeatAt <= STALE_AFTER_MS) {
+    return `Producer heartbeat shows a board read started and did not finish (the producer may have timed out). ${refreshRemedy()}`
+  }
+  if (producer.lastOutcome === 'snapshot-written' && snapshot?.status === 'missing' && now - producer.heartbeatAt <= STALE_AFTER_MS) {
+    return `The snapshot file is missing although the producer reported writing it: ${snapshot.file}. ${refreshRemedy()}`
+  }
+  return `Producer heartbeat is stale; the board has not been measured recently. ${refreshRemedy()}`
+}
+
+// A board read that failed (or never finished) AFTER the snapshot was written: the count is still
+// the last good one, but the reader must also learn the newer failure and its remedy.
+function hasNewerProducerRecord(snapshot) {
+  const producer = snapshot?.producer
+  return snapshot?.status === 'present' && finiteNumber(producer?.heartbeatAt) && producer.heartbeatAt > snapshot.at &&
+    Boolean(producer.lastOutcome) && producer.lastOutcome !== 'snapshot-written'
+}
+
+function actionableBlockLine(decision, snapshot, now) {
+  const producer = snapshot?.producer
+  const recentFailure = finiteNumber(producer?.heartbeatAt) &&
+    now - producer.heartbeatAt <= STALE_AFTER_MS &&
+    producer.lastOutcome !== 'reading' && producer.lastOutcome !== 'snapshot-written'
+  const failure = recentFailure ? producerFailureRemedy(snapshot) : null
+  let text
+  if (decision.reason === 'snapshot-stale') {
+    text = `${snapshot.actionable} actionable item(s) remain. ${unmeasuredText(failure, producer, now, snapshot)}`
+  } else if (finiteNumber(decision.actionable)) {
+    text = `${decision.actionable} actionable item(s) remain.`
+    if (hasNewerProducerRecord(snapshot)) text += ` ${unmeasuredText(failure, producer, now, snapshot)}`
+  } else if (!failure && decision.reason === 'snapshot-missing' && !finiteNumber(producer?.heartbeatAt)) {
+    text = 'Actionability producer is declared but has not reported a heartbeat — wire the producer.'
+  } else {
+    text = unmeasuredText(failure, producer, now, snapshot)
+  }
+  if (snapshot?.undeclared > 0) text += ` ${snapshot.undeclared} card(s) with no Depends-on line: not counted.`
+  return text
+}
+
 function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, mandateKind) {
   // Factual, not imperative — see the emission comment in main() for why. Keep the exact
   // substrings 'actionable item(s) remain' and 'Block N of M':
   // the test suite matches on them, and they carry the state a resuming reader needs.
-  let actionableLine
-  if (finiteNumber(decision.actionable)) {
-    actionableLine = `${decision.actionable} actionable item(s) remain.`
-  } else if (finiteNumber(snapshot?.producer?.heartbeatAt) &&
-    now - snapshot.producer.heartbeatAt <= STALE_AFTER_MS &&
-    snapshot.producer.lastOutcome !== 'reading' && snapshot.producer.lastOutcome !== 'snapshot-written') {
-    actionableLine = 'Actionability producer could not read the board — check the tracker.'
-  } else if (decision.reason === 'snapshot-missing') {
-    actionableLine = 'Actionability producer is declared but has not reported a heartbeat — wire the producer.'
-  } else if (!finiteNumber(snapshot?.producer?.heartbeatAt)) {
-    actionableLine = 'Actionability state cannot be distinguished from legacy snapshot evidence — check the tracker.'
-  } else {
-    actionableLine = `Producer heartbeat is stale; the board has not been measured recently. To refresh the board snapshot: Run exactly: ${ACTIONABLE_REFRESH_COMMAND}`
-  }
-  if (decision.reason === 'snapshot-stale' && !actionableLine.includes(ACTIONABLE_REFRESH_COMMAND)) {
-    actionableLine += ` The board has not been measured recently. To refresh the board snapshot: Run exactly: ${ACTIONABLE_REFRESH_COMMAND}`
-  }
-  if (decision.reason === 'snapshot-stale' && finiteNumber(snapshot?.actionable)) {
-    actionableLine = `${snapshot.actionable} actionable item(s) remain. ${actionableLine}`
-  }
+  const actionableLine = actionableBlockLine(decision, snapshot, now)
   const proposal = proposalAge(snapshot?.status === 'present' ? snapshot.at : null, now, PROPOSAL_MAX_AGE_MS)
   let ageLine
   if (proposal.reason === 'future') ageLine = 'The snapshot timestamp is in the future and is unusable for a proposal.'
   else if (proposal.ageMs === null) ageLine = 'The snapshot is missing; age is unknown.'
   else ageLine = `Snapshot is ${formatSnapshotAge(proposal.ageMs)} old.`
   let proposalLine = 'The gate is not proposing a card because the snapshot is stale or its age is unknown.'
+  if (proposal.ageMs === null && proposal.reason !== 'future') proposalLine = 'The gate is not proposing a card because the snapshot is missing.'
   if (proposal.usable) proposalLine = `Next: ${decision.next ? decision.next : 'unknown'}.`
   // ⚠ ONE LINE, and the length lock below is what keeps it that way.
   // Measured 2026-08-06 on this harness: NO Stop-hook emission shape hides its text from the

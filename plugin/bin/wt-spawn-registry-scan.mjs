@@ -55,6 +55,7 @@ import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { handleHelpFlag } from './lib/cli-help.mjs';
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs';
+import { unresolvedWaits } from './lib/delegate-wake.mjs';
 
 const HELP = `wt-spawn-registry-scan — read the spawn registry (written by
 wt-outbound-guard-hook.mjs) and report what is UNACCOUNTED FOR: an agent whose spawn record has
@@ -250,38 +251,20 @@ const spokeById = lastByAgentId('out');
 const laterOf = (...timestamps) => timestamps.reduce((latest, timestamp) =>
   timestamp !== undefined && (latest === undefined || timestamp > latest) ? timestamp : latest, undefined);
 
-// WAITING-FOR — read side of the convention wt-outbound-guard-hook.mjs writes (see its own
-// comment for the wire format and the idempotence/erasure invariants).
-//
-// ⚠ RESOLVED BY POSITION, NEVER BY TIMESTAMP — same fix shape as the arc-slicing logic in
-// wt-outbound-guard-hook.mjs ("Records written in the same millisecond share an `at`, so a time
-// comparison drops a record that sits exactly on the boundary"). A cross-family review (opencode
-// gpt-5.6-terra) caught the same defect here: two DISTINCT real SendMessage calls landing in the
-// same millisecond (plausible — ISO timestamps are millisecond-resolution and two calls can be
-// hook-processed back to back) would tie under a `w.at < lastOutboundAt` comparison, and the tie
-// resolved toward "still waiting" regardless of which call was ACTUALLY later — silently
-// re-opening the exact false-positive class the erasure design exists to close. File order IS
-// chronological order for records sharing a name (append-only log, sequential tool calls), so a
-// single forward pass that overwrites state on every 'out'/'waiting' record — last write in FILE
-// ORDER wins — is immune to millisecond ties. It is also idempotence-safe under duplicate
-// registration: replays of the SAME real event write the SAME (type, name) pair again in
-// immediate succession, so a chain of identical overwrites lands on the same final value as one.
-const waitingState = new Map(); // name -> {artifact, path} | null, walked in file (chronological) order
-const waitingStateById = new Map(); // raw agent id fallback, same correlation shape as stop/out
-for (const r of records) {
-  if (r.t === 'spawn') {
-    if (r.childName) waitingState.set(r.childName, null);
-    if (r.child) waitingStateById.set(r.child, null);
-    continue;
-  }
-  const next = r.t === 'out' ? null : r.t === 'waiting' ? { artifact: r.artifact ?? null, path: r.path ?? null } : undefined;
-  if (next === undefined) continue;
-  if (r.name) waitingState.set(r.name, next);
-  if (r.agentId) waitingStateById.set(r.agentId, next);
+// Declared waits are independent of the open/stopped spawn view. File order, not timestamps,
+// decides whether this agent's latest relevant transition was waiting, resumed, or out.
+// A transcript observer writes resumed after a confirmed next turn; this reader uses only
+// the registry, so anonymous agents and cleanly stopped agents remain identifiable here.
+const waitingStateById = unresolvedWaits(records);
+function waitingForOf(name, rawAgentId, spawnedAt) {
+  const record = (rawAgentId ? waitingStateById.get(rawAgentId) : null)
+    || [...waitingStateById.values()].find((r) => r.name === name && r.at >= spawnedAt);
+  return record ? { artifact: record.artifact ?? null, path: record.path ?? null } : null;
 }
-function waitingForOf(name, rawAgentId) {
-  return waitingState.get(name) || (rawAgentId ? waitingStateById.get(rawAgentId) : null) || null;
-}
+const waiting = [...waitingStateById.values()].map((r) => ({
+  agentId: r.agentId, name: r.name ?? r.agentId, artifact: r.artifact ?? null,
+  path: r.path ?? null, at: r.at,
+}));
 
 const now = Date.now();
 const open = [];
@@ -326,7 +309,7 @@ for (const s of spawns) {
     lastOutbound: spokenAt || null,
     quietMin,
     transcriptFreshMin,
-    waitingFor: waitingForOf(name, s.child),
+    waitingFor: waitingForOf(name, s.child, s.at),
   });
 }
 
@@ -352,7 +335,7 @@ function untrackableLine(s) {
 
 if (AS_JSON) {
   console.log(JSON.stringify({
-    file, totalSpawns: spawns.length, open: open.length, flagged, confirmedAlive,
+    file, totalSpawns: spawns.length, open: open.length, flagged, confirmedAlive, waiting,
     untrackable: untrackable.length,
     untrackableDetail: untrackable.map((s) => ({
       subagentType: s.subagentType ?? null,
@@ -366,6 +349,11 @@ if (AS_JSON) {
 
 console.log(`Registry: ${file}`);
 console.log(`${spawns.length} spawn(s) recorded · ${open.length} with no recorded ending · threshold ${QUIET_MIN} min\n`);
+if (waiting.length) {
+  console.log(`${waiting.length} declared wait(s), unresolved:`);
+  for (const w of waiting) console.log(`  ${w.agentId} — waiting for: ${w.artifact} @ ${w.path}`);
+  console.log('');
+}
 
 if (untrackable.length) {
   console.log(`⚠ ${untrackable.length} spawn(s) cannot be followed individually — they were`);

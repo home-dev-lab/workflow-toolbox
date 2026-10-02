@@ -508,8 +508,16 @@ background wait.
 
 ## Wake-up contract (harness limitation — non-negotiable)
 
-Your own background waits (launcher `await`, watchers, sleeps) will NOT reliably re-wake
-you; only an inbound SendMessage does. So after spawning pilots or launching runs: write
+Use a bounded foreground poll first, staying in your turn. If you must end your turn
+awaiting a tracked background command, spawn anonymously or named with
+`isolation: "worktree"` where a repository exists. A named non-isolated teammate loses
+its observer and is not reliably woken by its own background tasks. Permitted-shape
+delegates self-woke in the measured majority (606/628 and 168/173), not invariably.
+For an attributable unresolved completion the arc watch tells main the exact
+SendMessage call, repeating until you resume; main must send that call verbatim. An
+unattributable notice yields DEGRADED, never a guessed target. For detached work, put `WAITING-FOR: <artifact> @ <absolute path>` on the FIRST
+line of your last SendMessage; the registry lists the declared wait, not a completion.
+After spawning pilots or launching runs: write
 your in-flight state (what runs where, which file will appear where) to
 `<REPORT_DIR>/orchestrator-state.md`, SendMessage the main session ONE line ("wave in
 flight: N pilots; watch <dir>; ping me on ticks"), and yield. The main session owns the
@@ -585,9 +593,9 @@ back to the next:
    was never sent. Use the value verbatim as `agentId`, set `agentIdSource: "brief"`, and name
    the file `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<raw id, sanitized>.json`. This
    is the only tier that works when you were spawned anonymously (no declared name) — the normal
-   shape for a pilot that delegates to an external executor lane, since a named+isolated spawn
-   loses its observer while named+non-isolated is unusable once a lane is writing into your
-   worktree.
+    shape for a pilot that delegates to an external executor lane; named+isolated preserves
+    its observer, but an isolated worktree may be cleaned while an external lane still writes
+    there. Named+non-isolated is refused because it loses its observer and background wakeups.
 2. **No such line, but you know your own declared spawn name.** Use the name as `agentId`, set
    `agentIdSource: "name"`, and name the file
    `${WT_LIVENESS_DIR:-$HOME/.local/state/wt-liveness}/<name, sanitized>.json` (sanitize: every

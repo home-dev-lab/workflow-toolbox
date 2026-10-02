@@ -45,7 +45,7 @@ function fixture(register, { failOnce = false, badRule = false, initialHealth = 
     env: { get: async (key) => key === 'CLAUDE_CONFIG_DIR' ? '/fixture/config' : null },
     fs: { list: async (path) => badRule && path.endsWith('rules-on-demand') ? [{ name: 'bad.md', kind: 'file' }] : [],
       stat: async (path) => ({ kind: path.endsWith('.md') ? 'file' : 'dir', size: 999999 }) },
-    ui: { log: async () => {} }, session: { id: async () => 'one', messages: async () => [] },
+    ui: { log: async () => {} }, session: { id: async () => 'one', root: async () => '/fixture', messages: async () => [] },
     store: { get: async (key) => stored.get(key), set: async (key, value) => {
       if (key === 'health') {
         writes.push(value);

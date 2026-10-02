@@ -119,8 +119,14 @@ describe('raw host primitive quality ratchet', () => {
     // The rm critical-path guard adds its hook and its shell-command parser; the hook reads stdin
     // and the home directory through bin/lib/host, and the parser's separators are shell syntax.
     // The plugin-root classifier (plugin-root-state.mjs) adds one; its home-directory read goes
-    // through bin/lib/host.
-    expect(result.perimeterFiles).toBe(253)
+    // through bin/lib/host. Completion attribution and its scanner add two more perimeter files;
+    // their filesystem primitives live in bin/lib/host, so the primitive ceiling stays unchanged.
+    // The shipped Depends-on parser (depends-on-parser.mjs) adds one pure module with no host operation.
+    // The shared find_cards page rule (find-cards-page.mjs) adds one pure module with no host operation.
+    // The suite-lock bypass guard adds its hook; its platform and temp-root reads live in bin/lib/host.
+    // The cancelled-call relay guard adds its hook; its file access lives in bin/lib/host.
+    // The session-env dedup hook adds one perimeter file; its filesystem primitives live in bin/lib/host.
+    expect(result.perimeterFiles).toBe(260)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

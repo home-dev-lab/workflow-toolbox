@@ -11,7 +11,7 @@ import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { createModelTracker, modelWarnings } from './lib/model-fallback-core.mjs'
 import { appendWarnings } from './lib/host/model-fallback-files.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
 
 const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
@@ -66,6 +66,7 @@ async function worker(options) {
     const stream = query({ prompt: withRepositoryGuide(options.dir, launch.prompt), options: queryOptions })
     for await (const message of stream) {
       modelTracker.observe(message)
+      if (!initReceiptSeen && isPreInitNotice(message)) continue
       if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) throw new Error(`SDK executor initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
       if (message.type === 'system' && message.subtype === 'init') {
         initReceiptSeen = true

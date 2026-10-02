@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 // Delegated-arc watcher, shipped as a plugin monitor.
 //
-// WHAT IT WATCHES: the subagent transcripts of the CURRENT project's sessions,
-// corroborated by the outbound-guard stop journal and, when a delegate chooses
-// to leave one, its own liveness declaration file. It emits only on TERMINAL
-// states — a transcript that stopped growing, or one that disappeared. It stays
-// silent while agents are writing and after a transcript records a clean end_turn,
-// so silence means no agent needs attention. A liveness file with no usable transcript
+// WHAT IT WATCHES: subagent transcripts of the CURRENT project's sessions,
+// corroborated by the outbound-guard stop journal and optional liveness declarations.
+// The current main session's completion enqueues additionally yield WAKE relays when
+// their owners have not resumed (FORWARD candidates exist only in wt-delegate-wake-scan.mjs). Stale-transcript
+// detection stays quiet for a clean end_turn; a liveness file with no usable transcript
 // correlation key is surfaced separately as UNCORRELATABLE rather than read as silence.
 //
 // WHY A MONITOR AND NOT A REMINDER: a delegated agent that dies to a quota wall,
@@ -56,17 +55,20 @@ import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from '
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
+import { announceable, detectRelays, dueRelays, eventBudget, readAgents, readNewMain, readThrottle, writeThrottle, writeResumed } from './lib/delegate-wake.mjs'
 
 const HELP = `wt-arc-watch — delegated-arc watcher: watches this project's subagent transcripts
 (corroborated by the outbound-guard stop journal and any liveness declaration file) and
-emits ONLY on terminal states (STALE, GONE) — never on progress. Silence means everyone is
-still writing. Meant to be armed as a persistent Monitor.
+emits terminal states (STALE, GONE) and attributable unresolved completion relays
+(WAKE only; nested-notice FORWARD candidates are in wt-delegate-wake-scan.mjs). Meant to be armed as a persistent Monitor.
 
 Options:
   --project <dir>    project whose sessions to watch (default: cwd)
   --reports <dir>    optional REPORT_DIR to also watch for new file-reports
   --stale <minutes>  minutes with no transcript growth before a candidate is flagged (default 10)
   --poll <seconds>   poll interval (default 60, minimum 5)
+  --wake-grace <s>  seconds before an unresolved completion is announced (default 90)
+  --wake-repeat <s> minimum first retry interval (default 600)
   --help, -h         print this text and exit 0
 `
 
@@ -76,12 +78,11 @@ const MAX_STALE_MINUTES = Math.floor(MAX_TIMER_MS / 60_000)
 
 // Set once per poll (see the main loop) from the shared service-degraded flag
 // (see plugin/bin/wt-service-watch.mjs). While true, `write()` drops every
-// line — but ONLY the emission: every Set/Map this file tracks (transcripts,
-// announced-* sets, reports) keeps updating underneath exactly as it always
-// has. That is what makes recovery backlog-free — nothing is queued during
-// the blackout, so lifting the flag just resumes normal diffing from
-// whatever the state already is, instead of dumping everything that was
-// suppressed.
+// line — but ONLY the emission: existing STALE/GONE tracking (transcripts,
+// announced-* sets, reports) keeps updating, so lifting the flag does not
+// dump stale backlog. Actionable WAKE throttle state intentionally
+// does NOT advance during suppression: a still-unresolved relay must survive
+// the blackout and be announced on recovery.
 let suppressEmission = false
 
 function write(line) {
@@ -143,6 +144,8 @@ let staleMinutes = 10
 let pollSeconds = 60
 let projectDir = process.cwd()
 let reportsDir = ''
+let wakeGrace = 90
+let wakeRepeat = 600
 
 for (let i = 2; i < process.argv.length; i += 2) {
   const option = process.argv[i]
@@ -168,6 +171,11 @@ for (let i = 2; i < process.argv.length; i += 2) {
     const n = readNumber(value)
     if (n === null || n > MAX_POLL_SECONDS) fail(`invalid --poll (maximum ${MAX_POLL_SECONDS}s): ${shown}`, 2)
     pollSeconds = n
+  } else if (option === '--wake-grace' || option === '--wake-repeat') {
+    const n = readNumber(value)
+    if (n === null || n > MAX_POLL_SECONDS) fail(`invalid ${option}: ${shown}`, 2)
+    if (option === '--wake-grace') wakeGrace = n
+    else wakeRepeat = n
   } else {
     fail(`unknown option: ${redact(option)}`, 2)
   }
@@ -512,21 +520,7 @@ const staleMs = staleMinutes * 60_000
 const MAX_EVENTS_PER_POLL = 20
 
 function makeBudget() {
-  let spent = 0
-  let suppressed = 0
-  return {
-    emit(line) {
-      if (spent < MAX_EVENTS_PER_POLL) {
-        spent += 1
-        write(line)
-      } else {
-        suppressed += 1
-      }
-    },
-    close() {
-      if (suppressed > 0) write(`ARC WATCH TRUNCATED: ${suppressed} further event(s) this poll were counted, not listed`)
-    },
-  }
+  return eventBudget(write, MAX_EVENTS_PER_POLL)
 }
 
 // TeammateIdle qualifies a named teammate that may never cross a SubagentStop
@@ -645,6 +639,53 @@ function wait(ms) {
 // arming time must suppress the ARMED banner exactly like every later line.
 suppressEmission = Boolean(await isServiceDegraded())
 
+const wakeCursor = { offset: 0, tailBytes: Buffer.alloc(0), records: [] }
+const wakeAgentCache = new Map()
+const wakeDegraded = new Set()
+const wakePendingProblems = new Set()
+const wakeDataDir = process.env.WT_DELEGATE_WAKE_DIR || path.join(OUTBOUND_GUARD_DIR, 'delegate-wake')
+const wakeStateFile = path.join(wakeDataDir, `${currentSessionId || 'unknown'}.json`)
+function wakeProblem(reason, budget) {
+  if (reason && !wakeDegraded.has(reason)) wakePendingProblems.add(reason)
+  if (suppressEmission) return
+  for (const pending of wakePendingProblems) {
+    if (!budget.emit(`ARC WATCH DEGRADED: ${safeName(pending)}`)) return
+    wakeDegraded.add(pending)
+    wakePendingProblems.delete(pending)
+  }
+}
+
+function sweepDelegateWake(budget) {
+  if (!currentSessionId) { wakeProblem('session id unknown; completion attribution unavailable', budget); return }
+  const sessionDir = path.join(sessionsRoot, currentSessionId)
+  let candidates
+  let attributionProblems = []
+  try {
+    const main = readNewMain(path.join(sessionsRoot, `${currentSessionId}.jsonl`), wakeCursor)
+    const { agents, meta } = readAgents(sessionDir, wakeAgentCache)
+    const registry = path.join(OUTBOUND_GUARD_DIR, `${currentSessionId}.jsonl`)
+    try { writeResumed(registry, path.join(sessionDir, 'subagents')) }
+    catch { attributionProblems.push('registry resume transition unavailable') }
+    const result = detectRelays({ sessionId: currentSessionId, main, agents, meta,
+      now: Date.now(), grace: wakeGrace * 1000 })
+    candidates = announceable(result.lines)
+    attributionProblems = [...attributionProblems, ...result.degraded]
+  } catch (error) { wakeProblem(`completion attribution unavailable (${error.code ?? 'invalid transcript or meta'})`, budget); return }
+  const { state, degraded: stateError } = readThrottle(wakeStateFile)
+  const now = Date.now()
+  const due = dueRelays(candidates, state, now, MAX_EVENTS_PER_POLL, wakeRepeat * 1000)
+  // The shared budget serves eligible WAKEs in F4 order before any diagnostics.
+  // Unprinted problems survive even if the next poll no longer observes their cause.
+  for (const item of due) {
+    if (suppressEmission || !budget.emit(item.line)) continue
+    const prior = state[item.key]
+    state[item.key] = { lastEmittedAt: now, count: (prior?.count ?? 0) + 1 }
+  }
+  for (const problem of attributionProblems) wakeProblem(problem, budget)
+  wakeProblem(stateError, budget)
+  if (!suppressEmission && due.length && writeThrottle(wakeStateFile, state)) wakeProblem('throttle state unwritable', budget)
+}
+
 write(`ARC WATCH ARMED: stale=${staleMinutes}min poll=${pollSeconds}s tracking=${previousTranscripts.size} transcript(s)`)
 if (announcedStale.size > 0) {
   write(`ARC WATCH BASELINE: ${announcedStale.size} transcript(s) were already silent at arming and are not tracked`)
@@ -681,16 +722,17 @@ while (true) {
     }
   }
 
+  const budget = makeBudget()
+  sweepDelegateWake(budget)
+
   // One notice per directory, not one per cycle: repeating would flood the
   // channel and get the monitor auto-stopped, manufacturing the very silence
   // this watcher exists to remove.
   for (const [dir, error] of failures) {
     if (degraded.has(dir)) continue
-    write(`ARC WATCH DEGRADED: ${redact(dir)} (${redact(error?.message ?? error)})`)
+    budget.emit(`ARC WATCH DEGRADED: ${redact(dir)} (${redact(error?.message ?? error)})`)
     degraded.add(dir)
   }
-
-  const budget = makeBudget()
 
   sweepIdleRegistry(budget)
 
@@ -711,7 +753,7 @@ while (true) {
         preexistingSilent.delete(name)
       }
     } else if (!degraded.has(sessionsRoot)) {
-      write('ARC WATCH DEGRADED: partial scan — disappearances not reported this poll')
+      budget.emit('ARC WATCH DEGRADED: partial scan — disappearances not reported this poll')
       degraded.add(sessionsRoot)
     }
 

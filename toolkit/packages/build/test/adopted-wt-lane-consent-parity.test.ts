@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
@@ -36,22 +36,47 @@ const SUITE_LOCK_CHILD_TIMEOUT_MS = CHILD_TIMEOUT_MS * 3 + 15_000
 // A started launcher returns while its detached worker is still recording the run in the host
 // directory; teardown waits for every started worker to exit so it never removes that directory
 // under a live writer (ENOTEMPTY on macOS, run 36341392712).
-const workers: number[] = []
+type LaneWorker = { pid: number, project: string | null }
+const workers: LaneWorker[] = []
 const WORKER_EXIT_PATIENCE_MS = 30_000
 const workerAlive = (pid: number) => { try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' } }
-async function waitForWorkerExit(pid: number) {
+// Windows hands the pid of an exited worker to a new process, so a liveness probe alone can keep
+// reporting a finished worker alive. The worker's last write to its lane log is `EXIT=<n>`, which
+// only the worker writes: that line settles it, whatever the pid now names.
+const workerLogExited = (project: string | null) => project !== null && /^EXIT=\d+$/.test(laneLogTail(project, 1))
+async function waitForWorkerExit(worker: LaneWorker, { alive = workerAlive, tick }: { alive?: (pid: number) => boolean, tick?: () => Promise<void> } = {}) {
+  const done = () => !alive(worker.pid) || workerLogExited(worker.project)
   const deadline = Date.now() + WORKER_EXIT_PATIENCE_MS
-  while (workerAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25))
-  if (workerAlive(pid)) throw new Error(`timed out waiting for adopted lane worker pid=${pid} to exit before teardown`)
+  while (!done() && Date.now() < deadline) await (tick ? tick() : new Promise((resolve) => setTimeout(resolve, 25)))
+  if (!done()) {
+    const tail = worker.project === null ? '<unavailable>' : laneLogTail(worker.project, 20)
+    throw new Error(`timed out waiting for adopted lane worker pid=${worker.pid} to exit before teardown; lane log tail: ${tail}`)
+  }
 }
 
 afterEach(async () => {
-  for (const pid of workers.splice(0)) await waitForWorkerExit(pid)
-  for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'project')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
+  for (const worker of workers.splice(0)) await waitForWorkerExit(worker)
+  // On Windows the EXIT= line can be readable a moment before the worker releases its log handle.
+  for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'project')), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
 }, WORKER_EXIT_PATIENCE_MS * 2)
 
 function laneLogTail(project: string, lines = 8) {
   try { return readFileSync(join(laneHostDir(project), 'run.log'), 'utf8').trim().split(/\r?\n/).slice(-lines).join(' | ') || '<empty>' } catch { return '<unavailable>' }
+}
+
+function projectWithLaneLog(log: string) {
+  const root = mkdtempSync(join(tmpdir(), 'wt-adopted-worker-exit-')); roots.push(root)
+  const project = join(root, 'project'); mkdirSync(project)
+  mkdirSync(laneHostDir(project), { recursive: true }); writeFileSync(join(laneHostDir(project), 'run.log'), log)
+  return project
+}
+
+// A pid that stays alive for good stands for a reused one; the clock advances a second per poll, so
+// the 30 s patience runs out in thirty polls and no real time passes.
+async function waitBehindReusedPid(project: string) {
+  let now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+  try { await waitForWorkerExit({ pid: 424242, project }, { alive: () => true, tick: async () => { now += 1000 } }) } finally { clock.mockRestore() }
 }
 
 function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = CHILD_TIMEOUT_MS) {
@@ -65,11 +90,12 @@ function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutM
   // Every door that starts a lane (launch() and the direct launcher calls alike) announces its
   // detached worker as pid=<n>; teardown waits for each one (ENOTEMPTY on macOS, run 36345651918).
   const worker = /^pid=(\d+)$/m.exec(result.stdout ?? '')?.[1]
-  if (result.status === 0 && worker) workers.push(Number(worker))
+  const dirIndex = args.indexOf('--dir')
+  const project = dirIndex >= 0 ? args[dirIndex + 1]! : null
+  if (result.status === 0 && worker) workers.push({ pid: Number(worker), project })
   if (result.error) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim().split(/\r?\n/).at(-1) || '<no output>'
-    const dirIndex = args.indexOf('--dir')
-    const laneTail = dirIndex >= 0 ? laneLogTail(args[dirIndex + 1]!) : '<unavailable>'
+    const laneTail = project === null ? '<unavailable>' : laneLogTail(project)
     throw new Error(`${name} failed after ${timeoutMs}ms: ${result.error.message}; last output: ${output}; lane log tail: ${laneTail}`)
   }
   return result
@@ -175,6 +201,16 @@ describe('adopted wt-lane consent resolver', () => {
       {},
       100,
     )).toThrow(/lane log tail: first \| 2026-09-17T00:00:00.000Z stage=inspect-launcher-start/)
+  })
+
+  it('treats a worker whose lane log ends with EXIT= as exited while its reused pid still reads alive', async () => {
+    const project = projectWithLaneLog('2026-09-17T00:00:00.000Z stage=worker-identity-capture-done\nEXIT=0\n')
+    await expect(waitBehindReusedPid(project)).resolves.toBeUndefined()
+  })
+
+  it('names the pid and the lane log tail when a live worker never writes EXIT=', async () => {
+    const project = projectWithLaneLog('first\n2026-09-17T00:00:00.000Z stage=worker-identity-capture-done\n')
+    await expect(waitBehindReusedPid(project)).rejects.toThrow(/pid=424242 to exit before teardown; lane log tail: first \| 2026-09-17T00:00:00.000Z stage=worker-identity-capture-done/)
   })
 
   for (const mode of ['--check', '--install']) {
@@ -285,7 +321,8 @@ describe('adopted wt-lane consent resolver', () => {
     const acknowledged = runChild('adopted wt-lane stale-brief acknowledgement', [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600', '--acknowledge-stale-brief'], f.env)
     expect(acknowledged.status, acknowledged.stderr).toBe(0)
     expect(acknowledged.stdout).toMatch(/brief_sha256=[0-9a-f]{64}\n/)
-  })
+    // Windows worst 22689 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 57_000)
 
   it('refuses an unlisted model through the plugin runtime before the adopted launcher spawns', () => {
     const f = fixture()
@@ -302,7 +339,8 @@ describe('adopted wt-lane consent resolver', () => {
       pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: true, lane_models: 'openai/gpt-5.6-luna' } } },
     }))
     expect(launch(f).status).toBe(0)
-  })
+    // Windows worst 26791 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 67_000)
 
   it('uses the real resolver for account and project consent fixtures', () => {
     for (const account of CONSENT_ACCOUNTS) {
@@ -342,9 +380,10 @@ describe('adopted wt-lane consent resolver', () => {
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const started = launch(f)
     expect(started.status, started.stderr).toBe(0)
-    for (const pid of workers) await waitForWorkerExit(pid)
+    for (const worker of workers) await waitForWorkerExit(worker)
     expect(laneLogTail(f.project, 40)).toContain('worker-early-failure-probe')
-  })
+    // Windows worst 16418 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 42_000)
 
   it('forces the fence in an adopted launcher child', () => {
     const f = fixture()
@@ -368,7 +407,8 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     expect(existsSync(seen), `the lane child never wrote ${seen}; lane log tail: ${laneLogTail(f.project, 20)}`).toBe(true)
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
-  })
+    // Windows worst 22579 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 57_000)
 
   it('hands the adopted lane child an executable WT_SUITE_LOCK_CMD for the installed plugin suite-lock runner', () => {
     const f = fixture()

@@ -7,9 +7,11 @@ import { fileURLToPath } from 'node:url'
 import { spawnNeedsShell } from '../../plugin/bin/lib/suite-lock.mjs'
 
 const args = process.argv.slice(2)
-if (args.shift() !== '--' || !args.length) throw new Error('usage: node scripts/with-suite-lease.mjs -- <command> [args...]')
+// --light asks for queue priority: a short run goes before younger full suites (order only, one holder at a time).
+const light = args[0] === '--light' ? (args.shift(), true) : false
+if (args.shift() !== '--' || !args.length) throw new Error('usage: node scripts/with-suite-lease.mjs [--light] -- <command> [args...]')
 const cli = fileURLToPath(new URL('../../plugin/bin/wt-suite-lock.mjs', import.meta.url))
-const command = [process.execPath, cli, 'run', '--', ...args]
+const command = [process.execPath, cli, 'run', ...(light ? ['--light'] : []), '--', ...args]
 const child = spawn(command[0], command.slice(1), { stdio: 'inherit', shell: spawnNeedsShell(command[0]) })
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal))
 child.once('error', (error) => { process.stderr.write(`suite lease: ${error.message}\n`); process.exitCode = 2 })

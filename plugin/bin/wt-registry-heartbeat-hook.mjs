@@ -59,6 +59,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SCAN = join(HERE, 'wt-spawn-registry-scan.mjs');
 const QUIET_MIN = process.env.WT_REGISTRY_HEARTBEAT_QUIET_MIN || '20';
 const STALE_TRANSCRIPT_MIN = process.env.WT_REGISTRY_HEARTBEAT_STALE_TRANSCRIPT_MIN || '5';
+// A wait whose agent died never resolves; the heartbeat would repeat it on every Stop forever.
+// The scan's --json `waiting` array keeps every unresolved wait; only this reminder is bounded.
+const WAIT_REMINDER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function emit(json) {
   process.stdout.write(JSON.stringify(json));
@@ -89,7 +92,7 @@ function main() {
 
   // 1 = flagged open+silent agents found. 0 (clean), 2 (no registry yet), or null (timeout/crash)
   // all mean: nothing worth spending this stop over.
-  if (res.status !== 1 || !res.stdout) emit({});
+  if ((res.status !== 0 && res.status !== 1) || !res.stdout) emit({});
 
   let data;
   try {
@@ -98,7 +101,14 @@ function main() {
     emit({});
   }
   const flagged = Array.isArray(data?.flagged) ? data.flagged : [];
-  if (flagged.length === 0) emit({});
+  const now = Date.now();
+  const waiting = (Array.isArray(data?.waiting) ? data.waiting : []).filter((w) => {
+    const declared = Date.parse(w?.at);
+    return Number.isFinite(declared) && now - declared <= WAIT_REMINDER_MAX_AGE_MS;
+  });
+  const waitText = waiting.length ? `Declared waits, unresolved:\n${waiting.map((w) =>
+    `  - ${w.agentId} — waiting for: ${w.artifact} @ ${w.path}`).join('\n')}` : '';
+  if (flagged.length === 0) emit(waitText ? { systemMessage: waitText } : {});
 
   const lines = flagged.map(
     (o) =>
@@ -114,7 +124,7 @@ function main() {
     'kill all look identical from here. ASK each one (SendMessage) before assuming anything — a ' +
     'substantive reply means it was working, "resumed from transcript" means it had died. Once ' +
     `you have looked, run \`node ${SCAN} --session ${sessionId} --ack <name>\` so this stops ` +
-    'repeating for that entry.';
+     'repeating for that entry.' + (waitText ? `\n\n${waitText}` : '');
 
   if (stopHookActive) emit({ systemMessage: reason }); // already forced through once this attempt
   emit({ decision: 'block', reason });

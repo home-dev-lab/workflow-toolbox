@@ -239,9 +239,19 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this SessionStart Planka degraded-mode reminder under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-session-env-dedup-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this SessionStart session-env duplicate-export cleanup and size alarm under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-arc-watch.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this monitor and its terminal-state output contract under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this monitor, its terminal-state output and attributable completion relay under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-delegate-wake-scan.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this session-scoped completion replay and optional registry resume observer.',
   },
   {
     script: 'plugin/bin/wt-autonomy-arm.mjs',
@@ -388,6 +398,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-model-fallback-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the model-fallback PostToolUse and SubagentStop warning hooks.',
+  },
+  {
+    script: 'plugin/bin/wt-cancelled-call-relay-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this SubagentStop cancelled-call relay guard under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-probe-claim-guard-hook.mjs',
@@ -588,6 +603,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-rm-critical-path-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse and PermissionRequest critical-path rm refuser under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-suite-lock-bypass-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse warn-only suite-lock bypass guard for Agent-tool sub-agents under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-zsh-word-split-guard-hook.mjs',
@@ -1063,6 +1083,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-actionable-gate-hook.mjs',
       'plugin/bin/wt-actionable-snapshot-producer-hook.mjs',
       'plugin/bin/wt-actionable-snapshot-refresh.mjs',
+      // The shipped Depends-on convention the producer falls back to; its rules are documented there.
+      'plugin/bin/lib/depends-on-parser.mjs',
       'plugin/bin/wt-registry-heartbeat-hook.mjs',
       'plugin/bin/wt-session-start-registry-hook.mjs',
       'plugin/bin/wt-spawn-registry-scan.mjs',
@@ -1081,11 +1103,13 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-adopt-rules-check-hook.mjs',
       'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
       'plugin/bin/wt-unsynced-buffer-hook.mjs',
+      'plugin/bin/wt-session-env-dedup-hook.mjs',
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
       'plugin/bin/wt-lane-consent-gate-hook.mjs',
       'plugin/bin/wt-lane-orphan-watch.mjs',
       'plugin/bin/wt-arc-watch.mjs',
+       'plugin/bin/wt-delegate-wake-scan.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
        'plugin/bin/wt-autonomy-watch.mjs',
        'plugin/bin/lib/session-role.mjs',
@@ -1101,6 +1125,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-outbound-guard-hook.mjs',
       'plugin/bin/wt-model-fallback-check.mjs',
       'plugin/bin/wt-model-fallback-hook.mjs',
+      'plugin/bin/wt-cancelled-call-relay-guard-hook.mjs',
       'plugin/bin/wt-probe-claim-guard-hook.mjs',
       'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
       'plugin/bin/wt-observer-pairing-guard-hook.mjs',
@@ -1121,6 +1146,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-command-repeat-check.mjs',
       'plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs',
       'plugin/bin/wt-rm-critical-path-guard-hook.mjs',
+      'plugin/bin/wt-suite-lock-bypass-guard-hook.mjs',
       'plugin/bin/wt-zsh-word-split-guard-hook.mjs',
       'plugin/bin/wt-var-colon-modifier-guard-hook.mjs',
        'plugin/bin/wt-merge-chain-guard-hook.mjs',

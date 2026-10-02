@@ -6,7 +6,32 @@ import { execFileSync } from 'node:child_process'
 // @ts-expect-error plugin runtime modules are untyped JavaScript.
 import { createBudget, walkFiles } from '../../../../plugin/bin/lib/bounded-walk.mjs'
 
+function withWalkRoot(run: (root: string) => void) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-walk-race-'))
+  try { run(root) } finally { fs.rmSync(root, { recursive: true, force: true }) }
+}
+const acceptMarkdown = (_rel: string, name: string) => name.endsWith('.md')
+
 describe('bounded walk', () => {
+  it('keeps a dangling root absent while refusing a dangling non-agent child', () => withWalkRoot((root) => {
+    const link = path.join(root, 'broken')
+    fs.symlinkSync(path.join(root, 'missing'), link)
+    expect(walkFiles([link], { accept: acceptMarkdown })).toEqual({ files: [], errors: [], exhausted: null })
+    expect(walkFiles([root], { accept: acceptMarkdown }).errors).toEqual([{ path: link, code: 'ENOENT' }])
+  }))
+
+  it.skipIf(process.platform === 'win32')('ignores a non-accepted FIFO child (requires POSIX mkfifo)', () => withWalkRoot((root) => {
+    execFileSync('mkfifo', [path.join(root, 'pipe')])
+    expect(walkFiles([root], { accept: acceptMarkdown })).toEqual({ files: [], errors: [], exhausted: null })
+  }))
+
+  it.skipIf(process.platform === 'win32')('refuses an accepted FIFO child and every FIFO root (requires POSIX mkfifo)', () => withWalkRoot((root) => {
+    const pipe = path.join(root, 'pipe.md')
+    execFileSync('mkfifo', [pipe])
+    expect(walkFiles([root], { accept: acceptMarkdown }).errors).toEqual([{ path: pipe, code: 'NOT_REGULAR' }])
+    expect(walkFiles([pipe], { accept: () => false }).errors).toEqual([{ path: pipe, code: 'NOT_REGULAR' }])
+  }))
+
   it('enumerates seeded generated trees despite broken siblings and cycles', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-generated-walk-'))
     let state = 0x714d2

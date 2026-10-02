@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -20,7 +20,9 @@ function envFor(directory: string): NodeJS.ProcessEnv {
   for (const key of Object.keys(env)) if (key.startsWith('WT_SUITE_LEASE')) delete env[key]
   return { ...env, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK_DIR: directory }
 }
-afterEach(() => { for (const directory of roots.splice(0)) rmSync(directory, { recursive: true, force: true }) })
+// A process of a chain that is still closing (Windows keeps a directory that is some process's cwd, and answers EPERM or EBUSY
+// to its removal) must not turn a finished case red: Node retries those errors with a linear backoff (about 5 s in all here).
+afterEach(() => { for (const directory of roots.splice(0)) rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) })
 // Skipped on win32 because the product never reaches the broker there. The broker is a unix-domain socket
 // bridge that only the Linux bwrap plan starts and exports (plugin/bin/lib/host/lane-sandbox.mjs:1006, :482), and
 // a non-Linux host never gets that plan (lane-sandbox.mjs:551). If WT_SUITE_LOCK_BROKER is set by hand on
@@ -35,6 +37,22 @@ const SURVIVE = "detached:process.platform==='win32'"
 function killIfAlive(pidFile: string) {
   if (!existsSync(pidFile)) return
   try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+}
+const hasExited = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null
+// The chain tests' cleanup. Killing only the lock CLI leaves its descendants (pnpm, the runner, the worker) alive on Windows,
+// and the worker's cwd sits inside the temp directory, so the directory removal then fails. Writing the release file lets the
+// chain end by itself, the lock CLI exits only after its child chain has; SIGKILL is the fallback for a chain that did not.
+async function stopChain(release: string, holder: ChildProcess, holderDone: Promise<number | null>) {
+  writeFileSync(release, '1')
+  try { await waitFor(() => hasExited(holder), 15_000) } catch { holder.kill('SIGKILL') }
+  await holderDone
+}
+// Runs the body, then the cleanup. A cleanup failure is reported only when the body succeeded, so it never replaces the body's own error.
+async function withChainCleanup(release: string, holder: ChildProcess, holderDone: Promise<number | null>, body: () => Promise<void>) {
+  let bodyFailed = false
+  try { await body() } catch (error) { bodyFailed = true; throw error } finally {
+    try { await stopChain(release, holder, holderDone) } catch (cleanupError) { if (!bodyFailed) throw cleanupError }
+  }
 }
 async function waitFor(check: () => boolean, timeout = 12_000) {
   const deadline = Date.now() + timeout
@@ -250,6 +268,36 @@ it.each(['ci', 'non-tty'])('waits for the holder on a real non-run Vitest entry 
   } finally { child.kill('SIGKILL') }
 }, 20_000)
 
+it.each([
+  { name: 'one test file', args: ['packages/build/test/suite-lock.test.ts'], light: true },
+  { name: 'a directory selecting more than eight files', args: ['packages/build/test'], light: false },
+  { name: 'coverage enabled', args: ['--coverage', 'packages/build/test/suite-lock.test.ts'], light: false },
+])('queues a real Vitest run as light only when it selects 1 to 8 files without coverage: $name', async ({ args, light }) => {
+  const directory = root()
+  const holder = await acquireSuiteLock({ root: directory, argv: ['certification'] })
+  const queued = () => (existsSync(join(directory, 'queue.d')) ? readdirSync(join(directory, 'queue.d')).filter((entry) => entry.endsWith('.json')) : [])
+  // The nested run shares this toolkit's config, whose coverage directory is the one the enclosing
+  // `pnpm test --coverage` writes into: a nested `--coverage` run cleans it and the enclosing run then
+  // fails reading its own coverage files. Every nested run gets its own coverage directory.
+  const sharedCoverageTmp = join(ROOT, 'toolkit', '.lane', 'coverage', '.tmp')
+  mkdirSync(sharedCoverageTmp, { recursive: true })
+  const sentinel = join(sharedCoverageTmp, `nested-run-sentinel-${process.pid}-${Date.now()}.json`)
+  writeFileSync(sentinel, '{}')
+  const child = spawn(process.execPath, ['node_modules/vitest/vitest.mjs', ...args, `--coverage.reportsDirectory=${join(directory, 'coverage')}`, '-t', 'sanitises untrusted holder fields'], {
+    cwd: join(ROOT, 'toolkit'), env: { ...envFor(directory), CI: '1', WT_VITEST_MAX_WORKERS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    await waitFor(() => queued().length === 1, 15_000)
+    const record = JSON.parse(readFileSync(join(directory, 'queue.d', queued()[0]!), 'utf8')) as { light?: boolean }
+    expect(record.light === true, 'the queue ticket of the Vitest global setup').toBe(light)
+    expect(existsSync(sentinel), 'the nested run left the enclosing coverage directory alone').toBe(true)
+  } finally {
+    child.kill('SIGKILL')
+    releaseSuiteLock(holder)
+    rmSync(sentinel, { force: true })
+  }
+}, 30_000)
+
 it('keeps the lease through the ordinary chain: a package manager waiting on a test runner waiting on its worker', async () => {
   // Stand-ins for `pnpm test` -> vitest -> worker: each parent waits for its child, so the direct
   // child of the holder exits only after the whole chain has. The worker ends only on the test's word.
@@ -261,7 +309,7 @@ it('keeps the lease through the ordinary chain: a package manager waiting on a t
   const manager = `const {spawn}=require('node:child_process');spawn(process.execPath,['-e',${JSON.stringify(runner)}],{stdio:'inherit'}).once('exit',(c)=>process.exit(c??1))`
   const holder = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', manager], { env: envFor(directory), stdio: ['ignore', 'pipe', 'pipe'] })
   const holderDone = new Promise<number | null>((resolve) => holder.once('exit', resolve))
-  try {
+  await withChainCleanup(release, holder, holderDone, async () => {
     await waitFor(() => existsSync(ready), 8000)
     const blocked = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.8', '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 4000 })
     expect(blocked.status, 'a competitor was admitted while the worker of the covered chain still ran').toBe(75)
@@ -271,12 +319,9 @@ it('keeps the lease through the ordinary chain: a package manager waiting on a t
     const admitted = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '4', '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 8000 })
     expect(admitted.status, admitted.stderr).toBe(0)
     expect(admitted.stdout).toBe('admitted')
-  } finally {
-    writeFileSync(release, '1')
-    holder.kill('SIGKILL')
-    await holderDone
-  }
-}, 20_000)
+  })
+  // Budget: ready wait 8 s + body spawns 4 s + 8 s + cleanup wait up to 15 s; 40 s keeps the margin a loaded hosted Windows runner needs.
+}, 40_000)
 
 // The real package manager in the chain: `pnpm run` waits on its script (the runner), which waits on its worker.
 // Skipped, by name, where pnpm is not on PATH (for example an external lane that must never call it).
@@ -293,20 +338,43 @@ it.skipIf(!pnpmAvailable)('keeps the lease through a real `pnpm run` chain until
   let stderr = ''
   holder.stderr!.on('data', (data) => { stderr += String(data) })
   const holderDone = new Promise<number | null>((resolve) => holder.once('exit', resolve))
-  try {
-    await waitFor(() => existsSync(ready), 15_000)
+  await withChainCleanup(release, holder, holderDone, async () => {
+    // `pnpm run` took more than 16.8 s to start its worker on a loaded hosted Windows runner (cross-os run, 2026-09): wait up to 40 s,
+    // and stop at once, naming the holder's stderr, when the chain exited before its worker was ready.
+    await waitFor(() => existsSync(ready) || hasExited(holder), 40_000)
+    expect(existsSync(ready), `the chain exited before its worker was ready: ${stderr}`).toBe(true)
     const blocked = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.8', '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 4000 })
     expect(blocked.status, 'a competitor was admitted while the pnpm-run worker still ran').toBe(75)
     writeFileSync(release, '1')
     expect(await holderDone, stderr).toBe(0)
     const admitted = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '4', '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 8000 })
     expect(admitted.status, admitted.stderr).toBe(0)
-  } finally {
-    writeFileSync(release, '1')
-    holder.kill('SIGKILL')
-    await holderDone
+  })
+  // Budget: ready wait up to 40 s + body spawns 4 s + 8 s + cleanup wait up to 15 s, so 60 s.
+}, 60_000)
+
+it('ends a chain by its release word instead of killing it, so its cwd is free for the directory removal', async () => {
+  const directory = root()
+  const release = join(directory, 'worker-release')
+  const worker = `const fs=require('fs');const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)})){clearInterval(t)}},20)`
+  const holder = spawn(process.execPath, ['-e', worker], { cwd: directory, stdio: 'ignore' })
+  const holderDone = new Promise<number | null>((resolve) => holder.once('exit', resolve))
+  await stopChain(release, holder, holderDone)
+  expect({ code: holder.exitCode, signal: holder.signalCode }, 'the chain ended on its own release word').toEqual({ code: 0, signal: null })
+}, 20_000)
+
+it('reports a cleanup failure only when the body succeeded, never in place of the body error', async () => {
+  const directory = root()
+  const release = join(directory, 'missing-dir', 'worker-release') // writing it fails: the cleanup itself throws
+  const spawnQuick = () => {
+    const holder = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+    return { holder, holderDone: new Promise<number | null>((resolve) => holder.once('exit', resolve)) }
   }
-}, 30_000)
+  const failing = spawnQuick()
+  await expect(withChainCleanup(release, failing.holder, failing.holderDone, async () => { throw new Error('body error') })).rejects.toThrow('body error')
+  const passing = spawnQuick()
+  await expect(withChainCleanup(release, passing.holder, passing.holderDone, async () => {})).rejects.toThrow(/ENOENT/)
+})
 
 it.each(['direct', 'nested'])('releases the %s CLI lease after its direct child exits even with a background descendant', async (mode) => {
   const directory = root()

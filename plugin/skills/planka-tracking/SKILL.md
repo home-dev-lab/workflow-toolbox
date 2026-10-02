@@ -57,8 +57,12 @@ over the defaults below and say so before creating anything.
   when new history overlaps an existing comment, merge into one consolidated comment rather than
   stacking duplicates.
 - **Dependencies** (Planka has no native card-relation field): encode them in the description as
-  `Depends-on: #<cardId> (<title>)`, one line per dependency. A card whose dependencies aren't
-  all `Done` is a blocked chain, not a candidate for "what's next".
+  `Depends-on: #<cardId> (<title>)`, one line per dependency. Write `Depends-on: none` ONLY when
+  you know the card is independent. When you do not know a card's dependencies, leave the line out
+  and flag the card for the arbiter (the person who owns the backlog) in your report. Never stamp
+  `none` by default, and never invent a dependency. A card whose dependencies aren't all `Done` is
+  a blocked chain; a card with no `Depends-on:` line has not been checked. Neither is a candidate
+  for "what's next", and the board's actionability gate counts neither as startable.
 - **Degradation**: if the `planka` MCP becomes unreachable *after* onboarding, ongoing task work
   can fall back to writing into .claude/progress.md under a dated `## Unsynced (Planka down)`
   section. On the next session, `wt-unsynced-buffer-hook.mjs` names the buffered entries so they
@@ -99,6 +103,8 @@ If the project has a .claude/progress.md:
    a markdown description trimmed to essentials, long history/context → **card comments**.
 4. **Classify** each card: priority + type + effort, plus the discovered domain labels.
 5. **Encode dependencies** with `Depends-on: #<id> (<title>)` in the description, one per line.
+   Write `Depends-on: none` only on a card you know is independent; when unsure, leave the line out
+   and list the card for the arbiter (see Conventions above).
 6. **Migrate the historical narrative too, not just the task rows.** Per-task history (commits,
    PR/ticket links, a session-by-session changelog) → **card comments** on the matching card: one
    consolidated, dated "migrated from progress.md" comment per card. A cross-cutting changelog

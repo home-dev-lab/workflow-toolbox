@@ -687,7 +687,8 @@ describe('wt-arc-watch: gated on THIS session\'s own first delegation, not on pr
       { encoding: 'utf8', timeout: 14_000 },
     )
     expect(res.stdout).toContain('ARC WATCH ARMED')
-  }, 18_000)
+    // Windows worst 11087 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 18000 ms).
+  }, 28_000)
 })
 
 describe('monitors.json registers the new monitor', () => {

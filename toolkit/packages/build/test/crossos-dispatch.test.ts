@@ -250,7 +250,8 @@ describe('cross-OS dispatch', () => {
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log, 'matrix (macos-latest)'), print: out.print })).toBe(1)
     expect(out.lines).toContain('FAILED TEST [gating step: Test (macOS shard 2/2)] packages/build/test/sdk-pilot-lifecycle-server.test.ts > runner-hosted SDK pilot lifecycle > the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]')
     expect(out.lines.at(-1)).toBe('RESULT: red')
-  })
+    // Windows worst 12115 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 31_000)
 
   it('fails closed on an unknown step and retains the no-gating-test fallback for diagnostic-only logs', async () => {
     const f = publicFixture(); const out = output()
@@ -648,6 +649,20 @@ describe('green only from positive evidence', () => {
     expect(result.verdict).toBe('red')
     expect(result.incomplete).toBe(false)
     expect(result.reason).toBe('1 of 3 jobs failed (matrix (windows-latest))')
+  })
+  it('a Windows run split into shard jobs is green only when every shard succeeded', () => {
+    const sharded = () => {
+      const run = positive()
+      run.jobs = ['matrix (ubuntu-latest)', 'matrix (macos-latest)', 'matrix (windows-latest, 1)', 'matrix (windows-latest, 2)']
+        .map((name) => ({ name, conclusion: 'success' }))
+      return run
+    }
+    expect(verdictFromEvidence(sharded(), sha).verdict).toBe('green')
+    const failed = sharded(); failed.jobs[3] = { name: 'matrix (windows-latest, 2)', conclusion: 'failure' }
+    const result = verdictFromEvidence(failed, sha)
+    expect(result.verdict).toBe('red')
+    expect(result.incomplete).toBe(false)
+    expect(result.reason).toBe('1 of 4 jobs failed (matrix (windows-latest, 2))')
   })
   it('a genuinely missing job is still incomplete, never read as a job failure', () => {
     const dropped = positive(); dropped.jobs.splice(1, 1)
