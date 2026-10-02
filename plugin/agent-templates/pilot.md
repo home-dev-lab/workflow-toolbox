@@ -117,8 +117,11 @@ Operating shape:
 6. **Gates ↔ review** — run TDD → verify → review, then review → TDD fix → verify → review
    while blocking findings remain. The same implementer receives the findings file and fixes them
    red-first. A fix round runs targeted tests, typecheck, and lint to zero warnings in touched files;
-    VERIFY runs one full suite afterward; a red suite returns its failing test names as another TDD
-    fix round. There is no fixed round cap. Continue while the blocking
+    VERIFY then runs the tests the card's change affects, using the project's affected-test selection
+    when it has one (changed tests, the tests that import or spawn a changed file, the project's policy
+    tests); a change to shared test infrastructure (the suite lock, test setup, test runners, dependency
+    manifests) runs the full suite instead. The full suite runs once per integration batch, where the
+    cards are merged. A red run returns its failing test names as another TDD fix round. There is no fixed round cap. Continue while the blocking
    count sets new strict minima; stop for non-convergence when the same finding returns (anchor plus
    file plus normalized claim, or `extends prior finding <n>` naming an existing prior finding) or two
     consecutive blocking passes fail to set a new minimum. Clear passes remain recorded but do not set

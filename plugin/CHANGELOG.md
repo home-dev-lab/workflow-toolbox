@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- The adopted `pilot` template no longer runs the full test suite for every card. After its fix rounds, a pilot now runs only the tests its change affects, using the project's affected-test selection when the project has one. A change to shared test infrastructure (the suite lock, test setup, test runners, dependency manifests) still runs the full suite. The full suite runs once per integration batch, where the cards are merged. With several pilots working at once, each card's gate now holds the machine's suite lock for minutes, not for a whole suite. Re-adopt the template to pick this up.
+
 ## [0.190.0] - 2026-10-02
 
 ### Quality
