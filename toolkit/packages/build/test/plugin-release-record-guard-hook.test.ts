@@ -90,6 +90,8 @@ describe('wt-plugin-release-record-guard-hook', () => {
     const result = run(root, 'git commit -m "release: 0.2.0"')
     expect(result.denied).toBe(true)
     expect(result.stdout).toContain('pnpm quality:delta')
+    // The delta reads the coverage artifact, so the refusal must order a fresh coverage run first.
+    expect(result.stdout).toMatch(/pnpm quality:coverage[^\n]*before[^\n]*pnpm quality:delta/)
   })
 
   it('refuses a release commit when no ratchet improved', () => {

@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import v8CoverageModule from '@vitest/coverage-v8'
 import { V8CoverageProvider } from '@vitest/coverage-v8/dist/provider.js'
+import { readTreeIdentity, writeCoverageStamp } from './coverage-stamp.mjs'
 
 export function enableChildProcessCoverage(root, env = process.env) {
   const parent = resolve(root, '.lane')
@@ -55,10 +56,32 @@ async function readIncludedResults(directory, isIncluded) {
   return { results, incomplete }
 }
 
+// Whether this run measured only part of the suite: selected files, a project filter, a test-name
+// pattern, or a WT_TEST_MODE other than `all`. `filenamePattern` is where Vitest keeps the CLI file
+// filters; a context without that field returns null (unknown), which quality.mjs refuses.
+export function runIsFiltered(ctx, env = process.env) {
+  if (!ctx || !('filenamePattern' in ctx)) return null
+  return (ctx.filenamePattern?.length ?? 0) > 0
+    || Boolean(ctx.config?.testNamePattern)
+    || (ctx.config?.project?.length ?? 0) > 0
+    || (env.WT_TEST_MODE ?? 'all') !== 'all'
+}
+
 class ChildProcessCoverageProvider extends V8CoverageProvider {
   initialize(ctx) {
     super.initialize(ctx)
     this.childInstrument = enableChildProcessCoverage(ctx.config.root)
+    this.treeAtStart = readTreeIdentity(ctx.config.root)
+  }
+
+  // The stamp is written after the reports, beside them, from the tree read at start and at the end.
+  async reportCoverage(coverageMap, options) {
+    await super.reportCoverage(coverageMap, options)
+    writeCoverageStamp(this.options.reportsDirectory, {
+      start: this.treeAtStart,
+      end: readTreeIdentity(this.ctx.config.root),
+      filtered: runIsFiltered(this.ctx),
+    })
   }
 
   async generateCoverage(context) {

@@ -7,11 +7,13 @@ import { fileURLToPath } from 'node:url'
 import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { ESLint } from 'eslint'
 import sonarjs from 'eslint-plugin-sonarjs'
+import { COVERAGE_STAMP_NAME, coverageFreshness, readTreeIdentity } from './coverage-stamp.mjs'
 
 const TOOLKIT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(TOOLKIT_ROOT, '..')
 const BASELINE = join(TOOLKIT_ROOT, 'quality-baseline.json')
 const COVERAGE = join(TOOLKIT_ROOT, '.lane/coverage/coverage-summary.json')
+const COVERAGE_STAMP = join(dirname(COVERAGE), COVERAGE_STAMP_NAME)
 const TARGETS = ['toolkit/packages/*/src/**/*.ts', 'plugin/**/*.mjs', 'plugin/**/*.js']
 const SOURCE_DIRS = [
   'packages/runtime/src', 'packages/patterns/src', 'packages/build/src', 'packages/std/src',
@@ -193,9 +195,27 @@ function readCycles() {
   return metric(cycles.length, offenders)
 }
 
-function readCoverage() {
-  if (!existsSync(COVERAGE)) throw new Error(`Missing ${relative(TOOLKIT_ROOT, COVERAGE)}; run pnpm quality:coverage first`)
-  const report = JSON.parse(readFileSync(COVERAGE, 'utf8'))
+function readStamp(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+// A summary left by an older run reads exactly like a fresh one, so the numbers are used only when
+// the stamp the coverage provider wrote beside them names HEAD's tree. Checked before the slower
+// linters run, so a stale artifact is refused at once.
+function assertCoverageFresh({ coverage, stamp, current }) {
+  if (!existsSync(coverage)) throw new Error(`Missing ${relative(TOOLKIT_ROOT, coverage)}; run pnpm quality:coverage first`)
+  const verdict = coverageFreshness(readStamp(stamp), current)
+  if (!verdict.ok) throw new Error(`Stale coverage artifact ${relative(TOOLKIT_ROOT, coverage)}: ${verdict.reason}`)
+  if (verdict.warning) console.error(`Warning: ${verdict.warning}`)
+}
+
+export function readCoverage({ coverage = COVERAGE, stamp = COVERAGE_STAMP, current = readTreeIdentity(REPO_ROOT) } = {}) {
+  assertCoverageFresh({ coverage, stamp, current })
+  const report = JSON.parse(readFileSync(coverage, 'utf8'))
   const names = ['lines', 'branches', 'functions', 'statements']
   return Object.fromEntries(names.map((name) => {
     const offenders = Object.entries(report)
@@ -211,12 +231,13 @@ function readCoverage() {
 }
 
 export async function measure() {
+  const coverage = readCoverage()
   return {
     ...(await lintMetrics()),
     duplication: readJscpd(),
     knipIssues: readKnip(),
     dependencyCycles: readCycles(),
-    ...readCoverage(),
+    ...coverage,
   }
 }
 
