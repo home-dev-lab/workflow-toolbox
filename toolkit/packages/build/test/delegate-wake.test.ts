@@ -158,6 +158,44 @@ it('F6 concurrent writers leave one complete throttle document and no shared tem
   expect(Object.keys(readThrottle(file).state)).toHaveLength(1)
 })
 
+it('F6 a rename refused while another writer holds the target (Windows EPERM/EACCES/EBUSY) is retried, bounded, never a shared temp', () => {
+  fixture()
+  const file = join(temp!, 'refused.json')
+  const refusal = (code: string) => Object.assign(new Error(`${code}: operation not permitted, rename`), { code })
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    const calls: string[] = []
+    const pauses: number[] = []
+    const rename = (from: string, to: string) => {
+      calls.push(from)
+      if (calls.length === 1) throw refusal(code)
+      fs.renameSync(from, to)
+    }
+    expect(writeThrottle(file, { [code]: { lastEmittedAt: 1, count: 1 } }, { rename, pause: (ms: number) => pauses.push(ms) })).toBeNull()
+    expect(calls).toHaveLength(2)
+    expect(pauses).toHaveLength(1)
+    expect(pauses[0]).toBeGreaterThan(0)
+    expect(calls[0]).toBe(calls[1])
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ [code]: { lastEmittedAt: 1, count: 1 } })
+  }
+  expect(fs.readdirSync(temp!).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  // A lasting refusal: each pause grows, and all of them together stay under one second.
+  let persistent = 0
+  const waited: number[] = []
+  const alwaysRefused = () => { persistent += 1; throw refusal('EPERM') }
+  expect(writeThrottle(file, { late: { lastEmittedAt: 2, count: 1 } }, { rename: alwaysRefused, pause: (ms: number) => waited.push(ms) })).toBe('throttle state unwritable')
+  expect(persistent).toBeGreaterThan(1)
+  expect(waited).toHaveLength(persistent - 1)
+  expect(waited.every((ms, index) => ms > 0 && (index === 0 || ms > (waited[index - 1] ?? 0)))).toBe(true)
+  expect(waited.reduce((sum, ms) => sum + ms, 0)).toBeLessThan(1000)
+  let other = 0
+  const notTransient = () => { other += 1; throw refusal('EXDEV') }
+  expect(writeThrottle(file, {}, { rename: notTransient, pause: () => { throw new Error('no pause for EXDEV') } })).toBe('throttle state unwritable')
+  expect(other).toBe(1)
+  expect(writeThrottle(join(temp!, 'no-seams.json'), {}, null)).toBeNull()
+  expect(fs.readdirSync(temp!).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  expect(Object.keys(readThrottle(file).state)).toEqual(['EBUSY'])
+})
+
 it('attribution is scoped to this session: no main notice means no alert; unowned and monitor notices stay silent, ambiguous and malformed ones degrade', () => {
   const own = detectRelays({ sessionId, main: [], agents: { [owner]: [launch('task1234'), assistant(-100)] },
     meta: { [owner]: { agentType: 'worker' } }, now: start + 100000 })

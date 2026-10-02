@@ -86,13 +86,38 @@ export function readThrottle(file) {
   return { state: writeError ? {} : state, degraded: writeError ?? degraded }
 }
 
-export function writeThrottle(file, state) {
+// Windows refuses `rename` over a file another process holds open (EPERM, EACCES or EBUSY), and two
+// watchers writing this state meet exactly that while the other's rename or read is in flight. The
+// refusal is transient: retry it, bounded (under a second in all), before reporting the state
+// unwritable. Any other error is not retried. The retry is not limited to Windows: elsewhere a refused
+// rename is a lasting permission problem and is reported after the same bound. `rename` and `pause` are
+// seams for tests only.
+const RENAME_TRANSIENT_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const RENAME_ATTEMPTS = 10
+const RENAME_PAUSE_MS = 20
+
+function pauseSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function renameRetrying(rename, pause, from, to) {
+  for (let attempt = 1; ; attempt += 1) {
+    try { return rename(from, to) } catch (error) {
+      if (!RENAME_TRANSIENT_CODES.has(error?.code) || attempt >= RENAME_ATTEMPTS) throw error
+      pause(RENAME_PAUSE_MS * attempt)
+    }
+  }
+}
+
+export function writeThrottle(file, state, seams) {
   let tmp
   try {
+    const rename = seams?.rename ?? fs.renameSync
+    const pause = seams?.pause ?? pauseSync
     tmp = `${file}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(tmp, JSON.stringify(state))
-    fs.renameSync(tmp, file)
+    renameRetrying(rename, pause, tmp, file)
     return null
   } catch { return 'throttle state unwritable' }
   finally { if (tmp) { try { fs.unlinkSync(tmp) } catch { /* renamed or unwritable */ } } }
