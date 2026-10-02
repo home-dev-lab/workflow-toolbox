@@ -4,7 +4,8 @@
 import { config } from './config.js';
 import { opReadArgv, opValueFrom } from './op-resolve.js';
 import { planReferences, renderReplacement } from './references.js';
-import { knownTokens, tokenize } from './token-vault.js';
+import { knownTokens, registrationRefusalReason, tokenize } from './token-vault.js';
+import { publishRefusals } from './journal.js';
 
 // A FAILED prefetch is remembered for a short window, keyed by account and reference.
 // Measured 2026-09-22 in a real session: ONE Bash command carrying ONE reference produced 42,716
@@ -30,15 +31,23 @@ const failures = new Map();
 const inFlight = new Map();
 
 function expire(now) {
-  for (const [key, at] of failures) {
+  for (const [key, { at }] of failures) {
     if (now - at < FAILURE_MEMORY_MS) break;
     failures.delete(key);
   }
 }
 
-function rememberFailure(key) {
+function rememberFailure(key, reason = '') {
   failures.delete(key);
-  failures.set(key, Date.now());
+  failures.set(key, { at: Date.now(), reason });
+}
+
+async function registerReference($, kind, value) {
+  const token = tokenize(kind, value);
+  const reason = registrationRefusalReason(value);
+  if (!reason) return { token };
+  await publishRefusals($);
+  return { token: null, reason: `a ${kind} reference whose value was refused by the vault floor (${reason})` };
 }
 
 /** Resident sizes, for the bound's own locks. */
@@ -56,15 +65,17 @@ async function resolveOnce($, key, ref, account) {
     return { token: null };
   }
   const value = opValueFrom(result);
-  if (!value) { rememberFailure(key); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
-  return { token: tokenize('onepassword', value) };
+  if (result?.exitCode !== 0) { rememberFailure(key); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
+  const resolved = await registerReference($, 'onepassword', value);
+  if (!resolved.token) rememberFailure(key, resolved.reason);
+  return resolved;
 }
 
 export async function resolveReference($, ref, account = config().opAccount) {
   const key = `${account}:${ref}`;
   expire(Date.now());
   // Answering from memory stays silent: a log line per attempt would storm exactly like the spawns.
-  if (failures.has(key)) return { token: null };
+  if (failures.has(key)) return { token: null, reason: failures.get(key).reason };
   const pending = inFlight.get(key);
   if (pending) return pending;
   // Every resolution in flight may record one failure, so it counts against the memory NOW: checking
@@ -120,7 +131,9 @@ const unrepresentable = (value) => value.includes('\0') || !value.isWellFormed()
 // (Astra H5 at f98cf712: a prefetch of `value\n\n` reached the output as `value`, unmasked).
 function substitutionVariants(kind, value) {
   const stripped = value.replace(/\n+$/, '');
-  return stripped && stripped !== value ? [tokenize(kind, stripped)] : [];
+  if (stripped === value) return [];
+  const token = tokenize(kind, stripped);
+  return registrationRefusalReason(stripped) ? [] : [token];
 }
 
 export async function rewriteReferences($, command) {
@@ -141,18 +154,18 @@ export async function rewriteReferences($, command) {
     const key = `${refAccount}:${ref}`;
     if (!prefetched.has(key)) {
       const resolved = await resolveReference($, ref, refAccount);
-      prefetched.set(key, resolved.token ? { token: resolved.token, value: knownTokens().get(resolved.token)?.value } : null);
+      prefetched.set(key, { ...resolved, value: knownTokens().get(resolved.token)?.value });
     }
     return prefetched.get(key);
   };
-  const prefetchFailed = () => refused(command, 'a 1Password reference that could not be prefetched', { prefetchFailed: true });
+  const prefetchFailed = (reason) => reason ? refused(command, reason) : refused(command, 'a 1Password reference that could not be prefetched', { prefetchFailed: true });
   // Before any prefetch: a disabled form refuses the whole command, and nothing is read for it.
   if (plan.occurrences.some((occurrence) => occurrence.form === 'env')) return refused(command, ENV_DISABLED);
   for (const occurrence of plan.occurrences) {
     let value;
     if (occurrence.form === 'op') {
       const resolved = await opValue(`op://${occurrence.path}`, account);
-      if (!resolved) return prefetchFailed();
+      if (!resolved.token) return prefetchFailed(resolved.reason);
       value = resolved.value;
       substituted.push(resolved.token);
     } else {
@@ -160,8 +173,17 @@ export async function rewriteReferences($, command) {
       // runs: a value no detector recognises can only be masked in the output because the vault knows it.
       value = occurrence.form === 'file' ? await fileContent($, occurrence) : knownTokens().get(occurrence.label)?.value;
       if (typeof value !== 'string') return refused(command, 'a reference whose value could not be read');
-      if (occurrence.form === 'token') substituted.push(occurrence.label);
-      else if (value) substituted.push(tokenize('file', value));
+      if (occurrence.form === 'token') {
+        const reason = registrationRefusalReason(value);
+        if (reason) return refused(command, `a token reference whose value was refused by the vault floor (${reason})`);
+        substituted.push(occurrence.label);
+      }
+      // An empty file binds an empty argument and holds nothing, as before the vault floor existed.
+      else if (value) {
+        const resolved = await registerReference($, 'file', value);
+        if (!resolved.token) return refused(command, resolved.reason);
+        substituted.push(resolved.token);
+      }
     }
     if (unrepresentable(value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
     const kind = occurrence.form === 'op' ? 'onepassword' : occurrence.form === 'file' ? 'file' : knownTokens().get(occurrence.label)?.kind ?? 'token';
@@ -175,7 +197,7 @@ export async function rewriteReferences($, command) {
     // The configured account applies exactly as to a bare reference when the command names none
     // (Astra at 2618aa81: `op read <ref>` prefetched without the configured --account).
     const resolved = await opValue(invocation.ref, invocation.account || account);
-    if (!resolved) return prefetchFailed();
+    if (!resolved.token) return prefetchFailed(resolved.reason);
     if (unrepresentable(resolved.value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
     substituted.push(resolved.token, ...substitutionVariants('onepassword', resolved.value));
     const name = bind(resolved.value);
