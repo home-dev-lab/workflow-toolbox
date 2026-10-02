@@ -5,6 +5,25 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.190.0] - 2026-10-02
+
+### Quality
+
+Minor release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`). Cyclomatic and cognitive complexity, ESLint warnings and duplication improved. Knip issues rose by 19; the cause has not been analysed yet and is tracked for the next release. Coverage is not reported: the coverage artifact the delta read predates this release tree (no fresh `pnpm quality:coverage` ran before the measurement), so its figures would not describe this release.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 124 | -2 |
+| Cognitive complexity | 268 -> 243 | -25 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 640 | -44 |
+| Duplication % | 2.4324 -> 2.2988 | -0.13 |
+| Knip issues | 196 -> 215 | +19 |
+| Dependency cycles | 2 -> 2 | 0 |
+
 ### Added
 - A SessionStart hook, `wt-session-env-dedup-hook.mjs`, stops a session from reaching `E2BIG` through repeated appends to its session-env files. At each start it removes duplicate literal `export` lines (keeping the last of each) from the current session's `sessionstart-hook-*.sh` files, and warns when the directory exceeds 64 KiB, naming the file and its size. Files with any non-literal line, other sessions' directories and a `CLAUDE_ENV_FILE` outside a `session-env` directory are never touched; on any harness without that variable it is a silent no-op. On Windows it rewrites nothing, because Windows refuses to replace a file that another handle holds open; the size alarm still runs there and says deduplication is unavailable on this platform.
 - A new `SubagentStop` hook (`wt-cancelled-call-relay-guard-hook.mjs`) for delegates whose tool call is cancelled with the generic "The user doesn't want to take this action right now. STOP…" text. It reads the delegate's own transcript and, when the newest such cancellation was not followed by a message, blocks the stop once. It asks for one `SendMessage` to the spawner with the tool name and the verbatim text, background work kept running, then a wait for the answer, and says that relaying is how a delegate waits for instructions. The message states only what the transcript shows, including when it records the hook run on that call as cancelled. It blocks at most once per stop cycle, never twice for duplicate registrations, and not again when a message sent after its nudge is itself cancelled. An unreadable transcript makes it silent. It ignores the main loop, real permission refusals (`user-rejected`), agents without a messaging tool and Workflow subagents. Each block is counted in the shared guard journal. The pilot template carries the same instruction for sessions without the hook.
