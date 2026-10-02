@@ -4062,6 +4062,8 @@ await test('a successful result scrubs a value that only a later field revealed'
 // warning appended there never reached the model, on a refusal or on a result). The measurement-mode warning
 // therefore travels inside the refusal text, or in `context` beside a result.
 const MEASUREMENT_WARNING = /WOULD BLOCK; executed in measurement mode/;
+// A refusal may come before anything ran (an unreadable reference), so its warning must not claim execution.
+const REFUSAL_WARNING = /\[wt-secret-guard: WOULD BLOCK(?![^\]]*executed)[^\]]*credential file/;
 const guardedCommand = 'cat "$HOME/.netrc"';
 await test('a guarded-path refusal for an unreadable reference carries the warning inside deny and no other field', () => freshVault(async () => {
   let executed = false;
@@ -4069,14 +4071,16 @@ await test('a guarded-path refusal for an unreadable reference carries the warni
   assert.equal(executed, false, 'the refused command ran');
   assert.deepEqual(Object.keys(answer), ['deny'], 'a refusal carried a field the host contract forbids');
   assert.match(answer.deny, /refused Bash execution/);
-  assert.match(answer.deny, MEASUREMENT_WARNING, 'the measurement warning was not in the refusal text');
+  assert.match(answer.deny, REFUSAL_WARNING, 'the refusal did not carry a warning that stays true when nothing ran');
+  assert.doesNotMatch(answer.deny, MEASUREMENT_WARNING, 'a refusal claimed the command executed');
 }));
 await test('a guarded-path errored command answers a scrubbed refusal with the warning inside deny and no other field', () => freshVault(async () => {
   const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} >&2; exit 3` }, async () => erroredCore(`Exit code 3\n${erroredValue}`));
   assert.deepEqual(Object.keys(answer), ['deny'], 'a refusal carried a field the host contract forbids');
   assert.equal(answer.deny.includes(erroredValue), false, 'raw value reached the refusal');
   assert.match(answer.deny, /secret:slack-token#/);
-  assert.match(answer.deny, MEASUREMENT_WARNING, 'the measurement warning was not in the refusal text');
+  assert.match(answer.deny, REFUSAL_WARNING, 'the refusal did not carry a warning that stays true when nothing ran');
+  assert.doesNotMatch(answer.deny, MEASUREMENT_WARNING, 'a refusal claimed the command executed');
 }));
 await test('a guarded-path result keeps core text untouched and carries the warning in context after the context beneath', () => freshVault(async () => {
   const answer = await hookForTool('Bash')($, { tool: 'Bash', command: guardedCommand }, async () => ({ result: { stdout: 'ok\n', stderr: '' }, text: 'ok\n', ref: 9, context: ['beneath'] }));
@@ -4094,6 +4098,22 @@ await test('a guarded Read answers with the warning in context, never in text', 
 await test('an unguarded result gets no measurement warning anywhere', () => freshVault(async () => {
   const answer = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo plain' }, async () => ({ result: { stdout: 'plain\n', stderr: '' }, text: 'plain\n', ref: 3 }));
   assert.equal(MEASUREMENT_WARNING.test(JSON.stringify(answer)), false);
+}));
+await test('an empty refusal from beneath stays a bare refusal, guarded or not, even after a reference rewrite', () => freshVault(async () => {
+  const plain = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async () => ({ deny: '' }));
+  assert.deepEqual(plain, { deny: '' }, 'an empty refusal gained a field the host contract forbids');
+  const guarded = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} && echo op://Private/item/field` }, async () => ({ deny: '' }));
+  assert.deepEqual(Object.keys(guarded), ['deny'], 'a guarded empty refusal gained a field the host contract forbids');
+  assert.match(guarded.deny, REFUSAL_WARNING);
+}));
+await test('a guarded errored result with nothing to scrub keeps core error and carries the warning in context', () => freshVault(async () => {
+  const core = { isError: true, result: 'Exit code 3', text: 'Exit code 3', ref: 7 };
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} >/dev/null; exit 3` }, async () => core);
+  assert.equal(answer.deny, undefined);
+  assert.equal(answer.result, core.result);
+  assert.equal(answer.text, core.text, 'core error text was rewritten');
+  assert.equal(answer.isError, true);
+  assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING);
 }));
 const { runRevisionLocks } = await import('./revision-locks.mjs');
 await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });

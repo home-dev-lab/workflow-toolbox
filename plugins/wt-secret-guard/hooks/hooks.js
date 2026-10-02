@@ -66,10 +66,11 @@ function withNotes(result, rewrites, tokenised = false) {
   return { ...result, text: typeof result.text === 'string' ? `${result.text}\n${notes.join('\n')}` : notes.join('\n') };
 }
 
-// A tool result's `text` is core's rendering, which the host never reads back from a hook (measured: a note
-// appended there did not reach the model). The notes go in `context`, which the model reads after the result.
+// The host builds what the model reads of a tool result from its `result`, never from a hook's `text` (measured:
+// a note appended there did not reach the model). The notes go in `context`, which the model reads after the
+// result. Any refusal, an empty one included, is returned as it came: the host types a refusal as `{ deny }` alone.
 function withResultNotes(result, rewrites, tokenised = false) {
-  if (!result || result.deny || (!rewrites && !tokenised)) return result;
+  if (!result || typeof result !== 'object' || result.deny !== undefined || (!rewrites && !tokenised)) return result;
   const context = Array.isArray(result.context) ? result.context : [];
   return { ...result, context: [...context, ...noteLines(rewrites, tokenised)] };
 }

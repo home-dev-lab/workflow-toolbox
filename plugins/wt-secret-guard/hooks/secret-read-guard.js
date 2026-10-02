@@ -14,11 +14,15 @@ export async function applySecretReadGuard(host, event, next, verdict, surface) 
   return withWarning(result);
 }
 
-// The host types a refusal as `{ deny }` alone and renders an answered call from core's own messages, so a
-// warning in `text` is dropped on both. It travels inside the refusal, or in `context` after the result.
+// A refusal can come before anything ran (an unreadable reference), so its warning never claims execution.
+export const REFUSAL_WARNING = '[wt-secret-guard: WOULD BLOCK; this command can read a credential file.]';
+
+// The host types a refusal as `{ deny }` alone, and builds what the model reads of an answered call from its
+// `result` (core's own messages when `ref` is handed back), never from a hook's `text`. So the warning travels
+// inside the refusal, or in `context`, which the model reads after the result.
 function withWarning(result) {
   if (!result || typeof result !== 'object') return result;
-  if (typeof result.deny === 'string') return { deny: `${result.deny}\n${WARNING}` };
+  if (result.deny !== undefined) return { deny: `${result.deny}\n${REFUSAL_WARNING}` };
   const context = Array.isArray(result.context) ? result.context : [];
   return { ...result, context: [...context, WARNING] };
 }
