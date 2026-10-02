@@ -266,6 +266,7 @@ Minor release: measured on the release tree against the 0.189.0 baseline (`node 
 | Duplication % | 2.4324 -> 2.2063 | -0.23 |
 | Knip issues | 196 -> 189 | -7 |
 | Dependency cycles | 2 -> 2 | 0 |
+- `wt-rules-on-demand` offline judge (EXPERIMENTAL, measurement-only): `judge` now defaults to the `sonnet` model. Measured against blind-labelled real transcripts, `haiku` was wrong on most of the cases it decided and called violations where none occurred. `score` adds a violation-detector line (violation precision and recall, no-violation precision, share of determinate cases decided), and extracted cases now say whether the excerpt hit its budget (`excerptBudgetHit`) or only had single items cut (`itemsCut`), next to the existing `truncated`.
 
 ## [0.190.0] - 2026-10-02
 

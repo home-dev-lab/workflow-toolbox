@@ -135,24 +135,28 @@ function excerpt(records, serve, end, acts, scopeStart) {
     }
     for (const answerIndex of act.answerIndices ?? []) add(answerIndex);
   }
-  let output = '', previous = 0, truncated = false;
+  // Two different losses: the whole excerpt hitting its budget (later lines are gone) and one item cut at ITEM_CHARS
+  // (its head is still shown). Cases record both; `truncated` keeps meaning "something was cut", and stays the only
+  // loss the prompt shows, because a prompt reporting them separately did not judge more precisely when measured.
+  let output = '', previous = 0, budgetHit = false, itemsCut = 0;
   const kept = new Set();
+  const cutsIn = (text) => text.split('[item truncated]').length - 1;
   for (const index of [...selected].sort((a, b) => a - b)) {
     const gap = previous ? index - previous - 1 : 0;
     const raw = represented(records[index], index, calls.get(index), results.get(index));
     const piece = (gap > 0 ? `… ${gap} lines omitted …\n` : '') + raw + '\n';
     if (output.length + piece.length > EXCERPT_CHARS) {
-      truncated = true;
-      if (!output) { output = piece.slice(0, EXCERPT_CHARS); kept.add(index); }
+      budgetHit = true;
+      if (!output) { output = piece.slice(0, EXCERPT_CHARS); kept.add(index); itemsCut += cutsIn(output); }
       break;
     }
     output += piece;
     kept.add(index);
-    truncated ||= raw.includes('[item truncated]');
+    itemsCut += cutsIn(raw);
     previous = index;
   }
    const dropped = acts.filter((act) => !kept.has(act.index) || act.id && !output.includes(`[tool call ${act.use.name} ${act.id}]`)).length;
-  return { excerpt: output, truncated, droppedActs: dropped };
+  return { excerpt: output, truncated: budgetHit || itemsCut > 0, excerptBudgetHit: budgetHit, itemsCut, droppedActs: dropped };
 }
 
 async function agentFacts(acts, cwd, options) {
@@ -275,7 +279,7 @@ export async function extractCases(options) {
        cases.push({ caseId: digest(`${path}\0${delivery.line}\0${delivery.blockIndex}\0${delivery.name}\0${delivery.toolUseId}`), rule: delivery.name, ruleText: delivery.text,
         currentRuleHash: rule.hash, triggerSource: history.source ?? 'unavailable', transcriptPath: path, serveLine: delivery.line, timestamp: delivery.at,
         sessionId: records.find((record) => record.sessionId)?.sessionId ?? basename(path, '.jsonl'), agentId: delivery.agentId === 'main' && path.split(/[\\/]/).includes('subagents') ? basename(path, '.jsonl') : delivery.agentId,
-        excerpt: context.excerpt, facts, truncated: context.truncated, droppedActs: context.droppedActs,
+        excerpt: context.excerpt, facts, truncated: context.truncated, excerptBudgetHit: context.excerptBudgetHit, itemsCut: context.itemsCut, droppedActs: context.droppedActs,
         governedActs: acts.length, ...(triggerReason ? { triggerState: 'unknown', triggerReason } : { triggerState: 'known' }) });
     }
   }
