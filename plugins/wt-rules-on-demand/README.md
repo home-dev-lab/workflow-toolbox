@@ -328,8 +328,9 @@ For each governed call the excerpt includes its preceding prompt and assistant
 text, arguments and result, with compaction markers and line-numbered gaps.
 Arguments/results are capped at 1,200 characters each and the excerpt at 12,000
 characters; the case records `truncated` (anything cut), and separately
-`excerptBudgetHit` (the 12,000-character budget dropped later lines) and
-`itemsCut` (how many single items were cut at 1,200 characters), plus the
+`excerptBudgetHit` (the 12,000-character budget dropped later lines, or cut a
+first line longer than the whole budget) and `itemsCut` (how many single items
+were cut at 1,200 characters, counted where the cut is made), plus the
 dropped-act count. Most cut excerpts lose only item tails, not whole lines. Only the model
 can return `not applicable`, on non-empty evidence; code never decides a negative.
 The extract summary compares raw served blocks to cases produced, including
@@ -359,7 +360,9 @@ case lacks a judge row); score counts every multiply-labelled case for agreement
 but only agreed cases with judge rows for precision/recall. It also prints a
 violation-detector line, in which `followed` and `not applicable` both count as
 no violation: violation precision and recall, no-violation precision, and the
-share of determinate cases the judge decided. A judge file with
+share of determinate cases the judge decided. A violation called on a case the
+labellers agreed is `undecidable` counts against violation precision: a warning
+the evidence cannot support is a false alarm. A judge file with
 multiple predictions for one case (for example, changed evidence or two model
 runs) must be split before scoring.
 

@@ -36,6 +36,13 @@ test('an excerpt that overflows its budget says so, with the dropped acts counte
   assert.ok(item.droppedActs > 0);
 });
 
+test('transcript text that merely contains the cut marker is not counted as a cut item', async (t) => {
+  const { cases } = await casesFor(t, [serve('a'), call('a', 'quoting a past excerpt: … [item truncated] and again [item truncated]')]);
+  const [item] = cases;
+  assert.equal(item.itemsCut, 0);
+  assert.equal(item.truncated, false);
+});
+
 test('an excerpt with nothing cut reports neither loss', async (t) => {
   const { cases } = await casesFor(t, [serve('a'), call('a', 'short')]);
   const [item] = cases;
