@@ -2,7 +2,7 @@
 // Composition root and dependency inversion: wire pure policies to host capabilities in order.
 import { configure, config } from './config.js';
 import { detections } from './detector.js';
-import { appendEvent, publish } from './journal.js';
+import { appendEvent, publish, publishRefusals } from './journal.js';
 import { scrubPromptStorage, scrubToolUseStorage } from './prompt-storage-host.js';
 import { resolveReference as resolveRuntimeReference, rewriteReferences } from './reference-runtime.js';
 import { planReferences } from './references.js';
@@ -94,9 +94,10 @@ function erroredAnswer(original, cleaned, rewrites = 0) {
 async function scrubToolResult($, event, next) {
   const response = await next(event);
   const cleaned = scrubSettled(response, '');
+  const answer = erroredAnswer(response, cleaned);
   await publish(journalHost($));
   if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-  return erroredAnswer(response, cleaned);
+  return answer;
 }
 
 async function measuredRead($, event, next, surface) {
@@ -137,6 +138,7 @@ async function guardedOutbound($, event, next) {
 
 async function warnHookAttachment($, event, next) {
   const cleaned = scrub(event, '');
+  await publish(journalHost($));
   if (event.origin?.kind === 'hook' && event.origin?.event === 'SessionStart' && cleaned.changed) {
     await appendEvent(journalHost($), { surface: 'attachment', action: 'warned', dedupeKey: `attachment:${event.index ?? 'session-start'}` });
     await $.ui.log('wt-secret-guard: detected and scrubbed a SessionStart hook attachment; model-side propagation of attachment rewrites is unproven. Remove the value from the source hook or consumer store.');
@@ -167,6 +169,7 @@ export const register = (on, options) => {
     const execute = async (originalEvent) => {
       // The rewrite prefetches every 1Password value and binds it into the command as data.
       const rewrite = await rewriteReferences(references, originalCommand);
+      await publishRefusals(audit);
       if (rewrite.prefetchFailed) return { deny: 'wt-secret-guard refused Bash execution because a 1Password reference could not be prefetched.' };
       if (rewrite.invalidReference) {
         return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word or as the whole contents of a quoted word. A reference inside a heredoc body is left as text.` };
@@ -175,9 +178,10 @@ export const register = (on, options) => {
       const substituted = new Set(rewrite.substituted);
       const response = await next(rewrite.command === originalCommand ? originalEvent : { ...originalEvent, command: rewrite.command });
       const cleaned = scrubSettled(response, rewrite.command, true, substituted);
+      const answer = erroredAnswer(response, cleaned, rewrite.count);
       await publish(audit);
       if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-      return erroredAnswer(response, cleaned, rewrite.count);
+      return answer;
     };
     if (!config().secretFileReadWarnings) {
       await appendEvent(audit, { surface: 'bash', action: 'policy-disabled', ruleId: 'policy', commandClass: 'bash', toolUseId: event.tool_use_id });
@@ -200,17 +204,23 @@ export const register = (on, options) => {
   on('turn.step', async function* ($, event, next) {
     const correlation = event.turnId ?? event.index;
     const stream = maskTurnStep(event, next, REDACTION_NOTE, () => appendEvent(journalHost($), { surface: 'assistant', action: 'masked', dedupeKey: correlation ? `assistant:${correlation}` : undefined }));
-    for (;;) {
-      const step = await stream.next();
-      if (step.done) return step.value;
-      yield step.value;
-    }
+    try {
+      for (;;) {
+        const step = await stream.next();
+        await publish(journalHost($));
+        if (step.done) return step.value;
+        yield step.value;
+      }
+    } finally { await stream.return(); await publish(journalHost($)); }
   });
-  on('ui.render', { component: 'AssistantMessage' }, ($, event, next) => maskAssistantRender(event, next));
+  on('ui.render', { component: 'AssistantMessage' }, async ($, event, next) => {
+    try { return await maskAssistantRender(event, next); } finally { await publish(journalHost($)); }
+  });
   on('prompt.submit', async ($, event, next) => {
     const cleaned = scrub(event, '');
+    const detected = new Set(typeof event.text === 'string' ? detections(event.text).map(({ value, secret = value }) => secret) : []);
     const replacements = typeof event.text === 'string'
-      ? [...knownTokens()].filter(([, entry]) => event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
+      ? [...knownTokens()].filter(([, entry]) => (!entry.ephemeral || detected.has(entry.value)) && event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
       : [];
     await publish(journalHost($));
     if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
