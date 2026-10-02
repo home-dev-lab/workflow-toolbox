@@ -28,7 +28,9 @@ const PNPM_DIR_FLAG = /^(?:-C|--dir)$/
 // Split points that start a new command word, kept so the walk knows when a subshell or group opens
 // or closes: a `cd` inside one does not move the directory of what follows it.
 // A brace is a group only as its own word (`{ cmd; }`), never inside `${NAME}`.
-const TOKEN = /(&&|\|\||;|\||\n|(?<![>&])&(?![&>])|\$\(|\(|\)|(?<![$\w])\{(?=\s)|(?<=[\s;])\})/
+const SEPARATORS = ['&&', '\\|\\|', ';', '\\|', '\\n', '(?<![>&])&(?![&>])']
+const GROUP_MARKS = ['\\$\\(', '\\(', '\\)', '(?<![$\\w])\\{(?=\\s)', '(?<=[\\s;])\\}']
+const TOKEN = new RegExp(`(${[...SEPARATORS, ...GROUP_MARKS].join('|')})`)
 const OPENERS = new Set(['$(', '(', '{'])
 const CLOSERS = new Set([')', '}'])
 const COVERAGE_ORDER = ['bypassed', 'uncovered', 'unknown', 'inherited-lease', 'lease-script', 'lease-config']
@@ -54,7 +56,7 @@ function leadingAssignments(segment) {
   const assigned = {}
   let rest = segment.trim()
   for (;;) {
-    const match = rest.match(/^(?:(?:sudo|env)\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\S*)(?:\s+|$)/)
+    const match = rest.match(/^(?:(?:sudo|env)\s+)?([A-Za-z_]\w*)=(\S*)(?:\s+|$)/)
     if (!match) return { assigned, rest }
     assigned[match[1]] = match[2]
     rest = rest.slice(match[0].length)
@@ -95,8 +97,8 @@ function expand(value, vars, home) {
   // Quoted spans arrive blanked to '' or "" (stripNonCode): their content is not readable here.
   if (/[`'"]/.test(value)) return null
   const expanded = value
-    .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (all, braced, bare) => vars[braced ?? bare] ?? all)
-    .replace(/^~(?=\/|$)/, home ?? '~')
+    .replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (all, braced, bare) => vars[braced ?? bare] ?? all)
+    .replace(/^~(?=\/|$)/, () => home ?? '~')
   return /[$~]/.test(expanded) || expanded === '' ? null : expanded
 }
 
@@ -132,14 +134,17 @@ export function parseTestRunStarts(command, cwd = null, home = null) {
   const starts = []
   for (const token of stripNonCode(command.replace(/\bWT_SUITE_LOCK=(['"])0\1/g, 'WT_SUITE_LOCK=0')).replace(/(^|[\s;&|()])#[^\n]*/gm, '$1').split(TOKEN)) {
     if (OPENERS.has(token)) { stack.push(state.dir); continue }
-    if (CLOSERS.has(token)) { if (stack.length) state.dir = stack.pop(); continue }
+    if (CLOSERS.has(token)) {
+      if (stack.length) state.dir = stack.pop()
+      continue
+    }
     const { assigned, rest } = leadingAssignments(commandHead(token))
     if (!rest) {
       for (const [name, value] of Object.entries(assigned)) state.vars[name] = expand(value, state.vars, home) ?? `$${name}`
       continue
     }
     if (/^export\s+/.test(rest)) {
-      for (const exported of rest.slice(7).matchAll(/(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=(\S*)/g)) {
+      for (const exported of rest.slice(7).matchAll(/(?:^|\s)([A-Za-z_]\w*)=(\S*)/g)) {
         state.exportedAssignment = assignmentCoverage(exported[1], exported[2]) ?? state.exportedAssignment
       }
       continue

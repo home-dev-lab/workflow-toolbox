@@ -49,9 +49,10 @@ function parseSnapshot(stdout) {
   const processes = []
   for (const line of String(stdout).split('\n')) {
     if (!line.trim()) continue
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/)
-    if (!match) throw new Error('process enumeration returned an unexpected shape')
-    processes.push({ pid: Number(match[1]), ppid: Number(match[2]), comm: match[3], args: match[4] })
+    const [pid, ppid, comm] = line.trim().split(/\s+/, 3)
+    if (!/^\d+$/.test(pid) || !/^\d+$/.test(ppid ?? '') || !comm) throw new Error('process enumeration returned an unexpected shape')
+    const commAt = line.indexOf(comm, line.indexOf(ppid, line.indexOf(pid) + pid.length) + ppid.length)
+    processes.push({ pid: Number(pid), ppid: Number(ppid), comm, args: line.slice(commAt + comm.length).trim() })
   }
   if (!processes.length) throw new Error('process enumeration returned no process records')
   return processes
@@ -171,6 +172,12 @@ function enumerationUnavailable(input, starts, reason) {
   })
 }
 
+function startClass(concurrent, delegateOutside, count) {
+  if (concurrent) return 'concurrent-test-start'
+  if (delegateOutside) return 'uncovered-delegate-start'
+  return count > 0 ? 'lock-queued-start' : 'solo-test-start'
+}
+
 function main() {
   const input = readInput()
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return
@@ -192,7 +199,7 @@ function main() {
   const delegate = typeof input.agent_id === 'string' && input.agent_id !== '' && !isWorkflowSubagentPayload(input)
   const delegateOutside = !concurrent && delegate && lock.inUse && coverage === 'uncovered'
 
-  const cls = concurrent ? 'concurrent-test-start' : delegateOutside ? 'uncovered-delegate-start' : count > 0 ? 'lock-queued-start' : 'solo-test-start'
+  const cls = startClass(concurrent, delegateOutside, count)
   recordGuardEvent({
     guard: GUARD,
     decision: concurrent || delegateOutside ? 'warned' : 'silent',
