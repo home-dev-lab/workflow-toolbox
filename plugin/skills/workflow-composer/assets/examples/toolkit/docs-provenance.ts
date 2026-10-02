@@ -772,6 +772,12 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
+    // The concurrent-test guard decides lock coverage through these two modules; its known-issues
+    // entry states the coverage rules, the record fields and the cross-platform behaviour.
+    sources: ['plugin/bin/wt-concurrent-test-guard-hook.mjs', 'plugin/bin/lib/test-run-lock-coverage.mjs', 'plugin/bin/lib/host/test-run-lock-host.mjs'],
+    docs: ['docs/public/known-issues.md'],
+  },
+  {
     sources: ['plugin/bin/wt-config.mjs', 'plugin/bin/wt-config-context-hook.mjs', 'plugin/bin/lib/plugin-options.mjs'],
     docs: ['README.md'],
   },
