@@ -1,4 +1,6 @@
 // Information hiding: raw values stay in this registry and callers operate on stable tokens.
+import { isCommonWord } from './common-words.js';
+
 const tokens = new Map();
 // Every value the vault holds, so a token is never minted equal to one (verify13 finding 1).
 const values = new Set();
@@ -8,6 +10,7 @@ const MAX_INDEXED_VALUE_LENGTH = 4096;
 let serial = 0;
 let entryOrder = 0;
 let pending = [];
+let refusedRegistrations = new Map();
 const work = { valueLookupSteps: 0, scrubEntryScans: 0, shortValueScans: 0, prefixLookups: 0, prefixCandidateChecks: 0, prefixCandidateSearches: 0, prefixLengthRejections: 0 };
 const prefixIndex = new Map();
 const shortEntries = [];
@@ -126,7 +129,26 @@ function shortHash(value) {
   return (state >>> 0).toString(16).padStart(8, '0').slice(0, 6);
 }
 
+// The floor governs later matching, not masking in the text that first detected a value.
+// Returns only a closed reason, never value material; length counts Unicode code points.
+export function registrationRefusalReason(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return 'whitespace';
+  if ([...trimmed].length < 4) return 'short';
+  return isCommonWord(trimmed.toLowerCase()) ? 'common-word' : '';
+}
+
+function refuseRegistration(kind, reason) {
+  // Kind is an enum-like label supplied by callers, but never accept value material as a label.
+  const safeKind = typeof kind === 'string' && /^[a-z][a-z-]{0,40}$/.test(kind) ? kind : 'unknown';
+  const key = `${safeKind}:${reason}`;
+  const previous = refusedRegistrations.get(key);
+  refusedRegistrations.set(key, { kind: safeKind, reason, count: (previous?.count ?? 0) + 1 });
+}
+
 export function tokenize(kind, value) {
+  const reason = registrationRefusalReason(value);
+  if (reason) refuseRegistration(kind, reason);
   // The token for a value is one no held value is spelled like: a value registered AFTER its token was
   // issued can share that spelling, and emitting it then prints that other value verbatim (Astra at
   // 7323b6d2: A's token reused as A's replacement printed B, whose value was that spelling). Such a
@@ -140,14 +162,13 @@ export function tokenize(kind, value) {
   // candidate is drawn. The shape stays `secret:<kind>#<6 hex>`, which every consumer matches.
   let token;
   do { serial += 1; token = `secret:${kind}#${shortHash(`${serial}:${value}`)}`; } while (tokens.has(token) || token === value || values.has(token));
-  const entry = { kind, value };
+  const entry = reason ? { kind, value, ephemeral: true } : { kind, value };
   tokens.set(token, entry);
-  indexEntry(token, kind, value);
-  values.add(value);
+  if (!reason) { indexEntry(token, kind, value); values.add(value); }
   const shadowed = tokens.get(value);
   if (shadowed && tokenByValue.get(shadowed.value) === value) tokenByValue.delete(shadowed.value);
   tokenByValue.set(value, token);
-  pending.push({ token, kind, value });
+  if (!reason) pending.push({ token, kind, value });
   return token;
 }
 
@@ -181,12 +202,19 @@ export function replacementFor(token) {
 }
 export function takePending() { const result = pending; pending = []; return result; }
 export function restorePending(entries) { pending = [...entries, ...pending]; }
+export function takeRefusedRegistrations() { const result = [...refusedRegistrations.values()]; refusedRegistrations.clear(); return result; }
+export function restoreRefusedRegistrations(entries) {
+  for (const entry of entries) {
+    const key = `${entry.kind}:${entry.reason}`;
+    refusedRegistrations.set(key, { ...entry, count: entry.count + (refusedRegistrations.get(key)?.count ?? 0) });
+  }
+}
 export function testState() { return new Map(tokens); }
 export function testResetVaultWork() { for (const key of Object.keys(work)) work[key] = 0; }
 export function testVaultWork() { return { ...work, ...indexStats, prefixKeys: prefixIndex.size, maxIndexedValueLength: MAX_INDEXED_VALUE_LENGTH }; }
 export function testVaultSnapshot() {
   return {
-    tokens: new Map(tokens), values: new Set(values), tokenByValue: new Map(tokenByValue), serial, entryOrder, pending: [...pending],
+    tokens: new Map(tokens), values: new Set(values), tokenByValue: new Map(tokenByValue), serial, entryOrder, pending: [...pending], refusedRegistrations: new Map(refusedRegistrations),
   };
 }
 export function testRestoreVault(snapshot) {
@@ -195,6 +223,7 @@ export function testRestoreVault(snapshot) {
   tokenByValue.clear(); for (const entry of snapshot.tokenByValue) tokenByValue.set(...entry);
   prefixIndex.clear(); shortEntries.length = 0; categoryCounts.clear(); longCategoryMinLengths.clear();
   entryOrder = 0; indexStats.oversizedValues = 0; indexStats.prefixEntries = 0; indexStats.prefixKeyCharacters = 0;
-  for (const [token, entry] of tokens) indexEntry(token, entry.kind, entry.value);
+  for (const [token, entry] of tokens) if (!entry.ephemeral) indexEntry(token, entry.kind, entry.value);
   serial = snapshot.serial; entryOrder = snapshot.entryOrder; pending = [...snapshot.pending];
+  refusedRegistrations = new Map(snapshot.refusedRegistrations ?? []);
 }

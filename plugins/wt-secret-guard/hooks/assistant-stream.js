@@ -75,7 +75,7 @@ function fragmentIndex() {
   const options = config();
   if (fragments.size === vault.size && fragments.emails === options.maskEmails && fragments.addresses === options.maskIpAddresses) return fragments.index;
   const index = new Map();
-  for (const [label, entry] of vault) addGrams(index, entry.kind, entry.value, { label }, options);
+  for (const [label, entry] of vault) if (!entry.ephemeral) addGrams(index, entry.kind, entry.value, { label }, options);
   fragments = { size: vault.size, emails: options.maskEmails, addresses: options.maskIpAddresses, index };
   return index;
 }
@@ -90,7 +90,7 @@ function secretSpans(text, from, final) {
   const options = config();
   const spans = [];
   for (const [label, entry] of knownTokens()) {
-    if (typeof entry.value !== 'string' || !entry.value || !eligible(entry.kind, options)) continue;
+    if (entry.ephemeral || typeof entry.value !== 'string' || !entry.value || !eligible(entry.kind, options)) continue;
     if (entry.value.length >= FRAGMENT) continue; // longer values are covered by the fragment index
     for (const at of occurrences(text, entry.value, from)) spans.push({ start: at, end: at + entry.value.length, label });
   }

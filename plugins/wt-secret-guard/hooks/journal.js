@@ -1,6 +1,6 @@
 // Audit without disclosure: persist only closed enums and identifiers while owning legacy publication.
 import { sha256 } from './sha256.js';
-import { knownTokens, restorePending, takePending } from './token-vault.js';
+import { knownTokens, restorePending, restoreRefusedRegistrations, takePending, takeRefusedRegistrations } from './token-vault.js';
 
 const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'web-fetch', 'web-search', 'agent', 'task', 'assistant', 'attachment']);
 const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool']);
@@ -117,12 +117,22 @@ export function promotionStatus(events, dispositions, now = Date.now()) {
   };
 }
 
+export async function publishRefusals($) {
+  const refused = takeRefusedRegistrations();
+  for (let index = 0; index < refused.length; index += 1) {
+    const { kind, reason, count } = refused[index];
+    try { await $.uiLog(`wt-secret-guard: registration refused (kind ${kind}, reason ${reason}, count ${count})`); }
+    catch { restoreRefusedRegistrations(refused.slice(index)); return; }
+  }
+}
+
 export async function publish($) {
+  await publishRefusals($);
   const added = takePending();
   if (!added.length) return;
   try {
     const key = await ensureSalt($);
-    const entries = [...knownTokens()].map(([token, entry]) => ({ token, kind: entry.kind, sha256: sha256(`${key}:${entry.value}`) }));
+    const entries = [...knownTokens()].filter(([, entry]) => !entry.ephemeral).map(([token, entry]) => ({ token, kind: entry.kind, sha256: sha256(`${key}:${entry.value}`) }));
     await $.setDetections({ version: 1, updatedAt: new Date().toISOString(), entries });
     const stats = await $.getStats() ?? {};
     for (const entry of added) stats[entry.kind] = Number(stats[entry.kind] ?? 0) + 1;
