@@ -182,7 +182,10 @@ export function shellAssignments(command) {
     else if (CLOSERS.has(first) && blocks > 0) blocks -= 1;
     previous = segment.sep;
     if (!top) continue;
-    if (first === 'unset') { for (const name of segment.words.slice(1).filter((word) => !word.startsWith('-'))) found.push({ start: segment.start, name, unset: true }); continue; }
+    if (first === 'unset') {
+      for (const name of segment.words.slice(1).filter((word) => !word.startsWith('-'))) found.push({ start: segment.start, name, unset: true });
+      continue;
+    }
     const words = first === 'export' ? segment.words.slice(1) : segment.words;
     if (!words.length || !words.every((word) => /^[A-Za-z_]\w*=/.test(word))) continue;
     for (const word of words) {

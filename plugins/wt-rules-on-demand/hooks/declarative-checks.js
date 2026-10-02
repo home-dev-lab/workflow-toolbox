@@ -73,7 +73,7 @@ function expand(text, vars) {
       output += text.slice(i, stop); i = stop; continue;
     }
     if (c === '"') quoted = !quoted;
-    const match = c === '$' ? /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/.exec(text.slice(i)) : null;
+    const match = c === '$' ? /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/.exec(text.slice(i)) : null;
     if (match && vars.has(match[1] ?? match[2])) { output += vars.get(match[1] ?? match[2]); i += match[0].length; continue; }
     output += c; i += 1;
   }
