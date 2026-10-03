@@ -43,9 +43,9 @@ function event(guard: string, opts: { decision?: string; class?: string; session
   return { ts: '2026-08-05T10:00:00.000Z', guard, decision: opts.decision ?? 'blocked', ...(opts.class ? { class: opts.class } : {}), ...(opts.session ? { session: opts.session } : {}), ...(opts.origin === null ? {} : { origin: opts.origin ?? 'real' }) }
 }
 
-function run(journalDir: string | undefined, extra: Record<string, unknown> = {}): { out: string; err: string; code: number | null } {
+function run(journalDir: string | undefined, extra: Record<string, unknown> = {}, rawInput?: string): { out: string; err: string; code: number | null } {
   const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ cwd: REPO_ROOT, ...extra }),
+    input: rawInput ?? JSON.stringify({ cwd: REPO_ROOT, ...extra }),
     encoding: 'utf8',
     env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir ?? join(mkdtempSync(join(tmpdir(), 'wt-gr-empty-')), 'nope') },
   })
@@ -287,7 +287,7 @@ describe('guard-recurrence-hook — compact digest (SessionStart source=compact)
     // Run it through a shell with the journal env pointed ELSEWHERE: only the printed prefix can find the groups.
     const elsewhere = join(mkdtempSync(join(tmpdir(), 'wt-gr-else-')), 'nope')
     dirs.push(elsewhere)
-    const res = spawnSync('sh', ['-c', line.slice('Full picture: '.length)], { encoding: 'utf8', env: { ...process.env, WT_GUARD_JOURNAL_DIR: elsewhere } })
+    const res = spawnSync('sh', ['-c', line.slice('Full picture: '.length)], { encoding: 'utf8', env: { ...process.env, HOME: elsewhere, WT_GUARD_JOURNAL_DIR: elsewhere } })
     expect(res.status).toBe(0)
     for (let g = 0; g < 5; g++) expect(res.stdout).toContain(`number-${g}-hook.mjs`)
   })
@@ -296,11 +296,9 @@ describe('guard-recurrence-hook — compact digest (SessionStart source=compact)
     const dir = mkJournalDir()
     manyGroups(dir, 4)
     for (const raw of ['null', 'false', '0']) {
-      const res = spawnSync(process.execPath, [HOOK], { input: raw, encoding: 'utf8', env: { ...process.env, WT_GUARD_JOURNAL_DIR: dir } })
-      expect(ctx(res.stdout)).toContain('Records written before origin tracking remain unknown')
+      expect(ctx(run(dir, {}, raw).out)).toContain('Records written before origin tracking remain unknown')
     }
-    const bad = spawnSync(process.execPath, [HOOK], { input: '{not json', encoding: 'utf8', env: { ...process.env, WT_GUARD_JOURNAL_DIR: dir } })
-    expect(bad.stdout).toBe('')
+    expect(run(dir, {}, '{not json').out).toBe('')
   })
 
   it('F7: source=compact on a non-SessionStart event keeps the full output; an absent event name counts as SessionStart', () => {
