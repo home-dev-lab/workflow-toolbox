@@ -302,7 +302,7 @@ Checks an `Agent` spawn's definition and denies it only when the agent has a `to
 
 ### `wt-spawn-channel-guard-hook.mjs` — report-channel advisory (PreToolUse on Agent)
 
-Warns, never blocks, when a brief asks a spawned agent to report, reply, send, message the caller, or report when done, while its trusted `tools:` allow-list lacks `SendMessage`. Quoted and fenced examples are ignored. An unresolved agent type stays silent and journals `type-unresolved`, rather than inferring access from an unknown definition.
+Warns, never blocks, when a reporting brief includes explicit message-delivery cues (such as delivery via or in parentheses naming `SendMessage`, sending the spawner a plan summary, or replying to an agent, caller or spawner), while its trusted `tools:` allow-list lacks `SendMessage`. A report noun, a report-file deliverable, an ordinary final reply, or “when done” alone does not trigger it. Quoted and fenced examples are ignored. An unresolved agent type stays silent and journals `type-unresolved`, rather than inferring access from an unknown definition. Negated or descriptive delivery instructions can still warn: this heuristic does not resolve negation or the speaker's intent.
 
 ### `wt-spawn-readonly-guard-hook.mjs` — read-only boundary advisory (PreToolUse on Agent)
 
@@ -318,7 +318,7 @@ Refuses a Workflow launch unless `args.perAgent.model` is a non-empty string. `m
 
 ### `wt-nested-spawn-guard-hook.mjs` — nested self-verification advisory (PreToolUse on Agent)
 
-Warns, never blocks, when an Agent call issued by a subagent asks for verification, review of its own work, double-checking, or a second opinion. The owning session should route independent verification, preserving separation between implementation and review. Quoted and fenced examples stay silent.
+Warns, never blocks, when an Agent call issued by a subagent directly asks to verify, review, or double-check “my” or “my own” work, code, changes, implementation, patch, diff, fix, claims, results, plan, design, proposal, analysis, report, tests, draft, pull requests (including PRs), commits or branches, or asks for a second opinion on them. Up to three intervening words before “my” and two work modifiers after it are allowed, as in “verify all of my changes” or “review my latest patch”. Separate mentions of verification and ownership (such as the child's own worktree or its own independent reading) do not qualify. The owning session should route independent verification, preserving separation between implementation and review. Quoted and fenced examples stay silent. Indirect ownership phrasing is outside this narrow heuristic; negation and instructions assigning another subject to review the work are not resolved.
 
 ### `wt-spawn-shape-guard-hook.mjs` — observer-preserving spawn guard (PreToolUse)
 
