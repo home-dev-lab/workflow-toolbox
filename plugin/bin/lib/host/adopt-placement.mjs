@@ -11,7 +11,7 @@ const clean = (value) => {
   return text
 }
 
-/** @knip-test-seam Computed file-URL import in adopt-installer.test.ts. */
+/** @knipTestSeam Computed file-URL import in adopt-installer.test.ts. */
 export function onDemandRoots({ project, config }) {
   return { project: `${clean(project)}/.claude/${ON_DEMAND_NAME}`, user: `${clean(config)}/${ON_DEMAND_NAME}` }
 }

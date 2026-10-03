@@ -4,7 +4,7 @@
   // Platform executables used by the launcher and FIFO-based tests, not npm binaries.
   "ignoreBinaries": ["mkfifo", "ionice"],
   // Named test seams reached by computed imports or tests outside the configured workspace projects.
-  "tags": ["-knip-test-seam"],
+  "tags": ["-knipTestSeam"],
   "workspaces": {
     ".": {
       "entry": ["plugin/bin/*.mjs", "plugin/hooks/hooks.js", "plugin/monitors/*.mjs", "plugin/skills/adopt/scripts/install.mjs", "toolkit/scripts/frontmatter-corpus-diff.mjs"],

@@ -523,7 +523,7 @@ function unsandboxed(reason) {
 
 const REQUEST_PATH_PROBE = `const fs=require('node:fs');let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>data+=s);process.stdin.on('end',()=>{const answer={};for(const p of JSON.parse(data)){try{const info=fs.statSync(p);fs.accessSync(p,fs.constants.R_OK|(info.isDirectory()?fs.constants.X_OK:0));answer[p]=info.dev+':'+info.ino}catch{answer[p]=null}}process.stdout.write(JSON.stringify(answer))})`
 
-/** @knip-test-seam Computed import in lane-sandbox.test.ts. */
+/** @knipTestSeam Computed import in lane-sandbox.test.ts. */
 export function probeRequestPaths(paths, { wrap, execPath, env }) {
   const [command, args] = wrap(execPath, ['-e', REQUEST_PATH_PROBE])
   const result = spawnSync(command, args, { env, input: JSON.stringify(paths), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000 })
