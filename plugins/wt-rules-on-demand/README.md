@@ -271,6 +271,19 @@ limits on every run.
 Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
 from a host timer or cron job; the plugin ships no scheduler. This entry point
 checks the user rules and configured followed projects, and defaults to dry-run.
+The nightly run also measures the static instruction prefix across profiles and
+recently used projects, without moving rule files. Its latest measurement lives
+at `<config dir>/plugins/data/wt-rules-on-demand/quality/static-prefix-latest.json`
+for each profile; SessionStart reports an over-limit, incomplete or stale result.
+Run `node scripts/prefix-size.mjs --config-dir <config dir> --json` to inspect it
+independently. The prefix CLI exits 0 (ok), 2 (near limit), 3 (unknown) or 4
+(over limit); the nightly CLI exits 4 for an over-limit prefix when rollback
+itself succeeded, and 1 for unknown or failed measurement.
+The measurement runs after the night's reverts, so a rule moved back to static
+counts the same night. A file over the per-file limit is left out of the harness's
+combined count but still loaded: the check reports it, with `loadedChars`, and is
+at least near the limit. The session-start line describes the session's own
+check and adds one line when a check elsewhere is over the limit.
 To permit evidence-gated reversions, pass `--apply` explicitly. A host can
 inspect rules before deployment with `rules.mjs check-rules --dir <rules-dir>
 --corpus <commands.json> --time-bound-ms 50`; each slow regex test is reported

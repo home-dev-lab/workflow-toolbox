@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { appendFile, mkdir, readFile, readdir, writeFile, rm } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { qualityCheck } from './quality-check.mjs';
+import { atomicLatest, qualityCheck } from './quality-check.mjs';
+import { measureStaticPrefix } from './prefix-size.mjs';
 import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 
 export async function dailyRollback(options) {
   const startedAt = new Date().toISOString();
   const config = options.configDirs[0];
+  // Seen before anything is created: the data dirs below would otherwise make a mistyped profile look real.
+  const missingConfigDirs = [];
+  for (const dir of options.configDirs) await stat(dir).catch((error) => { if (['ENOENT', 'ENOTDIR'].includes(error.code)) missingConfigDirs.push(dir); });
   const dataDir = await assertSafeDataDir(options.dataDir ?? qualityDataDir(config));
   await mkdir(dataDir, { recursive: true });
   const dailyDir = join(dataDir, 'daily');
   await mkdir(dailyDir, { recursive: true });
   const journalPath = join(dataDir, 'rollback-journal.jsonl');
-   const result = { ok: false, reverted: [], refused: [], failed: [], attention: [], withinNoise: [], skipped: [], notificationsFailed: [] };
+    const result = { ok: false, reverted: [], refused: [], failed: [], attention: [], withinNoise: [], skipped: [], notificationsFailed: [] };
   let code = 0;
   try {
     let followed = [];
@@ -66,6 +70,11 @@ export async function dailyRollback(options) {
       for (const name of files.slice(0, -14)) await rm(join(dailyDir, name));
     }
   } catch (error) { result.error = error.message; code = 1; }
+  // Measured after the reverts, so a rule moved back to static tonight is in tonight's figure.
+  if (options.measurePrefix || options.prefix) {
+    try { result.staticPrefix = await (options.measurePrefix ?? measureStaticPrefix)({ configDirs: options.configDirs, roots: [options.project], days: options.days ?? 7, missingConfigDirs, ...options.prefix }); }
+    catch (error) { result.staticPrefix = { status: 'error', error: error.message, checks: [] }; }
+  }
   // Read back the journal: a child can revert and crash before returning its outcomes.
   try {
     const journal = await readFile(journalPath, 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
@@ -105,13 +114,42 @@ export async function dailyRollback(options) {
       await appendFile(journalPath, JSON.stringify({ ...row, state: 'delivered' }) + '\n');
     }
   } catch (error) { result.notificationsFailed.push({ error: error.message }); }
-  result.finishedAt = new Date().toISOString();
-  await writeFile(join(dataDir, 'daily-rollback-latest.json'), JSON.stringify(result, null, 2) + '\n');
+   result.finishedAt = new Date().toISOString();
+   if (result.staticPrefix) {
+     // The env-less data dir is the one every session's hook reads, whatever CLAUDE_PLUGIN_DATA says in either process.
+     for (const dir of options.configDirs) {
+       if (missingConfigDirs.includes(dir)) continue;
+       try {
+         const target = await assertSafeDataDir(qualityDataDir(dir, {}));
+         await mkdir(target, { recursive: true });
+         await atomicLatest(join(target, 'static-prefix-latest.json'), { ...result.staticPrefix, finishedAt: result.finishedAt });
+       } catch (error) { result.staticPrefix.recordError = `${dir}: ${error.message}`; }
+     }
+     if (result.staticPrefix.status === 'over' && process.env.WT_ROD_DAILY !== '1') {
+       try {
+         const notify = options.notifyCommand ?? (process.env.WT_ROD_NOTIFY_COMMAND ? JSON.parse(process.env.WT_ROD_NOTIFY_COMMAND) : null);
+         if (notify) {
+           if (!Array.isArray(notify) || !notify.length || notify.some((arg) => typeof arg !== 'string' || !arg)) throw new Error('notify command must be a nonempty JSON argv array');
+           const { limit, checks } = result.staticPrefix;
+           const payload = { event: 'static prefix over limit', day: result.finishedAt.slice(0, 10), limit,
+             checks: checks.filter((check) => check.status === 'over').map(({ configDir, root, totalChars, loadedChars, fileCount, totalLimit, largest }) => ({ configDir, root, totalChars, loadedChars, fileCount, totalLimit, largest })) };
+           const sent = spawnSync(notify[0], notify.slice(1), { input: JSON.stringify(payload) + '\n', encoding: 'utf8', shell: false });
+           if (sent.error || sent.status !== 0) throw sent.error ?? new Error(sent.stderr || `notify exit ${sent.status}`);
+         }
+       } catch (error) { result.prefixNotifyFailed = [{ error: error.message }]; }
+     }
+     if (code === 0) {
+       if (result.staticPrefix.status === 'over') code = 4;
+       else if (['unknown', 'error'].includes(result.staticPrefix.status) || result.staticPrefix.recordError) code = 1;
+     }
+   }
+   await atomicLatest(join(dataDir, 'daily-rollback-latest.json'), result);
   return { result, code };
 }
 
+// Exit: 0 clean (including prefix warn), 1 incomplete/unknown/error, 3 refused rollback, 4 static prefix over limit.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = { configDirs: [], projectsDirs: [], mirrorDirs: [], project: process.cwd(), days: 7, apply: process.env.WT_ROD_REAL_REVERT === '1' };
+   const options = { configDirs: [], projectsDirs: [], mirrorDirs: [], project: process.cwd(), days: 7, prefix: {}, apply: process.env.WT_ROD_REAL_REVERT === '1' };
   try {
     for (let i = 2; i < process.argv.length; i++) {
       const flag = process.argv[i];
@@ -121,7 +159,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       else if (flag === '--data-dir') options.dataDir = resolve(process.argv[++i]);
       else if (flag === '--project') options.project = resolve(process.argv[++i]);
       else if (flag === '--since') options.since = process.argv[++i];
-      else if (flag === '--days') options.days = Number(process.argv[++i]);
+       else if (flag === '--days') options.days = Number(process.argv[++i]);
+       else if (flag === '--prefix-limit') options.prefix.totalLimit = Number(process.argv[++i]);
+       else if (flag === '--prefix-context-tokens') options.prefix.contextTokens = Number(process.argv[++i]);
       else if (flag === '--apply') options.apply = true;
       else if (flag === '--json') options.json = true;
       else throw new Error(`unknown option: ${flag}`);
