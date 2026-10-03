@@ -307,3 +307,21 @@ on the same scope. The lock file is a best-effort guard against accidental
 overlap, not an exclusivity guarantee across processes or hosts. An apparently
 dead local owner or remote owner older than five minutes may be reclaimed with
 a warning; a held lock is reported after two seconds.
+
+## Running the plugin's tests
+
+Run `node --test` from this plugin directory. The suite also runs from a
+standalone vendored copy. Checkout integration tests use
+`test/external-test.mjs`: when the toolbox's `plugin/rules/` or the sibling
+`wt-secret-guard` module is absent, each affected test visibly skips with
+`toolbox dependency absent` and the relative and resolved dependency path.
+With those dependencies present, the same tests run their original assertions.
+Only `ENOENT` is skipped; unreadable, malformed or broken dependencies fail.
+The refusal tests that use only this plugin run in both layouts.
+
+New checkout dependencies must use `externalTest(relativePath, import.meta.url)`
+and read or import the URL supplied to its test callback. The suite's
+`external-boundary.test.mjs` scans test sources recursively for unguarded
+checkout-relative URL construction, imports and literal filesystem reads.
+This is a source regression check, not a filesystem sandbox: dynamically
+assembled paths and arbitrary data flow still need review.
