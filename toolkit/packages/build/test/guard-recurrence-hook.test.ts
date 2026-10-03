@@ -43,9 +43,9 @@ function event(guard: string, opts: { decision?: string; class?: string; session
   return { ts: '2026-08-05T10:00:00.000Z', guard, decision: opts.decision ?? 'blocked', ...(opts.class ? { class: opts.class } : {}), ...(opts.session ? { session: opts.session } : {}), ...(opts.origin === null ? {} : { origin: opts.origin ?? 'real' }) }
 }
 
-function run(journalDir: string | undefined): { out: string; err: string; code: number | null } {
+function run(journalDir: string | undefined, extra: Record<string, unknown> = {}): { out: string; err: string; code: number | null } {
   const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ cwd: REPO_ROOT }),
+    input: JSON.stringify({ cwd: REPO_ROOT, ...extra }),
     encoding: 'utf8',
     env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir ?? join(mkdtempSync(join(tmpdir(), 'wt-gr-empty-')), 'nope') },
   })
@@ -228,5 +228,85 @@ describe('guard-recurrence-hook — the SessionStart count surface', () => {
     expect(res.status).toBe(0)
     expect(res.stdout ?? '').toBe('')
     expect(res.stderr).toContain('wt-guard-recurrence-hook.mjs: FAILED OPEN')
+  })
+})
+
+describe('guard-recurrence-hook — compact digest (SessionStart source=compact)', () => {
+  function manyGroups(dir: string, n: number): void {
+    const lines: Array<Record<string, unknown>> = []
+    for (let g = 0; g < n; g++) {
+      // Distinct counts so the top-3 order is decidable: group g fires g+3 times.
+      for (let i = 0; i < g + 3; i++) lines.push(event(`wt-some-long-guard-name-number-${g}-hook.mjs`, { class: `class-${g}`, session: 's1' }))
+    }
+    writeWeek(dir, lines)
+  }
+  const ctx = (out: string): string => JSON.parse(out).hookSpecificOutput.additionalContext as string
+
+  it('on compact keeps header, the 3 highest groups, a "+ N more" line, a one-sentence caveat and the Full picture command, under 1,200 chars', () => {
+    const dir = mkJournalDir()
+    manyGroups(dir, 22)
+    const { out, code } = run(dir, { hook_event_name: 'SessionStart', source: 'compact' })
+    const text = ctx(out)
+    expect(code).toBe(0)
+    expect(text.length).toBeLessThan(1200)
+    const groupLines = text.split('\n').filter((l) => l.startsWith('  wt-some-long-guard'))
+    expect(groupLines).toHaveLength(3)
+    expect(groupLines[0]).toContain('number-21-hook.mjs')
+    expect(groupLines[2]).toContain('number-19-hook.mjs')
+    expect(text).toContain('+ 19 more groups at or above the threshold')
+    expect(text).toMatch(/event count, not a confirmed-defect count/i)
+    expect(text).toContain('Full picture: ')
+    expect(text).toContain('wt-guard-journal-scan.mjs')
+  })
+
+  it('on compact with at most 3 groups prints no "+ N more" line', () => {
+    const dir = mkJournalDir()
+    manyGroups(dir, 2)
+    const text = ctx(run(dir, { source: 'compact' }).out)
+    expect(text).not.toContain('more groups')
+    expect(text).toContain('Full picture:')
+  })
+
+  it('every non-compact source keeps the full list, with the long caveat', () => {
+    const dir = mkJournalDir()
+    manyGroups(dir, 22)
+    for (const extra of [{}, { source: 'startup' }, { source: 'resume' }, { source: 'clear' }]) {
+      const text = ctx(run(dir, extra).out)
+      expect(text.split('\n').filter((l) => l.startsWith('  wt-some-long-guard'))).toHaveLength(22)
+      expect(text).not.toContain('more groups')
+      expect(text).toContain('Records written before origin tracking remain unknown')
+    }
+  })
+
+  it('F3: the compact "Full picture" line is an executable command that pins the journal dir and lists the groups', () => {
+    const dir = mkJournalDir()
+    manyGroups(dir, 5)
+    const text = ctx(run(dir, { source: 'compact' }).out)
+    const line = text.split('\n').find((l) => l.startsWith('Full picture: ')) as string
+    expect(line).not.toContain('<plugin>')
+    // Run it through a shell with the journal env pointed ELSEWHERE: only the printed prefix can find the groups.
+    const elsewhere = join(mkdtempSync(join(tmpdir(), 'wt-gr-else-')), 'nope')
+    dirs.push(elsewhere)
+    const res = spawnSync('sh', ['-c', line.slice('Full picture: '.length)], { encoding: 'utf8', env: { ...process.env, WT_GUARD_JOURNAL_DIR: elsewhere } })
+    expect(res.status).toBe(0)
+    for (let g = 0; g < 5; g++) expect(res.stdout).toContain(`number-${g}-hook.mjs`)
+  })
+
+  it('F6: stdin that parses to null/false/0 behaves as before (full list); only unparseable stdin is silent', () => {
+    const dir = mkJournalDir()
+    manyGroups(dir, 4)
+    for (const raw of ['null', 'false', '0']) {
+      const res = spawnSync(process.execPath, [HOOK], { input: raw, encoding: 'utf8', env: { ...process.env, WT_GUARD_JOURNAL_DIR: dir } })
+      expect(ctx(res.stdout)).toContain('Records written before origin tracking remain unknown')
+    }
+    const bad = spawnSync(process.execPath, [HOOK], { input: '{not json', encoding: 'utf8', env: { ...process.env, WT_GUARD_JOURNAL_DIR: dir } })
+    expect(bad.stdout).toBe('')
+  })
+
+  it('F7: source=compact on a non-SessionStart event keeps the full output; an absent event name counts as SessionStart', () => {
+    const dir = mkJournalDir()
+    manyGroups(dir, 22)
+    expect(ctx(run(dir, { hook_event_name: 'UserPromptSubmit', source: 'compact' }).out)).toContain('Records written before origin tracking remain unknown')
+    expect(ctx(run(dir, { source: 'compact' }).out)).toContain('+ 19 more groups')
   })
 })
