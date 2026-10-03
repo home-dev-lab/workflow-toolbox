@@ -9,6 +9,7 @@ import { cleanEnv, managedPolicyArgs } from './clean-env.mjs';
 import { migrateRule, readSpec } from '../scripts/rule-lifecycle-lib.mjs';
 import { managedSettingsPath, assertProfiles } from '../scripts/profile-check.mjs';
 import { dailyRollback } from '../scripts/daily-rollback.mjs';
+import { installFixture } from '../test-support/profile-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url));
 const id = 'wt-rules-on-demand@local';
@@ -20,6 +21,7 @@ async function fixture(t) {
   const primary = join(root, 'primary');
   const managed = join(root, 'managed.json');
   await mkdir(join(primary, 'rules'), { recursive: true });
+  await installFixture(primary);
   await writeFile(join(primary, 'rules', 'sample.md'), body);
   await writeFile(join(primary, 'settings.json'), JSON.stringify(enabled));
   const spec = join(root, 'spec.json');
@@ -116,6 +118,8 @@ test('repeated mirror-dir and assume-loaded preserve comma-containing profile na
   const mirrors = [join(p.root, 'team,blue'), join(p.root, 'other')];
   for (const mirror of mirrors) {
     await mkdir(join(mirror, 'rules'), { recursive: true });
+    await installFixture(mirror);
+    await writeFile(join(mirror, 'settings.json'), JSON.stringify({ ...enabled, env: { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } }));
     await symlink(join(p.primary, 'rules', 'sample.md'), join(mirror, 'rules', 'sample.md'));
   }
   const flags = mirrors.flatMap((mirror) => ['--mirror-dir', mirror]);
@@ -132,6 +136,7 @@ test('mirror launch version is unknown without profile evidence, regardless of m
   const p = await fixture(t);
   const mirror = join(p.root, 'mirror');
   await mkdir(mirror);
+  await installFixture(mirror);
   await writeFile(join(mirror, 'settings.json'), JSON.stringify(enabled));
   const run = p.run('--mirror-dir', mirror);
   assert.notEqual(run.status, 0, 'the primary process version must not prove the mirror launch version');
@@ -148,23 +153,26 @@ test('platform policy paths are explicit; an unsupported platform is a named ref
   assert.throws(() => managedSettingsPath('other'), /location unknown on platform other/);
 });
 
-test('a mirror ignores the migrating process Function Hooks variable but accepts its own recent activity', async (t) => {
+test('a mirror ignores the migrating process Function Hooks variable and its own recent activity', async (t) => {
   const p = await fixture(t);
   const mirror = join(p.root, 'mirror');
   await mkdir(join(mirror, 'plugins', 'store'), { recursive: true });
+  await installFixture(mirror);
   await writeFile(join(mirror, 'settings.json'), JSON.stringify(enabled));
   const env = cleanEnv({ CLAUDE_CONFIG_DIR: p.primary, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' });
   const io = { managedFile: p.managed };
   await assert.rejects(assertProfiles(p.primary, [mirror], [], env, io), /mirror.*launch version unknown/);
-  await writeFile(join(mirror, 'plugins', 'store', 'wt-rules-on-demand_inline-0123456789ab.json'), JSON.stringify({ health: { days: { [new Date().toISOString().slice(0, 10)]: { calls: 1 } } } }));
-  await assertProfiles(p.primary, [mirror], [], env, io);
+  await writeFile(join(mirror, 'plugins', 'store', 'wt-rules-on-demand_local-0123456789ab.json'), JSON.stringify({ health: { days: { [new Date().toISOString().slice(0, 10)]: { calls: 1 } } } }));
+  await assert.rejects(assertProfiles(p.primary, [mirror], [], env, io), /mirror.*launch version unknown/);
 });
 
 test('shared static and shared resolved on-demand directories still migrate and revert', async (t) => {
   const p = await fixture(t);
   const mirror = join(p.root, 'mirror');
   await mkdir(mirror);
+  await installFixture(mirror);
   await mkdir(join(p.primary, 'rules-on-demand'));
+  await writeFile(join(mirror, 'settings.json'), JSON.stringify({ ...enabled, env: { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } }));
   for (const dir of ['rules', 'rules-on-demand']) await symlink(join(p.primary, dir), join(mirror, dir), 'junction');
   assert.equal(p.run('--mirror-dir', mirror, '--assume-loaded', mirror).status, 0);
   assert.match(await readFile(join(mirror, 'rules-on-demand', 'sample.md'), 'utf8'), /Keep this rule/);
@@ -177,12 +185,14 @@ test('a shared-static mirror with absent on-demand storage is refused before cre
   const p = await fixture(t);
   const mirror = join(p.root, 'mirror');
   await mkdir(mirror);
+  await installFixture(mirror);
+  await writeFile(join(mirror, 'settings.json'), JSON.stringify({ ...enabled, env: { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } }));
   await symlink(join(p.primary, 'rules'), join(mirror, 'rules'), 'junction');
   const run = p.run('--mirror-dir', mirror, '--assume-loaded', mirror);
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /shared rules.*separate rules-on-demand/);
   await p.intact();
-  assert.deepEqual(await readdir(mirror), ['rules']);
+  assert.deepEqual(await readdir(mirror), ['plugins', 'rules', 'settings.json']);
 });
 
 test('daily applied rollback forwards repeated literal mirror paths and restores every mirror', async (t) => {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { assertProfiles, managedSettingsPath } from '../scripts/profile-check.mjs';
+import { installFixture } from '../test-support/profile-fixture.mjs';
 
 const id = 'wt-rules-on-demand@local';
 const enabled = { enabledPlugins: { [id]: true }, pluginConfigs: { [id]: { options: { enabled: true } } } };
@@ -13,6 +14,7 @@ async function fixture(t) {
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const profile = join(root, 'profile');
   await fs.mkdir(profile);
+  await installFixture(profile);
   await fs.writeFile(join(profile, 'settings.json'), JSON.stringify(enabled));
   const managedFile = join(root, 'managed-settings.json');
   const drops = join(root, 'managed-settings.d');
@@ -21,14 +23,16 @@ async function fixture(t) {
   return { root, profile, managedFile, drops, env, check };
 }
 
-test('every JSON policy drop-in prohibits even when a later fragment permits', async (t) => {
+test('sorted JSON policy drop-ins reconstruct the effective hook permission', async (t) => {
   const p = await fixture(t);
   await fs.mkdir(p.drops);
   await fs.writeFile(p.managedFile, '{}');
   await fs.writeFile(join(p.drops, '10-block.json'), JSON.stringify({ disableAllHooks: true }));
   await fs.writeFile(join(p.drops, '20-permit.json'), JSON.stringify({ disableAllHooks: false }));
   await fs.writeFile(join(p.drops, 'ignored.txt'), '{invalid');
-  await assert.rejects(p.check(), /10-block\.json.*disableAllHooks/, 'a prohibiting fragment must refuse');
+  await p.check();
+  await fs.writeFile(join(p.drops, '30-block.json'), JSON.stringify({ disableAllHooks: true }));
+  await assert.rejects(p.check(), /30-block\.json.*disableAllHooks/, 'the effective prohibiting fragment must refuse');
 });
 
 test('absent base with nested guard drop-in refuses before assumptions', async (t) => {
@@ -81,7 +85,7 @@ test('CLI environment override alone cannot redirect production policy', async (
   });
   assert.equal(run.status, 0, run.stderr);
   const evidence = JSON.parse(run.stdout.trim().split('\n').at(-1));
-  assert.deepEqual(evidence.reads, [evidence.expected], 'CLI must ignore environment policy redirection');
+  assert.deepEqual(evidence.reads, [evidence.expected, join('/unused', 'settings.json')], 'CLI must ignore environment policy redirection while reconstructing user and managed settings');
 });
 
 for (const processEvidence of [

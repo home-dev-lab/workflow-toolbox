@@ -1,7 +1,9 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const managedPolicyArgs = ['--import', new URL('../test-support/managed-policy-fixture.mjs', import.meta.url).href];
+const preload = fileURLToPath(new URL('../test-support/managed-policy-fixture.mjs', import.meta.url));
+export const managedPolicyArgs = ['--import', pathToFileURL(preload).href];
 
 export function cleanEnv(overrides = {}) {
   const base = Object.fromEntries(Object.entries(process.env).filter(([key]) =>

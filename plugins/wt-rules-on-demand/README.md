@@ -20,44 +20,73 @@ node /path/to/wt-rules-on-demand/scripts/rules.mjs prove-triggers rule-at-act.md
 node /path/to/wt-rules-on-demand/scripts/rules.mjs migrate rule-at-act.md --project /path/to/project --spec rule-at-act.spec.json --proof proof.json
 ```
 
-A user-scope `migrate --user` first checks that the engine serves rules in every
+A user-scope `migrate --user` first checks local engine evidence in every
 profile it writes to (`--config-dir`, each `--mirror-dir`). It reads the platform's
 managed settings first: Linux `/etc/claude-code/managed-settings.json`, macOS
 `/Library/Application Support/ClaudeCode/managed-settings.json`, Windows
 `C:\Program Files\ClaudeCode\managed-settings.json`, plus every `*.json` in the
 sibling `managed-settings.d/` directory. Absent files/directories are normal;
 unreadable directories, dangling policy links, and unreadable or invalid files
-are refused by path. Any prohibiting fragment wins conservatively over conflicting
-fragments; this command does not infer that a later permission cancels a prohibition.
-Managed settings or a profile's `settings.json` setting `disableAllHooks` or
-`pluginConfigs["<id>"].options.enabled` false refuse migration. Managed
+are refused by path. Managed values override user values, and sorted drop-ins
+override the managed base file. The effective `disableAllHooks: true`
+refuses migration. An engine identity disabled in `enabledPlugins` or its
+`pluginConfigs["<id>"].options.enabled` cannot authorize migration; a disabled
+obsolete identity does not veto an affirmatively enabled replacement. Effective
 `pluginConfigs["cc-plugin-sec-default@builtin"].options.allowManagedModsOnly: true`,
-`allowManagedHooksOnly: true`, or `enabledPlugins["<engine id>"]: false` also
+`allowManagedHooksOnly: true` also
 refuse: local evidence does not establish an organization-managed deployment of
 this user-installed engine. A top-level `allowManagedModsOnly` is not the guard
-option, and the guard option in user settings is not managed policy. Known managed
-contradictions cannot be bypassed with `--assume-loaded` or earlier activity.
-Otherwise a profile passes when its own store,
-`<profile>/plugins/store/wt-rules-on-demand_<source>-<hash>.json`, counts engine
-calls on one of the last 7 UTC days: the engine records those only while it runs
-enabled, so this covers a plugin loaded with `--plugin-dir`, for the launches that
-wrote them. Without that record, `settings.json` must list the plugin in
-`enabledPlugins` with `pluginConfigs["<id>"].options.enabled` true, and Function
+option. The effective guard option is checked with managed precedence, like engine
+options, but this security guard is managed-only policy: a user guard option alone
+does not establish it. `--assume-loaded` remains accepted and recorded in the migration ledger
+for compatibility, but does not waive any decision check. Historical health is
+never read by this checker and cannot change an outcome.
+Effective `disableSideloadFlags: true` refuses inline (`--plugin-dir`)
+or unknown engine sources, even with that flag. Installed-source evidence requires
+the profile's user installation record and a readable engine manifest inside its
+plugin cache; stale records are skipped so later valid records can supply evidence.
+Current enabled installations are examined even when old inline health exists;
+this check does not call cached plugins organization-managed.
+User and managed keys examined by this checker must have their documented boolean/object
+types (and the Function Hooks environment flag must be a string); wrong types
+refuse with the file, full key path and found type.
+Every accepted profile must have a readable user or managed
+`pluginConfigs["<serving id>"].options.enabled: true`. The manifest default is
+false: missing or malformed enablement is refused even with historical health or
+`--assume-loaded`. Readable user/managed settings must list an installed plugin in
+`enabledPlugins`, and its installation record and cached manifest must establish
+presence. An inline identity instead needs a readable engine manifest at the
+running profile's `CLAUDE_PLUGIN_ROOT`; a plugin directory alone does not replace
+affirmative enablement. Function
 Hooks must be on: Claude Code 2.1.287 and later load mods by default (the running
 version is read from the `CLAUDE_CODE_EXECPATH` and `AI_AGENT` variables Claude Code
 sets for its commands); an older or unknown build needs
-`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Process evidence applies only to the profile
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. A readable user/managed environment value
+takes precedence over the process value. Process evidence applies only to the profile
 named by `CLAUDE_CONFIG_DIR`, otherwise `HOME/.claude` or `USERPROFILE/.claude`,
 compared by resolved real paths. The migrating process cannot establish another
 profile's launch version or environment, including a foreign `--config-dir`:
-without recent activity that profile needs
-that variable in its own `settings.json`, or explicit `--assume-loaded <dir>`
-after verifying its launch by hand. `--settings` and launch flags `--safe-mode`,
-`--bare`, and `--setting-sources` (which can exclude user settings) cannot be
-read by this check; refusal messages name these limits. Other managed sources,
-including macOS MDM, Windows registry and server-delivered policy, are unexamined
-and named as such. Verify effective settings
-for every intended launch; earlier activity proves only the launches that wrote it.
+that profile needs the variable in its own readable user/managed settings.
+
+### Pre-launch verification limits
+
+`--settings`, launch flags (`--safe-mode`, `--bare`, `--setting-sources`, which can
+exclude user settings), project/local settings of whichever repository is opened,
+macOS MDM, Windows registry and server-delivered policy are **not decidable before
+launch** by this checker. An inherited version/Function Hooks environment after
+`CLAUDE_CONFIG_DIR` or HOME is rebound is also not decidable before launch; realpath
+comparison alone does not establish where that inherited evidence originated.
+See the tracked follow-up **migration proven by observed serving** for these
+launch-time conditions. Refusals/warnings name unexamined sources; they do not
+establish that the effective launch policy permits the engine. Verify effective
+settings for every intended launch; earlier activity proves only the launches
+that wrote it.
+
+Affirmative enablement in readable managed settings can authorize a profile
+before its first activity, even with an absent user settings file. An existing
+invalid or unreadable user file, including a dangling settings link, refuses by filename. Enablement
+delivered only through unexamined launch-time policy still needs the observed
+serving follow-up.
 
 Repeat `--mirror-dir <dir>` for each mirror, and `--assume-loaded <dir>` for each
 hand-verified profile. One flag value is one literal path, including commas;

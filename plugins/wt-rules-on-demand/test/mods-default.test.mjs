@@ -7,11 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { cleanEnv, managedPolicyArgs } from './clean-env.mjs';
 import { claudeVersion, modsOnByDefault } from '../scripts/claude-version.mjs';
-import { recentActivity } from '../scripts/engine-activity.mjs';
+import { installFixture } from '../test-support/profile-fixture.mjs';
 
 // Claude Code 2.1.287 loads mods (Function Hooks plugins) by default and ignores CLAUDE_CODE_ENABLE_FUNCTION_HOOKS.
-// The profile check before a user-scope migration must accept that, and accept a plugin loaded with --plugin-dir
-// (not listed in enabledPlugins) once the profile's own store shows the engine active there recently.
+// The profile check requires readable enablement and engine presence, independent of prior activity.
 
 const cli = fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url));
 const ruleName = 'sample-rule.md';
@@ -50,6 +49,7 @@ async function profile(t) {
   const config = join(root, 'config');
   const storeDir = join(config, 'plugins', 'store');
   await mkdir(join(config, 'rules'), { recursive: true });
+  await installFixture(config);
   await writeFile(join(config, 'rules', ruleName), 'Sample rule body.\n');
   const specPath = join(root, 'spec.json');
   await writeFile(specPath, JSON.stringify(spec));
@@ -88,7 +88,7 @@ test('new build (2.1.287) without the variable is accepted', async (t) => {
   assert.equal(await p.migrated(), true);
 });
 
-test('unknown version: refused without the variable and names the escape, accepted with it', async (t) => {
+test('unknown version: refused without the variable and names the assumption limit, accepted with it', async (t) => {
   const p = await profile(t);
   await p.settings(enabled);
   const run = p.migrate({});
@@ -106,30 +106,6 @@ test('listed in enabledPlugins but the engine option is not on: refused', async 
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /engine not enabled/);
   assert.equal(await p.migrated(), false);
-});
-
-test('a plugin loaded by --plugin-dir: accepted on a recent engine health day, refused without valid recent evidence', async (t) => {
-  const p = await profile(t);
-  await p.settings({});
-  const none = p.migrate(NEW);
-  assert.notEqual(none.status, 0);
-  assert.match(none.stderr, /plugin not enabled in settings\.json and no engine health day/);
-  await p.store([utcDay(-7)]);
-  assert.notEqual(p.migrate(NEW).status, 0, 'seven date keys back is outside the window');
-  await p.store([utcDay(2), 'garbage']);
-  assert.notEqual(p.migrate(NEW).status, 0, 'a future or malformed day is no evidence');
-  await p.store(['2026-02-30', '2026-09-31']);
-  assert.notEqual(p.migrate(NEW).status, 0, 'an impossible calendar date is no evidence');
-  await p.store([utcDay(-1)], 'wt-rules-on-demand_inline.json');
-  assert.notEqual(p.migrate(NEW).status, 0, 'a store name without the engine hash suffix is not read');
-  await p.storeRaw({ [utcDay(0)]: null, [utcDay(-1)]: { calls: 0 } });
-  assert.notEqual(p.migrate(NEW).status, 0, 'a day that counts no call is no evidence');
-  assert.equal(await p.migrated(), false);
-  await p.store([utcDay(-8), utcDay(-6), utcDay(-1), utcDay(-3)]);
-  const fresh = p.migrate({});
-  assert.equal(fresh.status, 0, fresh.stderr);
-  assert.ok(fresh.stderr.includes(`engine active on ${utcDay(-1)} (${STORE})`), `the newest day is named: ${fresh.stderr}`);
-  assert.equal(await p.migrated(), true);
 });
 
 test('an explicit engine-off wins over recent activity', async (t) => {
@@ -150,20 +126,4 @@ test('health evidence from a plugin source disabled in enabledPlugins does not c
   await p.settings({ disableAllHooks: true });
   assert.match(p.migrate(NEW).stderr, /disableAllHooks/);
   assert.equal(await p.migrated(), false);
-});
-
-test('recentActivity at a fixed clock: window of seven date keys, impossible dates rejected, newest day wins', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'rod-activity-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const storeDir = join(root, 'plugins', 'store');
-  await mkdir(storeDir, { recursive: true });
-  const now = Date.parse('2026-10-02T12:00:00Z');
-  const write = (days) => writeFile(join(storeDir, STORE), JSON.stringify({ health: { days: Object.fromEntries(days.map((day) => [day, { calls: 1 }])) } }));
-  await write(['2026-09-31']);
-  assert.equal(await recentActivity(root, new Set(), now), null, '2026-09-31 is not a date, though Date.parse reads it as October 1');
-  await write(['2026-09-25']);
-  assert.equal(await recentActivity(root, new Set(), now), null, 'seven keys back is outside');
-  await write(['2026-09-26', '2026-09-30', '2026-09-28']);
-  assert.deepEqual(await recentActivity(root, new Set(), now), { day: '2026-09-30', store: STORE });
-  assert.equal(await recentActivity(root, new Set(['inline']), now), null);
 });
