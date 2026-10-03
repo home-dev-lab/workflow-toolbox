@@ -27,7 +27,7 @@ export function agentHasNoMessagingTool(agentType, cwd = '') {
 const defaultReaddir = (d) => fs.readdirSync(d, { withFileTypes: true })
 
 // The transcript itself lives inside `subagents/workflows/<run>/`: the run directory is its parent.
-export function workflowRunDirFromTranscriptPath(transcriptPath) {
+function workflowRunDirFromTranscriptPath(transcriptPath) {
   if (typeof transcriptPath !== 'string' || transcriptPath.length === 0) return null
   const transcriptDir = path.dirname(transcriptPath)
   const transcriptBase = path.basename(transcriptPath)
@@ -71,7 +71,7 @@ function runDirHoldingAgent(workflowsDir, runs, agentId, readdir) {
 
 // The agent's OWN transcript `agent-<agent_id>.jsonl` sits in one of the session's run
 // directories. Membership is proved by that file, never by the session having exactly one run.
-export function workflowRunDirHoldingAgent(transcriptPath, agentId, readdir = defaultReaddir) {
+function workflowRunDirHoldingAgent(transcriptPath, agentId, readdir = defaultReaddir) {
   const found = sessionWorkflowRuns(transcriptPath, readdir)
   return found ? runDirHoldingAgent(found.workflowsDir, found.runs, agentId, readdir) : null
 }

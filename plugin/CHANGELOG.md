@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Dead-code checking now follows the adoption installer and recognises its computed-import test seams and platform executables. Module-private helpers no longer expose unused exports; the Knip ceiling is tightened from 221 to the measured 189 issues.
 - The artifact server's SessionStart line now names the link command by its resolved absolute path, so a session can run it as written; it previously carried a literal ${CLAUDE_PLUGIN_ROOT} that a session's shell leaves empty.
 - Suite-lock waiters now renew their wait budget when their queue position improves, so a steadily advancing ticket can wait past the former total-time limit; a ticket at the head waits up to the stale bound, while a stalled queue still times out naming its holder. The lane broker forwards progress separately from periodic wait notices.
 
