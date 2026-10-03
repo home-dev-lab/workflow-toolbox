@@ -50,7 +50,7 @@ export async function dailyRollback(options) {
       const args = [fileURLToPath(new URL('./rollback-check.mjs', import.meta.url)),
         ...(scope.scope === 'user' ? ['--user', '--config-dir', resolve(scope.rulesDir, '..')] : ['--project', scope.projectRoot]),
         '--json', '--verdicts', report.verdictPath, '--mechanical-only', '--journal', journalPath];
-      if (scope.scope === 'user' && options.mirrorDirs?.length) args.push('--mirror-dir', options.mirrorDirs.join(','));
+       if (scope.scope === 'user') for (const mirror of options.mirrorDirs ?? []) args.push('--mirror-dir', mirror);
       const run = spawnSync(process.execPath, args, { encoding: 'utf8' });
       let outcomes;
       try { outcomes = JSON.parse(run.stdout); } catch { throw new Error(`rollback-check ${scope.rulesDir}: ${run.stderr || run.stdout}`); }

@@ -15,7 +15,9 @@ counts. Use `migrate <rule.md> --spec <spec.json> --proof <proof.json>
 requires an explicit named absence of evidence. For user rules supply `--user
 --config-dir <dir>` and any `--mirror-dir <dir>`; the command refuses a profile
 where it cannot show the engine serves (see the README). Use `--assume-loaded <dir>`
-only after verifying that profile by hand. `revert` returns a rule to static. `retire <rule.md>
+only after verifying that profile by hand. Repeat these flags for multiple profiles;
+commas are literal path characters. Verify effective launch settings and each mirror's
+Claude Code build; a primary build does not prove a mirror's. `revert` returns a rule to static. `retire <rule.md>
 --reason "reason"` archives it. Never manually move a rule or edit a ledger.
 
 Read `<CLAUDE_PLUGIN_DATA>/quality/latest.json` when that variable is set, or

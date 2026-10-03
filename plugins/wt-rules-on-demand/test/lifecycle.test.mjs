@@ -56,7 +56,7 @@ test('rollback reads bounded external verdict archives by rule identity', async 
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(run.stdout)[0].action, 'would revert');
 });
-import { cleanEnv } from './clean-env.mjs';
+import { cleanEnv, managedPolicyArgs } from './clean-env.mjs';
 
 const cli = fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url));
 const quality = fileURLToPath(new URL('../scripts/quality-check.mjs', import.meta.url));
@@ -128,7 +128,7 @@ test('user migration requires enabled plugin and Function Hooks for every profil
   const primary = join(root, 'primary');
   for (const dir of [primary, mirror]) await mkdir(join(dir, 'rules'), { recursive: true });
   await writeFile(join(primary, 'rules', name), await readFile(realRule));
-  const args = [cli, 'migrate', name, '--user', '--config-dir', primary, '--mirror-dir', mirror, '--spec', realSpec, '--no-proof', 'fixture'];
+  const args = [...managedPolicyArgs, cli, 'migrate', name, '--user', '--config-dir', primary, '--mirror-dir', mirror, '--spec', realSpec, '--no-proof', 'fixture'];
    const run = (...rest) => spawnSync(process.execPath, [...args, ...rest], { encoding: 'utf8', env: cleanEnv({ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '0' }) });
   assert.match(run().stderr, /profile .*primary: settings.json missing/);
   await writeFile(join(primary, 'settings.json'), JSON.stringify({ enabledPlugins: { 'wt-rules-on-demand@local': true }, pluginConfigs: { 'wt-rules-on-demand@local': { options: { enabled: true } } }, env: { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } }));

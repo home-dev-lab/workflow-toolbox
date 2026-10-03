@@ -21,9 +21,23 @@ node /path/to/wt-rules-on-demand/scripts/rules.mjs migrate rule-at-act.md --proj
 ```
 
 A user-scope `migrate --user` first checks that the engine serves rules in every
-profile it writes to (`--config-dir`, each `--mirror-dir`). A profile whose
-`settings.json` sets `disableAllHooks`, or sets the engine's `enabled` option to
-false, is refused. Otherwise it passes when its own store,
+profile it writes to (`--config-dir`, each `--mirror-dir`). It reads the platform's
+managed settings first: Linux `/etc/claude-code/managed-settings.json`, macOS
+`/Library/Application Support/ClaudeCode/managed-settings.json`, Windows
+`C:\Program Files\ClaudeCode\managed-settings.json`, plus every `*.json` in the
+sibling `managed-settings.d/` directory. Absent files/directories are normal;
+unreadable directories, dangling policy links, and unreadable or invalid files
+are refused by path. Any prohibiting fragment wins conservatively over conflicting
+fragments; this command does not infer that a later permission cancels a prohibition.
+Managed settings or a profile's `settings.json` setting `disableAllHooks` or
+`pluginConfigs["<id>"].options.enabled` false refuse migration. Managed
+`pluginConfigs["cc-plugin-sec-default@builtin"].options.allowManagedModsOnly: true`,
+`allowManagedHooksOnly: true`, or `enabledPlugins["<engine id>"]: false` also
+refuse: local evidence does not establish an organization-managed deployment of
+this user-installed engine. A top-level `allowManagedModsOnly` is not the guard
+option, and the guard option in user settings is not managed policy. Known managed
+contradictions cannot be bypassed with `--assume-loaded` or earlier activity.
+Otherwise a profile passes when its own store,
 `<profile>/plugins/store/wt-rules-on-demand_<source>-<hash>.json`, counts engine
 calls on one of the last 7 UTC days: the engine records those only while it runs
 enabled, so this covers a plugin loaded with `--plugin-dir`, for the launches that
@@ -32,10 +46,28 @@ wrote them. Without that record, `settings.json` must list the plugin in
 Hooks must be on: Claude Code 2.1.287 and later load mods by default (the running
 version is read from the `CLAUDE_CODE_EXECPATH` and `AI_AGENT` variables Claude Code
 sets for its commands); an older or unknown build needs
-`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. The check reads the profile's own
-`settings.json` only: managed settings, `--settings` and launch flags such as
-`--safe-mode` are not seen. `--assume-loaded <dir>` skips a profile you have
-verified by hand.
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Process evidence applies only to the profile
+named by `CLAUDE_CONFIG_DIR`, otherwise `HOME/.claude` or `USERPROFILE/.claude`,
+compared by resolved real paths. The migrating process cannot establish another
+profile's launch version or environment, including a foreign `--config-dir`:
+without recent activity that profile needs
+that variable in its own `settings.json`, or explicit `--assume-loaded <dir>`
+after verifying its launch by hand. `--settings` and launch flags `--safe-mode`,
+`--bare`, and `--setting-sources` (which can exclude user settings) cannot be
+read by this check; refusal messages name these limits. Other managed sources,
+including macOS MDM, Windows registry and server-delivered policy, are unexamined
+and named as such. Verify effective settings
+for every intended launch; earlier activity proves only the launches that wrote it.
+
+Repeat `--mirror-dir <dir>` for each mirror, and `--assume-loaded <dir>` for each
+hand-verified profile. One flag value is one literal path, including commas;
+comma-separated lists are not supported. This also applies to `revert`,
+`rollback-check.mjs`, and `daily-rollback.mjs` mirror flags. A mirror sharing the
+primary's static `rules/` directory but using separate `rules-on-demand/` storage
+is refused before a migration moves anything. Share both directories (with the
+on-demand target already present), or use separate static directories with
+per-file links, before migrating. The command does not repair or rewrite a
+user-owned mirror layout.
 
 An explicit `--no-proof "reason"` marks the rule unproven. `revert` returns a
 rule to static; `retire <rule.md> --reason "reason"` archives it without deleting

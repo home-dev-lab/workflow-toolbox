@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { cleanEnv } from './clean-env.mjs';
+import { cleanEnv, managedPolicyArgs } from './clean-env.mjs';
 import { claudeVersion, modsOnByDefault } from '../scripts/claude-version.mjs';
 import { recentActivity } from '../scripts/engine-activity.mjs';
 
@@ -60,8 +60,8 @@ async function profile(t) {
     await writeFile(join(storeDir, name), JSON.stringify({ served: {}, health: { days } }));
   };
   const store = (days, name) => storeRaw(Object.fromEntries(days.map((day) => [day, { calls: 1, errors: 0, totalMs: 1, slow: 0, maxMs: 1 }])), name);
-  const migrate = (env) => spawnSync(process.execPath, [cli, 'migrate', ruleName, '--user', '--config-dir', config, '--spec', specPath, '--no-proof', 'fixture'],
-    { encoding: 'utf8', env: cleanEnv(env) });
+  const migrate = (env) => spawnSync(process.execPath, [...managedPolicyArgs, cli, 'migrate', ruleName, '--user', '--config-dir', config, '--spec', specPath, '--no-proof', 'fixture'],
+    { encoding: 'utf8', env: cleanEnv({ CLAUDE_CONFIG_DIR: config, ...env }) });
   const migrated = async () => (await readdir(join(config, 'rules-on-demand')).catch(() => [])).includes(ruleName);
   return { settings, store, storeRaw, migrate, migrated };
 }
