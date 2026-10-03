@@ -384,6 +384,19 @@ export function detectTailscale(port) {
   }
 }
 
+// Keep loopback startup failure separate from the optional tailnet listener.
+export async function listenArtifactLoopback(listen, port) {
+  try {
+    await listen('127.0.0.1')
+    return true
+  } catch (error) {
+    if (error?.code !== 'EADDRINUSE') throw error
+    process.stderr.write(`wt-artifact-server: port ${port} is already in use (EADDRINUSE)\n`)
+    process.exitCode = 1
+    return false
+  }
+}
+
 export async function probeArtifactServer(port, timeout = process.platform === 'win32' ? 10_000 : 750, expectedUid = artifactUid()) {
   const { request } = await import('node:http')
   return new Promise((resolve) => {
