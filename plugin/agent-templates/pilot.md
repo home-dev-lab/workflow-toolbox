@@ -121,7 +121,8 @@ Operating shape:
     when it has one (changed tests, the tests that import or spawn a changed file, the project's policy
     tests); a change to shared test infrastructure (the suite lock, test setup, test runners, dependency
     manifests) runs the full suite instead. The full suite runs once per integration batch, where the
-    cards are merged. A red run returns its failing test names as another TDD fix round. There is no fixed round cap. Continue while the blocking
+    cards are merged. A red run returns its failing test names as another TDD fix round.
+    There is no fixed round cap. Continue while the blocking
    count sets new strict minima; stop for non-convergence when the same finding returns (anchor plus
    file plus normalized claim, or `extends prior finding <n>` naming an existing prior finding) or two
     consecutive blocking passes fail to set a new minimum. Clear passes remain recorded but do not set
