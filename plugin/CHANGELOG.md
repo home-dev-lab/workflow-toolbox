@@ -9,6 +9,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The artifact server's SessionStart line now names the link command by its resolved absolute path, so a session can run it as written; it previously carried a literal ${CLAUDE_PLUGIN_ROOT} that a session's shell leaves empty.
 - Suite-lock waiters now renew their wait budget when their queue position improves, so a steadily advancing ticket can wait past the former total-time limit; a ticket at the head waits up to the stale bound, while a stalled queue still times out naming its holder. The lane broker forwards progress separately from periodic wait notices.
 
+- `wt-rules-on-demand`: a `bash-command` compliance check now reads a path held in a shell variable assigned earlier in the same command. `W=<path>; git worktree add "$W"` used to be judged on the literal `"$W"` and counted as not followed, which made a migrated rule look followed less on demand than it was static, and the nightly rollback moved it back to the static prefix. Each governed segment is now also judged with the variables of earlier unconditional top-level assignments (`NAME=value`, `export NAME=value`; last assignment wins, `unset` removes) substituted. An assignment inside `( )`, an `if`/loop/`case`/`{ }` body, a pipeline, a background job or after `&&`/`||` is not used, nor is a prefix assignment (`NAME=value cmd`); single-quoted and backslash-escaped `$` stay literal, and the substituted text stays within the existing subject cap. Replayed on the real rows of that rollback: static 79.9 %, on demand 84.0 %, no revert. A path reached through `cd` and a relative argument is still judged literally.
+
 ## [0.190.0] - 2026-10-02
 
 ### Quality
