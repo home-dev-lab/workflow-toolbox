@@ -115,6 +115,20 @@ async function waitForConnections(server: net.Server, count: number, timeoutMs =
   }
 }
 
+function brokerWaiter(address: string, name: string, waitS = 10) {
+  const controller = new AbortController()
+  const progress: Array<{ ahead: number; aheadExcludingRelease: number; total: number }> = []
+  let failure: unknown
+  const result = acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, argv: [name], waitS, signal: controller.signal,
+    onProgress: (place: { ahead: number; aheadExcludingRelease: number; total: number }) => progress.push(place),
+  }).then((lease: Awaited<ReturnType<typeof acquireSuiteLock>>) => ({ lease }), (error: unknown) => { failure = error; return { error } })
+  return { progress, result, failure: () => failure, stop: async () => {
+    controller.abort()
+    const outcome = await result
+    if ('lease' in outcome) releaseSuiteLock(outcome.lease)
+  } }
+}
+
 // The broker runs only inside the Linux lane sandbox: sandboxAvailability returns { none } on every
 // other platform (plugin/bin/lib/host/lane-sandbox.mjs:491), and only that plan sets
 // WT_SUITE_LOCK_BROKER (lane-sandbox.mjs:477), the one switch that routes a client to a broker
@@ -139,6 +153,29 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       releaseSuiteLock(lease)
     } finally { server.close() }
   }, 15_000)
+
+  it('gives broker clients the same actual and non-release queue positions as direct clients', async () => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    const holder = await acquireSuiteLock({ root, env: {} })
+    const first = brokerWaiter(address, 'E0')
+    await waitFor(() => first.progress.length > 0)
+    const controller = new AbortController()
+    const release = acquireSuiteLock({ root, env: {}, priority: 'release', signal: controller.signal, pollMs: 10 }).catch(() => {})
+    await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 2)
+    const second = brokerWaiter(address, 'E1')
+    try {
+      await waitFor(() => second.progress.length > 0)
+      expect(second.progress[0]).toEqual({ ahead: 2, aheadExcludingRelease: 1, total: 3 })
+      releaseSuiteLock(holder)
+      await waitFor(() => second.progress.length > 1)
+      expect(second.progress[1], 'handover must use the producer current place').toEqual({ ahead: 1, aheadExcludingRelease: 1, total: 2 })
+    } finally {
+      controller.abort(); const released = await release; if (released) releaseSuiteLock(released)
+      await first.stop(); await second.stop()
+      releaseSuiteLock(holder); server.close(); restore()
+    }
+  })
 
   // A faulty broker repeating the same (or a worse, or an impossible) place renews nothing: the client's
   // own watchdog still ends the wait about waitS + 2 s after the last real improvement.
@@ -184,12 +221,93 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const third = connect(broker.socket, { argv: ['third'], waitS: 5 })
     try {
       await first.waitForReply(granted)
-      await second.waitForReply((text) => text.includes('progress 0 1\n'))
-      await third.waitForReply((text) => text.includes('progress 1 2\n'))
+      await second.waitForReply((text) => /progress 0 1(?: 0)?\n/.test(text))
+      await third.waitForReply((text) => /progress 1 2(?: 1)?\n/.test(text))
       first.socket.end()
       await second.waitForReply(granted)
-      await third.waitForReply((text) => text.includes('progress 0 1\n'))
+      await third.waitForReply((text) => /progress 0 1(?: 0)?\n/.test(text))
     } finally { first.socket.destroy(); second.socket.destroy(); third.socket.destroy() }
+  }, 12_000)
+
+  it('reports non-release position with a release ahead and renews the broker client on release handover', async () => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    const holder = await acquireSuiteLock({ root, env: {} })
+    const first = brokerWaiter(address, 'E0')
+    await waitFor(() => first.progress.length > 0)
+    const second = brokerWaiter(address, 'E1', 1)
+    let releaseLease: Awaited<ReturnType<typeof acquireSuiteLock>> | undefined
+    try {
+      await waitFor(() => second.progress.length > 0)
+      const release = acquireSuiteLock({ root, env: {}, priority: 'release', waitS: 4, pollMs: 10 })
+      await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 3)
+      // A release ahead changes actual position to 2, never the client's non-release position 1.
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      releaseSuiteLock(holder)
+      releaseLease = await release
+      await new Promise((resolve) => setTimeout(resolve, 3_600))
+      expect(second.failure(), 'client must survive a release hold longer than its 3 s watchdog').toBeUndefined()
+      releaseSuiteLock(releaseLease); releaseLease = undefined
+      const firstResult = await first.result
+      expect(firstResult).toHaveProperty('lease')
+      await first.stop()
+      expect(await second.result).toHaveProperty('lease')
+    } finally {
+      if (releaseLease) releaseSuiteLock(releaseLease)
+      releaseSuiteLock(holder)
+      await first.stop(); await second.stop(); server.close(); restore()
+    }
+  }, 15_000)
+
+  it.each(['connect during release', 'cancel ordinary ahead'])('preserves release watchdog across progress: %s', async (sequence) => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    let holder = await acquireSuiteLock({ root, env: {}, ...(sequence === 'connect during release' ? { priority: 'release' } : {}) })
+    const first = brokerWaiter(address, 'E0')
+    await waitFor(() => first.progress.length > 0)
+    const middle = sequence === 'cancel ordinary ahead' ? brokerWaiter(address, 'E1') : undefined
+    if (middle) await waitFor(() => middle.progress.length > 0)
+    const second = brokerWaiter(address, 'E2', 1)
+    try {
+      await waitFor(() => second.progress.length > 0)
+      if (middle) {
+        const release = acquireSuiteLock({ root, env: {}, priority: 'release', pollMs: 10 })
+        await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 4)
+        releaseSuiteLock(holder); holder = await release
+        await waitFor(() => second.progress.length >= 2)
+        await middle.stop()
+        await waitFor(() => second.progress.some((place) => place.aheadExcludingRelease === 1))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3_600))
+      expect(second.failure(), 'progress must preserve the current release-holder budget').toBeUndefined()
+      releaseSuiteLock(holder)
+      expect(await first.result).toHaveProperty('lease'); await first.stop()
+      expect(await second.result).toHaveProperty('lease')
+    } finally {
+      releaseSuiteLock(holder); await first.stop(); await middle?.stop(); await second.stop(); server.close(); restore()
+    }
+  }, 20_000)
+
+  it('counts only non-release tickets in broker progress while a release ticket is still ahead', async () => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    const holder = await acquireSuiteLock({ root, env: {} })
+    const first = connect(address, { argv: ['E0'], waitS: 3 })
+    await first.waitForReply((text) => text.includes('progress 0 '))
+    const second = connect(address, { argv: ['E1'], waitS: 3 })
+    const controller = new AbortController()
+    try {
+      await second.waitForReply((text) => text.includes('progress 1 '))
+      const release = acquireSuiteLock({ root, env: {}, priority: 'release', signal: controller.signal, waitS: 3, pollMs: 10 })
+      const cancelled = release.catch(() => {})
+      await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 3)
+      first.socket.destroy()
+      await second.waitForReply((text) => text.includes('progress 0 '))
+      expect(second.text()).toContain('progress 0 ')
+      controller.abort(); await cancelled
+    } finally {
+      controller.abort(); first.socket.destroy(); second.socket.destroy(); releaseSuiteLock(holder); server.close(); restore()
+    }
   }, 12_000)
 
   it('reuses the one exclusive lease across project setups through the current broker', async () => {
