@@ -1,5 +1,10 @@
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { stripHeredocs } from './command-invocation.mjs'
+
+const BACKSLASH = '\\'
+const DOUBLE_ESCAPES = new Set([BACKSLASH, '$', '`', '"', '\n'])
+const escapesNext = (quote, next) => quote !== "'" && (!quote || DOUBLE_ESCAPES.has(next))
 
 function splitCommandSegments(command) {
   const segments = []
@@ -10,7 +15,7 @@ function splitCommandSegments(command) {
   for (let index = 0; index < text.length; index += 1) {
     const ch = text[index]
     if (escaped) { current += ch; escaped = false; continue }
-    if (ch === '\\') { current += ch; escaped = true; continue }
+    if (ch === BACKSLASH && escapesNext(quote, text[index + 1])) { current += ch; escaped = true; continue }
     if (quote) {
       current += ch
       if (ch === quote) quote = null
@@ -43,9 +48,11 @@ function tokenize(segment) {
   let current = ''
   let quote = null
   let escaped = false
-  for (const ch of String(segment || '')) {
-    if (escaped) { current += ch; escaped = false; continue }
-    if (ch === '\\') { escaped = true; continue }
+  const text = String(segment || '')
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index]
+    if (escaped) { if (ch !== '\n') current += ch; escaped = false; continue }
+    if (ch === BACKSLASH && escapesNext(quote, text[index + 1])) { escaped = true; continue }
     if (quote) {
       if (ch === quote) quote = null
       else current += ch
@@ -74,12 +81,12 @@ export function gitString(repo, args) {
   }
 }
 
-function currentBranch(repo) {
-  return gitString(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+function currentBranch(repo, read) {
+  return read(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
 }
 
-function pushTrackingRef(repo) {
-  return gitString(repo, ['rev-parse', '--symbolic-full-name', '@{push}']) || gitString(repo, ['rev-parse', '--symbolic-full-name', '@{upstream}'])
+function pushTrackingRef(repo, read) {
+  return read(repo, ['rev-parse', '--symbolic-full-name', '@{push}']) || read(repo, ['rev-parse', '--symbolic-full-name', '@{upstream}'])
 }
 
 function normalizeSource(source) {
@@ -101,18 +108,36 @@ function defaultDestination(source, branch) {
   return source
 }
 
-function parsePushSegment(segment, cwd) {
+function invocationTokens(segment) {
   const tokens = tokenize(segment)
+  if (!tokens) return null
+  while (tokens[0] === 'sudo' || tokens[0] === 'env' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0] || '')) tokens.shift()
+  return tokens
+}
+
+function gitInvocation(tokens, cwd) {
   if (!tokens || tokens[0] !== 'git') return null
   let repo = cwd
   let index = 1
-  while (index < tokens.length && tokens[index] !== 'push') {
-    if (tokens[index] === '-C' && tokens[index + 1]) {
-      repo = path.resolve(cwd || process.cwd(), tokens[index + 1])
-      index += 2
-    } else index += 1
+  let unsupportedForm = null
+  while (tokens[index]?.startsWith('-')) {
+    const token = tokens[index]
+    if (token === '-C') { repo = path.resolve(repo, tokens[index + 1] || '.'); index += 2 }
+    else if (token === '-c') index += 2
+    else if (token === '--git-dir' || token === '--work-tree') { unsupportedForm = token; index += 2 }
+    else {
+      if (token.startsWith('--git-dir=') || token.startsWith('--work-tree=')) unsupportedForm = token
+      index++
+    }
   }
-  if (tokens[index] !== 'push') return null
+  return { repo, index, action: tokens[index], unsupportedForm }
+}
+
+function parsePushSegment(segment, cwd) {
+  const tokens = invocationTokens(segment)
+  const invocation = gitInvocation(tokens, cwd)
+  if (invocation?.action !== 'push') return null
+  const { repo, index, unsupportedForm } = invocation
 
   const positionals = []
   let afterDashDash = false
@@ -139,20 +164,26 @@ function parsePushSegment(segment, cwd) {
     refspecs: optionRemote ? positionals : positionals.slice(1),
     deletion,
     aggregateForm,
+    unsupportedForm,
   }
 }
 
-export function derivePushTargets(input) {
-  if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return []
-  const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()
+export function parsePushCommand(command, cwd = process.cwd(), read = gitString) {
   const targets = []
-  const segments = splitCommandSegments(input?.tool_input?.command)
+  const segments = splitCommandSegments(stripHeredocs(String(command || '')))
+  let currentCwd = cwd
   for (const segment of segments) {
-    const parsed = parsePushSegment(segment, cwd)
+    const tokens = invocationTokens(segment)
+    if (tokens?.[0] === 'cd' && tokens.length === 2) { currentCwd = path.resolve(currentCwd, tokens[1]); continue }
+    const parsed = parsePushSegment(segment, currentCwd)
     if (!parsed) continue
     const common = { ...parsed, command: segment, standalone: segments.length === 1 }
-    const branch = currentBranch(parsed.repo)
-    const tracking = pushTrackingRef(parsed.repo)
+    if (parsed.unsupportedForm) {
+      targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.unsupportedForm })
+      continue
+    }
+    const branch = currentBranch(parsed.repo, read)
+    const tracking = pushTrackingRef(parsed.repo, read)
     if (parsed.aggregateForm) {
       targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.aggregateForm })
       continue
@@ -194,6 +225,26 @@ export function derivePushTargets(input) {
     }
   }
   return targets
+}
+
+export function derivePushTargets(input) {
+  if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return []
+  return parsePushCommand(input?.tool_input?.command, input.cwd || process.cwd())
+}
+
+// Same shell segmentation and tokenization as pushes; recorder callers need repository targets,
+// never a second shell parser. Only executable heads count, not quoted mentions or heredoc data.
+export function parseGitCommands(command, cwd = process.cwd()) {
+  const commands = []
+  let current = cwd
+  for (const segment of splitCommandSegments(stripHeredocs(String(command || '')))) {
+    const tokens = invocationTokens(segment)
+    if (!tokens) continue
+    if (tokens[0] === 'cd' && tokens.length === 2) { current = path.resolve(current, tokens[1]); continue }
+    const invocation = gitInvocation(tokens, current)
+    if (invocation) commands.push({ ...invocation, args: tokens.slice(invocation.index + 1) })
+  }
+  return commands
 }
 
 export function derivePushChecks(input) {

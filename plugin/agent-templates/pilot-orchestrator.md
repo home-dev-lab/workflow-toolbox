@@ -39,8 +39,8 @@ up through your report's "Lessons for the memory" section.
 
 Use the `TASK_TRACKER` block from your spawn prompt when present; otherwise auto-detect
 the project's tracker (a kanban board pointer such as `.claude/planka.json` → the board's
-MCP; else the tracker the project's own rules/config name — e.g. Jira via its CLI; else a
-task file such as `.claude/progress.md`). Every board/card duty in this definition applies
+MCP; else the tracker the project's own rules/config name — e.g. Jira via its CLI).
+When neither exists, the spawn prompt is the card. Every board/card duty in this definition applies
 to that tracker's equivalents; the lifecycle invariants are tracker-neutral (in-progress
 at intake, realtime transitions, one consolidated narrative, Done only at DoD).
 

@@ -234,9 +234,14 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
       'Known-issues documents this SessionStart post-adoption environment-drift light under Shipped Hooks, Guards & Monitors.',
   },
   {
-    script: 'plugin/bin/wt-unsynced-buffer-hook.mjs',
+    script: 'plugin/bin/wt-work-journal-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this SessionStart Planka degraded-mode reminder under Shipped Hooks, Guards & Monitors.',
+    reason: 'The work-journal guide documents mechanical act recorders, integrity recovery, the bounded digest and warn-only Stop pairing.',
+  },
+  {
+    script: 'plugin/bin/wt-work-journal.mjs',
+    status: 'mapped',
+    reason: 'The work-journal guide documents readers, board setup, reconciliation, verified retirement, restore, unlock and closed-day export.',
   },
   {
     script: 'plugin/bin/wt-arc-watch.mjs',
@@ -1089,6 +1094,12 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
     // Monitors" section — none had a doc surface before.
+    sources: ['plugin/bin/wt-work-journal.mjs', 'plugin/bin/wt-work-journal-hook.mjs', 'plugin/bin/lib/work-journal.mjs', 'plugin/bin/lib/work-journal-paths.mjs', 'plugin/bin/lib/work-journal-recorders.mjs', 'plugin/bin/lib/work-journal-git.mjs', 'plugin/bin/lib/work-journal-hook-core.mjs', 'plugin/bin/lib/work-journal-lifecycle.mjs', 'plugin/bin/lib/work-journal-commands.mjs', 'plugin/bin/lib/host/work-journal-io.mjs', 'plugin/config/work-journal-recorders.json'],
+    docs: ['docs/public/work-journal.md', 'docs/public/known-issues.md', 'README.md', 'plugin/hooks/README.md', 'plugin/skills/deep-grounding/SKILL.md', 'plugin/skills/planka-tracking/SKILL.md', 'plugin/skills/what-next/SKILL.md'],
+  },
+  {
+    // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
+    // Monitors" section — none had a doc surface before.
     sources: [
       'plugin/bin/wt-adopt-check-hook.mjs',
       'plugin/bin/wt-label-intent-producer-hook.mjs',
@@ -1097,7 +1108,6 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       // and the shim one release after the rename.
       'plugin/bin/wt-adopt-rules-check-hook.mjs',
       'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
-      'plugin/bin/wt-unsynced-buffer-hook.mjs',
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
       'plugin/bin/wt-lane-consent-gate-hook.mjs',

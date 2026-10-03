@@ -54,6 +54,10 @@ function makeSandbox(tag: string): Sandbox {
       HOME: homeDir,
       XDG_STATE_HOME: stateDir,
       CLAUDE_CONFIG_DIR: configDir,
+      CLAUDE_PROJECT_DIR: projectDir,
+      WT_WORK_JOURNAL_DIR: join(stateDir, 'journal-live'),
+      WT_WORK_JOURNAL_ARCHIVE_DIR: join(stateDir, 'journal-archive'),
+      WT_WORK_JOURNAL_NOW: '2026-06-02T12:00:00Z',
       WT_OUTBOUND_GUARD_DIR: join(stateDir, 'outbound-guard'),
       WT_CANCELLED_CALL_RELAY_DIR: join(stateDir, 'cancelled-call-relay'),
       WT_HOOK_DRIFT_DIR: join(stateDir, 'hook-drift'),
@@ -108,7 +112,7 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
-    case 'wt-unsynced-buffer-hook.mjs':
+    case 'wt-work-journal-hook.mjs':
       return {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,

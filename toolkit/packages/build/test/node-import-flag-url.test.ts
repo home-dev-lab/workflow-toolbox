@@ -39,8 +39,9 @@ function importFlagViolations(source: string) {
 }
 
 function trackedScripts() {
-  const listing = execFileSync('git', ['ls-files', '-z', '--', 'toolkit', 'plugin'], { cwd: REPO, encoding: 'utf8' })
-  return listing.split('\0').filter((file) => /\.(?:[cm]?[jt]s)$/.test(file) && !file.includes('/node_modules/') && !file.includes('/dist/') && basename(file) !== SELF)
+  const listing = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'toolkit', 'plugin'], { cwd: REPO, encoding: 'utf8' })
+  const deleted = new Set(execFileSync('git', ['diff', '--diff-filter=D', '--name-only', '-z', 'HEAD'], { cwd: REPO, encoding: 'utf8' }).split('\0'))
+  return listing.split('\0').filter((file) => !deleted.has(file) && /\.(?:[cm]?[jt]s)$/.test(file) && !file.includes('/node_modules/') && !file.includes('/dist/') && basename(file) !== SELF)
 }
 
 describe('node --import / --loader arguments are URLs', () => {

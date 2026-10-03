@@ -5,9 +5,9 @@ description: >-
   Invoke when you have just finished a chunk of work or need the next recommendation grounded in
   the tracked backlog, or when the user types /what-next or asks "what's next", "what should I
   tackle now", or "what comes after this". Read the project's Planka board through
-  .claude/planka.json when the `planka` MCP is reachable, otherwise fall back to
-  .claude/progress.md, plus the current conversation and any existing knowledge index such as
-  `MEMORY.md`. Read-only: propose a next step, never mutate the board, `progress.md`, or task
+  .claude/planka.json when the `planka` MCP is reachable, plus the conversation, recent work
+  journal activity and any existing knowledge index such as `MEMORY.md`. Without a board, state
+  that no backlog can be verified. Read-only: propose a next step, never mutate the board or task
   state.
 argument-hint: "[topic-filter]"
 ---
@@ -16,11 +16,10 @@ argument-hint: "[topic-filter]"
 
 You help the user decide what to work on next, **grounded in what they actually track**, not
 what sounds productive. Read the inputs in order, synthesize, output a focused recommendation.
-**Read-only** throughout — never edit the board, `progress.md`, or any task state.
+**Read-only** throughout — never edit the board or any task state.
 
 **Dependencies, stated up front:** the board path needs the `planka` MCP server reachable and a
-.claude/planka.json pointer (written by the `planka-tracking` skill); the `progress.md` path
-needs nothing beyond the file existing; the `MEMORY.md` input is used only if the project already
+.claude/planka.json pointer (written by the `planka-tracking` skill). The `MEMORY.md` input is used only if the project already
 keeps one — most don't, and that's fine. When none of these are present, say so and fall back to
 conversation + whatever the user tells you (see Fallback at the end).
 
@@ -39,15 +38,13 @@ Read in order; stop as soon as you have enough.
    flag it as a blocked chain instead. **Also never recommend a card with no `Depends-on:` line.**
    Never drop a card that has no `Depends-on:` line: list each one, with its card id, in the
    **not checked: add a Depends-on line** section (see Output). This is the same rule the
-   actionability Stop gate counts by. **Otherwise** (no
-   pointer, or the MCP is down) fall back to **.claude/progress.md** if it exists: parse
-   whatever status structure it actually uses — common patterns are labeled sections (active /
-   pending / blocked / done) or a flat list with inline status markers — and look for some kind
-   of "last updated" line or header to judge staleness. If the file doesn't follow a recognizable
-   structure, read it as free text and extract candidate tasks conservatively. If neither a board
-   nor a `progress.md` exists, see **Fallback** at the end.
+   actionability Stop gate counts by. **Otherwise** (no pointer, or the MCP is down), say
+   "No backlog can be verified" and use **Fallback** at the end. Never infer pending tasks from
+   recent journal activity: the journal is an index of acts, not a backlog.
 2. **Conversation context** (free) — what did the user JUST finish? The recommendation should
    flow logically from that, not be a random pick from the bench.
+   If recent context needs grounding, read `wt-work-journal.mjs show --days 30`; follow its
+   detail links. This supplies activity context only, never candidates for pending work.
 3. **A knowledge index, if the project keeps one** (free, optional) — some projects maintain a
    running notes file (commonly named `MEMORY.md`) with gotchas, prior decisions, and
    cross-references tied to specific tasks. If one is already loaded in context, skim it for
@@ -69,7 +66,7 @@ Read in order; stop as soon as you have enough.
 
 ### Step 0 (MANDATORY, when the board is managed) — run the label-intent lens, don't describe it
 
-If input 1 resolved to the Planka board (not the `progress.md` fallback), run the label-intent
+If input 1 resolved to the Planka board, run the label-intent
 lens with a REAL Bash tool call — reading the script's source to understand it, or mentioning it
 in prose, does NOT satisfy this step; only an actual execution does:
 
@@ -110,15 +107,14 @@ found nothing (never manufactures noise) and never edits a card; when it finds s
 injects the finding into context for you to report. This skill step remains the backstop for the
 cases the hook cannot cover — the hook fires only on an unfiltered `get_board` call with a real
 `toolkit/` vendored at the project root, so run this command by hand whenever those conditions
-don't hold (`progress.md` fallback, a filtered board read, or a project that vendors `toolkit/`
+don't hold (a filtered board read, or a project that vendors `toolkit/`
 under a different path). The reserve above is **retired for `label-intent-lens.ts` specifically**
 — it still applies to `card-hygiene-lens.ts` below, whose mechanical hook wiring remains open.
 
 ### Step 1 (MANDATORY first) — scan for stalls
 
-For each in-flight item (`In Progress` cards, or the equivalent "currently active" entries in
-`progress.md`), find its last-touched date however the project records it — a card's activity
-date, or a "last touched"/"last updated" line next to the task. **If it's more than 7 days before
+For each in-flight `In Progress` card, find its last-touched date from the card's activity
+or recorded "last touched"/"last updated" line. **If it's more than 7 days before
 today, it IS stalled** — no exceptions (not "it's blocked anyway", not "I'm thinking about it").
 Emit, above the recommendation, at most the 2 oldest:
 
@@ -171,7 +167,7 @@ one action that makes it startable: add `Depends-on: none` when the card is inde
 ## Rules
 
 - **Self-describing references** — never a bare `#id`/SHA; carry the substance in ≤8 words.
-- **Read-only** — never edit the board, `progress.md`, or any task state. The user mutates it via
+- **Read-only** — never edit the board or any task state. The user mutates it via
   the board's own tools, `planka-tracking`, or manual edits.
 - **Respect blockers & dependencies** — skip `Blocked` items and any card with an unsatisfied
   `Depends-on:` unless there's evidence the blocker cleared; never recommend a card with no
@@ -184,8 +180,8 @@ one action that makes it startable: add `Depends-on: none` when the card is inde
 
 ## Fallback when no backlog source exists
 
-If there's no board (no .claude/planka.json, or the `planka` MCP is unreachable) AND no
-.claude/progress.md, fall back to conversation context plus any project/feedback notes already
-in context, and say so up front: "No board or `progress.md` found — recommendation based on
-conversation + memory only; less reliable for medium-term priorities." If there's no
-.claude/planka.json, also mention the project can be onboarded via the `planka-tracking` skill.
+If there's no reachable board, say up front: "No backlog can be verified — this suggestion
+uses conversation and memory only, not tracked pending work." Use conversation context,
+relevant project/feedback notes and journal activity as context. When there is no pointer,
+recommend onboarding with the `planka-tracking` skill. Do not invent a startable card or an
+`Option N` tracker handle from an activity line.

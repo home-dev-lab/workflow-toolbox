@@ -24,7 +24,8 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // retention helpers read the platform from host/platform.mjs.
 // The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1893
+// The journal replaces the old reminder's raw filesystem reads with host-adapter operations.
+export const HOST_PRIMITIVE_CEILING = 1890
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
