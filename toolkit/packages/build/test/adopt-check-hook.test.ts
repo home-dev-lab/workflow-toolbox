@@ -996,6 +996,10 @@ describe('wt-adopt-check-hook — compact digest', () => {
     const compact = runHookWithSource(f.proj, f.env, 'compact')
     const command = /`(printf [^`]+)`/.exec(compact)?.[1]
     expect(command).toBeTruthy()
+    // F9: a drift first detected at compaction was never printed at session start, so the closing line must
+    // describe what the command does (prints the current full remedies), not claim an earlier print.
+    expect(compact).not.toContain('were printed at session start')
+    expect(compact).toContain('prints the current full remedies')
     const res = spawnSync('bash', ['-c', command as string], { encoding: 'utf8', env: f.env })
     expect(res.status).toBe(0)
     expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toBe(startup)

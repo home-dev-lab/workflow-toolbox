@@ -374,9 +374,9 @@ function buildDigestMessage(perFile, set) {
 function digestClosing(root, noticeOnly) {
   const payload = JSON.stringify({ source: 'startup', hook_event_name: 'SessionStart', cwd: root })
   const rerun = `printf '%s' ${shellQuote(payload)} | node ${shellQuote(path.join(HERE, 'wt-adopt-check-hook.mjs'))}`
-  return 'The per-file remedies were printed at session start and the compaction dropped them; to print them ' +
-    `again, run \`${rerun}\`` +
-    (noticeOnly ? ' and hand them to the session that owns the directory.' : '.')
+  return 'This digest omits the per-file remedies; the command that prints the current full remedies is ' +
+    `\`${rerun}\`` +
+    (noticeOnly ? '; hand them to the session that owns the directory.' : '.')
 }
 
 function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
