@@ -13,9 +13,12 @@ against real JSONL transcripts using `prove-triggers <rule.md> --spec <spec.json
 counts. Use `migrate <rule.md> --spec <spec.json> --proof <proof.json>
 --project <project>` only when every trigger has evidence. `--no-proof "reason"`
 requires an explicit named absence of evidence. For user rules supply `--user
---config-dir <dir>` and any `--mirror-dir <dir>`; the command refuses a profile
-where it cannot show the engine serves (see the README). Use `--assume-loaded <dir>`
-to record hand verification; it does not bypass configuration or loading checks.
+--config-dir <dir>` and any `--mirror-dir <dir>`. Its static checks are a refusal-only
+pre-filter: a matching manifest name establishes presence, not that the engine
+loads or delivers rules. The command reports each unrefused profile on stderr;
+migration remains provisional until the engine is observed serving the rule in
+that profile (see the README). Use `--assume-loaded <dir>` to record hand
+verification; it does not bypass static checks or establish observed serving.
 Repeat these flags for multiple profiles;
 commas are literal path characters. Verify effective launch settings and each mirror's
 Claude Code build; a primary build does not prove a mirror's. `revert` returns a rule to static. `retire <rule.md>

@@ -49,7 +49,7 @@ export async function managedPolicies(options = {}) {
     if (error.code === 'ENOENT' && await absent(directory, io)) names = [];
     else refuse(`managed settings ${directory}: cannot read drop-in directory (${error.code ?? error.message})`);
   }
-  for (const name of names.filter((name) => name.endsWith('.json')).sort()) {
+  for (const name of names.filter((name) => !name.startsWith('.') && name.endsWith('.json')).sort()) {
     const fragment = paths.join(directory, name);
     policies.push({ file: fragment, settings: await readPolicy(fragment, io) });
   }

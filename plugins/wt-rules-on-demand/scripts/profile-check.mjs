@@ -75,6 +75,7 @@ async function assertProfile(dir, runningProfile, env, policies) {
 
 async function inlineEngine(root) {
   if (!root) return false;
+  // A name match establishes presence only, not loader validity or serving; non-refusal remains provisional.
   try { return JSON.parse(await readFile(join(root, '.claude-plugin', 'plugin.json'), 'utf8')).name === 'wt-rules-on-demand'; }
   catch { return false; }
 }

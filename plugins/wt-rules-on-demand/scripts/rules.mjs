@@ -174,7 +174,11 @@ async function migrate() {
   const spec = await readSpec(resolve(String(options.spec)));
   const hash = triggersHash(spec.triggers);
   const bodyHash = createHash('sha256').update(await readFile(resolve(lifecycleRoot, scope === 'user' ? 'rules' : join('.claude', 'rules'), subject))).digest('hex');
-  if (scope === 'user') await assertProfiles(configDir, mirrorDirs, assumedLoaded);
+  if (scope === 'user') {
+    await assertProfiles(configDir, mirrorDirs, assumedLoaded);
+    for (const dir of [configDir, ...mirrorDirs])
+      console.error(`rules: profile ${dir}: not refused by static checks; migration is provisional until the engine is observed serving the rule.`);
+  }
   let proof;
   if (options.proof) {
     proof = JSON.parse(await readFile(resolve(String(options.proof)), 'utf8'));

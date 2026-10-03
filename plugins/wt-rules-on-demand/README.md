@@ -20,12 +20,17 @@ node /path/to/wt-rules-on-demand/scripts/rules.mjs prove-triggers rule-at-act.md
 node /path/to/wt-rules-on-demand/scripts/rules.mjs migrate rule-at-act.md --project /path/to/project --spec rule-at-act.spec.json --proof proof.json
 ```
 
-A user-scope `migrate --user` first checks local engine evidence in every
-profile it writes to (`--config-dir`, each `--mirror-dir`). It reads the platform's
+A user-scope `migrate --user` first runs a refusal-only static pre-filter in every
+profile it writes to (`--config-dir`, each `--mirror-dir`). A non-refusal does not
+prove the engine loads or delivers rules: migration is provisional until the engine
+is observed serving the rule in that profile. The command reports this limit per
+checked profile on stderr, alongside its other `rules:` diagnostics; the stdout
+`migrated …` summary is unchanged. It reads the platform's
 managed settings first: Linux `/etc/claude-code/managed-settings.json`, macOS
 `/Library/Application Support/ClaudeCode/managed-settings.json`, Windows
-`C:\Program Files\ClaudeCode\managed-settings.json`, plus every `*.json` in the
-sibling `managed-settings.d/` directory. Absent files/directories are normal;
+`C:\Program Files\ClaudeCode\managed-settings.json`, plus visible `*.json` files in the
+sibling `managed-settings.d/` directory. Names starting with `.` are ignored.
+Absent files/directories are normal;
 unreadable directories, dangling policy links, and unreadable or invalid files
 are refused by path. Managed values override user values, and sorted drop-ins
 override the managed base file. The effective `disableAllHooks: true`
@@ -43,8 +48,9 @@ for compatibility, but does not waive any decision check. Historical health is
 never read by this checker and cannot change an outcome.
 Effective `disableSideloadFlags: true` refuses inline (`--plugin-dir`)
 or unknown engine sources, even with that flag. Installed-source evidence requires
-the profile's user installation record and a readable engine manifest inside its
-plugin cache; stale records are skipped so later valid records can supply evidence.
+the profile's user installation record and a readable engine manifest whose version
+entry sits in its plugin cache (the entry may be a link to a development checkout);
+stale records are skipped so later valid records can supply evidence.
 Current enabled installations are examined even when old inline health exists;
 this check does not call cached plugins organization-managed.
 User and managed keys examined by this checker must have their documented boolean/object
@@ -57,7 +63,11 @@ false: missing or malformed enablement is refused even with historical health or
 `enabledPlugins`, and its installation record and cached manifest must establish
 presence. An inline identity instead needs a readable engine manifest at the
 running profile's `CLAUDE_PLUGIN_ROOT`; a plugin directory alone does not replace
-affirmative enablement. Function
+affirmative enablement. These manifest checks match the engine name only; they do
+not validate the loader's schema or hook modules. Even a name-matching manifest
+with a string-valued `keywords` field passes the presence check although Claude Code
+cannot load it. With neither installed nor inline manifest evidence, migration
+is refused. Function
 Hooks must be on: Claude Code 2.1.287 and later load mods by default (the running
 version is read from the `CLAUDE_CODE_EXECPATH` and `AI_AGENT` variables Claude Code
 sets for its commands); an older or unknown build needs
@@ -82,7 +92,7 @@ establish that the effective launch policy permits the engine. Verify effective
 settings for every intended launch; earlier activity proves only the launches
 that wrote it.
 
-Affirmative enablement in readable managed settings can authorize a profile
+Affirmative enablement in readable managed settings can leave a profile unrefused
 before its first activity, even with an absent user settings file. An existing
 invalid or unreadable user file, including a dangling settings link, refuses by filename. Enablement
 delivered only through unexamined launch-time policy still needs the observed
