@@ -13,8 +13,9 @@ against real JSONL transcripts using `prove-triggers <rule.md> --spec <spec.json
 counts. Use `migrate <rule.md> --spec <spec.json> --proof <proof.json>
 --project <project>` only when every trigger has evidence. `--no-proof "reason"`
 requires an explicit named absence of evidence. For user rules supply `--user
---config-dir <dir>` and any `--mirror-dir <dir>`; verify every profile loads the
-plugin and Function Hooks. `revert` returns a rule to static. `retire <rule.md>
+--config-dir <dir>` and any `--mirror-dir <dir>`; the command refuses a profile
+where it cannot show the engine serves (see the README). Use `--assume-loaded <dir>`
+only after verifying that profile by hand. `revert` returns a rule to static. `retire <rule.md>
 --reason "reason"` archives it. Never manually move a rule or edit a ledger.
 
 Read `<CLAUDE_PLUGIN_DATA>/quality/latest.json` when that variable is set, or
