@@ -7,8 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { externalTest } from './external-test.mjs';
 const { register, resetForSelftest } = await import(process.env.ROD_TEST_HOOKS ? pathToFileURL(process.env.ROD_TEST_HOOKS).href : '../hooks/hooks.js');
-const { REDACTION_NOTE } = await import('../../wt-secret-guard/hooks/constants.js');
 const { GUARD_REDACTION_NOTE } = await import('../hooks/guard-refusal.js');
 
 const makeRule = (compliance, trigger) => `---\non-demand:\n  triggers:\n${trigger}\n  compliance:\n${compliance}\n---\nSynthetic instruction.\n`;
@@ -41,7 +41,9 @@ const toolTrigger = "    - kind: 'tool'\n      tool: '^Bash$'\n      input-regex
 const ruleBlock = '<rule name="sample.md">';
 const carries = (answer) => [answer.deny ?? '', ...(answer.context ?? [])].some((item) => item.includes(ruleBlock));
 
-test('the guard note rod recognises is the guard\'s own', () => {
+const guardNoteTest = externalTest('../../wt-secret-guard/hooks/constants.js', import.meta.url);
+guardNoteTest('the guard note rod recognises is the guard\'s own', async (_t, url) => {
+  const { REDACTION_NOTE } = await import(url);
   assert.equal(GUARD_REDACTION_NOTE, REDACTION_NOTE);
 });
 
@@ -84,9 +86,6 @@ test('turn correlation sees a call the guard answered after it ran, as a failed 
 });
 
 // The guard itself, driven in-process: its Grep hook between rules-on-demand and an errored core answer.
-const guardHooks = [];
-(await import('../../wt-secret-guard/hooks/hooks.js')).register((event, matcher, hook) => guardHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), {});
-const guardGrep = guardHooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Grep').hook;
 function guardHost() {
   const store = new Map(); const files = new Map();
   return {
@@ -102,7 +101,11 @@ function guardHost() {
   };
 }
 
-test('the real guard\'s refusal for a scrubbed error reads as a call that ran', async () => {
+const guardHookTest = externalTest('../../wt-secret-guard/hooks/hooks.js', import.meta.url);
+guardHookTest('the real guard\'s refusal for a scrubbed error reads as a call that ran', async (_t, url) => {
+  const guardHooks = [];
+  (await import(url)).register((event, matcher, hook) => guardHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), {});
+  const guardGrep = guardHooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Grep').hook;
   // Assembled at run time so this file never carries a detectable literal.
   const held = ['xox', 'b-1234567890', '12-abcdefghij'].join('');
   const core = async () => ({ isError: true, result: `grep failed near ${held}`, text: `grep failed near ${held}`, ref: 7 });
