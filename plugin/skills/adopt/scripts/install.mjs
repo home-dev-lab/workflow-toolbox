@@ -704,12 +704,14 @@ function contentFingerprint(body) {
   return fingerprint(body.replace(/[ \t\r\n]+$/u, ''))
 }
 
-function renderBanner(version, fp, stamp = null, file = '') {
+function renderBanner(version, fp, stamp = null, file = '', aheadTrace = null) {
   const metadata = `installed from ${BANNER_TOOL} v${version}` + (fp ? ` · content sha256:${fp}` : '')
   let provenance = ''
   if (stamp?.kind === 'head') provenance = ` head sha256:${stamp.head}`
   else if (stamp?.kind === 'kept') provenance = ` kept sha256:${stamp.kept} spec sha256:${stamp.spec}`
-  if (file.endsWith('.mjs')) return `// ${metadata}${provenance} by the adopt skill -- editable copy.`
+  // The --allow-ahead trace sits AFTER "by the adopt skill" so every banner parser and the
+  // content fingerprint (which never covers the banner) read the line exactly as before.
+  if (file.endsWith('.mjs')) return `// ${metadata}${provenance} by the adopt skill -- editable copy.${aheadTrace ? ` ALLOW-AHEAD: ${aheadTrace}` : ''}`
   return (
     `<!-- ${metadata}${provenance} by the adopt ` +
     `skill — editable copy. Re-run the ${BANNER_TOOL}:adopt skill to check for updates; ` +
@@ -859,6 +861,12 @@ function adoptedLauncherPluginRoot(env = process.env) {
   for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
     if (typeof candidate === 'string' && candidate) return candidate
   }
+  return installedPluginRegistryEntry(env)?.installPath ?? null
+}
+
+/** The workflow-toolbox entry of the active config's installed-plugin registry, as `{ key,
+ * installPath }`, or null when the registry or the entry is missing or unreadable. */
+function installedPluginRegistryEntry(env = process.env) {
   const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')
   const registry = path.join(configDir, 'plugins', 'installed_plugins.json')
   try {
@@ -867,9 +875,9 @@ function adoptedLauncherPluginRoot(env = process.env) {
     const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
     const entry = key ? plugins[key] : null
     const installed = Array.isArray(entry) ? entry[0] : entry
-    if (typeof installed?.installPath === 'string' && installed.installPath) return installed.installPath
+    if (typeof installed?.installPath === 'string' && installed.installPath) return { key, installPath: installed.installPath }
   } catch {
-    // Reported below with the same remedies as a missing runtime module.
+    // Reported by the callers with the same remedies as a missing runtime module.
   }
   return null
 }
@@ -890,11 +898,173 @@ function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
   return modules
 }
 
-function preflightAdoptedLauncherRuntime(chosen, sourceRoot) {
-  if (!chosen.includes('scripts')) return
+// --- A script set ahead of the installed plugin -----------------------------------------------
+//
+// SCOPE: the scripts set only. An adopted script is not standalone: it imports its libraries from
+// the INSTALLED plugin at run time, so a script adopted from a newer source tree runs new code
+// against old libraries and fails on first use (a missing export), while --check still reads the
+// copy as clean. The rules, agents and autonomy sets are self-contained text with no run-time
+// library resolution, so this check deliberately never applies to them.
+//
+// "Ahead" is judged against EVERY plugin root the adopted scripts may resolve when they run: the
+// launcher re-resolves at each launch (CLAUDE_PLUGIN_ROOT, then WT_PLUGIN_ROOT, then the config
+// registry), so a root shadowed now can be the one used then; and a copy written into another
+// profile's scripts dir runs under that profile's registry. A root is behind when its version cannot
+// be read, when the source version is greater, or when the versions are equal and the run-time tree
+// differs. The last case is the common one: a development tree usually carries the latest released
+// number while its code already moved.
+//
+// The run-time tree is compared WHOLE (every file under these plugin-relative directories, line
+// endings ignored), not as an import graph: the adopted scripts also spawn helper entrypoints and
+// read data files through computed paths that no import parser follows. `bin/` holds every module
+// and helper; `pricing/` is data the bin code loads relative to itself. A difference anywhere there
+// at an equal version means the source is not a released tree — exactly the case to refuse.
+const ADOPTED_SCRIPTS_RUNTIME_DIRS = ['bin', 'pricing']
+const ALLOW_AHEAD_TRACE_RE = / ALLOW-AHEAD: (.*)$/
+
+function pluginVersionAt(root) {
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'plugin.json'), 'utf8')).version
+    return typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+function sameDirectory(a, b) {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b)
+  } catch {
+    return path.resolve(a) === path.resolve(b)
+  }
+}
+
+function runtimeTreeFiles(root) {
+  const files = []
+  const walk = (rel) => {
+    let entries
+    try {
+      entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const child = path.join(rel, entry.name)
+      if (entry.isDirectory()) walk(child)
+      else files.push(child.split(path.sep).join('/'))
+    }
+  }
+  for (const dir of ADOPTED_SCRIPTS_RUNTIME_DIRS) walk(dir)
+  return files
+}
+
+/** The first plugin-relative file present in only one of the two run-time trees, or whose content
+ *  differs (CRLF and LF read alike), in sorted order; null when the trees match. */
+function firstRuntimeTreeDifference(sourceRoot, runtimeRoot) {
+  const read = (root, rel) => {
+    try {
+      return fs.readFileSync(path.join(root, ...rel.split('/')), 'utf8').replace(/\r\n/g, '\n')
+    } catch {
+      return null
+    }
+  }
+  const union = [...new Set([...runtimeTreeFiles(sourceRoot), ...runtimeTreeFiles(runtimeRoot)])].sort()
+  for (const rel of union) {
+    const a = read(sourceRoot, rel)
+    if (a === null || a !== read(runtimeRoot, rel)) return rel
+  }
+  return null
+}
+
+/** Every plugin root the adopted scripts may resolve at run time, de-duplicated, each with the
+ *  registry key that installed it when a registry names it. `targetDirs` are the scripts dirs about
+ *  to be written: a dir directly under a config dir runs under that config's own registry. */
+function adoptedScriptsRuntimeRoots(targetDirs, env = process.env) {
+  const roots = []
+  const add = (candidate, source, key = null) => {
+    if (typeof candidate !== 'string' || !candidate) return
+    const existing = roots.find((root) => sameDirectory(root.path, candidate))
+    if (existing) existing.key ??= key
+    else roots.push({ path: candidate, source, key })
+  }
+  add(env.CLAUDE_PLUGIN_ROOT, 'CLAUDE_PLUGIN_ROOT')
+  add(env.WT_PLUGIN_ROOT, 'WT_PLUGIN_ROOT')
+  const active = installedPluginRegistryEntry(env)
+  add(active?.installPath, 'the installed-plugin registry', active?.key)
+  for (const dir of targetDirs) {
+    const configDir = path.dirname(dir)
+    const entry = installedPluginRegistryEntry({ ...env, CLAUDE_CONFIG_DIR: configDir })
+    add(entry?.installPath, `the installed-plugin registry of ${configDir}`, entry?.key)
+  }
+  return roots
+}
+
+/** null when the source scripts match every run-time root, else `{ path, source, key, kind,
+ *  detail, trace }` for the first root that does not. */
+function scriptsAheadOfInstalledPlugin(sourceRoot, sourceVersion, targetDirs, env = process.env) {
+  for (const root of adoptedScriptsRuntimeRoots(targetDirs, env)) {
+    if (sameDirectory(root.path, sourceRoot)) continue
+    const where = `the installed plugin at ${root.path} (from ${root.source})`
+    const installed = pluginVersionAt(root.path)
+    if (installed === null) {
+      return { ...root, kind: 'unreadable', detail: `the version of ${where} could not be read`, trace: 'installed plugin version unreadable' }
+    }
+    const order = cmp(sourceVersion, installed)
+    if (order > 0) {
+      return { ...root, kind: 'newer', detail: `this source tree is v${sourceVersion}, ${where} is v${installed}`, trace: `installed plugin was v${installed}` }
+    }
+    if (order === 0) {
+      const differing = firstRuntimeTreeDifference(sourceRoot, root.path)
+      if (differing) {
+        return { ...root, kind: 'unreleased', detail: `this source tree and ${where} are both v${installed}, but ${differing} differs between them, so this tree is not that release`, trace: `installed plugin was v${installed} with a different run-time tree` }
+      }
+    }
+  }
+  return null
+}
+
+function aheadRefusalMessage(ahead, chosen) {
+  const argv = process.argv.slice(2)
+  const command = (words) => words.map((word) => shellQuote(word)).join(' ')
+  const remedies = []
+  if (ahead.key) {
+    const release = ahead.kind === 'unreleased' ? 'once a plugin release carries these changes, install it' : 'install the plugin release that carries this source'
+    remedies.push(`${release}, restart Claude Code, then re-run this command: claude plugin update ${shellQuote(ahead.key)}`)
+  } else {
+    remedies.push(`${ahead.path} is not a registry install: point ${ahead.source} at a plugin root that matches this source, or unset it, then re-run this command`)
+  }
+  const installedInstaller = path.join(ahead.path, 'skills', 'adopt', 'scripts', 'install.mjs')
+  if (realFile(installedInstaller)) {
+    remedies.push(`adopt the scripts that match that plugin, from its own installer: ${command([process.execPath, installedInstaller, ...argv])}`)
+  }
+  remedies.push(`develop the pair together on purpose (each banner records the deviation): ${command([process.execPath, fileURLToPath(import.meta.url), ...argv, '--allow-ahead'])}`)
+  const lines = [
+    `refusing to install the scripts set: ${ahead.detail}.`,
+    '  An adopted script loads its libraries from the installed plugin when it runs, so this pair would run code against libraries it was not shipped with.',
+    '  To clear it:',
+    ...remedies.map((remedy, index) => `    ${index + 1}. ${remedy}`),
+  ]
+  const others = chosen.filter((name) => name !== 'scripts')
+  if (others.length > 0) {
+    lines.push(`  The ${formatSetList(others)} sets carry no run-time library resolution and are not subject to this check: ${formatSetFlags(others)} installs them alone.`)
+  }
+  return lines.join('\n')
+}
+
+function preflightAdoptedLauncherRuntime(chosen, sourceRoot, args = {}, scriptsTargetDirs = []) {
+  if (!chosen.includes('scripts')) return null
   const runtimeRoot = adoptedLauncherPluginRoot()
   if (!runtimeRoot) {
     fail('wt-lane.mjs plugin root could not be resolved — install or update workflow-toolbox, then retry')
+  }
+  let aheadTrace = null
+  if (args.mode === 'install') {
+    const ahead = scriptsAheadOfInstalledPlugin(sourceRoot, currentVersion(sourceRoot), scriptsTargetDirs)
+    if (ahead && !args.allowAhead) fail(aheadRefusalMessage(ahead, chosen))
+    if (ahead) {
+      aheadTrace = ahead.trace
+      process.stdout.write(`adopt: --allow-ahead — ${ahead.detail}; the scripts banners record it.\n`)
+    }
   }
   const adopted = itemContent(SETS.scripts, { file: 'wt-lane.mjs' }, sourceRoot)
   for (const modulePath of adoptedLauncherRuntimeModules(adopted, runtimeRoot)) {
@@ -902,6 +1072,7 @@ function preflightAdoptedLauncherRuntime(chosen, sourceRoot) {
       fail(`wt-lane.mjs runtime module is missing from the resolved plugin root: ${modulePath} — update or reinstall workflow-toolbox, then retry.`)
     }
   }
+  return aheadTrace
 }
 
 /** The shipped content's fingerprint, or null when the source cannot be read.
@@ -993,7 +1164,7 @@ function stripScriptBanner(text) {
  *  installer just wrote it from its own template a moment earlier. Returns
  *  `{ text, preserved }`; `preserved` is `[]` when there is nothing local to carry (the common
  *  case, and the only case for the rules/autonomy sets, which pass no `oldContent`). */
-function renderItem(set, item, version, root, oldContent = null, triggers = null, force = false) {
+function renderItem(set, item, version, root, oldContent = null, triggers = null, force = false, aheadTrace = null) {
   const rawContent = itemContent(set, item, root)
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
@@ -1006,7 +1177,7 @@ function renderItem(set, item, version, root, oldContent = null, triggers = null
       ? { kind: 'head', head: triggers.current }
       : triggers.stamp
   }
-  const b = renderBanner(version, fingerprint(content), stamp, item.file)
+  const b = renderBanner(version, fingerprint(content), stamp, item.file, set.kind === 'scripts' ? aheadTrace : null)
   let text
   if (set.kind === 'agents') text = insertAgentBanner(content, b)
   else if (onDemandHead) text = `${writtenHead}${b}\n\n${content}`
@@ -1661,6 +1832,7 @@ const CLI_BOOLEAN_OPTIONS = {
   '--dry-run': 'dryRun',
   '--ignore-secondary': 'ignoreSecondary',
   '--execute': 'execute',
+  '--allow-ahead': 'allowAhead',
 }
 
 const CLI_MODE_OPTIONS = {
@@ -2375,7 +2547,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
     return
   }
   const oldContent = existingContentForRender(set, target, classification)
-  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, args.force)
+  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, args.force, args.aheadTrace)
   if (preserved.length > 0) {
     process.stdout.write(
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
@@ -2444,12 +2616,21 @@ function writeTriggerHead(set, dir, item, planned, action) {
   process.stdout.write(`  ${item.file}: ${verb} (head only; body left at v${classification.installedVer}) -> ${target} (journal ${journalPath(dir)}) · on-demand triggers ${outcome}\n`)
 }
 
+/** An up-to-date script copy whose banner does not carry THIS run's --allow-ahead trace (one that
+ *  lacks it under --allow-ahead, or keeps a stale one without) is re-rendered: the body is
+ *  identical, so only the banner changes, and the trace always describes the latest install. */
+function bannerTraceStale(set, classification, decision, args) {
+  if (set.kind !== 'scripts' || classification.state !== 'clean' || !decision.status.startsWith('UP-TO-DATE')) return false
+  const current = ALLOW_AHEAD_TRACE_RE.exec(bannerLine(set, classification.raw))?.[1] ?? null
+  return current !== (args.aheadTrace ?? null)
+}
+
 function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const planned = decideManagedItem(set, dir, item, args, version, root, alternateDirs)
   const { classification, decision, triggers } = planned
   if (args.mode === 'install') {
     if (args.refreshTriggers || args.keepTriggers) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
-    else if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
+    else if (decision.write || bannerTraceStale(set, classification, decision, args)) writeManagedItem(set, dir, item, args, version, root, planned)
     else if (triggers && (triggers.state === 'stale' || (triggers.state === 'current' && (triggers.stamp?.kind !== 'head' || triggers.stamp.head !== triggers.current)))) {
       writeTriggerHead(set, dir, item, planned, 'refresh')
     }
@@ -3133,11 +3314,21 @@ function managedSetGroups(set, fallbackDir, resolution, root) {
   return groups
 }
 
+// `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under --global the
+// config dir IS the '.claude' layer already, so `globalSubdir` (its own field, NOT derived from
+// defaultDir's basename — see the SETS comment above) is appended instead.
+function managedSetFallbackDir(set, args, globalRoot) {
+  return path.resolve(args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)))
+}
+
 function runManagedCommand(args, context) {
   const { root, version, chosen, globalRoot } = context
   const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
 
-  preflightAdoptedLauncherRuntime(chosen, root)
+  const scriptsTargetDirs = chosen.includes('scripts')
+    ? [...managedSetGroups(SETS.scripts, managedSetFallbackDir(SETS.scripts, args, globalRoot), implicitInstallDirs.get('scripts'), root).keys()]
+    : []
+  args.aheadTrace = preflightAdoptedLauncherRuntime(chosen, root, args, scriptsTargetDirs)
 
   process.stdout.write(
     `adopt: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
@@ -3156,13 +3347,7 @@ function runManagedCommand(args, context) {
   }
   for (const name of chosen) {
     const set = SETS[name]
-    // `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under
-    // --global the config dir IS the '.claude' layer already, so `globalSubdir` (its own
-    // field, NOT derived from defaultDir's basename — see the SETS comment above) is
-    // appended instead.
-    const fallbackDir = path.resolve(
-      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
-    )
+    const fallbackDir = managedSetFallbackDir(set, args, globalRoot)
     // Checked once against the whole set: a group the implicit resolution did not give this file skips it.
     if (args.file && !set.resolveItems(root).some((item) => item.file === args.file)) {
       fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
