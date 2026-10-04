@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { closeSync, openSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const HOLD_MS = 60 * 60 * 1000
 // Six Node processes can take over five seconds to start on the saturated Windows CI host.
@@ -73,6 +73,6 @@ async function main() {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+if (isInvokedDirectly(import.meta.url)) {
   main().catch((error) => { process.stderr.write(`process-enumeration-load: ${error.message}\n`); process.exitCode = 1 })
 }

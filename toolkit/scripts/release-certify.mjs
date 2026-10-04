@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { availableParallelism, loadavg } from 'node:os'
 import { join } from 'node:path'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { acquireSuiteLock, releaseSuiteLock, spawnNeedsShell, suiteLeaseMarker } from '../../plugin/bin/lib/suite-lock.mjs'
 import { coveredCommandSpawnOptions, signalCoveredCommand, stopCoveredCommandTree } from '../../plugin/bin/lib/host/suite-lock-host.mjs'
 
@@ -99,7 +100,7 @@ export async function certify({ override = false, gates = ['typecheck', 'lint', 
   }
 }
 
-if (process.argv[1] && import.meta.filename === process.argv[1]) {
+if (isInvokedDirectly(import.meta.url)) {
   const args = process.argv.slice(2)
   if (args.some((arg) => arg !== '--allow-high-load')) throw new Error('usage: pnpm certify [-- --allow-high-load]')
   process.exitCode = await certify({ override: args.includes('--allow-high-load') })

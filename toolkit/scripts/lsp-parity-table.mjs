@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 export const LANGUAGES = ['typescript', 'java', 'kotlin', 'groovy', 'python', 'svelte', 'vue']
 export const CAPABILITIES = ['diagnostics', 'symbol-overview', 'symbol-lookup', 'declarations', 'references', 'implementations']
@@ -32,7 +32,7 @@ export function writeParityTable(archive) {
   return rendered
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isInvokedDirectly(import.meta.url)) {
   const archive = process.argv[2]
   if (!archive || process.argv.length !== 3) throw new Error('usage: lsp-parity-table.mjs <archive-root>')
   process.stdout.write(writeParityTable(resolve(archive)).markdown)

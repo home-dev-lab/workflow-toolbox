@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
@@ -218,7 +219,7 @@ export function formatFinding(finding) {
   return `${finding.file}:${finding.line} ${finding.signal}: ${finding.detail}${reason ? ` [allowed: ${reason}]` : ''}`
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkAmbientState()
   process.stdout.write(`${result.findings.map(formatFinding).join('\n')}${result.findings.length ? '\n' : ''}`)
   if (process.argv.includes('--check') && (result.unapproved.length || result.stale.length)) {

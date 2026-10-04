@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { dirname, join, resolve } from 'node:path'
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 
@@ -124,7 +125,7 @@ export function writeLspRoot(repoRoot = DEFAULT_REPO_ROOT) {
   writeFileSync(join(repoRoot, 'plugin', '.lsp.json'), buildLspRoot(repoRoot))
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isInvokedDirectly(import.meta.url)) {
   try {
     writeLspRoot()
   } catch (error) {

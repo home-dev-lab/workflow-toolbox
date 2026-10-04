@@ -3,7 +3,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const USAGE = 'usage: run-typescript-pack-agent.mjs <agent.md> <input.md> <output.json>'
 
@@ -67,7 +68,7 @@ async function main() {
   writeFileSync(outputPath, `${JSON.stringify(serializeRun(agentPath, model, effort, transcript), null, 2)}\n`)
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isInvokedDirectly(import.meta.url)) {
   main().catch((error) => {
     process.stderr.write(`${error.message}\n`)
     process.exitCode = 1

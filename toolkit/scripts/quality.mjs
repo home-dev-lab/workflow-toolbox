@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { ESLint } from 'eslint'
 import sonarjs from 'eslint-plugin-sonarjs'
 
@@ -293,7 +294,7 @@ async function main() {
   throw new Error('Usage: quality.mjs baseline | delta [--since <git-ref>] | debt-cards [--top N] [--format markdown|json]')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isInvokedDirectly(import.meta.url)) {
   main().catch((error) => {
     // A report that cannot be produced says so by exit code; a silent exit 0 on `delta` once hid a
     // parse failure behind an empty report.

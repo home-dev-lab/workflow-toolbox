@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { extname, join, relative, resolve } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const DEFAULT_PLUGIN_ROOT = resolve(import.meta.dirname, '../../plugin')
 const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
@@ -161,7 +162,7 @@ export function formatHostPrimitiveRefusal(result) {
   ].join('\n')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkHostPrimitives()
   process.stdout.write(`Raw host primitives: ${result.count}/${result.ceiling} across ${result.perimeterFiles} perimeter files.\n`)
   if (result.exceeded) {
