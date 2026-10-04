@@ -370,7 +370,7 @@ describe('a guard given a flag VALUE spelled --help / -h does not take the help 
     const git = (...a: string[]) =>
       spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', ...a], {
         encoding: 'utf8',
-        env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+        env: { ...process.env, HOME: repo, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
       })
     expect(git('init', '-q').status).toBe(0)
     expect(git('commit', '-q', '--allow-empty', '-m', 'one').status).toBe(0)
