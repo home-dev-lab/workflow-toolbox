@@ -514,6 +514,35 @@ describe('orchestrator driver', () => {
     const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { offsets.push(offset); return { cards: cards.slice(offset, offset + 1), total: 2 } } }; const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board }); expect(result.rows).toHaveLength(2); expect(offsets.slice(0, 2)).toEqual([0, 1])
   })
 
+  // A mission scan must never act on a subset of its list. Every page carries the list's total (the live server
+  // answers {total, offset, limit, cards} with total = the filtered list's size, probed 2026-10-04). A malformed
+  // total stops the wave at once; a list that changes under the scan is re-read from offset 0, and the wave stops
+  // as board unavailable only when it never reads consistently.
+  const missionCards = () => [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]
+  it.each([
+    ['a page without total', 'malformed find_cards total', (_offset: number, cards: unknown[]) => ({ cards })],
+    ['a null total', 'malformed find_cards total', (_offset: number, cards: unknown[]) => ({ cards, total: null })],
+    ['a string total', 'malformed find_cards total', (_offset: number, cards: unknown[]) => ({ cards, total: String(cards.length) })],
+    ['an empty page before total is reached', 'empty page at offset 1 before total 2', (offset: number, cards: unknown[]) => ({ cards: offset === 0 ? cards.slice(0, 1) : [], total: cards.length })],
+    ['more cards than total', '2 cards for total 1', (_offset: number, cards: unknown[]) => ({ cards, total: cards.length - 1 })],
+    ['a total that falls between pages of one scan', 'total changed from 3 to 2', (offset: number, cards: unknown[]) => ({ cards: cards.slice(offset, offset + 1), total: offset === 0 ? cards.length + 1 : cards.length })],
+    ['a card returned twice', 'card 1 returned twice', (_offset: number, cards: unknown[]) => ({ cards: cards.slice(0, 1), total: cards.length })],
+  ])('refuses a mission scan on %s instead of piloting a partial list', async (_label, reason, page) => {
+    const cards = missionCards(); const f = repoFixture(cards)
+    const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => page(offset, cards) }
+    const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' }); expect(f.launches).toHaveLength(0)
+    expect(readFileSync(f.report, 'utf8')).toContain(reason)
+  })
+
+  it('re-reads a mission list that changed during the scan and pilots the consistent read', async () => {
+    const cards = missionCards(); const f = repoFixture(cards); let calls = 0
+    // First scan: the total moves between page 1 and page 2 (another session edited the list); every later read is stable.
+    const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { calls += 1; return { cards: cards.slice(offset, offset + 1), total: calls === 2 ? cards.length + 1 : cards.length } } }
+    const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board })
+    expect(result.stopReason).not.toBe('board unavailable'); expect(f.launches.map((launch) => launch.card)).toEqual(['1', '2'])
+  })
+
   it.each(['main base', 'outside worktrees', 'budget below timeout'])('refuses the %s preflight', async (guard) => {
     const f = repoFixture(); const options = guard === 'main base' ? { ...f.options, base: 'main' } : guard === 'outside worktrees' ? { ...f.options, worktreesDir: join(tmpdir(), 'outside-waves') } : { ...f.options, maxMinutes: 0.5, pilotTimeout: 60 }
     const result = await runOrchestrator(options, f); expect(result.exitCode).toBe(1); expect(result.rows).toHaveLength(0); expect(result.stopReason).toBe(guard === 'main base' ? 'base main is refused' : guard === 'outside worktrees' ? 'worktrees dir is outside repository root' : 'time budget below one pilot timeout')
