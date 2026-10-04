@@ -12,7 +12,19 @@ Usage:
 list prints the merged plugin → user → project registry and missing dependencies.
 init creates the user registry from detected MCP servers and command-line tools; it never overwrites.
 `
-handleHelpFlag(args, HELP)
+handleHelpFlag(args, HELP, {
+  valueFlags: [],
+  booleanFlags: ['--dry-run', '--json'],
+})
+// Refuse what is not part of the grammar. `--help` is only help in flag position, so a typo'd
+// token followed by --help (`init --typo --help`) now reaches the command: ignoring the typo would
+// run `init` and write the registry the caller meant to ask about.
+const KNOWN_OPTIONS = new Set(['--dry-run', '--json'])
+const unknownToken = args.slice(1).find((token) => !KNOWN_OPTIONS.has(token))
+if (unknownToken !== undefined) {
+  console.error(`wt-grounding-sources: unknown argument: ${unknownToken.replace(/[\r\n]+/g, ' ').slice(0, 80)}`)
+  process.exit(2)
+}
 const command = args[0]
 const dryRun = args.includes('--dry-run')
 const asJson = args.includes('--json')

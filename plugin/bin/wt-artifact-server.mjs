@@ -487,7 +487,14 @@ async function serve() {
 
 function urlCommand(args) {
   const remote = args.includes('--remote')
-  const argument = args.find((value) => value !== '--remote')
+  const positionals = args.filter((value) => value !== '--remote')
+  // One path and --remote only: a second path is refused, never silently dropped.
+  if (positionals.length > 1) {
+    process.stderr.write('usage: wt-artifact-server url <path> [--remote]\n')
+    process.exitCode = 2
+    return
+  }
+  const argument = positionals[0]
   if (!argument) { process.stderr.write('url requires a path\n'); process.exitCode = 3; return }
   const result = artifactUrlResult(path.resolve(argument), { remote })
   if (result.url === null) { process.stderr.write(`${result.reason}\n`); process.exitCode = 3; return }
@@ -568,9 +575,14 @@ async function statusCommand() {
 }
 
 const argv = process.argv.slice(2)
-handleHelpFlag(argv, HELP)
+handleHelpFlag(argv, HELP, {
+  valueFlags: [],
+  booleanFlags: ['--force', '--remote'],
+})
 const [command, ...args] = argv
-if (command === undefined || command === 'serve') await serve()
+// `serve` takes no arguments: an extra token is refused (usage, exit 2) instead of being ignored while a
+// listener starts.
+if (command === undefined || (command === 'serve' && args.length === 0)) await serve()
 else if (command === 'url') urlCommand(args)
 else if (command === 'status' && args.length === 0) process.stdout.write(`${await statusCommand()}\n`)
 else if ((command === 'stop' || command === 'restart') && args.every((arg) => arg === '--force')) {

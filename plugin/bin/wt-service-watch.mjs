@@ -107,7 +107,10 @@ Options:
   --help                     print this text and exit 0
 `
 
-handleHelpFlag(process.argv.slice(2), HELP)
+handleHelpFlag(process.argv.slice(2), HELP, {
+  valueFlags: ['--poll-healthy', '--poll-degraded', '--expiry', '--timeout', '--flag', '--url', '--fixture'],
+  booleanFlags: ['--once'],
+})
 const relayLine = relaySkipLine('SERVICE WATCH')
 if (relayLine) {
   process.stdout.write(`${relayLine}\n`)
