@@ -20,12 +20,93 @@ const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: 
 const pytestFailure = readFileSync(new URL('./fixtures/failed-test-output/pytest.txt', import.meta.url), 'utf8')
 const gradleJunitFailure = readFileSync(new URL('./fixtures/failed-test-output/gradle-junit.txt', import.meta.url), 'utf8')
 const roots: string[] = []
+const numberedAnchorPlan = plan.replace(/^## Tasks\b[\s\S]*?(?=\n## Gates)/m, `## Tasks
+1. baseline. DoD: locked.
+2. regression. DoD: red first.
+3. safety. DoD: green after.
+`)
+const ANCHOR_FALLBACK_SENTENCE = 'A finding on a task with no listed id anchors to the DoD criterion it serves.'
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   delete process.env.WT_EDGE_CONFIG
   delete process.env.WT_FULL_CALLS
   delete process.env.WT_FULL_COUNTS
+})
+
+describe.sequential('plan task anchor lifecycle', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
+  it('returns a MEDIUM finding on a numbered plan task to tdd', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle, numberedAnchorPlan)
+    const finding = '[MEDIUM][anchor: plan task 3][location: tracked.txt:2] preserve the planned safety check'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'numbered-review' })).toBe('accepted phase=tdd')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain(finding)
+  })
+
+  it('blocks a critic finding on a numbered plan task instead of routing it', async () => {
+    const lifecycle = fullLifecycle()
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
+    await lifecycle.artifact({ kind: 'plan', content: numberedAnchorPlan }); expect(await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })).toMatch(/^accepted phase=critic/)
+    const finding = '[blocking][anchor: plan task 2][location: plan.md:2] missing regression proof'
+    edgeConfig(lifecycle, { critic: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'critic' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: [finding], tool_use_id: 'numbered-critic' })).toMatch(/^accepted phase=plan/)
+    const routed = join(lifecycle.root, '.lane', 'plan-non-blocking-findings.md')
+    expect(existsSync(routed) ? readFileSync(routed, 'utf8') : '').not.toContain('missing regression proof')
+  })
+
+  it('lists exactly the resolving anchors in canonical and launch briefs for every independent role', async () => {
+    const mixedPlan = numberedAnchorPlan.replace('3. safety. DoD: green after.', '### Task 3 safety heading\nDoD: green after.\n### T4 heading text\nDoD: locked.\n### Group\n- task without an id. DoD: locked.')
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle, mixedPlan)
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'review' })
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'refutation' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
+    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    for (const phase of ['critic', 'review', 'refutation']) {
+      const briefs = [readFileSync(join(lifecycle.root, '.lane', `${phase}-brief.md`), 'utf8'), ...calls.filter((call) => call.phase === phase).map((call) => call.briefText)]
+      for (const brief of briefs) {
+        expect(brief.match(/^Anchors that resolve: .*$/m)?.[0]).toBe('Anchors that resolve: DoD 1, plan task 1, plan task 2, plan task 3, plan task T4')
+        expect(brief).toContain(ANCHOR_FALLBACK_SENTENCE)
+        expect(brief).not.toContain('DoD entries are counted from')
+      }
+    }
+    const tddBrief = readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')
+    expect(tddBrief).toContain(/(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(mixedPlan)![0])
+    expect(tddBrief).not.toContain('Anchors that resolve:')
+  })
+
+  it.each([undefined, null])('labels anchors counted from task DoD lines when card input is absent (%s)', async (cardText) => {
+    const lifecycle = fullLifecycle({ cardText }); await reachReview(lifecycle, numberedAnchorPlan.replace('2. regression. DoD:', '2. regression. Definition of done:'))
+    const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+    expect(brief.match(/^Anchors that resolve: .*$/m)?.[0]).toBe('Anchors that resolve: DoD 1, DoD 2, DoD 3, plan task 1, plan task 2, plan task 3')
+    expect(brief).toContain('DoD entries are counted from the plan\'s task DoD lines.')
+    expect(brief).toContain(ANCHOR_FALLBACK_SENTENCE)
+  })
+
+  it('does not delegate an explicitly empty card DoD to the plan', async () => {
+    const lifecycle = fullLifecycle({ cardText: 'Route: FULL\n## Definition of done\n' }); await reachReview(lifecycle, numberedAnchorPlan)
+    const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+    expect(brief.match(/^Anchors that resolve: .*$/m)?.[0]).toBe('Anchors that resolve: plan task 1, plan task 2, plan task 3')
+    expect(brief).not.toContain('DoD entries are counted from')
+  })
+
+  it('counts detected tasks rather than quoted DoD example labels for fallback anchors', async () => {
+    const lifecycle = fullLifecycle({ cardText: undefined })
+    const examplePlan = numberedAnchorPlan.replace(/^## Tasks\b[\s\S]*?(?=\n## Gates)/m, '## Tasks\n- implement. DoD: green. Example token: `Definition of done: fake`\n')
+    await reachReview(lifecycle, examplePlan)
+    const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+    expect(brief.match(/^Anchors that resolve: .*$/m)?.[0]).toBe('Anchors that resolve: DoD 1')
+  })
+
+  it('prints an empty resolving anchor set as none', async () => {
+    const lifecycle = fullLifecycle({ cardText: 'Route: FULL\n## Definition of done\n' })
+    await reachReview(lifecycle, numberedAnchorPlan.replace(/^\d+\. /gm, '- ').replaceAll('DoD:', 'Definition of done:').replace(/Definition of done: [^\n]+/g, 'Definition of done:'))
+    const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+    expect(brief.match(/^Anchors that resolve: .*$/m)?.[0]).toBe('Anchors that resolve: none')
+    expect(brief).toContain(ANCHOR_FALLBACK_SENTENCE)
+  })
 })
 
 describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
@@ -1007,15 +1088,15 @@ async function writePassingGate({ log, root }: { log: string, root: string }) {
   throw new Error(`fixture gate mtime did not advance 20ms past lane receipt ${laneMtime}`)
 }
 function edgeConfig(lifecycle: { root: string }, config: Record<string, unknown>) { writeFileSync(join(lifecycle.root, '.lane', 'edge-config.json'), JSON.stringify(config)) }
-async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>) {
+async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan) {
   edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
   expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
-  expect(await lifecycle.artifact({ kind: 'plan', content: plan })).toBe('wrote plan')
+  expect(await lifecycle.artifact({ kind: 'plan', content: planContent })).toBe('wrote plan')
   expect(await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })).toMatch(/^accepted phase=critic/)
   expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' })).toBe('wrote critic-brief')
   expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
   expect(await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic' })).toBe('accepted phase=tdd')
-  expect(await lifecycle.artifact({ kind: 'brief', content: plan })).toBe('wrote brief')
+  expect(await lifecycle.artifact({ kind: 'brief', content: planContent })).toBe('wrote brief')
   expect(await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })).toBe('lane tdd EXIT=0')
   expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })).toBe('accepted phase=verify')
   await gates(lifecycle)

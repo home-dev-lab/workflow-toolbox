@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-plan-shape.mjs'
+import { acceptanceSection, containsPlanShape, planTaskIds, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-plan-shape.mjs'
 
 const validPlan = `# Parser plan
 
@@ -26,6 +26,40 @@ Rejected: exercising the parser only through lifecycle transitions.
 `
 
 describe('lifecycle plan shape parser', () => {
+  it.each([
+    ['numbered', '1. baseline. DoD: locked\n2. regression. DoD: red\n3. safety. DoD: green', ['1', '2', '3']],
+    ['bullet ids', '- T1 baseline. DoD: locked\n- A2 regression. DoD: red', ['T1', 'A2']],
+    ['task headings', '### Task 3 safety\nDoD: green\n### T4 regression\nDefinition of done: red', ['3', 'T4']],
+    ['group heading', '### Task 9 group\n- T2 child. DoD: green', ['T2']],
+    ['idless items', '- implement safety. DoD: green\n### Another task\nDoD: locked', []],
+    ['duplicate ids', '1. first. DoD: green\n1. second. DoD: green\n### Task 1 third\nDoD: green', ['1']],
+    ['indented ids', '- task. DoD: green\n  - T1 nested detail\n  - win32 policy detail', []],
+    ['prose outside Tasks', '- task. DoD: green\n\n## Notes\n- win32 platform detail', []],
+    ['token boundary', '- T3suffix is not an id. DoD: green\n### T4suffix is not an id\nDoD: green', []],
+    ['punctuated ids', '### Task 3.1 rollback\nDoD: green\n- T3-extra rollback. DoD: green\n### T4-extra rollback\nDoD: green', []],
+    ['hierarchical heading id', '### Task 3.1 rollback\nDoD: green', []],
+    ['colon boundaries', '- T3: rollback. DoD: green\n### Task 4: rollback\nDoD: green', ['T3', '4']],
+    ['oversized ids', `${'1'.repeat(2000)}. implement. DoD: green\n- ${'T'.repeat(32)}1 implement. DoD: green\n### Task ${'2'.repeat(33)}\nDoD: green`, []],
+    ['maximum ids', `${'1'.repeat(32)}. implement. DoD: green`, ['1'.repeat(32)]],
+    ['backtick fenced examples', '1. implement. DoD: green\n```text\n9. example, not a task. DoD: demonstration\n```', ['1']],
+    ['tilde fenced examples', '### Task 1 implement\nDoD: green\n~~~text\n9. example, not a task\n### T8 example\n~~~', ['1']],
+    ['CRLF', '1. first. DoD: green\r\n### T2 second\r\nDoD: green', ['1', 'T2']],
+  ])('derives explicit task ids from the accepted %s shape', (_shape, tasks, ids) => {
+    const content = validPlan.replace(/## Tasks[\s\S]*?(?=\n## Gates)/, `## Tasks\n${tasks}\n`)
+    expect(containsPlanShape(content, true)).toBe(true)
+    expect(planTaskIds(content)).toEqual(ids)
+  })
+
+  it('derives explicit task ids only when a Tasks section exists', () => {
+    expect(planTaskIds('1. outside a plan. DoD: green')).toEqual([])
+  })
+
+  it.each(['```', '~~~'])('rejects a plan whose only tasks are %s fenced examples', (fence) => {
+    const content = validPlan.replace(/## Tasks[\s\S]*?(?=\n## Gates)/, `## Tasks\n${fence}\n9. example. DoD: demonstration\n${fence}\n`)
+    expect(containsPlanShape(content, true)).toBe(false)
+    expect(planTaskIds(content)).toEqual([])
+  })
+
   it('enforces the mandatory Card terms section', () => {
     expect(PLAN_SHAPE_DESCRIPTION).toContain('a mandatory `## Card terms: reading chosen` section with one `- <card term, verbatim>: <the reading this plan chose>` line for each card Definition-of-done term open to more than one reading')
     expect(containsPlanShape(validPlan, true)).toBe(true)
