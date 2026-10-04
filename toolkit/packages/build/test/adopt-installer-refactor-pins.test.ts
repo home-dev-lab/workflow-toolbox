@@ -50,13 +50,14 @@ function childProcessCwd(cwd: string): string {
 function fixturePlugin(): { root: string; script: string } {
   const root = tempDir('wt-adopt-refactor-plugin-')
   mkdirSync(join(root, '.claude-plugin'), { recursive: true })
-  writeFileSync(join(root, '.claude-plugin/plugin.json'), '{"version":"1.2.3"}\n')
+  writeFileSync(join(root, '.claude-plugin/plugin.json'), '{"name":"workflow-toolbox","version":"1.2.3"}\n')
   const script = join(root, 'skills/adopt/scripts/install.mjs')
   mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
   mkdirSync(join(root, 'bin/lib'), { recursive: true })
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
   mkdirSync(join(root, 'bin/lib/host'))
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), join(root, 'bin/lib/host/adopted-script-shim.mjs'))
   cpSync(SCRIPT, script)
   return { root, script }
 }
@@ -69,6 +70,7 @@ function mutateScript(replacements: Array<[string, string]>): string {
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
   mkdirSync(join(root, 'bin/lib/host'))
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), join(root, 'bin/lib/host/adopted-script-shim.mjs'))
   let source = readFileSync(SCRIPT, 'utf8')
   for (const [from, to] of replacements) {
     expect(source).toContain(from)
@@ -361,6 +363,7 @@ describe('adopt installer refactor pins', () => {
     cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
     mkdirSync(join(root, 'bin/lib/host'))
     cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
+    cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), join(root, 'bin/lib/host/adopted-script-shim.mjs'))
     cpSync(SCRIPT, script)
     const result = run(['--set', 'all', '--check', '--dir', tempDir()], { script })
     expect(result.status).toBe(1)
@@ -405,15 +408,16 @@ describe('adopt installer refactor pins', () => {
     expect(readdirSync(config).filter((file) => file.startsWith('settings.json.workflow-toolbox.bak.'))).toEqual(backupsBefore)
   })
 
-  it('preserves replacement metacharacters in an adopted script transformation', () => {
+  it('preserves replacement metacharacters in a rendered adopted shim', () => {
     const fixture = fixturePlugin()
     cpSync(join(PLUGIN, 'bin'), join(fixture.root, 'bin'), { recursive: true })
     const marker = "replacement tokens: $` $& $' $$"
-    const generatedImport = "import os from 'node:os'\nimport { pathToFileURL } from 'node:url'"
-    const source = readFileSync(fixture.script, 'utf8')
+    const templateModule = join(fixture.root, 'bin/lib/host/adopted-script-shim.mjs')
+    const generatedImport = "import os from 'node:os'\\nimport path from 'node:path'"
+    const source = readFileSync(templateModule, 'utf8')
     expect(source).toContain(generatedImport)
     const markerInTemplateSource = marker.split('`').join('\\`')
-    writeFileSync(fixture.script, source.replace(generatedImport, () => `${generatedImport}\n// ${markerInTemplateSource}`))
+    writeFileSync(templateModule, source.replace(generatedImport, () => `${generatedImport}\\n// ${markerInTemplateSource}`))
     const target = tempDir()
 
     const result = run(['--set', 'scripts', '--install', '--file', 'wt-lane-wait.mjs', '--dir', target], {

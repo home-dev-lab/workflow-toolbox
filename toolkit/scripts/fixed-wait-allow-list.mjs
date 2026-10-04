@@ -1,5 +1,8 @@
 // Named exemptions for scripts/fixed-wait-census.mjs, keyed by file, signal, resolved number and enclosing statement.
 export const fixedWaitAllowList = new Map([
+  // packages/build/test/adopt-script-shims.test.ts
+  ["packages/build/test/adopt-script-shims.test.ts:fixed-sleep:setTimeout 30000 ms:const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('shim readiness timed out')) }, 30_000)", {"class":"duration-bound","reason":"readiness event hang guard; rejects and terminates the shim rather than using a sleep to infer readiness."}],
+  ["packages/build/test/adopt-script-shims.test.ts:fixed-sleep:setTimeout 30000 ms:const watchdog = setTimeout(() => { child.kill('SIGKILL'); try { process.kill(ready, 'SIGKILL') } catch { /* already reaped */ } }, 30_000)", {"class":"duration-bound","reason":"teardown hang guard for the awaited process close event; forces cleanup of both wrapper and child if signal forwarding is broken."}],
   // packages/build/test/adopt-installer-refactor-pins.test.ts
   ["packages/build/test/adopt-installer-refactor-pins.test.ts:fixed-sleep:setTimeout 5000 ms:const timeout = setTimeout(() => child.kill('SIGKILL'), 5_000)", {"class":"duration-bound","reason":"teardown watchdog forcing SIGKILL if the child never reaches the awaited close event; not itself waiting on anything."}],
   // packages/build/test/adopted-wt-lane-consent-parity.test.ts

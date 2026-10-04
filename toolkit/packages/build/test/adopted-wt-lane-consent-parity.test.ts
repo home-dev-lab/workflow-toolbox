@@ -133,7 +133,7 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
 else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPTED_SEEN_LOCK, String(process.env.WT_SUITE_LOCK_CMD ?? 'unset'))
 `)
   chmodSync(join(bin, 'opencode'), 0o755)
-  writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
+  writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'workflow-toolbox', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
   for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'frontmatter.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'remedy-quote.mjs', 'resolved-binary.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
@@ -143,6 +143,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
   writeFileSync(join(pluginRoot, 'bin', 'wt-lane.mjs'), transformSource ? transformSource(launcher) : launcher)
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane-wait.mjs'), join(pluginRoot, 'bin', 'wt-lane-wait.mjs'))
+  for (const file of ['wt-arc-watch.mjs', 'wt-quota-watch.mjs']) writeFileSync(join(pluginRoot, 'bin', file), '// unused fixture watcher\n')
   // The suite-lock runner a lane's WT_SUITE_LOCK_CMD runs, with the CLI and library it imports.
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs'), join(pluginRoot, 'bin', 'wt-suite-lock.mjs'))
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock.cmd'), join(pluginRoot, 'bin', 'wt-suite-lock.cmd'))
@@ -151,7 +152,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   for (const file of ['suite-lock.mjs', 'artifact-server.mjs']) cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
-    plugins: { 'workflow-toolbox@fixture': [{ installPath: pluginRoot, version: '0.0.0' }] },
+    plugins: { 'workflow-toolbox@fixture': [{ scope: 'user', installPath: pluginRoot, version: '0.0.0' }] },
   }))
   // The launcher resolves consent solely through these fixture-owned locations. Do not
   // inherit a developer's config, home, or lane settings into the child process.
@@ -213,71 +214,24 @@ describe('adopted wt-lane consent resolver', () => {
     await expect(waitBehindReusedPid(project)).rejects.toThrow(/pid=424242 to exit before teardown; lane log tail: first \| 2026-09-17T00:00:00.000Z stage=worker-identity-capture-done/)
   })
 
-  for (const mode of ['--check', '--install']) {
-    it(`${mode} refuses when the resolved plugin root is missing a launcher runtime module`, () => {
-      const f = fixture(undefined, false)
-      const missing = join(f.root, 'plugin', 'bin', 'lib', 'lane-model-allowlist.mjs')
-      rmSync(missing)
-
-      const result = runChild('adopt installer missing-module check', [f.installer, '--set', 'scripts', mode, '--dir', join(f.root, 'scripts')], f.env)
-
-      expect(result.status).not.toBe(0)
-      expect(`${result.stdout}${result.stderr}`).toBe(
-        `adopt: wt-lane.mjs runtime module is missing from the resolved plugin root: ${missing} — update or reinstall workflow-toolbox, then retry.\n`,
-      )
-      expect(existsSync(f.installed)).toBe(false)
-    })
-  }
-
-  it('--install refuses when the resolved plugin root lacks the launcher helper lane-priority.mjs', () => {
-    const name = 'lane-priority.mjs'
-    const f = fixture(undefined, false)
-    const missing = join(f.root, 'plugin', 'bin', 'lib', 'host', name)
-    rmSync(missing)
-    const result = runChild('adopt installer missing-helper check', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
-    expect(result.status).not.toBe(0)
-    expect(`${result.stdout}${result.stderr}`).toContain(`runtime module is missing from the resolved plugin root: ${missing}`)
-  })
-
-  it.each([
-    ['a single-quoted named import', "import { unknownHelper } from './lib/unknown-helper.mjs'"],
-    ['a double-quoted named import', 'import { unknownHelper } from "./lib/unknown-helper.mjs"'],
-    ['a side-effect import', "import './lib/unknown-helper.mjs'"],
-    ['a dynamic import', "await import('./lib/unknown-helper.mjs')"],
-    ['a multi-line import', "import {\n  unknownHelper,\n  another,\n} from './lib/unknown-helper.mjs'"],
-    ['a parent-relative literal', "await import('../lib/unknown-helper.mjs')"],
-  ])('--install fails loudly when the launcher gains %s the transform does not know', (_form, statement) => {
-    const f = fixture((source) => `${source}\n${statement}\n`, false)
-    const result = runChild('adopt installer leftover-import check', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
-    expect(result.status).not.toBe(0)
-    expect(`${result.stdout}${result.stderr}`).toContain('left a relative runtime import')
-    expect(existsSync(f.installed)).toBe(false)
-  })
-
-  it('preflights the shared plugin-option resolver derived from the adopted loader', () => {
-    const f = fixture(undefined, false)
-    const missing = join(f.root, 'plugin', 'bin', 'lib', 'plugin-options.mjs')
-    rmSync(missing)
-
-    const result = runChild('adopt installer preflight', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
-
-    expect(result.status).not.toBe(0)
-    expect(`${result.stdout}${result.stderr}`).toBe(
-      `adopt: wt-lane.mjs runtime module is missing from the resolved plugin root: ${missing} — update or reinstall workflow-toolbox, then retry.\n`,
-    )
-    expect(existsSync(f.installed)).toBe(false)
-  })
-
-  it('loads the same installed supervisor provider as the shipped launcher', () => {
+  it('installs only the generic shim and runs the canonical consent gate fail-closed', () => {
     const f = fixture()
     const adopted = readFileSync(f.installed, 'utf8')
-    expect(adopted).toContain("const supervisor = path.join(root, 'bin', 'lib', 'lane-supervisor-core.mjs')")
-    expect(adopted).toContain('supervisorModule.inspectProcess')
-    expect(adopted).toContain("const launcher = path.join(root, 'bin', 'wt-lane.mjs')")
-    expect(adopted).toContain("const host = path.join(root, 'bin', 'lib', 'host', 'adapter.mjs')")
-    expect(adopted).toContain('hostAdapter: hostModule.hostAdapter')
-    expect(adopted).toContain('launcherModule.inspectStartedProcess')
-    expect(adopted).not.toContain("from './lib/lane-supervisor-core.mjs'")
+    expect(adopted).not.toContain('./lib/')
+    expect(adopted).not.toContain('resolveConsent')
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'false' } }))
+    const refused = launch(f)
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain('Refused: this command routes work to the external executor lane, and consent is not given')
+  })
+
+  it('refuses a missing canonical launcher before execution', () => {
+    const f = fixture()
+    rmSync(join(f.pluginRoot, 'bin', 'wt-lane.mjs'))
+    const actual = launch(f)
+    expect(actual.status).toBe(2)
+    expect(actual.stdout).toBe(actual.stderr)
+    expect(actual.stdout).toContain('bin/wt-lane.mjs')
   })
 
   // Three isolated Linux runs: 1.49s, 1.50s, 1.51s; Windows runner's 20s expiry
@@ -295,16 +249,17 @@ describe('adopted wt-lane consent resolver', () => {
   it.each([
     ['hostAdapter export', 'export const unrelated = {}\n'],
     ['readAvailableMemory capability', 'export const hostAdapter = {}\n'],
-  ])('refuses an installed host adapter without the required %s', (_name, source) => {
+  ])('matches direct execution for an installed host adapter without the required %s', (_name, source) => {
     const f = fixture()
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     writeFileSync(join(f.pluginRoot, 'bin', 'lib', 'host', 'adapter.mjs'), source)
 
     const result = launch(f)
+    const direct = runChild('canonical host adapter refusal', [join(f.pluginRoot, 'bin', 'wt-lane.mjs'), '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.project, 'brief.md'), '--allow-no-git'], f.env)
 
     expect(result.status).toBe(1)
-    expect(result.stderr).toMatch(/installed workflow-toolbox plugin is (?:too old for this adopted launcher|older or incompatible)/)
-    expect(result.stderr).not.toContain('is not a function')
+    expect(result.status).toBe(direct.status)
+    expect(result.stderr).toBe(direct.stderr)
   })
 
   it('preserves stale-brief refusal and acknowledgement evidence in the adopted launcher', () => {
@@ -360,8 +315,9 @@ describe('adopted wt-lane consent resolver', () => {
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     rmSync(join(f.config, 'plugins', 'installed_plugins.json'))
     const actual = launch(f)
-    expect(actual.status).toBe(1)
-    expect(actual.stderr).toBe('wt-lane: Refused: could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json; refusing to launch.\n')
+    expect(actual.status).toBe(2)
+    expect(actual.stdout).toBe(actual.stderr)
+    expect(actual.stdout).toContain('installed_plugins.json')
   })
 
   it('prints help without an installed plugin', () => {
@@ -369,7 +325,7 @@ describe('adopted wt-lane consent resolver', () => {
     rmSync(join(f.config, 'plugins', 'installed_plugins.json'))
     const actual = runChild('adopted wt-lane help', [f.installed, '--help'], f.env)
     expect(actual.status, actual.stderr).toBe(0)
-    expect(actual.stdout).toContain('Usage: node wt-lane.mjs')
+    expect(actual.stdout).toContain('launcher for the installed workflow-toolbox plugin; plugin not found')
   })
 
   it('records a detached worker that fails before its first stage in the lane log', async () => {
@@ -444,20 +400,20 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
     const result = launch(f)
 
     expect(result.status).toBe(1)
-    expect(result.stderr).toContain('wt-lane: Refused: the installed workflow-toolbox plugin is older or incompatible')
+    expect(result.stderr).toContain('wt-lane: Refused: the suite-lock CLI is missing at')
+    expect(result.stderr).toContain('update or reinstall workflow-toolbox')
   })
 
-  it('refuses a launcher whose consent import fragment was reworded', () => {
+  it('runs a launcher with reworded consent imports without rewriting its body', () => {
     const f = fixture((source) => source.replace(
       "import { resolveConsent } from './lib/lane-consent-check-core.mjs'",
       "import { resolveConsent as resolveLaneConsent } from './lib/lane-consent-check-core.mjs'",
-    ), false)
-    const install = runChild('adopt installer transformed-source refusal', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
+    ).replace('return { resolveConsent,', 'return { resolveConsent: resolveLaneConsent,'), false)
+    const install = runChild('adopt installer canonical-source adoption', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
 
-    expect(install.status).not.toBe(0)
-    expect(`${install.stdout}${install.stderr}`).toContain('launcher transformation expected exactly one occurrence')
-    expect(`${install.stdout}${install.stderr}`).toContain('import { resolveConsent } from')
-    expect(`${install.stdout}${install.stderr}`).toContain(join(f.root, 'plugin', 'bin', 'wt-lane.mjs'))
-    expect(readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')).toContain("import { resolveConsent } from './lib/lane-consent-check-core.mjs'")
+    expect(install.status, install.stderr).toBe(0)
+    const refused = launch(f)
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain('consent is not given')
   })
 })
