@@ -69,7 +69,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
+import { firstExistingPath, firstTreeDifference, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, pluginManifestVersion, realDirOrParent, sameDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -711,7 +711,8 @@ function renderBanner(version, fp, stamp = null, file = '', aheadTrace = null) {
   else if (stamp?.kind === 'kept') provenance = ` kept sha256:${stamp.kept} spec sha256:${stamp.spec}`
   // The --allow-ahead trace sits AFTER "by the adopt skill" so every banner parser and the
   // content fingerprint (which never covers the banner) read the line exactly as before.
-  if (file.endsWith('.mjs')) return `// ${metadata}${provenance} by the adopt skill -- editable copy.${aheadTrace ? ` ALLOW-AHEAD: ${aheadTrace}` : ''}`
+  const trace = aheadTrace ? ' ALLOW-AHEAD: ' + aheadTrace : ''
+  if (file.endsWith('.mjs')) return `// ${metadata}${provenance} by the adopt skill -- editable copy.${trace}`
   return (
     `<!-- ${metadata}${provenance} by the adopt ` +
     `skill — editable copy. Re-run the ${BANNER_TOOL}:adopt skill to check for updates; ` +
@@ -922,58 +923,10 @@ function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
 const ADOPTED_SCRIPTS_RUNTIME_DIRS = ['bin', 'pricing']
 const ALLOW_AHEAD_TRACE_RE = / ALLOW-AHEAD: (.*)$/
 
-function pluginVersionAt(root) {
-  try {
-    const v = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'plugin.json'), 'utf8')).version
-    return typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) ? v : null
-  } catch {
-    return null
-  }
-}
-
-function sameDirectory(a, b) {
-  try {
-    return fs.realpathSync(a) === fs.realpathSync(b)
-  } catch {
-    return path.resolve(a) === path.resolve(b)
-  }
-}
-
-function runtimeTreeFiles(root) {
-  const files = []
-  const walk = (rel) => {
-    let entries
-    try {
-      entries = fs.readdirSync(path.join(root, rel), { withFileTypes: true })
-    } catch {
-      return
-    }
-    for (const entry of entries) {
-      const child = path.join(rel, entry.name)
-      if (entry.isDirectory()) walk(child)
-      else files.push(child.split(path.sep).join('/'))
-    }
-  }
-  for (const dir of ADOPTED_SCRIPTS_RUNTIME_DIRS) walk(dir)
-  return files
-}
-
-/** The first plugin-relative file present in only one of the two run-time trees, or whose content
- *  differs (CRLF and LF read alike), in sorted order; null when the trees match. */
+/** The first plugin-relative file of the run-time tree that differs between the two roots, as
+ *  a display path, or null when the trees match. */
 function firstRuntimeTreeDifference(sourceRoot, runtimeRoot) {
-  const read = (root, rel) => {
-    try {
-      return fs.readFileSync(path.join(root, ...rel.split('/')), 'utf8').replace(/\r\n/g, '\n')
-    } catch {
-      return null
-    }
-  }
-  const union = [...new Set([...runtimeTreeFiles(sourceRoot), ...runtimeTreeFiles(runtimeRoot)])].sort()
-  for (const rel of union) {
-    const a = read(sourceRoot, rel)
-    if (a === null || a !== read(runtimeRoot, rel)) return rel
-  }
-  return null
+  return firstTreeDifference(sourceRoot, runtimeRoot, ADOPTED_SCRIPTS_RUNTIME_DIRS)?.reduce((joined, part) => path.posix.join(joined, part)) ?? null
 }
 
 /** Every plugin root the adopted scripts may resolve at run time, de-duplicated, each with the
@@ -1005,7 +958,7 @@ function scriptsAheadOfInstalledPlugin(sourceRoot, sourceVersion, targetDirs, en
   for (const root of adoptedScriptsRuntimeRoots(targetDirs, env)) {
     if (sameDirectory(root.path, sourceRoot)) continue
     const where = `the installed plugin at ${root.path} (from ${root.source})`
-    const installed = pluginVersionAt(root.path)
+    const installed = pluginManifestVersion(root.path)
     if (installed === null) {
       return { ...root, kind: 'unreadable', detail: `the version of ${where} could not be read`, trace: 'installed plugin version unreadable' }
     }
@@ -1164,7 +1117,7 @@ function stripScriptBanner(text) {
  *  installer just wrote it from its own template a moment earlier. Returns
  *  `{ text, preserved }`; `preserved` is `[]` when there is nothing local to carry (the common
  *  case, and the only case for the rules/autonomy sets, which pass no `oldContent`). */
-function renderItem(set, item, version, root, oldContent = null, triggers = null, force = false, aheadTrace = null) {
+function renderItem(set, item, version, root, oldContent = null, triggers = null, { force = false, aheadTrace = null } = {}) {
   const rawContent = itemContent(set, item, root)
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
@@ -2547,7 +2500,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
     return
   }
   const oldContent = existingContentForRender(set, target, classification)
-  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, args.force, args.aheadTrace)
+  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, { force: args.force, aheadTrace: args.aheadTrace })
   if (preserved.length > 0) {
     process.stdout.write(
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
