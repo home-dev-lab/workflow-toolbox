@@ -3,6 +3,7 @@ import { dirname, join, win32 } from 'node:path';
 
 export const LAUNCH_LIMIT = 'Cannot read --settings or launch flags --safe-mode, --bare, --setting-sources (which may exclude user settings); other managed sources (MDM, registry, server-delivered policy) are unexamined. Verify the effective settings of each intended launch.';
 export const objectSettings = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const UNEXAMINED_SOURCE = new Map([['darwin', 'MDM policy'], ['win32', 'registry policy']]);
 export function refuse(message) { throw new Error(`${message}; ${LAUNCH_LIMIT}`); }
 
 export function managedSettingsPath(platform = process.platform) {
@@ -53,7 +54,7 @@ export async function managedPolicies(options = {}) {
     const fragment = paths.join(directory, name);
     policies.push({ file: fragment, settings: await readPolicy(fragment, io) });
   }
-  const unexamined = platform === 'darwin' ? 'MDM policy' : platform === 'win32' ? 'registry policy' : 'server-delivered policy';
+  const unexamined = UNEXAMINED_SOURCE.get(platform) ?? 'server-delivered policy';
   (options.warn ?? console.error)(`rules: ${unexamined} is unexamined; file-based policy is not the complete effective policy. ${LAUNCH_LIMIT}`);
   return policies;
 }

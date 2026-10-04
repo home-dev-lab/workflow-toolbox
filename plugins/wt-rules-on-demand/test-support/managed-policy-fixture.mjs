@@ -10,8 +10,12 @@ if (process.execArgv.includes(import.meta.url) && process.env.WT_ROD_TEST_MANAGE
   const file = managedSettingsPath();
   const target = process.env.WT_ROD_TEST_MANAGED_SETTINGS;
   const directory = join(dirname(file), 'managed-settings.d');
-  const redirect = (path) => path === file ? target : path === directory ? join(dirname(target), 'managed-settings.d')
-    : String(path).startsWith(directory + sep) ? join(dirname(target), 'managed-settings.d', String(path).slice(directory.length + 1)) : path;
+  const dropIns = join(dirname(target), 'managed-settings.d');
+  const redirect = (path) => {
+    if (path === file) return target;
+    if (path === directory) return dropIns;
+    return String(path).startsWith(directory + sep) ? join(dropIns, String(path).slice(directory.length + 1)) : path;
+  };
   for (const method of ['readFile', 'readdir', 'lstat']) {
     const original = fs[method];
     fs[method] = (path, ...args) => original(redirect(path), ...args);

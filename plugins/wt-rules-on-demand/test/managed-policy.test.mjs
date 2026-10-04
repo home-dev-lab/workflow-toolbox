@@ -105,11 +105,11 @@ test('running profile realpath alias and default HOME profile retain their own e
   const p = await fixture(t);
   const alias = join(p.root, 'alias');
   await fs.symlink(p.profile, alias, 'junction');
-  await p.check({ CLAUDE_CONFIG_DIR: alias });
+  await assert.doesNotReject(p.check({ CLAUDE_CONFIG_DIR: alias }), 'realpath alias keeps its own evidence');
   const home = join(p.root, 'home');
   await fs.mkdir(home);
   await fs.symlink(p.profile, join(home, '.claude'), 'junction');
-  await p.check({ CLAUDE_CONFIG_DIR: '', HOME: home });
+  await assert.doesNotReject(p.check({ CLAUDE_CONFIG_DIR: '', HOME: home }), 'default HOME profile keeps its own evidence');
 });
 
 test('unresolvable process profile is named unknown and cannot donate evidence', async (t) => {
@@ -131,7 +131,7 @@ test('the nested guard option in user settings is not managed policy', async (t)
   await fs.writeFile(join(p.profile, 'settings.json'), JSON.stringify({ ...enabled,
     pluginConfigs: { ...enabled.pluginConfigs, 'cc-plugin-sec-default@builtin': { options: { allowManagedModsOnly: true } } },
   }));
-  await p.check();
+  await assert.doesNotReject(p.check(), 'user-level guard option is not managed policy');
 });
 
 test('permission-denied drop-in enumeration is a named policy refusal', async (t) => {
