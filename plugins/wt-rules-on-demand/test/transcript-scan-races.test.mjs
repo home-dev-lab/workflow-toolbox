@@ -3,16 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import promises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { scanTranscripts } from '../scripts/transcript-verdicts.mjs';
 import { qualityCheck } from '../scripts/quality-check.mjs';
 
 async function fixture(t) {
-  const scratch = fileURLToPath(new URL('../../../.lane/', import.meta.url));
-  await promises.mkdir(scratch, { recursive: true });
-  const root = await promises.mkdtemp(join(scratch, 'scan-'));
+  const root = await promises.mkdtemp(join(tmpdir(), 'scan-'));
   t.after(() => promises.rm(root, { recursive: true, force: true }));
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const projects = join(root, 'projects'), rulesDir = join(root, 'rules');
