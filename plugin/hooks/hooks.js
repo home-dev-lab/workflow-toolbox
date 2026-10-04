@@ -1,6 +1,7 @@
 import { LOOP_BOUNDS, PHASES } from './lifecycle-phases.js';
 import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
+import { COLORS, cellWidth, drawControl, elementKey, evidenceLines, paneColumns, snapshotClock, stageColumns, stateWords, textStyle } from './pane-design.js';
 
 const PANE_ID = 'wt-what-is-running';
 let paneSequence = 0;
@@ -59,13 +60,6 @@ function unavailableSnapshot(reason) {
   };
 }
 const UNKNOWN_SNAPSHOT = unavailableSnapshot('reading…');
-const COLORS = {
-  // Button and Link text colour cannot be set in the host, and button text renders light: every button background
-  // must be DARK for contrast (owner is colour blind, 2026-09-14 #2286 — whiteBright under light text was unreadable).
-  // Link text renders blue: its background must be LIGHT.
-  action: 'black', actionOpen: 'gray', close: 'black', link: 'whiteBright',
-  external: 'cyanBright', error: 'redBright',
-};
 
 function pathBase(value) {
   return String(value || '').replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || null;
@@ -165,15 +159,16 @@ function sanitizeRenderedText(value, repairs, path = '$') {
   return value;
 }
 
-export function sanitizePaneTree(value, path = '$', repairs = []) {
+export function sanitizePaneTree(value, path = '$', repairs = [], visibleKeys = null) {
   if (typeof value === 'string') {
-    const sanitized = stripAnsiAndControl(value);
+    const sanitized = path.endsWith('.key') ? elementKey(value) : stripAnsiAndControl(value);
+    if (path.endsWith('.key')) visibleKeys?.add(sanitized);
     if (sanitized !== value) repairs.push({ path, before: value, after: sanitized });
     return sanitized;
   }
-  if (Array.isArray(value)) return value.map((item, index) => sanitizePaneTree(item, `${path}[${index}]`, repairs));
+  if (Array.isArray(value)) return value.map((item, index) => sanitizePaneTree(item, `${path}[${index}]`, repairs, visibleKeys));
   if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizePaneTree(item, `${path}.${key}`, repairs)]));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizePaneTree(item, `${path}.${key}`, repairs, visibleKeys)]));
 }
 
 export function isValidLinkHref(href) {
@@ -232,17 +227,17 @@ function knownDetails(row) {
 }
 
 export function renderPane(ui, snapshot, expanded, selected, currentProject, allProjects, actions) {
-  const { Box, Button, Link } = ui;
+  const { Link } = ui;
+  const columns = paneColumns(actions.bodyColumns);
+  const Box = (props = {}) => ui.Box(props.flexDirection === 'row' ? { ...props, flexWrap: 'wrap' } : props);
   const repairs = [];
   let textIndex = 0;
   const Text = (props = {}) => ui.Text(Object.hasOwn(props, 'children')
-    ? { ...props, children: sanitizeRenderedText(props.children, repairs, `$.Text[${textIndex++}].props.children`) }
-    : props);
-  const buttonLabel = (label) => `[${label}]`;
+    ? { ...textStyle(props), children: sanitizeRenderedText(props.children, repairs, `$.Text[${textIndex++}].props.children`) }
+    : textStyle(props));
   const fixed = (...children) => node(Box, { flexShrink: 0 }, ...children);
-  const fixedText = (props, text) => node(Box, { flexShrink: 0 }, node(Text, props, text));
-  const control = (props, label, color = COLORS.action) => node(Box, { key: `control:${props.key}`, flexShrink: 0, backgroundColor: color },
-    node(Button, { ...props, hover: { color: 'black', backgroundColor: 'whiteBright', bold: true } }, buttonLabel(label)));
+  const fixedText = (props, text) => node(Box, { flexShrink: 0, width: Math.min(cellWidth(text), columns) }, node(Text, props, text));
+  const control = (props, label, _color = COLORS.action) => drawControl(ui, props, sanitizeRenderedText(label, repairs, `$.control[${props.key}].label`), actions);
   const linked = (props, color = COLORS.link) => node(Box, { flexShrink: 0, backgroundColor: color }, node(Link, props));
   const projectOf = (item) => typeof item?.project === 'string' && item.project.trim() && item.project !== 'unknown' ? item.project.trim() : null;
   const sameProject = (item) => projectOf(item)?.toLowerCase() === currentProject.toLowerCase();
@@ -267,31 +262,17 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const elapsed = snapshotAge < 60 ? `${snapshotAge} s` : `${Math.floor(snapshotAge / 60)} min`;
     ageText = `updated ${elapsed} ago`;
   }
-  const renderEvidence = (summary) => {
-    const lines = String(summary || '').replace(/\r\n?/g, '\n').split('\n').map((raw) => {
-      const heading = /^#{1,6}\s+(.+)$/.exec(raw.trim());
-      const text = (heading?.[1] || raw.trim()).replace(/^[-*]\s+/, '').replace(/\*\*|__|`/g, '').trim();
-      return text && !/^[A-Za-z][A-Za-z ]*:$/.test(text) ? { text, heading: Boolean(heading) } : null;
-    }).filter(Boolean);
-    // Bounded in lines AND characters: a line is a paragraph that wraps, so seven long findings still fill the screen.
-    const shown = [];
-    let budget = 900;
-    for (const line of lines.slice(0, 7)) {
-      if (budget <= 0) break;
-      const text = line.text.length > Math.min(240, budget) ? `${line.text.slice(0, Math.min(240, budget) - 1).trimEnd()}…` : line.text;
-      budget -= text.length;
-      shown.push(node(Text, { wrap: 'wrap', ...(line.heading ? { bold: true } : {}) }, text));
-    }
-    if (lines.length > shown.length) shown.push(node(Text, { dimColor: true }, `… ${lines.length - shown.length} more lines`));
-    return shown;
-  };
-  const renderStateSegment = ({ key, buttonKey, label, state, open = false, onPress = null }) => {
-    const style = state.words === 'running' ? { bold: true } : {};
+  const renderEvidence = (summary) => evidenceLines(Text, summary);
+  const renderStateSegment = ({ key, buttonKey, label, state, open = false, onPress = null, nameWidth = null, hideWords = false }) => {
+    const style = ['running', 'ERROR'].includes(state.words) ? { bold: true } : {};
+    let labelNode;
+    if (onPress) labelNode = control({ key: buttonKey, plain: true, onPress }, `${open ? '▼' : '▶'} ${label} ${state.glyph}`, open ? COLORS.actionOpen : COLORS.action);
+    else if (nameWidth) labelNode = node(Text, style, `${label} ${state.glyph}`);
+    else labelNode = fixedText(style, `${label} ${state.glyph}`);
+    if (nameWidth) labelNode = node(Box, { flexShrink: 0, width: nameWidth }, labelNode);
     return node(Box, { key, flexDirection: 'row', columnGap: 1 },
-      onPress
-        ? control({ key: buttonKey, plain: true, onPress }, `${open ? '▼' : '▶'} ${label} ${state.glyph}`, open ? COLORS.actionOpen : COLORS.action)
-        : fixedText(style, `${label} ${state.glyph}`),
-      fixedText(style, state.words),
+      labelNode,
+      hideWords ? null : fixedText(style, stateWords(state)),
     );
   };
   const formatUsd = (value, label) => {
@@ -368,9 +349,11 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const isExpanded = expanded.has(row.id);
     const buttonKey = `detail-toggle:row:${row.id}`;
     let outcomeLabel = '● running';
-    if (/^(?:error|failed|fail)/i.test(String(row.outcome || ''))) outcomeLabel = '✗ ERROR';
+    const failed = /^(?:error|failed|fail)/i.test(String(row.outcome || ''));
+    if (failed) outcomeLabel = '⚠ ✗ ERROR';
     else if (row.outcome === 'done') outcomeLabel = '✓ done';
     const owner = row.launcherSessionId ? `session ${String(row.launcherSessionId).slice(0, 8)}` : 'session';
+    const duration = row.elapsed && row.elapsed !== 'unknown' ? ' · ' + row.elapsed : '';
     const details = [
       `phases: n/a (${row.phaseAvailability || 'plain lane'})`,
       row.model && row.model !== 'unknown' ? `model ${row.model}` : null,
@@ -383,10 +366,9 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         control({ key: buttonKey, plain: true, onPress: () => actions.toggle(row.id) }, `${isExpanded ? '▼' : '▶'} ${label}`, isExpanded ? COLORS.actionOpen : COLORS.action),
         showCard && cardId ? fixedText({ color: COLORS.external }, '·') : null,
         showCard ? cardId : null,
-        fixedText({ color: COLORS.external, bold: row.outcome === 'running' }, `· ${outcomeLabel}`),
         row.showModel && row.model && row.model !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.model}`) : null,
-        row.elapsed && row.elapsed !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.elapsed}`) : null,
       ),
+      node(Text, { color: failed ? COLORS.error : COLORS.external, bold: failed || row.outcome === 'running' }, `◇ external · ${outcomeLabel.padEnd(9)}${duration}`),
       row.title && row.title !== label ? node(Text, { color: COLORS.external, wrap: 'wrap' }, row.title) : null,
       isExpanded && (details || row.title || (showCard && (cardId || row.cardUrl))) ? renderOpenDetail(buttonKey, `${label} details`, () => actions.toggle(row.id),
         node(Text, { dimColor: true }, `owner: ${owner}`),
@@ -406,7 +388,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const selection = selected.get(row.id);
     const inspector = selection ? row.inspectors?.[selection.toLowerCase()] : null;
     const phaseKnown = row.phase && row.phase !== 'unknown';
-    const visiblePhases = phaseKnown ? PANE_PHASES : [];
+    const visiblePhases = showStages && phaseKnown ? PANE_PHASES : [];
     const stageHeading = row.phaseSource === 'log' ? 'Work stages (from log):' : 'Work stages:';
     const phaseButtons = visiblePhases.map(([phase]) => {
       const state = stateOf(row, phase);
@@ -428,7 +410,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       row.watchdog && row.watchdog !== 'unknown' ? node(Text, { dimColor: true }, `watchdog: ${row.watchdog}`) : null,
     ] : [];
     const inspectorButtonKey = selection ? `detail-toggle:stage:${row.id}:${selection}` : null;
-    const inspectorNodes = !selection ? [] : [renderOpenDetail(inspectorButtonKey, PANE_PHASES.find(([phase]) => phase === selection)?.[1] || selection, () => actions.closeView(row.id),
+    const inspectorNodes = !selection || !showStages ? [] : [renderOpenDetail(inspectorButtonKey, PANE_PHASES.find(([phase]) => phase === selection)?.[1] || selection, () => actions.closeView(row.id),
       ...phaseCostDetail(row, selection),
       ...renderEvidence(inspector?.summary || (inspector?.href ? 'A report was recorded.' : '')),
       Link && isValidLinkHref(inspector?.href) ? linked({ href: inspector.href, label: '[Open report]' }) : null,
@@ -438,14 +420,15 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     return node(Box, { key: `pilot:${row.id}`, flexDirection: 'column', paddingLeft: indent },
       node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
         control({ key: `detail-toggle:row:${row.id}`, plain: true, onPress: () => actions.toggle(row.id) }, `${isExpanded ? '▼' : '▶'} ${row.label || 'Pilot'}`, isExpanded ? COLORS.actionOpen : COLORS.action),
+        fixedText({}, '▣ pilot'),
         showCard ? renderCardId(row) : null,
         title ? node(Text, { wrap: 'wrap' }, `· ${title}`) : null,
         current ? fixedText({}, `· ${current}`) : null,
         queue ? fixedText({ dimColor: true }, `· ${queue}`) : null,
-        failed ? fixedText({ color: COLORS.error, bold: true }, ` · ${row.outcome}`) : null,
+        failed ? fixedText({ color: COLORS.error, bold: true }, `⚠ ${row.outcome}`) : null,
       ),
       showCard ? renderCardLink(row) : null,
-      showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1, paddingLeft: 1 }, fixedText({ bold: true }, stageHeading), ...phaseButtons.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])) : null,
+      showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, paddingLeft: 1 }, fixedText({ bold: true }, stageHeading), ...phaseButtons) : null,
       runCostStatus(row),
       runningCostStatus(row),
       rounds ? node(Box, { paddingLeft: 1 }, node(Text, { dimColor: true }, rounds)) : null,
@@ -471,24 +454,31 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       const next = stages.filter((stage) => stage.state.words === 'not started');
       const lifecycleLanes = (pilot.lanes || []).filter((lane) => lane.phaseAvailability === 'lifecycle lane' && lane.outcome === 'running');
       const failed = /^(?:error|failed|fail)/i.test(String(pilot.outcome || ''));
+      const wideStages = columns >= 120;
+      const grid = stageColumns(shown, pilot.phaseElapsed);
       const stageRows = shown.map((stage, index) => {
         const buttonKey = `detail-toggle:stage:${sessionId}:${card.id}:${stage.id}`;
         const hasEvidence = (Boolean(stage.inspector?.summary || stage.inspector?.href) || stage.cost !== undefined) && !['not started', 'skipped'].includes(stage.state.words);
         const isLast = index === shown.length - 1 && !next.length && !skipped.length;
         const reportFallback = stage.inspector?.href ? 'A report was recorded.' : '';
         const report = stage.inspector?.summary || reportFallback;
+        const stateNode = node(Box, { flexShrink: 0, width: grid.state }, node(Text, { bold: ['running', 'ERROR'].includes(stage.state.words) }, stateWords(stage.state)));
+        const elapsed = pilot.phaseElapsed?.[stage.id];
+        const timeNode = elapsed && elapsed !== 'unknown' ? node(Box, { flexShrink: 0, width: grid.time }, node(Text, { dimColor: true }, `· ${elapsed}`)) : null;
+        const costNode = stage.cost && stage.cost !== 'unknown' ? fixedText({ dimColor: true }, `· ${formatUsd(stage.cost.usd, stage.cost.priceLabel)}`) : null;
+        const metadata = node(Box, { flexDirection: 'row', columnGap: 1 }, stateNode, timeNode, costNode);
         const openDetail = selection === stage.id
-          ? node(Box, { key: `stage-detail-indent:${key}:${stage.id}`, paddingLeft: 2 }, renderOpenDetail(buttonKey, stage.label, () => actions.closeView(key), ...phaseCostDetail(pilot, stage.id), ...renderEvidence(report), Link && isValidLinkHref(stage.inspector?.href) ? linked({ href: stage.inspector.href, label: '[Open report]' }) : null))
+          ? node(Box, { key: `stage-detail-indent:${key}:${stage.id}`, paddingLeft: 3 }, renderOpenDetail(buttonKey, stage.label, () => actions.closeView(key), ...phaseCostDetail(pilot, stage.id), ...renderEvidence(report), Link && isValidLinkHref(stage.inspector?.href) ? linked({ href: stage.inspector.href, label: '[Open report]' }) : null))
           : null;
         return node(Box, { key: `spine-stage:${key}:${stage.id}`, flexDirection: 'column', paddingLeft: 1 },
           node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
             fixedText({ dimColor: true }, isLast ? '└' : '├'),
-            renderStateSegment({ key: `stage-state:${sessionId}:${card.id}:${stage.id}`, buttonKey, label: stage.label, state: stage.state, open: selection === stage.id, onPress: hasEvidence ? () => actions.select(key, stage.id) : null }),
-            pilot.phaseElapsed?.[stage.id] && pilot.phaseElapsed[stage.id] !== 'unknown' ? fixedText({ dimColor: true }, `· ${pilot.phaseElapsed[stage.id]}`) : null,
-            stage.cost && stage.cost !== 'unknown' ? fixedText({ dimColor: true }, `· ${formatUsd(stage.cost.usd, stage.cost.priceLabel)}`) : null,
+            renderStateSegment({ key: `stage-state:${sessionId}:${card.id}:${stage.id}`, buttonKey, label: stage.label, state: stage.state, open: selection === stage.id, onPress: hasEvidence ? () => actions.select(key, stage.id) : null, nameWidth: wideStages ? grid.name : null, hideWords: true }),
+            wideStages ? metadata : null,
           ),
+          wideStages ? null : node(Box, { paddingLeft: 2 }, metadata),
           openDetail,
-          failed && stage.id === pilot.phase ? node(Text, { color: COLORS.error, bold: true }, `owner: pilot runner · ${pilot.outcome}`) : null,
+          failed && stage.id === pilot.phase ? node(Text, { color: COLORS.error, bold: true }, `⚠ owner: pilot runner · ${pilot.outcome}`) : null,
           ...lifecycleLanes.filter((lane) => lane.phase === stage.id).map((lane, laneIndex, lanes) => renderExternal(lane, 2, false, laneIndex === lanes.length - 1 ? '└' : '├')),
         );
       });
@@ -516,6 +506,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       return node(Box, { key, flexDirection: 'column' },
         node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
           control({ key: `detail-toggle:row:${pilot.id}`, plain: true, onPress: () => actions.toggle(pilot.id) }, `${isExpanded ? '▼' : '▶'} ${pilotLabel}`, isExpanded ? COLORS.actionOpen : COLORS.action),
+          fixedText({}, '▣ pilot'),
           fixedText({ bold: true }, 'drives the stages below'),
           currentPhaseLabel ? fixedText({}, `· ${currentPhaseLabel}`) : null,
           known(pilot.phaseModel) ? fixedText({ dimColor: true }, `· ${pilot.phaseModel}`) : null,
@@ -559,7 +550,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const openStage = stages.find((stage) => stage.id === selection);
     const openButtonKey = openStage ? `detail-toggle:stage:${sessionId}:${card.id}:${openStage.id}` : null;
     return node(Box, { key, flexDirection: 'column', paddingLeft: 1 },
-      node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 }, fixedText({ bold: true }, 'Work stages:'), ...segments.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])),
+      node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 2 }, fixedText({ bold: true }, 'Work stages:'), ...segments),
       pilot ? runCostStatus(pilot) : null,
       pilot ? runningCostStatus(pilot) : null,
       !pilot && (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0)
@@ -573,7 +564,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ...(actor.children || []).map((child) => renderHierarchyActor(child, indent + 1)),
   );
   if (Array.isArray(snapshot.sessions)) for (const session of snapshot.sessions) {
-    const cards = (session.cards || []).flatMap((card, index) => [index ? node(Box, { key: `card-separator:${session.id}:${card.id}`, flexDirection: 'column' }, node(Text, {}, ''), node(Text, { dimColor: true }, '────────────────────────────────────────')) : null, node(Box, { key: `card:${session.id}:${card.id}`, flexDirection: 'column', paddingLeft: 1 },
+    const cards = (session.cards || []).flatMap((card, index) => [index ? node(Box, { key: `card-separator:${session.id}:${card.id}`, flexDirection: 'column' }, node(Text, {}, ''), node(Text, { dimColor: true }, '─'.repeat(Math.min(40, columns - 12)))) : null, node(Box, { key: `card:${session.id}:${card.id}`, flexDirection: 'column', paddingLeft: 1 },
       card.waveId ? node(Text, { bold: true }, `Wave ${card.waveId}`) : null,
       card.title && card.title !== card.id ? node(Text, { bold: true, wrap: 'wrap' }, card.title) : node(Text, { bold: true }, `Card ${card.id}`),
       !(card.actors || []).some((actor) => actor.sdkLifecycle === true) ? renderCardLink(card) : null,
@@ -585,7 +576,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const identity = name && (!project || name.toLowerCase() !== project.toLowerCase()) ? name : session.sessionId?.slice(0, 8) || null;
     const sessionLabel = project || identity ? ['Session', project, identity].filter(Boolean).join(' · ') : 'Session';
     grouped.push(node(Box, { key: session.id, flexDirection: 'column' },
-      node(Box, { key: `session-rule:${session.id}`, flexDirection: 'column' }, node(Text, {}, ''), node(Text, { dimColor: true }, '════════════════════════════════════════')),
+      node(Box, { key: `session-rule:${session.id}`, flexDirection: 'column' }, node(Text, {}, ''), node(Text, { dimColor: true }, '═'.repeat(Math.min(40, columns - 12)))),
       node(Box, { key: `session-header:${session.id}` }, fixedText({ bold: true, wrap: 'wrap' }, sessionLabel)),
       ...cards,
       ...(session.actors || []).map((actor) => renderHierarchyActor(actor, 1)),
@@ -700,7 +691,9 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const narrow = Number(actions.bodyColumns) < 72;
   let scope = allProjects ? 'Scope: all projects' : `Scope: this project · ${currentProject}`;
   if (narrow) scope = allProjects ? '· all' : `· ${currentProject}`;
-  const tree = node(Box, { flexDirection: 'column' },
+  const clock = snapshotClock(snapshot.collectedAt);
+  const updateText = [clock ? `Snapshot ${clock}` : null, ageText].filter(Boolean).join(' · ');
+  const tree = node(Box, { flexDirection: 'column', width: columns, backgroundColor: COLORS.background },
     node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: narrow ? 1 : 2 },
       fixedText({ bold: true }, 'What is running'),
       fixedText({ dimColor: true }, scope),
@@ -708,26 +701,29 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       control({ key: 'project-scope', plain: true, onPress: actions.switchScope }, allProjects ? 'Show this project' : 'Show all projects', allProjects ? COLORS.actionOpen : COLORS.action),
       control({ key: 'close', plain: true, onPress: actions.close }, 'Close', COLORS.close),
     ),
-    snapshot.discovery !== 'unknown' ? node(Text, { dimColor: true }, ageText) : null,
+    snapshot.discovery !== 'unknown' ? node(Text, { dimColor: true }, updateText) : null,
     ...lines,
   );
-  const sanitized = sanitizePaneTree(tree, '$', repairs);
+  const visibleKeys = new Set();
+  const sanitized = sanitizePaneTree(tree, '$', repairs, visibleKeys);
+  for (const key of actions.buttonHandlers?.keys() || []) if (!visibleKeys.has(key)) actions.buttonHandlers.delete(key);
   if (repairs.length) actions.onRepair?.(repairs);
   return sanitized;
 }
 
-function renderFailurePane(ui, close, error) {
+function renderFailurePane(ui, close, error, actions) {
   const detail = stripAnsiAndControl(String(error?.message || error || 'unknown error')).slice(0, 160);
-  return node(ui.Box, { flexDirection: 'column' },
-    node(ui.Text, { bold: true }, 'What is running'),
-    node(ui.Text, { color: COLORS.error, wrap: 'wrap' }, `The display failed: ${detail}`),
-    node(ui.Box, { key: 'control:close', flexShrink: 0, backgroundColor: COLORS.close },
-      node(ui.Button, { key: 'close', plain: true, hover: { color: 'black', backgroundColor: 'whiteBright', bold: true }, onPress: close }, '[Close]')),
+  return node(ui.Box, { flexDirection: 'column', backgroundColor: COLORS.background },
+    node(ui.Text, { color: COLORS.text, bold: true }, 'What is running'),
+    node(ui.Text, { color: COLORS.error, bold: true, wrap: 'wrap' }, `⚠ The display failed: ${detail}`),
+    drawControl(ui, { key: 'close', plain: true, onPress: close }, 'Close', actions),
   );
 }
 
 /** @type {import('claude-code').Register} */
-export const registerWithLayout = (on, options, layout) => {
+export const registerWithLayout = (on, options, layout, clientButton) => {
+  const paneButtons = new Map();
+  const hintButtons = new Map();
   let host = null;
   let open = false;
   let timer = null;
@@ -765,6 +761,7 @@ export const registerWithLayout = (on, options, layout) => {
 
   const stopPolling = (request) => {
     if (request !== undefined && request !== generation) return;
+    paneButtons.clear();
     generation += 1;
     timer?.cancel?.(); timer = null; open = false; paneObserved = false;
   };
@@ -901,6 +898,7 @@ export const registerWithLayout = (on, options, layout) => {
     // The fixed id remains an in-process alias for host/test compatibility. Only a tagged id proves to a fresh
     // registration that this session already had our pane; no shared store or ui.open call is involved.
     if (event.requestId !== paneId && !(openedHere && event.requestId === PANE_ID) && !(taggedPane && !openedHere)) return result;
+    paneButtons.clear();
     if (!open) {
       if (!host && taggedPane) {
         pendingPaneId = event.requestId;
@@ -918,10 +916,11 @@ export const registerWithLayout = (on, options, layout) => {
     paneObserved = true;
     let ui;
     try { ui = await $.ui.resolve(event); } catch { return result; }
-    if (!ui?.Box || !ui?.Text || !ui?.Button) return result;
+    if (!ui?.Box || !ui?.Text || (!ui?.Button && !(ui?.Client && clientButton))) return result;
     const startedAt = Date.now();
     try {
       const tree = renderPane(ui, snapshot, expanded, selected, currentProject, allProjects, {
+        clientButton, buttonHandlers: paneButtons, buttonGeneration: generation,
         close,
         switchScope: () => { allProjects = !allProjects; $.ui.invalidate('ui.render'); },
         toggle: (id) => { expanded.has(id) ? expanded.delete(id) : expanded.add(id); $.ui.invalidate('ui.render'); },
@@ -935,17 +934,25 @@ export const registerWithLayout = (on, options, layout) => {
       return tree;
     } catch (error) {
       recordRenderEvent('render-throw', error?.message || error || 'unknown error', event.props);
-      return renderFailurePane(ui, close, error);
+      paneButtons.clear();
+      return renderFailurePane(ui, close, error, { clientButton, buttonHandlers: paneButtons, buttonGeneration: generation, bodyColumns: event.props?.bodyColumns });
     }
   });
 
   on('ui.render', { component: 'PromptHint' }, async ($, event, next) => {
+    hintButtons.clear();
     const result = await next(event);
     let ui;
     try { ui = await $.ui.resolve(event); } catch { return result; }
-    if (!ui?.Box || !ui?.Button) return result;
+    if (!ui?.Box || (!ui?.Button && !(ui?.Client && clientButton))) return result;
     return node(ui.Box, { flexDirection: 'row' }, result,
-      node(ui.Box, { key: 'control:wt-wir-open', backgroundColor: COLORS.action }, node(ui.Button, { key: 'wt-wir-open', plain: true, hover: { color: 'black', backgroundColor: 'whiteBright', bold: true }, onPress: () => { void show(); } }, '[what is running]')));
+      drawControl(ui, { key: 'wt-wir-open', plain: true, onPress: () => show() }, 'what is running', { clientButton, buttonHandlers: hintButtons }));
+  });
+
+  on('ui.message', async (_$, event, next) => {
+    const onPress = event.data?.pressed === true && (paneButtons.get(event.element) || hintButtons.get(event.element));
+    if (onPress) await onPress();
+    return next(event);
   });
 };
 
