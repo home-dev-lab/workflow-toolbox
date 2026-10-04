@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const SOURCE = fileURLToPath(new URL('../../../../../plugin', import.meta.url))
 const FILE = 'wt-lane.mjs'
@@ -136,7 +136,7 @@ export const fixLocks = {
     const preload = path.join(f.root, 'no-execve.mjs')
     fs.writeFileSync(preload, 'process.execve = undefined')
     fs.writeFileSync(f.target, 'process.stdout.write(JSON.stringify(process.execArgv))')
-    const args = ['--conditions=shim-lock', '--import', preload]
+    const args = ['--conditions=shim-lock', '--import', pathToFileURL(preload).href]
     assert.deepEqual(JSON.parse(f.node([...args, f.shim]).stdout), args, 'spawn must preserve interpreter options')
   },
   'non executable interpreter preflight': (f) => {
@@ -144,7 +144,7 @@ export const fixLocks = {
     const executable = path.join(f.root, 'node-copy'), preload = path.join(f.root, 'node-path.mjs')
     fs.copyFileSync(process.execPath, executable); fs.chmodSync(executable, 0o644)
     fs.writeFileSync(preload, `process.execPath = ${JSON.stringify(executable)}`)
-    const result = f.node(['--import', preload, f.shim])
+    const result = f.node(['--import', pathToFileURL(preload).href, f.shim])
     assert.equal(result.status, 2, 'non-executable Node must refuse before real execve')
     assert.equal(result.signal, null)
     assert.match(result.stdout, /Node executable/)
@@ -183,7 +183,7 @@ export const fixLocks = {
     for (const fd of [1, 2]) {
       const preload = path.join(f.root, `closed-${fd}.mjs`)
       fs.writeFileSync(preload, `import fs from 'node:fs'; fs.closeSync(${fd})`)
-      const result = f.node(['--import', preload, f.shim])
+      const result = f.node(['--import', pathToFileURL(preload).href, f.shim])
       assert.equal(result.status, 2, 'a failed diagnostic fd must not prevent controlled exit 2')
       assert.match(fd === 1 ? result.stderr : result.stdout, /installed workflow-toolbox plugin not found/, 'the other diagnostic fd must still be written')
     }
