@@ -9,10 +9,15 @@ function escapes(path, parent, root) {
   const url = new URL(path.replaceAll('\\', '/'), parent);
   return url.protocol === 'file:' && !url.href.startsWith(root.href);
 }
+// A quoted checkout-relative path (group 1 the quote, group 2 the path) after a caller prefix.
+const QUOTED_RELATIVE_PATH = String.raw`(['"\x60])((?:\.\.?[/\\])[^'"\x60]+)\1`;
+function literalAfter(prefix) {
+  return new RegExp(`(?:${prefix})${QUOTED_RELATIVE_PATH}`, 'g');
+}
 function unguardedReads(source, file, root) {
   const violations = [];
-  const modulePaths = /(?:new\s+URL\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+)(['"`])((?:\.\.?[/\\])[^'"`]+)\1/g;
-  const cwdPaths = /\b(?:readFile(?:Sync)?|readdir(?:Sync)?|cp(?:Sync)?|stat(?:Sync)?|access(?:Sync)?)\s*\(\s*(['"`])((?:\.\.?[/\\])[^'"`]+)\1/g;
+  const modulePaths = literalAfter(String.raw`new\s+URL\s*\(\s*|\bimport\s*\(\s*|\bfrom\s+|\bimport\s+`);
+  const cwdPaths = literalAfter(String.raw`\b(?:readFile|readdir|cp|stat|access)(?:Sync)?\s*\(\s*`);
   for (const [pattern, parent] of [[modulePaths, file], [cwdPaths, root]]) {
     for (const match of source.matchAll(pattern)) {
       if (escapes(match[2], parent, root)) violations.push(match[2]);
