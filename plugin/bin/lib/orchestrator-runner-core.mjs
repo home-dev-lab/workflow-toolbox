@@ -70,19 +70,25 @@ export function parseOrchestratorArgs(argv) {
   return options
 }
 
-// A mission never acts on a subset of its list. Every find_cards page carries the filtered list's `total`
-// (the live server answers { total, offset, limit, cards }); a page without an integer total is malformed and
-// stops the wave at once. A list that changes under the scan (another session or worker editing the board) shows
-// as a moving total, an empty page before total, more cards than total, or a card returned twice: the list is then
-// re-read from offset 0, and the wave stops only when it never reads consistently.
-const PAGINATE_SCANS = 3
+// A mission never acts on a subset of its list, nor on a mix of two states of it. Every find_cards page carries the
+// filtered list's `total` (the live server answers { total, offset, limit, cards }); a page without a non-negative
+// integer total is malformed and stops the wave at once. A list edited under the scan (another session or worker)
+// shows as a moving total, an empty page before total, more cards than total, or a card returned twice; and a removal
+// plus an append between two pages leaves the total unchanged while mixing two states. So a read is accepted only when
+// two consecutive consistent scans return the same set of cards, and the wave stops after PAGINATE_SCANS scans without
+// such a pair.
+const PAGINATE_SCANS = 4
 
 async function paginate(board, list) {
-  let unstable
+  let previous = null
+  let unstable = 'no two consecutive scans agreed'
   for (let scan = 0; scan < PAGINATE_SCANS; scan += 1) {
     const read = await scanListPages(board, list)
-    if (read.cards) return read.cards
-    unstable = read.unstable
+    if (!read.cards) { unstable = read.unstable; previous = null; continue }
+    const key = read.cards.map((card) => String(card.id)).sort().join('\n')
+    if (previous === key) return read.cards
+    if (previous !== null) unstable = 'two scans returned different cards'
+    previous = key
   }
   throw new Error(`board unavailable: find_cards list ${list} kept changing over ${PAGINATE_SCANS} scans (${unstable})`)
 }

@@ -514,33 +514,66 @@ describe('orchestrator driver', () => {
     const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { offsets.push(offset); return { cards: cards.slice(offset, offset + 1), total: 2 } } }; const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board }); expect(result.rows).toHaveLength(2); expect(offsets.slice(0, 2)).toEqual([0, 1])
   })
 
-  // A mission scan must never act on a subset of its list. Every page carries the list's total (the live server
-  // answers {total, offset, limit, cards} with total = the filtered list's size, probed 2026-10-04). A malformed
-  // total stops the wave at once; a list that changes under the scan is re-read from offset 0, and the wave stops
-  // as board unavailable only when it never reads consistently.
-  const missionCards = () => [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]
+  // A mission scan must never act on a subset of its list, nor on a mix of two states of it. Every page carries the
+  // list's total (the live server answers {total, offset, limit, cards} with total = the filtered list's size, probed
+  // 2026-10-04). A malformed total stops the wave on the first page. A read is accepted only when two consecutive
+  // consistent scans return the same cards; a list that keeps changing stops the wave as board unavailable after a
+  // bounded number of scans.
+  const missionCard = (id: string) => ({ id, listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' })
+  const missionCards = () => [missionCard('1'), missionCard('2')]
   it.each([
-    ['a page without total', 'malformed find_cards total', (_offset: number, cards: unknown[]) => ({ cards })],
-    ['a null total', 'malformed find_cards total', (_offset: number, cards: unknown[]) => ({ cards, total: null })],
-    ['a string total', 'malformed find_cards total', (_offset: number, cards: unknown[]) => ({ cards, total: String(cards.length) })],
+    ['a page without total', (cards: unknown[]) => ({ cards })],
+    ['a null total', (cards: unknown[]) => ({ cards, total: null })],
+    ['a string total', (cards: unknown[]) => ({ cards, total: String(cards.length) })],
+    ['a negative total', (cards: unknown[]) => ({ cards, total: -1 })],
+    ['a fractional total', (cards: unknown[]) => ({ cards, total: 1.5 })],
+  ])('stops a mission on its first page when it carries %s', async (_label, page) => {
+    const cards = missionCards(); const f = repoFixture(cards); let calls = 0
+    const board = { ...f.board, findCards: async () => { calls += 1; return page(cards) } }
+    const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' }); expect(f.launches).toHaveLength(0); expect(calls).toBe(1)
+    expect(readFileSync(f.report, 'utf8')).toContain('malformed find_cards total')
+  })
+
+  it.each([
     ['an empty page before total is reached', 'empty page at offset 1 before total 2', (offset: number, cards: unknown[]) => ({ cards: offset === 0 ? cards.slice(0, 1) : [], total: cards.length })],
     ['more cards than total', '2 cards for total 1', (_offset: number, cards: unknown[]) => ({ cards, total: cards.length - 1 })],
     ['a total that falls between pages of one scan', 'total changed from 3 to 2', (offset: number, cards: unknown[]) => ({ cards: cards.slice(offset, offset + 1), total: offset === 0 ? cards.length + 1 : cards.length })],
     ['a card returned twice', 'card 1 returned twice', (_offset: number, cards: unknown[]) => ({ cards: cards.slice(0, 1), total: cards.length })],
-  ])('refuses a mission scan on %s instead of piloting a partial list', async (_label, reason, page) => {
-    const cards = missionCards(); const f = repoFixture(cards)
-    const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => page(offset, cards) }
+  ])('refuses a mission list that keeps showing %s, after a bounded number of scans', async (_label, reason, page) => {
+    const cards = missionCards(); const f = repoFixture(cards); let scans = 0
+    const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { if (offset === 0) scans += 1; if (scans > 50) throw new Error('unbounded scan'); return page(offset, cards) } }
     const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board })
-    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' }); expect(f.launches).toHaveLength(0)
-    expect(readFileSync(f.report, 'utf8')).toContain(reason)
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' }); expect(f.launches).toHaveLength(0); expect(scans).toBe(4)
+    expect(readFileSync(f.report, 'utf8')).toContain(`kept changing over 4 scans (${reason})`)
   })
 
-  it('re-reads a mission list that changed during the scan and pilots the consistent read', async () => {
-    const cards = missionCards(); const f = repoFixture(cards); let calls = 0
+  it('refuses a mission list whose consistent scans never agree on the same cards', async () => {
+    const cards = missionCards(); const f = repoFixture(cards); let scans = 0
+    // Each scan is internally consistent (one page, total 1), but the card differs every time: no stable read exists.
+    const board = { ...f.board, findCards: async () => { scans += 1; return { cards: [cards[scans % 2]], total: 1 } } }
+    const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: 'board unavailable' }); expect(f.launches).toHaveLength(0); expect(scans).toBe(4)
+    expect(readFileSync(f.report, 'utf8')).toContain('two scans returned different cards')
+  })
+
+  it('never pilots a mix of two states of the list when a card is removed and another appended between pages', async () => {
+    // Counterexample from the cross-family review: the list is [1, 2]; page 1 returns card 1, then another session removes
+    // card 1 and appends card 3, so page 2 at offset 1 returns card 3 with the same total. [1, 3] never existed.
+    const f = repoFixture([missionCard('1'), missionCard('2'), missionCard('3')]); let calls = 0
+    const before = [missionCard('1'), missionCard('2')]; const after = [missionCard('2'), missionCard('3')]
+    const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { calls += 1; const list = calls === 1 ? before : after; return { cards: list.slice(offset, offset + 1), total: list.length } } }
+    await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board })
+    expect(f.launches.map((launch) => launch.card)).toEqual(['2', '3'])
+  })
+
+  it('re-reads a mission list from offset 0 when it changed during the scan, and pilots the consistent read', async () => {
+    const cards = missionCards(); const f = repoFixture(cards); let calls = 0; const offsets: number[] = []
     // First scan: the total moves between page 1 and page 2 (another session edited the list); every later read is stable.
-    const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { calls += 1; return { cards: cards.slice(offset, offset + 1), total: calls === 2 ? cards.length + 1 : cards.length } } }
+    const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { calls += 1; offsets.push(offset); return { cards: cards.slice(offset, offset + 1), total: calls === 2 ? cards.length + 1 : cards.length } } }
     const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board })
     expect(result.stopReason).not.toBe('board unavailable'); expect(f.launches.map((launch) => launch.card)).toEqual(['1', '2'])
+    expect(offsets.slice(0, 4)).toEqual([0, 1, 0, 1])
   })
 
   it.each(['main base', 'outside worktrees', 'budget below timeout'])('refuses the %s preflight', async (guard) => {
@@ -588,7 +621,7 @@ describe('orchestrator driver', () => {
 
   it('re-scans a mission after each card and removes cards that cease to be eligible', async () => {
     const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9999\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards); let scans = 0
-    const board = { ...f.board, getCard: async (id: string) => id === '9999' ? { id: '9999', listName: 'Done' } : f.board.getCard(id), findCards: async (args: { limit: number, offset: number }) => { scans += 1; const visible = scans === 1 ? cards : cards.slice(0, 1); return { cards: visible.slice(args.offset, args.offset + args.limit), total: visible.length } } }
+    const board = { ...f.board, getCard: async (id: string) => id === '9999' ? { id: '9999', listName: 'Done' } : f.board.getCard(id), findCards: async (args: { limit: number, offset: number }) => { scans += 1; const visible = scans <= 2 ? cards : cards.slice(0, 1); return { cards: visible.slice(args.offset, args.offset + args.limit), total: visible.length } } }
     const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', missionLabels: ['mission'] }, { ...f, board }); expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1']); expect(scans).toBeGreaterThanOrEqual(2)
   })
 
