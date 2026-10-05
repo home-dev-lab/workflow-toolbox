@@ -138,6 +138,15 @@ const spawnPayload = (
 // wt-outbound-guard-hook.mjs — item 1 (spawn edges) + item 2 (nudge on silence)
 // --------------------------------------------------------------------------
 describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge per arc', () => {
+  it('records explicit pilot ownership cardIds and omits the field without an assignment', () => {
+    const { env, dir } = guardEnv('pilot-card-ids')
+    const payload = spawnPayload('sess-card-ids', { childId: 'a0123456789abcdef', name: '', subagentType: 'pilot' })
+    run(GUARD_HOOK, { ...payload, tool_input: { ...payload.tool_input, prompt: 'PILOT-CARD: 9000000000000000001' } }, env)
+    run(GUARD_HOOK, { ...payload, tool_input: { ...payload.tool_input, prompt: 'Dependency card: 9000000000000000002' } }, env)
+    const records = readFileSync(join(dir, 'sess-card-ids.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(records[0].cardIds).toEqual(['9000000000000000001'])
+    expect(records[1]).not.toHaveProperty('cardIds')
+  })
   // POSITIVE CONTROL FIRST: prove a silent subagent DOES produce a nudge before trusting any
   // "silence" result elsewhere in this suite (a broken invocation and a genuine non-match both
   // look like "no output" otherwise).
