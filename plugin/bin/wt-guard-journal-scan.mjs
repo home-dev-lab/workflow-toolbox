@@ -51,7 +51,10 @@ Exit codes: 0 read cleanly (even if zero events) · 2 journal directory does not
 `
 
 const argv = process.argv.slice(2)
-handleHelpFlag(argv, HELP)
+handleHelpFlag(argv, HELP, {
+  valueFlags: ['--weeks'],
+  booleanFlags: ['--all', '--json'],
+})
 
 const KNOWN_FLAGS = new Set(['--weeks', '--all', '--json'])
 for (const token of argv) {

@@ -45,6 +45,7 @@ export const spawningTestFiles = [
   'packages/build/test/claimed-test-check.test.ts',
   'packages/build/test/claude-executor.test.ts',
   'packages/build/test/cli-bundle-smoke.test.ts',
+  'packages/build/test/cli-help-flag-value.test.ts',
   'packages/build/test/cli-help.test.ts',
   'packages/build/test/cli.test.ts',
   'packages/build/test/command-repeat-check.test.ts',
