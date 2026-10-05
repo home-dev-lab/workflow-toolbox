@@ -182,7 +182,10 @@ const stored = (deny) => `<tool_use_error>${deny}</tool_use_error>`;
 const folded = (body, ...rules) => [[body, ...rules.map((name) => `<rule name="${name}">\nSynthetic instruction.\n</rule>`)].join('\n\n'), GUARD_REDACTION_NOTE].join('\n');
 const delivered = (text) => normalize(resultRecord(text), 1).filter((event) => event.kind === 'delivery').map((event) => event.name);
 
-test('the real guard above rules-on-demand folds the rule into its refusal, and the transcript reader counts it', async () => {
+guardHookTest('the real guard above rules-on-demand folds the rule into its refusal, and the transcript reader counts it', async (_t, url) => {
+  const guardHooks = [];
+  (await import(url)).register((event, matcher, hook) => guardHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), {});
+  const guardGrep = guardHooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Grep').hook;
   const held = ['xox', 'b-1234567890', '12-abcdefghij'].join('');
   const core = async () => ({ isError: true, result: `grep failed near ${held}`, text: `grep failed near ${held}`, ref: 7 });
   const f = fixture(makeRule("    kind: 'none'\n    reason: 'fixture'", "    - kind: 'tool'\n      tool: '^Grep$'\n      unconditional: 'true'"));
