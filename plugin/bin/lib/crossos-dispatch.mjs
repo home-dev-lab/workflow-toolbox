@@ -37,7 +37,8 @@ function options(argv) {
   for (let index = 1; index < argv.length; index++) {
     const flag = argv[index]
     if (flag === '--dry-run') { out.dryRun = true; continue }
-    if (!names[flag] || !argv[index + 1]) throw failure(`unknown or missing option: ${flag}`)
+    // Own properties only: `names` is a plain object, so `constructor` / `toString` would otherwise pass as options.
+    if (!Object.hasOwn(names, flag) || !argv[index + 1]) throw failure(`unknown or missing option: ${flag}`)
     out[names[flag]] = argv[++index]
   }
   if (['decide', 'run', 'collect'].includes(command) && !out.merge) throw failure('--merge is required')

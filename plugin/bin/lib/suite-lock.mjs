@@ -145,7 +145,7 @@ export function formatSuiteLockHolder(holder) {
   const since = Number.isNaN(started.valueOf())
     ? 'unknown time'
     : started.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
-  return `holder pid ${pid} (${displayArgv(holder.argv)}) since ${since}`
+  return `holder pid ${pid} (${displayArgv(holder.argv)}) since ${since}${holder.priority === 'release' ? ' (release priority)' : ''}`
 }
 
 // Every acquirer uses the same FIFO mutex; a holder covers its descendant commands by marker.
@@ -196,6 +196,8 @@ const isOlderClientTicket = (record) => !(record && (record.light === true || 'l
 // LIGHT_BYPASS_MAX_GRANTS light leases were granted since. A lost or replaced counter reads as a
 // different generation, so the ticket is no longer passable.
 function ticketRank(record, counter) {
+  // Main-session release gates precede every modern non-release ticket, without a bypass counter.
+  if (record?.priority === 'release') return -1
   if (record?.light === true) return 0
   const queuedAt = record?.lightGrantsAtQueue
   const passable = typeof record?.lightGrantsGeneration === 'string' && record.lightGrantsGeneration === counter.generation
@@ -204,6 +206,13 @@ function ticketRank(record, counter) {
 }
 
 const goesBefore = (rank, number, otherRank, otherNumber) => rank < otherRank || (rank === otherRank && number < otherNumber)
+
+// Both filesystem waiters and broker clients select their watchdog from the same current state.
+function waiterBudget(wait, hold, ahead, holderPriority) {
+  if (wait === 0) return 0
+  return ahead === 0 || holderPriority === 'release' ? hold : wait
+}
+const progressPlace = ({ ahead, aheadExcludingRelease, total }) => ({ ahead, aheadExcludingRelease, total })
 
 // Reclaims dead tickets and returns my place: how many live tickets are ahead, and how many in all.
 function queuePlace(queueDir, mine, mineRecord, counter, options) {
@@ -221,8 +230,9 @@ function queuePlace(queueDir, mine, mineRecord, counter, options) {
   const byNumberOnly = live.some((other) => isOlderClientTicket(other.record))
   const rankOf = (record) => (byNumberOnly ? 0 : ticketRank(record, counter))
   const myRank = rankOf(mineRecord)
-  const ahead = live.filter((other) => goesBefore(rankOf(other.record), other.number, myRank, mine)).length
-  return { ahead, total: Math.max(live.length + 1, ahead + 1) }
+  const preceding = live.filter((other) => goesBefore(rankOf(other.record), other.number, myRank, mine))
+  const ahead = preceding.length
+  return { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: Math.max(live.length + 1, ahead + 1) }
 }
 
 // true: acquired. false: the lock is held. 'reclaim': a reclaimer is in flight, so the acquisition is
@@ -319,6 +329,7 @@ function waiterRecord(options, counter) {
     argv: options.argv ?? process.argv,
     cwd: options.cwd ?? process.cwd(),
     startedAt: new Date().toISOString(),
+    ...(options.priority === 'release' ? { priority: 'release' } : {}),
     ...(options.light === true ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }),
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
@@ -326,9 +337,12 @@ function waiterRecord(options, counter) {
   }
 }
 
-function describeWait(place, current, light = false) {
+function describeWait(place, current, record) {
   const holder = current.held ? formatSuiteLockHolder(current.holder) : 'holder none (handing over)'
-  return `position ${place.ahead + 1} of ${place.total}${light ? ' (light priority)' : ''}, ${holder}`
+  let priority = ''
+  if (record.priority === 'release') priority = ' (release priority)'
+  else if (record.light === true) priority = ' (light priority)'
+  return `position ${place.ahead + 1} of ${place.total}${priority}, ${holder}`
 }
 
 // Windows reports a file or directory that another process is deleting ("delete pending") as EPERM,
@@ -350,6 +364,27 @@ async function retryTransient(operation, pauseMs) {
   }
 }
 
+// Revalidate after winning the atomic mutex, before counting any grant or returning a lease.
+// Any read/write failure gives back the provisional lease before the outer transient retry.
+function confirmAdmission(state, holder, place, options) {
+  const { root, lockDir, queueDir, ticket, record } = state
+  const lease = { root, lockDir, holder }
+  try {
+    const confirmed = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
+    if (confirmed.ahead > 0) {
+      releaseSuiteLock(lease)
+      options.afterHandBack?.()
+      return { again: true, place }
+    }
+    if (record.light === true) recordLightGrant(root)
+    throwIfAborted(options.signal)
+    return { lease }
+  } catch (error) {
+    releaseSuiteLock(lease)
+    throw error
+  }
+}
+
 // One poll of the queue: `{ lease }` when acquired, `{ again: true, place }` to poll again at once, or
 // `{ place, current }` to wait.
 function pollQueue(state, options) {
@@ -362,23 +397,7 @@ function pollQueue(state, options) {
     delete holder.lightGrantsGeneration
     options.beforeAcquire?.() // test seam: runs between the placement and the attempt
     const taken = tryTakeLock(lockDir, holder, options.beforePublish)
-    if (taken === true) {
-      const lease = { root, lockDir, holder }
-      // Placement read the counter and the queue before the lock was won; a light grant may have landed
-      // since. Judge again now that I am the sole holder, and hand the lock back (uncounted) when a
-      // ticket now goes before mine, so an exclusive ticket is passed by at most LIGHT_BYPASS_MAX_GRANTS grants.
-      if (queuePlace(queueDir, ticket, record, readLightCounter(root), options).ahead > 0) {
-        releaseSuiteLock(lease)
-        options.afterHandBack?.() // test seam: runs after a lock won and handed back
-        return { again: true, place }
-      }
-      if (record.light === true) {
-        try { recordLightGrant(root) } catch (error) { releaseSuiteLock(lease); throw error }
-      }
-      // An abort that lands during the publish never leaves a lock behind.
-      if (options.signal?.aborted) { releaseSuiteLock(lease); throw abortError() }
-      return { lease }
-    }
+    if (taken === true) return confirmAdmission(state, holder, place, options)
     if (taken === 'reclaim') {
       removeDirectoryOlderThan(path.join(root, 'reclaim.d'), RECLAIM_DIR_STALE_MS)
       return { place, current: readSuiteLock({ root }) }
@@ -395,6 +414,13 @@ function pollQueue(state, options) {
 export async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
   if (options.mode !== undefined) throw new Error('unknown suite lease mode argument: mode')
+  if (options.priority !== undefined && options.priority !== 'release') throw new Error(`unknown suite lock priority: ${String(options.priority)}`)
+  if (options.priority === 'release' && options.light === true) throw new Error('release priority cannot be combined with light')
+  if (options.priority !== undefined && typeof env.WT_SUITE_LOCK_BROKER === 'string' && env.WT_SUITE_LOCK_BROKER.trim()) {
+    const error = new Error('release priority is not available inside a lane sandbox')
+    error.code = 'WT_SUITE_LOCK_PRIORITY_REFUSED'
+    throw error
+  }
   throwIfAborted(options.signal)
   // The marker decision precedes every wait (including a broker connection). An explicit root
   // selects its own filesystem domain, regardless of the caller's broker environment.
@@ -418,6 +444,8 @@ export async function acquireSuiteLock(options = {}) {
   let lastProgressAt = startedWaiting
   let bestAhead = Infinity
   let lastPlace = null
+  let lastHolderId = null
+  let holderPriority
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root))
   const ticket = await retryTransient(() => takeTicket(queueDir, record), HEAD_OF_QUEUE_POLL_MS)
@@ -431,19 +459,32 @@ export async function acquireSuiteLock(options = {}) {
       // An immediate hand-back retry also honours the deadline; only a NEW best place renews it.
       const current = step.again ? readSuiteLock({ root }) : step.current
       const now = Date.now()
+      const holderId = current.holder?.leaseId ?? null
+      if (holderId && holderId !== lastHolderId) {
+        holderPriority = current.holder.priority
+        options.onHandover?.(holderId, current.holder.priority)
+        if (lastHolderId || holderPriority === 'release') {
+          lastProgressAt = now
+          if (step.place) options.onProgress?.(progressPlace(step.place))
+        }
+      }
+      if (holderId) lastHolderId = holderId
       // An immediate retry carries the place it was decided at: reaching the head there is progress too.
       if (step.place) {
         lastPlace = step.place
-        if (lastPlace.ahead < bestAhead) {
-          bestAhead = lastPlace.ahead
+        if (lastPlace.aheadExcludingRelease < bestAhead) {
+          bestAhead = lastPlace.aheadExcludingRelease
           lastProgressAt = now
-          options.onProgress?.({ ahead: lastPlace.ahead, total: lastPlace.total })
-          options.onWait?.(`waiting for suite lock: ${describeWait(lastPlace, current, record.light === true)}`)
+          options.onProgress?.(progressPlace(lastPlace))
+          options.onWait?.(`waiting for suite lock: ${describeWait(lastPlace, current, record)}`)
           nextNoticeAt = now + noticeMs
         }
       }
-      // Once at the head, the head budget holds even when a light ticket passes it afterwards.
-      const budget = bestAhead === 0 ? headWaitMs : waitMs
+      // Once all non-release tickets ahead are gone, the head budget holds even if a
+      // release ticket passes it. Only actual head (ahead === 0) may acquire.
+      // A release can legitimately hold longer than the ordinary wait window. Bound its
+      // uninterrupted hold by the stale/head window; a normal stuck holder keeps waitMs.
+      const budget = waiterBudget(waitMs, headWaitMs, bestAhead, holderPriority)
       const remaining = budget - (now - lastProgressAt)
       if (remaining <= 0) {
         const position = lastPlace ? `position ${lastPlace.ahead + 1} of ${lastPlace.total}` : 'position unknown'
@@ -455,7 +496,7 @@ export async function acquireSuiteLock(options = {}) {
       if (step.again) continue
       const { place } = step
       if (now >= nextNoticeAt) {
-        options.onWait?.(`waiting for suite lock: ${describeWait(place, current, record.light === true)}`)
+        options.onWait?.(`waiting for suite lock: ${describeWait(place, current, record)}`)
         nextNoticeAt = now + noticeMs
       }
       const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
@@ -511,6 +552,9 @@ function requestBrokerSuiteLock(socketPath, options) {
     let resolveLost
     let timer
     let bestAhead = Infinity
+    let lastHolderId = null
+    let holderPriority
+    let notifyHandover = false
     // Resolves with the REASON the granted lease was lost: the broker's own error text (its hold bound)
     // when one arrives after the grant, 'broker gone' when the socket closes. The first reason wins.
     // After a hold bound the socket stays OPEN: the broker releases the lock when it closes, which the
@@ -549,13 +593,28 @@ function requestBrokerSuiteLock(socketPath, options) {
         if (settled && !granted) { socket.destroy(); return }
         if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
         else if (line.startsWith('progress ')) {
-          // Only a strictly better place renews the client's own watchdog, and the head budget sticks once
-          // reached: a repeated, worse or impossible progress line from a faulty broker renews nothing.
-          const [ahead, total] = line.slice(9).split(' ').map((field) => (/^(0|[1-9]\d{0,8})$/.test(field) ? Number(field) : Number.NaN))
-          if (!settled && ahead < bestAhead && ahead < total) {
-            bestAhead = ahead
-            restartTimer(ahead === 0 && waitS > 0 ? Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S) : waitS)
-            options.onProgress?.({ ahead, total })
+          // A better non-release place renews the client watchdog; a holder handover has its
+          // own line. Repeated, worse or impossible positions alone renew nothing.
+          const [nonReleaseAhead, total, actualAhead] = line.slice(9).split(' ').map((field) => (/^(0|[1-9]\d{0,8})$/.test(field) ? Number(field) : Number.NaN))
+          const ahead = Number.isSafeInteger(actualAhead) ? actualAhead : nonReleaseAhead
+          if (!settled && nonReleaseAhead < total && ahead >= nonReleaseAhead && ahead < total && (nonReleaseAhead < bestAhead || notifyHandover)) {
+            if (nonReleaseAhead < bestAhead) {
+              bestAhead = nonReleaseAhead
+              restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
+            }
+            notifyHandover = false
+            options.onProgress?.({ ahead, aheadExcludingRelease: nonReleaseAhead, total })
+          }
+        }
+        else if (line.startsWith('handover ')) {
+          const [holderId, priority] = line.slice(9).split(' ')
+          if (!settled && /^[A-Za-z0-9-]{1,128}$/.test(holderId)) {
+            holderPriority = priority
+            if (holderId !== lastHolderId && (lastHolderId || priority === 'release')) {
+              restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
+              notifyHandover = Boolean(lastHolderId)
+            }
+            lastHolderId = holderId
           }
         }
         else if (line.startsWith('error ') && granted) lose(line.slice(6))

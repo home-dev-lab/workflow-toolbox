@@ -20,10 +20,11 @@ import {
 } from './lib/suite-lock.mjs'
 
 const USAGE = `Usage:
-  node wt-suite-lock.mjs run [--light] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  node wt-suite-lock.mjs run [--light] [--priority release] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   node wt-suite-lock.mjs status [--json]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
-  --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without queue progress; the head waits up to max(--wait-s, --stale-s).`
+  --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
+  Release priority is reserved for the main session's release and merge-train gates.`
 
 function parseSeconds(args, name, fallback) {
   const index = args.indexOf(name)
@@ -48,7 +49,16 @@ async function run(args) {
   const lightIndex = flags.indexOf('--light')
   const light = lightIndex >= 0
   if (light) flags.splice(lightIndex, 1)
+  const priorityIndex = flags.indexOf('--priority')
+  const priority = priorityIndex >= 0 ? flags[priorityIndex + 1] : undefined
+  if (priorityIndex >= 0) flags.splice(priorityIndex, 2)
+  if (priorityIndex >= 0 && priority !== 'release') throw new Error(`unknown suite lock priority: ${String(priority)}`)
+  if (priority === 'release' && light) throw new Error('release priority cannot be combined with light')
   if (flags.length > 0) throw new Error(`unknown argument: ${flags[0]}`)
+  if (priority === 'release' && process.env.WT_SUITE_LOCK_BROKER?.trim()) {
+    process.stderr.write('wt-suite-lock: release priority is not available inside a lane sandbox\n')
+    return 2
+  }
   if (process.env.WT_SUITE_LOCK === '0') {
     process.stderr.write('wt-suite-lock: bypassed because WT_SUITE_LOCK=0\n')
     return spawnCommand(command)
@@ -61,8 +71,12 @@ async function run(args) {
   }
   let lease
   try {
-    lease = await acquireSuiteLock({ waitS, staleS, argv: command, light, onWait: (line) => process.stderr.write(`${line}\n`) })
+    lease = await acquireSuiteLock({ waitS, staleS, argv: command, light, priority, onWait: (line) => process.stderr.write(`${line}\n`) })
   } catch (error) {
+    if (error?.code === 'WT_SUITE_LOCK_PRIORITY_REFUSED') {
+      process.stderr.write(`wt-suite-lock: ${error.message}\n`)
+      return 2
+    }
     if (error?.code === 'WT_SUITE_LOCK_TIMEOUT' || error?.code === 'WT_SUITE_LOCK_UNAVAILABLE') {
       process.stderr.write(`wt-suite-lock: ${error.message}\n`)
       return 75

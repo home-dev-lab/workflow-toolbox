@@ -12,7 +12,10 @@ WAKE lines are directly evidenced (the delegate's own end_turn, no later assista
 FORWARD lines are printed as "FORWARD (unverified): ..." — a diagnostic candidate list only: whether a
 nested delegate's parent received its notice is inferred from missing records, and that inference's
 precision is unmeasured. The live watcher (wt-arc-watch) never announces FORWARD.
-`)
+`, {
+  valueFlags: ['--session', '--grace', '--at'],
+  booleanFlags: ['--json', '--write-resumed'],
+})
 const allowed = new Set(['--session', '--grace', '--at', '--json', '--write-resumed'])
 if (args.some((arg) => arg.startsWith('--') && !allowed.has(arg))) {
   process.stderr.write('wt-delegate-wake-scan: unknown option\n')

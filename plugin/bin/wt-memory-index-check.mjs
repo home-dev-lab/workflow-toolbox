@@ -60,7 +60,10 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP);
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--store', '--threshold', '--size-threshold', '--hub-max', '--index-file', '--out'],
+    booleanFlags: ['--json'],
+  });
   const out = { store: null, threshold: 200, sizeThreshold: 25000, hubMax: 45, indexFile: 'MEMORY.md', json: false, out: null };
   // A flag that takes a value must actually find one — `--index-file` at
   // the end of argv with nothing after it must fail loudly (usage error),

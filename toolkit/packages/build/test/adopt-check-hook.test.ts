@@ -940,6 +940,92 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
   })
 })
 
+// Compaction re-fires SessionStart with source "compact": the hook then prints a digest (names only) instead of
+// re-injecting every per-file remedy that the session already received at startup.
+function runHookWithSource(cwd: string, env: NodeJS.ProcessEnv, source: string | undefined, hook = HOOK): string {
+  const payload: Record<string, unknown> = { hook_event_name: 'SessionStart', cwd }
+  if (source !== undefined) payload['source'] = source
+  const res = spawnSync(process.execPath, [hook], { input: JSON.stringify(payload), encoding: 'utf8', env })
+  const stdout = (res.stdout ?? '').trim()
+  return stdout ? ((JSON.parse(stdout).hookSpecificOutput?.additionalContext as string) ?? '') : ''
+}
+const mdNames = (text: string) => [...new Set(text.match(/[A-Za-z0-9._-]+\.md\b/g) ?? [])].sort()
+
+/** Many edited files and one stale copy in the project dir, plus an unresolved trigger head. */
+function busyFixture(tag: string) {
+  const f = fixture(tag)
+  const dir = join(f.proj, '.claude', 'rules')
+  installInto(dir)
+  for (const file of readdirSync(dir).filter((name) => name.endsWith('.md') && name !== RULE)) {
+    writeFileSync(join(dir, file), readFileSync(join(dir, file), 'utf8') + '\nMY LOCAL EDIT\n')
+  }
+  ageManagedRule(join(dir, RULE))
+  const onDemand = join(f.cfg, 'rules-on-demand')
+  specCopy(onDemand)
+  const act = join(onDemand, ACT)
+  writeFileSync(act, readFileSync(act, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+  return f
+}
+
+describe('wt-adopt-check-hook — compact digest', () => {
+  it('names every file the startup output names, in far fewer characters', () => {
+    const f = busyFixture('compact-digest')
+    const startup = runHookWithSource(f.proj, f.env, 'startup')
+    const compact = runHookWithSource(f.proj, f.env, 'compact')
+    expect(readdirSync(join(f.proj, '.claude', 'rules')).filter((n) => n.endsWith('.md')).length).toBeGreaterThanOrEqual(10)
+    expect(startup).toContain('SESSION ACTION')
+    expect(mdNames(startup).length).toBeGreaterThanOrEqual(10)
+    expect(mdNames(compact)).toEqual(mdNames(startup))
+    expect(compact.length).toBeLessThan(3000)
+    expect(compact).not.toContain('SESSION ACTION')
+    expect(compact).not.toContain('--force')
+  })
+
+  it('keeps startup, resume, clear and absent-source output byte-for-byte', () => {
+    const f = busyFixture('compact-others')
+    const startup = runHookWithSource(f.proj, f.env, 'startup')
+    expect(startup.length).toBeGreaterThan(3000)
+    for (const source of ['resume', 'clear', undefined, 'unknown']) {
+      expect(runHookWithSource(f.proj, f.env, source)).toBe(startup)
+    }
+  })
+
+  it('prints a re-run command that reproduces the full startup output', () => {
+    const f = busyFixture('compact-rerun')
+    const startup = runHookWithSource(f.proj, f.env, 'startup')
+    const compact = runHookWithSource(f.proj, f.env, 'compact')
+    const command = /`(printf [^`]+)`/.exec(compact)?.[1]
+    expect(command).toBeTruthy()
+    // F9: a drift first detected at compaction was never printed at session start, so the closing line must
+    // describe what the command does (prints the current full remedies), not claim an earlier print.
+    expect(compact).not.toContain('were printed at session start')
+    expect(compact).toContain('prints the current full remedies')
+    const res = spawnSync('bash', ['-c', command as string], { encoding: 'utf8', env: f.env })
+    expect(res.status).toBe(0)
+    expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toBe(startup)
+  })
+
+  it('digest in notice-only mode hands the remedies to the owning session and stays silent when clean', () => {
+    const f = busyFixture('compact-notice')
+    const env = { ...f.env, WT_ADOPT_REFRESH: 'notice-only' }
+    const compact = runHookWithSource(f.proj, env, 'compact')
+    expect(compact).toContain('session that owns')
+    expect(compact).toContain('printf ')
+    expect(compact.length).toBeLessThan(3000)
+    expect(compact).not.toContain('SESSION ACTION')
+    const clean = fixture('compact-clean')
+    installInto(join(clean.proj, '.claude', 'rules'))
+    expect(runHookWithSource(clean.proj, clean.env, 'compact')).toBe('')
+  })
+
+  it('keeps the stale-root comparison-skipped line in digest mode', () => {
+    const { f, staleEnv } = staleRootFixture()
+    const context = runHookWithSource(f.proj, staleEnv, 'compact')
+    expect(context).toContain('Comparison skipped for ')
+    expect(context).not.toContain('SESSION ACTION: run')
+  })
+})
+
 // Card 1874754605787645076, route C: a static-named alias of the on-demand root store is on-demand
 // storage by filesystem identity, so the hook never proposes installing static rules into it.
 describe('wt-adopt-check-hook — on-demand placement by root identity', () => {

@@ -3,14 +3,16 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime JavaScript under plugin/
-import { LIGHT_BYPASS_MAX_GRANTS, acquireSuiteLock, lightRunCommand, operatorReleaseSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { LIGHT_BYPASS_MAX_GRANTS, acquireSuiteLock, formatSuiteLockHolder, lightRunCommand, operatorReleaseSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
 import { BROKER_REFUSAL, createSuiteLockBroker } from '../../../../plugin/bin/lib/host/lane-suite-lock-broker.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
-import { ensureLightCounter, putLockBack, readLightCounter, recordLightGrant } from '../../../../plugin/bin/lib/host/suite-lock-queue.mjs'
+import { ensureLightCounter, putLockBack, readLightCounter, recordLightGrant, removeTicket, takeTicket } from '../../../../plugin/bin/lib/host/suite-lock-queue.mjs'
+// @ts-expect-error runtime JavaScript under plugin/
+import { currentPidNamespace } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
 // @ts-expect-error runtime JavaScript under toolkit/test-support/
 import { suiteLeaseArgvForProject, suiteLeaseClassFor, suiteLeaseClassForProject } from '../../../test-support/suite-lease.global-setup.mjs'
 
@@ -42,9 +44,19 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
 
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve))
 
+async function baseSuiteLock(root: string) {
+  const archive = spawnSync('git', ['archive', '95b4150b', 'plugin/bin/lib'], { cwd: ROOT, maxBuffer: 10 * 1024 * 1024 })
+  expect(archive.status, String(archive.stderr)).toBe(0)
+  const unpack = spawnSync('tar', ['-x', '-C', root], { input: archive.stdout })
+  expect(unpack.status, String(unpack.stderr)).toBe(0)
+  mkdirSync(join(root, 'plugin/.claude-plugin'))
+  writeFileSync(join(root, 'plugin/.claude-plugin/plugin.json'), readFileSync(join(ROOT, 'plugin/.claude-plugin/plugin.json')))
+  return import(pathToFileURL(join(root, 'plugin/bin/lib/suite-lock.mjs')).href)
+}
+
 // One in-process acquirer on a temp root: records its name when it acquires, then releases.
 function waiter(root: string, name: string, order: string[], options: Record<string, unknown> = {}) {
-  return acquireSuiteLock({ root, pollMs: 20, waitS: 30, argv: [name], ...options }).then((lease: { holder: unknown }) => {
+  return acquireSuiteLock({ root, env: isolatedEnv(root), pollMs: 20, waitS: 30, argv: [name], ...options }).then((lease: { holder: unknown }) => {
     order.push(name)
     releaseSuiteLock(lease)
   })
@@ -278,11 +290,304 @@ describe('suite lock priority for light runs: order only, one holder at a time',
   })
 })
 
+describe('release priority', () => {
+  it.each(['before', 'after'])('A6a claims a free lock with a base-version ticket queued %s the remaining release', async (placement) => {
+    const root = tempRoot(); const old = await baseSuiteLock(root); const lock = join(root, 'shared')
+    const holder = await acquireSuiteLock({ root: lock, env: isolatedEnv(lock) })
+    const abort = new AbortController(); const all: Promise<void>[] = []
+    let claimed = false
+    const run = async (name: string, api: typeof old, priority?: string) => {
+      const lease = await api.acquireSuiteLock({ root: lock, env: isolatedEnv(lock), signal: abort.signal,
+        pollMs: 10, waitS: 30, staleS: 30, argv: [name], ...(priority ? { priority } : {}) })
+      if (name === 'base' || name === 'remaining-release') claimed = true
+      api.releaseSuiteLock(lease)
+    }
+    const enqueue = async (name: string, api: typeof old, priority?: string) => {
+      all.push(run(name, api, priority))
+      await waitFor(() => records(lock).length === all.length)
+    }
+    try {
+      const modern = { acquireSuiteLock, releaseSuiteLock }
+      await enqueue('first-release', modern, 'release')
+      await enqueue('second-release', modern, 'release')
+      if (placement === 'before') await enqueue('base', old)
+      await enqueue('remaining-release', modern, 'release')
+      if (placement === 'after') await enqueue('base', old)
+      const ticket = records(lock).map((name) => JSON.parse(readFileSync(join(lock, 'queue.d', name), 'utf8')))
+        .find((record) => record.argv[0] === 'base')
+      expect(ticket).toMatchObject({ lightGrantsAtQueue: 0, lightGrantsGeneration: readLightCounter(lock).generation })
+      expect(ticket.priority, 'the base-version ticket is release-unaware').toBeUndefined()
+      releaseSuiteLock(holder)
+      await waitFor(() => claimed, 3_000).catch(() => {})
+      expect(claimed, 'a base-version ticket and a new release must not elect each other behind a free lock').toBe(true)
+      await Promise.all(all)
+    } finally {
+      abort.abort(); releaseSuiteLock(holder); await Promise.allSettled(all)
+    }
+  }, 30_000)
+
+  it('A6b serves every queued release before ordinary tickets without creating release state', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root, env: isolatedEnv(root) })
+    const order: string[] = []; const all = [waiter(root, 'E', order), waiter(root, 'L', order, { light: true })]
+    await waitFor(() => records(root).length === 2)
+    for (let index = 1; index <= 5; index += 1) {
+      all.push(waiter(root, `R${index}`, order, { priority: 'release' }))
+      await waitFor(() => records(root).length === index + 2)
+    }
+    releaseSuiteLock(holder); await Promise.all(all)
+    expect(order, 'release priority has no per-waiter bypass bound').toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'L', 'E'])
+    expect(readdirSync(root).sort(), 'release admissions add no persistent state').toEqual(['light-grants', 'queue.d'])
+    expect(readLightCounter(root).grants).toBe(1)
+  }, 20_000)
+
+  it('R1 serves a later release before light and exclusive tickets without counting a light grant', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root })
+    const order: string[] = []; const all: Promise<void>[] = []
+    all.push(waiter(root, 'E1', order)); await waitFor(() => records(root).length === 1)
+    all.push(waiter(root, 'E2', order)); await waitFor(() => records(root).length === 2)
+    all.push(waiter(root, 'L1', order, { light: true })); await waitFor(() => records(root).length === 3)
+    all.push(waiter(root, 'R', order, { priority: 'release' })); await waitFor(() => records(root).length === 4)
+    releaseSuiteLock(holder); await Promise.all(all)
+    expect(order).toEqual(['R', 'L1', 'E1', 'E2'])
+    expect(readLightCounter(root).grants).toBe(1)
+  }, 20_000)
+
+  it('R2 orders releases by ticket number before an earlier exclusive', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root })
+    const order: string[] = []; const all: Promise<void>[] = []
+    all.push(waiter(root, 'E', order)); await waitFor(() => records(root).length === 1)
+    all.push(waiter(root, 'R1', order, { priority: 'release' })); await waitFor(() => records(root).length === 2)
+    all.push(waiter(root, 'R2', order, { priority: 'release' })); await waitFor(() => records(root).length === 3)
+    releaseSuiteLock(holder); await Promise.all(all)
+    expect(order).toEqual(['R1', 'R2', 'E'])
+  }, 20_000)
+
+  it('R3 records both counter fields and defers to a live older-client ticket', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root })
+    mkdirSync(join(root, 'queue.d'), { recursive: true })
+    const base = join(root, 'queue.d', '0000000000000001')
+    writeFileSync(`${base}.ticket`, '')
+    writeFileSync(`${base}.json`, JSON.stringify({ pid: process.pid, argv: ['old'], startedAt: new Date().toISOString(), pidNamespace: null, startTime: null }))
+    const order: string[] = []
+    const release = waiter(root, 'R', order, { priority: 'release', waitS: 0.5 })
+    await waitFor(() => records(root).length === 2)
+    const ticket = readRecord(root, records(root)[1]!) as { priority?: string; lightGrantsAtQueue?: number; lightGrantsGeneration?: string }
+    expect(ticket).toMatchObject({ priority: 'release', lightGrantsAtQueue: 0, lightGrantsGeneration: readLightCounter(root).generation })
+    releaseSuiteLock(holder)
+    await expect(release).rejects.toThrow(/timed out waiting/)
+    rmSync(`${base}.json`)
+  }, 10_000)
+
+  it('R4 hands back a light win when a release joins at the acquisition seam', async () => {
+    const root = tempRoot(); let releaseTicket: number | undefined; let handedBack = 0
+    const order: string[] = []
+    await waiter(root, 'L', order, { light: true, beforeAcquire: () => {
+      if (releaseTicket !== undefined) return
+      const counter = readLightCounter(root)
+      releaseTicket = takeTicket(join(root, 'queue.d'), { pid: process.pid, argv: ['R'], startedAt: new Date().toISOString(), priority: 'release', lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation, pidNamespace: null, startTime: null })
+    }, afterHandBack: () => { handedBack += 1; order.push('R'); removeTicket(join(root, 'queue.d'), releaseTicket!) } })
+    expect(handedBack).toBe(1)
+    expect(order).toEqual(['R', 'L'])
+  }, 20_000)
+
+  it('R5 excludes overtaking releases from progress while retaining the head budget', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root })
+    const blocker = new AbortController()
+    const first = acquireSuiteLock({ root, signal: blocker.signal, pollMs: 10, waitS: 3 })
+    await waitFor(() => records(root).length === 1)
+    const progress: Array<{ ahead: number; aheadExcludingRelease: number }> = []
+    const mine = acquireSuiteLock({ root, argv: ['E'], pollMs: 10, waitS: 0.4, staleS: 2, onProgress: (place: { ahead: number; aheadExcludingRelease: number }) => progress.push(place) })
+    // Attach handlers immediately: a failed expectation must never leave a rejected waiter unobserved.
+    const mineResult = mine.then((lease: { holder: unknown }) => { releaseSuiteLock(lease); return { lease } }, (error: Error) => ({ error }))
+    await waitFor(() => records(root).length === 2)
+    const releases = Array.from({ length: 3 }, (_, index) => waiter(root, `R${index}`, [], { priority: 'release', waitS: 3 }))
+    await waitFor(() => records(root).length === 5)
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    blocker.abort(); await expect(first).rejects.toMatchObject({ code: 'ABORT_ERR' })
+    let progressError: Error | undefined
+    try {
+      await waitFor(() => progress.some((place) => place.aheadExcludingRelease === 0))
+      await new Promise((resolve) => setTimeout(resolve, 1_250)) // more than three ordinary wait windows; still inside the 2 s head budget
+    } catch (error) { progressError = error as Error
+    } finally { releaseSuiteLock(holder) }
+    await Promise.allSettled(releases)
+    const result = await mineResult
+    if (progressError) throw progressError
+    if ('error' in result) throw result.error
+    releaseSuiteLock(result.lease)
+    expect(progress[0]).toMatchObject({ ahead: 1, aheadExcludingRelease: 1 })
+    expect(progress.some((place) => place.aheadExcludingRelease === 0 && place.ahead > 0)).toBe(true)
+  }, 20_000)
+
+  it('R5b renews a second exclusive waiter when a release holder takes over, without changing its non-release place', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root })
+    const first = acquireSuiteLock({ root, argv: ['E0'], waitS: 4, pollMs: 10 })
+    await waitFor(() => records(root).length === 1)
+    const progress: Array<{ ahead: number; aheadExcludingRelease: number }> = []
+    const second = acquireSuiteLock({ root, argv: ['E1'], waitS: 2, staleS: 2, pollMs: 10, onProgress: (place: { ahead: number; aheadExcludingRelease: number }) => progress.push(place) })
+    const result = second.then((lease: { holder: unknown }) => ({ lease }), (error: Error) => ({ error }))
+    await waitFor(() => progress.some((place) => place.aheadExcludingRelease === 1))
+    const release = acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', waitS: 4, pollMs: 10 })
+    await waitFor(() => records(root).length === 3)
+    await new Promise((resolve) => setTimeout(resolve, 1_400))
+    releaseSuiteLock(holder)
+    const releaseLease = await release
+    await new Promise((resolve) => setTimeout(resolve, 1_000)) // total exceeds 2 s; only a handover timestamp renewal survives
+    releaseSuiteLock(releaseLease)
+    const firstLease = await first; releaseSuiteLock(firstLease)
+    const outcome = await result
+    if ('error' in outcome) throw outcome.error
+    releaseSuiteLock(outcome.lease)
+    expect(progress.filter((place) => place.aheadExcludingRelease === 1).length, 'holder handover reports progress at the same non-release place').toBeGreaterThan(1)
+  }, 15_000)
+
+  it('R5c a release merely arriving does not renew the non-release waiter window', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root })
+    const firstAbort = new AbortController(); const releaseAbort = new AbortController()
+    const first = acquireSuiteLock({ root, signal: firstAbort.signal, waitS: 3, pollMs: 10 })
+    await waitFor(() => records(root).length === 1)
+    const started = Date.now()
+    const second = acquireSuiteLock({ root, waitS: 1.5, pollMs: 10 })
+    const secondResult = second.then((lease: { holder: unknown }) => ({ lease }), (error: { code?: string }) => ({ error }))
+    await waitFor(() => records(root).length === 2)
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    const release = acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', signal: releaseAbort.signal, waitS: 3, pollMs: 10 })
+    const releaseResult = release.catch(() => {})
+    await waitFor(() => records(root).length === 3)
+    try {
+      expect(await secondResult).toMatchObject({ error: { code: 'WT_SUITE_LOCK_TIMEOUT' } })
+      expect(Date.now() - started, 'release arrival must not restart the ordinary deadline').toBeLessThan(2_000)
+    }
+    finally {
+      releaseAbort.abort(); firstAbort.abort(); releaseSuiteLock(holder)
+      await Promise.allSettled([first, releaseResult])
+    }
+  }, 10_000)
+
+  it('R6 validates priority before an inherited lease and rejects light release', async () => {
+    const root = tempRoot(); const lease = await acquireSuiteLock({ root })
+    const env = { ...process.env, WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` }
+    try {
+      await expect(acquireSuiteLock({ root, env, priority: 'foo' })).rejects.toThrow('unknown suite lock priority: foo')
+      await expect(acquireSuiteLock({ root, env, priority: 'release', light: true })).rejects.toThrow(/release priority.*light|light.*release priority/)
+    } finally { releaseSuiteLock(lease) }
+  })
+
+  it('R7 refuses release priority in the broker domain with a named code', async () => {
+    await expect(acquireSuiteLock({ priority: 'release', env: { WT_SUITE_LOCK_BROKER: '/not-connected' } })).rejects.toMatchObject({
+      code: 'WT_SUITE_LOCK_PRIORITY_REFUSED', message: 'release priority is not available inside a lane sandbox',
+    })
+    await expect(acquireSuiteLock({ root: tempRoot(), priority: 'release', env: { WT_SUITE_LOCK_BROKER: '/not-connected' } })).rejects.toMatchObject({
+      code: 'WT_SUITE_LOCK_PRIORITY_REFUSED',
+    })
+  })
+
+  it('R7b CLI refuses brokered release priority with its named message', () => {
+    const result = spawnSync(process.execPath, [CLI, 'run', '--priority', 'release', '--', process.execPath, '-e', ''], { env: isolatedEnv(tempRoot(), { WT_SUITE_LOCK_BROKER: '/not-connected' }), encoding: 'utf8' })
+    expect(result.status, result.stderr).toBe(2)
+    expect(result.stderr).toContain('release priority is not available inside a lane sandbox')
+  })
+
+  it('R8 CLI runs release before an earlier exclusive; invalid forms exit 2', async () => {
+    const root = tempRoot(); const holder = await acquireSuiteLock({ root })
+    const output = join(root, 'order.txt')
+    const start = (name: string, flags: string[]) => {
+      const child = spawn(process.execPath, [CLI, 'run', ...flags, '--', process.execPath, '-e', 'require("fs").appendFileSync(process.argv[1], process.argv[2]+"\\n")', output, name], { env: isolatedEnv(root), stdio: 'ignore' })
+      children.push(child)
+      return new Promise<number | null>((resolve) => child.once('exit', resolve))
+    }
+    const exclusive = start('E', []); await waitFor(() => records(root).length === 1)
+    const release = start('R', ['--priority', 'release']); await waitFor(() => records(root).length === 2)
+    releaseSuiteLock(holder)
+    expect(await Promise.all([exclusive, release])).toEqual([0, 0])
+    expect(readFileSync(output, 'utf8')).toBe('R\nE\n')
+    for (const flags of [['--priority', 'foo'], ['--priority', 'release', '--light']]) {
+      const result = spawnSync(process.execPath, [CLI, 'run', ...flags, '--', process.execPath, '-e', ''], { env: isolatedEnv(root), encoding: 'utf8' })
+      expect(result.status, result.stderr).toBe(2)
+    }
+  }, 20_000)
+
+  it('R9 old clients and new releases share one holder and all finish', async ({ skip }) => {
+    const root = tempRoot(); const archive = spawnSync('git', ['archive', '95b4150b', 'plugin/bin/lib'], { cwd: ROOT, maxBuffer: 10 * 1024 * 1024 })
+    if (archive.status !== 0) { skip(`R9 old-client archive unavailable: git archive 95b4150b plugin/bin/lib (${String(archive.stderr)})`); return }
+    const unpack = spawnSync('tar', ['-x', '-C', root], { input: archive.stdout })
+    if (unpack.status !== 0) { skip(`R9 old-client archive unavailable: tar extraction (${String(unpack.stderr)})`); return }
+    mkdirSync(join(root, 'plugin/.claude-plugin'))
+    writeFileSync(join(root, 'plugin/.claude-plugin/plugin.json'), readFileSync(join(ROOT, 'plugin/.claude-plugin/plugin.json')))
+    const old = await import(pathToFileURL(join(root, 'plugin/bin/lib/suite-lock.mjs')).href)
+    const lock = join(root, 'shared')
+    const holder = await acquireSuiteLock({ root: lock })
+    const done: string[] = []; let inside = 0; let peak = 0
+    const run = async (name: string, api: typeof old, options: Record<string, unknown>) => {
+      const lease = await api.acquireSuiteLock({ root: lock, env: isolatedEnv(lock), pollMs: 15, waitS: 8, argv: [name], ...options })
+      inside += 1; peak = Math.max(peak, inside)
+      expect(readSuiteLock({ root: lock }).holder.leaseId).toBe(lease.holder.leaseId)
+      await yieldTurn()
+      inside -= 1; done.push(name); api.releaseSuiteLock(lease)
+    }
+    const all: Promise<void>[] = []
+    for (const name of ['E1', 'E2', 'L']) {
+      all.push(run(name, old, name === 'L' ? { light: true } : {}))
+      await waitFor(() => records(lock).length === all.length)
+    }
+    for (const name of ['R1', 'R2']) {
+      all.push(run(name, { acquireSuiteLock, releaseSuiteLock }, { priority: 'release' }))
+      await waitFor(() => records(lock).length === all.length)
+    }
+    releaseSuiteLock(holder)
+    await Promise.all(all)
+    expect(peak).toBe(1)
+    expect(done.sort()).toEqual(['E1', 'E2', 'L', 'R1', 'R2'])
+  }, 30_000)
+
+  it('shows release priority on a holder and in wait notices', async () => {
+    const root = tempRoot(); const lease = await acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', argv: ['gate'] })
+    try {
+      expect(readSuiteLock({ root }).holder.priority).toBe('release')
+      expect(formatSuiteLockHolder(lease.holder)).toContain('(release priority)')
+    } finally { releaseSuiteLock(lease) }
+    const holder = await acquireSuiteLock({ root }); const notices: string[] = []
+    const pending = acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', waitS: 0.1, staleS: 0.1, pollMs: 10, onWait: (line: string) => notices.push(line) })
+    await expect(pending).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    releaseSuiteLock(holder)
+    expect(notices.join(' ')).toContain('(release priority)')
+  })
+})
+
+// Suspended ordinary waiter: its real ticket stays live, but it never attempts the mutex.
+function suspendedOrdinary(root: string, options: Record<string, unknown> = {}) {
+  const counter = ensureLightCounter(root)
+  const record = { pid: process.pid, startedAt: new Date().toISOString(), pidNamespace: null, startTime: null,
+    lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation, ...options }
+  return takeTicket(join(root, 'queue.d'), record) as number
+}
+
+describe('direct release-holder watchdog renewal', () => {
+  it.each([{ label: 'timestamp', waitS: 2, staleS: 2, beforeMs: 1_400, holdMs: 1_000 },
+    { label: 'holder priority budget', waitS: 0.4, staleS: 2, beforeMs: 150, holdMs: 800 }])('A5g renews the first observed release holder: $label', async ({ waitS, staleS, beforeMs, holdMs }) => {
+    const root = tempRoot(); const ticket = suspendedOrdinary(root)
+    const progress: Array<{ aheadExcludingRelease: number }> = []; const handovers: string[] = []
+    const pending = acquireSuiteLock({ root, waitS, staleS, pollMs: 10,
+      onProgress: (place: { aheadExcludingRelease: number }) => progress.push(place),
+      onHandover: (id: string) => handovers.push(id),
+    }).then((lease: { holder: unknown }) => { releaseSuiteLock(lease); return { acquired: true } }, (error: { code?: string }) => ({ error }))
+    await waitFor(() => progress.some((place) => place.aheadExcludingRelease === 1))
+    await new Promise((resolve) => setTimeout(resolve, beforeMs))
+    const release = await acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', pollMs: 10 })
+    await waitFor(() => handovers.includes(release.holder.leaseId))
+    await new Promise((resolve) => setTimeout(resolve, holdMs))
+    releaseSuiteLock(release); removeTicket(join(root, 'queue.d'), ticket)
+    expect(await pending, 'first observed release must renew the timestamp and preserve its hold budget').toEqual({ acquired: true })
+    expect(handovers).toEqual([release.holder.leaseId])
+  }, 10_000)
+
+})
+
 describe('wt-suite-lock status judges the holder like release does', () => {
   const status = (root: string, ...flags: string[]) => spawnSync(process.execPath, [CLI, 'status', ...flags], { env: isolatedEnv(root), encoding: 'utf8' })
   function deadHolder(root: string) {
         mkdirSync(join(root, 'lock.d'), { recursive: true })
-    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ pid: 2147483647, argv: ['pnpm', 'test'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null, leaseId: 'dead-lease' }))
+    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ pid: 2147483647, argv: ['pnpm', 'test'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: currentPidNamespace(), startTime: null, leaseId: 'dead-lease' }))
   }
 
   it('T8a reads a holder that is gone or expired as stale, in text and in JSON', () => {
@@ -322,7 +627,7 @@ describe('wt-suite-lock status judges the holder like release does', () => {
 })
 
 describe('regressions found in review: mixed clients, reclaim, stale counter, counter loss', () => {
-  const OLD_CLIENT_RECORD = { pid: process.pid, argv: ['old'], cwd: '/', platform: process.platform, pidNamespace: null, startTime: null }
+  const OLD_CLIENT_RECORD = { pid: process.pid, argv: ['old'], cwd: '/', platform: process.platform, pidNamespace: currentPidNamespace(), startTime: null }
   // Seeds a ticket in the format of a client from before priority (no light, no grant count), under the next free number.
   function seedOldClientTicket(root: string) {
     mkdirSync(join(root, 'queue.d'), { recursive: true })

@@ -115,8 +115,9 @@ FINDINGS:
   it.each([
     ['[anchor: none]', 'explicit anchor none'],
     ['[anchor: DoD 99]', 'explicit anchor DoD 99 does not resolve'],
+    ['[anchor: plan task 99]', 'explicit anchor plan task 99 does not resolve'],
   ])('routes an explicitly unresolvable MEDIUM+ anchor with its reason: %s', (anchor, routeReason) => {
-    const verdict = verdictFromReport('review', `VERDICT: changes-requested\nFINDINGS:\n- [MEDIUM]${anchor}[location: src/a.ts:1] defect\n`, { validAnchors: ['DoD 1'] })
+    const verdict = verdictFromReport('review', `VERDICT: changes-requested\nFINDINGS:\n- [MEDIUM]${anchor}[location: src/a.ts:1] defect\n`, { validAnchors: ['DoD 1', 'plan task 3'] })
     expect(verdict.findingDetails[0]).toMatchObject({ blocks: false, routeReason })
   })
 
@@ -139,6 +140,11 @@ FINDINGS:
 `, { validAnchors: ['DoD 1'], previousFixPatch: patch })
     expect(ownCode.findingDetails[0]).toMatchObject({ blocks: true })
     expect(cardCriterion.findingDetails[0]).toMatchObject({ blocks: true })
+  })
+
+  it('keeps a bare numeric anchor unresolved against an explicit numbered plan task', () => {
+    const verdict = verdictFromReport('review', 'VERDICT: changes-requested\nFINDINGS:\n- [MEDIUM][anchor: 3][location: src/a.ts:1] defect\n', { validAnchors: ['plan task 3'] })
+    expect(verdict.findingDetails[0]).toMatchObject({ anchor: null, blocks: false, routeReason: 'explicit anchor 3 does not resolve' })
   })
 
   it('never infers an anchor from finding prose', () => {

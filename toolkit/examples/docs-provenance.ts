@@ -400,6 +400,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents the model-fallback PostToolUse and SubagentStop warning hooks.',
   },
   {
+    script: 'plugin/bin/wt-duplicate-pilot-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse duplicate pilot spawn guard and its review-based probation under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-cancelled-call-relay-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this SubagentStop cancelled-call relay guard under Shipped Hooks, Guards & Monitors.',
@@ -1126,6 +1131,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-model-fallback-check.mjs',
       'plugin/bin/wt-model-fallback-hook.mjs',
       'plugin/bin/wt-cancelled-call-relay-guard-hook.mjs',
+      'plugin/bin/wt-duplicate-pilot-guard-hook.mjs',
       'plugin/bin/wt-probe-claim-guard-hook.mjs',
       'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
       'plugin/bin/wt-observer-pairing-guard-hook.mjs',

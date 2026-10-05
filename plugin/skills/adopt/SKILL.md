@@ -136,6 +136,11 @@ When adopting into a project that already has rules, reconcile first — see the
   prints the journalled text as adopted, the local text, and the currently shipped text.
 - **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
+- **Adopt scripts ahead of the installed plugin (deliberate):** `--install` refuses a `scripts` set
+  whose source is newer than, or at the same version but with different libraries from, any
+  plugin root the adopted scripts load at run time, and prints the commands that clear it. Add
+  `--allow-ahead` only when you develop the scripts and the plugin together; each banner then
+  records the installed version it was adopted against. The other sets are not checked.
 - **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
   use set-wide `--force` when the three-way decision covered only one file.
 - **Resolve an on-demand trigger finding:** run the exact printed `--set rules --install

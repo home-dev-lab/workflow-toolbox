@@ -37,7 +37,10 @@ function table(rows) {
 
 try {
   const args = process.argv.slice(2)
-  handleHelpFlag(args, HELP)
+  handleHelpFlag(args, HELP, {
+    valueFlags: [],
+    booleanFlags: ['--json'],
+  })
   if (args.some((arg) => arg !== '--json') || args.filter((arg) => arg === '--json').length > 1) {
     throw new Error(`unknown argument: ${args.find((arg) => arg !== '--json') ?? '--json'}\n\n${HELP}`)
   }

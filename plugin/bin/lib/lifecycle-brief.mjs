@@ -21,7 +21,7 @@ function fenced(content) {
   return `${fence}text\n${content}${content.endsWith('\n') ? '' : '\n'}${fence}`
 }
 
-export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none', bindingDecisions = '' }) {
+export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none', bindingDecisions = '', validAnchors = [], planDodFallback = false }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
   const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : `
 Severity policy:
@@ -70,6 +70,8 @@ ${fenced(context)}
 
 Write the report to \`${reportPath}\` with exactly one verdict block:
 ${severityPolicy}
+Anchors that resolve: ${validAnchors.join(', ') || 'none'}
+${planDodFallback ? "DoD entries are counted from the plan's task DoD lines.\n" : ''}A finding on a task with no listed id anchors to the DoD criterion it serves.
 
 VERDICT: <${verdict}>
 FINDINGS:

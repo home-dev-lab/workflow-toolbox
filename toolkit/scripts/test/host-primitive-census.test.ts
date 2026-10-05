@@ -127,7 +127,8 @@ describe('raw host primitive quality ratchet', () => {
     // The cancelled-call relay guard adds its hook; its file access lives in bin/lib/host.
     // The session-env dedup hook adds one perimeter file; its filesystem primitives live in bin/lib/host.
     // The What is running pane design helper (hooks/pane-design.js) adds one pure module with no host operation.
-    expect(result.perimeterFiles).toBe(261)
+    // The duplicate pilot guard adds its hook and its card-id parser; their file access lives in bin/lib/host.
+    expect(result.perimeterFiles).toBe(263)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

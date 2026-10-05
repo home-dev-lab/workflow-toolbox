@@ -98,7 +98,10 @@ function readNumber(value) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--project', '--poll'],
+    booleanFlags: ['--once'],
+  })
   const relayLine = relaySkipLine('AUTONOMY WATCH')
   if (relayLine) {
     write(relayLine)
