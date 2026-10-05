@@ -19,6 +19,7 @@ import {
   configuredArtifactPort,
   detectTailscale,
   ensureSecureStateDir,
+  listenArtifactLoopback,
   normalizeRoots,
   pathIsDenied,
   pathIsUnder,
@@ -460,12 +461,7 @@ async function serve() {
     await scanRegistrations()
   }
 
-  try {
-    await listen('127.0.0.1')
-  } catch (error) {
-    if (error?.code === 'EADDRINUSE') process.exit(0)
-    throw error
-  }
+  if (!await listenArtifactLoopback(listen, requestedPort)) return
   if (tailscale.ip && tailscale.ip !== '127.0.0.1') {
     try { await listen(tailscale.ip) } catch { tailscale.remoteUrl = null }
   }
