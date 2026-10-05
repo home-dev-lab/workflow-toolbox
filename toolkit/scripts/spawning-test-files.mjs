@@ -147,6 +147,8 @@ export const spawningTestFiles = [
   'packages/build/test/rm-critical-path-guard-hook.test.ts',
   'packages/build/test/rule-convention-guard.test.ts',
   'packages/build/test/rule-edit-horizon-hook.test.ts',
+  'packages/build/test/rule-narrative-hook.test.ts',
+  'packages/build/test/rule-narrative-split.test.ts',
   'packages/build/test/rules-manifest.test.ts',
   'packages/build/test/run-cost.test.ts',
   'packages/build/test/run-gate.test.ts',

@@ -15,11 +15,14 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { sealRuleNarrative, sealRuleNarrativeFile } from '../../../test-support/rule-narrative-stub.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BIN_DIR = join(REPO_ROOT, 'plugin/bin')
 const GUARD_JOURNAL_LIB = join(BIN_DIR, 'lib/guard-journal.mjs')
+const fileSeal = sealRuleNarrativeFile()
+afterAll(fileSeal.restore)
 
 // Files that legitimately do NOT call the shared journal, and WHY — never a silent exclusion.
 // Both are `plugin/bin/*guard*.mjs` matches, so without this list the family scan below would
@@ -259,7 +262,7 @@ describe('guard-journal — live wiring proof across the code-shape spread', () 
           cwd: root,
           tool_input: { file_path: filePath, content: 'Do the thing on 15/03/2024.' },
         },
-        { HOME: home },
+        sealRuleNarrative(root, { HOME: home }),
       )
       expect(r.status).toBe(0)
       const entries = journalEntries()
