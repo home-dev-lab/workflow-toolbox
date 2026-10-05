@@ -42,9 +42,9 @@
 // the private per-turn hook that ALSO probes the same endpoint. Several of
 // those running against the same account is enough independent traffic to
 // trip the endpoint's own rate limit. Now: a fresh reading in the shared
-// cache (`<configDir>/.quota-cache.json`, same file and format the per-turn
-// hook already uses) is used instead of a live call, and a live call refills
-// that cache for the next reader — see `lib/quota-cache.mjs`. A failed or
+// cache named for the latest live account (same names and format the per-turn
+// hook uses) is used instead of a live call. Live login readings refill the login
+// cache; token-account files remain hook-owned — see `lib/quota-cache.mjs`. A failed or
 // rate-limited probe backs off with a growing, capped interval instead of
 // retrying at the same cadence that got it rate-limited — see
 // `lib/quota-backoff.mjs`. Neither change touches the property that already
@@ -57,7 +57,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { readQuotaCache, writeQuotaCacheAtomic, defaultQuotaCachePath } from './lib/quota-cache.mjs'
+import { readQuotaCache, writeQuotaCacheAtomic, quotaCachePathFor } from './lib/quota-cache.mjs'
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
 import { hasCompleteWindows } from './lib/quota-window-completeness.mjs'
@@ -90,9 +90,33 @@ const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 const ROUTE = resolveRoute(process.env)
 const USER_PROBE = join(CONFIG_DIR, 'scripts', 'quota-usage.mjs')
 const BUNDLED_PROBE = join(dirname(fileURLToPath(import.meta.url)), 'wt-quota-probe.mjs')
-// Same path AND format the private per-turn hook (inject-context-quota.mjs) already
-// reads/writes — see lib/quota-cache.mjs for the compatibility contract.
-const CACHE_PATH = defaultQuotaCachePath(CONFIG_DIR)
+// Account-keyed names and format match the per-turn hook. Only login is refillable:
+// token files belong to the hook and are also used to detect per-turn activity.
+function probeAccountKey(data) {
+  if (data?.accountKey == null && process.env.CLAUDE_CODE_OAUTH_TOKEN) return null
+  return data?.accountKey ?? 'login'
+}
+
+async function readAccountCache(state) {
+  if (!state.hasReading || state.accountKey === null) return null
+  try {
+    return await readQuotaCache(quotaCachePathFor(CONFIG_DIR, state.accountKey), WATCHER_CACHE_TOLERANCE_MS, CONFIG_DIR, state.accountKey)
+  } catch { return null /* unsafe key or cache error: continue with a live probe */ }
+}
+
+async function refillLoginCache(data) {
+  if (probeAccountKey(data) !== 'login') return
+  try {
+    await writeQuotaCacheAtomic(quotaCachePathFor(CONFIG_DIR, 'login'), data, CONFIG_DIR, 'login')
+  } catch { /* best effort: cache errors must never stop live monitoring */ }
+}
+
+function accountChanged(state, data, currentFingerprint) {
+  const key = probeAccountKey(data)
+  const changed = state.accountKey !== key || (state.fingerprint !== null && currentFingerprint !== null && state.fingerprint !== currentFingerprint)
+  state.accountKey = key
+  return changed
+}
 const WINDOWS = [
   { key: 'five_hour', label: '5h' },
   { key: 'seven_day', label: '7d' },
@@ -202,7 +226,7 @@ function runProbe(probePath, timeoutMs) {
     //
     // CLAUDE_CONFIG_DIR is PINNED, not inherited, even though the child would inherit
     // the same value today: this watcher's own CONFIG_DIR is itself read from
-    // process.env at startup, so pinning here means the cache PATH (CACHE_PATH, derived
+    // process.env at startup, so pinning here means the cache path (derived
     // from CONFIG_DIR) and the probe's TARGET can never independently drift apart —
     // the exact divergence that let a foreign reading reach the cache in the first place.
     const child = spawn(process.execPath, [probePath], {
@@ -463,6 +487,7 @@ const state = {
   probeTimeoutSignaled: false,
   internalErrorSignaled: false,
   fingerprint: null,
+  accountKey: null,
   hasReading: false,
   consecutiveFailures: 0,
   degradedElapsedMs: 0,
@@ -666,7 +691,7 @@ while (true) {
     // cache trust is unchanged. Argued explicitly, not left implicit: disabling the cache
     // entirely would defeat SUIVI 1/2 (the whole point of this change); requiring a live
     // probe for EVERY reading was rejected for the same reason.
-    const cachedReading = state.hasReading ? await readQuotaCache(CACHE_PATH, WATCHER_CACHE_TOLERANCE_MS, CONFIG_DIR) : null
+    const cachedReading = await readAccountCache(state)
     if (cachedReading && cachedReading.fresh) {
       const cachedWindows = extractWindows(cachedReading.data)
       // FINDING 2 fix: completeness, not mere non-emptiness — see hasCompleteWindows.
@@ -798,11 +823,7 @@ while (true) {
       // Live probe succeeded: refill the shared cache so the per-turn hook and any other
       // watcher can use this reading instead of hitting the endpoint again inside the TTL
       // window. Best-effort — a cache write failure must never take the watcher down.
-      try {
-        await writeQuotaCacheAtomic(CACHE_PATH, parsed, CONFIG_DIR)
-      } catch {
-        /* best effort — includes a provenance mismatch, which must never take the watcher down */
-      }
+      await refillLoginCache(parsed)
 
       windows = liveWindows
       sourceData = parsed
@@ -829,6 +850,7 @@ while (true) {
       const line = initialStateLine(windows, thresholds)
       setBaseline(state, windows, thresholds)
       state.fingerprint = readAccountFingerprint(sourceData?.configDir)
+      state.accountKey = probeAccountKey(sourceData)
       state.hasReading = true
       // ONE line, not two: the arming confirmation and the first reading are the same event from
       // the reader's side. `line` can legitimately be empty (nothing worth reporting yet), in
@@ -845,13 +867,11 @@ while (true) {
 
     const currentFingerprint = readAccountFingerprint(sourceData?.configDir)
     const previousFingerprint = state.fingerprint
-    const fingerprintChanged = previousFingerprint !== null && currentFingerprint !== null && previousFingerprint !== currentFingerprint
-
-    if (fingerprintChanged) {
+    if (accountChanged(state, sourceData, currentFingerprint)) {
       // Four hex chars kept: signals the change while limiting residual correlation.
-      writeLine(`QUOTA ACCOUNT CHANGED: ${previousFingerprint.slice(0, 4)} -> ${currentFingerprint.slice(0, 4)}`)
+      writeLine(`QUOTA ACCOUNT CHANGED: ${previousFingerprint?.slice(0, 4) ?? '?'} -> ${currentFingerprint?.slice(0, 4) ?? '?'}`)
       setBaseline(state, windows, thresholds)
-      if (currentFingerprint !== null) state.fingerprint = currentFingerprint
+      state.fingerprint = currentFingerprint
       await sleep(poll * 1000)
       continue
     }
