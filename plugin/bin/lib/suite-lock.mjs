@@ -4,7 +4,7 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
-import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, readLightCounter, readQueueSnapshot, reclaimInFlight, recordLightGrant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
+import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, readAdmissionCounter, readLightCounter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
 import { connectSuiteLockBroker, createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
 import { orderSuiteLockTickets } from './suite-lock-order.mjs'
@@ -213,7 +213,7 @@ function queuePlace(queueDir, mine, mineRecord, counter, options) {
   const preceding = ordered.slice(0, ordered.findIndex((ticket) => ticket.number === mine))
   const ahead = preceding.length
   return { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
-    aheadNumbers: preceding.map((ticket) => ticket.number), liveNumbers: live.map((ticket) => ticket.number), counter }
+    admissions: readAdmissionCounter(path.dirname(queueDir)) }
 }
 
 // true: acquired. false: the lock is held. 'reclaim': a reclaimer is in flight, so the acquisition is
@@ -347,7 +347,7 @@ async function retryTransient(operation, pauseMs) {
 }
 
 // Revalidate after winning the atomic mutex, before counting any grant or returning a lease.
-// Any read/write failure gives back the provisional lease before the outer transient retry.
+// Ordering/light-counter failures give back the provisional lease before the outer transient retry.
 function confirmAdmission(state, holder, place, options) {
   const { root, lockDir, queueDir, ticket, record } = state
   const lease = { root, lockDir, holder }
@@ -360,6 +360,7 @@ function confirmAdmission(state, holder, place, options) {
     }
     if (record.light === true) recordLightGrant(root)
     throwIfAborted(options.signal)
+    recordAdmissionGrant(root)
     return { lease }
   } catch (error) {
     releaseSuiteLock(lease)
@@ -397,7 +398,7 @@ function acquisitionPriority(options, env) {
   if (options.mode !== undefined) throw new Error('unknown suite lease mode argument: mode')
   const explicit = options.priority === undefined ? undefined : parseSuiteLockPriority(options.priority)
   if (explicit === 'release' && options.light === true) throw new Error('release priority cannot be combined with light')
-  const broker = typeof env.WT_SUITE_LOCK_BROKER === 'string' && env.WT_SUITE_LOCK_BROKER.trim()
+  const broker = !options.root && typeof env.WT_SUITE_LOCK_BROKER === 'string' && env.WT_SUITE_LOCK_BROKER.trim()
   if (broker && explicit === 'release') {
     const error = new Error('release priority is not available inside a lane sandbox')
     error.code = 'WT_SUITE_LOCK_PRIORITY_REFUSED'

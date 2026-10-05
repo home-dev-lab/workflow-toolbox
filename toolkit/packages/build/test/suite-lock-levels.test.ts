@@ -10,7 +10,11 @@ import * as lock from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
 import { createSuiteLockBroker } from '../../../../plugin/bin/lib/host/lane-suite-lock-broker.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
-import { ensureLightCounter, readLightCounter, recordLightGrant, removeTicket, takeTicket } from '../../../../plugin/bin/lib/host/suite-lock-queue.mjs'
+import { ensureLightCounter, readAdmissionCounter, readLightCounter, recordAdmissionGrant, removeTicket, takeTicket } from '../../../../plugin/bin/lib/host/suite-lock-queue.mjs'
+// @ts-expect-error runtime JavaScript under plugin/
+import { orderSuiteLockTickets } from '../../../../plugin/bin/lib/suite-lock-order.mjs'
+// @ts-expect-error runtime JavaScript under plugin/
+import { suiteQueueAdvanced } from '../../../../plugin/bin/lib/suite-lock-progress.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
 import { currentPidNamespace } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
@@ -20,7 +24,7 @@ const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
 const roots: string[] = []
 const children: Array<ReturnType<typeof spawn>> = []
 afterEach(() => {
-  vi.restoreAllMocks(); vi.unstubAllEnvs()
+  vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs()
   for (const child of children.splice(0)) child.kill('SIGKILL')
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 })
 })
@@ -98,6 +102,31 @@ describe('card levels and exact mixed-version ordering', () => {
     seed(root, { level: 2, startedAt: 'unparsable' }); seed(root, { level: 0, light: true })
     expect(lock.readSuiteLockStatus({ root, env: envFor(root), now: () => now }).queue.map((item: { number: number }) => item.number)).toEqual([1, 2])
   })
+  it.each([0, 1, 2])('F1 a P%i exclusive becomes unpassable after one aging step', () => {
+    const root = temp(); const now = Date.now()
+    const counter = ensureLightCounter(root)
+    const ordered = orderSuiteLockTickets([{ number: 1, record: { level, startedAt: new Date(now - 30 * 60_000).toISOString(), lightGrantsGeneration: counter.generation, lightGrantsAtQueue: 0 } }], counter, now)
+    expect(ordered.tickets[0].key[1]).toBe(0)
+    const earlier = seed(root, { level: 0, startedAt: new Date(now - 30 * 60_000).toISOString() })
+    const later = seed(root, { level, startedAt: new Date(now - 30 * 60_000).toISOString() })
+    seed(root, { level: 0, light: true })
+    const queue = lock.readSuiteLockStatus({ root, env: envFor(root), now: () => now }).queue
+    expect(queue[0].number, 'earlier aged P0 exclusive must precede later aged P1 exclusive').toBe(earlier)
+    expect(queue.findIndex((entry: { number: number }) => entry.number === later)).toBeGreaterThan(0)
+  })
+  it('F1 serves P0 within bounded admissions under replenished aged P1 traffic', () => {
+    const now = Date.now(); const counter = { generation: 'same', grants: 0 }
+    const record = (level: number, startedAt: number) => ({ level, startedAt: new Date(startedAt).toISOString(), lightGrantsAtQueue: 0, lightGrantsGeneration: 'same' })
+    let queue = Array.from({ length: 11 }, (_, index) => ({ number: index + 1, record: record(index === 0 ? 0 : 1, now) }))
+    let clock = now + 40 * 60_000; let next = 12; let admitted = false
+    for (let admission = 0; admission < 1000; admission += 1) {
+      const head = orderSuiteLockTickets(queue, counter, clock).tickets[0]
+      if (head.number === 1) { admitted = true; break }
+      queue = queue.filter((ticket) => ticket.number !== head.number)
+      queue.push({ number: next++, record: record(1, clock) }); clock += 5 * 60_000
+    }
+    expect(admitted, 'P0 must acquire within bounded admissions despite replenished aged P1 exclusives').toBe(true)
+  })
   it('C4 actual develop exclusive and new light P0 both acquire, with develop light ordering', async () => {
     const old = await archived(temp()); const root = temp()
     const result = await service(root, [{ name: 'old-E', api: old }, { name: 'new-L', priority: 'P0', light: true }])
@@ -134,19 +163,76 @@ describe('unobserved short-holder progress', () => {
     try { await expect(lock.acquireSuiteLock({ root, env: envFor(root), waitS: 0.15, staleS: 0.15, pollMs: 10 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' }) }
     finally { lock.releaseSuiteLock(holder) }
   }, 10_000)
-  it('C6b renews when a previously ahead ticket leaves even without a new best position', async () => {
-    const root = temp(); seed(root, { level: 0 }); const held = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'release' })
-    const notices: string[] = []
-    const pending = lock.acquireSuiteLock({ root, env: envFor(root, { WT_SUITE_LOCK_PRIORITY: 'P2' }), waitS: 0.3, staleS: 0.3, pollMs: 30,
-      onWait: (line: string) => notices.push(line) }).then((lease: unknown) => { lock.releaseSuiteLock(lease); return 'acquired' }, (error: { code: string }) => error.code)
-    await waitFor(() => notices.length > 0)
-    const second = seed(root, { level: 0, light: true }); await pause(180); removeTicket(join(root, 'queue.d'), 1)
-    await pause(200); removeTicket(join(root, 'queue.d'), second); lock.releaseSuiteLock(held)
-    expect(await pending).toBe('acquired')
+  it('F2 cancellation churn behind the same hung holder still times out within its budget', async () => {
+    const root = temp(); const held = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0' })
+    seed(root, { level: 0 }); const now = Date.now(); const renew = vi.fn(); let result = 'waiting'; let endedAt = Infinity
+    const controller = new AbortController()
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    const pending = lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0', waitS: 0.2, staleS: 0.2, pollMs: 50, signal: controller.signal, onRenew: renew })
+      .then((lease: unknown) => { lock.releaseSuiteLock(lease); result = 'acquired' }, (error: { code: string }) => { result = error.code; endedAt = Date.now() - now })
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      for (let index = 0; index < 40; index += 1) {
+        const cancelled = seed(root, { level: 0, light: true })
+        await vi.advanceTimersByTimeAsync(50); removeTicket(join(root, 'queue.d'), cancelled)
+        await vi.advanceTimersByTimeAsync(50)
+      }
+      expect(result, 'cancellation churn must not renew a hung-holder watchdog').toBe('WT_SUITE_LOCK_TIMEOUT')
+      expect(endedAt).toBeLessThanOrEqual(250); expect(renew).not.toHaveBeenCalled()
+    } finally { controller.abort(); vi.useRealTimers(); lock.releaseSuiteLock(held); await pending }
+  })
+  it('F3 hidden exclusive P0 admissions renew a P2 waiter until it acquires', async () => {
+    const root = temp(); const first = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0' }); lock.releaseSuiteLock(first)
+    const ahead = seed(root, { level: 2 }); const renew = vi.fn(); const handover = vi.fn(); let result = 'waiting'
+    const controller = new AbortController()
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    const pending = lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P2', waitS: 0.2, staleS: 0.2, pollMs: 50, signal: controller.signal, onRenew: renew, onHandover: handover })
+      .then((lease: unknown) => { lock.releaseSuiteLock(lease); result = 'acquired' }, (error: { code: string }) => { result = error.code })
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      for (let index = 0; index < 8; index += 1) {
+        await vi.advanceTimersByTimeAsync(25)
+        const hidden = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0', waitS: 0 }); lock.releaseSuiteLock(hidden)
+        await vi.advanceTimersByTimeAsync(25)
+      }
+      removeTicket(join(root, 'queue.d'), ahead); await vi.advanceTimersByTimeAsync(50)
+      expect(result, 'hidden exclusive admissions must renew the watchdog until acquisition').toBe('acquired')
+      expect(renew.mock.calls.length).toBeGreaterThanOrEqual(4); expect(handover).not.toHaveBeenCalled()
+      expect(readLightCounter(root).grants).toBe(0)
+    } finally { controller.abort(); vi.useRealTimers(); removeTicket(join(root, 'queue.d'), ahead); await pending }
+  })
+  it('F3 renews only for increasing admissions under the same valid generation', () => {
+    const before = { admissions: { generation: 'same', grants: 2 }, aheadNumbers: [1], counter: { generation: 'light', grants: 0 } }
+    const place = { liveNumbers: [], admissions: { generation: 'same', grants: 3 }, counter: { generation: 'light', grants: 9 } }
+    expect(suiteQueueAdvanced(before, place)).toBe(true)
+    for (const admissions of [{ generation: 'same', grants: 2 }, { generation: 'same', grants: 1 }, { generation: 'other', grants: 9 }, { generation: null, grants: 9 }]) {
+      expect(suiteQueueAdvanced(before, { ...place, admissions })).toBe(false)
+    }
+    expect(suiteQueueAdvanced({ ...before, admissions: { generation: null, grants: 0 } }, place)).toBe(false)
+  })
+  it.each([{}, { light: true }, { priority: 'release' }])('F3 counts every admission exactly once (%j)', async (options) => {
+    const root = temp(); const first = await lock.acquireSuiteLock({ root, env: envFor(root), ...options })
+    const counter = readAdmissionCounter(root)
+    expect(counter.grants).toBe(1); lock.releaseSuiteLock(first)
+    const second = await lock.acquireSuiteLock({ root, env: envFor(root), ...options })
+    try { expect(readAdmissionCounter(root)).toEqual({ generation: counter.generation, grants: 2 }) }
+    finally { lock.releaseSuiteLock(second) }
+  })
+  it.each(['admissions', `admissions.${process.pid}.tmp`])('F3 counter write failure at %s does not fail or retry admission', async (file) => {
+    const root = temp(); mkdirSync(join(root, file)); const publish = vi.fn()
+    const held = await lock.acquireSuiteLock({ root, env: envFor(root), beforePublish: publish })
+    try { expect(held.holder.leaseId).toBeTruthy(); expect(publish).toHaveBeenCalledTimes(1); expect(existsSync(join(root, file))).toBe(true) }
+    finally { lock.releaseSuiteLock(held) }
   })
 })
 
 describe('declaration and isolated environments', () => {
+  it('F6 explicit root retains P0 despite an ambient broker and never connects', async () => {
+    const root = temp(); const connect = vi.spyOn(net, 'connect')
+    const held = await lock.acquireSuiteLock({ root, env: envFor(root, { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock') }), priority: 'P0' })
+    try { expect(held.broker).toBeUndefined(); expect(held.holder.level, 'explicit filesystem root must retain P0 despite an ambient broker').toBe(0); expect(connect).not.toHaveBeenCalled() }
+    finally { lock.releaseSuiteLock(held) }
+  })
   it('C8 accepts lowercase flags and exports the normalized child level', () => {
     const result = cli(temp(), ['run', '--priority', 'p0', '--', process.execPath, '-e', 'process.stdout.write(process.env.WT_SUITE_LOCK_PRIORITY)'])
     expect(result.status, result.stderr).toBe(0); expect(result.stdout).toBe('P0')
@@ -173,6 +259,43 @@ describe('declaration and isolated environments', () => {
 })
 
 describe('read-only status snapshot', () => {
+  it('F4 malformed holder and ticket argv objects do not invoke JSON-supplied coercion', async () => {
+    const root = temp(); const held = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    const record = { ...held.holder, argv: [{ toString: 0 }] }
+    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify(record)); takeTicket(join(root, 'queue.d'), record)
+    try { expect(cli(root, ['status']).status).toBe(0); expect(cli(root, ['status', '--json']).status).toBe(0) }
+    finally { lock.releaseSuiteLock(held) }
+  })
+  it('F4 text and JSON status bound a 2000-deep holder and ticket record', async () => {
+    const root = temp(); const held = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    const nested = '{"nested":'.repeat(2000) + '"leaf"' + '}'.repeat(2000)
+    const raw = JSON.stringify(held.holder).slice(0, -1) + ',"metadata":' + nested + '}'
+    writeFileSync(join(root, 'lock.d', 'holder.json'), raw); takeTicket(join(root, 'queue.d'), JSON.parse(raw))
+    try {
+      expect(cli(root, ['status']).status, 'text status must complete for a 2000-deep holder').toBe(0)
+      const result = cli(root, ['status', '--json'])
+      expect(result.status, 'JSON status must complete for a 2000-deep holder').toBe(0)
+      const json = JSON.parse(result.stdout)
+      expect(json.holder.metadata.nested.nested.nested.nested).toBe('[truncated]')
+      expect(result.stdout.length).toBeLessThan(4000); expect(records(root)).toHaveLength(1)
+    } finally { lock.releaseSuiteLock(held) }
+  })
+  it.each([1, true, 'partial'])('F5 primitive %j remains an unknown ticket in text and JSON status', (primitive) => {
+    const root = temp(); const number = takeTicket(join(root, 'queue.d'), primitive)
+    const file = join(root, 'queue.d', `${String(number).padStart(16, '0')}.json`)
+    expect(cli(root, ['status']).stdout).toContain('unknown')
+    const result = cli(root, ['status', '--json']); expect(result.status, `status must treat ${JSON.stringify(primitive)} as unknown without throwing`).toBe(0)
+    expect(JSON.parse(result.stdout).queue[0]).toMatchObject({ number, pid: null, level: null, waitedMs: null, stale: false })
+    expect(readFileSync(file, 'utf8').trim()).toBe(JSON.stringify(primitive))
+    expect(orderSuiteLockTickets([{ number, record: primitive }], { generation: null, grants: 0 }, Date.now()).tickets[0].record).toBeNull()
+  })
+  it.each([1, true, 'partial'])('F5 an acquiring waiter does not throw on primitive %j', async (primitive) => {
+    const root = temp(); const number = takeTicket(join(root, 'queue.d'), primitive); const notices: string[] = []
+    const pending = lock.acquireSuiteLock({ root, env: envFor(root), waitS: 1, staleS: 1, pollMs: 10, onWait: (line: string) => notices.push(line) })
+      .then((lease: unknown) => { lock.releaseSuiteLock(lease); return 'acquired' }, (error: Error) => error.name)
+    await waitFor(() => notices.length > 0); removeTicket(join(root, 'queue.d'), number)
+    expect(await pending, `acquisition must not throw for primitive ${JSON.stringify(primitive)}`).toBe('acquired')
+  })
   it('C9 reports holder age and level, aged service order, stale last, safe argv and queue-time waits', async () => {
     const root = temp(); const now = Date.now()
     const held = await lock.acquireSuiteLock({ root, env: envFor(root), startedAt: new Date(now - 3_840_000).toISOString() })
@@ -246,6 +369,17 @@ describe.skipIf(process.platform === 'win32')('broker host level and protocol co
     const status = await new Promise<number | null>((resolve) => child.once('exit', resolve))
     return { status, stdout, stderr }
   }
+  it('F4 broker status completes with bounded 2000-deep holder metadata', async () => {
+    const { root, address, server } = await localBroker()
+    const held = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    const raw = JSON.stringify(held.holder).slice(0, -1) + ',"metadata":' + '{"nested":'.repeat(2000) + '"leaf"' + '}'.repeat(2000) + '}'
+    writeFileSync(join(root, 'lock.d', 'holder.json'), raw)
+    try {
+      const snapshot = await lock.readBrokerSuiteLock(address)
+      expect(snapshot.held).toBe(true); expect(snapshot.holder.metadata.nested.nested.nested.nested).toBe('[truncated]')
+      expect(JSON.stringify(snapshot).length).toBeLessThan(4000)
+    } finally { server.releaseAll(); server.close(); lock.releaseSuiteLock(held) }
+  })
   it.each(['b9118d49', '95b4150b'])('C4c actual %s broker agrees with a new light waiter', async (ref) => {
     const archiveRoot = temp(); await archived(archiveRoot, ref)
     const oldBroker = await import(pathToFileURL(join(archiveRoot, 'plugin/bin/lib/host/lane-suite-lock-broker.mjs')).href)
@@ -318,17 +452,18 @@ describe.skipIf(process.platform === 'win32')('broker host level and protocol co
     }
     finally { server.close() }
   })
-  it('C7d host broker publishes renewal for light grants it never observes as holders', async () => {
-    const { root, address, server } = await localBroker({ priority: 'P1' }); seed(root)
+  it('C7d host broker publishes renewal for admissions it never observes as holders', async () => {
+    const { root, address, server } = await localBroker({ priority: 'P1' }); recordAdmissionGrant(root); seed(root)
     let text = ''; const socket = net.connect(address)
     socket.on('data', (chunk) => { text += String(chunk) }); socket.write('{"argv":["waiting"],"waitS":0.4}\n')
     try {
       await waitFor(() => text.includes('progress '))
       for (let index = 0; index < 4; index += 1) {
-        const previous = text.length; recordLightGrant(root)
+        const previous = text.length; recordAdmissionGrant(root)
         await waitFor(() => text.slice(previous).includes('renew '))
       }
-      expect(readLightCounter(root).grants).toBe(4)
+      expect(readAdmissionCounter(root).grants).toBe(5)
+      expect(readLightCounter(root).grants).toBe(0)
     } finally { socket.destroy(); server.releaseAll(); server.close() }
   })
 })

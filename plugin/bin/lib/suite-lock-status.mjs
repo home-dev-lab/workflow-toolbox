@@ -5,20 +5,25 @@ import { suiteLockLongHoldSeconds } from './suite-lock-priority.mjs'
 const finite = (value) => Number.isFinite(value) ? value : null
 const pidNumber = (value) => Number.isSafeInteger(value) && value > 0 ? value : null
 const OLDER_BROKER_QUEUE = 'queue unavailable from an older broker'
-function safeValue(value) {
+function safeValue(value, depth = 0) {
+  if (depth > 4) return '[truncated]'
   if (typeof value === 'string') return displayText(value)
   if (typeof value === 'number') return finite(value)
-  if (Array.isArray(value)) return value.map(safeValue)
+  if (Array.isArray(value)) return value.map((field) => safeValue(field, depth + 1))
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, field]) => [displayText(key), safeValue(field)]))
+    return Object.fromEntries(Object.entries(value).map(([key, field]) => [displayText(key), safeValue(field, depth + 1)]))
   }
   return value
+}
+function safeArgv(argv) {
+  if (!Array.isArray(argv)) return null
+  return argv.map((field) => field !== null && typeof field === 'object' ? '[unknown]' : displayText(field))
 }
 function safeHolder(holder) {
   if (!holder) return null
   const fields = safeValue(holder)
   return { ...fields, pid: pidNumber(holder.pid), level: numericLevel(holder.level) ? holder.level : null,
-    argv: Array.isArray(holder.argv) ? holder.argv.map(displayText) : null,
+    argv: safeArgv(holder.argv),
     startedAt: typeof holder.startedAt === 'string' ? displayText(holder.startedAt) : undefined,
     startTime: finite(holder.startTime) }
 }
@@ -28,7 +33,7 @@ function queueEntry(ticket, position, now) {
   return { position, number: finite(ticket.number), pid: pidNumber(record?.pid),
     level: numericLevel(record?.level) ? record.level : null, effectiveLevel: effectiveLevel(record, now),
     light: record?.light === true, release: record?.priority === 'release',
-    waitedMs: waitedMilliseconds(record?.startedAt, now), stale: ticket.stale, argv: displayArgv(record?.argv) }
+    waitedMs: waitedMilliseconds(record?.startedAt, now), stale: ticket.stale, argv: displayArgv(safeArgv(record?.argv)) }
 }
 
 export function suiteLockStatusSnapshot(current, tickets, counter, now, env) {

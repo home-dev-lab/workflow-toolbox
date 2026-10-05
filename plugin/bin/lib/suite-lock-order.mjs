@@ -29,13 +29,15 @@ export function effectiveLevel(record, now) {
 }
 
 function levelRank(record, counter, now) {
-  // Fully aged tickets cannot be passed again, even by new P0 light arrivals.
+  // Every exclusive becomes unpassable after one aging step, including declared P0.
   // Release remains above them: starvation protection assumes finite release arrivals.
-  if (record.level > 0 && effectiveLevel(record, now) === 0) return 0
+  const waited = waitedMilliseconds(record.startedAt, now)
+  if (record.priority !== 'release' && record.light !== true && (waited === null || waited >= LEVEL_AGING_STEP_MS)) return 0
   return ticketRank(record, counter)
 }
 
 export function orderSuiteLockTickets(tickets, counter, now) {
+  tickets = tickets.map((ticket) => ({ ...ticket, record: ticket.record && typeof ticket.record === 'object' ? ticket.record : null }))
   const compatible = tickets.some(({ record }) => !numericLevel(record?.level))
   const byNumberOnly = compatible && tickets.some(({ record }) => isOlderClientTicket(record))
   const key = ({ number, record }) => {

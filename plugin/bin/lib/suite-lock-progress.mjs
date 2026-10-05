@@ -1,9 +1,8 @@
 // Renew only on service evidence, never on arrivals or mere placement changes.
 export function suiteQueueAdvanced(previous, place) {
   if (!previous) return false
-  if (previous.aheadNumbers.some((number) => !place.liveNumbers.includes(number))) return true
-  const before = previous.counter
-  return before.generation !== null && before.generation === place.counter.generation && place.counter.grants > before.grants
+  const before = previous.admissions
+  return before.generation !== null && before.generation === place.admissions.generation && place.admissions.grants > before.grants
 }
 
 export const isBrokerQueueEvent = (line) => /^(progress|renew) /.test(line)
