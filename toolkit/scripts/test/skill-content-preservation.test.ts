@@ -37,8 +37,12 @@ describe('skill content preservation', () => {
     expect(findMissingLines('keep', ['please keep this'])).toEqual([{ lineNumber: 1, line: 'keep' }])
   })
 
-  it('uses set membership for repeated old lines', () => {
-    expect(findMissingLines('same\nsame\n', ['same'])).toEqual([])
+  it('counts repeated old lines, so deleting one copy of a repeated line is reported', () => {
+    expect(findMissingLines('same\nsame\n', ['same'])).toEqual([{ lineNumber: 2, line: 'same' }])
+  })
+
+  it('accepts a repeated line whose copies are split between the body and a reference', () => {
+    expect(findMissingLines('same\nother\nsame\n', ['same\nother', 'same'])).toEqual([])
   })
 
   it('preserves line numbers across CRLF and Unicode whitespace', () => {

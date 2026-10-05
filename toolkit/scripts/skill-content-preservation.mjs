@@ -7,11 +7,22 @@ export function normalizeLine(line) {
   return line.trim().replace(/\s+/gu, ' ')
 }
 
+// Multiset membership: each occurrence of an old line consumes one occurrence in the new texts,
+// so deleting one copy of a line that the old body repeated is reported, not hidden by its twin.
 export function findMissingLines(oldText, newTexts) {
-  const present = new Set(newTexts.flatMap((text) => text.split('\n').map(normalizeLine)))
+  const available = new Map()
+  for (const line of newTexts.flatMap((text) => text.split('\n').map(normalizeLine))) {
+    available.set(line, (available.get(line) ?? 0) + 1)
+  }
   return oldText.split('\n').flatMap((line, index) => {
     const normalized = normalizeLine(line)
-    return normalized && !present.has(normalized) ? [{ lineNumber: index + 1, line: normalized }] : []
+    if (!normalized) return []
+    const count = available.get(normalized) ?? 0
+    if (count > 0) {
+      available.set(normalized, count - 1)
+      return []
+    }
+    return [{ lineNumber: index + 1, line: normalized }]
   })
 }
 
