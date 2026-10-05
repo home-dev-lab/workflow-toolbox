@@ -70,18 +70,50 @@ export function parseOrchestratorArgs(argv) {
   return options
 }
 
+// A mission never acts on a subset of its list, nor on a mix of two states of it. Every find_cards page carries the
+// filtered list's `total` (the live server answers { total, offset, limit, cards }); a page without a non-negative
+// integer total is malformed and stops the wave at once. A list edited under the scan (another session or worker)
+// shows as a moving total, an empty page before total, more cards than total, or a card returned twice; and a removal
+// plus an append between two pages leaves the total unchanged while mixing two states. So a read is accepted only when
+// two consecutive consistent scans return the same set of cards, and the wave stops after PAGINATE_SCANS scans without
+// such a pair.
+const PAGINATE_SCANS = 4
+
 async function paginate(board, list) {
+  let previous = null
+  let unstable = 'no two consecutive scans agreed'
+  for (let scan = 0; scan < PAGINATE_SCANS; scan += 1) {
+    const read = await scanListPages(board, list)
+    if (!read.cards) { unstable = read.unstable; previous = null; continue }
+    const key = read.cards.map((card) => String(card.id)).sort().join('\n')
+    if (previous === key) return read.cards
+    if (previous !== null) unstable = 'two scans returned different cards'
+    previous = key
+  }
+  throw new Error(`board unavailable: find_cards list ${list} kept changing over ${PAGINATE_SCANS} scans (${unstable})`)
+}
+
+async function scanListPages(board, list) {
   const found = []
-  for (let offset = 0;;) {
-    const page = await board.findCards({ listName: list, limit: 100, offset })
+  const seen = new Set()
+  let total = null
+  for (;;) {
+    const page = await board.findCards({ listName: list, limit: 100, offset: found.length })
     const cards = cardList(page)
     if (!cards) throw new Error('board unavailable: malformed find_cards response')
+    if (!Number.isInteger(page.total) || page.total < 0) throw new Error('board unavailable: malformed find_cards total')
     for (const card of cards) validateBoardCard(card)
+    if (total !== null && page.total !== total) return { unstable: `total changed from ${total} to ${page.total}` }
+    total = page.total
+    if (cards.length === 0 && found.length < total) return { unstable: `empty page at offset ${found.length} before total ${total}` }
+    for (const card of cards) {
+      const id = String(card.id)
+      if (seen.has(id)) return { unstable: `card ${id} returned twice` }
+      seen.add(id)
+    }
     found.push(...cards)
-    offset += cards.length
-    const total = Number(page?.total ?? found.length)
-    if (!Number.isFinite(total)) throw new Error('board unavailable: malformed find_cards total')
-    if (cards.length === 0 || offset >= total) return found
+    if (found.length > total) return { unstable: `${found.length} cards for total ${total}` }
+    if (found.length === total) return { cards: found }
   }
 }
 
