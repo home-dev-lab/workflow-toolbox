@@ -208,7 +208,9 @@ describe('wt-missing-package-script-guard-hook', () => {
   it('INVENTED: silent — a genuine typo with no ancestor defining it either', () => {
     const r = run('pnpm totally-made-up-script', root)
     expect(r.warned).toBe(true)
-    expect(r.stdout).toContain('genuine typo')
+    // Journal-only warn path: the detection is recorded, nothing is printed to the model.
+    expect(r.stdout).toBe('')
+    expect(r.entries[0]).toMatchObject({ decision: 'warned', class: 'missing-script' })
   })
 
   it('INVENTED: silent — "pnpm lint" mentioned inside a quoted commit message is not a real invocation', () => {
