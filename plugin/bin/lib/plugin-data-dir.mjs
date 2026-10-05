@@ -1,13 +1,13 @@
 // Resolve one config-scoped state root for every plugin and shell caller.
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, rmdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { basename, dirname, join, win32 } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
+import { legacyCarryFilesystem as DEFAULT_FS } from './host/legacy-carry-filesystem.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..')
-const DEFAULT_FS = { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, rmdirSync }
 
 export function pluginName() {
   return JSON.parse(readFileSync(join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).name
