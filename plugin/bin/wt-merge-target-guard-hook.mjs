@@ -24,6 +24,7 @@
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const GUARD = 'wt-merge-target-guard-hook.mjs'
@@ -81,14 +82,14 @@ function splitSegments(command) {
   return segments
 }
 
-function shellWords(segment) {
+export function shellWords(segment) {
   const words = []
   let current = ''; let quote = null
   for (let index = 0; index < segment.length; index++) {
     const char = segment[index]
     if (quote) {
       if (char === quote) quote = null
-      else if (char === '\\' && quote === '"' && index + 1 < segment.length) current += segment[++index]
+      else if (char === '\\' && quote === '"' && /[$`"\\\n]/.test(segment[index + 1])) current += segment[++index]
       else current += char
     } else if (char === "'" || char === '"') quote = char
     else if (/\s/.test(char)) { if (current) { words.push(current); current = '' } }
@@ -165,4 +166,4 @@ function main() {
   })
 }
 
-runFailOpenHook(GUARD, main)
+if (isInvokedDirectly(import.meta.url)) runFailOpenHook(GUARD, main)

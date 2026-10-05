@@ -49,6 +49,7 @@ export const spawningTestFiles = [
   'packages/build/test/cli-help.test.ts',
   'packages/build/test/cli.test.ts',
   'packages/build/test/command-repeat-check.test.ts',
+  'packages/build/test/commit-chain-lexer-property.test.ts',
   'packages/build/test/commit-signature-check.test.ts',
   'packages/build/test/concurrent-test-guard-hook.test.ts',
   'packages/build/test/crossos-dispatch.test.ts',
