@@ -282,6 +282,13 @@ const characterizationCases: Array<[string, string, CharacterizationFinding[]]> 
   ['braced scalar as command', 'L="a b"; ${L}', [{ name: 'L', kind: 'list', context: 'args', use: ' ${L}' }]],
   ['literal concatenation is not an exact reference', 'L="a b"; kill prefix$L $L/suffix', []],
   ['emulate shell splitting', 'emulate -L sh; L="a b"; kill $L', []],
+  ['emulate with combined flags before the mode', 'emulate -LR sh; L="a b"; kill $L', []],
+  ['emulate ksh mode after a flag', 'emulate -R ksh; L="a b"; kill $L', []],
+  // zsh -f: `emulate foo sh` fails with "unknown argument sh" and leaves splitting off.
+  ['emulate with an invalid mode does not split', 'emulate foo sh; L="a b"; kill $L', listFindings],
+  // zsh -f: `emulate sh -c cmd` emulates for that one command only.
+  ['emulate -c scopes the mode to one command', 'emulate sh -c true; L="a b"; kill $L', listFindings],
+  ['emulate zsh mode does not split', 'emulate zsh; L="a b"; kill $L', listFindings],
   ['dynamic option argument is not recognized', 'setopt $option shwordsplit; L="a b"; kill $L', listFindings],
   ['preserves current redirected-option warning', 'setopt >/dev/null shwordsplit; L="a b"; kill $L', listFindings],
   ['preserves current assignment-prefixed-option warning', 'X=x setopt shwordsplit; L="a b"; kill $L', listFindings],

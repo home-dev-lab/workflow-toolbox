@@ -313,7 +313,16 @@ function commandEnablesWordSplit(words) {
   if (command === 'set') {
     return normalized.some((word, at) => word === '-o' && normalized[at + 1] === 'shwordsplit')
   }
-  return command === 'emulate' && normalized.some((word) => ['sh', 'ksh', 'bash'].includes(word))
+  return command === 'emulate' && emulateSplits(normalized)
+}
+
+// zsh `emulate [flags] mode [-c cmd]`: only the first non-flag argument is the mode, and `-c` scopes
+// it to one command. `emulate foo sh` is an error and `emulate sh -c cmd` leaves the shell unchanged.
+function emulateSplits(args) {
+  let at = 0
+  while (at < args.length && /^[-+]/.test(args[at])) at += /^[-+]o$/.test(args[at]) ? 2 : 1
+  if (!['sh', 'ksh', 'bash'].includes(args[at])) return false
+  return !args.slice(at + 1).includes('-c')
 }
 
 function enablesWordSplit(command) {
