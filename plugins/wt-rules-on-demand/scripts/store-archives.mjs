@@ -11,11 +11,11 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { rollbackInputLocations } from './rollback-input-paths.mjs';
-import { archivedSegments, reassembleSplits, sumServed, sumSessions } from './delivery-join.mjs';
+import { archivedSegments, reassembleSplits, sumServed, sumSessions, joinIdentityActivity } from './delivery-join.mjs';
 
 export const storeArchivePattern = rollbackInputLocations[2].namePattern;
 export const verdictArchivePattern = rollbackInputLocations[1].namePattern;
-const numbers = (name) => name.match(/(\d+)-(\d+)\.jsonl?$/).slice(1).map(Number);
+const numbers = (name) => name.replace(/\.jsonl?$/, '').split('-').slice(-2).map(Number);
 
 // Archive file names of a directory listing matching `pattern`, oldest first (by time, then by sequence).
 export const archiveNames = (names, pattern) => names.filter((name) => pattern.test(name))
@@ -72,3 +72,4 @@ export function reportUnreadable(reader, unreadable) {
 // Live stores (mirrors included) plus the archived segments, joined per segment and summed across segments.
 export const withArchivedSessions = (archives, ...live) => sumSessions([...archivedSegments(archives, 'sessions'), ...live.map((sessions) => sessions ?? {})]);
 export const withArchivedServed = (archives, ...live) => sumServed([...archivedSegments(archives, 'served'), ...live.map((served) => served ?? {})]);
+export const withArchivedIdentityActivity = (archives, ...live) => joinIdentityActivity(...archives.filter((archive) => archive.key === 'identityActivity').map((archive) => archive.value), ...live);
