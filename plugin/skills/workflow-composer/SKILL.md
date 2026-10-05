@@ -99,7 +99,7 @@ Open [references/toolkit-path.md](references/toolkit-path.md) when authoring a r
 
 ## The raw authoring path (one-offs)
 
-Open [references/raw-authoring-path.md](references/raw-authoring-path.md) when using the raw JavaScript authoring path, before writing its script.
+Open [references/raw-authoring-path.md](references/raw-authoring-path.md) when using the raw JavaScript authoring path, before writing its script, and before choosing agent-type routing (`withLeanRouting`, `withReadOnlyRouting`) for any composition.
 
 ## Validate before you run
 

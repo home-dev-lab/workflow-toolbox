@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { findMissingLines, findUnlinkedReferences, main, normalizeLine } from '../skill-content-preservation.mjs'
+import { findDanglingReferences, findMissingLines, findUnlinkedReferences, frontmatterOf, main, normalizeLine } from '../skill-content-preservation.mjs'
 
 describe('skill content preservation', () => {
   it('normalizes whitespace without rewording a line', () => {
@@ -80,6 +80,27 @@ describe('reference links', () => {
   it('treats regex punctuation in filenames literally', () => {
     expect(findUnlinkedReferences('references/a+b.md', ['a+b.md', 'ab.md'])).toEqual(['ab.md'])
   })
+
+  it('does not count a mention hidden inside an HTML comment as a link', () => {
+    expect(findUnlinkedReferences('# Skill\n<!-- references/details.md -->\n', ['details.md'])).toEqual(['details.md'])
+  })
+
+  it('reports a body mention whose reference file does not exist', () => {
+    expect(findDanglingReferences('Open references/gone.md, then references/kept.md.', ['references/kept.md'])).toEqual([
+      'references/gone.md',
+    ])
+  })
+
+  it('reports no dangling mention when every named reference exists', () => {
+    expect(findDanglingReferences('Open [references/a.md](references/a.md).', ['references/a.md'])).toEqual([])
+  })
+})
+
+describe('frontmatter', () => {
+  it('returns the frontmatter block, or an empty string when there is none', () => {
+    expect(frontmatterOf('---\nname: x\ndescription: y\n---\n# Body\n')).toBe('---\nname: x\ndescription: y\n---')
+    expect(frontmatterOf('# Body\n---\n')).toBe('')
+  })
 })
 
 const temporaryDirectories: string[] = []
@@ -106,6 +127,7 @@ describe('preservation CLI without child processes', () => {
     expect(main(args, (line: string) => output.push(line))).toBe(0)
     expect(output).toEqual([
       'PRESERVATION: ok (0 missing non-blank lines)',
+      'FRONTMATTER: ok',
       'LINKS: ok (1 references)',
       'SIZE: ok (47/15000 UTF-16 code units)',
       'RESULT: ok',
@@ -126,6 +148,24 @@ describe('preservation CLI without child processes', () => {
     const output: string[] = []
     expect(main(args, (line: string) => output.push(line))).toBe(1)
     expect(output).toContain('UNLINKED: references/nested/details.md')
+    expect(output.at(-1)).toBe('RESULT: fail')
+  })
+
+  it('reports a changed frontmatter and returns 1', () => {
+    const { args, root, skillDir } = fixture('---\nname: s\ndescription: new\n---\nKeep\nOpen references/nested/details.md\n')
+    writeFileSync(join(root, 'old.md'), '---\nname: s\ndescription: old\n---\nKeep\nMoved\n')
+    writeFileSync(join(skillDir, 'references', 'nested', 'details.md'), 'Moved\ndescription: old\n')
+    const output: string[] = []
+    expect(main(args, (line: string) => output.push(line))).toBe(1)
+    expect(output).toContain('FRONTMATTER: fail (SKILL.md frontmatter differs from the old one)')
+    expect(output.at(-1)).toBe('RESULT: fail')
+  })
+
+  it('reports a dangling reference mention and returns 1', () => {
+    const { args } = fixture('# Skill\nKeep\nOpen references/nested/details.md\nOpen references/gone.md\n')
+    const output: string[] = []
+    expect(main(args, (line: string) => output.push(line))).toBe(1)
+    expect(output).toContain('DANGLING: references/gone.md')
     expect(output.at(-1)).toBe('RESULT: fail')
   })
 

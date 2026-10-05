@@ -1,4 +1,4 @@
-This reference belongs to the adopt skill; all paths are relative to the skill directory (the parent of references/).
+This reference belongs to the adopt skill. Its text moved here verbatim from that skill's SKILL.md, so every path and link in it means what it meant there: a link to another reference file resolves from the skill directory (the parent of this references/ folder), and a project or repository path keeps its own base.
 
 ## What gets installed
 

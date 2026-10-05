@@ -44,7 +44,7 @@ environment-variable fallback (`WT_KNOWLEDGE_BASE_INDEX`); every other block is 
 auto-detection / default** (no env var — don't invent one). Resolve them like this, then embed
 the resolved values in the spawn prompt:
 
-Open [references/resolve-the-environment-brief.md](references/resolve-the-environment-brief.md) before resolving any environment-brief block for a spawn.
+Every spawn: open [references/resolve-the-environment-brief.md](references/resolve-the-environment-brief.md) and resolve each block it lists before composing the spawn prompt.
 
 ## Step 2 — select the wave's cards
 
@@ -59,6 +59,8 @@ completed or parked card the orchestrator re-queries the tracker so newly-create
 in-scope cards join the queue automatically.
 
 ## Step 3 — compose the spawn prompt (with model elevation)
+
+Before composing or making any spawn, open [references/compose-the-spawn-prompt.md](references/compose-the-spawn-prompt.md): it holds the observer-preserving spawn shape (a `name` without `isolation` costs the observer) and the model-resolution details.
 
 Before composing any pilot or orchestrator spawn, run the shipped model resolver CLI:
 
@@ -122,7 +124,6 @@ orchestrator uses its default 10-minute close gate: when declaring a tier or mis
 must do two live re-queries separated by at least that much real elapsed time, and both reads must
 come back empty/resolved.
 
-Open [references/compose-the-spawn-prompt.md](references/compose-the-spawn-prompt.md) before composing a spawn, to check its observer-preserving shape and model-resolution details.
 
 ### LIVENESS_AGENT_ID — sent as the first follow-up message, never inside the composed brief
 

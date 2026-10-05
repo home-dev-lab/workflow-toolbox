@@ -106,7 +106,7 @@ live run** for `in-progress` (check the web UI for a zombie first).
 
 ## Honesty about what is observed vs inferred
 
-Open [references/observed-vs-inferred.md](references/observed-vs-inferred.md) when confirming an agent-state or schema-failure classification against transcripts.
+Open [references/observed-vs-inferred.md](references/observed-vs-inferred.md) before accepting or reporting any classification from the table above: the labels are hints, and that file says how to confirm them against transcripts.
 
 ## Reached no external model (a diagnosable class, not a mystery)
 
@@ -131,7 +131,7 @@ record) directly:
 
 ## Thin-envelope runs
 
-Open [references/thin-envelope-runs.md](references/thin-envelope-runs.md) when diagnosing a run routed through a thin external-model envelope.
+Open [references/thin-envelope-runs.md](references/thin-envelope-runs.md) when diagnosing a run routed through a thin external-model envelope or through a wrapper agent around an external model, before reporting whether the external model was reached.
 
 ## Degraded runs — silently-denied tool calls (blind reviews/plans/impls)
 
