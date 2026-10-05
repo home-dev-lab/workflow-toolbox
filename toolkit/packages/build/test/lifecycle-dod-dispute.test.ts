@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { cardDefinitionOfDone } from '../../../../plugin/bin/lib/card-definition-of-done.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { createDodEscalation, DOD_ANCHOR, planReadingOfTerm } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
+import { createDodEscalation, criticFindingAfterNoReblock, DOD_ANCHOR, planReadingOfTerm } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { writeRegularFile } from '../../../../plugin/bin/lib/lifecycle-launch.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -25,6 +25,17 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('DoD dispute publication', () => {
+  it.each([['1. preserve rollback.', '1'], ['- T1 preserve rollback.', 'T1'], ['### Task 1 preserve rollback', '1'], ['### T1 preserve rollback', 'T1']])('suppresses a paraphrased task finding after fallback for %s', (item, id) => {
+    const term = 'Preserve rollback safety'
+    const state = { dodDisputes: [{ criterion: 1, term, resolution: { source: 'fallback' } }] }
+    const text = `[blocking][missing][anchor: plan task ${id}][location: plan.md:5] The rollback requirement is still unmet`
+    const finding = { blocks: true, anchor: `plan task ${id}`, text }
+    criticFindingAfterNoReblock(finding, state, [term], undefined, `## Tasks\n${item} DoD: ${term}\n`)
+    expect(finding.blocks).toBe(false)
+    const unrelated = { blocks: true, anchor: `plan task ${id}`, text }
+    criticFindingAfterNoReblock(unrelated, state, [term], undefined, `## Tasks\n${item} DoD: Preserve rollback safetySuffix\n`)
+    expect(unrelated.blocks).toBe(true)
+  })
   it('shares the anchor grammar across every DoD spelling', () => {
     for (const spelling of ['DoD 1', 'DoD #1', 'DoD1', 'DoD criterion 1', 'DoD item 1']) expect(DOD_ANCHOR.exec(spelling)?.[1]).toBe('1')
   })

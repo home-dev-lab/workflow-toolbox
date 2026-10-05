@@ -127,6 +127,7 @@ describe('wt-suite-lock-bypass-guard-hook — lock-disabled (WT_SUITE_LOCK=0)', 
     ['single-quoted value', "WT_SUITE_LOCK='0' pnpm test"],
     ['double-quoted value', 'WT_SUITE_LOCK="0" pnpm test'],
     ['bash -c', "bash -c 'WT_SUITE_LOCK=0 pnpm test'"],
+    ['bash -c ending in gate-chain', "bash -c 'WT_SUITE_LOCK=0 pnpm test; bash .lane/gate-chain.sh'"],
     ['sh -lc', 'sh -lc "cd toolkit && WT_SUITE_LOCK=0 pnpm test"'],
     ['zsh -c with export', "zsh -c 'export WT_SUITE_LOCK=0; pnpm test'"],
     ['command substitution', 'OUT=$(WT_SUITE_LOCK=0 pnpm test 2>&1)'],
@@ -276,6 +277,34 @@ describe('wt-suite-lock-bypass-guard-hook — forced release and stale reclaim',
     ['the equals form the lock CLI does not read', 'wt-suite-lock release --stale-s=0'],
   ])('stays silent on win32 for %s', (_why, command) => {
     expectSilent(command, { env: { WT_SUITE_LOCK_BYPASS_GUARD_PLATFORM: 'win32' } })
+  })
+})
+
+describe('wt-suite-lock-bypass-guard-hook — release priority', () => {
+  it.each([
+    'node plugin/bin/wt-suite-lock.mjs run --priority release -- pnpm test',
+    'wt-suite-lock run --priority release -- pnpm test',
+    'bash .lane/gate-chain.sh --priority release --dir toolkit -- test',
+    'sh .lane/gate-chain.sh --priority release',
+    'zsh .lane/gate-chain.sh --priority release',
+    'dash .lane/gate-chain.sh --priority release',
+    'ksh .lane/gate-chain.sh --priority release',
+    'bash -o pipefail .lane/gate-chain.sh --priority release',
+    'bash -eo pipefail .lane/gate-chain.sh --priority release',
+  ])('warns a sub-agent invoking %s', (command) => {
+    const r = expectWarned(command, 'priority-release')
+    expect(r.context).toContain('release priority is reserved for the main session\'s release and merge-train gates')
+  })
+
+  it.each([
+    'echo wt-suite-lock run --priority release -- pnpm test',
+    'grep -rn "--priority release" .',
+    "cat <<'EOF'\nwt-suite-lock run --priority release -- pnpm test\nEOF",
+    'git commit -m "document wt-suite-lock run --priority release"',
+  ])('ignores mentions in %s', (command) => { expectSilent(command) })
+
+  it('does not warn the main session', () => {
+    expectSilent('node plugin/bin/wt-suite-lock.mjs run --priority release -- pnpm test', { agentId: null })
   })
 })
 

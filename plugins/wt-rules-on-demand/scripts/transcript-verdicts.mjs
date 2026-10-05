@@ -4,6 +4,7 @@ import { readdir, readFile, stat, writeFile, realpath } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
+import { finished } from 'node:stream/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve, basename, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +12,7 @@ import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { checkLines } from '../hooks/act-checks.js';
 import { ruleDirectories, configDirectory } from '../paths.js';
 import { argumentEvidence, bounded, RULE_CAP } from '../hooks/evidence.js';
-import { refusedAfterRun, afterGuardNote } from '../hooks/guard-refusal.js';
+import { storedRanRefusal, guardCarried } from '../hooks/guard-refusal.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { toolInputVerdict, bashSegments, segmentVerdict, correlateTurn } from '../hooks/declarative-checks.js';
 
@@ -48,15 +49,28 @@ async function firstMigration(root, name, scope) {
   return text.split('\n').flatMap((line) => { try { const row = JSON.parse(line); return row.action === 'migrate' && row.rule === name && Number.isFinite(Date.parse(row.time)) ? [row.time] : []; } catch { return []; } }).sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? null;
 }
 
-async function filesIn(directory, stats) {
+function errorDiagnostic(path, error, stats) {
+  if (stats.errors.length < 50) stats.errors.push(`${path}: ${error.code ?? error.message}${error.syscall ? ` (${error.syscall})` : ''}`);
+}
+
+function fileError(path, error, stats) {
+  stats.filesFailed++;
+  errorDiagnostic(path, error, stats);
+}
+
+async function filesIn(directory, stats, projectsRoot) {
   stats.visited ??= new Set();
-  const physical = await realpath(directory).catch(() => null);
-  if (physical && stats.visited.has(physical)) return [];
-  if (physical) stats.visited.add(physical);
-  let entries;
-  try { entries = await readdir(directory, { withFileTypes: true }); } catch (error) {
-    stats.filesFailed++;
-    if (stats.errors.length < 50) stats.errors.push(`${directory}: ${error.code ?? error.message}`);
+  let physical, entries;
+  try {
+    physical = await realpath(directory);
+    projectsRoot ??= physical;
+    // Save-memory copies are identified by physical position, independent of traversal aliases.
+    if (dirname(dirname(physical)) === projectsRoot && /^memory\.bak-\d{8}-\d{4}$/.test(basename(physical))) return [];
+    if (stats.visited.has(physical)) return [];
+    stats.visited.add(physical);
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    fileError(directory, error, stats);
     return [];
   }
   const files = [];
@@ -64,9 +78,9 @@ async function filesIn(directory, stats) {
     const path = join(directory, entry.name);
     try {
       const info = await stat(path); // follows symlinked transcript files
-      if (info.isDirectory()) files.push(...await filesIn(path, stats));
+      if (info.isDirectory()) files.push(...await filesIn(path, stats, projectsRoot));
       else if (info.isFile() && entry.name.endsWith('.jsonl')) files.push(path);
-    } catch (error) { stats.filesFailed++; if (stats.errors.length < 50) stats.errors.push(`${path}: ${error.code ?? error.message}`); }
+    } catch (error) { fileError(path, error, stats); }
   }
   return files;
 }
@@ -167,12 +181,13 @@ export function normalize(record, line, cwd = '') {
     for (const part of results) {
       const raw = textOf(part.content);
       const refusal = raw.slice(0, RULE_CAP);
-      // A call that ran and that the secret guard answered with a refusal: its error may quote anything, and what rode
-      // on it follows the guard's note.
-      const ranRefusal = part.is_error === true && refusedAfterRun(raw);
-      const refused = !ranRefusal && refusal.includes(REFUSAL);
+      // A call that ran and that the secret guard answered with a refusal: its error may quote anything; what rode on
+      // it sits just above the guard's note (guard outer) or after it (guard inner).
+      const ranRefusal = part.is_error === true ? storedRanRefusal(raw) : null;
+      const refused = ranRefusal === null && refusal.includes(REFUSAL);
       events.push({ ...base, kind: 'result', id: part.tool_use_id, isError: part.is_error === true, text: bounded(raw), ...(refused ? { refused } : {}) });
-      const carried = ranRefusal ? afterGuardNote(raw).slice(0, RULE_CAP) : refused ? refusal : null;
+      let carried = refused ? refusal : null;
+      if (ranRefusal !== null) carried = guardCarried(ranRefusal).slice(0, RULE_CAP);
       if (carried !== null) for (const block of blocks(carried).filter((item) => !item.fallback))
         deliveries.push({ ...base, kind: 'delivery', name: block.name, bytes: block.bytes, provenance: { kind: 'refusal', toolUseId: part.tool_use_id, line, at } });
     }
@@ -266,6 +281,7 @@ export function judge(context, resolved, path, stats, seen, now, collection) {
 async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPrefixes, explicitRoots, owners, migrationDate, lastChange, now, nonProofNames, collection }) {
   let context = { id: `${path}:0`, start: 0, cwd: '', events: [], owners }, cwd = '', valid = 0, lineNumber = 0, index = 0;
   const badBefore = stats.badLines;
+  let readError, input, lines, closed, handledError;
   const flush = async () => {
     if (discover && cwd && !skipCwdPrefixes.some((prefix) => { const path = relative(prefix, cwd); return path === '' || path !== '..' && !path.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(path); }) && !scopes.some((scope) => scope.scope === 'project' && scope.projectRoot === cwd)) {
       const rulesDir = ruleDirectories(cwd, configDirectory(process.env) ?? cwd).project;
@@ -288,7 +304,11 @@ async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPref
          collection.uncertainContexts.push({ ruleId: `${scope.scope}:${scope.rulesDir}:${rule.name}`, contextId: context.id });
   };
   try {
-    for await (const line of createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity })) {
+    input = createReadStream(path, { encoding: 'utf8' });
+    input.on('error', (error) => { readError = error; });
+    closed = finished(input).catch((error) => { readError = error; });
+    lines = createInterface({ input, crlfDelay: Infinity });
+    for await (const line of lines) {
       lineNumber++; stats.linesRead++;
       if (!watched.test(line) && !line.includes('"type":"user"')) continue;
       let record;
@@ -307,6 +327,9 @@ async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPref
         if (events[0]?.kind === 'compact') { context.events.push({ kind: 'turn' }); await flush(); context = { id: `${path}:${++index}`, start: Date.parse(record.timestamp) || 0, cwd, events: [], owners }; }
       else context.events.push(...events);
     }
+    // EOF precedes the file descriptor's close; late close errors must also fail closed.
+    await closed;
+    if (readError) throw readError;
     // A subagent transcript ends when the subagent ends: its last turn is closed. A main-session file may still be live.
     if (/(?:^|[\\/])subagents(?:[\\/]|$)/.test(path)) context.events.push({ kind: 'turn' });
     await flush();
@@ -314,7 +337,18 @@ async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPref
     // Well-formed JSONL with no transcript record (another tool's log under the projects directory) is not a transcript.
     else if (stats.badLines === badBefore) stats.skipped.push(`${path}: not a transcript`);
     else { stats.filesFailed++; if (stats.errors.length < 50) stats.errors.push(`${path}: no valid transcript records`); }
-  } catch (error) { stats.filesFailed++; if (stats.errors.length < 50) stats.errors.push(`${path}: ${error.message}`); }
+  } catch (error) {
+    handledError = error;
+    fileError(path, error, stats);
+  } finally {
+    lines?.close();
+    input?.destroy();
+    await closed;
+    if (readError && readError !== handledError) {
+      if (handledError) errorDiagnostic(path, readError, stats);
+      else fileError(path, readError, stats);
+    }
+  }
 }
 
 // The config dirs owning a projects dir: those whose `projects` is physically that dir. [] = owned by no user scope's
@@ -333,7 +367,8 @@ export async function scanTranscripts({ projectsDirs, scopes, days = 7, since, n
   if (!Number.isFinite(days) || days <= 0) throw new Error('days must be a positive number');
   if (since !== undefined && (!Number.isFinite(Date.parse(since)) || Date.parse(since) > now)) throw new Error('since must be a past ISO date');
   if (since !== undefined) days = (now - Date.parse(since)) / 86400000 || Number.EPSILON;
-  const stats = { filesRead: 0, filesFailed: 0, linesRead: 0, skipped: [], skippedOutsideWindow: 0, errors: [], badLines: 0, days, projects: new Set(), tmpProjects: new Set(), scopeErrors: [],
+  const stats = { filesRead: 0, filesFailed: 0,
+    linesRead: 0, skipped: [], skippedOutsideWindow: 0, errors: [], badLines: 0, days, projects: new Set(), tmpProjects: new Set(), scopeErrors: [],
     coverage: { rulesParsed: 0, checkableRules: 0, unmeasuredRules: [], filesRead: 0, filesFailed: 0, badLines: 0, missingTimestamps: 0, unknownMigrationDates: [], unresolvedActs: {}, gitErrors: [], missingProjectsDirs: [], unownedProjectsDirs: [] } };
   const loaded = await loadScopes(scopes, migrationDate, lastChange, stats);
    const collection = collect ? { deliveries: [], acts: {}, contexts: 0, effective: [], uncertainContexts: [] } : null;
@@ -346,10 +381,10 @@ export async function scanTranscripts({ projectsDirs, scopes, days = 7, since, n
     const owners = await ownersOf(dir, loaded);
     if (owners === null) stats.coverage.unownedProjectsDirs.push(dir);
     for (const path of await filesIn(dir, stats)) {
-    try {
-       if ((await stat(path)).mtimeMs < now - days * 86400000) { stats.skippedOutsideWindow++; continue; }
-           await scanFile(path, loaded, rows, stats, seen, { discover: discoverProjects, skipCwdPrefixes, explicitRoots, owners: owners ?? [], migrationDate, lastChange, now, nonProofNames, collection });
-    } catch (error) { stats.filesFailed++; if (stats.errors.length < 50) stats.errors.push(`${path}: ${error.code ?? error.message}`); }
+      try {
+        if ((await stat(path)).mtimeMs < now - days * 86400000) { stats.skippedOutsideWindow++; continue; }
+        await scanFile(path, loaded, rows, stats, seen, { discover: discoverProjects, skipCwdPrefixes, explicitRoots, owners: owners ?? [], migrationDate, lastChange, now, nonProofNames, collection });
+      } catch (error) { fileError(path, error, stats); }
     }
   }
   stats.tmpProjectsSkipped = stats.tmpProjects.size;
@@ -426,7 +461,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       console.log('| --- | --- | --- | --- | --- | --- |');
       for (const item of summarise(result.rows)) console.log(`| ${item.scope} ${item.rule} | ${item.migrated ?? 'no migration date'} | ${item.before.acts} / ${item.before.followed} / ${item.before.rate} | ${item.after.acts} / ${item.after.followed} / ${item.after.rate} | ${item.after.triggerMiss} (${item.after.triggerMissUnmatched}) | ${item.after.outOfScope} |`);
     }
-     console.log(`files read: ${result.stats.filesRead}; lines read: ${result.stats.linesRead}; skipped outside window: ${result.stats.skippedOutsideWindow}; errors: ${result.stats.errors.join('; ')}`);
+     console.log(`files read: ${result.stats.filesRead}; files failed: ${result.stats.filesFailed}; lines read: ${result.stats.linesRead}; skipped outside window: ${result.stats.skippedOutsideWindow}; errors: ${result.stats.errors.join('; ')}`);
     if (!result.stats.filesRead) process.exitCode = 1;
   } catch (error) { console.error(`transcript-verdicts: ${error.message}`); process.exitCode = 1; }
 }

@@ -120,7 +120,7 @@ export async function qualityCheck({ configDirs, projectsDirs, project, followed
     }
        const runNow = Date.now();
        const initial = await scanTranscripts({ projectsDirs, scopes, days, since, now: runNow, collect: true, discoverProjects: true, nonProofNames: process.env.WT_ROD_NON_PROOF_NAMES?.split(',').filter(Boolean) ?? [] });
-    if (!initial.stats.filesRead) throw new Error(`0 transcript files read; skipped ${initial.stats.skipped.length}: ${initial.stats.skipped.join('; ')}`);
+     if (!initial.stats.filesRead) throw new Error(`0 transcript files read; files failed: ${initial.stats.filesFailed}; errors: ${initial.stats.errors.join('; ')}; skipped ${initial.stats.skipped.length}: ${initial.stats.skipped.join('; ')}`);
     const rows = initial.rows;
     const date = new Date().toISOString().slice(0, 10);
      const verdictPath = privateVerdictPath ?? join(target, `verdicts-${date}.jsonl`);

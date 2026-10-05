@@ -22,7 +22,7 @@ for (let index = 0; index < args.length; index += 1) {
   else if (args[index] === '--journal') options.journal = args[++index] ?? '';
   else if (args[index] === '--user') options.user = true;
   else if (args[index] === '--config-dir') options.configDir = args[++index] ?? '';
-  else if (args[index] === '--mirror-dir') options.mirrorDirs = String(args[++index] ?? '').split(',').filter(Boolean).map((path) => resolve(path));
+  else if (args[index] === '--mirror-dir') options.mirrorDirs.push(resolve(args[++index] ?? ''));
   else { console.error(`unknown option: ${args[index]}`); process.exit(2); }
 }
 if (!options.user && (options.configDir || options.mirrorDirs.length)) { console.error('--config-dir and --mirror-dir require --user'); process.exit(2); }

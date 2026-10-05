@@ -32,11 +32,26 @@ export function acceptanceSection(content) {
   return heading[0] + (end === -1 ? body : body.slice(0, end))
 }
 
-function taskIndexesIn(lines) {
+function unfencedPlan(content) {
+  let fence = null
+  return content.split(/\r?\n/).map((line) => {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null
+      return ''
+    }
+    if (!marker) return line
+    fence = marker[1]
+    return ''
+  }).join('\n')
+}
+
+function planTaskItems(content) {
+  const lines = planSection(unfencedPlan(content), PLAN_SHAPE.tasksHeading).split(/\r?\n/)
   // A column-0 `- ` / `1. ` line is a task. A `### ` heading is a task only when no such line sits under
   // it before the next heading; otherwise it groups the list tasks beneath it.
   const isListItem = (line) => /^(?:- |\d+\. )/.test(line)
-  return lines
+  const taskIndexes = lines
     .map((line, index) => {
       if (isListItem(line)) return index
       if (!/^### /.test(line)) return -1
@@ -45,14 +60,31 @@ function taskIndexesIn(lines) {
       return lines.slice(index + 1, end).some(isListItem) ? -1 : index
     })
     .filter((index) => index >= 0)
+  return { lines, taskIndexes }
+}
+
+function taskId(line) {
+  const id = /^(\d+)\. /.exec(line)?.[1] ??
+    /^- ([A-Za-z]+\d+)(?=\s|:|$)/.exec(line)?.[1] ??
+    /^### (?:Task (\d+)|([A-Za-z]+\d+))(?=\s|:|$)/i.exec(line)?.slice(1).find(Boolean)
+  return id?.length <= 32 ? id : null
+}
+
+export function planTasks(content) {
+  const { lines, taskIndexes } = planTaskItems(content)
+  return taskIndexes.map((index) => ({ line: lines[index], id: taskId(lines[index]) }))
+}
+
+export function planTaskIds(content) {
+  const ids = planTasks(content).map((task) => task.id).filter(Boolean)
+  return [...new Set(ids)]
 }
 
 function legacyShapeProblem(content, requireAcceptance) {
   const adr = planSection(content, PLAN_SHAPE.adrHeading)
   if (!PLAN_SHAPE.adrTerms.every((term) => new RegExp(term, 'i').test(adr)))
     return `Missing or incomplete ## ${PLAN_SHAPE.adrHeading}; example: Decision: <choice>; Rejected: <alternative>.`
-  const lines = planSection(content, PLAN_SHAPE.tasksHeading).split(/\r?\n/)
-  const taskIndexes = taskIndexesIn(lines)
+  const { lines, taskIndexes } = planTaskItems(content)
   const complete = taskIndexes.length > 0 && taskIndexes.every(
     (start, i) =>
       new RegExp(`\\b(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(lines[start]) ||

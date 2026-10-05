@@ -30,11 +30,11 @@ export const PROFILE_AUTH_KEYS = [
   'CLAUDE_CODE_SKIP_MANTLE_AUTH', 'CLAUDE_CODE_SKIP_VERTEX_AUTH',
 ]
 
-export function profileAccountOverride(profileEnv) {
+function profileAccountOverride(profileEnv) {
   return PROFILE_AUTH_KEYS.find((key) => Object.hasOwn(profileEnv, key)) ?? null
 }
 
-export function evaluateSdkAccount(account, expected, unavailable = null) {
+function evaluateSdkAccount(account, expected, unavailable = null) {
   const email = typeof account?.email === 'string' && account.email.trim() ? account.email.trim() : null
   const tokenSource = typeof account?.tokenSource === 'string' && account.tokenSource ? account.tokenSource : null
   const storedLogin = (tokenSource === null || tokenSource === 'none') && (account?.apiKeySource == null || account.apiKeySource === 'none') && account?.apiProvider === 'firstParty'
@@ -57,18 +57,18 @@ export function evaluateSdkAccount(account, expected, unavailable = null) {
   return { verdict: 'unverifiable', allowed: false, line: `account: credential owner not verified; cannot verify expected ${expected} from SDK accountInfo (tokenSource=${tokenSource ?? 'none'})${configEmail}`, ...summary }
 }
 
-export async function closeRefusedAccountStream(stream, log) {
+async function closeRefusedAccountStream(stream, log) {
   if (typeof stream.close !== 'function') return
   try { await stream.close() } catch { log('account: SDK stream close failed after refusal') }
 }
 
-export function profileOverrideDecision(variable, expected) {
+function profileOverrideDecision(variable, expected) {
   return { verdict: 'profile_override', allowed: false, line: `account: --profile-env sets ${variable}; expected ${expected} must be checked against the runner launch environment`, email: null, token_source: null, expected }
 }
 
 // Thrown by open() on a refused account so the runner's catch can tell it from an SDK failure:
 // a refusal ends the run failed with its account line, it is never rethrown.
-export class AccountRefusal extends Error {}
+class AccountRefusal extends Error {}
 
 const EMPTY_GATE_TIMERS = {}
 
@@ -112,7 +112,7 @@ export function createAccountGate({ expectAccount, launchEnv, profileEnv, log, t
   }
 }
 
-export async function checkSdkAccount(stream, expected, { setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+async function checkSdkAccount(stream, expected, { setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
   if (typeof stream?.accountInfo !== 'function') return evaluateSdkAccount(null, expected, 'accountInfo unavailable')
   let timer
   try {

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readSpec, migrateRule, revertRule, retireRule, triggersHash } from '../scripts/rule-lifecycle-lib.mjs';
+import { externalTest } from './external-test.mjs';
 
 test('JSON migration specs accept boolean and string unconditional values', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'rod-unconditional-'));
@@ -56,15 +57,16 @@ test('rollback reads bounded external verdict archives by rule identity', async 
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(run.stdout)[0].action, 'would revert');
 });
-import { cleanEnv } from './clean-env.mjs';
+import { cleanEnv, managedPolicyArgs } from './clean-env.mjs';
+import { installFixture } from '../test-support/profile-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url));
 const quality = fileURLToPath(new URL('../scripts/quality-check.mjs', import.meta.url));
 const rollback = fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url));
-const realRule = fileURLToPath(new URL('../../../plugin/rules/wt-delegation-ladder-at-act.md', import.meta.url));
+const ruleTest = externalTest('../../../plugin/rules/wt-delegation-ladder-at-act.md', import.meta.url);
 const realSpec = fileURLToPath(new URL('./fixtures/lifecycle.spec.json', import.meta.url));
 const name = 'wt-delegation-ladder-at-act.md';
-async function sandbox(t) {
+async function sandbox(t, realRule) {
   const root = await mkdtemp(join(tmpdir(), 'rod-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, '.claude/rules/wt'), { recursive: true });
@@ -86,8 +88,8 @@ async function tree(root) {
   return entries.sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-test('safe trigger spec migrates unchanged real rule body, reverts and retires into archive', async (t) => {
-  const root = await sandbox(t);
+ruleTest('safe trigger spec migrates unchanged real rule body, reverts and retires into archive', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const spec = await readSpec(realSpec);
   const source = join(root, '.claude/rules/wt', name);
   const body = await readFile(source, 'utf8');
@@ -106,8 +108,8 @@ test('safe trigger spec migrates unchanged real rule body, reverts and retires i
   await assert.rejects(() => retireRule(root, `wt/${name}`, ''), /requires --reason/);
 });
 
-test('proof binds body, scope and every trigger; named override is unproven', async (t) => {
-  const root = await sandbox(t);
+ruleTest('proof binds body, scope and every trigger; named override is unproven', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const body = await readFile(join(root, '.claude/rules/wt', name));
   const spec = await readSpec(realSpec);
   const proof = join(root, 'proof.json');
@@ -121,18 +123,19 @@ test('proof binds body, scope and every trigger; named override is unproven', as
   assert.equal(run().status, 0);
 });
 
-test('user migration requires enabled plugin and Function Hooks for every profile', async (t) => {
+ruleTest('user migration requires enabled plugin and Function Hooks for every profile', async (t, realRule) => {
   const root = await mkdtemp(join(tmpdir(), 'rod-user-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const mirror = join(root, 'mirror');
   const primary = join(root, 'primary');
-  for (const dir of [primary, mirror]) await mkdir(join(dir, 'rules'), { recursive: true });
+  for (const dir of [primary, mirror]) { await mkdir(join(dir, 'rules'), { recursive: true }); await installFixture(dir); }
   await writeFile(join(primary, 'rules', name), await readFile(realRule));
-  const args = [cli, 'migrate', name, '--user', '--config-dir', primary, '--mirror-dir', mirror, '--spec', realSpec, '--no-proof', 'fixture'];
+  const args = [...managedPolicyArgs, cli, 'migrate', name, '--user', '--config-dir', primary, '--mirror-dir', mirror, '--spec', realSpec, '--no-proof', 'fixture'];
    const run = (...rest) => spawnSync(process.execPath, [...args, ...rest], { encoding: 'utf8', env: cleanEnv({ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '0' }) });
-  assert.match(run().stderr, /profile .*primary: settings.json missing/);
+  assert.match(run().stderr, /profile .*primary.*engine not enabled/);
   await writeFile(join(primary, 'settings.json'), JSON.stringify({ enabledPlugins: { 'wt-rules-on-demand@local': true }, pluginConfigs: { 'wt-rules-on-demand@local': { options: { enabled: true } } }, env: { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } }));
-  assert.match(run().stderr, /profile .*mirror: settings.json missing/);
+  assert.match(run().stderr, /profile .*mirror.*engine not enabled/);
+  await writeFile(join(mirror, 'settings.json'), JSON.stringify({ enabledPlugins: { 'wt-rules-on-demand@local': true }, pluginConfigs: { 'wt-rules-on-demand@local': { options: { enabled: true } } }, env: { CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' } }));
   assert.equal(run('--assume-loaded', mirror).status, 0);
   const ledger = await readFile(join(primary, 'rules-on-demand-ledger.jsonl'), 'utf8');
   assert.match(ledger, /"assumedLoaded":\[".*mirror"\]/);
@@ -171,8 +174,8 @@ test('ledger failure cannot remove the source or leave a destination', async (t)
   assert.equal(await readFile(join(root, '.claude/rules-on-demand/sample.md'), 'utf8').catch(() => null), null);
 });
 
-test('EEXIST at destination creation never removes another invocation’s file', async (t) => {
-  const root = await sandbox(t);
+ruleTest('EEXIST at destination creation never removes another invocation’s file', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const spec = await readSpec(realSpec);
   const destination = join(root, '.claude/rules-on-demand', name);
   await assert.rejects(() => migrateRule(root, `wt/${name}`, spec, {}, { io: {
@@ -182,8 +185,8 @@ test('EEXIST at destination creation never removes another invocation’s file',
   assert.ok(await readFile(join(root, '.claude/rules/wt', name)));
 });
 
-test('a held local lock makes a second migration wait in the common case', async (t) => {
-  const root = await sandbox(t);
+ruleTest('a held local lock makes a second migration wait in the common case', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const spec = await readSpec(realSpec);
   await writeFile(join(root, '.claude/rules/wt/second.md'), 'Second\n');
   let release;
@@ -199,8 +202,8 @@ test('a held local lock makes a second migration wait in the common case', async
   assert.deepEqual(lines.map((row) => row.rule), [name, 'second.md']);
 });
 
-test('held lifecycle lock is refused with a legible message', async (t) => {
-  const root = await sandbox(t);
+ruleTest('held lifecycle lock is refused with a legible message', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const lock = join(root, '.claude/rules-on-demand.lock');
   await writeFile(lock, 'held');
   const spec = await readSpec(realSpec);
@@ -208,8 +211,8 @@ test('held lifecycle lock is refused with a legible message', async (t) => {
   assert.equal(await readFile(lock, 'utf8'), 'held');
 });
 
-test('stale lifecycle lock is reclaimed and reported', async (t) => {
-  const root = await sandbox(t);
+ruleTest('stale lifecycle lock is reclaimed and reported', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const lock = join(root, '.claude/rules-on-demand.lock');
    await writeFile(lock, JSON.stringify({ pid: 99999999, hostname: 'remote-host', startedAt: Date.now() - 6 * 60_000 }));
   const old = new Date(Date.now() - 6 * 60_000);
@@ -273,8 +276,8 @@ test('retire honours an explicit static subpath when an on-demand basename also 
   assert.equal(await readFile(join(root, '.claude/rules-on-demand/example.md'), 'utf8'), 'on-demand version\n');
 });
 
-test('daily quality check is dry-run and leaves entire project rule tree and ledger unchanged', async (t) => {
-  const root = await sandbox(t);
+ruleTest('daily quality check is dry-run and leaves entire project rule tree and ledger unchanged', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const config = join(root, 'config');
   const data = join(config, 'plugins/data/wt-rules-on-demand/quality');
   const spec = await readSpec(realSpec);
@@ -288,8 +291,8 @@ test('daily quality check is dry-run and leaves entire project rule tree and led
   assert.deepEqual(await readFile(join(root, '.claude/rules-on-demand-ledger.jsonl')), ledger);
 });
 
-test('unattributed dry-run needs attention and leaves rule and ledger byte-identical', async (t) => {
-  const root = await sandbox(t);
+ruleTest('unattributed dry-run needs attention and leaves rule and ledger byte-identical', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
   const config = join(root, 'config');
   const spec = await readSpec(realSpec);
   const destination = (await migrateRule(root, `wt/${name}`, spec, { unproven: true })).destination;

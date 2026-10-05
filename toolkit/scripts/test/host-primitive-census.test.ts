@@ -126,7 +126,8 @@ describe('raw host primitive quality ratchet', () => {
     // The suite-lock bypass guard adds its hook; its platform and temp-root reads live in bin/lib/host.
     // The cancelled-call relay guard adds its hook; its file access lives in bin/lib/host.
     // The session-env dedup hook adds one perimeter file; its filesystem primitives live in bin/lib/host.
-    expect(result.perimeterFiles).toBe(260)
+    // The duplicate pilot guard adds its hook and its card-id parser; their file access lives in bin/lib/host.
+    expect(result.perimeterFiles).toBe(262)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
