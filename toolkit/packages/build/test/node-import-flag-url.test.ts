@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -40,8 +40,8 @@ function importFlagViolations(source: string) {
 
 function trackedScripts() {
   const listing = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'toolkit', 'plugin', 'plugins'], { cwd: REPO, encoding: 'utf8' })
-  const deleted = new Set(execFileSync('git', ['diff', '--diff-filter=D', '--name-only', '-z', 'HEAD'], { cwd: REPO, encoding: 'utf8' }).split('\0'))
-  return listing.split('\0').filter((file) => !deleted.has(file) && /\.(?:[cm]?[jt]s)$/.test(file) && !file.includes('/node_modules/') && !file.includes('/dist/') && basename(file) !== SELF)
+  // The index still lists scripts deleted by an unstaged change; scan the current working tree.
+  return listing.split('\0').filter((file) => /\.(?:[cm]?[jt]s)$/.test(file) && !file.includes('/node_modules/') && !file.includes('/dist/') && basename(file) !== SELF && existsSync(resolve(REPO, file)))
 }
 
 describe('node --import / --loader arguments are URLs', () => {

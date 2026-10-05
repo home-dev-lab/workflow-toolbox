@@ -7,9 +7,54 @@ export const GUARD_REDACTION_NOTE = '[wt-secret-guard: text of the form secret:<
 
 export const refusedAfterRun = (text) => typeof text === 'string' && text.split('\n').includes(GUARD_REDACTION_NOTE);
 
-// What rules-on-demand appended to a ran refusal: the lines after the guard's last note line. The scrubbed error
-// before it is the tool's own output and may quote anything, a rule block or the note itself included.
-export const afterGuardNote = (text) => {
+// The transcript stores a refusal inside this wrapper; the live hook chain sees it bare, so only the offline readers
+// unwrap. Without it, a note that ends the refusal reads `<note></tool_use_error>` and is no longer a line of its own.
+const WRAP_OPEN = '<tool_use_error>';
+const WRAP_CLOSE = '</tool_use_error>';
+const unwrapped = (text) => {
+  const trimmed = text.trimEnd();
+  const wrapped = trimmed.startsWith(WRAP_OPEN) && trimmed.endsWith(WRAP_CLOSE);
+  return wrapped ? trimmed.slice(WRAP_OPEN.length, -WRAP_CLOSE.length) : text;
+};
+
+// An errored tool result from a transcript, as the text of the guard's ran refusal; null when it is not one.
+export const storedRanRefusal = (text) => {
+  if (typeof text !== 'string') return null;
+  const bare = unwrapped(text);
+  return refusedAfterRun(bare) ? bare : null;
+};
+
+const RULE_CLOSE = '\n</rule>';
+const RULE_OPEN = '\n\n<rule name="';
+const OPENING_LINE = /^<rule name="[^"\n]+">\n/;
+
+// rules-on-demand BELOW the guard returns its rules as context; the guard joins the scrubbed error and every context
+// item with blank lines, then puts its note under them. So the rules it carried are a trailing run of whole blocks:
+// each opens on its own line after a blank line, ends at its first line starting `</rule>`, and the last ends on the
+// line right above the note. A block the error quoted elsewhere is not in that run. Residuals, no layout tells them
+// apart: an error that itself ends in such a block reads as carried; a rule whose content holds an opening line after
+// a blank line reads under the inner name; a rule with a line starting `</rule>` in its content is not read.
+function foldedRun(before) {
+  let start = before.length;
+  for (;;) {
+    const head = before.slice(0, start);
+    const open = head.lastIndexOf(RULE_OPEN);
+    if (open < 0) break;
+    const block = head.slice(open + 2);
+    if (!OPENING_LINE.test(block) || block.indexOf(RULE_CLOSE) !== block.length - RULE_CLOSE.length) break;
+    start = open;
+  }
+  return before.slice(start);
+}
+
+// What rules-on-demand put on a ran refusal, given the text storedRanRefusal returns. Above the guard, it appends its
+// rules after the guard's last note line; below it, the guard folds them in just above that line. The scrubbed error
+// before them is the tool's own output and may quote anything, a rule block or the note itself included: when a rule
+// block follows the note, that is the carried part and nothing above the note is read.
+export const guardCarried = (text) => {
   const lines = text.split('\n');
-  return lines.slice(lines.lastIndexOf(GUARD_REDACTION_NOTE) + 1).join('\n');
+  const note = lines.lastIndexOf(GUARD_REDACTION_NOTE);
+  const after = lines.slice(note + 1).join('\n');
+  if (after.includes('<rule name="')) return after;
+  return foldedRun(lines.slice(0, note).join('\n'));
 };

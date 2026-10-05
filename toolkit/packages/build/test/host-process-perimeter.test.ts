@@ -41,6 +41,7 @@ describe('pid to parent-pid host perimeter', () => {
     // its platform and path helpers live in bin/lib/host.
     // The cancelled-call relay guard hook adds one process-table-free module.
     // Nine journal modules replace one reminder and the session-env dedup hook adds one; host operations remain in the adapter.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 257, violations: [] })
+    // The duplicate pilot guard adds its hook and its card-id parser, both process-table-free.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 259, violations: [] })
   })
 })

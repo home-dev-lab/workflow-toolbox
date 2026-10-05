@@ -6,6 +6,7 @@ import { safeRegex } from '../hooks/evidence.js';
 import { toolInputVerdict } from '../hooks/declarative-checks.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { generator } from './regex-generator.mjs';
+import { externalTest } from './external-test.mjs';
 
 const bash = String.raw`^(?:(?:(?:[^'";&|()\n]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')*(?:;|&&|\|\||\||&(?!&)|\()\s*)|(?:[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()]+))\s+|(?:timeout(?:(?:\s+(?:-s|--signal|-k|--kill-after)\s+\S+|\s+--(?:signal|kill-after)=\S+|\s+--(?:foreground|preserve-status|verbose))*)\s+\S+|nice(?:\s+(?:-[^\s]+|\d+))*|time|nohup|setsid|sudo(?:\s+(?:-[ugChpRT]\s+\S+|--(?:user|group|close-from|host|prompt|role|type)(?:=\S+|\s+\S+)|-[^\s]+))*|npx|pnpm\s+exec|env(?:\s+(?:-[uC]\s+\S+|--(?:unset|chdir)(?:=\S+|\s+\S+)|-[^\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()]+)))*)\s+|(?:ba)?sh\s+-c\s+['"]\s*|(?:if|then|do|else|elif|while|until)\s+|\{\s*|!\s*)*(?:gh\s+(?:issue|project)\b|jira\b)`;
 const cases = [
@@ -333,8 +334,8 @@ test('global/sticky lastIndex and empty match advancement agree with native', ()
   }
 });
 
-test('shipped specs compile and each has a firing and non-firing trigger through the real consumer', async () => {
-  const dir = new URL('../../../plugin/rules/', import.meta.url);
+const specsTest = externalTest('../../../plugin/rules/', import.meta.url);
+specsTest('shipped specs compile and each has a firing and non-firing trigger through the real consumer', async (_t, dir) => {
   const files = (await readdir(dir)).filter((file) => file.endsWith('.spec.json'));
   assert.equal(files.length, 12);
   const tools = ['Agent', 'SendMessage', 'Workflow', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Read', 'Task', 'Skill', 'Monitor', 'TaskOutput'];

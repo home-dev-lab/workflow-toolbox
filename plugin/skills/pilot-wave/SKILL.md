@@ -233,7 +233,7 @@ exists.
 
 The spawn prompt must carry:
 
-1. The card id(s) + a digest of each card's comments (the design is often arbitrated there).
+1. The card id(s) + a digest of each card's comments (the design is often arbitrated there); put one `PILOT-CARD: <id>` line per assigned card at column 0, outside code fences, for the duplicate-pilot guard to read.
 2. Repo scope with ABSOLUTE paths — and, when it matters, **which repos/dirs are PUBLIC vs
    private** (a write that lands product artifacts on a public surface is outward-facing; the
    agents treat that as a boundary concern to flag, not a silent commit — see below).

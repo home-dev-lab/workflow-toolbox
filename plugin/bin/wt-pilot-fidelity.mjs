@@ -28,7 +28,10 @@ function value(argv, index, flag) {
 }
 
 function parse(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--root', '--out-dir', '--dir', '--card', '--session', '--base', '--head', '--file', '--other-file'],
+    booleanFlags: ['--require-same-tree', '--require-clean-tree', '--require-head'],
+  })
   const [command, ...rest] = argv
   if (command !== 'freeze' && command !== 'verify') fail("first argument must be 'freeze' or 'verify'")
   const args = { command, root: null, outDir: null, dir: null, card: null, session: null, base: null, head: null, files: [], otherFiles: [], requireSameTree: false, requireHead: false }

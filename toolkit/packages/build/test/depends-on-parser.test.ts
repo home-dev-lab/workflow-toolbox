@@ -57,6 +57,16 @@ describe('shipped dependency convention (T4)', () => {
     expect(parseDependsOn('Depends-on: #111111 (title, x), #333333')).toEqual({ ids: ['111111', '333333'], unparseable: [] })
   })
 
+  it('an unclosed parenthesis holds the line as unparseable, never hides the ids after it', () => {
+    for (const line of [
+      'Depends-on: #111111 (unfinished title, #222222',
+      'Depends-on: #111111 (fix :( regression), #222222 (t)',
+      'Depends-on: #111111 (a title) (unfinished, 222222',
+      'Depends-on: (#111111',
+    ]) expect(parseDependsOn(line), line).toEqual({ ids: [], unparseable: [line] })
+    expect(parseDependsOn('Depends-on: #111111 title) more')).toEqual({ ids: ['111111'], unparseable: [] })
+  })
+
   it('still never lets a table row declare, even with decoration inside it', () => {
     expect(hasDependsOnLine('| **Depends-on:** #100010 |')).toBe(false)
     expect(parseDependsOn('| - **Depends-on:** none |')).toEqual({ ids: [], unparseable: [] })

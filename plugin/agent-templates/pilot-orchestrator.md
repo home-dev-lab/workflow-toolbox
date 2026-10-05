@@ -189,6 +189,8 @@ back silently.
    dormant delegate. On resumption, read the pilot's latest Discovery block first: its `Phase:`
    and `Next:` state identifies the phase to continue and the next concrete action.
 
+   Include one `PILOT-CARD: <id>` line per assigned card at column 0, outside code fences, so the duplicate-pilot guard can read the ownership declaration.
+
    Immediately after each `Agent` call returns, before anything else, `SendMessage` the
    newly-spawned pilot one line: `LIVENESS_AGENT_ID: <raw id from the Agent tool's return
    value>`. The id only exists once the call returns, so it is a follow-up message, never a
