@@ -71,44 +71,51 @@ function innerSubs(text) {
   return out
 }
 
+function readCommandSub(src, i, meta) {
+  const end = consumeBalanced(src, i + 2, '(', ')')
+  meta.subs.push(src.slice(i + 2, end))
+  meta.hasCmdSub = true
+  return end + 1
+}
+
+function readBracedParameter(src, i, meta) {
+  const end = consumeBalanced(src, i + 2, '{', '}')
+  const inner = src.slice(i + 2, end)
+  const match = inner.match(/^[=#^~+]*([A-Za-z_]\w*)/)
+  if (match) meta.refs.add(match[1])
+  for (const sub of innerSubs(inner)) { meta.subs.push(sub); meta.hasCmdSub = true }
+  return end + 1
+}
+
+function readAnsiQuote(src, i, meta) {
+  let j = i + 2
+  while (j < src.length && src[j] !== "'") j += src[j] === BACKSLASH ? 2 : 1
+  const body = src.slice(i + 2, j)
+  if (/\s/.test(body.replace(/\\[nt]/g, ' '))) meta.hasWS = true
+  meta.literal += body
+  return j + 1
+}
+
+function readParameter(src, i, meta) {
+  const match = src.slice(i + 1).match(/^=?([A-Za-z_]\w*)/)
+  if (match) { meta.refs.add(match[1]); return i + 1 + match[0].length }
+  return /[?$#@*\-!0-9]/.test(src[i + 1] ?? '') ? i + 2 : i + 1
+}
+
 function readDollar(src, i, meta) {
   const next = src[i + 1]
   if (next === '(' && src[i + 2] === '(') return consumeBalanced(src, i + 2, '(', ')') + 1
-  if (next === '(') {
-    const end = consumeBalanced(src, i + 2, '(', ')')
-    meta.subs.push(src.slice(i + 2, end))
-    meta.hasCmdSub = true
-    return end + 1
-  }
-  if (next === '{') {
-    const end = consumeBalanced(src, i + 2, '{', '}')
-    const inner = src.slice(i + 2, end)
-    const match = inner.match(/^[=#^~+]*([A-Za-z_]\w*)/)
-    if (match) meta.refs.add(match[1])
-    for (const sub of innerSubs(inner)) { meta.subs.push(sub); meta.hasCmdSub = true }
-    return end + 1
-  }
-  if (next === "'") {
-    let j = i + 2
-    while (j < src.length && src[j] !== "'") j += src[j] === BACKSLASH ? 2 : 1
-    const body = src.slice(i + 2, j)
-    if (/\s/.test(body.replace(/\\[nt]/g, ' '))) meta.hasWS = true
-    meta.literal += body
-    return j + 1
-  }
-  const match = src.slice(i + 1).match(/^=?([A-Za-z_]\w*)/)
-  if (match) { meta.refs.add(match[1]); return i + 1 + match[0].length }
-  return /[?$#@*\-!0-9]/.test(next ?? '') ? i + 2 : i + 1
+  if (next === '(') return readCommandSub(src, i, meta)
+  if (next === '{') return readBracedParameter(src, i, meta)
+  if (next === "'") return readAnsiQuote(src, i, meta)
+  return readParameter(src, i, meta)
 }
 
 function newMeta() {
   return { refs: new Set(), subs: [], hasWS: false, hasCmdSub: false, quoted: false, literal: '', isArray: false, assign: null }
 }
 
-function readWord(src, startAt) {
-  const start = startAt
-  let i = startAt
-  const meta = newMeta()
+function readAssignment(src, i, meta) {
   const assignment = src.slice(i).match(ASSIGN_RE)
   if (assignment) {
     meta.assign = { name: assignment[1], op: assignment[3], element: Boolean(assignment[2]) }
@@ -118,56 +125,68 @@ function readWord(src, startAt) {
       i = consumeBalanced(src, i + 1, '(', ')') + 1
     }
   }
+  return i
+}
+
+function readEscape(src, i, meta) {
+  if (src[i + 1] === '\n') return i + 2
+  if (/\s/.test(src[i + 1] ?? '')) meta.hasWS = true
+  meta.literal += src[i + 1] ?? ''
+  return i + 2
+}
+
+function readSingleQuote(src, i, meta) {
+  meta.quoted = true
+  const j = src.indexOf("'", i + 1)
+  const end = j < 0 ? src.length : j
+  const body = src.slice(i + 1, end)
+  if (/\s/.test(body)) meta.hasWS = true
+  meta.literal += body
+  return end + 1
+}
+
+function readBacktickSub(src, i, meta) {
+  const end = skipBacktick(src, i + 1)
+  meta.subs.push(src.slice(i + 1, end - 1)); meta.hasCmdSub = true
+  return end
+}
+
+function readDoublePart(src, i, meta) {
+  const ch = src[i]
+  if (ch === BACKSLASH) { meta.literal += src[i + 1] ?? ''; return i + 2 }
+  if (ch === '$') return readDollar(src, i, meta)
+  if (ch === '`') return readBacktickSub(src, i, meta)
+  if (/\s/.test(ch)) meta.hasWS = true
+  meta.literal += ch
+  return i + 1
+}
+
+function readDoubleQuote(src, i, meta) {
+  meta.quoted = true
+  i++
+  while (i < src.length && src[i] !== '"') i = readDoublePart(src, i, meta)
+  return i + 1
+}
+
+function readWordPart(src, i, meta) {
+  const ch = src[i]
+  if (ch === '(') return consumeBalanced(src, i + 1, '(', ')') + 1
+  if (ch === BACKSLASH) return readEscape(src, i, meta)
+  if (ch === "'") return readSingleQuote(src, i, meta)
+  if (ch === '"') return readDoubleQuote(src, i, meta)
+  if (ch === '$') return readDollar(src, i, meta)
+  if (ch === '`') return readBacktickSub(src, i, meta)
+  meta.literal += ch
+  return i + 1
+}
+
+function readWord(src, start) {
+  const meta = newMeta()
+  let i = readAssignment(src, start, meta)
   while (i < src.length) {
     const ch = src[i]
     if (/\s/.test(ch) || ';&|<>'.includes(ch) || ch === ')') break
-    if (ch === '(') { i = consumeBalanced(src, i + 1, '(', ')') + 1; continue }
-    if (ch === BACKSLASH) {
-      if (src[i + 1] === '\n') { i += 2; continue }
-      if (/\s/.test(src[i + 1] ?? '')) meta.hasWS = true
-      meta.literal += src[i + 1] ?? ''
-      i += 2
-      continue
-    }
-    if (ch === "'") {
-      meta.quoted = true
-      const j = src.indexOf("'", i + 1)
-      const end = j < 0 ? src.length : j
-      const body = src.slice(i + 1, end)
-      if (/\s/.test(body)) meta.hasWS = true
-      meta.literal += body
-      i = end + 1
-      continue
-    }
-    if (ch === '"') {
-      meta.quoted = true
-      i++
-      while (i < src.length && src[i] !== '"') {
-        const inner = src[i]
-        if (inner === BACKSLASH) { meta.literal += src[i + 1] ?? ''; i += 2; continue }
-        if (inner === '$') { i = readDollar(src, i, meta); continue }
-        if (inner === '`') {
-          const end = skipBacktick(src, i + 1)
-          meta.subs.push(src.slice(i + 1, end - 1)); meta.hasCmdSub = true
-          i = end
-          continue
-        }
-        if (/\s/.test(inner)) meta.hasWS = true
-        meta.literal += inner
-        i++
-      }
-      i++
-      continue
-    }
-    if (ch === '$') { i = readDollar(src, i, meta); continue }
-    if (ch === '`') {
-      const end = skipBacktick(src, i + 1)
-      meta.subs.push(src.slice(i + 1, end - 1)); meta.hasCmdSub = true
-      i = end
-      continue
-    }
-    meta.literal += ch
-    i++
+    i = readWordPart(src, i, meta)
   }
   const raw = src.slice(start, i)
   const exact = raw.match(/^\$([A-Za-z_]\w*)$/) || raw.match(/^\$\{([A-Za-z_]\w*)\}$/)
@@ -177,74 +196,92 @@ function readWord(src, startAt) {
 const OPS = [';;', ';&', ';|', '&&', '||', '|&', '&!', '&|', ';', '|', '&', '(', ')']
 const REDIRS = ['&>>', '&>', '<<<', '<<-', '<<', '>>', '>|', '>!', '>&', '<&', '<>', '>', '<']
 
-function lex(src) {
-  const tokens = []
-  const pendingHeredocs = []
-  let i = 0
+function consumeHeredoc(src, i, { tag, strip }) {
   while (i < src.length) {
-    const ch = src[i]
-    if (ch === '\n') {
-      tokens.push({ type: 'op', v: '\n' })
-      i++
-      while (pendingHeredocs.length) {
-        const { tag, strip } = pendingHeredocs.shift()
-        while (i < src.length) {
-          let newline = src.indexOf('\n', i)
-          if (newline < 0) newline = src.length
-          let line = src.slice(i, newline)
-          if (strip) line = line.replace(/^\t+/, '')
-          i = newline + 1
-          if (line === tag) break
-        }
-      }
-      continue
-    }
-    if (/\s/.test(ch)) { i++; continue }
-    if (ch === BACKSLASH && src[i + 1] === '\n') { i += 2; continue }
-    if (ch === '#') {
-      const newline = src.indexOf('\n', i)
-      i = newline < 0 ? src.length : newline
-      continue
-    }
-    if (ch === '(' && src[i + 1] === '(') {
-      i = consumeBalanced(src, i + 1, '(', ')') + 1
-      tokens.push({ type: 'op', v: ';' })
-      continue
-    }
-    if ((ch === '<' || ch === '>') && src[i + 1] === '(') {
-      const end = consumeBalanced(src, i + 2, '(', ')')
-      const meta = newMeta()
-      meta.subs.push(src.slice(i + 2, end))
-      tokens.push({ type: 'word', raw: src.slice(i, end + 1), meta, exactRef: null })
-      i = end + 1
-      continue
-    }
-    const fd = src.slice(i).match(/^\d+(?=[<>])/)
-    const at = fd ? i + fd[0].length : i
-    const redirection = REDIRS.find((candidate) => src.startsWith(candidate, at))
-    if (redirection && (fd || '<>&'.includes(ch))) {
-      i = at + redirection.length
-      while (src[i] === ' ' || src[i] === '\t') i++
-      if (redirection === '<<' || redirection === '<<-') {
-        const tag = src.slice(i).match(/^(['"]?)([^\s'";&|<>()]+)\1/)
-        if (tag) { pendingHeredocs.push({ tag: tag[2], strip: redirection === '<<-' }); i += tag[0].length }
-        continue
-      }
-      if (i < src.length && !/[\s;&|()]/.test(src[i])) {
-        const [token, next] = readWord(src, i)
-        token.type = 'redir-target'
-        tokens.push(token)
-        i = next
-      }
-      continue
-    }
-    const operator = OPS.find((candidate) => src.startsWith(candidate, i))
-    if (operator) { tokens.push({ type: 'op', v: operator }); i += operator.length; continue }
-    const [token, next] = readWord(src, i)
-    tokens.push(token)
-    i = next === i ? i + 1 : next
+    let newline = src.indexOf('\n', i)
+    if (newline < 0) newline = src.length
+    let line = src.slice(i, newline)
+    if (strip) line = line.replace(/^\t+/, '')
+    i = newline + 1
+    if (line === tag) break
   }
-  return tokens
+  return i
+}
+
+function lexLayout(src, i, state) {
+  const ch = src[i]
+  if (ch === '\n') {
+    state.tokens.push({ type: 'op', v: '\n' })
+    i++
+    while (state.pendingHeredocs.length) i = consumeHeredoc(src, i, state.pendingHeredocs.shift())
+    return i
+  }
+  if (/\s/.test(ch)) return i + 1
+  if (ch === BACKSLASH && src[i + 1] === '\n') return i + 2
+  if (ch === '#') {
+    const newline = src.indexOf('\n', i)
+    return newline < 0 ? src.length : newline
+  }
+  return null
+}
+
+function readHeredocTag(src, i, redirection, pendingHeredocs) {
+  const tag = src.slice(i).match(/^(['"]?)([^\s'";&|<>()]+)\1/)
+  if (tag) { pendingHeredocs.push({ tag: tag[2], strip: redirection === '<<-' }); i += tag[0].length }
+  return i
+}
+
+function readRedirectionTarget(src, i, tokens) {
+  if (i < src.length && !/[\s;&|()]/.test(src[i])) {
+    const [token, next] = readWord(src, i)
+    token.type = 'redir-target'
+    tokens.push(token)
+    return next
+  }
+  return i
+}
+
+function lexRedirection(src, i, state) {
+  const fd = src.slice(i).match(/^\d+(?=[<>])/)
+  const at = fd ? i + fd[0].length : i
+  const redirection = REDIRS.find((candidate) => src.startsWith(candidate, at))
+  if (!redirection || !(fd || '<>&'.includes(src[i]))) return null
+  i = at + redirection.length
+  while (src[i] === ' ' || src[i] === '\t') i++
+  if (redirection === '<<' || redirection === '<<-') return readHeredocTag(src, i, redirection, state.pendingHeredocs)
+  return readRedirectionTarget(src, i, state.tokens)
+}
+
+function lexProcessSub(src, i, tokens) {
+  const end = consumeBalanced(src, i + 2, '(', ')')
+  const meta = newMeta()
+  meta.subs.push(src.slice(i + 2, end))
+  tokens.push({ type: 'word', raw: src.slice(i, end + 1), meta, exactRef: null })
+  return end + 1
+}
+
+function lexToken(src, i, state) {
+  const ch = src[i]
+  if (ch === '(' && src[i + 1] === '(') {
+    const next = consumeBalanced(src, i + 1, '(', ')') + 1
+    state.tokens.push({ type: 'op', v: ';' })
+    return next
+  }
+  if ((ch === '<' || ch === '>') && src[i + 1] === '(') return lexProcessSub(src, i, state.tokens)
+  const redirected = lexRedirection(src, i, state)
+  if (redirected !== null) return redirected
+  const operator = OPS.find((candidate) => src.startsWith(candidate, i))
+  if (operator) { state.tokens.push({ type: 'op', v: operator }); return i + operator.length }
+  const [token, next] = readWord(src, i)
+  state.tokens.push(token)
+  return next === i ? i + 1 : next
+}
+
+function lex(src) {
+  const state = { tokens: [], pendingHeredocs: [] }
+  let i = 0
+  while (i < src.length) i = lexLayout(src, i, state) ?? lexToken(src, i, state)
+  return state.tokens
 }
 
 function looksLikeOnePath(literal) {
@@ -338,8 +375,7 @@ function analyzeSubstitution(state, src) {
   analyzeInto({ ...state, vars: cloneVars(state.vars) }, src)
 }
 
-function processCommand(state, words) {
-  for (const word of words) for (const sub of word.meta.subs) analyzeSubstitution(state, sub)
+function commandIndex(state, words) {
   let index = 0
   while (index < words.length) {
     const word = words[index]
@@ -347,22 +383,34 @@ function processCommand(state, words) {
     if (SKIP_PREFIX.has(word.raw)) { index++; continue }
     break
   }
+  return index
+}
+
+function processLoop(state, args, command) {
+  if (args[1]?.raw === 'in') for (const arg of args.slice(2)) flag(state, arg, 'for', command, ['list', 'cmdsub'])
+}
+
+function processDeclaration(state, args) {
+  let arrayFlag = false
+  for (const arg of args) {
+    if (/^[-+][A-Za-z]*[aA]/.test(arg.raw)) { arrayFlag = true; continue }
+    if (arg.meta.assign) recordAssign(state, arg, arrayFlag)
+    else if (arrayFlag && NAME_RE.test(arg.raw)) markArray(state, arg.raw)
+  }
+}
+
+function analyzeWordSubstitutions(state, words) {
+  for (const word of words) for (const sub of word.meta.subs) analyzeSubstitution(state, sub)
+}
+
+function processCommand(state, words) {
+  analyzeWordSubstitutions(state, words)
+  const index = commandIndex(state, words)
   if (index >= words.length) return
   const command = words[index].raw
   const args = words.slice(index + 1)
-  if (LOOP_CMDS.has(command)) {
-    if (args[1]?.raw === 'in') for (const arg of args.slice(2)) flag(state, arg, 'for', command, ['list', 'cmdsub'])
-    return
-  }
-  if (DECL.has(command)) {
-    let arrayFlag = false
-    for (const arg of args) {
-      if (/^[-+][A-Za-z]*[aA]/.test(arg.raw)) { arrayFlag = true; continue }
-      if (arg.meta.assign) recordAssign(state, arg, arrayFlag)
-      else if (arrayFlag && NAME_RE.test(arg.raw)) markArray(state, arg.raw)
-    }
-    return
-  }
+  if (LOOP_CMDS.has(command)) { processLoop(state, args, command); return }
+  if (DECL.has(command)) { processDeclaration(state, args); return }
   if (command === 'set') {
     for (const arg of args) flag(state, arg, 'set', 'set --', ['list', 'cmdsub'])
     return

@@ -194,3 +194,144 @@ describe('wt-zsh-word-split-guard-hook contract', () => {
     expect(commands.some((command: string) => command.includes('wt-zsh-word-split-guard-hook.mjs'))).toBe(true)
   })
 })
+
+type CharacterizationFinding = { name: string; kind: 'list' | 'cmdsub'; context: 'args' | 'for' | 'set'; use: string }
+
+const listFindings: CharacterizationFinding[] = [{ name: 'L', kind: 'list', context: 'args', use: 'kill $L' }]
+const loopFindings: CharacterizationFinding[] = [{ name: 'L', kind: 'cmdsub', context: 'for', use: 'for ... in $L' }]
+
+// Lock complete findings, including their order and use text, before splitting the lexer helpers.
+const characterizationCases: Array<[string, string, CharacterizationFinding[]]> = [
+  ['escaped whitespace', 'L=a\\ b; kill $L', listFindings],
+  ['escaped tab', 'L=a\\\tb; kill $L', listFindings],
+  ['line continuation inside a word', 'L=a\\\nb; kill $L', []],
+  ['line continuation between words', 'L="a b"; \\\nkill $L', listFindings],
+  ['double-quoted escaped space retains current silence', 'L="a\\ b"; kill $L', []],
+  ['single-quoted scalar', "L='a b'; kill $L", listFindings],
+  ['single-quoted empty scalar', "L=''; kill $L", []],
+  ['unterminated single quote', "L='a b; kill $L", []],
+  ['unterminated double quote', 'L="a b; kill $L', []],
+  ['trailing backslash inside double quotes', 'L="a\\', []],
+  ['trailing unquoted backslash', 'L=a\\; kill $L\\', []],
+  ['balanced midword glob', 'L="a b"; kill foo(bar) $L', listFindings],
+  ['unterminated midword glob', 'L="a b"; kill foo(bar $L', []],
+  ['ANSI-C newline escape', "L=$'a\\nb'; kill $L", listFindings],
+  ['ANSI-C tab escape', "L=$'a\\tb'; kill $L", listFindings],
+  ['ANSI-C escaped quote', "L=$'a\\' b'; kill $L", listFindings],
+  ['ANSI-C non-whitespace escape', "L=$'a\\rb'; kill $L", []],
+  ['unterminated ANSI-C quote', "L=$'a b; kill $L", []],
+  ['braced copy', 'L="a b"; X=${L}; kill $X', [{ name: 'X', kind: 'list', context: 'args', use: 'kill $X' }]],
+  ['braced flags copy', 'L="a b"; X=${=#^~+L}; kill $X', [{ name: 'X', kind: 'list', context: 'args', use: 'kill $X' }]],
+  ['braced no-name substitution', 'L=${1:-$(printf x)}; for x in $L', loopFindings],
+  ['braced nested command is analyzed', 'L="a b"; echo ${X:-$(kill $L)}', listFindings],
+  ['braced arithmetic is not a command substitution', 'L=${X:-$((1+2))}; for x in $L', []],
+  ['unterminated braced expression', 'L="a b"; kill ${L', []],
+  ['unquoted backtick assignment', 'L=`printf x`; for x in $L', loopFindings],
+  ['quoted backtick assignment', 'L="`printf x`"; for x in $L', loopFindings],
+  ['backtick nested command', 'L="a b"; echo `kill $L`', listFindings],
+  ['backtick escape', 'L=`printf \\`x`; for x in $L', loopFindings],
+  ['unterminated backtick', 'L=`printf x; for x in $L', []],
+  ['quoted command substitution', 'L="$(printf x)"; for x in $L', loopFindings],
+  ['nested parentheses and quotes in substitution', 'L=$(echo ("a)" \'b)\')); for x in $L', loopFindings],
+  ['nested parameters in quoted substitution', 'L=$(echo "${X:-$(echo x)}"); for x in $L', loopFindings],
+  ['backticks inside balanced substitution', 'L=$(echo `printf x`); for x in $L', loopFindings],
+  ['escaped closing parenthesis', 'L=$(echo \\)); for x in $L', loopFindings],
+  ['unterminated command substitution', 'L=$(printf x; for x in $L', []],
+  ['special parameters and lone dollars', 'L="a b"; echo $? $$ $# $@ $* $- $! $0 $9 $; kill $L', listFindings],
+  ['lone dollar at EOF', 'L="a b"; echo $', []],
+  ['unrecognized dollar suffix', 'L="a b"; echo $%; kill $L', listFindings],
+  ['braced numeric parameter without substitution', 'L=${1}; for x in $L', []],
+  ['arithmetic assignment', 'L=$((1+2)); for x in $L', []],
+  ['arithmetic command boundary', 'L="a b"; ((x++)); kill $L', listFindings],
+  ['comment with newline', 'L="a b"; # kill $L\nkill $L', listFindings],
+  ['comment without newline', 'L="a b"; # kill $L', []],
+  ['hash inside word stays literal', 'L="a b"; echo foo#bar; kill $L', listFindings],
+  ['process input substitution', 'L="a b"; cat <(kill $L)', listFindings],
+  ['process output substitution', 'L="a b"; cat >(kill $L)', listFindings],
+  ['redirected substitution', 'L="a b"; cat 2>$(kill $L)', listFindings],
+  ['redirect target alone does not flag', 'L="a b"; cat >$L', []],
+  ['redirect with no target before operator', 'L="a b"; cat > ; kill $L', listFindings],
+  ['redirect with no target at EOF', 'L="a b"; cat >', []],
+  ['redirect whitespace', 'L="a b"; cat 2> \t /dev/null; kill $L', listFindings],
+  ['plain heredoc', 'cat <<EOF\nL="a b"; kill $L\nEOF\nkill $L', []],
+  ['double-quoted stripped heredoc', 'L="a b"; cat <<-"EOF"\n\tkill $L\n\tEOF\nkill $L', listFindings],
+  ['multiple pending heredocs', 'L="a b"; cat <<A <<-B\nkill $L\nA\n\tkill $L\n\tB\nkill $L', listFindings],
+  ['unterminated heredoc final line', 'L="a b"; cat <<EOF\nkill $L', []],
+  ['heredoc delimiter without final newline', 'L="a b"; cat <<EOF\nEOF', []],
+  ['missing heredoc tag', 'L="a b"; cat <<\nkill $L', listFindings],
+  ['array element assignment', 'L[1]="a b"; kill $L', []],
+  ['array append on unknown name', 'L+=(a b); kill $L', []],
+  ['scalar append promotes cmdsub to list', 'L=$(printf x); L+=" y"; kill $L', listFindings],
+  ['copy preserves list classification', 'L="a b"; X=$L; kill $X', [{ name: 'X', kind: 'list', context: 'args', use: 'kill $X' }]],
+  ['assignments and prefixes before command', 'do time L="a b" noglob kill $L', listFindings],
+  ['assignments and prefixes only', 'L="a b"; do then', []],
+  ['command substitution before prefix assignment', 'L="a b" out=$(kill $L)', []],
+  ['select in scalar list', 'L="a b"; select x in $L', [{ name: 'L', kind: 'list', context: 'for', use: 'select ... in $L' }]],
+  ['foreach in scalar list', 'L="a b"; foreach x in $L', [{ name: 'L', kind: 'list', context: 'for', use: 'foreach ... in $L' }]],
+  ['loop without in clause', 'L="a b"; for x $L', []],
+  ['loop without args', 'L="a b"; for', []],
+  ['set flags cmdsub', 'L=$(printf x); set -- $L', [{ name: 'L', kind: 'cmdsub', context: 'set', use: 'set -- $L' }]],
+  ['set quoted scalar', 'L="a b"; set -- "$L"', []],
+  ['typeset array assignment', 'typeset -a L="a b"; kill $L', []],
+  ['typeset associative name', 'L="a b"; typeset +A L; kill $L', []],
+  ['typeset flag persists across args', 'typeset -ax ignored L="a b"; kill $L', []],
+  ['typeset invalid array name', 'L="a b"; typeset -a not-a-name; kill $L', listFindings],
+  ['declaration without array flag ignores bare name', 'L="a b"; local L; kill $L', listFindings],
+  ['declared scalar append', 'typeset L=x L+=" y"; kill $L', listFindings],
+  ['bare scalar as command', 'L="a b"; $L', [{ name: 'L', kind: 'list', context: 'args', use: ' $L' }]],
+  ['braced scalar as command', 'L="a b"; ${L}', [{ name: 'L', kind: 'list', context: 'args', use: ' ${L}' }]],
+  ['literal concatenation is not an exact reference', 'L="a b"; kill prefix$L $L/suffix', []],
+  ['emulate shell splitting', 'emulate -L sh; L="a b"; kill $L', []],
+  ['dynamic option argument is not recognized', 'setopt $option shwordsplit; L="a b"; kill $L', listFindings],
+  ['preserves current redirected-option warning', 'setopt >/dev/null shwordsplit; L="a b"; kill $L', listFindings],
+  ['preserves current assignment-prefixed-option warning', 'X=x setopt shwordsplit; L="a b"; kill $L', listFindings],
+]
+
+describe('wt-zsh-word-split-guard-hook lexer and command characterizations', () => {
+  it.each(characterizationCases)('%s', (_label, command, findings) => {
+    expect(analyze(command)).toEqual(findings)
+  })
+
+  it.each([';;', ';&', ';|', '&&', '||', '|&', '&!', '&|', ';', '|', '&', '\n'])('splits commands on %j', (operator) => {
+    expect(analyze(`L="a b" ${operator} kill $L`)).toEqual(listFindings)
+  })
+
+  it.each(['&>>', '&>', '<<<', '>>', '>|', '>!', '>&', '<&', '<>', '>', '<'])('recognizes %s redirection', (operator) => {
+    expect(analyze(`L="a b"; cat ${operator} /dev/null; kill $L`)).toEqual(listFindings)
+  })
+
+  it.each(['echo', 'print', 'printf', '[', '[[', 'test', 'eval', ':', 'exit', 'return', 'unset', 'read', 'case', 'source', '.', 'let'])('stays silent for %s', (command) => {
+    expect(analyze(`L="a b"; ${command} $L`)).toEqual([])
+  })
+})
+
+describe('wt-zsh-word-split-guard-hook exact notice and journal characterizations', () => {
+  it('preserves the full notice, deduplicated uses and three-use limit', () => {
+    const result = bash('L="a b"; kill $L; kill $L; for x in $L; set -- $L; cat $L')
+    const text = '[workflow-toolbox zsh word-split guard] zsh does not word-split an unquoted scalar: ' +
+      '`L` (built as a space-separated string, then used as `kill $L`, `for ... in $L`, `set -- $L`) ' +
+      'will reach the command as one word; a command can receive one malformed argument and a loop can run once. ' +
+      'Use `${=L}` for an explicit split, or an array: `L=()`, `L+=(value)`, then `"${L[@]}"`. ' +
+      'This hook recognizes `setopt shwordsplit` in the same command but cannot inspect options enabled in your .zshrc.'
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } }))
+  })
+
+  it.each([['observe', 'observe', ''], ['subagent', '', 'a123']])('preserves silent output and the %s journal record', (_label, mode, agent) => {
+    const journal = mkdtempSync(join(tmpdir(), 'wt-zsh-word-split-characterization-')); roots.push(journal)
+    const result = run({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: 'vitest', agent_id: agent,
+      tool_input: { command: 'L="a b"; kill $L' } }, {
+      WT_GUARD_MODE: mode, WT_GUARD_JOURNAL_DIR: journal,
+      WT_GUARD_JOURNAL_NOW: '2026-01-05T00:00:00Z', WT_GUARD_JOURNAL_TEST_ORIGIN: '1',
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('')
+    const entries = readdirSync(journal).filter((file) => file.endsWith('.ndjson'))
+      .flatMap((file) => readFileSync(join(journal, file), 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)))
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ ts: '2026-01-05T00:00:00.000Z', guard: 'wt-zsh-word-split-guard-hook.mjs',
+      decision: mode === 'observe' ? 'silent' : 'warned', mode: mode || 'enforce', origin: 'test',
+      class: 'zsh-unquoted-scalar-split', session: 'vitest', evidence: { vars: 'L' }, ...(agent ? { agent } : {}),
+    })
+  })
+})
