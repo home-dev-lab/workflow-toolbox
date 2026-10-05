@@ -11,7 +11,7 @@ import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { checkLines } from '../hooks/act-checks.js';
 import { ruleDirectories, configDirectory } from '../paths.js';
 import { argumentEvidence, bounded, RULE_CAP } from '../hooks/evidence.js';
-import { refusedAfterRun, afterGuardNote } from '../hooks/guard-refusal.js';
+import { storedRanRefusal, guardCarried } from '../hooks/guard-refusal.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { toolInputVerdict, bashSegments, segmentVerdict, correlateTurn } from '../hooks/declarative-checks.js';
 
@@ -167,12 +167,13 @@ export function normalize(record, line, cwd = '') {
     for (const part of results) {
       const raw = textOf(part.content);
       const refusal = raw.slice(0, RULE_CAP);
-      // A call that ran and that the secret guard answered with a refusal: its error may quote anything, and what rode
-      // on it follows the guard's note.
-      const ranRefusal = part.is_error === true && refusedAfterRun(raw);
-      const refused = !ranRefusal && refusal.includes(REFUSAL);
+      // A call that ran and that the secret guard answered with a refusal: its error may quote anything; what rode on
+      // it sits just above the guard's note (guard outer) or after it (guard inner).
+      const ranRefusal = part.is_error === true ? storedRanRefusal(raw) : null;
+      const refused = ranRefusal === null && refusal.includes(REFUSAL);
       events.push({ ...base, kind: 'result', id: part.tool_use_id, isError: part.is_error === true, text: bounded(raw), ...(refused ? { refused } : {}) });
-      const carried = ranRefusal ? afterGuardNote(raw).slice(0, RULE_CAP) : refused ? refusal : null;
+      let carried = refused ? refusal : null;
+      if (ranRefusal !== null) carried = guardCarried(ranRefusal).slice(0, RULE_CAP);
       if (carried !== null) for (const block of blocks(carried).filter((item) => !item.fallback))
         deliveries.push({ ...base, kind: 'delivery', name: block.name, bytes: block.bytes, provenance: { kind: 'refusal', toolUseId: part.tool_use_id, line, at } });
     }
