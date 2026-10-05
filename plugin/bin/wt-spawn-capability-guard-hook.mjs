@@ -50,6 +50,7 @@ function readInput() {
 /** Does the brief ask the agent to PRODUCE a file? Deliberately narrow: an imperative write verb
  *  bound to a path or to the report contract. Mentioning a path is not enough — briefs name paths
  *  to READ all the time, and denying those would make the guard the nuisance it exists to prevent. */
+const FR_ECRIRE_ENDINGS = 're|ras?|rez|rons|ront|rai[st]?|rait|riez|rions|vez|vons|vent|ve|ves|vi[eo]ns|[st]'
 const WRITE_INTENT = [
   ['write-to-path', /\bwrite\b[^.\n]{0,60}\b(?:to|into|at)\b[^.\n]{0,20}[/~][\w./-]+/i],
   ['write-report-to', /\bwrite\b[^.\n]{0,40}\b(?:report|findings|results?|output|proposal|file)\b[^.\n]{0,40}\bto\b/i],
@@ -59,7 +60,11 @@ const WRITE_INTENT = [
   // ⚠ No `\b` before an accented letter: JS word boundaries are built on ASCII \w, so `\bé`
   // does not mean what it looks like. And accents get dropped in practice, so match both forms.
   // A pattern that can never fire is worse than no pattern: it looks like coverage.
-  ['fr-ecris-dans', /(?:^|[^\p{L}])[ée]cri[st][^.\n]{0,60}(?:dans|vers|à|a)\s[^.\n]{0,20}[/~][\w./-]+/iu],
+  // The verb covers the imperative, infinitive, future and subjunctive (écris, écrire, écriras, écrives,
+  // écrivez) and must end there, so "écrivains" is not the verb. The preposition must start a word, or
+  // "méta (…" or "data in" would read as the preposition "a".
+  ['fr-ecris-dans', new RegExp(
+    `(?:^|[^\\p{L}])[ée]cri(?:${FR_ECRIRE_ENDINGS})(?!\\p{L})[^.\\n]{0,60}[^\\p{L}](?:dans|vers|à|a)\\s[^.\\n]{0,20}[/~][\\w./-]+`, 'iu')],
   ['fr-depose', /(?:^|[^\p{L}])(?:enregistre|sauvegarde|d[ée]pose|r[ée]dige)[^.\n]{0,60}[/~][\w./-]+/iu],
 ]
 
@@ -124,10 +129,41 @@ function adjacentNegation(before, after, french) {
   return prefix.slice(0, prefix.lastIndexOf(cue))
 }
 
+// A French infinitive carries its negation BEFORE the verb ("ne pas écrire", "sans écrire",
+// "il est interdit d'écrire"), which the post-verb frame above cannot see. The prohibition must
+// govern the verb directly: it ends right before the infinitive. A double negative ("n'oublie pas
+// d'écrire") never ends that way, and a negation or reversal earlier in the same comma segment
+// ("tu ne peux pas ne pas", "pourquoi ne pas") cancels it. Paths are blanked before any word test,
+// so "/tmp/avant" is not the word "avant".
+const FR_INFINITIVE = /^(?:[ée]crire|enregistrer|sauvegarder|d[ée]poser|r[ée]diger)$/iu
+const FR_MODAL = '(?:dois|doit|devez|devras|devrez|devrais|devrait|devait|doivent|peux|peut|pouvez|pouvait|pourrait|pourras|pourra|peuvent|faut|faudra|faudrait|vas|va|allez)'
+const FR_INFINITIVE_FRAME = new RegExp(
+  `(?:^|[^\\p{L}])(?:(?:ne\\s+|n')(?:${FR_MODAL}\\s+)?(?:surtout\\s+)?(?:pas|jamais|plus)(?:\\s+surtout)?` +
+    `|sans(?:\\s+(?:rien|jamais))?|(?:pas\\s+besoin|inutile|interdit|d[ée]fense|[ée]vite[rz]?)\\s+d(?:e\\s+|'))\\s*$`,
+  'u',
+)
+const FR_EARLIER_CANCEL = /(?:^|[^\p{L}])(?:(?:ne|pas|jamais|sans|non|pourquoi|si)(?!\p{L})|n')/u
+const FR_RESTRICTION = /(?:^|[^\p{L}])(?:(?:mais|seulement|uniquement|que|sauf|plut[ôo]t|avant|jusqu|sinon)(?!\p{L})|qu')/u
+const FR_CORRECTION_START = /^\s*(?:mais|plut[ôo]t|uniquement|seulement|sauf|sinon)(?!\p{L})/u
+
+function frenchWords(text) {
+  return normaliseContext(text).replace(/[/~][\w./-]+/g, ' ')
+}
+
+function isFrenchInfinitiveProhibition(candidate, context) {
+  if (candidate.phrase.includes(',')) return false
+  const before = frenchWords(context.before)
+  const frame = before.match(FR_INFINITIVE_FRAME)
+  if (!frame || FR_EARLIER_CANCEL.test(before.slice(0, frame.index).split(',').at(-1))) return false
+  const [here, next = ''] = frenchWords(context.after).split(',')
+  return !FR_RESTRICTION.test(here) && !FR_CORRECTION_START.test(next)
+}
+
 function isCleanProhibition(candidate, context) {
   if (candidate.pattern === 'report-written') return false
   // The destination must stay in the prohibited clause, not in a correction after it.
   if (/[;:!?]|\.(?=\s)/.test(candidate.phrase)) return false
+  if (FR_INFINITIVE.test(candidate.head)) return isFrenchInfinitiveProhibition(candidate, context)
   const { before, after } = context
   const earlier = adjacentNegation(before, after, candidate.pattern.startsWith('fr-'))
   if (earlier === null || hasReversal(earlier)) return false
@@ -165,7 +201,9 @@ function candidateSuppression(prompt, candidate, boundaries, cursor) {
   return null
 }
 
-function findWriteIntent(prompt) {
+function findWriteIntent(rawPrompt) {
+  // A decomposed accent (e + U+0301) must read as the same verb as the composed one.
+  const prompt = rawPrompt.normalize('NFC')
   let surviving = null
   let suppressed = null
   // Enumerate once; a filename's internal dot is not a clause boundary.

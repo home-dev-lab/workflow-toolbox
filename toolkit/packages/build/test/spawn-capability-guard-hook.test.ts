@@ -107,6 +107,30 @@ describe('wt-spawn-capability-guard-hook', () => {
       ['N’écris jamais ton rapport dans /tmp/x', 'écris jamais ton rapport dans /tmp/x', 'fr-ecris-dans', 'negated'],
       ['Ne rédige pas dans /tmp/x', 'rédige pas dans /tmp/x', 'fr-depose', 'negated'],
       ["N'enregistre plus dans /tmp/x", 'enregistre plus dans /tmp/x', 'fr-depose', 'negated'],
+      // Infinitive negation puts both particles BEFORE the verb.
+      ['ne pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['sans écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne jamais écrire ton rapport dans /tmp/x', 'écrire ton rapport dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Veille à ne pas ecrire dans /tmp/x', 'ecrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['**Ne pas** écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne pas enregistrer dans /tmp/x', 'enregistrer dans /tmp/x', 'fr-depose', 'negated'],
+      ['Tu ne dois pas écrire dans /home/x/repo.', 'écrire dans /home/x/repo.', 'fr-ecris-dans', 'negated'],
+      ['Lis /tmp/p.md sans rien écrire dans /home/x/repo.', 'écrire dans /home/x/repo.', 'fr-ecris-dans', 'negated'],
+      ["Pas besoin d'écrire dans /tmp/x : ton dernier message suffit.", 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne surtout pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ["Il est interdit d'écrire dans ~/.claude/rules.", 'écrire dans ~/.claude/rules.', 'fr-ecris-dans', 'negated'],
+      // A side clause carries its own negation; a "puis", "si", "ne" or "que" in another clause does not reverse it.
+      ['Lis /home/x/plan.md sans écrire dans /home/x/repo, puis rends ton verdict.', 'écrire dans /home/x/repo', 'fr-ecris-dans', 'negated'],
+      ['Vérifie si le hook marche, sans écrire dans ~/.claude.', 'écrire dans ~/.claude.', 'fr-ecris-dans', 'negated'],
+      ['Lis le module qui ne compile pas, sans écrire dans /tmp/x.', 'écrire dans /tmp/x.', 'fr-ecris-dans', 'negated'],
+      ['Analyse le dépôt sans écrire dans /home/x/repo, que tu dois laisser intact.', 'écrire dans /home/x/repo', 'fr-ecris-dans', 'negated'],
+      ['Analyse le rapport oublié sans écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne pas écrire dans /tmp/avant', 'écrire dans /tmp/avant', 'fr-ecris-dans', 'negated'],
+      ['Pas  besoin d’écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne pas **écrire** dans /tmp/x', 'écrire** dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Lis /tmp/si/x.md sans écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['nginx ne pouvait pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Tu ne devrais pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
       ['Never write your report to /tmp/x.md; your final message is the report.', 'write your report to /tmp/x.md', 'write-to-path', 'negated'],
       ['Compare its output to /tmp/expected.txt and report.', 'output to /tmp/expected.txt', 'save-to-path', 'noun'],
       ['Compare the JSON output to /tmp/expected.txt.', 'output to /tmp/expected.txt.', 'save-to-path', 'noun'],
@@ -189,6 +213,38 @@ describe('wt-spawn-capability-guard-hook', () => {
       'Do not write to /tmp/x: instead, put the report in /tmp/y.',
       'Do not write to /tmp/x; rather put the report in /tmp/y.',
       'N’écris pas dans /tmp/a : plutôt dans /tmp/b.',
+      // French infinitive instructions: the verb is the infinitive, the obligation sits elsewhere.
+      'Tu dois écrire ton rapport dans /tmp/r.md',
+      'Tu dois ecrire ton rapport dans /tmp/r.md',
+      "N'oublie pas d'écrire ton rapport dans /tmp/r.md",
+      'Écrivez le rapport dans /tmp/r.md',
+      'Ne pas écrire dans /tmp/a, mais dans /tmp/b.',
+      'Sans écrire dans /tmp/a; écris plutôt dans /tmp/b.',
+      'Tu écriras ton rapport dans /tmp/r.md',
+      'Il faut que tu écrives ton rapport dans /tmp/r.md',
+      'Pourquoi ne pas écrire ton rapport dans /tmp/r.md ?',
+      'Ne pas écrire dans le code, uniquement dans /tmp/r.md',
+      'Sans écrire dans le dépôt, mets ton rapport dans /tmp/r.md',
+      'Tu ne dois écrire que dans /tmp/r.md',
+      "N'hésite pas à écrire ton rapport dans /tmp/r.md",
+      'Ne manque pas de rédiger le rapport dans /tmp/r.md',
+      "Ne pas oublier d'écrire le rapport dans /tmp/r.md",
+      'Si besoin, ne pas hésiter à écrire dans /tmp/r.md',
+      // The prohibition must govern the verb itself: a negation elsewhere in the clause does not count.
+      'Sans attendre tu dois enregistrer le rapport dans /tmp/x',
+      'Le module ne marche pas et tu dois enregistrer le diagnostic dans /tmp/x',
+      'Ne pas seulement enregistrer le résumé dans /tmp/x',
+      'Tu ne peux pas ne pas rédiger le rapport dans /tmp/x',
+      "Il n'est pas interdit de déposer le rapport dans /tmp/x ; fais-le maintenant.",
+      'Ne pas enregistrer dans /tmp/a mais dans ./b.md',
+      'Il faut ne pas rédiger qu’un résumé dans /tmp/x ; inclure aussi les détails.',
+      'Use sans serif and run `enregistrer` dans /tmp/x.',
+      // A decomposed accent (e + U+0301) is the same verb.
+      'e\u0301crire dans /tmp/x',
+      'Il faut ne pas seulement écrire le résumé dans /tmp/x; inclus aussi les détails.',
+      ...['enregistrer', 'sauvegarder', 'déposer', 'deposer', 'rédiger', 'rediger'].map(
+        (verb) => `Tu dois ${verb} le rapport dans /tmp/r.md`,
+      ),
     ])('%s', (prompt) => {
       const r = readOnlySpawn(prompt)
       expect(r.denied).toBe(true)
@@ -299,8 +355,14 @@ describe('wt-spawn-capability-guard-hook', () => {
   describe('no matched candidate stays silent', () => {
     it.each([
       'without writing to /tmp/x',
-      'ne pas écrire dans /tmp/x',
-      'sans écrire dans /tmp/x',
+      'Décrire ce que fait /home/x/script.mjs dans /tmp/x',
+      'Lis les archives des écrivains dans /tmp/x.',
+      'Use the `ecrire` command to inspect data in /tmp/x.',
+      'Écrire le bloc méta délimité (`<!-- sr-meta v1 -->` … `<!-- /sr-meta -->`) en bas de la description',
+      // Nouns and past participles describe, they do not instruct.
+      'Aucune écriture dans ~/.claude/rules/ ni ailleurs',
+      'Les brouillons sont écrits et prêts, dans le fichier /tmp/x.md',
+      'Chaque ligne est écrite dans un journal durable (~/.local/state/x.jsonl)',
       'Read /tmp/x.diff and report',
     ])('%s', (prompt) => {
       const r = readOnlySpawn(prompt)
