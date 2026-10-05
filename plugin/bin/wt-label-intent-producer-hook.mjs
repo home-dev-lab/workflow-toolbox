@@ -4,8 +4,8 @@
 // read, instead of relying on a skill's prose telling the model to run it.
 //
 // The detector was correct, tested, and shipped — and invoked by NOTHING
-// except a "MANDATORY" line in plugin/skills/what-next/SKILL.md. Measured,
-// fresh session, 2026-07-27: the anti-false-verdict half of that line held
+// except a "MANDATORY" prose line in a (since removed) backlog-reading skill.
+// Measured, fresh session, 2026-07-27: the anti-false-verdict half of that line held
 // (the session correctly refused to write
 // "zero label gap" without having run the lens), but the "run it" half did
 // not reliably trigger the actual invocation — a text instruction can refuse
@@ -15,9 +15,9 @@
 // WHY A PostToolUse HOOK ON mcp__planka__get_board, SAME SHAPE AS
 // wt-actionable-snapshot-producer-hook.mjs: a hook is a plain node process
 // with no MCP connection and no model — it cannot read the board itself. It
-// reacts to a call the session already made. `/what-next`'s own Input 1 step
-// already calls get_board (or an unfiltered find_cards) to read the backlog,
-// so wiring here means the lens runs on every real /what-next pass with no
+// reacts to a call the session already made. Any session that reads the board
+// already calls get_board, so wiring here means the lens runs on every real
+// board read with no
 // separate gesture to forget. A project that never reads a Planka board
 // never triggers this hook: safe to ship broadly.
 //
@@ -35,7 +35,7 @@
 //
 // FAIL-OPEN: any exception anywhere in main() is caught by runFailOpenHook
 // and turns into a traced stderr line, never a broken PostToolUse response —
-// this hook must never be the reason the surrounding /what-next flow fails.
+// this hook must never be the reason the surrounding board-reading flow fails.
 
 import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
