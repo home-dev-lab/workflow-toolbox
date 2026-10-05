@@ -72,11 +72,24 @@ export function heartbeatTicket(queueDir, number, record) {
 }
 
 /** The ticket in the holder's shape ({ held, holder, ageMs }, age = time since its heartbeat), or null once gone. */
-export function readTicket(queueDir, number) {
+export function readTicket(queueDir, number, now) {
   const file = recordFile(queueDir, number)
   let holder = null
   try { holder = JSON.parse(readFileSync(file, 'utf8')) } catch { /* being written, or gone */ }
-  try { return { held: true, holder, ageMs: Date.now() - statSync(file).mtimeMs } } catch { return null }
+  try { return { held: true, holder, ageMs: (now ?? Date.now()) - statSync(file).mtimeMs } } catch { return null }
+}
+
+/** Read-only queue snapshot: one directory read and a shared clock, no reclamation or counter writes. */
+export function readQueueSnapshot(queueDir, now) {
+  let numbers
+  try { numbers = queuedTickets(queueDir) } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  }
+  return numbers.flatMap((number) => {
+    const ticket = readTicket(queueDir, number, now)
+    return ticket ? [{ number, ...ticket }] : []
+  })
 }
 
 // Windows refuses to unlink an entry another process holds open for a moment (EPERM/EBUSY);
