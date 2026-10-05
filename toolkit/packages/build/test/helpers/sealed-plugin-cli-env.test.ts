@@ -16,6 +16,21 @@ describe('sealedPluginCliEnv', () => {
     expect(env.USERPROFILE).toBeUndefined()
   })
 
+  // A gate wrapper that exports WT_SUITE_LOCK_WAIT_S (the outer suite run's lock wait, up to 12 h) must not reach the
+  // lock CLIs these tests spawn: a broker refuses a client waitS above its 10800 s ceiling, so seven suite-lock-broker
+  // cases failed under such a wrapper (card 1878424989787490016). A test that needs a wait passes it explicitly.
+  it('drops an ambient WT_SUITE_LOCK_WAIT_S, while an explicit override still wins', () => {
+    const previous = process.env.WT_SUITE_LOCK_WAIT_S
+    process.env.WT_SUITE_LOCK_WAIT_S = '43200'
+    try {
+      expect(sealedPluginCliEnv('/fixture', {}, 'linux').WT_SUITE_LOCK_WAIT_S).toBeUndefined()
+      expect(sealedPluginCliEnv('/fixture', { WT_SUITE_LOCK_WAIT_S: '5' }, 'linux').WT_SUITE_LOCK_WAIT_S).toBe('5')
+    } finally {
+      if (previous === undefined) delete process.env.WT_SUITE_LOCK_WAIT_S
+      else process.env.WT_SUITE_LOCK_WAIT_S = previous
+    }
+  })
+
   it('isolates both USERPROFILE and HOME on Windows', () => {
     const env = sealedPluginCliEnv('C:\\fixture', {}, 'win32')
     expect(env.HOME).toBe(join('C:\\fixture', 'home'))
