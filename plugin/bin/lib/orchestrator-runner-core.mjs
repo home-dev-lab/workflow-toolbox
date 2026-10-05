@@ -142,6 +142,7 @@ const isPlankaCardId = (id) => /^\d{1,19}$/.test(id) && BigInt(id) <= MAX_PLANKA
 // named in the report (Sol round 2: a malformed Depends-on line used to make a card vanish silently).
 // The Depends-on line is read by the shipped parser, the same one every other picker uses: no line is
 // "not checked", never pickable; an unreadable line or a missing dependency skips this card only.
+/** @knipTestSeam Imported by scripts/test/depends-on-consumers-differential.test.ts. */
 export async function missionIneligibilityReason(card, requiredLabels, board, known = new Map()) {
   const all = labels(card)
   if (!['P0', 'P1', 'P2'].some((label) => all.includes(label))) return 'no priority label'
