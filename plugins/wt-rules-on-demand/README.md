@@ -20,6 +20,23 @@ node /path/to/wt-rules-on-demand/scripts/rules.mjs prove-triggers rule-at-act.md
 node /path/to/wt-rules-on-demand/scripts/rules.mjs migrate rule-at-act.md --project /path/to/project --spec rule-at-act.spec.json --proof proof.json
 ```
 
+A user-scope `migrate --user` first checks that the engine serves rules in every
+profile it writes to (`--config-dir`, each `--mirror-dir`). A profile whose
+`settings.json` sets `disableAllHooks`, or sets the engine's `enabled` option to
+false, is refused. Otherwise it passes when its own store,
+`<profile>/plugins/store/wt-rules-on-demand_<source>-<hash>.json`, counts engine
+calls on one of the last 7 UTC days: the engine records those only while it runs
+enabled, so this covers a plugin loaded with `--plugin-dir`, for the launches that
+wrote them. Without that record, `settings.json` must list the plugin in
+`enabledPlugins` with `pluginConfigs["<id>"].options.enabled` true, and Function
+Hooks must be on: Claude Code 2.1.287 and later load mods by default (the running
+version is read from the `CLAUDE_CODE_EXECPATH` and `AI_AGENT` variables Claude Code
+sets for its commands); an older or unknown build needs
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. The check reads the profile's own
+`settings.json` only: managed settings, `--settings` and launch flags such as
+`--safe-mode` are not seen. `--assume-loaded <dir>` skips a profile you have
+verified by hand.
+
 An explicit `--no-proof "reason"` marks the rule unproven. `revert` returns a
 rule to static; `retire <rule.md> --reason "reason"` archives it without deleting
 its content. Only explicit CLI actions move rule files. The daily quality check
@@ -271,6 +288,19 @@ limits on every run.
 Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
 from a host timer or cron job; the plugin ships no scheduler. This entry point
 checks the user rules and configured followed projects, and defaults to dry-run.
+The nightly run also measures the static instruction prefix across profiles and
+recently used projects, without moving rule files. Its latest measurement lives
+at `<config dir>/plugins/data/wt-rules-on-demand/quality/static-prefix-latest.json`
+for each profile; SessionStart reports an over-limit, incomplete or stale result.
+Run `node scripts/prefix-size.mjs --config-dir <config dir> --json` to inspect it
+independently. The prefix CLI exits 0 (ok), 2 (near limit), 3 (unknown) or 4
+(over limit); the nightly CLI exits 4 for an over-limit prefix when rollback
+itself succeeded, and 1 for unknown or failed measurement.
+The measurement runs after the night's reverts, so a rule moved back to static
+counts the same night. A file over the per-file limit is left out of the harness's
+combined count but still loaded: the check reports it, with `loadedChars`, and is
+at least near the limit. The session-start line describes the session's own
+check and adds one line when a check elsewhere is over the limit.
 To permit evidence-gated reversions, pass `--apply` explicitly. A host can
 inspect rules before deployment with `rules.mjs check-rules --dir <rules-dir>
 --corpus <commands.json> --time-bound-ms 50`; each slow regex test is reported

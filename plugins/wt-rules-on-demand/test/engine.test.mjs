@@ -525,11 +525,14 @@ for (const [name, lines, event, pattern, length] of [
   ['path', `    - kind: 'path'\n      tool: '^Write$'\n      regex: '${overBudget}'`, { tool: 'Write', path: longMiss }, overBudget, 16000],
   ['path tool selector', `    - kind: 'path'\n      tool: '${overBudget}'\n      regex: 'never'`, { tool: longMiss, path: 'unmatched' }, overBudget, 16000],
 ]) test(`over-budget ${name} trigger serves and journals the failure`, async () => {
-  const f = fixture();
+  // Frozen clock: the 2000 ms shared wall deadline can never fire under machine load, so the per-regex step limit is the only bound.
+  const f = fixture({ clock: () => 0 });
   f.files.set('/sample-config/rules-on-demand/sample.md', triggerRule(lines));
   const result = await f.call(event);
   assert.match(result.context?.[0], /Budget rule body/);
-  assert.ok(errorsFor(f).some((row) => row.rule === 'sample.md' && row.pattern === pattern && row.length === length), JSON.stringify(errorsFor(f)));
+  // One rule alone stays under the shared budget: the row is the per-regex work limit, never the shared exhaustion.
+  assert.ok(errorsFor(f).some((row) => row.rule === 'sample.md' && row.pattern === pattern && row.length === length
+    && /^regex work budget exceeded; verdict unresolved$/.test(row.error)), JSON.stringify(errorsFor(f)));
   if (name === 'tool selector and no-input notice') assert.doesNotMatch(f.logs.join('\n'), /input-regex trigger not fired/);
 });
 

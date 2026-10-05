@@ -1492,10 +1492,13 @@ describe('SDK pilot runner', () => {
 
   // The SDK can emit an account-level `rate_limit_event` BEFORE its init message (measured on a fresh
   // account window). It carries no model output, so it must not count as "another message first".
-  it('tolerates a rate_limit_event that precedes the initialization receipt', async () => {
+  it.each([
+    ['a rate_limit_event', { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }],
+    ['a commands_changed notice', { type: 'system', subtype: 'commands_changed', commands: [] }],
+  ])('tolerates %s that precedes the initialization receipt', async (_name, notice) => {
     const f = fixture()
     const rateLimitedFirst = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
+      yield notice
       yield initMessage()
       await prompt.next()
     })()

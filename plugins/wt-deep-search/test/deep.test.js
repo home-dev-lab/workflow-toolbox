@@ -640,10 +640,23 @@ test('opencode timeout terminates the real detached child and grandchild before 
     'setInterval(() => {}, 1000);',
   ].join('\n'));
 
+  // The run's own timeout is HELD until the fixture has written both pids, then fired by hand.
+  // Left on a real 100 ms clock, a loaded machine can take longer than that just to start node, and
+  // the timeout then kills the fixture before it records anything: the pid file never appears and
+  // the test fails on its first wait, whatever that wait's ceiling. The termination grace waits
+  // that follow still run on the real clock, so the escalation path itself is exercised for real.
+  let fireRunTimeout;
+  const heldTimeout = Symbol('held run timeout');
   const result = startOpencode(
     { prompt: 'full brief', dir: root, logPath, timeoutMs: 100 },
     {
       spawn: (_command, _args, options) => spawn(process.execPath, [fixture, pidFile], options),
+      setTimeout: (callback, delay) => {
+        if (fireRunTimeout) return setTimeout(callback, delay);
+        fireRunTimeout = callback;
+        return heldTimeout;
+      },
+      clearTimeout: (handle) => { if (handle !== heldTimeout) clearTimeout(handle); },
       terminationGraceMs: 100,
     },
   );
@@ -653,9 +666,13 @@ test('opencode timeout terminates the real detached child and grandchild before 
       try {
         const pids = (await readFile(pidFile, 'utf8')).split(' ').map(Number);
         grandchildPid = pids[1];
-        return pids[0] === result.pid && Number.isInteger(grandchildPid);
+        return pids[0] === result.pid && Number.isInteger(grandchildPid) && grandchildPid > 0;
       } catch { return false; }
     }), true);
+    // Both processes are alive when the timeout fires, so their absence afterwards is the kill's doing.
+    process.kill(result.pid, 0);
+    process.kill(grandchildPid, 0);
+    fireRunTimeout();
     assert.equal(await waitFor(async () => (await readFile(logPath, 'utf8')).includes('EXIT=124')), true);
     assert.throws(() => process.kill(result.pid, 0), { code: 'ESRCH' });
     assert.throws(() => process.kill(grandchildPid, 0), { code: 'ESRCH' });

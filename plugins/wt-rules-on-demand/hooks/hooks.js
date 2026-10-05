@@ -6,6 +6,7 @@ import { ruleDirectories, configDirectory, agentLoop, projectRuleRoots, sameDire
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-match.js';
 import { regexCallBudget } from './linear-regex.js';
+import { refusedAfterRun } from './guard-refusal.js';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
 import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archiveTexts, familyOf, archiveName, retentionVictims,
   unsafeQualityPath, isSizeRefusal, jsonLength, property, sequenceNumber, OWNER_BITS } from './store-budget.js';
@@ -25,14 +26,13 @@ let archiveSequence = 0;
 let storeSwept = false;
 // This module instance's owners, drawn once per load so two instances under one pid (a hot reload) differ as much as
 // two separate hosts do: OWNER_BITS random bits in archive names (the most that keep the name's number a safe integer), and
-// 52 in segment ids, which are strings.
+// 52 in segment ids, which are strings. Delivery/verdict tokens use the same generator, redrawn on registration.
 const owner = Math.floor(Math.random() * 2 ** OWNER_BITS);
-const segOwner = Math.floor(Math.random() * 2 ** 52).toString(36).padStart(11, '0');
+const newToken = () => Math.floor(Math.random() * 2 ** 52).toString(36).padStart(11, '0');
+const segOwner = newToken();
 let segSequence = 0;
 const newSeg = () => `${segOwner}-${Date.now().toString(36)}-${(segSequence++).toString(36)}`;
 let sequence = 0;
-const processPrefix = () => (typeof process !== 'undefined' ? `${process.pid}-` : '');
-const newToken = () => processPrefix() + Date.now().toString(36);
 let token = newToken();
 const deliveryFields = ({ deliveryId, deliverySeq, servingSeq }) => ({ deliveryId, deliverySeq, servingSeq });
 const advancesClose = (previous, closeMark) => closeMark && !(previous?.token === token && previous.seq >= closeMark.seq);
@@ -907,11 +907,12 @@ async function turnCompleteWork($, e, next) {
        } finally { for (const rule of before) { const count = ctx.refusing.get(rule.name) - 1; if (count) ctx.refusing.set(rule.name, count); else ctx.refusing.delete(rule.name); } }
     }
       const result = await next(e);
-       if (result && ('deny' in result || 'drop' in result)) return result;
+      const refused = Boolean(result && 'deny' in result);
+       if (result && ('drop' in result || refused && !refusedAfterRun(result.deny))) return result;
      if (rules.some((rule) => rule.compliance?.kind === 'turn-correlation')) {
       const id = String(e.tool_use_id ?? `${ctx.correlation.length}`);
       ctx.correlation.push({ kind: 'use', id, name: e.tool, input: e.input ?? e });
-      ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: result?.isError === true });
+      ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: refused || result?.isError === true });
     }
      const acts = rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
      const ride = chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
@@ -934,7 +935,10 @@ async function turnCompleteWork($, e, next) {
        if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError, { seq: admission, discharged });
      }
      for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
-    return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
+    if (!ride.length) return result;
+    // A refusal carries only its text: what rides on it goes inside, after the guard's own words.
+    if (refused) return { deny: [result.deny, ...ride.map(block)].join('\n\n') };
+    return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
 }
 
 export function resetForSelftest() { unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

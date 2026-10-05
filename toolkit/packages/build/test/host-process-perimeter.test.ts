@@ -40,7 +40,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The suite-lock bypass guard (wt-suite-lock-bypass-guard-hook.mjs) adds one process-table-free hook;
     // its platform and path helpers live in bin/lib/host.
     // The cancelled-call relay guard hook adds one process-table-free module.
-    // Nine journal modules replace one reminder; their host operations remain in the adapter.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 256, violations: [] })
+    // Nine journal modules replace one reminder and the session-env dedup hook adds one; host operations remain in the adapter.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 257, violations: [] })
   })
 })

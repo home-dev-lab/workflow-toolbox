@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { blocks, REFUSAL, textOf } from './transcript-verdicts.mjs';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
+import { refusedAfterRun, afterGuardNote } from '../hooks/guard-refusal.js';
 
 export const ITEM_CHARS = 1200;
 export const EXCERPT_CHARS = 12000;
@@ -49,7 +50,14 @@ function served(record, line, cwd) {
   if (record.type === 'attachment' && record.attachment?.type === 'hook_additional_context')
     parts = [{ content: record.attachment.content, tool_use_id: (record.attachment.toolUseID ?? '').replace(/-context$/, '') }];
   else if (record.type === 'user' && Array.isArray(record.message?.content))
-    parts = record.message.content.filter((part) => part?.type === 'tool_result' && textOf(part.content).includes(REFUSAL));
+    parts = record.message.content.filter((part) => part?.type === 'tool_result')
+      .map((part) => {
+        const text = textOf(part.content);
+        // A call the secret guard answered with a refusal after it ran: its error may quote anything, and what rode on
+        // it follows the guard's note.
+        if (part.is_error === true && refusedAfterRun(text)) return { ...part, content: afterGuardNote(text) };
+        return text.includes(REFUSAL) ? part : null;
+      }).filter(Boolean);
   return parts.flatMap((part) => blocks(textOf(part.content)).filter((block) => !block.fallback && block.text !== null)
     .map((block, blockIndex) => ({ line, blockIndex, name: block.name, text: block.text, toolUseId: part.tool_use_id ?? '',
       at: record.timestamp ?? null, cwd, agentId: record.agentId ?? 'main', source: record.type })));

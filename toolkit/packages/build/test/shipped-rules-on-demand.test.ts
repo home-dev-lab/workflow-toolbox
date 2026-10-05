@@ -18,9 +18,10 @@ describe('shipped rules-on-demand', () => {
   it('runs dependency-free Node tests', () => {
     const run = spawnSync(process.execPath, ['--test'], { cwd: plugin, encoding: 'utf8' })
     expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0)
-  // The plugin's own `node --test` took 24.6 s on the windows-latest runner (run 36367767678), past
-  // the 20 s default; 60 s leaves about 2.4x that measurement.
-  }, 60_000)
+  // The plugin's own `node --test` took 67.9 s on the windows-latest runner (run 36971793287) and
+  // 57.0 s on ubuntu-latest and 42.9 s on macos-latest in the same run; 180 s leaves about 2.6x the
+  // slowest measurement.
+  }, 180_000)
   it('contains no private data or machine path', () => {
     const forbidden = ['.claude-work', 'planka', 'atrium', 'embedded-rules']
     const hits: string[] = []

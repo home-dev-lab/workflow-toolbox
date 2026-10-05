@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { probeArtifactServer, readArtifactDiscovery } from './lib/artifact-server.mjs'
+
+// The session's own shell does not carry CLAUDE_PLUGIN_ROOT, so the announced command names
+// the binary beside this hook by its resolved absolute path.
+const SERVER_BIN = join(dirname(fileURLToPath(import.meta.url)), 'wt-artifact-server.mjs')
 
 try {
   const input = JSON.parse(readFileSync(0, 'utf8') || '{}')
@@ -16,7 +22,7 @@ try {
     if (state) {
       const probe = await probeArtifactServer(state.port)
       if (probe.kind === 'ours' && probe.health.pid === state.pid) {
-        context = 'Artifact server is running: before handing the user a report or artifact path, run node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "<absolute-file-path>" and hand over the clickable link.'
+        context = `Artifact server is running: before handing the user a report or artifact path, run node "${SERVER_BIN}" url "<absolute-file-path>" and hand over the clickable link.`
       }
     }
     process.stdout.write(JSON.stringify({

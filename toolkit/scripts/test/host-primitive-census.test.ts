@@ -125,8 +125,8 @@ describe('raw host primitive quality ratchet', () => {
     // The shared find_cards page rule (find-cards-page.mjs) adds one pure module with no host operation.
     // The suite-lock bypass guard adds its hook; its platform and temp-root reads live in bin/lib/host.
     // The cancelled-call relay guard adds its hook; its file access lives in bin/lib/host.
-    // Nine journal modules replace one reminder; all new host access is behind the adapter.
-    expect(result.perimeterFiles).toBe(267)
+    // Nine journal modules replace one reminder and the session-env dedup hook adds one; all new host access is behind the adapter.
+    expect(result.perimeterFiles).toBe(268)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

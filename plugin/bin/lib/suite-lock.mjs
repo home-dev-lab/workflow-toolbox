@@ -350,7 +350,7 @@ async function retryTransient(operation, pauseMs) {
   }
 }
 
-// One poll of the queue: `{ lease }` when acquired, `{ again: true }` to poll again at once, or
+// One poll of the queue: `{ lease }` when acquired, `{ again: true, place }` to poll again at once, or
 // `{ place, current }` to wait.
 function pollQueue(state, options) {
   const { root, lockDir, queueDir, ticket, record } = state
@@ -370,7 +370,7 @@ function pollQueue(state, options) {
       if (queuePlace(queueDir, ticket, record, readLightCounter(root), options).ahead > 0) {
         releaseSuiteLock(lease)
         options.afterHandBack?.() // test seam: runs after a lock won and handed back
-        return { again: true }
+        return { again: true, place }
       }
       if (record.light === true) {
         try { recordLightGrant(root) } catch (error) { releaseSuiteLock(lease); throw error }
@@ -386,9 +386,9 @@ function pollQueue(state, options) {
   }
   const current = readSuiteLock({ root })
   // First in line and the holder released between my attempt and this read: try again now.
-  if (place.ahead === 0 && !current.held) return { again: true }
+  if (place.ahead === 0 && !current.held) return { again: true, place }
   // Only the head of the queue reclaims (acquisition also withdraws while reclaim.d exists, see tryTakeLock).
-  if (place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) return { again: true }
+  if (place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) return { again: true, place }
   return { place, current }
 }
 
@@ -409,10 +409,15 @@ export async function acquireSuiteLock(options = {}) {
   const lockDir = path.join(root, 'lock.d')
   const queueDir = path.join(root, 'queue.d')
   const waitMs = positiveSeconds(options.waitS ?? suiteLockWaitSeconds(env), '--wait-s') * 1000
+  // An explicit zero wait stays a fail-fast request at the head too.
+  const headWaitMs = waitMs === 0 ? 0 : Math.max(waitMs, positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000)
   const pollMs = options.pollMs ?? 2000
   const noticeMs = options.noticeMs ?? 30_000
   const startedWaiting = Date.now()
   let nextNoticeAt = startedWaiting
+  let lastProgressAt = startedWaiting
+  let bestAhead = Infinity
+  let lastPlace = null
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root))
   const ticket = await retryTransient(() => takeTicket(queueDir, record), HEAD_OF_QUEUE_POLL_MS)
@@ -423,12 +428,26 @@ export async function acquireSuiteLock(options = {}) {
       throwIfAborted(options.signal)
       const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS)
       if (step.lease) return step.lease
-      // Every iteration honours the deadline, an immediate retry included: a queue whose order keeps
-      // flipping can hand the lock back repeatedly, and that must not outlive the wait.
+      // An immediate hand-back retry also honours the deadline; only a NEW best place renews it.
       const current = step.again ? readSuiteLock({ root }) : step.current
       const now = Date.now()
-      if (now - startedWaiting >= waitMs) {
-        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}; inspect with wt-suite-lock status`)
+      // An immediate retry carries the place it was decided at: reaching the head there is progress too.
+      if (step.place) {
+        lastPlace = step.place
+        if (lastPlace.ahead < bestAhead) {
+          bestAhead = lastPlace.ahead
+          lastProgressAt = now
+          options.onProgress?.({ ahead: lastPlace.ahead, total: lastPlace.total })
+          options.onWait?.(`waiting for suite lock: ${describeWait(lastPlace, current, record.light === true)}`)
+          nextNoticeAt = now + noticeMs
+        }
+      }
+      // Once at the head, the head budget holds even when a light ticket passes it afterwards.
+      const budget = bestAhead === 0 ? headWaitMs : waitMs
+      const remaining = budget - (now - lastProgressAt)
+      if (remaining <= 0) {
+        const position = lastPlace ? `position ${lastPlace.ahead + 1} of ${lastPlace.total}` : 'position unknown'
+        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}; no queue progress for ${((now - lastProgressAt) / 1000).toFixed(1)} s at ${position}; inspect with wt-suite-lock status`)
         timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
         timeout.holder = current.holder
         throw timeout
@@ -440,7 +459,7 @@ export async function acquireSuiteLock(options = {}) {
         nextNoticeAt = now + noticeMs
       }
       const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
-      await sleep(Math.min(delay, Math.max(1, waitMs - (now - startedWaiting))), options.signal)
+      await sleep(Math.min(delay, budget / 4, remaining), options.signal)
     }
   } finally {
     removeTicket(queueDir, ticket)
@@ -490,6 +509,8 @@ function requestBrokerSuiteLock(socketPath, options) {
     let granted = false
     let released = false
     let resolveLost
+    let timer
+    let bestAhead = Infinity
     // Resolves with the REASON the granted lease was lost: the broker's own error text (its hold bound)
     // when one arrives after the grant, 'broker gone' when the socket closes. The first reason wins.
     // After a hold bound the socket stays OPEN: the broker releases the lock when it closes, which the
@@ -507,13 +528,17 @@ function requestBrokerSuiteLock(socketPath, options) {
       options.signal?.removeEventListener?.('abort', abort)
       reject(error)
     }
-    // The broker enforces waitS; the client allows a small transport/response margin so a
-    // zero-wait refusal still carries the broker's named holder rather than a blind timer.
-    const timer = setTimeout(() => {
-      const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}: holder unknown; inspect with wt-suite-lock status`)
-      timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
-      fail(timeout)
-    }, waitS * 1000 + 2000)
+    // The broker enforces the no-progress budget; the client allows a transport/response margin
+    // so a zero-wait refusal still carries the broker's named holder rather than a blind timer.
+    const restartTimer = (seconds) => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}: holder unknown; inspect with wt-suite-lock status`)
+        timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
+        fail(timeout)
+      }, seconds * 1000 + 2000)
+    }
+    restartTimer(waitS)
     const abort = () => fail(abortError())
     options.signal?.addEventListener?.('abort', abort, { once: true })
     socket.once('connect', () => { if (!settled) socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS, ...(options.light === true ? { light: true } : {}) })}\n`) })
@@ -523,6 +548,16 @@ function requestBrokerSuiteLock(socketPath, options) {
         const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
         if (settled && !granted) { socket.destroy(); return }
         if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
+        else if (line.startsWith('progress ')) {
+          // Only a strictly better place renews the client's own watchdog, and the head budget sticks once
+          // reached: a repeated, worse or impossible progress line from a faulty broker renews nothing.
+          const [ahead, total] = line.slice(9).split(' ').map((field) => (/^(0|[1-9]\d{0,8})$/.test(field) ? Number(field) : Number.NaN))
+          if (!settled && ahead < bestAhead && ahead < total) {
+            bestAhead = ahead
+            restartTimer(ahead === 0 && waitS > 0 ? Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S) : waitS)
+            options.onProgress?.({ ahead, total })
+          }
+        }
         else if (line.startsWith('error ') && granted) lose(line.slice(6))
         else if (line.startsWith('error ')) {
           const error = new Error(`suite lock broker ${socketPath}: ${line.slice(6)}; inspect with wt-suite-lock status`)

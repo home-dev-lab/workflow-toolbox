@@ -39,7 +39,7 @@ function importFlagViolations(source: string) {
 }
 
 function trackedScripts() {
-  const listing = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'toolkit', 'plugin'], { cwd: REPO, encoding: 'utf8' })
+  const listing = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'toolkit', 'plugin', 'plugins'], { cwd: REPO, encoding: 'utf8' })
   const deleted = new Set(execFileSync('git', ['diff', '--diff-filter=D', '--name-only', '-z', 'HEAD'], { cwd: REPO, encoding: 'utf8' }).split('\0'))
   return listing.split('\0').filter((file) => !deleted.has(file) && /\.(?:[cm]?[jt]s)$/.test(file) && !file.includes('/node_modules/') && !file.includes('/dist/') && basename(file) !== SELF)
 }
@@ -83,6 +83,7 @@ describe('node --import / --loader arguments are URLs', () => {
       'toolkit/packages/build/test/pilot-decision-store.test.ts',
       'toolkit/packages/build/test/quota-probe-token.test.ts',
       'toolkit/packages/build/test/service-watch.test.ts',
+      'plugins/wt-rules-on-demand/test/store-join.test.mjs',
     ]))
     expect(violations).toEqual([])
   })

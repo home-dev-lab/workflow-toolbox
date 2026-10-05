@@ -299,8 +299,8 @@ describe('What is running collector seam', () => {
       .match(/function fileUrlPath[\s\S]*?\n}/)?.[0]
     expect(body).toBeTruthy()
     const fn = vm.runInNewContext(`${body}; fileUrlPath`, sandbox) as typeof fileUrlPath
-    expect(fn(new URL('file:///home/doublefx/plugin/pricing/model-prices.json')))
-      .toBe('/home/doublefx/plugin/pricing/model-prices.json')
+    expect(fn(new URL('file:///home/dev/plugin/pricing/model-prices.json')))
+      .toBe('/home/dev/plugin/pricing/model-prices.json')
     expect(fn(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json')))
       .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
   })

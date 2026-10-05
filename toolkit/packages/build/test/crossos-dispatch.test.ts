@@ -250,7 +250,8 @@ describe('cross-OS dispatch', () => {
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log, 'matrix (macos-latest)'), print: out.print })).toBe(1)
     expect(out.lines).toContain('FAILED TEST [gating step: Test (macOS shard 2/2)] packages/build/test/sdk-pilot-lifecycle-server.test.ts > runner-hosted SDK pilot lifecycle > the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]')
     expect(out.lines.at(-1)).toBe('RESULT: red')
-  })
+    // Windows worst 12115 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
+  }, 31_000)
 
   it('fails closed on an unknown step and retains the no-gating-test fallback for diagnostic-only logs', async () => {
     const f = publicFixture(); const out = output()

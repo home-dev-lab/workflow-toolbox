@@ -22,7 +22,8 @@ import {
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   node wt-suite-lock.mjs status [--json]
-  node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]`
+  node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
+  --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without queue progress; the head waits up to max(--wait-s, --stale-s).`
 
 function parseSeconds(args, name, fallback) {
   const index = args.indexOf(name)

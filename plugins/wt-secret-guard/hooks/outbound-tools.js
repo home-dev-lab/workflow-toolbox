@@ -64,7 +64,7 @@ function pushStringFindings(found, value, key, path, options) {
     return -1;
   };
   for (const [, entry] of knownTokens()) {
-    if (typeof entry.value !== 'string' || !entry.value) continue;
+    if (entry.ephemeral || typeof entry.value !== 'string' || !entry.value) continue;
     const encoded = base64Utf8(entry.value);
     const short = entry.value.length < HELD_VALUE_FLOOR;
     const at = rawOccurrence(entry.value, short);
@@ -109,6 +109,7 @@ function fieldName(path) {
 
 function heldSource(finding) {
   for (const [token, entry] of knownTokens()) {
+    if (entry.ephemeral) continue;
     // replacementFor, never the map key: a token can be spelled like another held value (V52).
     if (finding.value === entry.value) { const safe = replacementFor(token); return { label: `held value ${safe}`, token: safe }; }
     if (finding.value === base64Utf8(entry.value)) { const safe = replacementFor(token); return { label: `base64 of held value ${safe}`, token: safe }; }
