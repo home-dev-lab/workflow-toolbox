@@ -299,6 +299,7 @@ async function planMirrors(root, from, to, mirrorDirs, scope, direction, name) {
     const mirrorTo = resolve(mirrorDir, relative(root, to));
     const sharedFrom = fromDirectory !== null && await realOrNull(dirname(mirrorFrom)) === fromDirectory;
     const sharedTo = toDirectory !== null && await realOrNull(dirname(mirrorTo)) === toDirectory;
+    if (direction === 'migrate' && sharedFrom && !sharedTo) throw new Error(`mirror ${mirrorDir}: shared rules with separate rules-on-demand would lose the migrated rule; share both directories or use a separate static directory with per-file links before migrating`);
     let removeLink = false;
     if (!sharedFrom) {
       const info = await lstat(mirrorFrom).catch((error) => error.code === 'ENOENT' || error.code === 'ENOTDIR' ? null : Promise.reject(error));
