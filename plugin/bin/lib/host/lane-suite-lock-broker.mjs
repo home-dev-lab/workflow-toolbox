@@ -124,7 +124,9 @@ export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUIT
           ...(request.light ? { light: true } : {}),
           signal: controller.signal,
           onWait: (line) => { if (!socket.destroyed) socket.write(`wait ${line}\n`) },
-          onProgress: ({ ahead, total }) => { if (!socket.destroyed) socket.write(`progress ${ahead} ${total}\n`) },
+          // The client watchdog follows non-release position; wait notices retain actual position.
+          onProgress: ({ ahead, aheadExcludingRelease, total }) => { if (!socket.destroyed) socket.write(`progress ${aheadExcludingRelease} ${total} ${ahead}\n`) },
+          onHandover: (holderId, priority) => { if (!socket.destroyed) socket.write(`handover ${holderId}${priority === 'release' ? ' release' : ''}\n`) },
         })
         if (closed) { releaseSuiteLock(acquired); return }
         lease = acquired

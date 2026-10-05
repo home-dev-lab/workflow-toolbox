@@ -37,7 +37,10 @@ deadline found · 2 usage error.
 `;
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP);
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--path', '--today', '--out'],
+    booleanFlags: ['--json', '--fail-on-unknown'],
+  });
   const out = { paths: [], today: null, json: false, out: null, failOnUnknown: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];

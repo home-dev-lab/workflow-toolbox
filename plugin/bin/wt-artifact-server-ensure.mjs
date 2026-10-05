@@ -512,7 +512,10 @@ async function main() {
 }
 
 const argv = process.argv.slice(2)
-handleHelpFlag(argv, HELP)
+handleHelpFlag(argv, HELP, {
+  valueFlags: [],
+  booleanFlags: [],
+})
 if (argv.length > 0) {
   process.stderr.write('usage: wt-artifact-server-ensure\n')
   process.exitCode = 2

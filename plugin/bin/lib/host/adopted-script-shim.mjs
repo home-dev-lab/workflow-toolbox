@@ -37,9 +37,13 @@ export function resolveAdoptedScript(file, env = process.env, cwd = process.cwd(
     if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) return refuse('plugin root must be an absolute path')
     const root = canonical(candidate)
     if (!root) return refuse('plugin root cannot be resolved')
-    if (readJson(path.join(root, '.claude-plugin', 'plugin.json'))?.name !== 'workflow-toolbox') return refuse('workflow-toolbox manifest missing or invalid')
+    const manifest = readJson(path.join(root, '.claude-plugin', 'plugin.json'))
+    if (manifest?.name !== 'workflow-toolbox') return refuse('workflow-toolbox manifest missing or invalid')
     const target = path.join(root, 'bin', file)
-    return regular(target) ? { root, target, lookup: null } : refuse(`canonical target is not a regular file: ${target}`)
+    return regular(target) ? { root, target, lookup: null } : {
+      root, target: null,
+      lookup: `installed workflow-toolbox v${manifest.version ?? 'unknown'} at ${root}: canonical target is not a regular file: ${target}; bin/${file}`,
+    }
   }
   return { root: null, target: null,
     lookup: `WT_PLUGIN_ROOT, ${registry} (applicable workflow-toolbox@* entries), CLAUDE_PLUGIN_ROOT; bin/${file}` }
@@ -54,11 +58,11 @@ function runAdoptedScript(file) {
     process.exit(2)
   }
   if (!resolved.target) {
-    if (process.argv[2] === '--help' || process.argv[2] === '-h') {
+    if (!resolved.root && (process.argv[2] === '--help' || process.argv[2] === '-h')) {
       try { fs.writeSync(1, `${file}: launcher for the installed workflow-toolbox plugin; plugin not found.\n`) } catch { /* rootless help is best effort */ }
       return
     }
-    fail(`installed workflow-toolbox plugin not found; looked up ${resolved.lookup}`)
+    fail(`${resolved.root ? 'installed workflow-toolbox script unavailable' : 'installed workflow-toolbox plugin not found'}; looked up ${resolved.lookup}`)
   }
   // A failed execve aborts Node: check the running interpreter's file and execute access.
   // Replacement between this check and exec remains a race; Node offers no safe JS catch.

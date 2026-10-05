@@ -2,7 +2,7 @@
 // text, the parent's trusted decision record, the deterministic timeout fallback, and the runner-owned text that
 // carries a resolution to the critic and the pilot report. It performs no I/O: callers read and write.
 import { randomBytes } from 'node:crypto'
-import { CARD_TERMS_HEADING } from './lifecycle-plan-shape.mjs'
+import { CARD_TERMS_HEADING, planTasks } from './lifecycle-plan-shape.mjs'
 
 export const DOD_DECISION_REQUEST_FILE = 'dod-decision-request.md'
 // A run is automated and its parent is a session watching the run log, never a person: the wait is
@@ -39,15 +39,25 @@ function termQuotedWholeWord(text, term) {
   return false
 }
 
-export function criticFindingAfterNoReblock(finding, state, dodBullets, log) {
+function taskQuotesTerm(finding, tasks, term) {
+  const id = /^plan task ([A-Za-z]+\d+|\d+)$/i.exec(String(finding.anchor ?? '').trim())?.[1]?.toLowerCase()
+  return id != null && tasks.some((task) => task.id?.toLowerCase() === id && termQuotedWholeWord(task.line, term))
+}
+
+export function criticFindingAfterNoReblock(finding, state, dodBullets, log, planContent = '') {
   if (!finding.blocks) return
   const anchor = DOD_ANCHOR.exec(String(finding.anchor ?? '').trim())
+  const tasks = planTasks(planContent ?? '')
   const ignored = state.dodDisputes.find((dispute) => dispute.resolution?.source === 'fallback' &&
-    (anchor ? Number(anchor[1]) === dispute.criterion : termQuotedWholeWord(finding.text, dodBullets?.[dispute.criterion - 1] ?? dispute.term)))
+    (anchor ? Number(anchor[1]) === dispute.criterion : findingQuotesSettledTerm(finding, tasks, dodBullets?.[dispute.criterion - 1] ?? dispute.term)))
   if (ignored) {
     finding.blocks = false
     log?.(`ignored-by-no-reblock rule: DoD ${ignored.criterion}: ${finding.text}`)
   }
+}
+
+function findingQuotesSettledTerm(finding, tasks, term) {
+  return termQuotedWholeWord(finding.text, term) || taskQuotesTerm(finding, tasks, term)
 }
 
 function cardTermsEntries(plan) {

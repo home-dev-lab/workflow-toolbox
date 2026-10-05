@@ -126,11 +126,14 @@ function describeTreeChange(startedHead, currentHead, changedPaths) {
 }
 
 function parseArgs(argv) {
-  // --help must be recognised only BEFORE a literal '--' — anything after that marker is the
-  // gate command itself (e.g. `-- some-tool --help` must run some-tool, not print this usage).
-  const dashDashIndex = argv.indexOf('--')
-  const ownArgs = dashDashIndex === -1 ? argv : argv.slice(0, dashDashIndex)
-  handleHelpFlag(ownArgs, HELP)
+  // The full argv goes to the helper with `endOfOptions: true`: the walk stops at a literal `--` that
+  // is in option position (everything after is the gate command, so `-- some-tool --help` runs
+  // some-tool) but sees a `--` that a value flag consumes (`--check -- --help`) as that flag's value.
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--name', '--record', '--check', '--gate', '--out-dir', '--fail-pattern'],
+    booleanFlags: [],
+    endOfOptions: true,
+  })
   const args = { name: null, record: null, check: null, gates: null, outDir: '.', outDirExplicit: false, failPattern: null, cmd: [] }
   let i = 0
   for (; i < argv.length; i++) {

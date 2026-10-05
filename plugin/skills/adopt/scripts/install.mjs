@@ -818,7 +818,7 @@ function stripScriptBanner(text) {
  *  installer just wrote it from its own template a moment earlier. Returns
  *  `{ text, preserved }`; `preserved` is `[]` when there is nothing local to carry (the common
  *  case, and the only case for the rules/autonomy sets, which pass no `oldContent`). */
-function renderItem(set, item, version, root, oldContent = null, triggers = null, force = false) {
+function renderItem(set, item, version, root, oldContent = null, triggers = null, { force = false } = {}) {
   const rawContent = itemContent(set, item, root)
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
@@ -2218,7 +2218,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
     return
   }
   const oldContent = existingContentForRender(set, target, classification)
-  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, args.force)
+  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, { force: args.force })
   if (preserved.length > 0) {
     process.stdout.write(
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
@@ -2984,6 +2984,13 @@ function managedSetGroups(set, fallbackDir, resolution, root) {
   return groups
 }
 
+// `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under --global the
+// config dir IS the '.claude' layer already, so `globalSubdir` (its own field, NOT derived from
+// defaultDir's basename — see the SETS comment above) is appended instead.
+function managedSetFallbackDir(set, args, globalRoot) {
+  return path.resolve(args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)))
+}
+
 function runManagedCommand(args, context) {
   const { root, version, chosen, globalRoot } = context
   const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
@@ -3007,13 +3014,7 @@ function runManagedCommand(args, context) {
   }
   for (const name of chosen) {
     const set = SETS[name]
-    // `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under
-    // --global the config dir IS the '.claude' layer already, so `globalSubdir` (its own
-    // field, NOT derived from defaultDir's basename — see the SETS comment above) is
-    // appended instead.
-    const fallbackDir = path.resolve(
-      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
-    )
+    const fallbackDir = managedSetFallbackDir(set, args, globalRoot)
     // Checked once against the whole set: a group the implicit resolution did not give this file skips it.
     if (args.file && !set.resolveItems(root).some((item) => item.file === args.file)) {
       fail(`--file is not managed by --set ${set.kind}: ${args.file}`)

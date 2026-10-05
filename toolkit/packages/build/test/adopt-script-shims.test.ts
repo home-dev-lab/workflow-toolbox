@@ -108,6 +108,20 @@ describe('adopted script shim contract', () => {
     expect(install(f).status).toBe(1); expect(existsSync(join(f.scripts, file))).toBe(false)
     expect(check(f).status).toBe(0)
   })
+  it.each(FILES)('names the missing script and installed plugin version and refuses even help for %s', (file) => {
+    const f = fixture(); adopt(f); rmSync(join(f.plugin, 'bin', file))
+    const refused = install(f, '--force')
+    expect(refused.status).toBe(1)
+    expect(refused.stdout).toContain(`bin/${file}`)
+    expect(refused.stdout).toContain('installed workflow-toolbox v1.0.0')
+    for (const args of [[], ['--help'], ['-h']]) {
+      const actual = run(f, file, args)
+      expect(actual.status).toBe(2)
+      expect(actual.stdout.toString()).toContain(`bin/${file}`)
+      expect(actual.stdout.toString()).toContain('installed workflow-toolbox v1.0.0')
+      expect(actual.stderr).toEqual(actual.stdout)
+    }
+  })
   it('treats an entirely absent scripts set as no drift', () => { expect(check(fixture()).status).toBe(0) })
   it.each(FILES)('preserves argv, bytes, cwd, env, and exit codes through %s', (file) => {
     const f = fixture(); adopt(f)
@@ -150,8 +164,11 @@ describe('adopted script shim contract', () => {
     expect(run(f, FILES[0]!).stdout.toString()).toBe('preferred')
   })
   it.each([true, false])('accepts single registry entries (wrapper=%s) before the loaded root', (wrapped) => {
-    const f = fixture(); adopt(f); registry(f.config, { scope: 'user', installPath: f.plugin }, wrapped)
+    const f = fixture()
+    writeFileSync(join(f.plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'workflow-toolbox', version: '0.0.1' }))
+    registry(f.config, { scope: 'user', installPath: f.plugin }, wrapped)
     f.env.CLAUDE_PLUGIN_ROOT = fakePlugin(f.root, 'loaded')
+    adopt(f)
     expect(run(f, FILES[0]!).stdout.toString()).toBe('installed')
   })
   it('ignores foreign project entries but refuses the first applicable broken installation', () => {
@@ -202,12 +219,28 @@ describe('adopted script shim contract', () => {
   })
 })
 
-function hook(f: ReturnType<typeof fixture>) {
-  const result = spawnSync(process.execPath, [HOOK], { env: f.env, cwd: f.project, encoding: 'utf8', input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: f.project }) })
+function hook(f: ReturnType<typeof fixture>, source = 'startup') {
+  const result = spawnSync(process.execPath, [HOOK], { env: f.env, cwd: f.project, encoding: 'utf8', input: JSON.stringify({ hook_event_name: 'SessionStart', source, cwd: f.project }) })
   expect(result.status).toBe(0)
   return result.stdout
 }
 describe('scripts adoption notice', () => {
+  it('uses the short script-drift remedy after compaction and retains the full startup remedy', () => {
+    const f = fixture(); adopt(f)
+    writeFileSync(join(f.scripts, FILES[0]!), readFileSync(join(f.scripts, FILES[0]!), 'utf8') + '// edit\n')
+    const compact = JSON.parse(hook(f, 'compact')).hookSpecificOutput.additionalContext as string
+    expect(compact).toContain(`${FILES[0]} (${f.scripts}): EDITED`)
+    expect(compact).toContain('Re-run the workflow-toolbox:adopt skill to inspect and reconcile script drift.')
+    expect(compact).toContain('This digest omits the per-file remedies')
+    expect(compact).not.toContain('--set scripts')
+    expect(compact).not.toContain('--force')
+    expect(compact).not.toContain('--fail-on-drift')
+    const startup = JSON.parse(hook(f)).hookSpecificOutput.additionalContext as string
+    expect(startup).toContain('--set scripts')
+    expect(startup).toContain('--diff')
+    expect(startup).toContain('--force')
+    expect(startup).toContain('--fail-on-drift')
+  })
   it.each(FILES)('reports every drifting state of %s with actionable commands', (file) => {
     const f = fixture(); adopt(f); const target = join(f.scripts, file), original = readFileSync(target, 'utf8')
     for (const state of ['edited', 'stale', 'hand-authored', 'missing']) {

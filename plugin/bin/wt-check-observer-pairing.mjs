@@ -43,7 +43,10 @@ function sleepMs(ms) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--subagents-dir', '--agent-id', '--name', '--window-sec', '--capture-dir', '--retry-ms', '--retry-interval-ms'],
+    booleanFlags: [],
+  })
   const out = {
     subagentsDir: null,
     agentId: null,

@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { blocks, REFUSAL, textOf } from './transcript-verdicts.mjs';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
-import { refusedAfterRun, afterGuardNote } from '../hooks/guard-refusal.js';
+import { storedRanRefusal, guardCarried } from '../hooks/guard-refusal.js';
 
 export const ITEM_CHARS = 1200;
 export const EXCERPT_CHARS = 12000;
@@ -53,9 +53,10 @@ function served(record, line, cwd) {
     parts = record.message.content.filter((part) => part?.type === 'tool_result')
       .map((part) => {
         const text = textOf(part.content);
-        // A call the secret guard answered with a refusal after it ran: its error may quote anything, and what rode on
-        // it follows the guard's note.
-        if (part.is_error === true && refusedAfterRun(text)) return { ...part, content: afterGuardNote(text) };
+        // A call the secret guard answered with a refusal after it ran: its error may quote anything; what rode on it
+        // sits just above the guard's note (guard outer) or after it (guard inner).
+        const ran = part.is_error === true ? storedRanRefusal(text) : null;
+        if (ran !== null) return { ...part, content: guardCarried(ran) };
         return text.includes(REFUSAL) ? part : null;
       }).filter(Boolean);
   return parts.flatMap((part) => blocks(textOf(part.content)).filter((block) => !block.fallback && block.text !== null)
