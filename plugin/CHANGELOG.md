@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- The workflow-composer, adopt, pilot-wave, delegation-chain, upgrade-canary, and workflow-debugger skills now keep their detailed guides in linked references opened on demand, preserving the full instructions. A new size-and-link test keeps every shipped skill within 15,000 characters and checks that its references are discoverable from the skill body.
 - The adopted `pilot` template no longer runs the full test suite for every card. After its fix rounds, a pilot now runs only the tests its change affects, using the project's affected-test selection when the project has one. A change to shared test infrastructure (the suite lock, test setup, test runners, dependency manifests) still runs the full suite. The full suite runs once per integration batch, where the cards are merged. With several pilots working at once, each card's gate now holds the machine's suite lock for minutes, not for a whole suite. Re-adopt the template to pick this up.
 ### Fixed
 - The report-channel and nested self-review spawn advisories now require message-delivery cues or a direct request to review the caller's work, instead of warning on unrelated report nouns and ownership words. Delivery includes sending the spawner a plan and replying to an agent; self-review tolerates nearby modifiers and includes pull requests, commits and branches. Both guards remain warn-only and continue to ignore quoted and fenced examples.

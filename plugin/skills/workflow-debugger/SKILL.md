@@ -106,22 +106,7 @@ live run** for `in-progress` (check the web UI for a zombie first).
 
 ## Honesty about what is observed vs inferred
 
-Both journal signals ARE observed in real journals on disk: agents DO end in
-non-`done` states (`error`, plus `progress`/`start` frozen mid-flight on runs that
-died), and `attempt > 1` DOES occur (StructuredOutput schema retries recorded in
-real runs). They stay rare next to the healthy population — treat a classification
-built on them as a strong hint and confirm against the agent's transcript. Budget
-exhaustion stays an advisory text Finding (never a primary verdict, so a wording
-miss costs nothing).
-
-**A second schema failure shape is also observed** (live probe, CC 2.1.170): give an agent an
-unsatisfiable schema and `attempt` still never goes above 1 — the runtime nudges the
-SAME agent conversation to call StructuredOutput, and after 2 in-conversation nudges
-the `agent()` call **throws** `agent({schema}): subagent completed without calling
-StructuredOutput`, while the journal records the failing agent as `done`/`attempt: 1`.
-The run therefore lands as a `script-throw`; the debugger matches that error signature
-and attaches a **schema-hint** finding telling you to fix the schema and re-run — the
-"done" agent's cache holds no usable result, so resuming buys nothing for that call.
+Open [references/observed-vs-inferred.md](references/observed-vs-inferred.md) when confirming an agent-state or schema-failure classification against transcripts.
 
 ## Reached no external model (a diagnosable class, not a mystery)
 
@@ -146,42 +131,7 @@ record) directly:
 
 ## Thin-envelope runs
 
-`workflow-toolbox:opencode-envelope` is a different lane shape from the heavy wrappers above. The
-script writes its invocation artifacts under the machine state root's (XDG_STATE_HOME or ~/.local/state)
-`wt-envelope/<pid>-<timestamp>-<random>/` (or `WT_ENVELOPE_WORKDIR` when explicitly set),
-and the manifest for that invocation is `envelope.manifest.json`; the brief `MANIFEST: <path>` line
-on stdout is the handle the debugger follows into the manifest, the per-task answer files, and the
-per-task logs (`plugin/bin/wt-opencode-envelope.mjs:114-116`,
-`plugin/bin/wt-opencode-envelope.mjs:659-675`, `plugin/CHANGELOG.md:11-12`).
-
-- **Where the evidence lives.** The manifest path comes from the Bash output's `MANIFEST:` line;
-  each task record in that JSON carries its own `answerFile`, `log`, `model`, `durationMs`, and
-  optional `usage`, and each per-task log ends with `EXIT=` because the script owns the CLI call
-  and its timeout/logging (`plugin/bin/wt-opencode-envelope.mjs:10-16`,
-  `plugin/bin/wt-opencode-envelope.mjs:671-675`, `plugin/agents/opencode-envelope.md:62-69`).
-- **Read `laneTokens` literally.** The verifier hook sets `meta.laneTokens` only when
-  `usage.tokens` exists, and omits the key entirely otherwise; absent means UNKNOWN, never zero
-  (`plugin/bin/wt-verifier-cli-guard-hook.mjs:689-694`,
-  `plugin/bin/wt-verifier-cli-guard-hook.mjs:843-848`).
-- **Expect one observatory node per external call, not one per envelope agent.** The envelope hook
-  unfolds the manifest's `tasks` array and writes one child node per task, and the changelog calls
-  out the same invariant as "One envelope, N external calls, N nodes"
-  (`plugin/bin/wt-verifier-cli-guard-hook.mjs:843-869`, `plugin/CHANGELOG.md:198-207`).
-- **CLI-called vs self-answered is different here.** A wrapper proves delegation with a real CLI
-  `tool_use` in the wrapper transcript. A thin envelope proves delegation with the `MANIFEST:` line
-  plus the manifest-backed answer/log files. If an envelope agent answered itself, you will find
-  neither artifact even if the transcript shows some unrelated tool call such as `git diff`
-  (`plugin/bin/wt-opencode-envelope.mjs:118-122`, `plugin/bin/wt-opencode-envelope.mjs:659-675`).
-- **`resumeFromRunId`: treat resumed envelopes conservatively.** The workflow runtime does replay
-  completed `agent()` calls from cache in the same session, but this skill does not verify any
-  envelope-specific idempotency contract in code; the script itself is "run the batch, write the
-  manifest" per invocation, so if a routed envelope agent re-runs, treat it as re-running its
-  batch (`plugin/skills/workflow-debugger/SKILL.md:89-105`,
-  `plugin/bin/wt-opencode-envelope.mjs:10-16`, `plugin/bin/wt-opencode-envelope.mjs:641-675`).
-
-If the class fires, name it plainly rather than describing the run as merely "wrong" —
-"the external model was never reached; the wrapper answered in its place" is a
-different, more actionable finding than "the review missed something."
+Open [references/thin-envelope-runs.md](references/thin-envelope-runs.md) when diagnosing a run routed through a thin external-model envelope.
 
 ## Degraded runs — silently-denied tool calls (blind reviews/plans/impls)
 
@@ -208,55 +158,8 @@ hit a denial will honestly read as degraded — the human reads the report.
 
 ## The `wt-observe` launcher CLI (ships in the same package)
 
-`@workflow-toolbox/debugger` also ships `wt-observe`, the lifecycle CLI for the
-Workflow Observatory companion app (the live run UI). `wt-debug` reads a run AFTER
-the fact; `wt-observe` manages the server that watches runs as they happen:
-
-| Verb | What it does |
-|------|--------------|
-| `start [--source <dir>]… [--watch] [--enable-launch]` | resolve the source set (`--source` flags > the persistent config list > auto-discovery of `~/.claude*` config dirs), then adopt a healthy running server or spawn a detached one; `--enable-launch` opts the instance into live launches |
-| `stop` | SIGTERM the owned server (identity-checked against the pidfile) and clear the pidfile |
-| `status` | pidfile + live health (sources served, launch opt-in), human-readable |
-| `launch <workflow> [--args <json>] [--source <label\|dir>]` | POST `/api/launch` a REGISTERED workflow by name — never an arbitrary path — and print `{ runId }` |
-| `await <runId>` | block until the run finishes and print `{ runId, status, result }`; its exit code is the outcome (pair it with a background shell — the exit IS the notification) |
-| `resume <runId> [--source <label\|dir>]` | the sanctioned explicit recovery of a settled-FAILED run (POST `/api/runs/:runId/recover`; distinct from the server's internal pause-transport resume) |
-| `prune` | delete test/probe run records so they stop lingering in the timeline; a still-running record (no terminal json yet) is invisible to prune — live runs can never be deleted |
-| `config show \| add-source <dir> \| remove-source <dir> \| add-remote <url> [--token\|--token-file\|--label] \| remove-remote <url>` | manage the persistent source list and remote-hub mounts (never auto-written by `start`; re-adding a remote's canonical URL is how you rotate its credentials) |
-
-Two mechanics worth knowing:
-
-- **Server resolution.** The spawn target is the Observatory checkout, located from
-  `$DWT_OBSERVE_ROOT` or by walking up from the current directory (interim posture,
-  pre-npm distribution of the app).
-- **Per-server API token + identity checks.** `start` generates a random token, hands
-  it to the server via env, and records it in the (0600) pidfile; every subsequent
-  `/api` action authenticates with that token AND identity-checks the pid first — a
-  foreign server that happens to sit on the same port is never commanded.
+Open [references/wt-observe-launcher-cli.md](references/wt-observe-launcher-cli.md) when managing the live Observatory server or launching, awaiting, or recovering its runs.
 
 ## How it works (for maintenance)
 
-The logic is a tested package in the toolkit; the plugin ships only the bundled artifact.
-
-- `@workflow-toolbox/debugger` `journal.ts` — tolerant journal types + `parseJournal` (never throws) +
-  agent accessors (`doneAgents`/`incompleteAgents`/`retriedAgents`). Unit-tested.
-- `diagnose.ts` — the pure decision table `diagnoseRun` + `recommendResume`. Unit-tested.
-- `format.ts` — the pure text report. Unit-tested.
-- `tool-denial.ts` — the pure denial scanner (`classifyDenial` / `parseTranscriptDenials` /
-  `buildToolDenialReport`); a closed allow-list of denial signatures. Unit-tested. Fed into the
-  audit report by `audit-folder.ts`'s `scanTranscripts({withDenials})` and surfaced by the Stop hook.
-- `source.ts` — impure journal resolution (filters `wf_*` before the mtime sort so a sibling
-  `agent-*.meta.json` never wins "latest"). Held out of `pnpm test`.
-- `cli.ts` — the entry esbuild bundles into `plugin/bin/wt-debug.mjs` (node ESM, zero npm
-  deps). `pnpm debugger:build` re-freezes it byte-identically into both `toolkit/bin/` and
-  `plugin/bin/`; a byte-identity test guards against drift.
-
-Related: **workflow-composer** authors/repairs the script itself; **upgrade-canary** checks
-whether a Claude Code upgrade moved the runtime surface this debugger reads. **`npx workflow-toolbox report
-[runId|latest|<journal-path>]`** is the sibling read of the same journal for a different question — not "why
-did it fail?" but "what did it cost, what did it decide, where are the transcripts?": a per-agent
-token rollup (reconciled to the run total), a per-agent **token breakdown** (input / output /
-cache-read / cache-write, read from each agent's transcript), the decision trail, and best-effort
-transcript links. When a run *has* agents (e.g. an `agent-died` you are diagnosing), `workflow-toolbox report`
-is where you drill into that agent's cost and open its transcript. The breakdown is a separate
-section from the journal cost rollup — the transcript sum (per-turn billed tokens) and the journal
-`tokens` aggregate are different measures and are not reconciled.
+Open [references/how-it-works.md](references/how-it-works.md) when maintaining the debugger or drilling into its implementation and audit-report modules.
