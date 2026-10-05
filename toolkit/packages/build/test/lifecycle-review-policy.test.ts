@@ -334,4 +334,44 @@ FINDINGS:
     expect(brief).toContain('## No-finding attack account')
     expect(brief).toContain('failed critic round and is re-run once')
   })
+
+  it('gives only plan critics the mandatory-section truth checklist', () => {
+    const options = { context: 'judge the supplied artefact', artifacts: ['plan.md'], reportPath: 'report.md' }
+    const critic = independentBrief({ ...options, phase: 'critic' })
+    const bullets = [
+      '- `## Quality coverage` / `Changed artefacts:`',
+      '- `## Quality coverage` / `Seams:`',
+      '- `## Gates`',
+      '- `## Card terms: reading chosen`',
+      '- `## State and recovery` / `Ownership:`',
+      '- `## State and recovery` / `Writers:`',
+      '- `## State and recovery` / `Terminal paths:`',
+      '- `## State and recovery` / `Published data:`',
+    ]
+    expect(critic).toContain('## Coverage checklist\n')
+    expect(critic).toContain('Plan-stage checklist')
+    for (const bullet of bullets) expect(critic).toContain(bullet)
+    for (const question of [
+      'each changed artefact against each applicable repository quality rule',
+      'approved seams and the census/ratchet checks',
+      'every repository-required validation with exit-code acceptance',
+      'each DoD term the plan interprets, anywhere in the plan',
+      "the narrowest reading that satisfies the card's words",
+      'a wider reading is a DoD-term question, not a plan defect',
+      '`- none:` is still subject to this truth check',
+      'ownership and immutability of each state or data boundary',
+      'lifecycle of all writers through the final observation point',
+      'every terminal/error path and what it preserves',
+      'derived records, commit/crash/deletion policy, and concurrent recovery',
+      'the transaction protocol and visibility at commit',
+      'only when the plan modifies already-published data',
+      'A false `N/A` is judged by the critic under the existing blocking definition',
+    ]) expect(critic).toContain(question)
+    for (const phase of ['review', 'refutation']) {
+      const brief = independentBrief({ ...options, phase })
+      expect(brief).not.toContain('Plan-stage checklist')
+      for (const bullet of bullets) expect(brief).not.toContain(bullet)
+      expect(brief).not.toContain('A false `N/A`')
+    }
+  })
 })

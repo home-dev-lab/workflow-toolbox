@@ -9,7 +9,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { splitFrontmatter } from './frontmatter.mjs'
 import { independentBrief, prospectivePatch, snapshotPatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
-import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
+import { acceptanceSection, planShapeProblem, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport, artefactIdentitiesAtStart } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
@@ -899,8 +899,8 @@ export function createLifecycleStateMachine({
       const plan = path.join(laneDir, 'plan.md')
       if (state.dodDisputes.some((dispute) => !dispute.resolution)) return refusal('plan->critic', 'bound DoD decision before revising the plan', plan)
       const planContent = readRegularFile(plan)
-      if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
-        return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
+      const shapeProblem = planShapeProblem(planContent ?? '', dodBullets !== undefined)
+      if (shapeProblem) return refusal('plan->critic', `valid plan artifact: ${shapeProblem} A valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
       const deferredProblem = deferredOutcomeProblem(planContent, timeline.routed_cards)
       if (deferredProblem) return refusal('plan->critic', deferredProblem, plan)
       if (dodBullets !== undefined) {

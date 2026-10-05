@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- FULL pilot plans now require non-empty quality coverage, gates, and state/recovery answers, plus card-term readings when card acceptance criteria are present. The runner refuses missing or empty sections and labels with a named example; the plan critic checks each answer's truth, including reasoned `N/A` exemptions.
 - The adopted `pilot` template no longer runs the full test suite for every card. After its fix rounds, a pilot now runs only the tests its change affects, using the project's affected-test selection when the project has one. A change to shared test infrastructure (the suite lock, test setup, test runners, dependency manifests) still runs the full suite. The full suite runs once per integration batch, where the cards are merged. With several pilots working at once, each card's gate now holds the machine's suite lock for minutes, not for a whole suite. Re-adopt the template to pick this up.
 ### Fixed
 - wt-rules-on-demand: `rules.mjs migrate --user` no longer refuses a profile on Claude Code 2.1.287 or later for a missing CLAUDE_CODE_ENABLE_FUNCTION_HOOKS (mods are on by default there), accepts a plugin loaded with --plugin-dir once that profile's store counts engine calls in the last 7 days, and now refuses a profile whose engine option is off or that sets disableAllHooks.
