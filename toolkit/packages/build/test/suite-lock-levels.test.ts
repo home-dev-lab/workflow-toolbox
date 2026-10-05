@@ -102,7 +102,7 @@ describe('card levels and exact mixed-version ordering', () => {
     seed(root, { level: 2, startedAt: 'unparsable' }); seed(root, { level: 0, light: true })
     expect(lock.readSuiteLockStatus({ root, env: envFor(root), now: () => now }).queue.map((item: { number: number }) => item.number)).toEqual([1, 2])
   })
-  it.each([0, 1, 2])('F1 a P%i exclusive becomes unpassable after one aging step', () => {
+  it.each([0, 1, 2])('F1 a P%i exclusive becomes unpassable after one aging step', (level) => {
     const root = temp(); const now = Date.now()
     const counter = ensureLightCounter(root)
     const ordered = orderSuiteLockTickets([{ number: 1, record: { level, startedAt: new Date(now - 30 * 60_000).toISOString(), lightGrantsGeneration: counter.generation, lightGrantsAtQueue: 0 } }], counter, now)

@@ -398,13 +398,14 @@ function acquisitionPriority(options, env) {
   if (options.mode !== undefined) throw new Error('unknown suite lease mode argument: mode')
   const explicit = options.priority === undefined ? undefined : parseSuiteLockPriority(options.priority)
   if (explicit === 'release' && options.light === true) throw new Error('release priority cannot be combined with light')
-  const broker = !options.root && typeof env.WT_SUITE_LOCK_BROKER === 'string' && env.WT_SUITE_LOCK_BROKER.trim()
-  if (broker && explicit === 'release') {
+  // Release is refused anywhere inside a lane sandbox, whatever the route; only the level follows the route.
+  const sandboxed = typeof env.WT_SUITE_LOCK_BROKER === 'string' && Boolean(env.WT_SUITE_LOCK_BROKER.trim())
+  if (sandboxed && explicit === 'release') {
     const error = new Error('release priority is not available inside a lane sandbox')
     error.code = 'WT_SUITE_LOCK_PRIORITY_REFUSED'
     throw error
   }
-  return broker ? 'P1' : suiteLockPriority({ priority: explicit }, env)
+  return sandboxed && !options.root ? 'P1' : suiteLockPriority({ priority: explicit }, env)
 }
 
 export async function acquireSuiteLock(options = {}) {
