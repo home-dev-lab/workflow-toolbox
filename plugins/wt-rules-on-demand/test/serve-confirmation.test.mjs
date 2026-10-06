@@ -460,8 +460,15 @@ test('fix1 cached OLD generation cannot confirm newly migrated NEW body', async 
   const result = await migrationEvidence({ ...migration, migratedAt: migration.time }, 'sample.md', evaluation(f));
   assert.notEqual(result.decision, 'confirm', 'OLD loaded generation must not confirm NEW migration');
   assert.equal(result.annotation.profiles[0].state, 'not loaded');
-  const engineIdentity = `user:${normal(f.demand)}:sample.md`;
-  assert.ok(instance.stored.get('identityActivity')[engineIdentity]?.generations?.[f.migration.generation]?.servedAt, 'engine echoes the generation of OLD actually served');
+  // The engine keys identities by the directory spelling it built (on Windows `C:\…\config/rules-on-demand`, hooks.js
+  // ruleDirectories); find the entry by its parts, as the reader does, and name what was found when it is missing.
+  const echoed = instance.stored.get('identityActivity') ?? {};
+  const ours = Object.entries(echoed).find(([key]) => {
+    const parts = lifecycle.splitRuleIdentity(key);
+    return parts?.scope === 'user' && parts.name === 'sample.md' && normal(parts.dir) === normal(f.demand);
+  });
+  const found = Object.fromEntries(Object.entries(echoed).map(([key, row]) => [key, Object.keys(row?.generations ?? {})]));
+  assert.ok(ours?.[1]?.generations?.[f.migration.generation]?.servedAt, `engine echoes the generation of OLD actually served; expected generation ${f.migration.generation} under ${normal(f.demand)}, found ${JSON.stringify(found)}`);
   hooks.resetForSelftest();
   const fresh = await instance.call('Agent');
   assert.ok(JSON.stringify(fresh).includes('NEW instruction'));
