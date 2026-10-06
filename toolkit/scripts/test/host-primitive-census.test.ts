@@ -128,7 +128,8 @@ describe('raw host primitive quality ratchet', () => {
     // The session-env dedup hook adds one perimeter file; its filesystem primitives live in bin/lib/host.
     // The What is running pane design helper (hooks/pane-design.js) adds one pure module with no host operation.
     // The duplicate pilot guard adds its hook and its card-id parser; their file access lives in bin/lib/host.
-    expect(result.perimeterFiles).toBe(263)
+    // Five pure suite-lock policy/display modules add files without host primitives.
+    expect(result.perimeterFiles).toBe(268)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

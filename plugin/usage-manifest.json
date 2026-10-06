@@ -39,8 +39,8 @@
   },
   "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 8, "consumedBy": "plugin/hooks/snapshot-program.js service-process collector" },
   "shippedSkills": {
-    "count": 16,
-    "names": ["adopt", "artifact-server", "changelog", "deep-grounding", "delegation-chain", "external-lane", "independent-analysis", "lesson-harvest", "pilot-wave", "planka-tracking", "stale-card-sweep", "toolkit-scaffold", "upgrade-canary", "what-next", "workflow-composer", "workflow-debugger"]
+    "count": 15,
+    "names": ["adopt", "artifact-server", "changelog", "deep-grounding", "delegation-chain", "external-lane", "independent-analysis", "lesson-harvest", "pilot-wave", "planka-tracking", "stale-card-sweep", "toolkit-scaffold", "upgrade-canary", "workflow-composer", "workflow-debugger"]
   },
   "functionHooks": {
     "status": "shipped",

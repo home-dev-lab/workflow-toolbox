@@ -113,6 +113,20 @@ describe.skipIf(process.platform === 'win32')('POSIX native prompt-storage range
     expect(await readFile(path)).toEqual(before)
   })
 
+  it('refuses a supplied record range whose replacement would leave unparsable JSON, and accepts the bare byte contract', async () => {
+    const root = await fixture('record-json')
+    const path = join(root, 'prompt.jsonl')
+    const raw = 'secretvalue'
+    const before = Buffer.from(`${JSON.stringify({ type: 'user', message: { content: raw } })}\n`)
+    await writeFile(path, before)
+    const offset = before.indexOf(raw)
+
+    const result = await posixWrite(path, offset, Buffer.from(raw), Buffer.from('bad"quote\\x'), undefined, { length: before.length - 1, toolUseId: '' })
+
+    expect(result.status).toBe(3)
+    expect(await readFile(path)).toEqual(before)
+  })
+
   it('refuses a same-size same-prefix JSONL record carrying a different tool_use id', async () => {
     const root = await fixture('record-identity')
     const path = join(root, 'prompt.jsonl')

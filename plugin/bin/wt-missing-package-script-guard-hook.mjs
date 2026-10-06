@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// wt-missing-package-script-guard-hook.mjs — a PreToolUse guard, plugin-level: WARNS (never
+// wt-missing-package-script-guard-hook.mjs — a PreToolUse guard, plugin-level: journals (never
 // blocks) on a Bash command that invokes a package-manager script (`pnpm <script>`, `npm run
 // <script>`, `yarn <script>`) whose name does NOT exist in the `scripts` map of the
 // `package.json` governing the command's effective directory.
@@ -14,10 +14,11 @@
 // certified by a chained gate. This guard closes the adjacent case: a genuinely fresh tree, a
 // script name that simply does not resolve from the directory the command runs in.
 //
-// ⚠ WARNS, NEVER DENIES — a new guard's precision is measured on material it did not choose
+// ⚠ JOURNAL-ONLY, NEVER DENIES — a new guard's precision is measured on material it did not choose
 // before it is allowed to block (mechanise-on-sight.md). Command-line parsing here is
-// necessarily heuristic (no real shell parser), so a false positive is possible; warn-only until
+// necessarily heuristic (no real shell parser), so a false positive is possible; journal-only until
 // its false-positive rate is measured on this project's own real traffic.
+// No stdout warning: allow would auto-approve the call, and permissionDecisionReason reaches no model.
 //
 // `cd`/`&&` CHAINS ARE TRACKED. `cd toolkit && pnpm test` resolves the script against `toolkit`,
 // not against whatever directory the Bash tool call itself carries, and several `cd`s in one
@@ -57,7 +58,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 
 function readInput() {
   try {
@@ -311,10 +312,7 @@ function main() {
   const finding = findFinding(cmd, initialCwd)
   if (!finding) return
 
-  const { scriptName, cwdPkgDir, ancestorDir } = finding
-  const hint = ancestorDir
-    ? ` It IS defined in the package.json at \`${ancestorDir}\` — run it from there instead.`
-    : ' No package.json up the tree defines it either — this may be a genuine typo.'
+  const { ancestorDir } = finding
 
   recordGuardEvent({
     guard: 'wt-missing-package-script-guard-hook.mjs',
@@ -325,20 +323,6 @@ function main() {
     evidence: { nearest: 'package_json', ancestor: ancestorDir ? 'yes' : 'no' },
   })
 
-  emitGuardNotice({
-    payload: input,
-    stdoutJson: {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        permissionDecisionReason:
-          `[workflow-toolbox missing-script guard] WARNING (not blocked): script \`${scriptName}\` ` +
-          `is not defined in the package.json governing \`${cwdPkgDir}\`.${hint} A failure here ` +
-          'can be mistaken for a real regression right after a merge — verify the CWD before ' +
-          'reading this as a broken build.',
-      },
-    },
-  })
 }
 
 runFailOpenHook('wt-missing-package-script-guard-hook.mjs', main)

@@ -413,3 +413,107 @@ and read or import the URL supplied to its test callback. The suite's
 checkout-relative URL construction, imports and literal filesystem reads.
 This is a source regression check, not a filesystem sandbox: dynamically
 assembled paths and arbitrary data flow still need review.
+
+## Provisional migrations
+
+New migrations carry `state: 'provisional'` and their migration time in the
+scope's ledger. Confirmation requires the engine's own `identityActivity`
+record to show a serve of that exact rule identity and migration generation **strictly after** migration
+in every required profile. An engine health record or a predicted setting does
+not confirm a migration. The hook records `loadedAt` when it loads a rule and
+`servedAt` when it delivers one; the first write of each field in each process
+is unconditional, then writes are throttled to ten minutes. A generation token
+in generated frontmatter is echoed in load/serve records, so a session caching
+an earlier rule body cannot confirm a later migration. Live store copies
+and store-key archives retain the later timestamp of each field independently.
+Load and serve updates are flushed together once per hook. A failed activity
+write is reported and retried after ten minutes, retaining the original observed
+instants; it does not trigger an immediate retry or health-write loop. Each write
+carries a reporting-capability timestamp; a leftover activity key alone does not
+establish that the current engine can report loads. Writers re-read and merge
+timestamp maxima before writing; the host's get/set API still leaves a narrow
+read-to-write race, which can lose evidence and lead to static restoration.
+
+User migrations record the primary profile and only mirrors that lost static
+delivery (a shared static directory or a removed static link). Independent
+static copies do not need confirmation. The recorded list governs both evidence
+and restoration; omitting a mirror from a later command does not remove it from
+the requirement. Project migrations record the migrating profile and use the
+union of those recorded profiles and the profiles passed to the check
+(`rollback-check --profile-dir`, repeatable; the nightly run passes all its
+`--config-dir` profiles). A profile is exposed only if its transcripts show a
+post-migration session with `cwd` inside the project, including nested worktrees.
+Project confirmation waits until the window ends. A required profile whose
+exposure evidence is missing stays named in an attention outcome; transcript
+cleanup or an omitted argument cannot remove a recorded profile. Exposure reads
+only the project's own transcript slug, streams recent files line by line,
+skips and counts malformed lines, and caches results across rules in a check.
+
+The default window is **168 hours**. Pass `--serve-window-hours <hours>` (finite,
+nonnegative, including zero) to `daily-rollback`, `rollback-check`, or
+`quality-check` to override it. After the window:
+
+- All required profiles served: an applying run writes a matching `confirm`
+  ledger row; the existing compliance rollback still governs the rule.
+- Any required profile neither loaded nor served: an applying nightly run
+  restores the rule to static delivery, including recorded mirror links, and
+  records the reason in the rollback report and revert notifications.
+- Every profile loaded, but some never served: the rule stays provisional and
+  reports `attention` with “loaded but never served”. This avoids moving a rule
+  back merely because its trigger has not fired.
+- Unreadable or unattributed activity evidence, an older engine lacking load records, missing
+  recorded profiles, or physically shared evidence directories or files
+  (including symlinks and hard links): the check
+  reports attention and neither confirms nor automatically restores from that
+  evidence. A rule physically owned by another profile is refused restoration.
+
+Activity records identify the writer's physical profile and engine-run capability,
+so copying a store into another profile cannot establish that profile's serve.
+Capability is evaluated within each store/writer observation. Health calls carry
+writer-run counts, so another store's new engine or another run in the same store
+cannot remove uncertainty about unattributed calls, even within the same day.
+An applying project check appends generation-bound `require` ledger rows for
+additional required profiles. Later checks and locked confirmation use the
+union of migration and requirement rows, even if a caller omits a profile.
+
+The nightly provisional pass runs **before transcript-coverage checks** and
+continues across failed scopes. Reports include `provisional`, `confirmed`,
+`wouldRevert`, and `failed` buckets. Dry runs annotate `wouldConfirm` without
+writing a ledger row or moving a file. A missing provisional on-demand file or
+directory is a named delivery-loss error and fails the daily run. Failed
+restoration also fails the run and reaches the notification channel. Every
+rollback, including compliance rollback after confirmation, restores recorded
+mirrors together with explicitly supplied mirrors.
+The pass inspects supplied profile ledgers together with physical on-demand
+owners' ledgers, every explicitly selected project, and followed projects from
+every supplied profile. Discovered provisional projects excluded from applying
+rollback are named as attention. Child checks have a two-minute timeout and a
+16 MiB output limit; resource failures are named and fail the scope.
+Activity and project exposure are observed once per profile/project per rollback
+process, then evaluated against each rule's cutoff. Exposure streams root and
+descendant transcript slugs and verifies every record's physical cwd.
+SessionStart reads revert notifications
+from both the hook data directory and the host timer's profile data directory,
+including when restoration removed the last on-demand rule. It also reads the
+latest nightly outcomes from both data directories. Would-revert, attention and
+restoration failures are printed in nightly text output and at startup.
+An existing nightly report that cannot be read or parsed produces a named
+startup line; an absent report remains silent.
+
+**Schedule the nightly command from a host timer with `--apply` for automatic
+restoration.** A profile whose hooks cannot load cannot start its own rollback.
+With `WT_ROD_REAL_REVERT` unset and no applying host timer, checks only report:
+they neither confirm in the ledger nor restore files. The plugin supplies no
+scheduler. `rollback-check --provisional-only` can evaluate this safety criterion
+without verdict files or compliance measurements.
+
+This is a one-shot migration check, not a guarantee for every later launch.
+Safe mode, disabled hooks, and MDM, registry or server-delivered policy can
+prevent confirmation, regardless of where their settings live. Changing these
+conditions after confirmation is outside this check. Profiles first exposed
+after a project confirmation, profiles neither recorded at migration nor
+supplied to the nightly run, and
+unrecorded shared static directories are also outside its bound. Legacy migrate
+rows written by older lifecycle tools have no provisional state and retain
+their previous rollback behavior. Migration and activity times assume the same
+host clock; lifecycle locking remains the best-effort guard described above.

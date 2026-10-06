@@ -23,7 +23,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { LEAN_AGENT_TYPE, LEAF_AGENT_TYPE } from '@workflow-toolbox/patterns'
@@ -51,9 +51,11 @@ const SURFACES = [
     .filter((f) => f.endsWith('.md'))
     .map((f) => `docs/public/${f}`),
   ...readdirSync(join(REPO_ROOT, 'plugin/skills')).map((d) => `plugin/skills/${d}/SKILL.md`),
-  ...readdirSync(join(REPO_ROOT, 'plugin/skills/workflow-composer/references')).map(
-    (f) => `plugin/skills/workflow-composer/references/${f}`,
-  ),
+  // Relocated guides stay under the same prose assertions as their skill bodies.
+  ...['adopt', 'delegation-chain', 'pilot-wave', 'upgrade-canary', 'workflow-composer', 'workflow-debugger']
+    .flatMap((skill) => [...walk(join(REPO_ROOT, 'plugin/skills', skill, 'references'))]
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => relative(REPO_ROOT, file).replaceAll('\\', '/'))),
 ]
 
 // ---------------------------------------------------------------------------
@@ -154,7 +156,7 @@ describe('docs-contract — surfaces', () => {
     const missing = SURFACES.filter((s) => !existsSync(join(REPO_ROOT, s)))
     expect(missing, `missing doc surfaces: ${missing.join(', ')}`).toEqual([])
     // Sanity floor: the contract covers the two READMEs + CLAUDE.md + public
-    // docs + 6 skills + composer references. Falling under 15 means a whole
+    // docs + skill bodies + relocated reference guides. Falling under 15 means a whole
     // directory silently vanished from the glob, not a normal doc change.
     expect(SURFACES.length).toBeGreaterThanOrEqual(15)
   })
@@ -226,7 +228,9 @@ describe('docs-contract — inline identifiers resolve against the implementatio
       }
       // 6. repo paths (must contain '/', no placeholder) — resolvable from a base
       if (/^[\w@./-]+\.(ts|js|mjs|md|json)$/.test(token) && token.includes('/') && !PLACEHOLDER.test(token)) {
-        const resolvable = [...PATH_BASES, dirname(surface)].some((b) =>
+        // Moved blocks retain skill-relative paths, as their reference opening line declares.
+        const skillDir = surface.match(/^(plugin\/skills\/[^/]+)\/references\//)?.[1]
+        const resolvable = [...PATH_BASES, dirname(surface), ...(skillDir ? [skillDir] : [])].some((b) =>
           existsSync(join(REPO_ROOT, b, token)),
         )
         if (!resolvable) failures.push(`${surface}: \`${token}\` — path not found from any base`)

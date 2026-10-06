@@ -12,7 +12,7 @@ const root = resolve(import.meta.dirname, '../../../..')
 const WORKFLOW = join(root, '.github/workflows/cross-os.yml')
 
 type Entry = { os: string; shard?: number }
-type Step = { name?: string; if?: string; run?: string; uses?: string; with?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
+type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
   jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number; steps: Step[] } }
 }
@@ -175,6 +175,20 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
       const total = SETUP_ALLOWANCE_MINUTES + timeoutOf(suite, entry) + diagnose.reduce((sum, step) => sum + timeoutOf(step, entry), 0)
       expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(job['timeout-minutes'])
       expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(job['timeout-minutes'])
+    }
+  })
+
+  it('fetches the base-version lock client on every entry before any suite step, since the checkout is shallow', () => {
+    const fetchIndex = steps.findIndex((step) => /git fetch\b/.test(step.run ?? '') && /base-version-client\.json/.test(step.run ?? ''))
+    expect(fetchIndex, 'a step fetches the commit named in test-support/base-version-client.json').toBeGreaterThanOrEqual(0)
+    const fetchStep = steps[fetchIndex] as Step
+    expect(fetchStep.if, 'the fetch runs on every entry').toBeUndefined()
+    expect(fetchStep['continue-on-error'], 'a failed fetch is a red, not a silent skip').toBeUndefined()
+    expect(fetchStep.shell, 'the $(...) substitution needs bash on every runner, Windows included').toBe('bash')
+    for (const entry of entries) {
+      const suites = steps.map((step, index) => ({ step, index })).filter(({ step }) => runsOn(step, entry) && !isDiagnostic(step) && /pnpm test|test:shard/.test(step.run ?? ''))
+      expect(suites.length, `suite steps of ${entry.os} shard ${entry.shard}`).toBeGreaterThanOrEqual(1)
+      for (const { step, index } of suites) expect(index, `"${step.name}" comes after the fetch`).toBeGreaterThan(fetchIndex)
     }
   })
 

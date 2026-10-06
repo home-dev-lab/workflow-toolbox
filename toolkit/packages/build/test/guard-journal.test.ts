@@ -39,14 +39,15 @@ function record(
   })
 }
 
-function emitNotice(payload: Record<string, unknown>) {
+function emitNotice(payload: Record<string, unknown>, options: Record<string, unknown> = {}, mode = 'warn') {
   const script = `
     import { emitGuardNotice } from ${JSON.stringify(pathToFileURL(LIB).href)}
-    emitGuardNotice({ payload: ${JSON.stringify(payload)}, stdoutText: 'warning' })
+    const result = emitGuardNotice({ payload: ${JSON.stringify(payload)}, stdoutText: 'warning', ...${JSON.stringify(options)} })
+    process.stderr.write('RETURN=' + result)
   `
   return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
-    env: { ...process.env, WT_GUARD_MODE: 'warn' },
+    env: { ...process.env, WT_GUARD_MODE: mode },
   })
 }
 
@@ -79,6 +80,57 @@ function secretStore(configDir: string, name: string, value: string, token: stri
 }
 
 describe('guard-journal — recordGuardEvent', () => {
+  it('opts subagents into context only, dropping all permission and text output', () => {
+    const stdoutJson = { extra: 'drop', hookSpecificOutput: {
+      hookEventName: 'PreToolUse', additionalContext: 'context', permissionDecision: 'allow', permissionDecisionReason: 'drop',
+    } }
+    const noOptIn = emitNotice({ agent_id: 'a1' }, { stdoutJson })
+    expect(noOptIn.stdout).toBe('')
+    expect(noOptIn.stderr).toBe('RETURN=false')
+    const r = emitNotice({ agent_id: 'a1' }, { reachSubagents: true, stdoutJson, stderrText: 'drop' })
+    expect(r.stdout).toBe('{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"context"}}')
+    expect(r.stderr).toBe('RETURN=true')
+  })
+
+  it.each([null, { hookSpecificOutput: {} }, { hookSpecificOutput: { additionalContext: 3 } }])(
+    'subagent opt-in without context is silent: %s', (stdoutJson) => {
+      const r = emitNotice({ agent_id: 'a1' }, { reachSubagents: true, stdoutJson, stderrText: 'drop' })
+      expect(r.stdout).toBe('')
+      expect(r.stderr).toBe('RETURN=false')
+    },
+  )
+
+  it.each([undefined, true])('subagent deny projection has explicit expected bytes (opt-in %s)', (reachSubagents) => {
+    const r = emitNotice({ agent_id: 'a1' }, { reachSubagents, stdoutJson: { hookSpecificOutput: {
+      hookEventName: 'PreToolUse', additionalContext: 'context', permissionDecision: 'deny', permissionDecisionReason: 'blocked',
+    } }, stderrText: 'drop' })
+    expect(r.stdout).toBe(reachSubagents ? '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"context"}}' : '')
+    expect(r.stderr).toBe(reachSubagents ? 'RETURN=true' : 'RETURN=false')
+  })
+
+  it.each([undefined, true])('main deny delivery has explicit expected bytes (opt-in %s)', (reachSubagents) => {
+    const r = emitNotice({}, { reachSubagents, stdoutJson: { hookSpecificOutput: {
+      hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'blocked',
+    } } })
+    expect(r.stdout).toBe('{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"blocked"}}')
+    expect(r.stderr).toBe('RETURN=true')
+  })
+
+  it.each([{}, { stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'context', permissionDecision: 'allow' } }, stderrText: 'stderr' }])(
+    'main session opt-in preserves bytes: %s', (options) => {
+      const base = emitNotice({}, options)
+      const opted = emitNotice({}, { ...options, reachSubagents: true })
+      expect(opted.stdout).toBe(base.stdout)
+      expect(opted.stderr).toBe(base.stderr)
+    },
+  )
+
+  it('observe mode suppresses even opted-in subagent context', () => {
+    const r = emitNotice({ agent_id: 'a1' }, { reachSubagents: true, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'context' } } }, 'observe')
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('RETURN=false')
+  })
+
   it('renders warned notices for the main loop but not a subagent', () => {
     const main = emitNotice({})
     const subagent = emitNotice({ agent_id: 'a1' })
