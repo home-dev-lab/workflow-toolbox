@@ -1519,7 +1519,8 @@ await test('[WIR5-06 pane] partial process discovery is visible as one dim diagn
   for (const reason of ['capped', 'unreadable']) {
     const { tree } = await renderSnapshot({ discovery: 'available', processDiscovery: 'partial', processPartialReason: reason, rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, items: [] }, collectedAt: paths.now });
     const messages = descendants(tree, (item) => item.name === 'Text' && item.props.children.includes(`process list partial (${reason})`));
-    assert.equal(messages.length, 1); assert.equal(messages[0].props.dimColor, true);
+    assert.equal(messages.length, 1); assert.equal(messages[0].props.color, '#b8b8b8');
+    assert.equal(messages[0].props.dimColor, undefined);
   }
 });
 
@@ -1673,8 +1674,8 @@ await test('[DoD 4] phase state is carried by words and the running glyph, not c
   }], collectedAt: paths.now };
   const { tree } = await renderSnapshot(snapshot);
   assert(!hasDescendant(tree, (item) => item.name === 'Button' && item.props.children.join('').includes('●')));
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('running') && item.props.bold === true && !item.props.color));
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('skipped') && !item.props.color));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('running') && item.props.bold === true && item.props.color === '#d7d7d7'));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('skipped') && item.props.color === '#d7d7d7'));
   assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('failed') && item.props.color && item.props.bold === true));
 });
 await test('[R1] every Button in the whole rendered tree has only string children', async () => {
@@ -1698,7 +1699,7 @@ await test('[changed Step 8 content gating][Missed A] lifecycle-only phases with
   const { tree } = await renderSnapshot(snapshot);
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
   assert(!findButton(tree, 'Verify ●'));
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.some((child) => String(child).includes('Verify ●')) && item.props.bold === true && !item.props.color));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.some((child) => String(child).includes('Verify ●')) && item.props.bold === true && item.props.color === '#d7d7d7'));
   assert.match(text, /Independent review ·.*not started/);
 });
 await test('[changed Round 2 wrapping][DoD 2][DoD 4] standalone external lanes state that phases are unavailable', async () => {
@@ -2261,20 +2262,21 @@ await test('[regression] a session inside its project .claude tree resolves to t
   ]) assert.equal(hooksModule.projectRootOf(cwd), root, cwd);
 });
 
-await test('[regression] button backgrounds are dark and link backgrounds light, so their host-rendered text stays readable', async () => {
-  // Field case 2026-09-14 21:33 (#2286): an open stage on whiteBright and a blue link on magenta were unreadable.
-  const light = new Set(['white', 'whiteBright', 'yellow', 'yellowBright', 'cyanBright', 'greenBright', 'gray', 'grey']);
+await test('[regression] fallback buttons have light rims and dark interiors, and links retain light backgrounds', async () => {
   const { tree } = await renderSnapshot({ discovery: 'available', rows: [], sessions: [],
     services: { count: 1, items: [{ id: 'service:1', label: 'Atrium broker', age: '1 min' }] }, helpers: { count: 0, oldest: 'none', items: [] }, collectedAt: paths.now });
   const boxes = descendants(tree, (item) => item.name === 'Box' && item.props.backgroundColor);
   assert(boxes.length > 0, 'coloured controls rendered');
   for (const box of boxes) {
-    const hasLink = descendants(box, (item) => item.name === 'Link').length > 0;
-    assert.equal(light.has(box.props.backgroundColor), hasLink, `${hasLink ? 'link' : 'button'} background ${box.props.backgroundColor}`);
+    const direct = [box.props.children || []].flat();
+    if (String(box.props.key || '').startsWith('control:')) assert.equal(box.props.backgroundColor, '#e6e6e6');
+    if (direct.some((child) => child?.name === 'Button')) assert.equal(box.props.backgroundColor, '#111111');
+    if (direct.some((child) => child?.name === 'Link')) assert.equal(box.props.backgroundColor, '#e6e6e6');
   }
+  assert.equal(boxes.filter((box) => String(box.props.key || '').startsWith('control:')).length, descendants(tree, (item) => item.name === 'Button').length);
 });
 
-await test('[Step 6 DoD 5] Services and Idle helpers have exact dim explanations, on the label row, name printed once', async () => {
+await test('[Step 6 DoD 5] Services and Idle helpers have exact readable muted explanations, on the label row, name printed once', async () => {
   const { tree } = await renderSnapshot({ discovery: 'available', rows: [], sessions: [],
     services: { count: 1, items: [{ id: 'service:1', label: 'Atrium broker', age: '1 min' }] },
     helpers: { count: 1, oldest: '2 min', items: [{ id: 'helper:2', label: 'Codex app-server', age: '2 min' }] }, collectedAt: paths.now });
@@ -2284,7 +2286,8 @@ await test('[Step 6 DoD 5] Services and Idle helpers have exact dim explanations
   ]) {
     const lines = descendants(tree, (item) => item.name === 'Text' && item.props.children.includes(meaning));
     assert.equal(lines.length, 1, meaning);
-    assert.equal(lines[0].props.dimColor, true);
+    assert.equal(lines[0].props.color, '#b8b8b8');
+    assert.equal(lines[0].props.dimColor, undefined);
     const rows = descendants(tree, (item) => item.name === 'Box' && item.props.flexDirection === 'row' && descendants(item, (child) => child === lines[0]).length > 0);
     assert(rows.some((row) => JSON.stringify(row).includes(name + ' (')), `${meaning} sits on the ${name} label row`);
     const mentions = descendants(tree, (item) => ['Text', 'Button'].includes(item.name) && item.props.children.map(String).join('').includes(name));
@@ -2758,7 +2761,7 @@ await test('[changed Step 8 content gating][Round 2 item 1] absent phase evidenc
   for (const [id, label] of [['not-reached', 'Critic'], ['lite-skipped', 'Plan'], ['running-empty', 'Independent review']]) {
     const { tree } = await renderSnapshot({ discovery: 'available', rows: [rows.find((row) => row.id === id)], collectedAt: paths.now });
     assert(!findButton(tree, label), label);
-    assert(hasDescendant(tree, (item) => item.name === 'Text' && !item.props.color && item.props.children.some((child) => String(child).includes(label))), label);
+    assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.color === '#d7d7d7' && item.props.children.some((child) => String(child).includes(label))), label);
   }
 });
 
@@ -3228,7 +3231,7 @@ await test('[Step 8 rule 3] every lifecycle stage state is neutral text', async 
   const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   for (const label of ['Plan', 'Critic', 'Independent review', 'Independent refutation']) {
     assert(!findButton(tree, label), `${label} should not be clickable`);
-    assert(hasDescendant(tree, (item) => item.name === 'Text' && !item.props.color && item.props.children.some((child) => String(child).includes(label))), `${label} should have neutral text`);
+    assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.color === '#d7d7d7' && item.props.children.some((child) => String(child).includes(label))), `${label} should have neutral text`);
   }
   for (const text of descendants(tree, (item) => item.name === 'Text')) assert.doesNotMatch(text.props.children.map(String).join(''), /\[[^\]]+\]/);
 });
@@ -3241,7 +3244,10 @@ await test('[regression] a detail body is bounded in characters, so long finding
   const tree = await renderProvidedSnapshot({ discovery: 'available', rows: [row], collectedAt: paths.now }, 'Critic');
   const detail = descendants(tree, (item) => item.name === 'Box' && item.props.key === 'open-detail-toggle:stage:long-findings:critic')[0];
   assert(detail, 'Critic detail');
-  const body = descendants(detail, (item) => item.name === 'Text' && item.props.wrap === 'wrap').map((item) => item.props.children.map(String).join(''));
+  // Every Text wraps now, so the detail header (title + Close) is excluded by its key, never by the wrap prop.
+  const header = descendants(detail, (item) => item.name === 'Box' && String(item.props.key).startsWith('open-detail-header:'))[0];
+  const headerTexts = new Set(header ? descendants(header, (item) => item.name === 'Text') : []);
+  const body = descendants(detail, (item) => item.name === 'Text' && !headerTexts.has(item)).map((item) => item.props.children.map(String).join(''));
   assert(body.length > 0, 'detail body lines');
   for (const line of body) assert(line.length <= 241, `evidence line of ${line.length} characters`);
   assert(body.join('').length <= 900, `detail body of ${body.join('').length} characters`);
@@ -3352,10 +3358,10 @@ await test('[increment stage row] stages are visibly separated and no stage node
   const separators = descendants(stageRow, (item) => item.name === 'Text' && ['├', '└'].includes(item.props.children.join('')));
   assert.equal(separators.length, segments.length);
   for (const segment of segments) {
-    for (const item of descendants(segment, () => true)) assert.equal(item.props?.color, undefined);
+    for (const item of descendants(segment, () => true)) assert.equal(item.props?.color, item.name === 'Text' ? '#d7d7d7' : undefined);
   }
   const costNodes = descendants(stageRow, (item) => String(item.props?.key || '').startsWith('phase-cost:'));
-  for (const item of costNodes.flatMap((cost) => descendants(cost, () => true))) assert.equal(item.props?.color, undefined);
+  for (const item of costNodes.flatMap((cost) => descendants(cost, () => true))) assert.equal(item.props?.color, item.name === 'Text' ? '#b8b8b8' : undefined);
 });
 
 await test('[phase cost pane] wide rows show compact totals, narrow rows retain stage words, and details show four named counters plus source', async () => {
