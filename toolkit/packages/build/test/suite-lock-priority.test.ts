@@ -32,7 +32,7 @@ afterEach(() => {
 const tempRoot = () => { const root = mkdtempSync(join(tmpdir(), 'wt-lock-priority-')); roots.push(root); return root }
 const records = (root: string) => (existsSync(join(root, 'queue.d')) ? readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).sort() : [])
 const readRecord = (root: string, name: string) => JSON.parse(readFileSync(join(root, 'queue.d', name), 'utf8')) as { light?: boolean }
-const isolatedEnv = (root: string, extra: NodeJS.ProcessEnv = {}) => ({ ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extra })
+const isolatedEnv = (root: string, extra: NodeJS.ProcessEnv = {}) => ({ ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extra })
 
 async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
@@ -44,14 +44,22 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
 
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve))
 
-async function baseSuiteLock(root: string) {
-  const archive = spawnSync('git', ['archive', '95b4150b', 'plugin/bin/lib'], { cwd: ROOT, maxBuffer: 10 * 1024 * 1024 })
-  expect(archive.status, String(archive.stderr)).toBe(0)
-  const unpack = spawnSync('tar', ['-x', '-C', root], { input: archive.stdout })
-  expect(unpack.status, String(unpack.stderr)).toBe(0)
+// The older lock client these interop tests run lives in git history, not in the tree. A shallow clone lacks it:
+// the cross-OS workflow fetches it by the id below, so on CI its absence is a red, elsewhere a named skip.
+const BASE_CLIENT = JSON.parse(readFileSync(join(ROOT, 'toolkit/test-support/base-version-client.json'), 'utf8')) as { commit: string, paths: string[] }
+
+/** Unpack the base-version lock client under `root`; return why it is unavailable instead when it cannot be. */
+async function baseSuiteLock(root: string, onCi = /^(1|true)$/i.test(process.env.CI ?? '')) {
+  const archive = spawnSync('git', ['archive', BASE_CLIENT.commit, ...BASE_CLIENT.paths], { cwd: ROOT, maxBuffer: 10 * 1024 * 1024 })
+  const unpack = archive.status === 0 ? spawnSync('tar', ['-x', '-C', root], { input: archive.stdout }) : null
+  if (!unpack || unpack.status !== 0) {
+    const reason = `base-version client ${BASE_CLIENT.commit} unavailable in this clone: ${String((unpack ?? archive).stderr).trim()}`
+    if (onCi) throw new Error(`${reason}; the cross-OS workflow must fetch it (toolkit/test-support/base-version-client.json)`)
+    return { unavailable: reason }
+  }
   mkdirSync(join(root, 'plugin/.claude-plugin'))
   writeFileSync(join(root, 'plugin/.claude-plugin/plugin.json'), readFileSync(join(ROOT, 'plugin/.claude-plugin/plugin.json')))
-  return import(pathToFileURL(join(root, 'plugin/bin/lib/suite-lock.mjs')).href)
+  return { client: await import(pathToFileURL(join(root, 'plugin/bin/lib/suite-lock.mjs')).href) }
 }
 
 // One in-process acquirer on a temp root: records its name when it acquires, then releases.
@@ -213,7 +221,7 @@ describe('suite lock priority for light runs: order only, one holder at a time',
       const address = join(root, 'broker.sock')
       const saved = { dir: process.env.WT_SUITE_LOCK_DIR, broker: process.env.WT_SUITE_LOCK_BROKER, lease: process.env.WT_SUITE_LEASE }
       process.env.WT_SUITE_LOCK_DIR = join(root, 'locks'); process.env.WT_SUITE_LOCK_BROKER = ''; delete process.env.WT_SUITE_LEASE
-      const server = createSuiteLockBroker() as net.Server
+      const server = createSuiteLockBroker({ env: isolatedEnv(join(root, 'locks')) }) as net.Server
       const holder = await acquireSuiteLock({ root: join(root, 'locks'), argv: ['H'] })
       try {
         await new Promise<void>((resolve) => server.listen(address, resolve))
@@ -291,8 +299,10 @@ describe('suite lock priority for light runs: order only, one holder at a time',
 })
 
 describe('release priority', () => {
-  it.each(['before', 'after'])('A6a claims a free lock with a base-version ticket queued %s the remaining release', async (placement) => {
-    const root = tempRoot(); const old = await baseSuiteLock(root); const lock = join(root, 'shared')
+  it.for(['before', 'after'])('A6a claims a free lock with a base-version ticket queued %s the remaining release', { timeout: 30_000 }, async (placement, { skip }) => {
+    const root = tempRoot(); const base = await baseSuiteLock(root)
+    if (!base.client) { skip(base.unavailable); return }
+    const old = base.client; const lock = join(root, 'shared')
     const holder = await acquireSuiteLock({ root: lock, env: isolatedEnv(lock) })
     const abort = new AbortController(); const all: Promise<void>[] = []
     let claimed = false
@@ -324,7 +334,7 @@ describe('release priority', () => {
     } finally {
       abort.abort(); releaseSuiteLock(holder); await Promise.allSettled(all)
     }
-  }, 30_000)
+  })
 
   it('A6b serves every queued release before ordinary tickets without creating release state', async () => {
     const root = tempRoot(); const holder = await acquireSuiteLock({ root, env: isolatedEnv(root) })
@@ -336,7 +346,7 @@ describe('release priority', () => {
     }
     releaseSuiteLock(holder); await Promise.all(all)
     expect(order, 'release priority has no per-waiter bypass bound').toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'L', 'E'])
-    expect(readdirSync(root).sort(), 'release admissions add no persistent state').toEqual(['light-grants', 'queue.d'])
+    expect(readdirSync(root).sort(), 'release admissions add no release-specific state').toEqual(['admissions', 'light-grants', 'queue.d'])
     expect(readLightCounter(root).grants).toBe(1)
   }, 20_000)
 
@@ -466,7 +476,7 @@ describe('release priority', () => {
 
   it('R6 validates priority before an inherited lease and rejects light release', async () => {
     const root = tempRoot(); const lease = await acquireSuiteLock({ root })
-    const env = { ...process.env, WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` }
+    const env = isolatedEnv(root, { WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` })
     try {
       await expect(acquireSuiteLock({ root, env, priority: 'foo' })).rejects.toThrow('unknown suite lock priority: foo')
       await expect(acquireSuiteLock({ root, env, priority: 'release', light: true })).rejects.toThrow(/release priority.*light|light.*release priority/)
@@ -508,14 +518,9 @@ describe('release priority', () => {
   }, 20_000)
 
   it('R9 old clients and new releases share one holder and all finish', async ({ skip }) => {
-    const root = tempRoot(); const archive = spawnSync('git', ['archive', '95b4150b', 'plugin/bin/lib'], { cwd: ROOT, maxBuffer: 10 * 1024 * 1024 })
-    if (archive.status !== 0) { skip(`R9 old-client archive unavailable: git archive 95b4150b plugin/bin/lib (${String(archive.stderr)})`); return }
-    const unpack = spawnSync('tar', ['-x', '-C', root], { input: archive.stdout })
-    if (unpack.status !== 0) { skip(`R9 old-client archive unavailable: tar extraction (${String(unpack.stderr)})`); return }
-    mkdirSync(join(root, 'plugin/.claude-plugin'))
-    writeFileSync(join(root, 'plugin/.claude-plugin/plugin.json'), readFileSync(join(ROOT, 'plugin/.claude-plugin/plugin.json')))
-    const old = await import(pathToFileURL(join(root, 'plugin/bin/lib/suite-lock.mjs')).href)
-    const lock = join(root, 'shared')
+    const root = tempRoot(); const base = await baseSuiteLock(root)
+    if (!base.client) { skip(base.unavailable); return }
+    const old = base.client; const lock = join(root, 'shared')
     const holder = await acquireSuiteLock({ root: lock })
     const done: string[] = []; let inside = 0; let peak = 0
     const run = async (name: string, api: typeof old, options: Record<string, unknown>) => {
@@ -594,7 +599,7 @@ describe('wt-suite-lock status judges the holder like release does', () => {
     const root = tempRoot(); deadHolder(root)
     const text = status(root)
     expect(text.status, text.stderr).toBe(0)
-    expect(text.stdout).toMatch(/^suite lock held by a stale holder \(gone or expired\): holder pid \d+ \(pnpm test\) since \d\d:\d\d; `wt-suite-lock release` clears it\n$/)
+    expect(text.stdout).toMatch(/^suite lock held by a stale holder \(gone or expired\): holder pid \d+ \(pnpm test\) since \d\d:\d\d, held 0 min; `wt-suite-lock release` clears it\n$/)
     const json = JSON.parse(status(root, '--json').stdout)
     expect(json.held).toBe(true)
     expect(json.stale).toBe(true)
@@ -604,7 +609,7 @@ describe('wt-suite-lock status judges the holder like release does', () => {
     const root = tempRoot()
     const lease = await acquireSuiteLock({ root, argv: ['pnpm', 'test'] })
     try {
-      expect(status(root).stdout).toMatch(/^suite lock held: holder pid \d+ \(pnpm test\) since \d\d:\d\d\n$/)
+      expect(status(root).stdout).toMatch(/^suite lock held: holder pid \d+ \(pnpm test\) since \d\d:\d\d, held 0 min, P1\n$/)
       expect(JSON.parse(status(root, '--json').stdout).stale).toBe(false)
     } finally { releaseSuiteLock(lease) }
   })

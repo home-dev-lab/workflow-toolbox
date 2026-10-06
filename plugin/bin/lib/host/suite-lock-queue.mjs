@@ -72,11 +72,27 @@ export function heartbeatTicket(queueDir, number, record) {
 }
 
 /** The ticket in the holder's shape ({ held, holder, ageMs }, age = time since its heartbeat), or null once gone. */
-export function readTicket(queueDir, number) {
+export function readTicket(queueDir, number, now) {
   const file = recordFile(queueDir, number)
   let holder = null
-  try { holder = JSON.parse(readFileSync(file, 'utf8')) } catch { /* being written, or gone */ }
-  try { return { held: true, holder, ageMs: Date.now() - statSync(file).mtimeMs } } catch { return null }
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'))
+    holder = parsed && typeof parsed === 'object' ? parsed : null
+  } catch { /* being written, or gone */ }
+  try { return { held: true, holder, ageMs: (now ?? Date.now()) - statSync(file).mtimeMs } } catch { return null }
+}
+
+/** Read-only queue snapshot: one directory read and a shared clock, no reclamation or counter writes. */
+export function readQueueSnapshot(queueDir, now) {
+  let numbers
+  try { numbers = queuedTickets(queueDir) } catch (error) {
+    if (error?.code === 'ENOENT') return []
+    throw error
+  }
+  return numbers.flatMap((number) => {
+    const ticket = readTicket(queueDir, number, now)
+    return ticket ? [{ number, ...ticket }] : []
+  })
 }
 
 // Windows refuses to unlink an entry another process holds open for a moment (EPERM/EBUSY);
@@ -157,7 +173,7 @@ export function discardDirectory(directory) {
 }
 
 const LIGHT_GRANTS_FILE = 'light-grants'
-const lightGrantsFile = (root) => path.join(root, LIGHT_GRANTS_FILE)
+const ADMISSIONS_FILE = 'admissions'
 
 /**
  * The light-grants counter: `{ generation, grants }`. `generation` is null when there is no valid counter
@@ -165,8 +181,12 @@ const lightGrantsFile = (root) => path.join(root, LIGHT_GRANTS_FILE)
  * generation can then match, so an exclusive ticket queued before a loss is never passed again.
  */
 export function readLightCounter(root) {
+  return readCounter(root, LIGHT_GRANTS_FILE)
+}
+
+function readCounter(root, file) {
   try {
-    const parsed = JSON.parse(readFileSync(lightGrantsFile(root), 'utf8'))
+    const parsed = JSON.parse(readFileSync(path.join(root, file), 'utf8'))
     if (typeof parsed?.generation === 'string' && parsed.generation !== '' && Number.isSafeInteger(parsed.grants) && parsed.grants >= 0) {
       return { generation: parsed.generation, grants: parsed.grants }
     }
@@ -174,10 +194,10 @@ export function readLightCounter(root) {
   return { generation: null, grants: 0 }
 }
 
-function writeLightCounter(root, state) {
-  const temporary = path.join(root, `${LIGHT_GRANTS_FILE}.${process.pid}.tmp`)
+function writeCounter(root, file, state) {
+  const temporary = path.join(root, `${file}.${process.pid}.tmp`)
   writeFileSync(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 })
-  renameSync(temporary, lightGrantsFile(root))
+  renameSync(temporary, path.join(root, file))
 }
 
 /** The counter an exclusive waiter records against; creates it (new generation) when there is none. */
@@ -186,21 +206,35 @@ export function ensureLightCounter(root) {
   if (current.generation !== null) return current
   const fresh = { generation: randomUUID(), grants: 0 }
   try {
-    writeFileSync(lightGrantsFile(root), `${JSON.stringify(fresh)}\n`, { flag: 'wx', mode: 0o600 })
+    writeFileSync(path.join(root, LIGHT_GRANTS_FILE), `${JSON.stringify(fresh)}\n`, { flag: 'wx', mode: 0o600 })
     return fresh
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error
   }
   const raced = readLightCounter(root)
   if (raced.generation !== null) return raced
-  writeLightCounter(root, fresh) // present but unreadable: replaced under a new generation
+  writeCounter(root, LIGHT_GRANTS_FILE, fresh) // present but unreadable: replaced under a new generation
   return fresh
 }
 
 /** Counts one light grant. Called by the light holder once it is admitted: the sole holder, so no writer race. */
 export function recordLightGrant(root) {
-  const current = readLightCounter(root)
-  writeLightCounter(root, current.generation === null ? { generation: randomUUID(), grants: 1 } : { generation: current.generation, grants: current.grants + 1 })
+  recordGrant(root, LIGHT_GRANTS_FILE)
+}
+
+function recordGrant(root, file) {
+  const current = readCounter(root, file)
+  writeCounter(root, file, current.generation === null ? { generation: randomUUID(), grants: 1 } : { generation: current.generation, grants: current.grants + 1 })
+}
+
+/** Service evidence only: this counter never participates in queue ordering. */
+export function readAdmissionCounter(root) {
+  return readCounter(root, ADMISSIONS_FILE)
+}
+
+/** Best-effort, once per admitted new client; failed evidence cannot withdraw or retry a lease. */
+export function recordAdmissionGrant(root) {
+  try { recordGrant(root, ADMISSIONS_FILE) } catch { /* liveness evidence may be unavailable */ }
 }
 
 /** True while a reclaimer holds reclaim.d: no acquisition may complete then. */

@@ -54,7 +54,7 @@ test('a store at the host limit takes the next act and every reader sees before 
 
 test('budgets: every key the hook writes is named, measured as JSON text, and the sum leaves the stated margin', () => {
   assert.equal(STORE_LIMIT, HOST_STORE_LIMIT);
-  assert.deepEqual(Object.keys(STORE_BUDGETS).sort(), [VERDICTS, 'health', 'served', 'sessions'].sort());
+  assert.deepEqual(Object.keys(STORE_BUDGETS).sort(), [VERDICTS, 'health', 'identityActivity', 'served', 'sessions'].sort());
   const total = Object.values(STORE_BUDGETS).reduce((sum, budget) => sum + budget, 0);
   assert.equal(total + FOREIGN_KEYS_BUDGET + STORE_OVERHEAD + STORE_MARGIN, STORE_LIMIT);
   assert.ok(STORE_MARGIN >= 600_000, `margin ${STORE_MARGIN}`);
@@ -68,7 +68,7 @@ test('every hook store write goes through the budgeted path', async () => {
   const source = await readFile(new URL('../hooks/hooks.js', import.meta.url), 'utf8');
   assert.equal(source.match(/\$\.store\.set\(/g).length, 1, 'the only direct store write is the budgeted one');
   assert.match(source, /async function setBounded\(\$, name, value, budget, keep\) \{[^]*?await \$\.store\.set\(name, kept\)/);
-  for (const match of source.matchAll(/setWithin\(\$, ([^,)]+)/g)) assert.ok(['VERDICTS', "'sessions'", "'served'", "'health'", 'name'].includes(match[1]), match[0]);
+  for (const match of source.matchAll(/setWithin\(\$, ([^,)]+)/g)) assert.ok(['VERDICTS', "'sessions'", "'served'", "'health'", "'identityActivity'", 'name'].includes(match[1]), match[0]);
 });
 
 test('a store at the limit recovers on the first write of any kind: journal, turn close, health alone', async (t) => {

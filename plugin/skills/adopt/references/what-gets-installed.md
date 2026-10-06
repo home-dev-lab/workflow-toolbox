@@ -1,0 +1,30 @@
+This reference belongs to the adopt skill. Its text moved here verbatim from that skill's SKILL.md, so every path and link in it means what it meant there: a link to another reference file resolves from the skill directory (the parent of this references/ folder), and a project or repository path keeps its own base.
+
+## What gets installed
+
+**rules → `.claude/rules/`:**
+
+- Every `*.md` in the plugin's `rules/` bundle (its single source) except `README.md`,
+  copied VERBATIM under a line-1 banner. The shipped set is the plugin's cross-cutting,
+  project-agnostic guardrails — the delegation ladder (`wt-delegation-ladder.md`: route each
+  task to the lowest rung, pin model + effort at every spawn, heavy work goes down / judgment
+  stays up, plus the non-delegable main-session duties) alongside companion rules for
+  verification, decision-making, grounding, and tracked-work hygiene. All are
+  cost-model-neutral principles (no account-specific model tables), machine-free, and fully
+  editable once written. The set is whatever the plugin bundles, so it grows as guardrails
+  are added — no per-rule change to the installer.
+
+**agents → `.claude/agents/`:**
+
+- **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`**,
+  **`pilot-orchestrator-watchdog.md`** — copied VERBATIM from the plugin's
+  `agent-templates/` directory (their single source), each under a banner. Installing all four
+  is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
+  watchdog pairing; `pilot-orchestrator.md` + `pilot-orchestrator-watchdog.md` are the wave
+  pair and sit idle otherwise. Once these project copies exist, spawn the BARE names
+  (`pilot`, `pilot-orchestrator`) so the watchdog pairing attaches.
+
+The rule set is the plugin's shipped, project-agnostic guardrails (pure directives — no
+environment-specific narrative); the workflow-authoring doctrine lives in the
+`workflow-toolbox:workflow-composer` skill and is not re-installed here.
+

@@ -72,7 +72,9 @@ test('listed transcript whose parent becomes a file before open fails closed', a
   const result = await f.scan();
   assert.equal(result.complete, false, 'ENOTDIR at open must fail closed');
   assert.equal(result.stats.filesFailed, 1);
-  assert.match(result.stats.errors[0], new RegExp('ENOTDIR \\(open\\)'));
+  // Opening through a parent that is now a file is ENOTDIR on POSIX; Windows reports the path as not found.
+  const code = process.platform === 'win32' ? 'ENOENT' : 'ENOTDIR';
+  assert.match(result.stats.errors[0], new RegExp(`${code} \\(open\\)`));
   assert.ok(result.stats.errors[0].startsWith(`${gone}: `));
 });
 

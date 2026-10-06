@@ -50,7 +50,8 @@ test('rollback computes next-call rate from live store verdicts', async (t) => {
   await migrateRule(root, 'lsp.md', await readSpec(yaml), {});
   const ledger = join(root, '.claude/rules-on-demand-ledger.jsonl');
   const entry = JSON.parse((await readFile(ledger, 'utf8')).trim());
-  await writeFile(ledger, `${JSON.stringify({ ...entry, time: '2025-01-01T00:00:00Z' })}\n`);
+  // These verdict joins characterize the legacy compliance path.
+  await writeFile(ledger, `${JSON.stringify({ ...entry, state: undefined, time: '2025-01-01T00:00:00Z' })}\n`);
   const store = join(root, 'store.json'), identity = `project:${join(root, '.claude/rules-on-demand')}:lsp.md`;
   await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': ['followed', 'not followed'].map((verdict) => JSON.stringify({ rule: 'lsp.md', ruleIdentity: identity, verdict, decidedAt: '2026-09-28T00:00:00Z' })).join('\n') + '\n' }));
   const run = spawnSync(process.execPath, [script('rollback-check'), '--project', root, '--store', store, '--dry-run', '--json'], { encoding: 'utf8', env: cleanEnv() });
@@ -68,7 +69,7 @@ test('rollback counts a duplicate window verdict once toward applicable', async 
   await migrateRule(root, 'lsp.md', await readSpec(yaml), {});
   const ledger = join(root, '.claude/rules-on-demand-ledger.jsonl');
   const entry = JSON.parse((await readFile(ledger, 'utf8')).trim());
-  await writeFile(ledger, `${JSON.stringify({ ...entry, time: '2025-01-01T00:00:00Z' })}\n`);
+  await writeFile(ledger, `${JSON.stringify({ ...entry, state: undefined, time: '2025-01-01T00:00:00Z' })}\n`);
   const store = join(root, 'store.json'), identity = `project:${join(root, '.claude/rules-on-demand')}:lsp.md`;
   const delivery = { rule: 'lsp.md', ruleIdentity: identity, deliveryId: 't-10', deliverySeq: 10, servingSeq: 9, at: '2026-01-01T00:00:00Z' };
   const row = { ...delivery, sessionId: 's', verdictId: 't-12', actSeq: 12, verdict: 'followed', decidedAt: '2026-09-28T00:00:00Z' };
@@ -88,7 +89,7 @@ test('rollback merges shared-session stores before matching null-session duplica
   await migrateRule(root, 'lsp.md', await readSpec(yaml), {});
   const ledger = join(root, '.claude/rules-on-demand-ledger.jsonl');
   const entry = JSON.parse((await readFile(ledger, 'utf8')).trim());
-  await writeFile(ledger, `${JSON.stringify({ ...entry, time: '2025-01-01T00:00:00Z' })}\n`);
+  await writeFile(ledger, `${JSON.stringify({ ...entry, state: undefined, time: '2025-01-01T00:00:00Z' })}\n`);
   const identity = `project:${join(root, '.claude/rules-on-demand')}:lsp.md`;
   const delivery = { rule: 'lsp.md', ruleIdentity: identity, deliveryId: 't-10', deliverySeq: 10, servingSeq: 9, at: '2026-01-01T00:00:00Z' };
   const row = { ...delivery, sessionId: null, verdictId: 't-12', actSeq: 12, verdict: 'followed', decidedAt: '2026-09-28T00:00:00Z' };

@@ -60,9 +60,7 @@ describe('wt-concurrent-test-guard-hook', () => {
   it.skipIf(process.platform === 'win32')('WARN: an injected concurrent runner is counted, legible, and never blocked', () => {
     const result = run('pnpm test', injectedProcessListing("printf '999999 1 vitest vitest run\\n'"))
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('1 test-runner process(es) are already running')
-    expect(result.stdout).toContain('WARNING (not blocked)')
-    expect(result.stdout).toContain('"permissionDecision":"allow"')
+    expect(result.stdout).toBe('')
     expect(result.stdout).not.toContain('"deny"')
     expect(result.entries).toHaveLength(1)
     expect(result.entries[0]).toMatchObject({ decision: 'warned', evidence: { count: '1' } })
@@ -76,15 +74,15 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(Number.isInteger(count)).toBe(true)
     expect(count).toBeGreaterThanOrEqual(0)
     expect(result.entries[0]).toMatchObject({ decision: count > 0 ? 'warned' : 'silent', evidence: { count: String(count) } })
-    if (count > 0) expect(result.stdout).toContain(`${count} test-runner process(es) are already running`)
-    else expect(result.stdout).toBe('')
+    expect(result.stdout).toBe('')
   })
 
   it.each(['pnpm -r test', 'pnpm vitest', 'pnpm exec vitest', 'pnpm --recursive test'])(
     'recognises required test-start form: %s',
     (command) => {
       const result = run(command, { ...process.env, PATH: '' })
-      expect(result.stdout).toContain('could not enumerate existing test-runner processes')
+      expect(result.stdout).toBe('')
+      expect(result.entries[0]).toMatchObject({ decision: 'warned', class: 'enumeration-unavailable' })
     },
   )
 
@@ -98,8 +96,7 @@ describe('wt-concurrent-test-guard-hook', () => {
   it('WARN: unavailable process enumeration is unknown, never a silent zero', () => {
     const result = run('pnpm test', { ...process.env, PATH: '' })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('unknown, not a zero count')
-    expect(result.stdout).toContain('"permissionDecision":"allow"')
+    expect(result.stdout).toBe('')
     expect(result.entries).toHaveLength(1)
     expect(result.entries[0]).toMatchObject({
       decision: 'warned',

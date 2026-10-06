@@ -1652,7 +1652,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     expect(state.pid).toBe(server.pid)
     expect((await health(state)).service).toBe('workflow-toolbox-artifact-server')
     await stopChild(server)
-    expect(server.exitCode).toBe(0)
+    // POSIX delivers SIGTERM to the server's own shutdown handler, which exits 0. Windows has no such signal: the stop
+    // terminates the process tree, so its exit code is the terminator's (1), not the server's.
+    expect(server.exitCode).toBe(process.platform === 'win32' ? 1 : 0)
     expect(output.stderr()).toBe('')
   }, 20_000)
 

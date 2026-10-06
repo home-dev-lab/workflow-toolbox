@@ -36,7 +36,8 @@ for (const { label, after, before, action, miss = true } of scenarios) test(`com
   await migrateRule(root, 'sample.md', spec, {});
   const ledger = join(root, '.claude/rules-on-demand-ledger.jsonl');
   const row = JSON.parse((await readFile(ledger, 'utf8')).trim());
-  await writeFile(ledger, JSON.stringify({ ...row, time: '2026-01-01T00:00:00Z' }) + '\n');
+  // Characterize the legacy compliance path; provisional profile uncertainty has its own locks.
+  await writeFile(ledger, JSON.stringify({ ...row, state: undefined, time: '2026-01-01T00:00:00Z' }) + '\n');
   const rulesDir = join(root, '.claude/rules-on-demand');
   const verdicts = join(root, 'verdicts.jsonl'), store = join(root, 'store.json');
   await writeFile(store, '{}');
