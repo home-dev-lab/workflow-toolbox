@@ -13,6 +13,7 @@ import { dailyRollback } from '../scripts/daily-rollback.mjs';
 import { checkRollbackScope } from '../scripts/daily-provisional.mjs';
 import { measureInputs } from '../scripts/quality-check.mjs';
 import { scanTranscripts } from '../scripts/transcript-verdicts.mjs';
+import { normal } from '../paths.js';
 
 const spec = { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'none', reason: 'Delivery-only fixture' } };
 const body = 'Keep this instruction available.\n';
@@ -130,7 +131,9 @@ function fixtureLayout(dir, scope) {
 }
 
 async function fixture(t, { scope = 'user', mirrors = [], profileAlias = false } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'rod-observed-'));
+  // Physical root: the engine and the reader compare physical identities, and macOS (/var) and Windows (8.3 names)
+  // hand out temp paths that are not their own real path. Aliases under test are created explicitly below.
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'rod-observed-')));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const { config, root, staticDir, ledger, demand } = fixtureLayout(dir, scope);
   await mkdir(staticDir, { recursive: true });
@@ -437,7 +440,8 @@ test('fix1 cached OLD generation cannot confirm newly migrated NEW body', async 
   const f = await fixture(t);
   const instance = engine();
   instance.$.env.get = async (name) => name === 'CLAUDE_CONFIG_DIR' ? f.config : undefined;
-  instance.$.fs.list = async (path) => path === f.demand ? [{ kind: 'file', name: 'sample.md' }] : [];
+  // The engine spells host paths with forward slashes (paths.js normal); Windows' native spelling uses backslashes.
+  instance.$.fs.list = async (path) => normal(path) === normal(f.demand) ? [{ kind: 'file', name: 'sample.md' }] : [];
   instance.$.fs.read = async () => readFile(join(f.demand, 'sample.md'), 'utf8');
   instance.$.fs.stat = async (path) => ({ kind: 'dir', size: 4096, realPath: path });
   await instance.call('Read');
@@ -456,7 +460,15 @@ test('fix1 cached OLD generation cannot confirm newly migrated NEW body', async 
   const result = await migrationEvidence({ ...migration, migratedAt: migration.time }, 'sample.md', evaluation(f));
   assert.notEqual(result.decision, 'confirm', 'OLD loaded generation must not confirm NEW migration');
   assert.equal(result.annotation.profiles[0].state, 'not loaded');
-  assert.ok(instance.stored.get('identityActivity')[f.identity].generations?.[f.migration.generation]?.servedAt, 'engine echoes the generation of OLD actually served');
+  // The engine keys identities by the directory spelling it built (on Windows `C:\…\config/rules-on-demand`, hooks.js
+  // ruleDirectories); find the entry by its parts, as the reader does, and name what was found when it is missing.
+  const echoed = instance.stored.get('identityActivity') ?? {};
+  const ours = Object.entries(echoed).find(([key]) => {
+    const parts = lifecycle.splitRuleIdentity(key);
+    return parts?.scope === 'user' && parts.name === 'sample.md' && normal(parts.dir) === normal(f.demand);
+  });
+  const found = Object.fromEntries(Object.entries(echoed).map(([key, row]) => [key, Object.keys(row?.generations ?? {})]));
+  assert.ok(ours?.[1]?.generations?.[f.migration.generation]?.servedAt, `engine echoes the generation of OLD actually served; expected generation ${f.migration.generation} under ${normal(f.demand)}, found ${JSON.stringify(found)}`);
   hooks.resetForSelftest();
   const fresh = await instance.call('Agent');
   assert.ok(JSON.stringify(fresh).includes('NEW instruction'));
