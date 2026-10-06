@@ -571,6 +571,20 @@ describe('SDK pilot runner', () => {
 
   })
 
+  it.each([
+    ['FULL', true],
+    ['LITE', false],
+  ])('states the plan shape in the first prompt only on a %s route that plans', async (route, expected) => {
+    const f = fixture(); writeFileSync(f.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    const prompts: string[] = []
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield initMessage()
+      prompts.push((await prompt.next()).value.message.content)
+    })()
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    expect(prompts[0].includes(PLAN_SHAPE_DESCRIPTION)).toBe(expected)
+  })
+
   it('refuses a card with no DoD criterion before query starts', async () => {
     const f = fixture(); writeFileSync(f.cardFile, 'Route: LITE\n## Notes\n- no acceptance here\n')
     let queried = false
