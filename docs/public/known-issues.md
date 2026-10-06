@@ -307,6 +307,7 @@ Polls `https://status.claude.com/api/v2/summary.json` and considers only `Claude
 ### `wt-spawn-capability-guard-hook.mjs` — unwritable-report spawn blocker (PreToolUse)
 
 Checks an `Agent` spawn's definition and denies it only when the agent has a `tools:` allowlist without `Write` and its brief asks for a file at a path. An agent type with no `tools:` line is allowed because it inherits all tools. The denial explains how to repair the brief before the delegated work runs without a way to write its required report. Internal errors fail open with one stderr trace.
+Matched clean prohibitions and noun uses of “output” get an advisory instead of a refusal; uncertain negation, destination corrections across clauses and later affirmative write requests still cause a refusal. Each refusal or advisory names the matched phrase and records it in the local guard journal, subject to the journal's secret masking and length limits. In observe mode these advisories stay silent while the journal retains the detection; refusals still apply.
 
 ### `wt-spawn-channel-guard-hook.mjs` — report-channel advisory (PreToolUse on Agent)
 
