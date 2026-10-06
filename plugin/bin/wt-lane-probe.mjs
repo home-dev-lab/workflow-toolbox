@@ -63,7 +63,10 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--worktree', '--pattern', '--archive'],
+    booleanFlags: [],
+  })
   const args = { worktrees: [], pattern: 'opencode', archive: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]

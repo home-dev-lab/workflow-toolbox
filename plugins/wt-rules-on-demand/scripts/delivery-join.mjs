@@ -1,5 +1,6 @@
 // Exact in-hook verdict/serve join. All filtering is reader-side; the journal and JSONL stay append-only.
 import { contextLast, legacyContextSeg, legacyServedSeg } from '../hooks/store-budget.js';
+export { joinIdentityActivity } from '../hooks/identity-activity.js';
 const number = (value) => typeof value === 'number' && Number.isFinite(value);
 const token = (id) => String(id ?? '').replace(/-\d+$/, '');
 const sameSession = (row, delivery) => row.sessionId == null || delivery.sessionId == null || row.sessionId === delivery.sessionId;
@@ -112,11 +113,16 @@ function joinActs(a = [], b = []) {
   }
   return [...byRule.entries()].sort(([x], [y]) => x.localeCompare(y)).map(([, act]) => act);
 }
+function joinField(x, y, combine) {
+  if (x === undefined) return y;
+  if (y === undefined) return x;
+  return combine ? combine(x, y) : greaterValue(x, y);
+}
 function joinFields(a = {}, b = {}, special) {
   const out = {};
   for (const key of [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])].sort()) {
     const x = a?.[key], y = b?.[key];
-    out[key] = x === undefined ? y : y === undefined ? x : special[key] ? special[key](x, y) : greaterValue(x, y);
+    out[key] = joinField(x, y, Object.hasOwn(special, key) ? special[key] : undefined);
   }
   return out;
 }

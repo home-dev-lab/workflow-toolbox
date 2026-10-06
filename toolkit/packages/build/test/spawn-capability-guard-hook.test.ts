@@ -16,7 +16,8 @@
 // brief that merely NAMES a path to read" is a load-bearing assertion, not padding.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -41,22 +42,336 @@ function projectWithAgent(name: string, frontmatter: string): string {
   return root
 }
 
-function run(payload: unknown, cwd: string) {
+function run(payload: unknown, cwd: string, mode = 'enforce') {
+  const journal = mkdtempSync(join(tmpdir(), 'wt-capability-journal-'))
+  roots.push(journal)
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
     // Point the user-level resolution root at an empty dir so only the fixture can match.
-    env: { ...process.env, CLAUDE_CONFIG_DIR: join(cwd, '.nonexistent-config') },
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: join(cwd, '.nonexistent-config'),
+      WT_GUARD_JOURNAL_DIR: journal,
+      WT_GUARD_JOURNAL_TEST_ORIGIN: '1',
+      WT_GUARD_MODE: mode,
+    },
   })
+  expect(res.status).toBe(0)
+  expect(res.stderr).not.toContain('FAILED OPEN')
   const denied = res.stdout.includes('"deny"')
-  return { denied, stdout: res.stdout, stderr: res.stderr, status: res.status }
+  const records: GuardRecord[] = readdirSync(journal)
+    .filter((name) => name.endsWith('.ndjson'))
+    .flatMap((name) => readFileSync(join(journal, name), 'utf8').trim().split('\n').map((line) => JSON.parse(line)))
+  return { denied, stdout: res.stdout, stderr: res.stderr, status: res.status, records }
+}
+
+interface GuardRecord {
+  decision: string
+  class: string
+  origin: string
+  reason: string
+  evidence?: { pattern: string; phrase: string }
 }
 
 function spawnPayload(type: string, prompt: string, cwd: string) {
   return { tool_name: 'Agent', cwd, tool_input: { subagent_type: type, prompt } }
 }
 
+function readOnlySpawn(prompt: string) {
+  const cwd = projectWithAgent('reader', 'tools: Read, Grep, Glob')
+  return run(spawnPayload('reader', prompt, cwd), cwd)
+}
+
+function singleRecord(result: ReturnType<typeof run>, decision: string, classification: string) {
+  expect(result.records).toHaveLength(1)
+  expect(result.records[0]).toMatchObject({ decision, class: classification, origin: 'test' })
+  return result.records[0]!
+}
+
+function journalPhrase(phrase: string) {
+  return phrase.slice(0, 24).replace(/[^A-Za-z0-9._/,-]+/g, '?')
+}
+
 describe('wt-spawn-capability-guard-hook', () => {
+  describe('suppressed candidates give one advisory and one warned record', () => {
+    it.each([
+      ['Do not write to /tmp/x.', 'write to /tmp/x.', 'write-to-path', 'negated'],
+      ['Never write your report to /tmp/x.md', 'write your report to /tmp/x.md', 'write-to-path', 'negated'],
+      ["Don't write the findings to /tmp/f.md", 'write the findings to /tmp/f.md', 'write-to-path', 'negated'],
+      ['You must not write to ~/x', 'write to ~/x', 'write-to-path', 'negated'],
+      ['**Do not** write to /tmp/x', 'write to /tmp/x', 'write-to-path', 'negated'],
+      ['NEVER save output to /tmp/x', 'save output to /tmp/x', 'save-to-path', 'negated'],
+      ['Do not write output to /tmp/x.', 'write output to /tmp/x.', 'write-to-path', 'negated'],
+      ["N'écris pas dans /tmp/x", 'écris pas dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['N’écris jamais ton rapport dans /tmp/x', 'écris jamais ton rapport dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne rédige pas dans /tmp/x', 'rédige pas dans /tmp/x', 'fr-depose', 'negated'],
+      ["N'enregistre plus dans /tmp/x", 'enregistre plus dans /tmp/x', 'fr-depose', 'negated'],
+      // Infinitive negation puts both particles BEFORE the verb.
+      ['ne pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['sans écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne jamais écrire ton rapport dans /tmp/x', 'écrire ton rapport dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Veille à ne pas ecrire dans /tmp/x', 'ecrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['**Ne pas** écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne pas enregistrer dans /tmp/x', 'enregistrer dans /tmp/x', 'fr-depose', 'negated'],
+      ['Tu ne dois pas écrire dans /home/x/repo.', 'écrire dans /home/x/repo.', 'fr-ecris-dans', 'negated'],
+      ['Lis /tmp/p.md sans rien écrire dans /home/x/repo.', 'écrire dans /home/x/repo.', 'fr-ecris-dans', 'negated'],
+      ["Pas besoin d'écrire dans /tmp/x : ton dernier message suffit.", 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne surtout pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ["Il est interdit d'écrire dans ~/.claude/rules.", 'écrire dans ~/.claude/rules.', 'fr-ecris-dans', 'negated'],
+      // A side clause carries its own negation; a "puis", "si", "ne" or "que" in another clause does not reverse it.
+      ['Lis /home/x/plan.md sans écrire dans /home/x/repo, puis rends ton verdict.', 'écrire dans /home/x/repo', 'fr-ecris-dans', 'negated'],
+      ['Vérifie si le hook marche, sans écrire dans ~/.claude.', 'écrire dans ~/.claude.', 'fr-ecris-dans', 'negated'],
+      ['Lis le module qui ne compile pas, sans écrire dans /tmp/x.', 'écrire dans /tmp/x.', 'fr-ecris-dans', 'negated'],
+      ['Analyse le dépôt sans écrire dans /home/x/repo, que tu dois laisser intact.', 'écrire dans /home/x/repo', 'fr-ecris-dans', 'negated'],
+      ['Analyse le rapport oublié sans écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne pas écrire dans /tmp/avant', 'écrire dans /tmp/avant', 'fr-ecris-dans', 'negated'],
+      ['Pas  besoin d’écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Ne pas **écrire** dans /tmp/x', 'écrire** dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Lis /tmp/si/x.md sans écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['nginx ne pouvait pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Tu ne devrais pas écrire dans /tmp/x', 'écrire dans /tmp/x', 'fr-ecris-dans', 'negated'],
+      ['Never write your report to /tmp/x.md; your final message is the report.', 'write your report to /tmp/x.md', 'write-to-path', 'negated'],
+      ['Compare its output to /tmp/expected.txt and report.', 'output to /tmp/expected.txt', 'save-to-path', 'noun'],
+      ['Compare the JSON output to /tmp/expected.txt.', 'output to /tmp/expected.txt.', 'save-to-path', 'noun'],
+      ['Compare command output to /tmp/expected.txt.', 'output to /tmp/expected.txt.', 'save-to-path', 'noun'],
+      ['To not write your report to /tmp/x would violate the task.', 'write your report to /tmp/x', 'write-to-path', 'negated'],
+      ['Compare the results, and after that output the report to /tmp/x.', 'output the report to /tmp/x.', 'save-to-path', 'noun'],
+      ['Do not write to /tmp/a. Never save to /tmp/b', 'write to /tmp/a.', 'write-to-path', 'negated'],
+    ])('%s', (prompt, phrase, pattern, suppression) => {
+      const r = readOnlySpawn(prompt)
+      expect(r.denied).toBe(false)
+      const output = JSON.parse(r.stdout).hookSpecificOutput
+      expect(output.hookEventName).toBe('PreToolUse')
+      expect(output.permissionDecision).toBeUndefined()
+      expect(output.additionalContext).toContain('ADVISORY')
+      expect(output.additionalContext).toContain('reader')
+      expect(output.additionalContext).toContain(`"${phrase}"`)
+      expect(output.additionalContext).toContain(suppression)
+      expect(output.additionalContext).toContain('Write')
+      expect(output.additionalContext).toContain('final message')
+      expect(output.additionalContext.split(/\r?\n/)).toHaveLength(1) // the advisory is one line
+      const record = singleRecord(r, 'warned', suppression === 'negated' ? 'negated-write' : 'noun-output')
+      expect(record.evidence).toEqual({ pattern, phrase: journalPhrase(phrase) })
+      expect(record.reason).toContain(phrase)
+    })
+  })
+
+  describe('uncertain, reversed, continued and affirmative instructions stay blocked', () => {
+    it.each([
+      'If the answer is no, write to /tmp/x.',
+      'Do not just write to /tmp/x; include the appendix too.',
+      'You cannot not write to /tmp/x.',
+      'Why not write your report to /tmp/x?',
+      'Do not forget to write your report to /tmp/r.md',
+      "Don't fail to write your report to /tmp/r.md",
+      "Don't hesitate to write your findings to /tmp/f.md",
+      'Never hesitate to write your findings to /tmp/f.md',
+      'Ne rédige que le rapport dans /tmp/x.',
+      'Answer no\nécris ton rapport dans /tmp/x',
+      'Output the results to /tmp/x.md',
+      'Run it and output the log to /tmp/x',
+      'Save its output to /tmp/x',
+      'Do not write to /tmp/a but write the report to /tmp/b.md',
+      'Do not write to /tmp/a. Write your report to /tmp/b.md',
+      'Do not write to /tmp/a but to /tmp/b.',
+      'Do not write only the summary to /tmp/x; include the details too.',
+      'You cannot simply not write your report to /tmp/x',
+      'N’écris pas dans /tmp/a, mais dans /tmp/b.',
+      'N’écris pas seulement le résumé dans /tmp/x; inclus aussi les détails.',
+      'Do not write the report to /tmp/x until the review is complete; then do so.',
+      '**You cannot** **not** write to /tmp/x',
+      'You can’t **not** write to /tmp/x',
+      'Never\nwrite to /tmp/x',
+      'Ne\nrédige pas dans /tmp/x',
+      'You must output the report to /tmp/x',
+      'Please also output the report to /tmp/x',
+      '**Output** the report to /tmp/x',
+      'Do not write to /tmp/a but output the report to /tmp/b',
+      'Compare its output to /tmp/a then save the report to /tmp/b',
+      'Never save output to /tmp/a but save the report to /tmp/b',
+      'Do not write to /tmp/a and write to /tmp/b',
+      'Do not, under any circumstances, write to /tmp/x',
+      'You must not ever write to ~/x',
+      'Do not mysteriously write to /tmp/x',
+      'If necessary do not write to /tmp/x',
+      'Écris pas dans /tmp/x',
+      'Do not say REPORT WRITTEN',
+      'Do not: write to /tmp/x',
+      '- Output the report to /tmp/x',
+      '1. Output the report to /tmp/x',
+      'Read the diff; then output the report to /tmp/x',
+      'You cannot not output the report to /tmp/x.',
+      'Do not output to /tmp/a but to /tmp/b.',
+      'You can’t **not** output the report to /tmp/x.',
+      'Never output to /tmp/a but to /tmp/b.',
+      ...['do', 'does', 'did', 'will', 'would', 'could', 'might', 'may'].map(
+        (auxiliary) => `You ${auxiliary} output the report to /tmp/x.`,
+      ),
+      ...[';', ':', '!', '?'].map((boundary) => `Do not write to /tmp/a${boundary} use /tmp/b.`),
+      // A continuation after a colon or semicolon still belongs to the same instruction sentence.
+      'Do not write to /tmp/x: instead, put the report in /tmp/y.',
+      'Do not write to /tmp/x; rather put the report in /tmp/y.',
+      'N’écris pas dans /tmp/a : plutôt dans /tmp/b.',
+      // French infinitive instructions: the verb is the infinitive, the obligation sits elsewhere.
+      'Tu dois écrire ton rapport dans /tmp/r.md',
+      'Tu dois ecrire ton rapport dans /tmp/r.md',
+      "N'oublie pas d'écrire ton rapport dans /tmp/r.md",
+      'Écrivez le rapport dans /tmp/r.md',
+      'Ne pas écrire dans /tmp/a, mais dans /tmp/b.',
+      'Sans écrire dans /tmp/a; écris plutôt dans /tmp/b.',
+      'Tu écriras ton rapport dans /tmp/r.md',
+      'Il faut que tu écrives ton rapport dans /tmp/r.md',
+      'Pourquoi ne pas écrire ton rapport dans /tmp/r.md ?',
+      'Ne pas écrire dans le code, uniquement dans /tmp/r.md',
+      'Sans écrire dans le dépôt, mets ton rapport dans /tmp/r.md',
+      'Tu ne dois écrire que dans /tmp/r.md',
+      "N'hésite pas à écrire ton rapport dans /tmp/r.md",
+      'Ne manque pas de rédiger le rapport dans /tmp/r.md',
+      "Ne pas oublier d'écrire le rapport dans /tmp/r.md",
+      'Si besoin, ne pas hésiter à écrire dans /tmp/r.md',
+      // The prohibition must govern the verb itself: a negation elsewhere in the clause does not count.
+      'Sans attendre tu dois enregistrer le rapport dans /tmp/x',
+      'Le module ne marche pas et tu dois enregistrer le diagnostic dans /tmp/x',
+      'Ne pas seulement enregistrer le résumé dans /tmp/x',
+      'Tu ne peux pas ne pas rédiger le rapport dans /tmp/x',
+      "Il n'est pas interdit de déposer le rapport dans /tmp/x ; fais-le maintenant.",
+      'Ne pas enregistrer dans /tmp/a mais dans ./b.md',
+      'Il faut ne pas rédiger qu’un résumé dans /tmp/x ; inclure aussi les détails.',
+      'Use sans serif and run `enregistrer` dans /tmp/x.',
+      // A decomposed accent (e + U+0301) is the same verb.
+      'e\u0301crire dans /tmp/x',
+      'Il faut ne pas seulement écrire le résumé dans /tmp/x; inclus aussi les détails.',
+      ...['enregistrer', 'sauvegarder', 'déposer', 'deposer', 'rédiger', 'rediger'].map(
+        (verb) => `Tu dois ${verb} le rapport dans /tmp/r.md`,
+      ),
+    ])('%s', (prompt) => {
+      const r = readOnlySpawn(prompt)
+      expect(r.denied).toBe(true)
+      const record = singleRecord(r, 'blocked', 'no-write-tool')
+      expect(record.reason).toContain('has no Write tool')
+      expect(JSON.parse(r.stdout).hookSpecificOutput.additionalContext).toBeUndefined()
+    })
+  })
+
+  describe('evidence selects the earliest affirmative phrase, longest on a tie', () => {
+    it.each([
+      ['Write your report to /tmp/x', 'Write your report to /tmp/x', 'write-to-path'],
+      ['Save to /tmp/a. Write to /tmp/b', 'Save to /tmp/a.', 'save-to-path'],
+      ['Do not write to /tmp/a. Write your report to /tmp/b.md', 'Write your report to /tmp/b.md', 'write-to-path'],
+      ['Do not write to /tmp/a and write to /tmp/b', 'write to /tmp/b', 'write-to-path'],
+      ['Compare its output to /tmp/a then save the report to /tmp/b', 'save the report to /tmp/b', 'save-to-path'],
+      ['Vérifie, puis écris ton rapport dans /tmp/r.md', 'écris ton rapport dans /tmp/r.md', 'fr-ecris-dans'],
+      ['👉écris ton rapport dans /tmp/x', 'écris ton rapport dans /tmp/x', 'fr-ecris-dans'],
+      ['Dépose le rapport dans ~/r.md', 'Dépose le rapport dans ~/r.md', 'fr-depose'],
+      ['Write your findings to the agreed location', 'Write your findings to', 'write-report-to'],
+      ['FINAL MESSAGE: REPORT WRITTEN: <path>', 'REPORT WRITTEN', 'report-written'],
+      ['Write  your\treport to /tmp/x', 'Write  your\treport to /tmp/x', 'write-to-path'],
+      ['Write to /tmp/x and send the report to the reviewer', 'Write to /tmp/x and send the report to', 'write-report-to'],
+    ])('%s', (prompt, phrase, pattern) => {
+      const r = readOnlySpawn(prompt)
+      expect(r.denied).toBe(true)
+      const record = singleRecord(r, 'blocked', 'no-write-tool')
+      expect(record.evidence).toEqual({ pattern, phrase: journalPhrase(phrase) })
+      expect(record.reason).toBe(`agent type "reader" has no Write tool; matched: "${phrase}"`)
+      expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecisionReason).toContain(`"${phrase}"`)
+    })
+
+    it('passes the complete phrase to secret masking before journal truncation', () => {
+      const cwd = projectWithAgent('reader', 'tools: Read')
+      const secret = 'fixture-secret-that-is-longer-than-the-evidence-cap-' + 'z'.repeat(130)
+      const salt = 'fixture-salt'
+      const store = join(cwd, '.nonexistent-config', 'plugins', 'store')
+      mkdirSync(store, { recursive: true })
+      writeFileSync(join(store, 'wt-secret-guard.json'), JSON.stringify({
+        salt,
+        detections: { entries: [{
+          sha256: createHash('sha256').update(`${salt}:${secret}`).digest('hex'),
+          token: 'MASKED',
+        }] },
+      }))
+      const r = run(spawnPayload('reader', `Write to /tmp/${secret}`, cwd), cwd)
+      const record = singleRecord(r, 'blocked', 'no-write-tool')
+      expect(record.evidence).toEqual({ pattern: 'write-to-path', phrase: 'Write?to?/tmp/MASKED' })
+      expect(record.reason).toContain('Write to /tmp/MASKED')
+      expect(record.reason).not.toContain(secret.slice(0, 10))
+    })
+  })
+
+  describe('observe mode keeps suppressed candidates silent', () => {
+    it.each(['Do not write to /tmp/x', 'Compare command output to /tmp/x'])('%s', (prompt) => {
+      const cwd = projectWithAgent('reader', 'tools: Read')
+      const r = run(spawnPayload('reader', prompt, cwd), cwd, 'observe')
+      expect(r.stdout).toBe('')
+      singleRecord(r, 'silent', prompt.startsWith('Do not') ? 'negated-write' : 'noun-output')
+    })
+
+    it('still denies an affirmative write request', () => {
+      const cwd = projectWithAgent('reader', 'tools: Read')
+      const r = run(spawnPayload('reader', 'Write to /tmp/x', cwd), cwd, 'observe')
+      expect(r.denied).toBe(true)
+      singleRecord(r, 'blocked', 'no-write-tool')
+    })
+  })
+
+  describe('classification scales with repeated clauses', () => {
+    // Separated clauses exercise boundary lookup; one unbroken clause exercises the context windows
+    // around each candidate (a quadratic window scan took ~18 s at 8000 repetitions of the last row).
+    // The bound is generous on purpose: linear classification takes tens of milliseconds, so only a
+    // super-linear regression, never machine load, can cross it.
+    it.each([
+      'Write to /tmp/x.\n', 'Compare command output to /tmp/x.\n',
+      'Write to /tmp/x ', 'Compare command output to /tmp/x ',
+    ])(
+      'classifies 20000 repetitions under 5000 ms: %s', (clause) => {
+        // Evaluate the real classifier in a child, excluding input/resolution/journal work from timing.
+        const script = `
+          const fs = require('node:fs')
+          const vm = require('node:vm')
+          const source = fs.readFileSync(process.argv[1], 'utf8')
+            .replace(/^import .*$/gm, '')
+            .replace("runFailOpenHook('wt-spawn-capability-guard-hook.mjs', main)", '')
+          const prompt = JSON.parse(fs.readFileSync(0, 'utf8'))
+          const result = vm.runInNewContext(source + \`\n
+            const start = performance.now()
+            const intent = findWriteIntent(prompt);
+            ({ elapsed: performance.now() - start, pattern: intent.pattern, suppression: intent.suppression })
+          \`, { prompt, performance })
+          console.log(JSON.stringify(result))
+        `
+        const res = spawnSync(process.execPath, ['-e', script, HOOK], {
+          input: JSON.stringify(clause.repeat(20000)), encoding: 'utf8', timeout: 90000,
+        })
+        expect(res.status, res.stderr).toBe(0)
+        const result = JSON.parse(res.stdout)
+        process.stdout.write(`classifier ${JSON.stringify(clause)}: ${result.elapsed.toFixed(1)} ms\n`)
+        expect(result.pattern).toBe(clause.startsWith('Write') ? 'write-to-path' : 'save-to-path')
+        expect(result.suppression).toBe(clause.startsWith('Write') ? undefined : 'noun')
+        expect(result.elapsed).toBeLessThan(5000)
+      }, 100000,
+    )
+  })
+
+  describe('no matched candidate stays silent', () => {
+    it.each([
+      'without writing to /tmp/x',
+      'Décrire ce que fait /home/x/script.mjs dans /tmp/x',
+      'Lis les archives des écrivains dans /tmp/x.',
+      'Use the `ecrire` command to inspect data in /tmp/x.',
+      'Écrire le bloc méta délimité (`<!-- sr-meta v1 -->` … `<!-- /sr-meta -->`) en bas de la description',
+      // Nouns and past participles describe, they do not instruct.
+      'Aucune écriture dans ~/.claude/rules/ ni ailleurs',
+      'Les brouillons sont écrits et prêts, dans le fichier /tmp/x.md',
+      'Chaque ligne est écrite dans un journal durable (~/.local/state/x.jsonl)',
+      'Read /tmp/x.diff and report',
+    ])('%s', (prompt) => {
+      const r = readOnlySpawn(prompt)
+      expect(r.denied).toBe(false)
+      expect(r.stdout).toBe('')
+      expect(r.records).toEqual([])
+    })
+  })
+
   describe('denies when the type cannot write but the brief demands a file', () => {
     it('English: "write your report to <path>"', () => {
       const cwd = projectWithAgent('groomer', 'tools: Read, Grep, Glob')
@@ -162,12 +477,14 @@ describe('wt-spawn-capability-guard-hook', () => {
       const res = spawnSync(process.execPath, [HOOK], { input: 'not json at all', encoding: 'utf8' })
       expect(res.stdout.trim()).toBe('')
       expect(res.status).toBe(0)
+      expect(res.stderr).not.toContain('FAILED OPEN')
     })
 
     it('empty stdin produces no output and exit 0', () => {
       const res = spawnSync(process.execPath, [HOOK], { input: '', encoding: 'utf8' })
       expect(res.stdout.trim()).toBe('')
       expect(res.status).toBe(0)
+      expect(res.stderr).not.toContain('FAILED OPEN')
     })
   })
 

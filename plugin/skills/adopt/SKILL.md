@@ -136,6 +136,11 @@ When adopting into a project that already has rules, reconcile first — see the
   prints the journalled text as adopted, the local text, and the currently shipped text.
 - **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
+- **Adopt scripts ahead of the installed plugin (deliberate):** `--install` refuses a `scripts` set
+  whose source is newer than, or at the same version but with different libraries from, any
+  plugin root the adopted scripts load at run time, and prints the commands that clear it. Add
+  `--allow-ahead` only when you develop the scripts and the plugin together; each banner then
+  records the installed version it was adopted against. The other sets are not checked.
 - **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
   use set-wide `--force` when the three-way decision covered only one file.
 - **Resolve an on-demand trigger finding:** run the exact printed `--set rules --install
@@ -158,33 +163,6 @@ When adopting into a project that already has rules, reconcile first — see the
   via `--dir`: a hardcoded `~/.claude` is correct on a default machine and silently WRONG on
   one with a second config profile, and the report then describes a directory nobody meant.
   Unlike `--dir`, `--global` composes with `--set all`; the two flags cannot be combined.
-- **Audit overlap (read-only):** `node scripts/install.mjs --audit-overlap --user-dir <dir>`
-  compares the user rules directory mechanically with the plugin's shipped rules bundle.
-  Use `--pairs-file <path>` to provide an editable JSON array of user/shipped basename pairs
-  (otherwise the bundled `scripts/rule-pairs.json` is used), and `--declarations-file <path>` to
-  provide an editable JSON array of author-declared ship statuses (otherwise the bundled
-  `scripts/ship-declarations.json` is used). A concern permanently excluded from
-  the swap by policy (its shipped counterpart is never meant to be installed for it — e.g. a
-  machine-specific rule that will never converge with a generic shipped one) should NOT be a
-  declared pair at all: leave it out so it reports as `UNMAPPED` like any other machine-only
-  rule, rather than as permanent, noisy `DRIFT`. It reports `DUPLICATE` when both
-  layers contain a paired file, `DRIFT` for user lines absent from the shipped file,
-  `CLEAN` when no such difference is found, and `ABSENT` when a declared user file is not
-  present. In the declarations file, `private` stays silent and counts as declared-private,
-  `undecided` reports a non-gating `UNDECIDED`, and `shipped-as` requires a `target` basename
-  under `plugin/rules/` and stays silent only while that shipped target exists (otherwise it is
-  a gating `DECLARATION-ERROR`). It also reports unpaired Markdown files as `UNMAPPED`; none of
-  these findings is auto-classified or auto-ported. This deliberately NEVER guesses a private
-  file's status from its prose: an undeclared file behaves exactly as before (`UNMAPPED`,
-  non-gating), and `undecided` does not gate — only a broken `shipped-as` declaration does. A
-  pair marked `"partial": true` in the pairs file (a
-  deliberate, bounded, accepted overlap — e.g. machine bindings that intentionally coexist
-  with their generic shipped counterpart) reports `DUPLICATE`/`DRIFT` informationally instead of
-  as a failing finding. The command exits 1 when any non-partial `DUPLICATE` or `DRIFT` is
-  found, when a shipped rule has no pairing entry (`UNPAIRED`), when the `agents` set has a
-  declared pair with no user file present (`ABSENT`), or when a `shipped-as` declaration points
-  at a shipped file that does not exist (`DECLARATION-ERROR`) — 0 otherwise. `UNMAPPED` and
-  `UNDECIDED` are both purely informational and never affect the exit code.
 
 **Target dirs — confirm scope with the user first.** Each set has its own default under the
 current working directory: rules → `.claude/rules/wt/`, agents → `.claude/agents/` (project
@@ -194,184 +172,21 @@ pass `--set rules --global` and let the script resolve the config dir (rules lan
 project-scoped (the watchdog pairing is a per-project concern) — the default
 `.claude/agents/` is normally right; ask before overriding it.
 
-### Rules live under a `wt/` subfolder (card 1835727457)
-
-Adopted rule copies default to `.claude/rules/wt/`, not the flat `.claude/rules/` root. The
-boundary between "my rules" and "the plugin's adopted rules" then exists in the directory
-tree itself, instead of only in the `wt-` filename prefix nothing enforced:
-
-```
-~/.claude/rules/
-├── delegation-lanes.md          ← the user's own rules
-├── machine-calibrations.md
-└── wt/                          ← the plugin's, adopted
-    ├── wt-delegation-ladder.md
-    ├── wt-delegation-ladder-at-act.md
-    ├── wt-sdlc.md
-    ├── wt-verify-by-ground-truth-at-act.md
-    └── …
-```
-
-`--dir` still targets any directory exactly, including the flat pre-migration root, for
-inspection during the transition. An install aimed at a parent that already contains adopted
-`wt/` files is refused rather than creating a second loaded copy.
-
-Core and `-at-act` rule halves are both installed here. A separate on-demand engine may move
-the latter using its adjacent source trigger spec; without that engine both remain static.
-
-**During the transition, `--check` and `--audit-overlap` search BOTH locations** for the
-rules set — the pre-migration flat dir and the new `wt/` default — and union the results.
-Checking only the new location would read a perfectly healthy, simply-not-yet-migrated
-project as "nothing adopted"; checking only the flat one would miss a project that already
-migrated. A file found ONLY at the flat location reports as `MIGRATION-PENDING` under
-`--check` rather than `ABSENT` — and a plain `--install` never writes a fresh copy over it
-(that would create exactly the duplicate the migration exists to avoid: the same rule
-loaded from two places at once). The `wt-adopt-check-hook` SessionStart hook and the
-delegation-ladder injection hook apply the same dual-location search, so neither nags a
-correctly-migrated project nor stays silent on an un-migrated one.
-
-**Moving an existing flat install to `rules/wt/` is a SEPARATE, explicit step — this skill's
-`--install` never does it automatically.** Preview it first, read-only:
-
-```bash
-node scripts/install.mjs --migrate --dry-run [--dir <…/rules/wt>] [--global] \
-  [--secondary-dir <path-to-a-second-config-dir's-rules-dir>]
-node scripts/install.mjs --migrate --execute [--dir <…/rules/wt>] [--global] \
-  --secondary-dir <path-to-a-second-config-dir's-rules-dir>
-```
-
-`--migrate` without `--dry-run` or `--execute` refuses outright, on purpose. Preview first,
-then use `--execute` only after the human decision to stop other sessions that might compact
-mid-move and read a half-migrated directory. The dry-run writes nothing and reports, in order: (1)
-every file it would move, source → destination, absolute paths; (2) every file it would
-LEAVE at the root, with the reason (hand-authored, locally edited, symlinked, or a name
-collision with an existing destination file); (3) the set LOADED before vs. after, in file
-count and bytes, so a doubling reads as a number rather than an intuition; (4) what happens
-to a second config dir's per-file symlinks, when `--secondary-dir` names one. It exits
-non-zero whenever it would produce a duplicate (a file loaded from both locations at once)
-— a dry-run that describes a dangerous state and exits 0 would be a report, not a guard.
-
-`--execute --secondary-dir <dir>` performs the second-config reconciliation only after every
-planned file move is byte-verified: it removes each per-file symlink in `<dir>` whose target was
-one of those moved files, then creates the single **absolute** directory symlink
-`<dir>/wt -> <primary>/rules/wt`. Absolute matches this machine's documented setup and makes the
-link independent of the invoking cwd. It prints the removed, created/already-correct, and left
-link counts; a remaining moved-file link makes the command exit non-zero with its path. Links to
-hand-authored root files are untouched. Re-running it reports `directory link already correct` and
-does not recreate the link. When a move is planned and `--secondary-dir` is absent, `--execute`
-refuses loudly rather than silently leaving an unknowable second configuration broken; pass
-`--ignore-secondary` only to acknowledge and explicitly accept that risk.
-
-**Design decision — the second config dir's symlink arrangement.** This machine's own setup
-(`~/.claude-work/rules/` symlinking each managed file individually into `~/.claude/rules/`)
-predates the `wt/` subfolder and cannot survive it unchanged: a per-file symlink does not
-follow a rename. The decision, made for this card and applying to any similar setup: replace
-the per-file symlinks with ONE directory symlink, `<secondary>/rules/wt -> <primary>/rules/wt`.
-Reason — a per-file link has to be re-created by hand every time a rule is added or removed
-(a hand-placed mechanism that goes silently stale the moment someone forgets the second
-half of an edit); a directory symlink covers the whole managed set at once and needs no
-maintenance as it grows or shrinks. Any locally-authored, non-`wt/` rules in the secondary
-dir are unaffected and stay as direct files (never covered by a directory symlink meant for
-the managed subset alone). `--migrate --dry-run --secondary-dir <dir>` names each existing
-per-file symlink into the migrating set and states whether it goes stale; `--migrate --execute
---secondary-dir <dir>` carries out the replacement above rather than leaving it as a manual
-follow-up.
-
 Recommended flow:
 1. Run `--check` first (for the relevant set, or `--set all`) and show the user the status
    (absent / up-to-date / stale / edited / hand-authored).
 2. If they want to proceed, confirm the target scope, then run `--install`.
 3. Report exactly which files were written and where.
 
-When a copy is behind, the installer also computes the changelog span between the installed and
-current plugin versions: the most recent entries in that range are shown, any omitted tail is
-counted as `omittedCount`, and a gap inside the version range is reported as
-`missingVersionCount` rather than being read as "no changes". If the installed version predates
-the oldest recorded heading, the tool reports `recorded:false` with `oldestRecordedVersion`
-instead of fabricating a partial history.
+Open [references/how-to-run-it.md](references/how-to-run-it.md) before using conditional installer flags, auditing overlap, or migrating existing flat rule copies.
 
 ## What gets installed
 
-**rules → `.claude/rules/`:**
-
-- Every `*.md` in the plugin's `rules/` bundle (its single source) except `README.md`,
-  copied VERBATIM under a line-1 banner. The shipped set is the plugin's cross-cutting,
-  project-agnostic guardrails — the delegation ladder (`wt-delegation-ladder.md`: route each
-  task to the lowest rung, pin model + effort at every spawn, heavy work goes down / judgment
-  stays up, plus the non-delegable main-session duties) alongside companion rules for
-  verification, decision-making, grounding, and tracked-work hygiene. All are
-  cost-model-neutral principles (no account-specific model tables), machine-free, and fully
-  editable once written. The set is whatever the plugin bundles, so it grows as guardrails
-  are added — no per-rule change to the installer.
-
-**agents → `.claude/agents/`:**
-
-- **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`**,
-  **`pilot-orchestrator-watchdog.md`** — copied VERBATIM from the plugin's
-  `agent-templates/` directory (their single source), each under a banner. Installing all four
-  is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
-  watchdog pairing; `pilot-orchestrator.md` + `pilot-orchestrator-watchdog.md` are the wave
-  pair and sit idle otherwise. Once these project copies exist, spawn the BARE names
-  (`pilot`, `pilot-orchestrator`) so the watchdog pairing attaches.
-
-The rule set is the plugin's shipped, project-agnostic guardrails (pure directives — no
-environment-specific narrative); the workflow-authoring doctrine lives in the
-`workflow-toolbox:workflow-composer` skill and is not re-installed here.
+Open [references/what-gets-installed.md](references/what-gets-installed.md) when explaining the files installed by the selected managed set.
 
 ## Detecting and refreshing stale copies
 
-`--check` parses each installed file's banner version and compares it to the running plugin's
-version — for both sets:
-
-At `SessionStart`, the read-only adopt check examines only the managed rule and agent paths in
-the project and active config profile. It stays silent when every adopted copy matches. For each
-differing managed copy it names `behind vX` or `ahead of vX` from the banner-version ordering;
-equal-version drift is classified from the stripped copy body when one side only adds content.
-If content changed in both directions, it says that direction is unknown rather than guessing.
-The hook never refreshes anything itself. For an unedited stale copy, the session runs the exact
-`--install --dir` command from the notice, re-checks that directory, and reports one line. For an
-edited copy, the session runs `--diff`, then either takes shipped text deliberately with
-`--install --force --file <file>` or keeps the
-edit and opens a card against the shipped rule. Successful installer writes are journalled with
-file, directory, before/after versions, and the adopted shipped snapshot. A directory symlink and
-its real target are one target; a second real config directory is checked and refreshed separately.
-
-- **ABSENT** — not installed; `--install` writes it.
-- **MIGRATED-ON-DEMAND** — a static rule absent here because it was moved into the on-demand
-  directory beside this one, where it carries its own on-demand head (the status names where it was
-  moved; it does not check that the engine is enabled in this profile). `--install` writes
-  nothing, even with `--force`: a static copy would load it twice. Delete the on-demand copy first
-  to bring it back as a static rule. When this rules directory is a link into another profile's,
-  the status says the rule is migrated there but not loaded by this profile; nothing is written
-  either, since the copy would land in that other profile. Only a head the rules-on-demand engine
-  accepts counts (the installer asks the engine's own parser).
-- **ON-DEMAND-UNVERIFIED** — the on-demand copy carries an on-demand head the installer cannot
-  confirm: the engine it found rejects the head (the status gives the parser's reason and the
-  engine path used), or no engine could be found or loaded (the status names the paths tried).
-  The engine the session actually runs may be one the installer cannot see (a `--plugin-dir`
-  copy), so a static copy could load the rule twice: the installer writes nothing, even with
-  `--force`, and exits 1. Fix the head, set `WT_RULES_ON_DEMAND_ROOT` to the root of the engine
-  the session runs, or delete the on-demand copy to bring the rule back as a static rule. The
-  SessionStart check reports it on its own line at every session and orders no install.
-- **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real
-  target) untouched. `--install --replace-symlinks` replaces the link with a managed copy in
-  place (the former target preserved).
-- **UP-TO-DATE** — installed, unedited, version equals the plugin's; `--install` is a no-op
-  (use `--force` to reset it to pristine).
-- **STALE** — installed, unedited, version behind; `--install` refreshes it (safe — no edits to lose).
-- **STALE (on-demand triggers behind the shipped spec)** — an installer-stamped head is
-  behind the shipped spec; run plain `--install` to refresh the head, even if the body is
-  edited or ahead. A head-only write keeps the body bytes and banner version unchanged.
-- **EDITED (on-demand triggers unresolved)** — an edited or unverifiable head is preserved.
-  Run either exact per-file `--refresh-triggers` or `--keep-triggers` command from the status.
-  An accepted keep stays quiet until the shipped spec moves or the head is edited again.
-- **EDITED** — installed, but the content no longer matches its stamped fingerprint (the user
-  changed it); `--install` SKIPS it, `--install --force` overwrites.
-- **hand-authored / pre-fingerprint banner** — a same-named file with no toolbox banner (never
-  overwritten, even with `--force` — this protects a user's own `pilot.md` and any copy they
-  made by hand before this skill existed; to bring such a copy under management, remove it and
-  re-run `--install`), or an older managed banner with no fingerprint (treated as
-  possibly-edited: skipped unless `--force`).
+Open [references/detecting-and-refreshing-stale-copies.md](references/detecting-and-refreshing-stale-copies.md) when checking status or refreshing an existing adopted copy.
 
 ## Non-goals
 

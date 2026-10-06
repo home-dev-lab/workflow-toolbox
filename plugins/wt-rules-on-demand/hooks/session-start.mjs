@@ -10,6 +10,7 @@ import { atomicLatest } from '../scripts/quality-check.mjs';
 import { launchQuality } from '../scripts/launch-quality.mjs';
 import { discoverFiles } from '../scripts/discover-files.mjs';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
+import { revertNotificationLine, dailyRollbackLines } from './revert-notifications.mjs';
 
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
@@ -67,6 +68,8 @@ if (config) {
 if (process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS !== '1') process.stdout.write('wt-rules-on-demand: inactive: Function Hooks require CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1.\n');
 if (!config) { process.stdout.write('wt-rules-on-demand: HOME or USERPROFILE unavailable; config directory unknown.\n'); process.exit(0); }
 const paths = ruleDirectories(cwd, resolve(config));
+process.stdout.write(await revertNotificationLine(config, process.env.WT_ROD_QUALITY_DATA || qualityDataDir(config)));
+process.stdout.write(await dailyRollbackLines(config, process.env.WT_ROD_QUALITY_DATA || qualityDataDir(config)));
 // The linked worktree holding `start`, read from git's own files by the plan shared with the hook (paths.js
 // worktreePlan); this command only fulfils its stat/read requests. Never spawns git; unknown is said, never guessed.
 const worktree = await linkedWorktree(cwd);
@@ -80,7 +83,7 @@ for (const dir of projectRuleRoots(cwd, { configDir: resolve(config), ...worktre
 const dangling = [];
 // User first, then project directories root first: per name the last copy is the nearest, and the one served.
 const copies = [...await discoverFiles(paths.user, { dangling })];
-for (const dir of projectRoots) copies.push(...await discoverFiles(ruleDirectories(dir, config).project, { dangling }));
+for (const dir of projectRoots) for (const copy of await discoverFiles(ruleDirectories(dir, config).project, { dangling })) copies.push(copy);
 const demand = [...new Map(copies.map(([name, path]) => [name, path])).entries()];
 const staticFiles = (await Promise.all([...projectRoots.map((dir) => ruleDirectories(dir, config).projectStatic), paths.userStatic].map((root) => discoverFiles(root, { recursive: true, dangling })))).flat();
 for (const path of dangling) process.stdout.write(`wt-rules-on-demand: dangling symlink ${path}\n`);
@@ -112,15 +115,6 @@ try { await assertSafeDataDir(dataDir); } catch (error) {
   process.exit(0);
 }
 const latestPath = join(dataDir, 'latest.json');
-const notifications = await readFile(join(dataDir, 'revert-notifications.jsonl'), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
-if (notifications.trim()) {
-  const entries = notifications.trim().split('\n');
-  const recent = entries.at(-1);
-  try {
-    const item = JSON.parse(recent);
-    process.stdout.write(`rules-on-demand: ${entries.length} recorded revert notification(s); latest ${item.scope} ${item.rule}; ${join(dataDir, 'revert-notifications.jsonl')}\n`);
-  } catch { process.stdout.write(`rules-on-demand: revert notifications available at ${join(dataDir, 'revert-notifications.jsonl')}\n`); }
-}
 let latest;
 try { latest = JSON.parse(await readFile(latestPath, 'utf8')); } catch { /* No previous report yet. */ }
 const stamp = join(dataDir, `run-started-${new Date(now).toISOString().slice(0, 10)}`);

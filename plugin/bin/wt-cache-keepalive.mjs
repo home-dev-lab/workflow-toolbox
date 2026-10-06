@@ -35,7 +35,10 @@ function nonNegativeInteger(value, fallback) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--project', '--poll', '--now'],
+    booleanFlags: ['--once'],
+  })
   let projectDir = process.cwd()
   let pollSeconds = positiveNumber(process.env.WT_CACHE_KEEPALIVE_POLL_SECONDS, 60)
   let once = false

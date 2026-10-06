@@ -4,11 +4,18 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
-import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, readLightCounter, reclaimInFlight, recordLightGrant, putLockBack, queuedTickets, readHolderIn, readTicket, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
+import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, readAdmissionCounter, readLightCounter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
 import { connectSuiteLockBroker, createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
+import { displayArgv } from './suite-lock-display.mjs'
+import { orderSuiteLockTickets } from './suite-lock-order.mjs'
+import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
+import { brokerProgressPlace, isBrokerQueueEvent, suiteQueueAdvanced } from './suite-lock-progress.mjs'
+import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
+export { LIGHT_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
+const suiteLockNow = (options) => options.now?.() ?? Date.now()
 
 export function suiteLockWaitSeconds(env = process.env) {
   return env.WT_SUITE_LOCK_WAIT_S === undefined
@@ -59,11 +66,22 @@ export function readSuiteLock(options = {}) {
   let holder = null
   let ageMs
   try { holder = JSON.parse(readFileSync(path.join(lockDir, 'holder.json'), 'utf8')) } catch { /* writer may still be publishing */ }
-  try { ageMs = Date.now() - statSync(lockDir).mtimeMs } catch (error) {
+  try { ageMs = suiteLockNow(options) - statSync(lockDir).mtimeMs } catch (error) {
     if (error?.code === 'ENOENT') return { held: false, root, lockDir, holder: null, ageMs: null }
     throw error
   }
   return { held: true, root, lockDir, holder, ageMs }
+}
+
+export function readSuiteLockStatus(options = {}) {
+  const now = suiteLockNow(options)
+  const current = readSuiteLock({ ...options, now: () => now })
+  const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
+    number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
+  }))
+  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env)
+  if (current.held) snapshot.stale = holderIsStale(current, options)
+  return snapshot
 }
 
 // A holder recorded in ANOTHER PID namespace cannot be judged by its PID number, which is
@@ -124,20 +142,6 @@ export function holderIsStale(lock, options = {}) {
 // A holder record is read from a file any local process can write, then printed on a terminal and
 // into logs: control characters (escape sequences, newlines, C1, bidi overrides) are replaced and the
 // command is capped, so a crafted argv cannot forge or hide a line.
-const ARGV_DISPLAY_MAX = 80
-// C0 and C1 controls, DEL, and the bidi marks/overrides/isolates that can reorder a terminal line.
-const DISPLAY_UNSAFE_RANGES = [[0x00, 0x1f], [0x7f, 0x9f], [0x200e, 0x200f], [0x2028, 0x2029], [0x202a, 0x202e], [0x2066, 0x2069]]
-const displaySafe = (character) => {
-  const code = character.codePointAt(0)
-  return DISPLAY_UNSAFE_RANGES.some(([low, high]) => code >= low && code <= high) ? '?' : character
-}
-
-function displayArgv(argv) {
-  if (!Array.isArray(argv)) return 'unknown command'
-  const text = argv.map((value) => Array.from(String(value), displaySafe).join('')).join(' ')
-  return text.length > ARGV_DISPLAY_MAX ? `${text.slice(0, ARGV_DISPLAY_MAX - 3)}...` : text
-}
-
 export function formatSuiteLockHolder(holder) {
   if (!holder || typeof holder !== 'object') return 'holder unknown'
   const pid = Number.isSafeInteger(holder.pid) ? holder.pid : 'unknown'
@@ -145,7 +149,7 @@ export function formatSuiteLockHolder(holder) {
   const since = Number.isNaN(started.valueOf())
     ? 'unknown time'
     : started.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
-  return `holder pid ${pid} (${displayArgv(holder.argv)}) since ${since}`
+  return `holder pid ${pid} (${displayArgv(holder.argv)}) since ${since}${holder.priority === 'release' ? ' (release priority)' : ''}`
 }
 
 // Every acquirer uses the same FIFO mutex; a holder covers its descendant commands by marker.
@@ -185,44 +189,31 @@ function ticketIsStale(ticket, options) {
 // when it is queued and is passed at most LIGHT_BYPASS_MAX_GRANTS times, checked again after the lock
 // is won. A ticket recorded under another generation (the counter was lost or replaced) is never passed,
 // and while any live ticket comes from an older client, every waiter orders by number only.
-export const LIGHT_BYPASS_MAX_GRANTS = 8
-
-// A ticket from a client that predates priority carries neither field. Such a client orders by ticket
-// number only, so while ANY live ticket is one, every waiter orders by number too: two waiters must never
-// disagree about who goes first (a waiter that waits for one that waits for it never acquires).
-const isOlderClientTicket = (record) => !(record && (record.light === true || 'lightGrantsAtQueue' in record))
-
-// Passable only against the counter generation it was queued under, and only while fewer than
-// LIGHT_BYPASS_MAX_GRANTS light leases were granted since. A lost or replaced counter reads as a
-// different generation, so the ticket is no longer passable.
-function ticketRank(record, counter) {
-  if (record?.light === true) return 0
-  const queuedAt = record?.lightGrantsAtQueue
-  const passable = typeof record?.lightGrantsGeneration === 'string' && record.lightGrantsGeneration === counter.generation
-    && Number.isSafeInteger(queuedAt) && counter.grants >= queuedAt && counter.grants - queuedAt < LIGHT_BYPASS_MAX_GRANTS
-  return passable ? 1 : 0
+// Both filesystem waiters and broker clients select their watchdog from the same current state.
+function waiterBudget(wait, hold, ahead, holderPriority) {
+  if (wait === 0) return 0
+  return ahead === 0 || holderPriority === 'release' ? hold : wait
 }
-
-const goesBefore = (rank, number, otherRank, otherNumber) => rank < otherRank || (rank === otherRank && number < otherNumber)
+const progressPlace = ({ ahead, aheadExcludingRelease, total }) => ({ ahead, aheadExcludingRelease, total })
 
 // Reclaims dead tickets and returns my place: how many live tickets are ahead, and how many in all.
 function queuePlace(queueDir, mine, mineRecord, counter, options) {
-  const live = []
-  for (const number of queuedTickets(queueDir)) {
+  const now = suiteLockNow(options)
+  const live = [{ number: mine, record: mineRecord }]
+  for (const ticket of readQueueSnapshot(queueDir, now)) {
+    const { number } = ticket
     if (number === mine) continue
-    const ticket = readTicket(queueDir, number)
-    if (!ticket) continue
     if (ticketIsStale(ticket, options)) {
       removeTicket(queueDir, number)
       continue
     }
     live.push({ number, record: ticket.holder })
   }
-  const byNumberOnly = live.some((other) => isOlderClientTicket(other.record))
-  const rankOf = (record) => (byNumberOnly ? 0 : ticketRank(record, counter))
-  const myRank = rankOf(mineRecord)
-  const ahead = live.filter((other) => goesBefore(rankOf(other.record), other.number, myRank, mine)).length
-  return { ahead, total: Math.max(live.length + 1, ahead + 1) }
+  const ordered = orderSuiteLockTickets(live, counter, now).tickets
+  const preceding = ordered.slice(0, ordered.findIndex((ticket) => ticket.number === mine))
+  const ahead = preceding.length
+  return { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
+    admissions: readAdmissionCounter(path.dirname(queueDir)) }
 }
 
 // true: acquired. false: the lock is held. 'reclaim': a reclaimer is in flight, so the acquisition is
@@ -313,12 +304,14 @@ function reclaimStaleHolder(root, lockDir, options) {
   return outcome === RECLAIM_BUSY ? false : outcome
 }
 
-function waiterRecord(options, counter) {
+function waiterRecord(options, counter, priority) {
   return {
     pid: process.pid,
     argv: options.argv ?? process.argv,
     cwd: options.cwd ?? process.cwd(),
-    startedAt: new Date().toISOString(),
+    startedAt: new Date(suiteLockNow(options)).toISOString(),
+    level: priority === 'release' ? 0 : Number(priority[1]),
+    ...(priority === 'release' ? { priority: 'release' } : {}),
     ...(options.light === true ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }),
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
@@ -326,9 +319,12 @@ function waiterRecord(options, counter) {
   }
 }
 
-function describeWait(place, current, light = false) {
+function describeWait(place, current, record) {
   const holder = current.held ? formatSuiteLockHolder(current.holder) : 'holder none (handing over)'
-  return `position ${place.ahead + 1} of ${place.total}${light ? ' (light priority)' : ''}, ${holder}`
+  let priority = ''
+  if (record.priority === 'release') priority = ' (release priority)'
+  else if (record.light === true) priority = ' (light priority)'
+  return `position ${place.ahead + 1} of ${place.total}${priority}, ${holder}`
 }
 
 // Windows reports a file or directory that another process is deleting ("delete pending") as EPERM,
@@ -350,6 +346,28 @@ async function retryTransient(operation, pauseMs) {
   }
 }
 
+// Revalidate after winning the atomic mutex, before counting any grant or returning a lease.
+// Ordering/light-counter failures give back the provisional lease before the outer transient retry.
+function confirmAdmission(state, holder, place, options) {
+  const { root, lockDir, queueDir, ticket, record } = state
+  const lease = { root, lockDir, holder }
+  try {
+    const confirmed = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
+    if (confirmed.ahead > 0) {
+      releaseSuiteLock(lease)
+      options.afterHandBack?.()
+      return { again: true, place }
+    }
+    if (record.light === true) recordLightGrant(root)
+    throwIfAborted(options.signal)
+    recordAdmissionGrant(root)
+    return { lease }
+  } catch (error) {
+    releaseSuiteLock(lease)
+    throw error
+  }
+}
+
 // One poll of the queue: `{ lease }` when acquired, `{ again: true, place }` to poll again at once, or
 // `{ place, current }` to wait.
 function pollQueue(state, options) {
@@ -362,23 +380,7 @@ function pollQueue(state, options) {
     delete holder.lightGrantsGeneration
     options.beforeAcquire?.() // test seam: runs between the placement and the attempt
     const taken = tryTakeLock(lockDir, holder, options.beforePublish)
-    if (taken === true) {
-      const lease = { root, lockDir, holder }
-      // Placement read the counter and the queue before the lock was won; a light grant may have landed
-      // since. Judge again now that I am the sole holder, and hand the lock back (uncounted) when a
-      // ticket now goes before mine, so an exclusive ticket is passed by at most LIGHT_BYPASS_MAX_GRANTS grants.
-      if (queuePlace(queueDir, ticket, record, readLightCounter(root), options).ahead > 0) {
-        releaseSuiteLock(lease)
-        options.afterHandBack?.() // test seam: runs after a lock won and handed back
-        return { again: true, place }
-      }
-      if (record.light === true) {
-        try { recordLightGrant(root) } catch (error) { releaseSuiteLock(lease); throw error }
-      }
-      // An abort that lands during the publish never leaves a lock behind.
-      if (options.signal?.aborted) { releaseSuiteLock(lease); throw abortError() }
-      return { lease }
-    }
+    if (taken === true) return confirmAdmission(state, holder, place, options)
     if (taken === 'reclaim') {
       removeDirectoryOlderThan(path.join(root, 'reclaim.d'), RECLAIM_DIR_STALE_MS)
       return { place, current: readSuiteLock({ root }) }
@@ -392,9 +394,23 @@ function pollQueue(state, options) {
   return { place, current }
 }
 
+function acquisitionPriority(options, env) {
+  if (options.mode !== undefined) throw new Error('unknown suite lease mode argument: mode')
+  const explicit = options.priority === undefined ? undefined : parseSuiteLockPriority(options.priority)
+  if (explicit === 'release' && options.light === true) throw new Error('release priority cannot be combined with light')
+  // Release is refused anywhere inside a lane sandbox, whatever the route; only the level follows the route.
+  const sandboxed = typeof env.WT_SUITE_LOCK_BROKER === 'string' && Boolean(env.WT_SUITE_LOCK_BROKER.trim())
+  if (sandboxed && explicit === 'release') {
+    const error = new Error('release priority is not available inside a lane sandbox')
+    error.code = 'WT_SUITE_LOCK_PRIORITY_REFUSED'
+    throw error
+  }
+  return sandboxed && !options.root ? 'P1' : suiteLockPriority({ priority: explicit }, env)
+}
+
 export async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
-  if (options.mode !== undefined) throw new Error('unknown suite lease mode argument: mode')
+  const priority = acquisitionPriority(options, env)
   throwIfAborted(options.signal)
   // The marker decision precedes every wait (including a broker connection). An explicit root
   // selects its own filesystem domain, regardless of the caller's broker environment.
@@ -418,8 +434,10 @@ export async function acquireSuiteLock(options = {}) {
   let lastProgressAt = startedWaiting
   let bestAhead = Infinity
   let lastPlace = null
+  let lastHolderId = null
+  let holderPriority
   mkdirSync(root, { recursive: true, mode: 0o700 })
-  const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root))
+  const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority)
   const ticket = await retryTransient(() => takeTicket(queueDir, record), HEAD_OF_QUEUE_POLL_MS)
   const state = { root, lockDir, queueDir, ticket, record }
 
@@ -431,19 +449,36 @@ export async function acquireSuiteLock(options = {}) {
       // An immediate hand-back retry also honours the deadline; only a NEW best place renews it.
       const current = step.again ? readSuiteLock({ root }) : step.current
       const now = Date.now()
+      const holderId = current.holder?.leaseId ?? null
+      if (holderId && holderId !== lastHolderId) {
+        holderPriority = current.holder.priority
+        options.onHandover?.(holderId, current.holder.priority)
+        if (lastHolderId || holderPriority === 'release') {
+          lastProgressAt = now
+          if (step.place) options.onProgress?.(progressPlace(step.place))
+        }
+      }
+      if (holderId) lastHolderId = holderId
       // An immediate retry carries the place it was decided at: reaching the head there is progress too.
       if (step.place) {
-        lastPlace = step.place
-        if (lastPlace.ahead < bestAhead) {
-          bestAhead = lastPlace.ahead
+        if (suiteQueueAdvanced(lastPlace, step.place)) {
           lastProgressAt = now
-          options.onProgress?.({ ahead: lastPlace.ahead, total: lastPlace.total })
-          options.onWait?.(`waiting for suite lock: ${describeWait(lastPlace, current, record.light === true)}`)
+          options.onRenew?.(progressPlace(step.place))
+        }
+        lastPlace = step.place
+        if (lastPlace.aheadExcludingRelease < bestAhead) {
+          bestAhead = lastPlace.aheadExcludingRelease
+          lastProgressAt = now
+          options.onProgress?.(progressPlace(lastPlace))
+          options.onWait?.(`waiting for suite lock: ${describeWait(lastPlace, current, record)}`)
           nextNoticeAt = now + noticeMs
         }
       }
-      // Once at the head, the head budget holds even when a light ticket passes it afterwards.
-      const budget = bestAhead === 0 ? headWaitMs : waitMs
+      // Once all non-release tickets ahead are gone, the head budget holds even if a
+      // release ticket passes it. Only actual head (ahead === 0) may acquire.
+      // A release can legitimately hold longer than the ordinary wait window. Bound its
+      // uninterrupted hold by the stale/head window; a normal stuck holder keeps waitMs.
+      const budget = waiterBudget(waitMs, headWaitMs, bestAhead, holderPriority)
       const remaining = budget - (now - lastProgressAt)
       if (remaining <= 0) {
         const position = lastPlace ? `position ${lastPlace.ahead + 1} of ${lastPlace.total}` : 'position unknown'
@@ -455,7 +490,7 @@ export async function acquireSuiteLock(options = {}) {
       if (step.again) continue
       const { place } = step
       if (now >= nextNoticeAt) {
-        options.onWait?.(`waiting for suite lock: ${describeWait(place, current, record.light === true)}`)
+        options.onWait?.(`waiting for suite lock: ${describeWait(place, current, record)}`)
         nextNoticeAt = now + noticeMs
       }
       const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
@@ -511,6 +546,9 @@ function requestBrokerSuiteLock(socketPath, options) {
     let resolveLost
     let timer
     let bestAhead = Infinity
+    let lastHolderId = null
+    let holderPriority
+    let notifyHandover = false
     // Resolves with the REASON the granted lease was lost: the broker's own error text (its hold bound)
     // when one arrives after the grant, 'broker gone' when the socket closes. The first reason wins.
     // After a hold bound the socket stays OPEN: the broker releases the lock when it closes, which the
@@ -548,14 +586,27 @@ function requestBrokerSuiteLock(socketPath, options) {
         const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
         if (settled && !granted) { socket.destroy(); return }
         if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
-        else if (line.startsWith('progress ')) {
-          // Only a strictly better place renews the client's own watchdog, and the head budget sticks once
-          // reached: a repeated, worse or impossible progress line from a faulty broker renews nothing.
-          const [ahead, total] = line.slice(9).split(' ').map((field) => (/^(0|[1-9]\d{0,8})$/.test(field) ? Number(field) : Number.NaN))
-          if (!settled && ahead < bestAhead && ahead < total) {
-            bestAhead = ahead
-            restartTimer(ahead === 0 && waitS > 0 ? Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S) : waitS)
-            options.onProgress?.({ ahead, total })
+        else if (isBrokerQueueEvent(line)) {
+          // Only the host's service-evidence renewal may renew at an unchanged/worse place.
+          const renewed = line.startsWith('renew ')
+          const place = brokerProgressPlace(line.slice(line.indexOf(' ') + 1))
+          if (!settled && place && (place.aheadExcludingRelease < bestAhead || notifyHandover || renewed)) {
+            const improved = place.aheadExcludingRelease < bestAhead
+            if (improved) bestAhead = place.aheadExcludingRelease
+            if (improved || renewed) restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
+            notifyHandover = false
+            options.onProgress?.(place)
+          }
+        }
+        else if (line.startsWith('handover ')) {
+          const [holderId, priority] = line.slice(9).split(' ')
+          if (!settled && /^[A-Za-z0-9-]{1,128}$/.test(holderId)) {
+            holderPriority = priority
+            if (holderId !== lastHolderId && (lastHolderId || priority === 'release')) {
+              restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
+              notifyHandover = Boolean(lastHolderId)
+            }
+            lastHolderId = holderId
           }
         }
         else if (line.startsWith('error ') && granted) lose(line.slice(6))

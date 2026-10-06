@@ -41,6 +41,8 @@ describe('pid to parent-pid host perimeter', () => {
     // its platform and path helpers live in bin/lib/host.
     // The cancelled-call relay guard hook adds one process-table-free module.
     // The session-env dedup hook (wt-session-env-dedup-hook.mjs) adds one process-table-free module.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 249, violations: [] })
+    // The duplicate pilot guard adds its hook and its card-id parser, both process-table-free.
+    // Five pure suite-lock policy/display modules add entries without process-table access.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 256, violations: [] })
   })
 })

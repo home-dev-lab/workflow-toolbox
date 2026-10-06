@@ -11,6 +11,13 @@ let serial = 0;
 let entryOrder = 0;
 let pending = [];
 let refusedRegistrations = new Map();
+export const GENERIC_KINDS = new Set(['assignment', 'op-output', 'key-value', 'environment-dump']);
+const released = new Set();
+const aliasesByValue = new Map();
+const trustedValues = new Set();
+const reservedIds = new Set();
+const tombstones = new Set();
+let dirty = false;
 const work = { valueLookupSteps: 0, scrubEntryScans: 0, shortValueScans: 0, prefixLookups: 0, prefixCandidateChecks: 0, prefixCandidateSearches: 0, prefixLengthRejections: 0 };
 const prefixIndex = new Map();
 const shortEntries = [];
@@ -120,22 +127,59 @@ function collectPrefixOccurrences(text, activeCategories, inactiveEligible, matc
   }
 }
 
-function shortHash(value) {
-  let state = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    state ^= value.charCodeAt(index);
-    state = Math.imul(state, 0x01000193);
+export function randomId() {
+  return [...crypto.getRandomValues(new Uint8Array(3))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+// A UI-only confirmation must not later appear as an emitted token's identifier.
+export function reserveTokenId(id) { reservedIds.add(id); }
+
+function caseTransitions(letters) {
+  let previous = ''; let count = 0;
+  for (const letter of letters) {
+    const current = /\p{Ll}/u.test(letter) ? 'lower' : /\p{Lu}/u.test(letter) ? 'upper' : '';
+    if (!current) continue;
+    if (previous && previous !== current) count += 1;
+    previous = current;
   }
-  return (state >>> 0).toString(16).padStart(8, '0').slice(0, 6);
+  return count;
+}
+
+function genericFloor(value) {
+  if (/^(?:\$\{\{[\s\S]*\}\}|\$\{[^{}]+\}|\{\{[\s\S]*\}\}|<[^<>]+>)$/.test(value) || /^(.)\1+$/u.test(value)) return 'ordinary-shape';
+  const letters = value.replace(/[-_./:\s()[\]{}<>,;'"]/g, '');
+  if (/^\p{L}+$/u.test(letters) && (caseTransitions(letters) < 4 || wordSegments(letters))) return 'low-distinctiveness';
+  const date = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+  const version = /^v?\d+(?:\.\d+){1,3}(?:-[\w.-]+)?(?:\+[\w.-]+)?$/;
+  return date.test(value) || version.test(value) || ordinaryPath(value) ? 'ordinary-shape' : '';
+}
+
+function wordSegments(value) {
+  // Conventional two-letter identifier words are explicit exceptions; arbitrary
+  // one-lowercase alternating runs remain distinctive.
+  return /^(?:\p{Lu}?\p{Ll}{2,}|\p{Lu}{2,}|By|Id)+$/u.test(value);
+}
+
+function ordinaryPath(value) {
+  if (!/^(?:\/|~\/|\.\/|\.\.\/)[\w./~-]*$/.test(value)) return false;
+  return value.split('/').every((segment) => {
+    const letters = segment.replace(/[-_.~]/g, '');
+    const distinctive = /^\p{L}+$/u.test(letters) && caseTransitions(letters) >= 4 && !wordSegments(letters);
+    const mixed = segment.length >= 16 && /\d/.test(segment) && /[a-z]/i.test(segment);
+    return !distinctive && !mixed;
+  });
 }
 
 // The floor governs later matching, not masking in the text that first detected a value.
 // Returns only a closed reason, never value material; length counts Unicode code points.
-export function registrationRefusalReason(value) {
+// Generic lowercase/title-case letters, separated passphrases and date/version/path shapes are
+// masked WITH their key, not held for later bare occurrences. Use a file/op reference to hold them
+// as trusted. This is a resemblance rule, not an estimate of credential entropy.
+export function registrationRefusalReason(value, kind) {
   const trimmed = value.trim();
   if (!trimmed) return 'whitespace';
   if ([...trimmed].length < 4) return 'short';
-  return isCommonWord(trimmed.toLowerCase()) ? 'common-word' : '';
+  if (isCommonWord(trimmed.toLowerCase())) return 'common-word';
+  return GENERIC_KINDS.has(kind) ? genericFloor(trimmed) : '';
 }
 
 function refuseRegistration(kind, reason) {
@@ -146,8 +190,35 @@ function refuseRegistration(kind, reason) {
   refusedRegistrations.set(key, { kind: safeKind, reason, count: (previous?.count ?? 0) + 1 });
 }
 
+function holdEntry(token, entry) {
+  delete entry.ephemeral;
+  indexEntry(token, entry.kind, entry.value);
+  values.add(entry.value);
+  pending.push({ token, kind: entry.kind, value: entry.value });
+}
+
+function rememberAlias(token, entry) {
+  const aliases = aliasesByValue.get(entry.value) ?? new Set();
+  aliases.add(token);
+  aliasesByValue.set(entry.value, aliases);
+  if (entry.trusted) trustedValues.add(entry.value);
+}
+
+function trustValue(value) {
+  trustedValues.add(value);
+  for (const alias of aliasesByValue.get(value) ?? []) tokens.get(alias).trusted = true;
+}
+
+function strengthenEntry(token, kind, reason) {
+  const entry = tokens.get(token);
+  if (reason) return token;
+  if (!GENERIC_KINDS.has(kind)) trustValue(entry.value);
+  if (entry.ephemeral) holdEntry(token, entry);
+  return token;
+}
+
 export function tokenize(kind, value) {
-  const reason = registrationRefusalReason(value);
+  const reason = registrationRefusalReason(value, kind) || (GENERIC_KINDS.has(kind) && released.has(value) ? 'released' : '');
   if (reason) refuseRegistration(kind, reason);
   // The token for a value is one no held value is spelled like: a value registered AFTER its token was
   // issued can share that spelling, and emitting it then prints that other value verbatim (Astra at
@@ -155,20 +226,33 @@ export function tokenize(kind, value) {
   // token keeps rehydrating to its value, but a fresh one is issued to REPLACE the value from then on.
   work.valueLookupSteps += 1;
   const existing = tokenByValue.get(value);
-  if (existing) return existing;
+  if (existing) return strengthenEntry(existing, kind, reason);
+  return mintEntry(kind, value, reason);
+}
+
+function mintId(kind, value) {
   // A token names exactly one value. Six hex digits collide (measured by Astra at 5a2134a5: 3,408
   // values gave two of them the same token, the second overwrote the first, which then expanded wrong
   // and was no longer masked), so a taken token is never reused: the serial moves on and the next
-  // candidate is drawn. The shape stays `secret:<kind>#<6 hex>`, which every consumer matches.
+  // candidate is drawn. Opaque random ids never encode a value or a guessable issuance serial.
+  // The shape stays `secret:<kind>#<6 hex>`, which every consumer matches.
   let token;
-  do { serial += 1; token = `secret:${kind}#${shortHash(`${serial}:${value}`)}`; } while (tokens.has(token) || token === value || values.has(token));
-  const entry = reason ? { kind, value, ephemeral: true } : { kind, value };
+   do { serial += 1; token = `secret:${kind}#${randomId()}`; } while (tokens.has(token) || token === value || values.has(token) || reservedIds.has(token.slice(-6)) || tombstones.has(token.slice(-6)));
+  return token;
+}
+
+function mintEntry(kind, value, reason) {
+  const token = mintId(kind, value);
+  const held = !reason || values.has(value);
+  const entry = { kind, value, trusted: trustedValues.has(value) || (!reason && !GENERIC_KINDS.has(kind)), ...(held ? {} : { ephemeral: true }) };
   tokens.set(token, entry);
-  if (!reason) { indexEntry(token, kind, value); values.add(value); }
+  rememberAlias(token, entry);
+  if (entry.trusted) trustValue(value);
+  if (held) { indexEntry(token, kind, value); values.add(value); }
   const shadowed = tokens.get(value);
   if (shadowed && tokenByValue.get(shadowed.value) === value) tokenByValue.delete(shadowed.value);
   tokenByValue.set(value, token);
-  if (!reason) pending.push({ token, kind, value });
+  if (held) pending.push({ token, kind, value });
   return token;
 }
 
@@ -201,6 +285,8 @@ export function replacementFor(token) {
   return entry ? tokenize(entry.kind, entry.value) : token;
 }
 export function takePending() { const result = pending; pending = []; return result; }
+export function takeDirty() { const result = dirty; dirty = false; return result; }
+export function restoreDirty() { dirty = true; }
 export function restorePending(entries) { pending = [...entries, ...pending]; }
 export function takeRefusedRegistrations() { const result = [...refusedRegistrations.values()]; refusedRegistrations.clear(); return result; }
 export function restoreRefusedRegistrations(entries) {
@@ -214,16 +300,45 @@ export function testResetVaultWork() { for (const key of Object.keys(work)) work
 export function testVaultWork() { return { ...work, ...indexStats, prefixKeys: prefixIndex.size, maxIndexedValueLength: MAX_INDEXED_VALUE_LENGTH }; }
 export function testVaultSnapshot() {
   return {
-    tokens: new Map(tokens), values: new Set(values), tokenByValue: new Map(tokenByValue), serial, entryOrder, pending: [...pending], refusedRegistrations: new Map(refusedRegistrations),
+    tokens: new Map([...tokens].map(([token, entry]) => [token, { ...entry }])), values: new Set(values), tokenByValue: new Map(tokenByValue), serial, entryOrder, pending: [...pending], refusedRegistrations: new Map(refusedRegistrations), released: new Set(released), dirty,
   };
 }
-export function testRestoreVault(snapshot) {
-  tokens.clear(); for (const entry of snapshot.tokens) tokens.set(...entry);
-  values.clear(); for (const value of snapshot.values) values.add(value);
-  tokenByValue.clear(); for (const entry of snapshot.tokenByValue) tokenByValue.set(...entry);
+function rebuildIndex() {
   prefixIndex.clear(); shortEntries.length = 0; categoryCounts.clear(); longCategoryMinLengths.clear();
   entryOrder = 0; indexStats.oversizedValues = 0; indexStats.prefixEntries = 0; indexStats.prefixKeyCharacters = 0;
   for (const [token, entry] of tokens) if (!entry.ephemeral) indexEntry(token, entry.kind, entry.value);
+}
+
+export function releaseRefusalReason(token) {
+  const entry = tokens.get(token);
+  if (!entry || entry.ephemeral) return 'unknown-or-unheld';
+  if (!isIssuedToken(token)) return 'ambiguous';
+  if (entry.trusted || !GENERIC_KINDS.has(entry.kind)) return 'trusted';
+  return '';
+}
+
+export function releaseToken(token) {
+  if (releaseRefusalReason(token)) return null;
+  const entry = tokens.get(token);
+  for (const [alias, other] of tokens) if (other.value === entry.value) { tombstones.add(alias.slice(-6)); tokens.delete(alias); }
+  aliasesByValue.delete(entry.value);
+  tokenByValue.delete(entry.value);
+  values.delete(entry.value);
+  pending = pending.filter((other) => other.value !== entry.value);
+  released.add(entry.value);
+  rebuildIndex();
+  dirty = true;
+  return { kind: entry.kind };
+}
+export function testRestoreVault(snapshot) {
+  tokens.clear(); for (const [token, entry] of snapshot.tokens) tokens.set(token, { ...entry });
+  aliasesByValue.clear(); trustedValues.clear();
+  for (const [token, entry] of tokens) rememberAlias(token, entry);
+  values.clear(); for (const value of snapshot.values) values.add(value);
+  tokenByValue.clear(); for (const entry of snapshot.tokenByValue) tokenByValue.set(...entry);
+  rebuildIndex();
   serial = snapshot.serial; entryOrder = snapshot.entryOrder; pending = [...snapshot.pending];
   refusedRegistrations = new Map(snapshot.refusedRegistrations ?? []);
+  released.clear(); for (const value of snapshot.released ?? []) released.add(value);
+  dirty = snapshot.dirty ?? false;
 }

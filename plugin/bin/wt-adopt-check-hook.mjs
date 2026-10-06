@@ -313,7 +313,8 @@ function triggerLines(file, finding, installCmd, event) {
   return []
 }
 
-function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
+/** Group one set's findings into the buckets the message builders report; agents never report ABSENT (opt-in). */
+function collectBuckets(perFile, set) {
   const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [], misplaced: [], unverified: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
@@ -323,8 +324,64 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
   // pilot suite made a choice, and nagging it on every session would be a guard that is
   // always red, which is a guard that gets ignored. For agents, only STALE is a finding.
   if (set !== 'rules') buckets.absent = []
-  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length && !buckets.misplaced.length && !buckets.unverified.length) return null
+  return buckets
+}
 
+const hasFindings = (buckets) => Object.values(buckets).some((items) => items.length)
+
+const DIGEST_LABELS = [
+  ['unverified', 'On-demand head unverified'],
+  ['misplaced', 'Misplaced static rule'],
+  ['duplicate', 'Loaded from two places (double-load)'],
+  ['absent', 'workflow-toolbox rules NOT installed here'],
+  ['stale', 'Stale (behind the shipped content)'],
+  ['edited', 'Locally modified (supported)'],
+  ['ahead', 'Ahead of the shipped content (fork)'],
+]
+
+/** Files grouped by where they live, so a shared directory is printed once: `a.md, b.md (dir); c.md (other)`. */
+function digestNames(items) {
+  const groups = new Map()
+  for (const { file, location, locations } of items) {
+    const where = locations?.length ? locations.join(' and ') : (location ?? '')
+    groups.set(where, [...(groups.get(where) ?? []), file])
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b))
+    .map(([where, files]) => files.sort().join(', ') + (where ? ' (' + where + ')' : '')).join('; ')
+}
+
+const hasTriggerMarker = (finding) => [finding, ...(finding.findings ?? [])]
+  .some((item) => item.status?.includes(TRIGGERS_STALE) || item.status?.includes(TRIGGERS_UNRESOLVED))
+
+/** The post-compaction form: one names-only line per non-empty bucket, no per-file command. */
+function buildDigest(buckets, set) {
+  const lines = []
+  for (const [key, label] of DIGEST_LABELS) {
+    if (buckets[key].length) lines.push(`${label} [${set}]: ${digestNames(buckets[key])}.`)
+  }
+  const triggers = Object.values(buckets).flat().filter(hasTriggerMarker)
+  if (triggers.length) lines.push(`On-demand triggers unresolved / behind [${set}]: ${digestNames(triggers)}.`)
+  return lines.length ? lines.join('\n') : null
+}
+
+/** The post-compaction message of one set, or null when it has nothing to report. */
+function buildDigestMessage(perFile, set) {
+  const buckets = collectBuckets(perFile, set)
+  return hasFindings(buckets) ? buildDigest(buckets, set) : null
+}
+
+/** The one closing line of a digest: how to print the per-file remedies again. */
+function digestClosing(root, noticeOnly) {
+  const payload = JSON.stringify({ source: 'startup', hook_event_name: 'SessionStart', cwd: root })
+  const rerun = `printf '%s' ${shellQuote(payload)} | node ${shellQuote(path.join(HERE, 'wt-adopt-check-hook.mjs'))}`
+  return 'This digest omits the per-file remedies; the command that prints the current full remedies is ' +
+    `\`${rerun}\`` +
+    (noticeOnly ? '; hand them to the session that owns the directory.' : '.')
+}
+
+function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
+  const buckets = collectBuckets(perFile, set)
+  if (!hasFindings(buckets)) return null
   const named = (items) => items.sort((a, b) => a.file.localeCompare(b.file)).map(({ file, location }) => {
     return location ? `${file} (${location})` : file
   }).join(', ')
@@ -464,6 +521,8 @@ export function main() {
     { set: 'agents', subdirs: ['agents'] },
   ]
 
+  // Compaction re-fires SessionStart; the session already holds the per-file remedies from its start.
+  const digest = event === 'SessionStart' && input.source === 'compact'
   const sections = []
   const skipped = []
   for (const { set, subdirs } of SETS) {
@@ -487,10 +546,13 @@ export function main() {
     const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
     let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
     if (set === 'rules') remedyDir = isOnDemandDir(nestedRulesDir, roots) ? path.dirname(nestedRulesDir) : nestedRulesDir
-    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
+    const built = digest
+      ? buildDigestMessage(perFile, set)
+      : buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
     if (built) sections.push(built)
   }
 
+  if (digest && sections.length) sections.push(digestClosing(root, noticeOnly))
   if (skipped.length) sections.push(`Comparison skipped for ${skipped.sort().join(', ')}: this session runs v${rootState.runningVersion} from ${rootState.runningRoot} while v${rootState.installedVersion} is installed at ${rootState.installedRoot}; a comparison against the running version is not reliable until /reload-plugins or a restart loads the installed one.`)
   const message = sections.filter(Boolean).join('\n')
   if (!message) return // everything adopted & current somewhere → silent

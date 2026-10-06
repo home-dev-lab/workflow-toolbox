@@ -46,6 +46,16 @@ Base: develop f7d8d7e9. Sources read: `plugin/hooks-modules/sdk-pilot-lifecycle/
 - C1 docs. DoD: PILOT-RUNNER.md describes the evidence table per edge, the `run` tool and `canUseTool` confinement; PILOT-CONTRACT.md ≤ 6144 bytes names the artifacts the pilot must produce; CHANGELOG Unreleased, one bullet per behaviour-changing decision.
 - C2 real runs. DoD: one LITE and one FULL real card through the runner on develop; archive manifest per run keyed by card, route, commit, phase list, evidence.json sha256; the FULL run shows critic, review and refutation lanes with their attestations; this card's own review goes through the mechanism (its FULL run IS the review).
 
+## Quality coverage
+Changed artefacts: lifecycle server, runner, host boundaries, hook confinement, fidelity bundle and documentation; typecheck, lint, lifecycle unit locks, full-sequence tests and plugin validation cover their applicable rules.
+Seams: runner-hosted tools and host I/O boundaries; confinement and fidelity locks check these seams, and the tree-signature census remains pinned.
+
+## State and recovery
+Ownership: the runner owns lifecycle state and evidence; lanes own only their assigned artifacts, and constructor route/model values are immutable.
+Writers: the pilot and phase lanes finish their artifacts before the runner attests them; gate processes finish before verification, and archive publication follows commit.
+Terminal paths: refusal preserves prior evidence and lifecycle state; failed lanes are attested as failed, and failed commit or archive publication refuses completion.
+Published data: the archive is copied before publication; evidence digests and tree signatures identify the observed state, while a failed publication refuses completion and leaves retry to the runner.
+
 ## Gates
 Per lane, from `<worktree>/toolkit`, detached, each with an `EXIT=` last line: `pnpm typecheck`, `pnpm lint`, `pnpm test`; `node plugin/bin/wt-plugin-validate.mjs --strict` (or the `claude plugin validate` equivalent used today); `git diff --check`. Every lock proven red first, archived at `.lane/red/<task>-<lock>.log` with its `EXIT=` line. Test-union: total after each lane strictly greater than before. Review: Sol on a repository-free diff bundle after lane A and after lane B; refutation lane; dispositions on the card; main's diff-read and one recorded gate on develop after the merge.
 

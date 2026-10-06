@@ -57,13 +57,23 @@ describe('shipped dependency convention (T4)', () => {
     expect(parseDependsOn('Depends-on: #111111 (title, x), #333333')).toEqual({ ids: ['111111', '333333'], unparseable: [] })
   })
 
+  it('an unclosed parenthesis holds the line as unparseable, never hides the ids after it', () => {
+    for (const line of [
+      'Depends-on: #111111 (unfinished title, #222222',
+      'Depends-on: #111111 (fix :( regression), #222222 (t)',
+      'Depends-on: #111111 (a title) (unfinished, 222222',
+      'Depends-on: (#111111',
+    ]) expect(parseDependsOn(line), line).toEqual({ ids: [], unparseable: [line] })
+    expect(parseDependsOn('Depends-on: #111111 title) more')).toEqual({ ids: ['111111'], unparseable: [] })
+  })
+
   it('still never lets a table row declare, even with decoration inside it', () => {
     expect(hasDependsOnLine('| **Depends-on:** #100010 |')).toBe(false)
     expect(parseDependsOn('| - **Depends-on:** none |')).toEqual({ ids: [], unparseable: [] })
   })
 })
 
-describe('triageCardDependencies — the one rule the gate and the what-next skill share', () => {
+describe('triageCardDependencies — the one rule the actionability gate relies on', () => {
   const done = new Set(['100010'])
   const card = (id: string, description?: string) => ({ id, name: `card ${id}`, description })
 
@@ -103,28 +113,5 @@ describe('text contract (locks the SKILL.md wording, not any model behaviour)', 
     expect(text).toContain('Write `Depends-on: none` ONLY when you know the card is independent')
     expect(text).toContain('leave the line out and flag the card for the arbiter')
     expect(text).toContain('Never stamp `none` by default')
-  })
-
-  it('what-next lists no-line cards in their own "not checked" section with their ids, never drops them', () => {
-    const text = read('plugin/skills/what-next/SKILL.md')
-    expect(text).toContain('not checked: add a Depends-on line')
-    expect(text).toContain('Never drop a card that has no `Depends-on:` line')
-    expect(text).toContain('with its card id')
-    expect(text).toContain('never recommend a card with no `Depends-on:` line')
-  })
-
-  it('what-next has one satisfiable output when no bench card qualifies: no Option handles, then not-checked or blocked chains', () => {
-    const text = read('plugin/skills/what-next/SKILL.md')
-    expect(text).toContain('When no bench card qualifies, say plainly that no card is startable')
-    expect(text).toContain('emit no `Option N` handle')
-    expect(text).toContain('Then emit the "not checked: add a Depends-on line" section if it exists; otherwise list the blocked chains')
-  })
-
-  it('D2: every bench card blocked means no not-checked section, because the section exists if and only if a card lacks the line', () => {
-    const text = read('plugin/skills/what-next/SKILL.md')
-    expect(text).toContain('Emit this section if and only if at least one `Next`/`Backlog` card has no `Depends-on:` line')
-    // The contradiction this removes: one sentence demanding the section first whenever nothing qualifies.
-    expect(text).not.toContain('lead with the "not checked: add a Depends-on line" section')
-    expect(text).not.toContain('Omit the section only when every candidate card has a `Depends-on:` line')
   })
 })

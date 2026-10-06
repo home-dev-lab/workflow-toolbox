@@ -132,13 +132,14 @@ describe('guard-journal — live wiring proof across the code-shape spread', () 
     expect(entries[0]).toMatchObject({ guard: 'wt-git-commit-backtick-guard-hook.mjs', decision: 'warned' })
   })
 
-  it('WARN shape (allow + reason): wt-merge-chain-guard-hook.mjs journals a warned event', () => {
+  it('journal-only WARN shape: wt-merge-chain-guard-hook.mjs journals a warned event', () => {
     const r = runHook('wt-merge-chain-guard-hook.mjs', {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: { command: 'git merge foo && pnpm test' },
     })
     expect(r.status).toBe(0)
+    expect(r.stdout).toBe('')
     const entries = journalEntries()
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({ guard: 'wt-merge-chain-guard-hook.mjs', decision: 'warned' })

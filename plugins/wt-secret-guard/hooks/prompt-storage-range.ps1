@@ -39,7 +39,7 @@ try {
     $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
     $currentRead = $stream.Read($current, 0, $length)
     if ($currentRead -ne $length -or [Convert]::ToBase64String($current) -ne $args[5]) { exit 3 }
-    if ($toolUseId) {
+    if ($recordLength -ge 0) {
       $recordBytes = New-Object byte[] $recordLength
       $null = $stream.Seek($recordOffset, [IO.SeekOrigin]::Begin)
       $recordRead = $stream.Read($recordBytes, 0, $recordLength)
@@ -53,7 +53,10 @@ try {
         if ($stream.ReadByte() -ne 10) { exit 3 }
       }
       try { $record = [Text.Encoding]::UTF8.GetString($recordBytes) | ConvertFrom-Json -Depth 100 } catch { exit 3 }
-      if (-not (Test-ToolUseId $record $toolUseId)) { exit 3 }
+      if ($toolUseId -and -not (Test-ToolUseId $record $toolUseId)) { exit 3 }
+      if ($bytes.Length -ne $length -or $offset -lt $recordOffset -or $offset + $length -gt $recordOffset + $recordLength) { exit 3 }
+      [Array]::Copy($bytes, 0, $recordBytes, $offset - $recordOffset, $bytes.Length)
+      try { $null = [Text.Encoding]::UTF8.GetString($recordBytes) | ConvertFrom-Json -Depth 100 } catch { exit 3 }
     }
     $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
     $stream.Write($bytes, 0, $bytes.Length)

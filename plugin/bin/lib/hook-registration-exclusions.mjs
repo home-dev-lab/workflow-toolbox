@@ -18,6 +18,13 @@ export const HOOK_REGISTRATION_EXCLUSIONS = [
       'through the manifest itself, so it cannot appear there.',
   },
   {
+    script: 'wt-duplicate-pilot-guard-hook.mjs',
+    reason:
+      'Registration is the main session\'s act after integration (PreToolUse, matcher Agent|Task). ' +
+      'This entry is removed in the same commit that declares the hook in plugin.json; the gate\'s ' +
+      'redundant-exclusion check refuses it from that moment on.',
+  },
+  {
     script: 'wt-envelope-intercept-hook.mjs',
     reason:
       'Deliberately registered only in plugin/launch-agents/.claude-plugin/plugin.json, not the ' +

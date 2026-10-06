@@ -62,7 +62,8 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
   let files
   try {
     files = readdirSync(BASE_DIR)
-      .filter((f) => f.endsWith('.ndjson'))
+      // Auxiliary verdict files share this directory; only weekly buckets are firings.
+      .filter((f) => /^\d{4}-W\d{2}\.ndjson$/.test(f))
       .map((f) => ({ name: f, path: join(BASE_DIR, f) }))
       .sort((a, b) => (a.name < b.name ? 1 : -1)) // newest ISO-week filename first, lexicographic == chronological
   } catch (error) {

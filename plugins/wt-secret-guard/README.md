@@ -1,12 +1,12 @@
 # wt-secret-guard
 
-`wt-secret-guard` replaces detected secrets in inbound deliveries, pasted prompts, attachments, visible assistant text, and supported tool results with stable tokens. It refuses raw secret-bearing Bash, Write, Edit, NotebookEdit, WebFetch, WebSearch, Agent, Task, and MCP inputs before execution. It can rewrite `op://` 1Password references and `secret:file:/path` references before Bash runs; `secret:env:NAME` is disabled and refused (see [Supported secret references](#supported-secret-references)).
+`wt-secret-guard` replaces detected secrets in inbound deliveries, pasted prompts, attachments, visible assistant text, and supported tool results with session-stable tokens. It refuses raw secret-bearing Bash, Write, Edit, NotebookEdit, WebFetch, WebSearch, Agent, Task, and MCP inputs before execution, with a body-redaction adapter for Atrium speak described below. It can rewrite `op://` 1Password references and `secret:file:/path` references before Bash runs; `secret:env:NAME` is disabled and refused (see [Supported secret references](#supported-secret-references)).
 
 For an inbound delivery, the guard withholds the credential value before the message is queued while leaving the rewritten message answerable. Its visible notice says that revocation is the only remedy and links to the provider's key page when the detected shape identifies one. This only stops this Claude Code session from spreading the value into commands, files, logs, or further messages. It cannot remove or unsend the original message from Atrium, Remote Control, Slack, another client, or any append-only history where it was already sent.
 
 Its scope is text delivered to this Claude Code session, text the session sends through submitted prompts, and supported tool results. It does not filter text at the point where a human types it in another client.
 
-MCP tools are covered at their boundary only: a raw secret in an MCP call's input is refused and the result returned to the session is scrubbed, but the secret-file read warning and reference resolution apply to Bash and Read alone. What an MCP server reads or stores on its own side — for example a file a context-indexing server reads itself, or the content it keeps in its own database — never passes through the guard; it is masked only when a later tool result returns it to the session.
+MCP tools are covered at their boundary only: a raw secret in an MCP call's input is refused (or replaced in a supported Atrium message body) and the result returned to the session is scrubbed, but the secret-file read warning and reference resolution apply to Bash and Read alone. What an MCP server reads or stores on its own side — for example a file a context-indexing server reads itself, or the content it keeps in its own database — never passes through the guard; it is masked only when a later tool result returns it to the session.
 
 Known vendor shapes include Brave API keys (`BSA` plus 28 URL-safe characters). UUIDs remain unmasked in ordinary log text, but are masked when immediately used as a credential, including an Exa client constructor or a key, token, secret, or credential assignment. **Any value the guard itself put into a command** — through a redaction token, `secret:env:`, `secret:file:` or `op://` — is masked in that command's output whatever it looks like, a UUID or an address included. Overlapping detections are merged before anything is replaced, so one pattern never unmasks what another one covers. Source code keeps an exemption for a credential-named variable assigned a *name* (`const token = fallbackToken`); a *quoted literal* is masked, in a declaration as anywhere else. A key with no recognizable shape and no credential context word remains invisible. No entropy threshold that avoids flooding ordinary output can catch every such value, so the guard does not lower its entropy threshold as a fallback.
 
@@ -15,6 +15,8 @@ Known vendor shapes include Brave API keys (`BSA` plus 28 URL-safe characters). 
 This is a Claude Code Function Hooks plugin, an early-access API. Start Claude Code with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` for both marketplace installs and `--plugin-dir`. Live A/B tests on Claude Code 2.1.278 showed that the flag is required on both paths. Without it, Claude Code does not load the guarding module.
 
 A classic `SessionStart` command prints one inactive-guard notice when the flag is absent. That fallback requires `node` on `PATH`; check it with `node --version`. If Node is unavailable, the notice cannot run, so the launch flag remains the authoritative requirement on every platform.
+
+Opaque ids and release confirmations use the host's `crypto.getRandomValues`; use Node 20 or later for local hook checks. They require no operating-system-specific randomness adapter.
 
 `node` on `PATH` is also required on Linux and macOS for two protections: the in-place repair of a refused call's transcript record, and the measurement journal. Without it both fail closed: the repair is skipped with a visible notice that the value may remain in the transcript, and journal events are dropped with a notice. The refusal itself does not depend on Node.
 
@@ -124,6 +126,36 @@ Two consequences worth knowing before you type one:
 Raw outbound values are refused rather than silently changing a requested destination. Exact reference spans (`op://`, `secret:env:`, `secret:file:`, `${NAME}`, and existing redaction tokens) pass unchanged, but do not exempt adjacent raw values. Bash token rehydration and `secret:file:` expansion bind encoded data to fixed shell code rather than evaluating the secret as shell source. The executed child still receives the raw value. This can expose the value through process metadata or child output; returned output is scrubbed, but operating-system process inspection is outside the guard.
 
 Outbound detection also matches raw values already held in the in-memory vault and their base64 encodings. A held value shorter than 6 characters counts only where it stands alone, with no letter or digit on either side: `pin=7342` is refused, an identifier that merely contains those digits is not. A refusal names the matched kind or held token, the field and the position, never the value; a field name that is itself secret-bearing is printed as `<key>`. Key-based detectors (`password: …`, `token=…`, `"secret": "…"`, `API_TOKEN=…`) capture the value on its own line only, never the key, the indentation or a following line. It does not reconstruct values split across fields or expressions, and it does not decode arbitrary encodings; those remain detection-evasion limits.
+
+### Registration floor and trusted references
+
+Whitespace-only values, values shorter than four Unicode code points after trimming, and common English words are masked where detected but never held. Generic detectors (`assignment`, `op-output`, `key-value`, `environment-dump`) additionally decline letter-only values with fewer than four lower/upper case transitions after removing separators, or camelCase/PascalCase words (including acronym runs and conventional `By`/`Id`), at any length. ISO dates/date-times, versions, template placeholders and repeated-character values are ordinary shapes too. Paths require a `/`, `~/`, `./` or `../` prefix and no distinctive segment (alternating-case letters or a digit/letter mix at least 16 characters long). Thus `changelog`, `sr-changelog-site`, `refreshAccessToken`, `parseHTTPResponse`, `2026-10-05`, `v0.1.2` and `/tmp/build2/log` do not become session-wide holds; alternating-case `mQvZtLpRsNxBcDa` and slash-containing AWS secret keys still do.
+
+**Trade-off:** lowercase or title-case letter-only passwords, letter-only passphrases with separators (including `correct-horse-battery-staple`), and date/version/path-shaped secrets are masked each time they appear **with their credential key**, but not when they appear alone later. To protect those bare occurrences, resolve the value through a supported `op read`/`op://` or `secret:file:` reference. Such a reference promotes a previously ephemeral value in place and marks it trusted. Vendor-shaped detections and trusted references retain the original four-code-point/common-word floor. Existing captures shorter than six UTF-16 units retain their key text; this release does not change those held bytes.
+
+Tokens keep the spelling `secret:<kind>#<6 lowercase hex>`, but their identifiers are opaque cryptographic random draws, never hashes of the value. They differ between sessions and cannot be used to enumerate a small credential domain offline. Values stay in memory only; tokens cannot be reused after a restart.
+
+### Owner-confirmed release
+
+To forget a false hold from a generic detector, submit this as the entire prompt from the terminal composer or Remote Control bridge:
+
+```text
+wt-secret-guard release secret:<kind>#<id>
+```
+
+The guard swallows the prompt and displays eligibility, the effect, and a random six-character confirmation code **through its UI log only**. Confirm within five minutes with the same whole prompt followed by that code. Both steps require engine-attested `composer` or `bridge` origin; SDK, peer, task, plugin and unstamped inputs cannot release anything. Wrong or expired confirmations change nothing. The code is withheld from model-visible prompt text and scrubbed results; it is never a tool result, context entry or refusal message issued by the release handler.
+
+Confirmation stops masking and refusing that value for the rest of this session and fully removes its vault entries. Later generic detections still mask it with its key but cannot re-hold it. A later accepting trusted registration restores protection. Trusted provenance is monotonic, including when a file or 1Password reference resolves an already-held generic value, and a trusted entry is never releasable. Unknown, unheld or ambiguous tokens cannot be released. The journal records the release kind only, and the persisted held table is republished even when empty.
+
+Each confirmation has one attempt; a wrong code consumes it. Codes are redacted case-insensitively after value masking and leave the redaction set when used, expired or replaced. Supported tool inputs carrying `wt-secret-guard release` are refused with a value-free reason. **Residual:** the host stamps scripted keystrokes into the session's own terminal as `composer`, so a session able to drive its own pane is not stopped by origin alone. The tool grammar check does not reconstruct an assembled or encoded command. Released identifiers are tombstoned for the session and never name a later value.
+
+### Atrium message-body redaction
+
+`ownerChannelRedaction` is a boolean option, default `true`. It applies only to `text` on `mcp__plugin_atrium_atrium__speak` and `mcp__atrium__speak`. Every held or detected occurrence in the body, including repeated values and base64 of held values, is replaced through the scrubber. Room names, mentions and all other fields remain unchanged or the call is refused. The whole rewritten event is classified again and any residual finding refuses the call. Other MCP tools retain refusal, and the option cannot select arbitrary tools or fields; setting it to `false` disables this adapter.
+
+This assumes Atrium treats redaction tokens as literal message text; it does not establish the recipient's identity or authorize downstream token rehydration. A successful rewrite is reported as **forwarded with values replaced**, with best-effort in-place repair of the persisted main-session input. Repair failure is reported truthfully and does not prevent forwarding the already-clean body. Subagent input is redacted but its persisted transcript is not repaired.
+
+Clean messages pass unchanged, including long numbers containing a short held PIN. Storage repair replaces individual secret spans with JSON-escaped tokens, pads by bytes, and validates the modified record before writing. A token too large for its stored span refuses repair and leaves the original record intact; the failure notice says a raw value may remain.
 
 ## Context limitation
 

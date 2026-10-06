@@ -1630,6 +1630,51 @@ describe('owner decision 2: discovery and one instance', () => {
 })
 
 describe('owner decision 3: session lifetime and operator controls', () => {
+  it('reports EADDRINUSE on a taken port and serves successfully once that port is free', async () => {
+    const stateHome = temporaryDir('serve-port-collision')
+    const reservation = await reservePort()
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    try {
+      const result = await runCli(['serve'], env)
+      expect(result.code).toBe(1)
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toBe(`wt-artifact-server: port ${reservation.port} is already in use (EADDRINUSE)\n`)
+      expect(readState(stateHome)).toBeNull()
+    } finally {
+      await closeServer(reservation.server)
+    }
+
+    const server = spawn(process.execPath, [SERVER, 'serve'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(server)
+    const output = childOutput(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    expect(state.port).toBe(reservation.port)
+    expect(state.pid).toBe(server.pid)
+    expect((await health(state)).service).toBe('workflow-toolbox-artifact-server')
+    await stopChild(server)
+    // POSIX delivers SIGTERM to the server's own shutdown handler, which exits 0. Windows has no such signal: the stop
+    // terminates the process tree, so its exit code is the terminator's (1), not the server's.
+    expect(server.exitCode).toBe(process.platform === 'win32' ? 1 : 0)
+    expect(output.stderr()).toBe('')
+  }, 20_000)
+
+  it('reports EADDRINUSE for a second serve without disrupting the live artifact server', async () => {
+    const stateHome = temporaryDir('serve-existing-server')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    const server = spawn(process.execPath, [SERVER, 'serve'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(server)
+    childOutput(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    const result = await runCli(['serve'], env)
+    expect(result.code).toBe(1)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe(`wt-artifact-server: port ${reservation.port} is already in use (EADDRINUSE)\n`)
+    expect(readState(stateHome)).toEqual(state)
+    expect((await health(state)).pid).toBe(server.pid)
+  }, 20_000)
+
   it('tolerates a transient discovery miss and uses a bounded removal retry while the server stops', async () => {
     const stateHome = temporaryDir('removed-state-home')
     const reservation = await reservePort()

@@ -11,12 +11,13 @@ const clean = (value) => {
   return text
 }
 
+/** @knipTestSeam Computed file-URL import in adopt-installer.test.ts. */
 export function onDemandRoots({ project, config }) {
   return { project: `${clean(project)}/.claude/${ON_DEMAND_NAME}`, user: `${clean(config)}/${ON_DEMAND_NAME}` }
 }
 
 // The static roots the engine loads recursively (projectStatic / userStatic in the same file).
-export function staticRoots({ project, config }) {
+function staticRoots({ project, config }) {
   return { project: `${clean(project)}/.claude/rules`, user: `${clean(config)}/rules` }
 }
 
@@ -140,4 +141,63 @@ export function onDemandEngineFiles({ pluginRoot, configDir, env = process.env }
     // No readable registry: the earlier candidates stand alone.
   }
   return candidates
+}
+
+/** The `version` of `<root>/.claude-plugin/plugin.json` when it is a plain x.y.z string, else null
+ *  (missing, unreadable, malformed). */
+export function pluginManifestVersion(root) {
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'plugin.json'), 'utf8')).version
+    return typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) ? v : null
+  } catch {
+    return null
+  }
+}
+
+/** True when both paths resolve to the same directory (symlinks followed); falls back to comparing
+ *  the resolved path strings when either cannot be resolved. */
+export function sameDirectory(a, b) {
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b)
+  } catch {
+    return path.resolve(a) === path.resolve(b)
+  }
+}
+
+function treeFiles(root, dirs) {
+  const files = []
+  const walk = (segments) => {
+    let entries
+    try {
+      entries = fs.readdirSync(path.join(root, ...segments), { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) walk([...segments, entry.name])
+      else files.push([...segments, entry.name])
+    }
+  }
+  for (const dir of dirs) walk([dir])
+  return files
+}
+
+/** The first file (as plugin-relative segments) under `dirs` that is present in only one of the two
+ *  roots or whose text differs, CRLF and LF read alike, in sorted order; null when they match. */
+export function firstTreeDifference(leftRoot, rightRoot, dirs) {
+  const read = (root, segments) => {
+    try {
+      return fs.readFileSync(path.join(root, ...segments), 'utf8').replace(/\r\n/g, '\n')
+    } catch {
+      return null
+    }
+  }
+  const byKey = new Map()
+  for (const segments of [...treeFiles(leftRoot, dirs), ...treeFiles(rightRoot, dirs)]) byKey.set(segments.join('\0'), segments)
+  for (const key of [...byKey.keys()].sort()) {
+    const segments = byKey.get(key)
+    const left = read(leftRoot, segments)
+    if (left === null || left !== read(rightRoot, segments)) return segments
+  }
+  return null
 }
