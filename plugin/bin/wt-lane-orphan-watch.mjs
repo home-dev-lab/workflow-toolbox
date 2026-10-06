@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { isLiveSandboxedLane, laneDescendantPids, posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
+import { ancestorPids, isOpencodeCommand, ownedOpencodePids, unattributedTreeKey } from './lib/lane-opencode-attribution.mjs'
 import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
 import { idleHelperEvents } from './lib/resolved-binary.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
@@ -106,7 +107,8 @@ const processDir = (argv, cwd) => {
   return null
 }
 
-const isOpencodeCommand = (command) => /(?:^|[\\/\s])opencode(?:\.exe|\.cmd)?(?:\s|$)/i.test(command)
+const insideProject = (cwd, project) => Boolean(cwd) && (cwd === project || cwd.startsWith(`${project}${path.sep}`))
+const observedArgv = (observed, command) => (Array.isArray(observed.argv) && observed.argv.length > 0 ? observed.argv : posixCommandArgs(command))
 
 function processRecordDirs(project, table) {
   if (!table.supported) return []
@@ -114,11 +116,51 @@ function processRecordDirs(project, table) {
   for (const item of table.processes) {
     if (!isOpencodeCommand(item.command)) continue
     const candidate = inspectProcess(item.pid)
-    if (!candidate?.cwd || (candidate.cwd !== project && !candidate.cwd.startsWith(`${project}${path.sep}`))) continue
-    const argv = Array.isArray(candidate.argv) && candidate.argv.length > 0 ? candidate.argv : posixCommandArgs(item.command)
+    if (!insideProject(candidate?.cwd, project)) continue
+    const argv = observedArgv(candidate, item.command)
     if (reportableOpencodeArgv(argv)) dirs.push(processDir(argv, candidate.cwd) ?? candidate.cwd)
   }
   return dirs
+}
+
+const isTestFixtureCall = (argv) => String(argv[1] ?? '').replaceAll('\\', '/').includes('/test/fixtures/')
+const inStagingLane = (staging, cwd, dir) => staging.some((lane) => containsPath(lane, cwd) || (dir && containsPath(lane, dir)))
+
+// An opencode process inside the project that no record, lane or launcher owns, or null when it is not one.
+function unattributedCandidate(item, { attributed, project, staging }) {
+  if (!isOpencodeCommand(item.command) || attributed.has(item.pid)) return null
+  const unknown = inspectProcess(item.pid)
+  if (!insideProject(unknown?.cwd, project)) return null
+  const argv = observedArgv(unknown, item.command)
+  if (!reportableOpencodeArgv(argv) || isTestFixtureCall(argv)) return null
+  return inStagingLane(staging, unknown.cwd, processDir(argv, unknown.cwd)) ? null : unknown
+}
+
+// Journals every unattributed pid once; notifies once per launcher TREE while that tree keeps an unattributed
+// process, so one unknown run of many calls (or one call seen through its wrappers) is a single wake. A key
+// whose tree has none left this sweep is dropped: a later unattributed process there is a new episode.
+// A pid number is reused: the key carries the start identity so a new process never inherits a notice.
+const unattributedPidKey = (item) => `unknown:${item.pid}:${item.startIdentity ?? item.startTime ?? 'unknown'}`
+
+function reportUnattributedOpencode({ table, attributed, project, staging, notified, notice, journal }) {
+  const live = new Set()
+  const reapers = ancestorPids(process.pid, table.processes)
+  for (const item of table.processes) {
+    const pidKey = unattributedPidKey(item)
+    const seen = notified.has(pidKey)
+    const unknown = seen ? null : unattributedCandidate(item, { attributed, project, staging })
+    if (!seen && !unknown) continue
+    const treeKey = `unknown-tree:${unattributedTreeKey(item.pid, table.processes, { reapers })}`
+    live.add(pidKey).add(treeKey)
+    if (!seen) reportOne({ item, unknown, pidKey, treeKey, notified, notice, journal })
+  }
+  for (const key of notified) if (/^unknown(?:-tree)?:/.test(key) && !live.has(key)) notified.delete(key)
+}
+
+function reportOne({ item, unknown, pidKey, treeKey, notified, notice, journal }) {
+  journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner', tree: treeKey.slice('unknown-tree:'.length) })
+  notified.add(pidKey)
+  if (!notified.has(treeKey)) notice(treeKey, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
 }
 
 async function main() {
@@ -293,19 +335,9 @@ async function main() {
     }
     // A LIVE SANDBOXED lane's opencode runs as a descendant of its recorded (bwrap) child: attributed
     // too. An unsandboxed lane's descendants are not: a nested `opencode run` there is still reported.
-    const attributed = new Set([...verifiedChildren, ...(table.supported ? laneDescendantPids(liveChildren, table.processes) : [])])
-    if (table.supported) for (const item of table.processes) {
-      if (!isOpencodeCommand(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
-      const unknown = inspectProcess(item.pid)
-      if (!unknown?.cwd || (unknown.cwd !== options.project && !unknown.cwd.startsWith(`${options.project}${path.sep}`))) continue
-      const argv = Array.isArray(unknown.argv) && unknown.argv.length > 0 ? unknown.argv : posixCommandArgs(item.command)
-      if (!reportableOpencodeArgv(argv)) continue
-      if (String(argv[1] ?? '').replaceAll('\\', '/').includes('/test/fixtures/')) continue
-      const dir = processDir(argv, unknown.cwd)
-      if (staging.some((lane) => containsPath(lane, unknown.cwd) || (dir && containsPath(lane, dir)))) continue
-      journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
-      notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
-    }
+    // A live batch launcher or lane-sandbox creator owns its record-less runs (lib/lane-opencode-attribution.mjs).
+    const attributed = new Set([...verifiedChildren, ...(table.supported ? [...laneDescendantPids(liveChildren, table.processes), ...ownedOpencodePids(table.processes)] : [])])
+    if (table.supported) reportUnattributedOpencode({ table, attributed, project: options.project, staging, notified, notice, journal })
     const brokers = listBrokers(hostAdapter, table)
     if (brokers.supported) for (const pid of brokers.pids) {
       if (notified.has(`broker:${pid}`)) continue
