@@ -99,7 +99,7 @@ let warnedAboutSecretStore = false
 function warnSecretStoreUnavailable() {
   if (warnedAboutSecretStore) return
   warnedAboutSecretStore = true
-  try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch {}
+  try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch { /* stderr closed: nowhere left to report */ }
 }
 
 function secretGuardMasker() {
@@ -111,7 +111,7 @@ function secretGuardMasker() {
       try {
         statSync(named)
         return named
-      } catch {}
+      } catch { /* no named store: fall back to the directory scan below */ }
       return readdirSync(storeDir)
         .filter((name) => /^wt-secret-guard_inline-[^.]+\.json$/.test(name))
         .map((name) => ({ path: path.join(storeDir, name), mtime: statSync(path.join(storeDir, name)).mtimeMs }))

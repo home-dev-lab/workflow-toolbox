@@ -49,7 +49,7 @@ import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { guardMode, recordGuardEvent } from './lib/guard-journal.mjs'
 import { resolveAgentTypeTools } from './lib/agent-type-tools.mjs'
-import { canWriteThroughBash, hasNoFileExtension, routesToFinalMessage } from './lib/spawn-brief-intent.mjs'
+import { canWriteThroughBash, finalMessageRoutes, hasNoFileExtension } from './lib/spawn-brief-intent.mjs'
 
 function readInput() {
   try {
@@ -108,7 +108,7 @@ function normaliseContext(text) {
 }
 
 function contextWords(text) {
-  return text.match(/[\p{L}]+(?:'[\p{L}]*)?/gu) ?? []
+  return text.match(/\p{L}+(?:'\p{L}*)?/gu) ?? []
 }
 
 function isNegationCue(word) {
@@ -139,13 +139,20 @@ function boundaryIndexes(prompt, expression) {
   return [-1, ...Array.from(prompt.matchAll(expression), (match) => match.index), prompt.length]
 }
 
+// Drops trailing Markdown emphasis markers (`*`, `_`) without a backtracking expression.
+function trimEmphasis(text) {
+  let end = text.length
+  while (end > 0 && (text[end - 1] === '*' || text[end - 1] === '_')) end -= 1
+  return text.slice(0, end)
+}
+
 function adjacentNegation(before, after, french) {
   if (french) {
     const frame = before.match(/(?:^|[^\p{L}\p{N}'’])(?:n['’][*_]*|ne[*_]*[ \t]+[*_]*)$/iu)
     if (!frame || !/^[ \t]+(?:pas|jamais|plus|rien)\b/.test(normaliseContext(after))) return null
     return before.slice(0, frame.index)
   }
-  const prefix = before.replace(/[*_]+$/, '')
+  const prefix = trimEmphasis(before)
   if (!/[ \t]$/.test(prefix)) return null
   const cue = prefix.split(/[ \t]+/).at(-2)
   if (!cue || !isNegationCue(normaliseContext(cue))) return null
@@ -331,7 +338,7 @@ function classifySurviving(intent, prompt, resolved) {
   if (canWriteThroughBash(resolved.tools, resolved.body, resolved.denied)) return { ...intent, suppression: 'bashroute' }
   const shadow = []
   if (intent.pathless) shadow.push('no-file-path')
-  if (routesToFinalMessage(prompt)) shadow.push('final-message-fallback')
+  if (finalMessageRoutes(prompt).length) shadow.push('final-message-fallback')
   return { ...intent, shadow }
 }
 

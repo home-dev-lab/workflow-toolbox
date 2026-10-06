@@ -13,8 +13,11 @@ const CARRIER = '(?:(?:put|return|make|give|include|deliver|write|send|provide|p
 // An inability counts only when it is about writing: a type unable to modify code or finish still owes the file.
 const INABILITY = '(?:cannot|can\'t|can not|have no|lack|may lack|do not have|don\'t have)(?:\\s+(?:a|the|any))?\\s+(?:write|files?)'
 
+const FINAL_IS = '(?:final|last) (?:message|response|answer) (?:is|must be|will be)'
+const DELIVERABLE = '(?:the |your )?(?:full |complete |whole )?(?:report|review|critique|deliverable|verdict list)'
+
 // Semantic shapes of "the final message carries the deliverable", not an alternation fitted to cases.
-export const FINAL_MESSAGE_ROUTES = [
+const FINAL_MESSAGE_ROUTES = [
   // (a) a stated or conditional inability, then the route
   new RegExp(`\\b(?:(?:if|when)\\s+)?you\\s+${INABILITY}\\b[^.\\n]{0,80}\\b${CARRIER}`, 'i'),
   // (b) a stated inability, then the route
@@ -22,15 +25,16 @@ export const FINAL_MESSAGE_ROUTES = [
   // (c) "if you can write ...; otherwise ... final message"
   new RegExp(`\\bif you can write\\b[^.\\n]{0,60}\\b(?:otherwise|else|instead|so)\\b[^.\\n]{0,80}\\b${CARRIER}`, 'i'),
   // (d) the final message IS the deliverable
-  /\b(?:final|last) (?:message|response|answer) (?:is|IS|must be|will be) (?:the |your )?(?:full |complete |whole )?(?:report|review|critique|deliverable|verdict list)\b(?!\s*(?:path|file))/i,
+  new RegExp(`\\b${FINAL_IS} ${DELIVERABLE}\\b(?!\\s*(?:path|file))`, 'i'),
   // (e) the write target IS the final message
   /\bto your (?:final|last) (?:message|response)\b/i,
 ]
 
-/** True when the brief already routes the deliverable to the agent's final message. */
-export function routesToFinalMessage(prompt) {
+/** Indexes of the route shapes the brief matches; non-empty when it already routes the deliverable to
+ *  the agent's final message. */
+export function finalMessageRoutes(prompt) {
   const text = prompt.normalize('NFC')
-  return FINAL_MESSAGE_ROUTES.some((expression) => expression.test(text))
+  return FINAL_MESSAGE_ROUTES.flatMap((expression, index) => (expression.test(text) ? [index] : []))
 }
 
 // The one-call pin, in every phrasing the shipped definitions use ("exactly one Bash call",
@@ -51,9 +55,9 @@ const WITH_EXTENSION = /^.+\.[A-Za-z0-9]{1,8}$/
 /** True when the candidate's destination path has a last segment without a `name.ext`. */
 export function hasNoFileExtension(candidate) {
   if (!PATH_PATTERNS.has(candidate.pattern)) return false
-  const path = candidate.phrase.match(/[/~][\w./-]+$/)?.[0]
-  if (!path) return false
-  const trimmed = path.replace(/[.,]+$/, '')
-  const last = /[^/\\]*$/.exec(trimmed)[0]
-  return !WITH_EXTENSION.test(last)
+  const destination = candidate.phrase.split(/\s/).at(-1)
+  if (!/^[/~][\w./-]*$/.test(destination)) return false
+  let end = destination.length
+  while (end > 0 && (destination[end - 1] === '.' || destination[end - 1] === ',')) end -= 1
+  return !WITH_EXTENSION.test(destination.slice(0, end).split(/[/\\]/).at(-1))
 }

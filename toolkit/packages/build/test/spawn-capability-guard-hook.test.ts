@@ -341,7 +341,7 @@ describe('wt-spawn-capability-guard-hook', () => {
           const result = vm.runInNewContext(lib + '\\n' + source + \`\n
             const start = performance.now()
             const intent = findWriteIntent(prompt)
-            const routed = routesToFinalMessage(prompt);
+            const routed = finalMessageRoutes(prompt).length > 0;
             ({ elapsed: performance.now() - start, pattern: intent.pattern, suppression: intent.suppression, routed })
           \`, { prompt, performance })
           console.log(JSON.stringify(result))
@@ -581,8 +581,7 @@ describe('wt-spawn-capability-guard-hook', () => {
       [4, 'Write your findings to your final message.'],
     ])('R2 shape %i: the refusal stands and the shadow names final-message-fallback', async (index, prompt) => {
       const lib = await import(pathToFileURL(BRIEF_INTENT).href)
-      const matching = lib.FINAL_MESSAGE_ROUTES.flatMap((expression: RegExp, k: number) => (expression.test(prompt) ? [k] : []))
-      expect(matching).toEqual([index])
+      expect(lib.finalMessageRoutes(prompt)).toEqual([index])
       shadowDeny(spawnWith('tools: Read, Grep', prompt), ['final-message-fallback'])
     })
     it.each([
