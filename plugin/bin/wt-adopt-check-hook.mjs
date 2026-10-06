@@ -72,7 +72,7 @@ function readInput() {
  *  per-file status lines (`  <file>: <status>`) into a Map<file, {status, location}>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
-function checkDir(dir, set = 'rules', locationKind = 'static', project = null) {
+function checkDir(dir, set = 'rules', locationKind = 'static', project = null, onFailure = () => {}) {
   const map = new Map()
   let res
   try {
@@ -84,11 +84,13 @@ function checkDir(dir, set = 'rules', locationKind = 'static', project = null) {
       ...(project ? { cwd: project } : {}),
     })
   } catch {
+    onFailure()
     return map
   }
+  if (res?.error || res?.status !== 0) onFailure()
   const stdout = res && res.stdout ? res.stdout : ''
   for (const line of stdout.split('\n')) {
-    const m = /^ {2}(\S+\.md): (.+)$/.exec(line)
+    const m = /^ {2}(\S+\.(?:md|mjs)): (.+)$/.exec(line)
     if (m) {
       let realLocation = path.resolve(dir)
       try {
@@ -311,6 +313,47 @@ function triggerLines(file, finding, installCmd, event) {
     return [`${file} (${finding.location}): ${TRIGGERS_UNRESOLVED}; take shipped with \`${triggerRemedy(installCmd, file, finding.location, 'refresh')}\` or keep yours with \`${triggerRemedy(installCmd, file, finding.location, 'keep')}\`.`]
   }
   return []
+}
+
+/** Scripts live only in the active config. Compare the rendered shim, never its canonical body. */
+function scriptDriftMessage(configDir, project, installCmd, rootState, skipped, digest = false) {
+  const dir = path.join(configDir, 'scripts')
+  const lines = []
+  let failed = false
+  const findings = checkDir(dir, 'scripts', 'static', project, () => { failed = true })
+  if ((failed || !findings.size) && hasAdoptedScripts(dir)) {
+    if (digest) return `workflow-toolbox scripts drift check could not run in ${dir}; restore the installed plugin and re-check with the workflow-toolbox:adopt skill.`
+    return `workflow-toolbox scripts drift check could not run in ${dir}; restore the installed plugin and re-check with \`${checkRemedy(installCmd, 'scripts', dir)} --fail-on-drift\`.`
+  }
+  for (const [file, finding] of findings) {
+    const status = finding.status
+    if (rootState.kind === 'stale' && /^(?:STALE|AHEAD)/.test(status)) {
+      skipped.push(`${file} (${dir})`)
+      continue
+    }
+    if (!/^(?:STALE|EDITED|AHEAD|SYMLINK|TARGET-MISSING|PRESENT \(no toolbox banner)/.test(status)) continue
+    if (digest) {
+      // Installer status text may itself carry a full remedy (for example --force).
+      lines.push(`${file} (${dir}): ${status.split(' ')[0]}. Re-run the workflow-toolbox:adopt skill to inspect and reconcile script drift.`)
+      continue
+    }
+    const check = `${checkRemedy(installCmd, 'scripts', dir)} --fail-on-drift`
+    let remedy
+    if (status.startsWith('TARGET-MISSING')) remedy = 'Update or reinstall workflow-toolbox to restore the named canonical target'
+    else if (status.startsWith('SYMLINK')) remedy = `Preserve the symlink destination, then run \`${installRemedy(installCmd, 'scripts', dir)} --replace-symlinks --file ${shellQuote(file)}\``
+    else if (status.startsWith('PRESENT')) {
+      remedy = `Preserve and move the hand-authored file ${shellQuote(path.join(dir, file))} to a backup first, then run \`${installRemedy(installCmd, 'scripts', dir)}\``
+    } else if (status.startsWith('STALE')) remedy = `Run \`${installRemedy(installCmd, 'scripts', dir)}\``
+    else remedy = `Compare the rendered shim with \`${diffRemedy(installCmd, 'scripts', file, dir)}\`, then restore it with \`${forceRemedy(installCmd, 'scripts', file, dir)}\``
+    lines.push(`${file} (${dir}): ${status}. ${remedy}; re-check with \`${check}\`.`)
+  }
+  return lines.join('\n')
+}
+
+function hasAdoptedScripts(dir) {
+  return ['wt-lane.mjs', 'wt-lane-wait.mjs', 'wt-arc-watch.mjs', 'wt-quota-watch.mjs'].some((file) => {
+    try { fs.lstatSync(path.join(dir, file)); return true } catch { return false }
+  })
 }
 
 /** Group one set's findings into the buckets the message builders report; agents never report ABSENT (opt-in). */
@@ -552,6 +595,8 @@ export function main() {
     if (built) sections.push(built)
   }
 
+  const scriptsMessage = scriptDriftMessage(configDir, root, INSTALL_RULES, rootState, skipped, digest)
+  if (scriptsMessage) sections.push(scriptsMessage)
   if (digest && sections.length) sections.push(digestClosing(root, noticeOnly))
   if (skipped.length) sections.push(`Comparison skipped for ${skipped.sort().join(', ')}: this session runs v${rootState.runningVersion} from ${rootState.runningRoot} while v${rootState.installedVersion} is installed at ${rootState.installedRoot}; a comparison against the running version is not reliable until /reload-plugins or a restart loads the installed one.`)
   const message = sections.filter(Boolean).join('\n')

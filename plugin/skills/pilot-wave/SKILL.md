@@ -34,20 +34,7 @@ skip this — a plain sub-agent (or doing it yourself) is simpler.
 Route work to the lowest rung that fits, and **pin model + effort at every spawn — never
 let a delegate silently inherit the session's model**:
 
-| Work | Rung | Who |
-|---|---|---|
-| A question / analysis / arbitration | your main loop, inline | you |
-| One isolated mechanical chore | one throwaway sub-agent | cheap model |
-| ONE card, full dev loop | an adopted `pilot` | strong model |
-| SEVERAL cards / a wave | an adopted `pilot-orchestrator` → pilots | strong model |
-| A heavy implementation increment of one card | the card's executor lane | cheap / cross-family |
-| A multi-agent fan-out inside a card's arc (a review, an audit) | a delegated run the pilot launches; the spawner arms the settle-watch (Step 4) | per-role pinned models |
-| Decorrelated verification of a checkable claim | a cross-family verifier | different family |
-
-The cost-model is deliberately NEUTRAL here: "heavy mechanical work goes DOWN to a cheaper
-executor, judgment stays UP with the arbiter" is the invariant. Which concrete model each
-rung maps to is YOUR account's business — resolve it at spawn (next section), do not hardcode
-a table of model names into a shipped brief.
+Open [references/delegation-ladder.md](references/delegation-ladder.md) when selecting the delegation rung and its model tier.
 
 ## Step 1 — resolve the environment brief
 
@@ -57,84 +44,7 @@ environment-variable fallback (`WT_KNOWLEDGE_BASE_INDEX`); every other block is 
 auto-detection / default** (no env var — don't invent one). Resolve them like this, then embed
 the resolved values in the spawn prompt:
 
-- **`KNOWLEDGE_BASE_INDEX`** — the session knowledge-base index the agents read (READ-ONLY).
-  Resolve: an explicit path the user gives → env `WT_KNOWLEDGE_BASE_INDEX` → derive
-  `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/memory/MEMORY.md`, where `<slug>` is
-  the absolute project root with every character outside `[A-Za-z0-9-]` replaced by `-`. If
-  no such index exists, pass none — the agents degrade to their own memory + the card.
-- **`TASK_TRACKER`** — where the cards live and how to reach them. Resolve: an explicit
-  tracker the user names → auto-detect (a kanban board pointer file, e.g. a planka.json board
-  descriptor, reached through its MCP; else the ticketing CLI the project configures, e.g.
-  Jira; else a plain task file). Pass which one and how to query it.
-- **`EXECUTOR_LANE`** — the lane for heavy mechanical increments, gated by CONSENT, not mere
-  availability. Resolve in two steps:
-  1. **Availability**: is a cross-family CLI bridge on `PATH` (e.g. `command -v codex`,
-     `command -v opencode`)? A missing one degrades cleanly to step 2's fallback — never
-     assume a bridge is present.
-   2. **Consent** (checked only if available): use the shared `wt-lane-consent` resolver. Its
-      account source is the plugin's persisted `userConfig.executor_lane_consent` value in
-      `~/.claude/settings.json` (opt-in, default OFF); the existing
-      `WT_EXECUTOR_LANE_CONSENT` settings `env` value remains an account source and must agree
-      when both are present. Then check the CURRENT project's
-      `<project>/.claude/settings.local.json` `env` block for the same key: it may only NARROW
-      (set it to something other than `"true"`), never widen an account ceiling that is off. A
-      refusal or disagreement at either level wins.
-  **The shipped CLI answers both halves of this without hand-editing JSON**, and it is what
-  you point a user at when they ask how to see or change the switch:
-
-  ```bash
-  wt-lane-consent                       # what is it right now: account, project, effective
-  wt-lane-consent --on | --off          # set the ACCOUNT ceiling
-  wt-lane-consent --project [dir] --off # NARROW it for one project only
-  wt-lane-consent --json                # the same state, machine-readable
-  ```
-
-  It reports the state in words (`ALLOWED` / `REFUSED` / `not set` / `UNKNOWN`), never the
-  raw stored value, and when it refuses it names WHICH level refused — an account that never
-  opted in and a project that narrows an allowing account read identically otherwise. A write
-  backs the file up first and preserves every other key.
-  ⚠ **Two readers, two latencies, and the CLI says so after a write**: anything reading the
-   settings FILE (this CLI, the consent check, this skill) sees the change immediately; anything
-  reading the environment VARIABLE sees it only in a session started afterwards, because the
-  settings `env` block is applied at session start. A correct write can otherwise look like it
-  did nothing.
-
-  If BOTH available AND consented → name the bridge as the executor/verifier lane.
-  Otherwise (no bridge, OR a bridge present but not consented) → **the lane is absent; the
-  pilot/orchestrator SPLITS** (its own tier for design/plan/arbitration, a spawned cheaper
-  sub-agent for the increment) — never "implement inline" on the arbiter's own tier. State
-  which of the two ("absent" vs "present but not consented") in the brief you compose, since
-  it changes what a later session should check before re-probing.
-  ⚠ **When you name a bridge, name its invocation shape too — a CLI invoked from a shell with
-  no terminal can block on standard input.** An agent's Bash tool is exactly that shell: stdin
-  is open but nothing will ever arrive, so a CLI that waits for it returns ZERO output until
-  something times out. Redirect stdin from the null device (`… < /dev/null`) and bound the call
-  with a timeout. The failure looks INTERMITTENT — an inherited stdin sometimes closes on its
-  own — which sends people hunting through the working directory, the database, the token, and
-  the model before they suspect the shell. State the shape in the brief; a pilot that only
-  receives the bridge's NAME will write the call itself, and write it without this.
-- **`WORKTREES_DIR`** — where pilots create isolation worktrees when the repo may have
-  concurrent writers. Resolve: an explicit dir → a sibling worktrees dir next to the repo.
-- **`REPORT_DIR`** — where file-reports land (the nested-routing workaround: a named agent's
-  final message routes to the main session, so reports go to files the arbiter polls).
-  Resolve: an explicit dir → a scratch dir you create and name. **Naming constraint**: the
-  CLI hard-blocks a sub-agent's `Write` when the file's basename starts with `report`,
-  `summary`, `findings`, or `analysis` (case-insensitive) — put the word at the END instead
-  (`<cardId>-report.md`, not `report-<cardId>.md`).
-- **`QUOTA_POSTURE`** — how much verification fan-out the budget allows, so reviews scale to
-  the change class. Resolve: an explicit posture the user states → "comfortable" default. Under
-  pressure, the agents degrade to the single cross-family verifier shape.
-- **`WATCHER_REGISTRY`** — a path/command a delegate can query to see which watchers (hooks,
-  monitors, disk/staleness checks) currently cover it and on what signal each fires — see the
-  three-state contract (watched / not watched / unknown, never collapsed) already carried in
-  `pilot.md` and `pilot-orchestrator.md`. This skill does not ship a concrete instrument: what
-  counts as a "watcher" is entirely project/machine-specific (a systemd timer, a hook-armed
-  marker directory, a cron job — nothing about the shape is portable). Resolve: an explicit
-  command the user gives → a project-level convention documented in the project's own rules
-  (e.g. a private rule naming a reader script) → absent. When absent, **say so once in your own
-  final report** rather than omitting the field from every brief silently — an omitted field
-  and a deliberately absent registry read identically to a pilot unless the report states which
-  one it was.
+Every spawn: open [references/resolve-the-environment-brief.md](references/resolve-the-environment-brief.md) and resolve each block it lists before composing the spawn prompt.
 
 ## Step 2 — select the wave's cards
 
@@ -149,6 +59,8 @@ completed or parked card the orchestrator re-queries the tracker so newly-create
 in-scope cards join the queue automatically.
 
 ## Step 3 — compose the spawn prompt (with model elevation)
+
+Before composing or making any spawn, open [references/compose-the-spawn-prompt.md](references/compose-the-spawn-prompt.md): it holds the observer-preserving spawn shape (a `name` without `isolation` costs the observer) and the model-resolution details.
 
 Before composing any pilot or orchestrator spawn, run the shipped model resolver CLI:
 
@@ -165,41 +77,6 @@ wave. The prompt must name the same `model=<value> (source=<env|settings|default
 unresolved value inherit the session model. A refused value stops the spawn and names the
 opencode-runner follow-up rather than falling back.
 
-⚠ **A `name` on a typed spawn costs you the observer — unless you also pass `isolation`.**
-
-In a session that already has addressable teammates, a named spawn is routed down the
-in-process-teammate path, and that path **rebuilds** the agent definition instead of using it:
-the `observer:` pairing is never read, `permissionMode` is overwritten, and the definition's
-system prompt survives only as an appendix to a generic base prompt. Read from the harness
-source (CLI 2.1.220) and confirmed by measurement.
-
-The condition is narrow and invisible at the moment you spawn — the same call keeps everything
-in a headless run and loses the observer in an interactive one — so do not reason about
-whether it holds. **Two shapes are safe, and both were verified end to end:**
-
-| Shape | Observer | Tools | Your name visible |
-|---|---|---|---|
-| anonymous (no `name`) | attached | intact | no |
-| `name` **+** `isolation` | **attached** | intact | **yes** |
-| `name` alone | **dropped** | intact | yes |
-
-`isolation` keeps the spawn on the normal path (the harness's own condition excludes it), so
-naming is free again as long as it travels with it. Measured: a named+isolated pilot got its
-watchdog 4 seconds after spawn, ran Bash, and had the destructive-action guard refuse a
-publish attempt.
-
-Two practical notes on `isolation`, both measured:
-
-- It puts the agent in a worktree of the repo, and **the agent can still create its own**
-  worktree on top if its brief calls for one — nested creation works and cleans up. In most
-  cases it no longer needs to.
-- It requires the **spawning session's** working directory to be inside a git repository, not
-  the repo you are targeting. On an umbrella project holding several repos, a spawn succeeds
-  or fails depending on where the shell happens to be; the failure is explicit, not silent.
-
-If you spawn anonymously, `SendMessage` still reaches the agent by the agent id the spawn
-result gives you.
-
 Spawn the orchestrator (wave) or pilot (single card) via the Agent tool. **Elevate the model
 AT SPAWN**: the shipped agent definitions deliberately OMIT a `model:` field. With no pin, the
 agent inherits the SESSION's own model — which is available by construction, because it is the
@@ -210,11 +87,6 @@ Agent tool's `model` parameter overrides the frontmatter, so pin the strongest m
 reliably call, falling back down the tiers if the top one is not available. Effort is pinned in
 the definitions and is universal — leave it unless you have a reason.
 
-One pairing fact behind why adoption is required at all: current Claude Code versions do not
-honor the `observer:` frontmatter for plugin-REGISTERED agents — a pilot spawned that way
-would run WITHOUT its `pilot-watchdog` observer attached, silently. That is why the pilot
-suite ships as templates rather than registered agents: there is no namespaced
-"workflow-toolbox:pilot" type to spawn as a fallback, only the adopted project copy.
 **Resolution rule for every spawn this skill composes: check the project's `.claude/agents/`
 first — if it carries a `pilot.md` (and, for a wave, a `pilot-orchestrator.md`), spawn the
 BARE names (`pilot`, `pilot-orchestrator`).**
@@ -251,6 +123,7 @@ If the spawn prompt overrides `STOP_GATE_INTERVAL_MIN`, name it explicitly. Othe
 orchestrator uses its default 10-minute close gate: when declaring a tier or mission COMPLETE it
 must do two live re-queries separated by at least that much real elapsed time, and both reads must
 come back empty/resolved.
+
 
 ### LIVENESS_AGENT_ID — sent as the first follow-up message, never inside the composed brief
 
@@ -311,21 +184,7 @@ records decisions, not transferable lessons.
 
 ## The environment-brief contract (reference)
 
-This is the plugin-side contract the agents honor. A spawner fills the blocks; an agent
-resolves anything left blank via the cascade. Publish-surface scoping is part of the brief
-because it is a generic end-user concern: many projects mix a public repo and a private one,
-and only the spawner knows which is which.
-
-| Block | Meaning | Fallback if omitted |
-|---|---|---|
-| `KNOWLEDGE_BASE_INDEX` | READ-ONLY session knowledge base | `WT_KNOWLEDGE_BASE_INDEX`, then derivation, then none |
-| `TASK_TRACKER` | which tracker + how to reach it | auto-detect (board pointer / CLI / task file) |
-| `EXECUTOR_LANE` | heavy-increment lane | probe for an available + consented bridge, else absent and split |
-| `WORKTREES_DIR` | isolation-worktree home | sibling worktrees dir |
-| `REPORT_DIR` | file-report home | a named scratch dir (naming constraint — see Step 1) |
-| `QUOTA_POSTURE` | verification-budget posture | comfortable; degrade under pressure |
-| `WATCHER_REGISTRY` | which watchers cover the delegate + their signal | absent; state so once in the report |
-| publish surface | which repos/dirs are public vs private | assume all private; treat public writes as escalations |
+Open [references/environment-brief-contract.md](references/environment-brief-contract.md) when checking a composed brief against the block and fallback table.
 
 ## Guardrails and non-goals
 

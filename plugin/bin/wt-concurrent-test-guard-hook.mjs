@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// Warn before starting a test runner when another test-runner process is already alive.
+// Journal before starting a test runner when another test-runner process is already alive.
+// Warn paths are journal-only pending precision measurement: allow would auto-approve the
+// call, and permissionDecisionReason reaches no model. Deny paths still emit refusals.
 // Enumeration uses a structured `ps` snapshot, never `pgrep -f`: the hook excludes its entire
 // ancestor chain before looking at executable positions, so its process, launcher shell, and the
 // command text being inspected cannot manufacture a match.
@@ -122,19 +124,6 @@ function existingRunnerCount() {
   }
 }
 
-function warning(input, message) {
-  emitGuardNotice({
-    payload: input,
-    stdoutJson: {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'allow',
-        permissionDecisionReason: `[workflow-toolbox concurrent-test guard] WARNING (not blocked): ${message}`,
-      },
-    },
-  })
-}
-
 function deny(input, message) {
   emitGuardNotice({
     payload: input,
@@ -166,7 +155,6 @@ function main() {
     })
     const message = `could not enumerate existing test-runner processes: ${result.reason}. This is unknown, not a zero count.`
     if (closed) deny(input, message)
-    else warning(input, message)
     return
   }
 
@@ -178,12 +166,6 @@ function main() {
     agent: input.agent_id,
     evidence: { count: result.count },
   })
-  if (result.count === 0) return
-  warning(
-    input,
-    `${result.count} test-runner process(es) are already running. A failure from this run may be contention, not the code. ` +
-      'If this run is meant to decide whether a failure is real, wait for them to exit.',
-  )
 }
 
 runFailOpenHook(GUARD, main)

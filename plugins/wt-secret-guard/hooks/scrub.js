@@ -1,9 +1,8 @@
 // Functional core: recursively mask values without performing host I/O.
 import { detections, entropyCandidates, optionalDetections } from './detector.js';
 import { config } from './config.js';
-import { isIssuedToken, knownTokens, knownValueOccurrences, replacementFor, tokenize } from './token-vault.js';
-
-const GENERIC_KINDS = new Set(['assignment', 'op-output', 'key-value', 'environment-dump']);
+import { confirmationKeyCollision, redactConfirmationCodes } from './owner-release.js';
+import { GENERIC_KINDS, isIssuedToken, knownTokens, knownValueOccurrences, replacementFor, tokenize } from './token-vault.js';
 
 function occurrences(text, value) {
   const spans = [];
@@ -25,15 +24,9 @@ function occurrences(text, value) {
 function replaceKnown(text, command, includeOptional, substituted, vaultOccurrences = knownValueOccurrences) {
   const options = config();
   const spans = [];
-  const eligible = (match) => {
-    const optionalEnabled = includeOptional && ((match.kind === 'email' && options.maskEmails) || (match.kind === 'ip-address' && options.maskIpAddresses));
-    const contextSensitive = match.kind === 'credential-uuid';
-    const unconditional = !contextSensitive && ((match.kind !== 'email' && match.kind !== 'ip-address') || optionalEnabled);
-    return unconditional || substituted.has(match.token);
-  };
+  const eligible = (match) => eligibleMatch(match, options, includeOptional, substituted);
   const activeCategories = new Set(['unconditional']);
-  if (includeOptional && options.maskEmails) activeCategories.add('email');
-  if (includeOptional && options.maskIpAddresses) activeCategories.add('ipAddress');
+  activateOptional(activeCategories, includeOptional, options);
   for (const match of vaultOccurrences(text, eligible, activeCategories)) {
     const { token } = match;
     if (!eligible(match)) continue;
@@ -41,9 +34,33 @@ function replaceKnown(text, command, includeOptional, substituted, vaultOccurren
   }
   const found = [
     ...detections(text, command),
-    ...(includeOptional ? optionalDetections(text, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }) : []),
+    ...findOptional(text, includeOptional, options),
   ];
   for (const detection of found) for (const [from, to] of occurrences(text, detection.value)) spans.push({ from, to, detection });
+  clipIssuedTokens(text, spans);
+  if (!spans.length) return { value: text, changed: false, entropy: entropyCandidates(text) };
+  spans.sort((left, right) => left.from - right.from || right.to - left.to);
+  const groups = mergeSpans(spans);
+  return replaceGroups(text, groups);
+}
+
+function findOptional(text, includeOptional, options) {
+  return includeOptional ? optionalDetections(text, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }) : [];
+}
+
+function activateOptional(activeCategories, includeOptional, options) {
+  if (includeOptional && options.maskEmails) activeCategories.add('email');
+  if (includeOptional && options.maskIpAddresses) activeCategories.add('ipAddress');
+}
+
+function eligibleMatch(match, options, includeOptional, substituted) {
+  const optionalEnabled = includeOptional && ((match.kind === 'email' && options.maskEmails) || (match.kind === 'ip-address' && options.maskIpAddresses));
+  const contextSensitive = match.kind === 'credential-uuid';
+  const unconditional = !contextSensitive && ((match.kind !== 'email' && match.kind !== 'ip-address') || optionalEnabled);
+  return unconditional || substituted.has(match.token);
+}
+
+function clipIssuedTokens(text, spans) {
   // A token already in the text is never scrubbed again, whatever value lies inside its spelling:
   // re-tokenising it made it impossible to rehydrate (Astra M7 at f98cf712 - a vault value `secret`
   // turned `secret:environment#a64479` into `secret:environment#a64479:environment#a64479`).
@@ -66,17 +83,23 @@ function replaceKnown(text, command, includeOptional, substituted, vaultOccurren
     const kind = span.detection?.kind ?? knownTokens().get(span.token)?.kind ?? 'merged';
     spans.splice(at, 1, ...pieces.map(([pieceFrom, pieceTo]) => ({ from: pieceFrom, to: pieceTo, detection: { kind, value: text.slice(pieceFrom, pieceTo) } })));
   }
-  if (!spans.length) return { value: text, changed: false, entropy: entropyCandidates(text) };
-  spans.sort((left, right) => left.from - right.from || right.to - left.to);
+}
+
+function mergeSpans(spans) {
   const groups = [];
   for (const span of spans) {
     const last = groups.at(-1);
     if (last && span.from < last.to) { last.to = Math.max(last.to, span.to); last.parts.push(span); } else groups.push({ from: span.from, to: span.to, parts: [span] });
   }
+  return groups;
+}
+
+function replaceGroups(text, groups) {
   // No replacement emits text equal to a held value: a known part's own token is reused only while it is
   // still an unambiguous issued token; otherwise the vault issues the value a fresh one.
   const tokenFor = (part) => (part.token ? replacementFor(part.token) : tokenize(part.detection.kind, part.detection.secret ?? part.detection.value));
   let scrubbed = '';
+  const replacements = [];
   let cursor = 0;
   for (const group of groups) {
     // A merged group is named after its most specific part: a vendor shape inside an environment dump
@@ -85,18 +108,27 @@ function replaceKnown(text, command, includeOptional, substituted, vaultOccurren
     const named = group.parts.find((part) => part.detection && !GENERIC_KINDS.has(part.detection.kind)) ?? group.parts.find((part) => part.detection) ?? group.parts[0];
     const kind = kindOf(named);
     const reuse = group.parts.find((part) => part.from === group.from && part.to === group.to && kindOf(part) === kind);
-    scrubbed += text.slice(cursor, group.from) + (reuse ? tokenFor(reuse) : tokenize(kind, text.slice(group.from, group.to)));
+    const token = reuse ? tokenFor(reuse) : tokenize(kind, text.slice(group.from, group.to));
+    replacements.push({ raw: text.slice(group.from, group.to), token });
+    scrubbed += text.slice(cursor, group.from) + token;
     cursor = group.to;
     // Every detection stays registered, as before: its value is masked wherever it appears next. After
     // the group's own token, so a part with the same value as the whole does not name the group.
     for (const part of group.parts) if (part.detection) tokenFor(part);
   }
   scrubbed += text.slice(cursor);
-  return { value: scrubbed, changed: scrubbed !== text, entropy: entropyCandidates(scrubbed) };
+  return { value: scrubbed, changed: scrubbed !== text, entropy: entropyCandidates(scrubbed), replacements };
+}
+
+function scrubString(value, command, includeOptional, substituted) {
+  const result = replaceKnown(value, command, includeOptional, substituted);
+  const text = redactConfirmationCodes(result.value);
+  return { ...result, value: text, changed: result.changed || text !== value };
 }
 
 export function scrub(value, command, includeOptional = true, substituted = new Set()) {
-  if (typeof value === 'string') return replaceKnown(value, command, includeOptional, substituted);
+  if (confirmationKeyCollision(value)) return { value: { deny: 'wt-secret-guard refused confirmation-code key collision.' }, changed: true, entropy: 0 };
+  if (typeof value === 'string') return scrubString(value, command, includeOptional, substituted);
   if (Array.isArray(value)) {
     let changed = false; let entropy = 0;
     const result = value.map((item) => { const next = scrub(item, command, includeOptional, substituted); changed ||= next.changed; entropy += next.entropy; return next.value; });
@@ -106,10 +138,17 @@ export function scrub(value, command, includeOptional = true, substituted = new 
     let changed = false; let entropy = 0;
     const result = {};
     // defineProperty, not assignment: `result['__proto__'] = …` sets the prototype and drops the field.
-    for (const [key, item] of Object.entries(value)) { const next = scrub(item, command, includeOptional, substituted); Object.defineProperty(result, key, { value: next.value, enumerable: true, writable: true, configurable: true }); changed ||= next.changed; entropy += next.entropy; }
+    for (const [key, item] of Object.entries(value)) { const next = scrubField(result, key, item, command, includeOptional, substituted); changed ||= next.changed; entropy += next.entropy; }
     return { value: result, changed, entropy };
   }
   return { value, changed: false, entropy: 0 };
+}
+
+function scrubField(result, key, item, command, includeOptional, substituted) {
+  const next = scrub(item, command, includeOptional, substituted);
+  const safeKey = redactConfirmationCodes(key);
+  Object.defineProperty(result, safeKey, { value: next.value, enumerable: true, writable: true, configurable: true });
+  return { changed: next.changed || safeKey !== key, entropy: next.entropy };
 }
 
 // One pass scrubs the fields of an object in order, so a value a LATER field revealed (a concealed JSON
@@ -128,3 +167,4 @@ export function scrubSettled(value, command, includeOptional = true, substituted
 export function testScrubWithVaultOccurrences(value, command, includeOptional, vaultOccurrences, substituted = new Set()) {
   return replaceKnown(value, command, includeOptional, substituted, vaultOccurrences);
 }
+export const scrubWithVaultOccurrences = testScrubWithVaultOccurrences;

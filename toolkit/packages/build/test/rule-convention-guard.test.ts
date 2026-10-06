@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { sealRuleNarrative, sealRuleNarrativeFile } from '../../../test-support/rule-narrative-stub.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-rule-convention-guard-hook.mjs')
@@ -11,6 +12,8 @@ const MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 const FIX_SENTENCE = 'A rule states what to DO plus the invariant that makes it right. Move the date, the name and the story to a note, and keep the directive.'
 
 const roots: string[] = []
+const fileSeal = sealRuleNarrativeFile()
+afterAll(fileSeal.restore)
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -32,10 +35,13 @@ type HookRun = {
 }
 
 function runHook(payload: unknown, env: NodeJS.ProcessEnv = process.env): HookRun {
+  const seal = fixture('seal')
   const res = spawnSync(process.execPath, [HOOK], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
-    env,
+    env: sealRuleNarrative(seal.root, env),
+    timeout: 15000,
+    killSignal: 'SIGKILL',
   })
   const stdout = (res.stdout ?? '').trim()
   const stderr = (res.stderr ?? '').trim()

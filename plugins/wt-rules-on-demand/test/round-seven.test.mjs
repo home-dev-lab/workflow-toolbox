@@ -21,6 +21,8 @@ test('legacy unattributed deliveries cannot turn a governed act into revert evid
   const root = await fixture(t);
   await writeFile(join(root, '.claude/rules/sample.md'), 'Body\n');
   await migrateRule(root, 'sample.md', spec, {});
+  const ledger = join(root, '.claude/rules-on-demand-ledger.jsonl');
+  await writeFile(ledger, JSON.stringify({ ...JSON.parse(await readFile(ledger, 'utf8')), state: undefined }) + '\n');
   const identity = `project:${join(root, '.claude/rules-on-demand')}:sample.md`;
   const store = join(root, 'store.json');
   const at = new Date(Date.now() + 1000).toISOString();

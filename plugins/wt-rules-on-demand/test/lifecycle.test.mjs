@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, cp, symlink, readlink, stat, utimes, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -121,6 +121,19 @@ ruleTest('proof binds body, scope and every trigger; named override is unproven'
   assert.match(run().stderr, /zero matches for triggers: 0/);
   await writeFile(proof, JSON.stringify(report));
   assert.equal(run().status, 0);
+});
+
+ruleTest('project migration records the --config-dir profile, not the environment one', async (t, realRule) => {
+  const root = await sandbox(t, realRule);
+  const environmentProfile = join(root, 'profile-env'), selectedProfile = join(root, 'profile-selected');
+  for (const dir of [environmentProfile, selectedProfile]) await mkdir(dir, { recursive: true });
+  const run = spawnSync(process.execPath, [cli, 'migrate', `wt/${name}`, '--project', root, '--config-dir', selectedProfile, '--spec', realSpec, '--no-proof', 'fixture'],
+    { encoding: 'utf8', env: cleanEnv({ CLAUDE_CONFIG_DIR: environmentProfile }) });
+  assert.equal(run.status, 0, run.stderr);
+  const migration = JSON.parse((await readFile(join(root, '.claude/rules-on-demand-ledger.jsonl'), 'utf8')).trim().split('\n').at(-1));
+  // The ledger keeps the profile as named; its physical identity is recorded beside it (macOS /var and Windows 8.3 temp paths differ).
+  assert.deepEqual(migration.profiles, [resolve(selectedProfile)], 'the profile named on the command line is the one required to serve');
+  assert.deepEqual(migration.profileIdentities.map((row) => row.physical), [await realpath(selectedProfile)], 'its physical identity is the selected profile, not the environment one');
 });
 
 ruleTest('user migration requires enabled plugin and Function Hooks for every profile', async (t, realRule) => {
@@ -245,10 +258,16 @@ test('manual rollback publishes its report under owned plugin data', async (t) =
   const config = join(root, 'config');
    const data = join(root, 'wt-rules-on-demand-fixture');
   await mkdir(join(project, '.claude/rules'), { recursive: true });
+  const exposureDir = join(config, 'projects', project.replace(/[^a-zA-Z0-9]/g, '-'));
+  await mkdir(exposureDir, { recursive: true });
   await writeFile(join(project, '.claude/rules/sample.md'), 'Sample\n');
   await migrateRule(project, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: {
     kind: 'bash-command', window: 1, 'on-close': 'not applicable', 'act-regex': 'run', 'require-regex': 'yes',
-  } }, {});
+  } }, {}, { configDir: config });
+  const exposureFile = join(exposureDir, 'exposure.jsonl'), exposedAt = new Date(Date.now() + 1000);
+  await writeFile(exposureFile, JSON.stringify({ cwd: project, timestamp: exposedAt.toISOString() }) + '\n');
+  // Explicitly post-migration, independent of the filesystem's same-tick mtime granularity.
+  await utimes(exposureFile, exposedAt, exposedAt);
   const store = join(root, 'store.json');
   const ruleIdentity = `project:${join(project, '.claude/rules-on-demand')}:sample.md`;
   await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': Array.from({ length: 5 }, () => JSON.stringify({ rule: 'sample.md', ruleIdentity, verdict: 'not followed', decidedAt: new Date().toISOString() })).join('\n') }));
@@ -259,7 +278,7 @@ test('manual rollback publishes its report under owned plugin data', async (t) =
     ...Array.from({ length: 5 }, (_, i) => row('after', 'not followed', new Date(Date.now() + 1000).toISOString(), i + 10))].join('\n') + '\n');
    const result = spawnSync(process.execPath, [rollback, '--project', project, '--store', store, '--verdicts', verdictFile, '--json'], { encoding: 'utf8', env: cleanEnv({ CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) }) });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout)[0].action, 'reverted');
+  assert.equal(JSON.parse(result.stdout)[0].action, 'reverted', result.stdout);
    const digest = createHash('sha256').update(await realpath(project)).digest('hex').slice(0, 12);
    assert.equal(JSON.parse(await readFile(join(data, `quality/rollback-project-${digest}-latest.json`), 'utf8')).reverted[0].rule, 'sample.md');
 });
@@ -372,7 +391,7 @@ test('automatic quality pipeline reports would-revert but leaves entire rule tre
   await mkdir(join(project, '.claude/rules'), { recursive: true });
   await mkdir(join(config, 'projects'), { recursive: true });
   await writeFile(join(project, '.claude/rules/sample.md'), 'Choose a model.\n');
-  await migrateRule(project, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'check', check: 'agent-model', 'rollback-min-samples': 5 } }, { unproven: true });
+  await migrateRule(project, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'check', check: 'agent-model', 'rollback-min-samples': 5 } }, { unproven: true }, { configDir: config });
   const file = join(project, '.claude/rules-on-demand/sample.md');
   const ledgerFile = join(project, '.claude/rules-on-demand-ledger.jsonl');
   const before = await readFile(file);
@@ -387,7 +406,11 @@ test('automatic quality pipeline reports would-revert but leaves entire rule tre
     { type: 'attachment', cwd: project, timestamp: at, attachment: { type: 'hook_additional_context', content: '<rule name="sample.md">\nChoose a model.\n</rule>', toolUseID: 'fixture-context' } },
     ...Array.from({ length: 8 }, (_, i) => ({ type: 'assistant', cwd: project, timestamp: at, message: { content: [{ type: 'tool_use', id: `fixture-${i}`, name: 'Agent', input: { prompt: 'work' } }] } })),
   ];
-  await writeFile(join(config, 'projects/sample.jsonl'), records.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  const exposureDir = join(config, 'projects', project.replace(/[^a-zA-Z0-9]/g, '-'));
+  await mkdir(exposureDir, { recursive: true });
+  await writeFile(join(exposureDir, 'sample.jsonl'), records.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  const exposureMtime = new Date(Date.now() + 1000);
+  await utimes(join(exposureDir, 'sample.jsonl'), exposureMtime, exposureMtime);
   const data = join(config, 'plugins/data/wt-rules-on-demand/quality');
    const run = spawnSync(process.execPath, [quality, '--project', project, '--config-dir', config, '--data-dir', data], { encoding: 'utf8', timeout: 60_000, env: cleanEnv() });
   assert.equal(run.status, 0, run.stderr);
