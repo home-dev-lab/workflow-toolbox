@@ -18,6 +18,12 @@ function carriesToolUseId(value, id) {
   if (!Array.isArray(value) && value.type === 'tool_use' && value.id === id) return true;
   return Object.values(value).some((child) => carriesToolUseId(child, id));
 }
+function validModifiedRecord(record, recordOffset) {
+  if (replacement.length !== length || offset < recordOffset || offset + length > recordOffset + record.length) return false;
+  const modified = Buffer.from(record);
+  replacement.copy(modified, offset - recordOffset);
+  try { JSON.parse(modified.toString('utf8')); return true; } catch { return false; }
+}
 const handle = await open(path, mode === 'read' ? 'r' : 'r+');
 try {
   const stat = await handle.stat();
@@ -32,9 +38,10 @@ try {
     const prefixRead = await handle.read(currentPrefix, 0, prefix.length, 0);
     const current = Buffer.alloc(length);
     const result = await handle.read(current, 0, length, offset);
-    const recordRequired = Boolean(payload.toolUseId);
     const recordOffset = Number(payload.recordOffset);
     const recordLength = Number(payload.recordLength);
+    // A supplied record range is always checked as JSON after the replacement; a bare range keeps the byte-only contract.
+    const recordRequired = Boolean(payload.toolUseId) || (payload.recordLength !== undefined && Number.isInteger(recordLength) && recordLength >= 0);
     const record = Buffer.alloc(Number.isInteger(recordLength) && recordLength >= 0 ? recordLength : 0);
     const recordRead = record.length ? await handle.read(record, 0, record.length, recordOffset) : { bytesRead: 0 };
     const before = Buffer.alloc(recordOffset > 0 ? 1 : 0);
@@ -48,7 +55,8 @@ try {
       && (!after.length || (afterRead.bytesRead === 1 && after[0] === 10)));
     const targetMatches = !payload.toolUseId || carriesToolUseId(parsed, payload.toolUseId);
     if (prefixRead.bytesRead !== prefix.length || !currentPrefix.equals(prefix)
-      || result.bytesRead !== length || !current.equals(expected) || !completeRecord || (recordRequired && !parsed) || !targetMatches) process.exitCode = 3;
+      || result.bytesRead !== length || !current.equals(expected) || !completeRecord || !targetMatches
+      || (recordRequired && (!parsed || !validModifiedRecord(record, recordOffset)))) process.exitCode = 3;
     else {
       const written = await handle.write(replacement, 0, replacement.length, offset);
       if (written.bytesWritten !== replacement.length) process.exitCode = 4;
