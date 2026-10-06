@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sealRuleNarrative, sealRuleNarrativeFile } from '../../../test-support/rule-narrative-stub.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
+const fileSeal = sealRuleNarrativeFile()
+afterAll(fileSeal.restore)
 
 type HookRun = {
   stdout: string
@@ -537,7 +540,8 @@ function runHook(hookPath: string, payload: unknown, sandbox: Sandbox): HookRun 
   const input = payload === null ? undefined : `${JSON.stringify(payload)}\n`
   const res = spawnSync(process.execPath, [hookPath], {
     cwd: sandbox.projectDir,
-    env: sandbox.env,
+    env: basename(hookPath) === 'wt-rule-convention-guard-hook.mjs'
+      ? sealRuleNarrative(sandbox.root, sandbox.env) : sandbox.env,
     input,
     encoding: 'utf8',
     // Hook startup is intentionally exercised under the full child-process suite; allow
