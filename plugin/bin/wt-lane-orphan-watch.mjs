@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { isLiveSandboxedLane, laneDescendantPids, posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
-import { ancestorPids, isOpencodeCommand, ownedOpencodePids, unattributedTreeKey } from './lib/lane-opencode-attribution.mjs'
+import { ancestorPids, isOpencodeCommand, ownedOpencodePids, reportUnattributed } from './lib/lane-opencode-attribution.mjs'
 import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
 import { idleHelperEvents } from './lib/resolved-binary.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
@@ -126,9 +126,9 @@ function processRecordDirs(project, table) {
 const isTestFixtureCall = (argv) => String(argv[1] ?? '').replaceAll('\\', '/').includes('/test/fixtures/')
 const inStagingLane = (staging, cwd, dir) => staging.some((lane) => containsPath(lane, cwd) || (dir && containsPath(lane, dir)))
 
-// An opencode process inside the project that no record, lane or launcher owns, or null when it is not one.
-function unattributedCandidate(item, { attributed, project, staging }) {
-  if (!isOpencodeCommand(item.command) || attributed.has(item.pid)) return null
+// An opencode process inside the project that no lane or launcher owns, or null when it is not one to report.
+function unattributedCandidate(item, { project, staging }) {
+  if (!isOpencodeCommand(item.command)) return null
   const unknown = inspectProcess(item.pid)
   if (!insideProject(unknown?.cwd, project)) return null
   const argv = observedArgv(unknown, item.command)
@@ -136,31 +136,11 @@ function unattributedCandidate(item, { attributed, project, staging }) {
   return inStagingLane(staging, unknown.cwd, processDir(argv, unknown.cwd)) ? null : unknown
 }
 
-// Journals every unattributed pid once; notifies once per launcher TREE while that tree keeps an unattributed
-// process, so one unknown run of many calls (or one call seen through its wrappers) is a single wake. A key
-// whose tree has none left this sweep is dropped: a later unattributed process there is a new episode.
-// A pid number is reused: the key carries the start identity so a new process never inherits a notice.
-const unattributedPidKey = (item) => `unknown:${item.pid}:${item.startIdentity ?? item.startTime ?? 'unknown'}`
-
 function reportUnattributedOpencode({ table, attributed, project, staging, notified, notice, journal }) {
-  const live = new Set()
-  const reapers = ancestorPids(process.pid, table.processes)
-  for (const item of table.processes) {
-    const pidKey = unattributedPidKey(item)
-    const seen = notified.has(pidKey)
-    const unknown = seen ? null : unattributedCandidate(item, { attributed, project, staging })
-    if (!seen && !unknown) continue
-    const treeKey = `unknown-tree:${unattributedTreeKey(item.pid, table.processes, { reapers })}`
-    live.add(pidKey).add(treeKey)
-    if (!seen) reportOne({ item, unknown, pidKey, treeKey, notified, notice, journal })
-  }
-  for (const key of notified) if (/^unknown(?:-tree)?:/.test(key) && !live.has(key)) notified.delete(key)
-}
-
-function reportOne({ item, unknown, pidKey, treeKey, notified, notice, journal }) {
-  journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner', tree: treeKey.slice('unknown-tree:'.length) })
-  notified.add(pidKey)
-  if (!notified.has(treeKey)) notice(treeKey, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
+  reportUnattributed({
+    processes: table.processes, reapers: ancestorPids(process.pid, table.processes), isAttributed: (pid) => attributed.has(pid),
+    candidateOf: (item) => unattributedCandidate(item, { project, staging }), notified, notice, journal,
+  })
 }
 
 async function main() {

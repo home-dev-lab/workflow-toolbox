@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { ancestorPids, isBatchLauncherRow, isOwnedSandboxRoot, ownedOpencodePids, unattributedTreeKey } from '../../../../plugin/bin/lib/lane-opencode-attribution.mjs'
+import { ancestorPids, isBatchLauncherRow, isOwnedSandboxRoot, ownedOpencodePids, reportUnattributed, unattributedTreeKey } from '../../../../plugin/bin/lib/lane-opencode-attribution.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { isTrueParent, laneDescendantPids } from '../../../../plugin/bin/lib/lane-live-scan.mjs'
 
@@ -65,12 +65,12 @@ describe('lane opencode attribution from the process table', () => {
     ]
     for (const pid of [21, 22, 23, 24]) expect(unattributedTreeKey(pid, rows), `pid ${pid}`).toBe('tree:20:777')
     expect(unattributedTreeKey(26, rows), 'a launcher whose command line names opencode is still the tree root').toBe('tree:25:888')
-    expect(unattributedTreeKey(31, rows)).toBe('pid:30')
-    expect(unattributedTreeKey(30, rows)).toBe('pid:30')
-    expect(unattributedTreeKey(40, rows)).toBe('pid:40')
+    expect(unattributedTreeKey(31, rows)).toBe('pid:30:unknown')
+    expect(unattributedTreeKey(30, rows)).toBe('pid:30:unknown')
+    expect(unattributedTreeKey(40, rows)).toBe('pid:40:unknown')
     expect(unattributedTreeKey(99, rows)).toBe('pid:99')
-    expect(unattributedTreeKey(52, rows), 'a ppid cycle ends the walk').toMatch(/^pid:5[01]$/)
-    expect(unattributedTreeKey(60, rows), 'a younger parent is a reused id').toBe('pid:60')
+    expect(unattributedTreeKey(52, rows), 'a ppid cycle ends the walk').toMatch(/^pid:5[01]:unknown$/)
+    expect(unattributedTreeKey(60, rows), 'a younger parent is a reused id').toBe('pid:60:1000')
   })
 
   // An orphan is adopted by a reaper. Keying it on the reaper would make every later orphan share the first
@@ -89,14 +89,45 @@ describe('lane opencode attribution from the process table', () => {
       { pid: 802, ppid: 800, command: OC },
       { pid: 803, ppid: 1, command: OC },
     ]
-    expect(unattributedTreeKey(701, rows)).toBe('pid:701')
-    expect(unattributedTreeKey(703, rows)).toBe('pid:702')
-    expect(unattributedTreeKey(711, rows)).toBe('pid:711')
-    expect(unattributedTreeKey(803, rows)).toBe('pid:803')
+    expect(unattributedTreeKey(701, rows)).toBe('pid:701:unknown')
+    expect(unattributedTreeKey(703, rows)).toBe('pid:702:unknown')
+    expect(unattributedTreeKey(711, rows)).toBe('pid:711:unknown')
+    expect(unattributedTreeKey(803, rows)).toBe('pid:803:unknown')
     const reapers = ancestorPids(801, rows)
     expect([...reapers].sort((a: number, b: number) => a - b)).toEqual([800, 801])
-    expect(unattributedTreeKey(802, rows, { reapers }), 'the session running the watcher adopts orphans').toBe('pid:802')
+    expect(unattributedTreeKey(802, rows, { reapers }), 'the session running the watcher adopts orphans').toBe('pid:802:unknown')
     expect(unattributedTreeKey(802, rows), 'without the watcher ancestry it is an ordinary launcher').toBe('tree:800:9')
+  })
+
+  // One watcher across sweeps: each sweep is a process table; `owned` is what records and launchers attribute.
+  const sweeps = (tables: { rows: Row[], owned?: number[] }[]) => {
+    const notified = new Set<string>()
+    return tables.map(({ rows, owned = [] }) => {
+      const warned: number[] = []
+      reportUnattributed({
+        processes: rows, reapers: new Set(), isAttributed: (pid: number) => owned.includes(pid),
+        candidateOf: (row: Row) => (/opencode run/.test(row.command) ? { cwd: '/p' } : null),
+        notified, notice: (key: string, line: string) => { notified.add(key); warned.push(Number(/pid=(\d+)/.exec(line)?.[1])) }, journal: () => true,
+      })
+      return warned
+    })
+  }
+
+  it('warns for a new orphan tree whose wrapper reuses the pid of an earlier one', () => {
+    const tree = (identity: number, child: number): Row[] => [
+      { pid: 300, ppid: 1, command: `/usr/bin/bwrap -- ${OC}`, startIdentity: identity },
+      { pid: child, ppid: 300, command: OC, startIdentity: identity + 1 },
+    ]
+    expect(unattributedTreeKey(310, tree(100, 310))).not.toBe(unattributedTreeKey(311, tree(200, 311)))
+    expect(sweeps([{ rows: tree(100, 310) }, { rows: tree(200, 311) }])).toEqual([[300], [300]])
+  })
+
+  it('ends a warning episode once its process is attributed, so a later unowned call in that tree warns', () => {
+    const launcher: Row = { pid: 100, ppid: 1, command: 'node /x/other-batch.mjs', startIdentity: 100 }
+    const first: Row = { pid: 101, ppid: 100, command: OC, startIdentity: 101 }
+    const second: Row = { pid: 102, ppid: 100, command: OC, startIdentity: 200 }
+    expect(sweeps([{ rows: [launcher, first] }, { rows: [launcher, first], owned: [101] }, { rows: [launcher, first, second], owned: [101] }]))
+      .toEqual([[101], [], [102]])
   })
 
   it('follows a parent link only when the parent is not younger than the child', () => {

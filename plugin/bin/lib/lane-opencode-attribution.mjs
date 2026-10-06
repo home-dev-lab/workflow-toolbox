@@ -16,6 +16,8 @@
 // sandbox plumbing (bwrap, or the bootstrap shell carrying `wt-lane-net`). A reaper is never a tree root:
 // pid 1, an init/systemd/launchd process, or an ancestor of the watcher itself (a session that adopts orphans).
 // An orphan reparented to one keeps a key of its own, so one hung orphan cannot hide the next.
+// Without a launcher the key is the chain's top process WITH its start identity: a reused wrapper pid starts
+// a new key. A subreaper not named above (tini, a container entrypoint) still roots one shared tree.
 import { isTrueParent, laneDescendantPids, posixCommandArgs } from './lane-live-scan.mjs'
 
 const BATCH_LAUNCHER_SCRIPTS = new Set(['wt-opencode-envelope.mjs'])
@@ -81,5 +83,36 @@ export function unattributedTreeKey(pid, processes, { reapers = new Set() } = {}
     seen.add(parent.pid)
     top = parent
   }
-  return `pid:${top.pid}`
+  return `pid:${top.pid}:${startIdentity(top)}`
+}
+
+// A pid number is reused: the key carries the start identity so a new process never inherits a notice.
+const unattributedPidKey = (row) => `unknown:${row.pid}:${startIdentity(row)}`
+
+/**
+ * Journals every unattributed opencode pid once; notifies once per launcher TREE while that tree keeps an
+ * unattributed process, so one unknown run of many calls (or one call seen through its wrappers) is a single
+ * wake. Attribution is re-read every sweep, a warned pid included: a key whose tree has no unattributed process
+ * left this sweep is dropped, so a later unattributed process there is a new episode.
+ * `candidateOf(row)` returns the inspected process when the row is an unowned opencode call to report, else null.
+ */
+export function reportUnattributed({ processes, reapers, isAttributed, candidateOf, notified, notice, journal }) {
+  const live = new Set()
+  for (const row of processes) {
+    if (isAttributed(row.pid)) continue
+    const pidKey = unattributedPidKey(row)
+    const seen = notified.has(pidKey)
+    const unknown = seen ? null : candidateOf(row)
+    if (!seen && !unknown) continue
+    const treeKey = `unknown-tree:${unattributedTreeKey(row.pid, processes, { reapers })}`
+    live.add(pidKey).add(treeKey)
+    if (!seen) reportOne({ row, unknown, pidKey, treeKey, notified, notice, journal })
+  }
+  for (const key of notified) if (/^unknown(?:-tree)?:/.test(key) && !live.has(key)) notified.delete(key)
+}
+
+function reportOne({ row, unknown, pidKey, treeKey, notified, notice, journal }) {
+  journal({ event: 'unattributed', pid: row.pid, argv: row.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner', tree: treeKey.slice('unknown-tree:'.length) })
+  notified.add(pidKey)
+  if (!notified.has(treeKey)) notice(treeKey, `WARNING: unattributed opencode pid=${row.pid} argv=${JSON.stringify(row.command.slice(0, 300))}; it was not killed`)
 }
