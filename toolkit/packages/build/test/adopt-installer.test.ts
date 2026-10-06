@@ -71,6 +71,7 @@ function copiedPlugin(): { script: string; spec: string } {
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(plugin, 'bin/lib/remedy-quote.mjs'))
   mkdirSync(join(plugin, 'bin/lib/host'))
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(plugin, 'bin/lib/host/adopt-placement.mjs'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), join(plugin, 'bin/lib/host/adopted-script-shim.mjs'))
   return { script: join(plugin, 'skills/adopt/scripts/install.mjs'), spec: join(plugin, 'rules/wt-task-tracking-at-act.spec.json') }
 }
 function runCopied(script: string, args: string[], dir: string) {
@@ -1602,9 +1603,9 @@ describe('adopt installer — scripts set', () => {
     expect(out).toContain('wt-lane-wait.mjs: WROTE')
     expect(readFileSync(installed, 'utf8').split('\n')[1]).toMatch(/^\/\/ installed from workflow-toolbox v\d+\.\d+\.\d+/)
     expect(readFileSync(installedWait, 'utf8')).not.toContain("from './lib/lane-supervisor-core.mjs'")
-    expect(readFileSync(installedWait, 'utf8')).toContain('plugin is too old for this adopted waiter')
+    expect(readFileSync(installedWait, 'utf8')).toContain('process.execve')
     expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: UP-TO-DATE')
-    const help = spawnSync(process.execPath, [installed, '--help'], { encoding: 'utf8' })
+    const help = spawnSync(process.execPath, [installed, '--help'], { encoding: 'utf8', env: INSTALLER_ENV })
     expect(help.status, help.stderr).toBe(0)
     const waitHelp = spawnSync(process.execPath, [installedWait, '--help'], { encoding: 'utf8', env: INSTALLER_ENV })
     expect(waitHelp.status, waitHelp.stderr).toBe(0)
@@ -1612,181 +1613,23 @@ describe('adopt installer — scripts set', () => {
     expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: EDITED')
   })
 
-  it('an adopted launcher against a plugin root without the lane host module still answers --help and refuses a launch by name, never with a module error', () => {
+  it('an adopted shim without a usable plugin answers --help and refuses execution on both streams', () => {
     const d = mkDir()
     run(['--set', 'scripts', '--install'], d)
-    // An installed plugin one release older: every runtime module except the lane host module.
     const olderRoot = mkDir()
-    cpSync(join(REPO_ROOT, 'plugin', 'bin'), join(olderRoot, 'bin'), { recursive: true })
-    rmSync(join(olderRoot, 'bin', 'lib', 'host', 'lane-host-dir.mjs'))
-    // The older release's sandbox module predates the lane host module and does not import it.
-    const sandboxModule = join(olderRoot, 'bin', 'lib', 'host', 'lane-sandbox.mjs')
-    const importLine = "import { laneHostStateRoot } from './lane-host-dir.mjs'\n"
-    expect(readFileSync(sandboxModule, 'utf8')).toContain(importLine)
-    writeFileSync(sandboxModule, readFileSync(sandboxModule, 'utf8').replace(importLine, "const laneHostStateRoot = () => '/nonexistent/wt-lane-host'\n"))
-    const env = { ...process.env, CLAUDE_PLUGIN_ROOT: olderRoot, WT_PLUGIN_ROOT: '' }
+    const env = { ...INSTALLER_ENV, CLAUDE_PLUGIN_ROOT: olderRoot, WT_PLUGIN_ROOT: undefined }
     const help = spawnSync(process.execPath, [join(d, 'wt-lane.mjs'), '--help'], { encoding: 'utf8', env })
     expect(help.stderr).not.toContain('ERR_MODULE_NOT_FOUND')
     expect(help.status, help.stderr).toBe(0)
+    expect(help.stdout).toContain('plugin not found')
     const brief = join(d, 'brief.md')
     writeFileSync(brief, '# brief\n')
     const launch = spawnSync(process.execPath, [join(d, 'wt-lane.mjs'), '--dir', d, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env })
     expect(launch.stderr).not.toContain('ERR_MODULE_NOT_FOUND')
-    expect(launch.status).not.toBe(0)
-    expect(launch.stderr).toMatch(/older or incompatible|unavailable/)
-  })
-})
-
-// An adopted script imports its libraries from the INSTALLED plugin at run time, so adopting it from a
-// source tree ahead of that plugin pairs new code with old libraries. --install must refuse that pair
-// before writing anything; --allow-ahead installs it and leaves the deviation in the banner.
-describe('adopt installer — scripts set refuses a source tree ahead of the installed plugin', () => {
-  const SOURCE_VERSION = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8')).version as string
-  // A plugin root as the cache holds it, for the parts the check reads: the run-time tree, the
-  // installer named in the remedy, and the manifest (omitted when version is null).
-  function installedFixture(version: string | null): string {
-    const root = mkDir()
-    for (const rel of ['bin', 'pricing', 'skills/adopt/scripts']) cpSync(join(REPO_ROOT, 'plugin', rel), join(root, rel), { recursive: true })
-    if (version !== null) {
-      mkdirSync(join(root, '.claude-plugin'))
-      writeFileSync(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'workflow-toolbox', version }))
-    }
-    return root
-  }
-  function registryConfig(installPath: string, key = 'workflow-toolbox@workflow-toolbox'): string {
-    const config = mkDir()
-    mkdirSync(join(config, 'plugins'))
-    writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { [key]: [{ scope: 'user', installPath }] } }))
-    return config
-  }
-  function runWith(args: string[], dir: string, installedRoot: string, extraEnv: NodeJS.ProcessEnv = {}) {
-    const env = { ...INSTALLER_ENV, CLAUDE_PLUGIN_ROOT: installedRoot, WT_PLUGIN_ROOT: '', ...extraEnv }
-    const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8', env })
-    return { status: res.status, out: (res.stdout ?? '') + (res.stderr ?? '') }
-  }
-  const banner = (dir: string, file = 'wt-lane.mjs') => readFileSync(join(dir, file), 'utf8').split('\n')[1]
-
-  it('refuses --install from a tree whose version is ahead, names both versions and the clearing commands, and writes nothing', () => {
-    const d = mkDir()
-    const installed = installedFixture('0.0.1')
-    const res = runWith(['--set', 'scripts', '--install'], d, '', { CLAUDE_CONFIG_DIR: registryConfig(installed) })
-    expect(res.status, res.out).toBe(1)
-    expect(res.out).toContain(`this source tree is v${SOURCE_VERSION}`)
-    expect(res.out).toContain('is v0.0.1')
-    expect(res.out).toContain(`claude plugin update ${remedyWord('workflow-toolbox@workflow-toolbox')}`)
-    expect(res.out).toContain(remedyWord(join(installed, 'skills', 'adopt', 'scripts', 'install.mjs')))
-    expect(res.out).toContain(`${remedyWord('--allow-ahead')}`)
-    expect(existsSync(join(d, 'wt-lane.mjs'))).toBe(false)
-    expect(existsSync(join(d, 'wt-lane-wait.mjs'))).toBe(false)
-  })
-
-  it('the printed clearing commands run as printed: the installed installer and the --allow-ahead re-run both succeed', () => {
-    const d = mkDir()
-    const installed = installedFixture('0.0.1')
-    const env = { ...INSTALLER_ENV, CLAUDE_PLUGIN_ROOT: installed, WT_PLUGIN_ROOT: '' }
-    const refused = spawnSync(process.execPath, [SCRIPT, '--set', 'scripts', '--install', '--dir', d], { encoding: 'utf8', env })
-    expect(refused.status).toBe(1)
-    const commands = (refused.stdout ?? '').split('\n').filter((line) => /^ {4}\d\. /.test(line)).map((line) => line.replace(/^.*?: (?='[^']*node)/, ''))
-    const pasteable = commands.filter((line) => line.startsWith("'"))
-    expect(pasteable).toHaveLength(2)
-    for (const command of pasteable) {
-      const ran = spawnSync('sh', ['-c', command], { encoding: 'utf8', env })
-      expect(ran.status, `${command}\n${ran.stdout}${ran.stderr}`).toBe(0)
-    }
-    expect(banner(d)).toContain('ALLOW-AHEAD')
-  })
-
-  it('--allow-ahead installs the ahead set and records the installed version in each banner, which still reads clean', () => {
-    const d = mkDir()
-    const res = runWith(['--set', 'scripts', '--install', '--allow-ahead'], d, installedFixture('0.0.1'))
-    expect(res.status, res.out).toBe(0)
-    expect(res.out).toContain('wt-lane.mjs: WROTE')
-    for (const file of ['wt-lane.mjs', 'wt-lane-wait.mjs']) {
-      expect(banner(d, file)).toMatch(new RegExp(`^// installed from workflow-toolbox v${SOURCE_VERSION.replace(/\./g, '\\.')} · content sha256:[0-9a-f]{12} by the adopt skill`))
-      expect(banner(d, file)).toContain('ALLOW-AHEAD: installed plugin was v0.0.1')
-    }
-    expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: UP-TO-DATE')
-  })
-
-  it('refuses when the installed plugin version cannot be read', () => {
-    const d = mkDir()
-    const res = runWith(['--set', 'scripts', '--install'], d, installedFixture(null))
-    expect(res.status, res.out).toBe(1)
-    expect(res.out).toContain('could not be read')
-    expect(existsSync(join(d, 'wt-lane.mjs'))).toBe(false)
-  })
-
-  it('at an equal version, refuses any run-time tree difference — imported module, spawned helper, extra file — and ignores line endings', () => {
-    expect(runWith(['--set', 'scripts', '--install'], mkDir(), installedFixture(SOURCE_VERSION)).status).toBe(0)
-    const differing: Array<[string, (root: string) => void]> = [
-      ['bin/lib/lane-model-allowlist.mjs', (root) => writeFileSync(join(root, 'bin/lib/lane-model-allowlist.mjs'), readFileSync(join(root, 'bin/lib/lane-model-allowlist.mjs'), 'utf8') + '\n// older\n')],
-      ['bin/lib/host/lane-suite-lock-broker.mjs', (root) => writeFileSync(join(root, 'bin/lib/host/lane-suite-lock-broker.mjs'), readFileSync(join(root, 'bin/lib/host/lane-suite-lock-broker.mjs'), 'utf8') + '\n// older\n')],
-      ['bin/lib/only-in-the-installed-tree.mjs', (root) => writeFileSync(join(root, 'bin/lib/only-in-the-installed-tree.mjs'), 'export {}\n')],
-    ]
-    for (const [rel, mutate] of differing) {
-      const installed = installedFixture(SOURCE_VERSION)
-      mutate(installed)
-      const d = mkDir()
-      const res = runWith(['--set', 'scripts', '--install'], d, installed)
-      expect(res.status, res.out).toBe(1)
-      expect(res.out).toContain(`but ${rel} differs`)
-      expect(existsSync(join(d, 'wt-lane.mjs'))).toBe(false)
-    }
-    const crlf = installedFixture(SOURCE_VERSION)
-    const loaded = join(crlf, 'bin', 'lib', 'lane-model-allowlist.mjs')
-    writeFileSync(loaded, readFileSync(loaded, 'utf8').replace(/\n/g, '\r\n'))
-    const res = runWith(['--set', 'scripts', '--install'], mkDir(), crlf)
-    expect(res.status, res.out).toBe(0)
-  })
-
-  it('checks every root the adopted scripts may resolve: an older registry install refuses even when CLAUDE_PLUGIN_ROOT matches, and names its registry key', () => {
-    const d = mkDir()
-    const config = registryConfig(installedFixture('0.0.1'), 'workflow-toolbox@my-market')
-    const res = runWith(['--set', 'scripts', '--install'], d, installedFixture(SOURCE_VERSION), { CLAUDE_CONFIG_DIR: config })
-    expect(res.status, res.out).toBe(1)
-    expect(res.out).toContain('is v0.0.1')
-    expect(res.out).toContain(`claude plugin update ${remedyWord('workflow-toolbox@my-market')}`)
-    expect(existsSync(join(d, 'wt-lane.mjs'))).toBe(false)
-  })
-
-  it('checks the registry of the config dir that owns the target scripts dir, not only the active one', () => {
-    const otherProfile = registryConfig(installedFixture('0.0.1'))
-    const target = join(otherProfile, 'scripts')
-    const res = runWith(['--set', 'scripts', '--install'], target, installedFixture(SOURCE_VERSION))
-    expect(res.status, res.out).toBe(1)
-    expect(res.out).toContain(`the installed-plugin registry of ${otherProfile}`)
-    expect(existsSync(join(target, 'wt-lane.mjs'))).toBe(false)
-  })
-
-  it('an environment root unknown to any registry gets a remedy for that root, not a registry update', () => {
-    const res = runWith(['--set', 'scripts', '--install'], mkDir(), installedFixture('0.0.1'))
-    expect(res.status, res.out).toBe(1)
-    expect(res.out).toContain('is not a registry install')
-    expect(res.out).not.toContain('claude plugin update')
-  })
-
-  it('--allow-ahead stamps the trace on an unchanged copy, and a later in-step install removes it', () => {
-    const d = mkDir()
-    expect(runWith(['--set', 'scripts', '--install'], d, installedFixture(SOURCE_VERSION)).status).toBe(0)
-    const body = () => readFileSync(join(d, 'wt-lane.mjs'), 'utf8').split('\n').slice(2).join('\n')
-    const before = body()
-    const ahead = runWith(['--set', 'scripts', '--install', '--allow-ahead'], d, installedFixture('0.0.1'))
-    expect(ahead.status, ahead.out).toBe(0)
-    expect(banner(d)).toContain('ALLOW-AHEAD: installed plugin was v0.0.1')
-    expect(body()).toBe(before)
-    const back = runWith(['--set', 'scripts', '--install'], d, installedFixture(SOURCE_VERSION))
-    expect(back.status, back.out).toBe(0)
-    expect(banner(d)).not.toContain('ALLOW-AHEAD')
-    expect(body()).toBe(before)
-  })
-
-  it('leaves the rules set and --check untouched by the check', () => {
-    const installed = installedFixture('0.0.1')
-    const rules = runWith(['--set', 'rules', '--install'], mkDir(), installed)
-    expect(rules.status, rules.out).toBe(0)
-    const check = runWith(['--set', 'scripts', '--check'], mkDir(), installed)
-    expect(check.status, check.out).toBe(0)
-    expect(check.out).not.toContain('ALLOW-AHEAD')
+    expect(launch.status).toBe(2)
+    expect(launch.stdout).toBe(launch.stderr)
+    expect(launch.stderr).toContain(olderRoot)
+    expect(launch.stderr).toContain('manifest missing or invalid')
   })
 })
 
@@ -2190,14 +2033,14 @@ describe('adopt installer — a flag with no effect in the resolved mode is REFU
       .filter((s): s is string => s.length > 0)
     expect(allSets.length).toBeGreaterThan(1) // else this test proves nothing
 
-    const scoped = [...table.matchAll(/(\w+): \{ cli: '([^']+)'[^}]*?sets: \[([^\]]+)\]/g)]
-      .map((m) => ({ cli: m[2] ?? '', sets: (m[3] ?? '').split(',').map((s) => s.trim().replace(/'/g, '')) }))
+    const scoped = [...table.matchAll(/(\w+): \{ cli: '([^']+)', modes: \['([^']+)'[^\]]*\][^}]*?sets: \[([^\]]+)\]/g)]
+      .map((m) => ({ cli: m[2] ?? '', mode: m[3] ?? '', sets: (m[4] ?? '').split(',').map((s) => s.trim().replace(/'/g, '')) }))
     expect(scoped.length).toBeGreaterThan(0) // else the mechanism silently vanished
 
-    for (const { cli, sets } of scoped) {
+    for (const { cli, mode, sets } of scoped) {
       for (const s of allSets.filter((x) => !sets.includes(x))) {
         const d = mkDir()
-        const res = runRaw(['--audit-overlap', '--set', s, '--user-dir', d, cli, join(d, 'x.json')])
+        const res = runRaw([`--${mode}`, '--set', s, mode === 'audit-overlap' ? '--user-dir' : '--dir', d, cli, join(d, 'x.json')])
         expect(res.status, `${cli} with --set ${s} must be refused`).not.toBe(0)
         expect(res.out).toContain(cli)
         expect(res.out).toContain(`--set ${s}`)
@@ -2294,6 +2137,7 @@ function makePluginCopy(version = '0.0.1'): { pluginRoot: string; script: string
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(pluginRoot, 'bin/lib/remedy-quote.mjs'))
   mkdirSync(join(pluginRoot, 'bin/lib/host'))
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(pluginRoot, 'bin/lib/host/adopt-placement.mjs'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), join(pluginRoot, 'bin/lib/host/adopted-script-shim.mjs'))
   return { pluginRoot, script: join(scriptDir, 'install.mjs'), agentsDir: join(pluginRoot, 'agents') }
 }
 

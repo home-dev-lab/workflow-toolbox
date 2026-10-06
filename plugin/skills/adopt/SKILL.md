@@ -131,16 +131,14 @@ backward compatibility):
 When adopting into a project that already has rules, reconcile first — see the
 "Reconciling your existing project rules" section in `../../rules/README.md`.
 
-- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --check`
+- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|autonomy|scripts|all> --check`
+- **Fail on script drift (read-only):** `node scripts/install.mjs --set scripts --check --global --fail-on-drift`. The four script items are thin launchers for the installed plugin, not copies of its bodies. Stale/edited managed shims, symlinked scripts (including dangling links), hand-authored files under shipped names, and missing canonical targets fail this check; absent items mean not adopted and do not fail. Preserve a symlink's destination before using `--install --replace-symlinks` to install a regular managed copy. A hand-authored file is never overwritten, even with `--force`: preserve and move it to a backup before adopting that name.
+
+Script resolution uses the first present candidate: explicit `WT_PLUGIN_ROOT`, otherwise the highest-priority applicable installed-plugin registry entry, otherwise `CLAUDE_PLUGIN_ROOT`. A broken selected candidate refuses; it never falls through to another installation. Only `user` scope applies globally; `project`/`local` entries apply in their canonical project directory and descendants, taking priority over user entries. Equal ranks keep registry order. Root and registry project paths must be absolute. The check verifies canonical target existence, not whether Node can load its imports; direct execution has the same load failures and follows the same target symlinks.
 - **Inspect an edited copy (read-only):** `node scripts/install.mjs --set <set> --diff <file> --dir <found-directory>`
   prints the journalled text as adopted, the local text, and the currently shipped text.
 - **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
-- **Adopt scripts ahead of the installed plugin (deliberate):** `--install` refuses a `scripts` set
-  whose source is newer than, or at the same version but with different libraries from, any
-  plugin root the adopted scripts load at run time, and prints the commands that clear it. Add
-  `--allow-ahead` only when you develop the scripts and the plugin together; each banner then
-  records the installed version it was adopted against. The other sets are not checked.
 - **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
   use set-wide `--force` when the three-way decision covered only one file.
 - **Resolve an on-demand trigger finding:** run the exact printed `--set rules --install
