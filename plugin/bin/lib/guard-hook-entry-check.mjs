@@ -11,7 +11,7 @@
 // 2.1.289 binary). This is not the host's schema: an entry it passes can still be refused, which is why the host
 // validator keeps running wherever the binary exists. Pure: no file system, no process, no platform dependency.
 
-export const GUARD_HOOK_EVENTS = ['PreToolUse', 'PermissionRequest']
+const GUARD_HOOK_EVENTS = ['PreToolUse', 'PermissionRequest']
 
 // The handler types hooks.md documents. An unknown type was measured to drop the whole source.
 const HOOK_TYPES = ['command', 'http', 'mcp_tool', 'prompt', 'agent']
