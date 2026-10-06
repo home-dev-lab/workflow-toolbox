@@ -161,6 +161,9 @@ test('project daily rollback records reverted nested source and rate, dry run do
   const f = await fixture(t);
   const spec = { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'check', check: 'agent-model' } };
   await migrateRule(f.project, 'nested/alpha.md', spec, {});
+  // This record/cutoff lock concerns legacy compliance rollback, not provisional discovery.
+  const ledger = join(f.project, '.claude/rules-on-demand-ledger.jsonl');
+  await writeFile(ledger, JSON.stringify({ ...JSON.parse(await readFile(ledger, 'utf8')), state: undefined }) + '\n');
   await writeFile(join(f.rules, 'new.md'), 'New\n');
   await writeFile(f.record, JSON.stringify({ version: 1, rules: { 'changed.md': { sha256: hash('Before\n'), state: 'static', reason: 'old' } } }));
   await writeFile(join(f.rules, 'changed.md'), 'After\n');

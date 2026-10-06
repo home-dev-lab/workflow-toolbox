@@ -5,8 +5,10 @@ import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMPLIANCE_KEYS, TRIGGER_KEYS, assertKnownKeys, parseRuntimeRule } from '../hooks/runtime-rule.js';
-import { ruleDirectories } from '../paths.js';
+import { ruleDirectories, configDirectory } from '../paths.js';
 import { safeRegex } from '../hooks/evidence.js';
+import { provisionalMigration, observedServe } from './serve-confirmation.mjs';
+import { additionalMigrationProfiles, captureProfileIdentities, validatedMigrationProfiles } from './profile-identities.mjs';
 
 export const STATIC_DIR = join('.claude', 'rules');
 export const DEMAND_DIR = join('.claude', 'rules-on-demand');
@@ -190,9 +192,11 @@ export async function migrationPreflight(root, rule, spec, scope = 'project') {
   const paths = rulePaths(root, rule, scope);
   const body = await readFile(paths.source, 'utf8');
   if (body.startsWith('---\n') || body.startsWith('---\r\n')) throw new Error('source rule already has frontmatter; refusing to alter its body');
-  const rendered = `${frontmatter(spec)}${body}`;
+  const generation = randomUUID();
+  const generated = frontmatter(spec).replace('\n---\n', () => `\n# migration-generation: ${generation}\n---\n`);
+  const rendered = `${generated}${body}`;
   parseRuntimeRule(paths.name, rendered);
-  return { paths, body, rendered };
+  return { paths, body, rendered, generation };
 }
 
 export function stripGeneratedFrontmatter(text) {
@@ -299,6 +303,7 @@ async function planMirrors(root, from, to, mirrorDirs, scope, direction, name) {
     const mirrorTo = resolve(mirrorDir, relative(root, to));
     const sharedFrom = fromDirectory !== null && await realOrNull(dirname(mirrorFrom)) === fromDirectory;
     const sharedTo = toDirectory !== null && await realOrNull(dirname(mirrorTo)) === toDirectory;
+    if (direction === 'migrate' && sharedFrom && !sharedTo) throw new Error(`mirror ${mirrorDir}: shared rules with separate rules-on-demand would lose the migrated rule; share both directories or use a separate static directory with per-file links before migrating`);
     let removeLink = false;
     if (!sharedFrom) {
       const info = await lstat(mirrorFrom).catch((error) => error.code === 'ENOENT' || error.code === 'ENOTDIR' ? null : Promise.reject(error));
@@ -314,7 +319,7 @@ async function planMirrors(root, from, to, mirrorDirs, scope, direction, name) {
     const hadLink = removeLink || (direction === 'revert' && (migration?.mirrors ?? []).some((mirror) => mirror?.from === mirrorTo));
     const createLink = !sharedTo && hadLink;
     if (createLink && await lstat(mirrorTo).catch(() => null)) throw new Error(`mirror ${mirrorDir}: ${mirrorTo} already exists; refusing to overwrite it`);
-    if (removeLink || createLink) plans.push({ from: removeLink ? mirrorFrom : null, to: createLink ? mirrorTo : null, target: to });
+    if (removeLink || createLink || sharedFrom) plans.push({ from: removeLink ? mirrorFrom : null, to: createLink ? mirrorTo : null, target: to, profile: resolve(mirrorDir), sharedFrom, removeLink });
   }
   return plans;
 }
@@ -458,23 +463,32 @@ async function withScopeLock(root, scope, fn) {
   }
 }
 
-export async function migrateRule(root, rule, spec, proof, { scope = 'project', mirrorDirs = [], io } = {}) {
+export async function migrateRule(root, rule, spec, proof, { scope = 'project', mirrorDirs = [], configDir = configDirectory(process.env), profileDirs = [], io } = {}) {
  return withScopeLock(root, scope, async () => {
-     const { paths, body, rendered } = await migrationPreflight(root, rule, spec, scope);
-   const mirrorPlans = await planMirrors(root, paths.source, paths.destination, mirrorDirs, scope, 'migrate', paths.name);
+     const { paths, body, rendered, generation } = await migrationPreflight(root, rule, spec, scope);
+    const mirrorPlans = await planMirrors(root, paths.source, paths.destination, mirrorDirs, scope, 'migrate', paths.name);
+    const profiles = scope === 'user'
+      ? [...new Set([resolve(root), ...mirrorPlans.filter((plan) => plan.sharedFrom || plan.removeLink).map((plan) => plan.profile)])]
+      : [...new Set([...(configDir ? [resolve(configDir)] : []), ...profileDirs.map((dir) => resolve(dir))])];
+    const profileIdentities = await captureProfileIdentities(profiles);
     await transaction(root, scope, paths.source, paths.destination, rendered, mirrorPlans, { entry: {
-    action: 'migrate', scope, rule: paths.name,
+     action: 'migrate', scope, rule: paths.name,
     from: ledgerPath(root, paths.source), to: ledgerPath(root, paths.destination),
     mirrors: mirrorPlans.map((plan) => ({ from: plan.from, to: plan.to })),
-     triggersHash: triggersHash(spec.triggers), ...proof, bodyHash: createHash('sha256').update(body).digest('hex'),
+      triggersHash: triggersHash(spec.triggers), ...proof, bodyHash: createHash('sha256').update(body).digest('hex'),
+        state: 'provisional', generation, profiles, profileIdentities,
      }, io });
    return paths;
  });
 }
 
 export async function revertRule(root, rule, reason = 'manual', { scope = 'project', mirrorDirs = [] } = {}) {
- return withScopeLock(root, scope, async () => {
+ return withScopeLock(root, scope, () => revertCore(root, rule, reason, { scope, mirrorDirs }));
+}
+
+async function revertCore(root, rule, reason, { scope, mirrorDirs }) {
   const paths = await revertPaths(root, rule, scope);
+  mirrorDirs = await restorationMirrors(root, paths.name, scope, mirrorDirs);
   let migrated;
   try { migrated = await readFile(paths.destination, 'utf8'); } catch (error) {
     if (error.code === 'ENOENT') return { ...paths, changed: false };
@@ -487,8 +501,80 @@ export async function revertRule(root, rule, reason = 'manual', { scope = 'proje
     from: ledgerPath(root, paths.destination), to: ledgerPath(root, paths.source),
     mirrors: mirrorPlans.map((plan) => ({ from: plan.from, to: plan.to })), reason,
     } });
-    return { ...paths, changed: true };
- });
+     return { ...paths, changed: true };
+}
+
+function restorationProfiles(migration) {
+  const recorded = [...(migration?.profiles ?? [])];
+  // Older migrate rows have mirrors but no profiles; recover each static layout's owning config dir too.
+  const suffix = `/${migration?.from ?? ''}`;
+  for (const mirror of migration?.mirrors ?? []) if (typeof mirror.from === 'string' && mirror.from.replaceAll('\\', '/').endsWith(suffix)) recorded.push(mirror.from.replaceAll('\\', '/').slice(0, -suffix.length));
+  return recorded;
+}
+
+async function restorationMirrors(root, name, scope, supplied) {
+  if (scope !== 'user') return supplied;
+  const recorded = restorationProfiles(await lastMigration(root, name, scope));
+  const primary = await realpath(root), dirs = [], seen = new Set([primary]);
+  for (const dir of new Set([...recorded, ...supplied])) {
+    if (!(await stat(dir)).isDirectory()) throw new Error(`recorded profile missing: ${dir}`);
+    const physical = await realpath(dir);
+    if (!seen.has(physical)) { seen.add(physical); dirs.push(dir); }
+  }
+  return dirs;
+}
+
+async function currentProvisional(root, name, scope) {
+  const text = await readFile(ledgerPathOf(root, scope), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
+  return provisionalMigration(text, name);
+}
+
+export async function requireMigrationProfiles(root, name, migratedAt, generation, profiles, { scope = 'project' } = {}) {
+  return withScopeLock(root, scope, async () => {
+    const migration = await currentProvisional(root, name, scope);
+    if (!migration || migration.migratedAt !== migratedAt || migration.generation !== generation) return { changed: false, skipped: 'state changed' };
+    if (scope !== 'project' || !generation) return { changed: false };
+    const added = additionalMigrationProfiles(migration, profiles);
+    if (!added.length) return { changed: false };
+    const profileIdentities = await captureProfileIdentities(added);
+    await ledger(root, { action: 'require', scope, rule: name, migratedAt, generation, profiles: added, profileIdentities }, scope);
+    return { changed: true };
+  });
+}
+
+function completeServeEvidence(migration, profiles, generation, migratedAt) {
+  return migration.generation && generation === migration.generation && Array.isArray(profiles) && profiles.length
+    && !profiles.some((row) => row.generation !== migration.generation || row.state !== 'served' || !observedServe({ id: row }, 'id', migratedAt));
+}
+
+export async function confirmMigration(root, name, migratedAt, evidence, { scope = 'project' } = {}) {
+  return withScopeLock(root, scope, async () => {
+    const migration = await currentProvisional(root, name, scope);
+    if (!migration || migration.migratedAt !== migratedAt) return { changed: false, skipped: 'state changed' };
+    const profiles = evidence?.profiles, generation = evidence?.generation;
+    if (!completeServeEvidence(migration, profiles, generation, migratedAt)) return { changed: false, skipped: 'serve evidence incomplete' };
+    {
+      let expected;
+      try { expected = await validatedMigrationProfiles(migration); }
+      catch (error) { return { changed: false, skipped: error.message }; }
+      const actual = await Promise.all(profiles.map((row) => realpath(row.dir)));
+      if (!expected.length || expected.some((dir) => !actual.includes(dir))) return { changed: false, skipped: 'serve evidence incomplete' };
+    }
+    const servedAt = profiles.map((row) => row.servedAt).sort((a, b) => Date.parse(b) - Date.parse(a))[0];
+    await ledger(root, { action: 'confirm', scope, rule: name, migratedAt, generation, servedAt, profiles }, scope);
+    return { changed: true };
+  });
+}
+
+export async function revertIfStillProvisional(root, name, migratedAt, reason, { scope = 'project', mirrorDirs = [] } = {}) {
+  return withScopeLock(root, scope, async () => {
+    const migration = await currentProvisional(root, name, scope);
+    if (!migration || migration.migratedAt !== migratedAt) return { changed: false, skipped: 'state changed' };
+    const profiles = scope === 'user' ? migration.profiles : [];
+    if (scope === 'user' && (!Array.isArray(profiles) || !profiles.length)) return { changed: false, skipped: 'migration profiles unknown' };
+    for (const dir of profiles) if (!(await stat(dir)).isDirectory()) throw new Error(`recorded profile missing: ${dir}`);
+    return revertCore(root, name, reason, { scope, mirrorDirs });
+  });
 }
 
 export async function retireRule(root, rule, reason, { scope = 'project', mirrorDirs = [] } = {}) {

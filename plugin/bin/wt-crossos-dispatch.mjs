@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { handleHelpFlag } from './lib/cli-help.mjs'
 import { dispatch } from './lib/crossos-dispatch.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 
@@ -14,7 +15,11 @@ Usage: node plugin/bin/wt-crossos-dispatch.mjs <decide|run|collect|release-check
 `
 
 if (isInvokedDirectly(import.meta.url)) {
-  process.exitCode = process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')
-    ? (console.log(HELP), 0)
-    : await dispatch(process.argv.slice(2))
+  // `release-check --ref --help` is a guard whose exit 0 means "released": --help is help only in
+  // flag position, and --dry-run is the one option of this CLI that takes no value.
+  handleHelpFlag(process.argv.slice(2), HELP, {
+    valueFlags: ['--merge', '--repo', '--paths-file', '--remote', '--workflow', '--repo-slug', '--timeout-min', '--evidence-dir', '--ref', '--base'],
+    booleanFlags: ['--dry-run'],
+  })
+  process.exitCode = await dispatch(process.argv.slice(2))
 }

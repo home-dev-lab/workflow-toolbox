@@ -11,6 +11,8 @@ import { measureRules, ruleId } from './quality-measures.mjs';
 import { createHash } from 'node:crypto';
 import { rollbackArchiveDirectory } from './rollback-input-paths.mjs';
 import { readStoreArchives, reportUnreadable, withArchivedSessions } from './store-archives.mjs';
+import { serveWindowHours } from './serve-confirmation.mjs';
+import { rollbackWindowArgs } from './daily-provisional.mjs';
 
 export async function measureInputs(configDirs, scopes, target) {
   const stores = [];
@@ -32,7 +34,7 @@ export async function measureInputs(configDirs, scopes, target) {
     // Contexts the hook moved out of an over-budget store are summed back with the live ones of this profile. The store
     // was read above, before this directory is listed (store-archives.mjs).
     const { archives, unreadable } = await readStoreArchives(rollbackArchiveDirectory(config));
-    unreadableArchives.push(...reportUnreadable('quality-check', unreadable));
+    for (const entry of reportUnreadable('quality-check', unreadable)) unreadableArchives.push(entry);
     if (item && archives.length) item.sessions = withArchivedSessions(archives, item.sessions);
     profiles.push({ configDir: config, recorded: !!item?.health, health: item?.health ?? null, sessions: item ? item.sessions ?? {} : withArchivedSessions(archives, {}) });
   }
@@ -80,13 +82,13 @@ export async function measureInputs(configDirs, scopes, target) {
       total.maxMs = Math.max(total.maxMs, counts.maxMs ?? 0);
       health.days[day] = total;
     }
-    health.lastErrors.push(...item.health.lastErrors ?? []);
+    for (const error of item.health.lastErrors ?? []) health.lastErrors.push(error);
   }
   return { ledger, previousState, pluginRulesDir,
     store: { health, profiles, sessions: Object.assign({}, ...stores.map((item) => item.sessions ?? {})), unreadableArchives }, storeBytes: stores.length ? storeBytes : null };
 }
 
-export async function qualityCheck({ configDirs, projectsDirs, project, followedRoots = [], dataDir, days = 7, since, volume = 20, verdictPath: privateVerdictPath }) {
+export async function qualityCheck({ configDirs, projectsDirs, project, followedRoots = [], dataDir, days = 7, since, volume = 20, verdictPath: privateVerdictPath, serveWindowHours: windowHours }) {
   const target = await assertSafeDataDir(dataDir ?? qualityDataDir(configDirs[0]));
   await mkdir(target, { recursive: true });
   const latest = join(target, 'latest.json');
@@ -120,7 +122,7 @@ export async function qualityCheck({ configDirs, projectsDirs, project, followed
     }
        const runNow = Date.now();
        const initial = await scanTranscripts({ projectsDirs, scopes, days, since, now: runNow, collect: true, discoverProjects: true, nonProofNames: process.env.WT_ROD_NON_PROOF_NAMES?.split(',').filter(Boolean) ?? [] });
-    if (!initial.stats.filesRead) throw new Error(`0 transcript files read; skipped ${initial.stats.skipped.length}: ${initial.stats.skipped.join('; ')}`);
+     if (!initial.stats.filesRead) throw new Error(`0 transcript files read; files failed: ${initial.stats.filesFailed}; errors: ${initial.stats.errors.join('; ')}; skipped ${initial.stats.skipped.length}: ${initial.stats.skipped.join('; ')}`);
     const rows = initial.rows;
     const date = new Date().toISOString().slice(0, 10);
      const verdictPath = privateVerdictPath ?? join(target, `verdicts-${date}.jsonl`);
@@ -130,11 +132,12 @@ export async function qualityCheck({ configDirs, projectsDirs, project, followed
     for (const scope of initial.scopes) {
       // The only invocation site of rollback-check: ALWAYS a dry-run, including on errors and all project scopes.
       const args = [fileURLToPath(new URL('./rollback-check.mjs', import.meta.url)), '--dry-run', '--json', '--verdicts', verdictPath,
-          ...(scope.scope === 'user' ? ['--user', '--config-dir', resolve(scope.rulesDir, '..')] : ['--project', scope.projectRoot])];
+          ...(scope.scope === 'user' ? ['--user', '--config-dir', resolve(scope.rulesDir, '..')] : ['--project', scope.projectRoot, ...configDirs.flatMap((dir) => ['--profile-dir', dir])]),
+          ...rollbackWindowArgs({ serveWindowHours: windowHours })];
       const run = spawnSync(process.execPath, args, { encoding: 'utf8' });
       if (run.status !== 0) throw new Error(`rollback-check ${scope.rulesDir}: ${run.stderr || run.stdout}`);
-      rollback.push(...JSON.parse(run.stdout));
-      rollbackNotes.push(...run.stderr.split('\n').filter((line) => line.startsWith('rollback-check:')));
+      for (const outcome of JSON.parse(run.stdout)) rollback.push(outcome);
+      for (const line of run.stderr.split('\n').filter((line) => line.startsWith('rollback-check:'))) rollbackNotes.push(line);
     }
       const latestMigration = new Map();
       let malformedLedgerLines = 0;
@@ -187,7 +190,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       if (arg === '--config-dir') options.configDirs.push(resolve(process.argv[++i]));
       else if (arg === '--projects-dir') options.projectsDirs.push(resolve(process.argv[++i]));
       else if (arg === '--project') options.project = resolve(process.argv[++i]);
-      else if (arg === '--data-dir') options.dataDir = resolve(process.argv[++i]);
+       else if (arg === '--data-dir') options.dataDir = resolve(process.argv[++i]);
+       else if (arg === '--serve-window-hours') options.serveWindowHours = serveWindowHours(process.argv[++i] ?? NaN);
        else if (arg === '--days') options.days = Number(process.argv[++i]);
         else if (arg === '--since') options.since = process.argv[++i];
        else if (arg === '--volume') options.volume = Number(process.argv[++i]);

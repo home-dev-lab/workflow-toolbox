@@ -25,7 +25,7 @@ function parseLine(line, strict) {
 // string limit and the heap; nothing here materialises the whole file. Memory kept is the
 // records `project` returns, and `accept` may reject a raw line before it is decoded at all.
 // cursor: { offset, tailBytes, records } — offset includes the unterminated tail held in tailBytes.
-export function advanceJsonl(file, cursor, { strict = true, accept = null, project = null } = {}) {
+function advanceJsonl(file, cursor, { strict = true, accept = null, project = null } = {}) {
   const fd = fs.openSync(file, 'r')
   try {
     const size = fs.fstatSync(fd).size

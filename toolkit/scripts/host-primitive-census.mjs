@@ -24,8 +24,10 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // The board-pointer walk and the worktree remover's canonical path moved into host/board-pointer.mjs; the
 // retention helpers read the platform from host/platform.mjs.
 // The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs.
+// The adopt installer dropped its script import-rewrite transform (one readFileSync, one homedir) while
+// the adopt-check hook gained one lstatSync to report a symlinked script.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1893
+export const HOST_PRIMITIVE_CEILING = 1892
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

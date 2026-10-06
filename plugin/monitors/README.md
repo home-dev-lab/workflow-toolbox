@@ -84,6 +84,14 @@ The append-only version-1 JSONL journal is
 `plugin/bin/lib/plugin-data-dir.mjs`. Session-owned events are delivered on monitor stdout. A pilot
 receives its own lane event synchronously from the lifecycle result instead.
 
+The adopt `scripts` set also installs `wt-arc-watch.mjs` and `wt-quota-watch.mjs` as
+thin launchers in `<configDir>/scripts/`. They resolve the installed plugin on each start,
+so watcher bodies and libraries update together. On POSIX with `process.execve`, the shim
+keeps the same pid; older Node versions and Windows use a signal-forwarding child process.
+A missing plugin or executable is reported synchronously on monitor stdout and stderr,
+with exit 2. Check these copies with `--set scripts --check --global --fail-on-drift`;
+SessionStart also reports stale, edited, hand-authored, and target-missing copies.
+
 Supervision uses one `.lane/supervision/<runId>.json` record per run and an atomic
 `.lane/supervision/current.json` pointer. Worker and child liveness is classified centrally from each
 recorded pid+argv identity; unavailable identity evidence is `unknown`, never dead. The launcher

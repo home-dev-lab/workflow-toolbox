@@ -28,7 +28,7 @@ const ALNUM = /[A-Za-z0-9]/;
 const standsAlone = (text, at, length) => !ALNUM.test(text[at - 1] ?? '') && !ALNUM.test(text[at + length] ?? '');
 
 function withoutReferences(value) { return value.replace(REFERENCE, (reference) => ' '.repeat(reference.length)); }
-function base64Utf8(value) {
+export function base64Utf8(value) {
   let binary = '';
   for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
   return btoa(binary);

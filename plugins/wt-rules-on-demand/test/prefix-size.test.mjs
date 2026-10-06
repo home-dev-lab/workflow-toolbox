@@ -167,6 +167,23 @@ test('measureStaticPrefix checks each profile at home and at every known project
   assert.ok(report.unresolved.some((path) => path.includes('slug-blind')), 'a project whose transcript names no cwd is listed, not dropped silently');
 });
 
+// macOS reaches the temporary directory through /var -> /private/var and Windows through 8.3 short names: a root
+// found in a transcript must keep the spelling the session recorded, like every other root, or keys built from the
+// home path land mid-segment. A symlinked home reproduces that spelling difference on Linux.
+test('measureStaticPrefix reports a transcript root in the spelling the transcript recorded', async (t) => {
+  if (process.platform === 'win32') return t.skip('directory symlinks need a privilege the runner may lack; the short-name spelling covers Windows');
+  const real = await mkdtemp(join(tmpdir(), 'rod-prefix-real-'));
+  const link = `${real}-link`;
+  t.after(() => Promise.all([rm(real, { recursive: true, force: true }), rm(link, { force: true })]));
+  await symlink(real, link, 'dir');
+  const config = join(link, '.claude');
+  const other = join(link, 'work', 'other');
+  await put(join(other, 'CLAUDE.md'), 'x\n');
+  await put(join(config, 'projects', 'slug-other', 'session.jsonl'), `${JSON.stringify({ type: 'user', cwd: other })}\n`);
+  const report = await measureStaticPrefix({ configDirs: [config], home: link, top: link, days: 7, totalLimit: 60 });
+  assert.deepEqual(report.checks.map((check) => check.root).sort(), [link, other].sort());
+});
+
 test('the CLI prints one line per check and exits 4 when a check is over the limit', async (t) => {
   const { home, config, project } = await machine(t);
   const run = spawnSync(process.execPath, [cli, '--config-dir', config, '--project', project, '--home', home, '--top', home, '--limit', '51'], { encoding: 'utf8' });

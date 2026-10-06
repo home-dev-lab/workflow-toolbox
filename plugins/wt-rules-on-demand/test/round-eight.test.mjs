@@ -18,6 +18,10 @@ async function fixture(t) {
   await mkdir(join(root, '.claude/rules'), { recursive: true });
   await writeFile(join(root, '.claude/rules/sample.md'), 'Body\n');
   await migrateRule(root, 'sample.md', spec, {});
+  // These store-only delivery locks characterize rules migrated before provisional activity existed.
+  const ledgerPath = join(root, '.claude/rules-on-demand-ledger.jsonl');
+  const migration = JSON.parse((await readFile(ledgerPath, 'utf8')).trim());
+  await writeFile(ledgerPath, JSON.stringify({ ...migration, state: undefined }) + '\n');
   const rulesDir = join(root, '.claude/rules-on-demand');
   const identity = `project:${rulesDir}:sample.md`;
   const at = new Date(Date.now() + 1000).toISOString();

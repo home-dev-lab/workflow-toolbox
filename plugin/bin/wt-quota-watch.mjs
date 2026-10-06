@@ -136,7 +136,10 @@ function resolveProbePath(probeOverride) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--thresholds', '--poll', '--probe', '--timeout'],
+    booleanFlags: [],
+  })
   const relayLine = relaySkipLine('QUOTA WATCH')
   if (relayLine) {
     writeLine(relayLine)

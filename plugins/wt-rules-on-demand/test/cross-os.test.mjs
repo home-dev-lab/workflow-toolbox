@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,9 @@ async function aliasedProject(t) {
   await symlink(real, alias, 'dir');
   await writeFile(join(real, '.claude/rules/sample.md'), 'Body\n');
   await migrateRule(real, 'sample.md', spec, {});
+  // Alias/compliance compatibility is independent of provisional exposure requirements.
+  const ledger = join(real, '.claude/rules-on-demand-ledger.jsonl');
+  await writeFile(ledger, JSON.stringify({ ...JSON.parse(await readFile(ledger, 'utf8')), state: undefined }) + '\n');
   return { real, alias, aliasIdentity: `project:${join(alias, '.claude/rules-on-demand')}:sample.md` };
 }
 

@@ -18,6 +18,7 @@ describe('guard unresolved definitions', () => {
         input: JSON.stringify({ hook_event_name: 'PostToolUse', tool_name: 'Agent', cwd: dir, session_id: 's', transcript_path: path.join(dir, 'session.jsonl'), tool_input: { subagent_type: 'pilot', name: 'pilot' }, tool_response: { agent_id: 'a' } }),
         encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(dir, 'config'), WT_GUARD_JOURNAL_DIR: journal },
       })
+      expect(result.status).toBe(0)
       expect(result.stdout).toContain('unresolved')
       const entries = fs.readdirSync(journal).flatMap((file) => fs.readFileSync(path.join(journal, file), 'utf8').trim().split('\n').map((line) => JSON.parse(line)))
       expect(entries).toEqual(expect.arrayContaining([expect.objectContaining({ class: 'unresolved' })]))
@@ -26,7 +27,7 @@ describe('guard unresolved definitions', () => {
   it.each([
     ['wt-spawn-capability-guard-hook.mjs', 'Write your report to /tmp/report.md', 'PreToolUse'],
     ['wt-spawn-readonly-guard-hook.mjs', 'Investigate read-only', 'PreToolUse'],
-    ['wt-spawn-channel-guard-hook.mjs', 'Report when done', 'PreToolUse'],
+    ['wt-spawn-channel-guard-hook.mjs', 'Report via SendMessage when done', 'PreToolUse'],
     ['wt-observer-pairing-guard-hook.mjs', 'Report when done', 'PostToolUse'],
   ])('%s journals unresolved rather than silently allowing', (hook, prompt, event) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-unresolved-'))
@@ -39,6 +40,7 @@ describe('guard unresolved definitions', () => {
         input: JSON.stringify({ hook_event_name: event, tool_name: 'Agent', cwd: dir, session_id: 's', transcript_path: path.join(dir, 'session.jsonl'), tool_input: { subagent_type: 'pilot', prompt, name: 'pilot' }, tool_response: { agent_id: 'a' } }),
         encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(dir, 'config'), WT_GUARD_JOURNAL_DIR: journal },
       })
+      expect(result.status).toBe(0)
       expect(result.stdout).toContain('unresolved')
       const entries = fs.readdirSync(journal).flatMap((file) => fs.readFileSync(path.join(journal, file), 'utf8').trim().split('\n').map((line) => JSON.parse(line)))
       expect(entries).toEqual(expect.arrayContaining([expect.objectContaining({ class: 'unresolved' })]))
@@ -56,6 +58,7 @@ describe('guard unresolved definitions', () => {
         input: JSON.stringify({ tool_name: 'Agent', cwd: dir, session_id: 's', tool_input: { subagent_type: 'pilot', prompt: 'Investigate read-only' } }),
         encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(dir, 'config'), WT_GUARD_JOURNAL_DIR: journal },
       })
+      expect(result.status).toBe(0)
       expect(result.stdout).toContain('unresolved')
       const events = fs.readdirSync(journal).flatMap((file) => fs.readFileSync(path.join(journal, file), 'utf8').trim().split('\n').map((line) => JSON.parse(line)))
       expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ class: 'unresolved' })]))
@@ -68,9 +71,11 @@ describe('guard unresolved definitions', () => {
       fs.mkdirSync(agents, { recursive: true })
       fs.writeFileSync(path.join(agents, 'pilot.md'), '---\nname: pilot\ndescription: worker\ntools: "*"\n---\n')
       const result = spawnSync(process.execPath, [path.join(root, 'plugin/bin/wt-spawn-channel-guard-hook.mjs')], {
-        input: JSON.stringify({ tool_name: 'Agent', cwd: dir, tool_input: { subagent_type: 'pilot', prompt: 'Report when done' } }),
+        input: JSON.stringify({ tool_name: 'Agent', cwd: dir, tool_input: { subagent_type: 'pilot', prompt: 'Report via SendMessage when done' } }),
         encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(dir, 'config') },
       })
+      expect(result.status).toBe(0)
+      expect(result.stderr).toBe('')
       expect(result.stdout).toBe('')
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })
@@ -81,9 +86,10 @@ describe('guard unresolved definitions', () => {
       fs.mkdirSync(agents, { recursive: true })
       fs.writeFileSync(path.join(agents, 'pilot.md'), `---\nname: pilot\ndescription: worker\n${denial}\n---\n`)
       const result = spawnSync(process.execPath, [path.join(root, 'plugin/bin/wt-spawn-channel-guard-hook.mjs')], {
-        input: JSON.stringify({ tool_name: 'Agent', cwd: dir, tool_input: { subagent_type: 'pilot', prompt: 'Report when done' } }),
+        input: JSON.stringify({ tool_name: 'Agent', cwd: dir, tool_input: { subagent_type: 'pilot', prompt: 'Report via SendMessage when done' } }),
         encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(dir, 'config') },
       })
+      expect(result.status).toBe(0)
       expect(result.stdout).toContain(denial.includes('{') ? 'unresolved' : 'no SendMessage')
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   })

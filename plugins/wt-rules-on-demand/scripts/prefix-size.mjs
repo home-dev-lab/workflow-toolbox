@@ -220,7 +220,8 @@ async function transcriptRoots(config, days, now, unresolved) {
       }
       if (cwd && isAbsolute(cwd)) {
         const real = await realpath(cwd);
-        if ((!inside(real, temp) || inside(await realpath(config).catch(() => config), temp)) && (await stat(real)).isDirectory()) { roots.push(real); continue; }
+        // Report the root as the session recorded it, like every other root; deduplication compares real paths.
+        if ((!inside(real, temp) || inside(await realpath(config).catch(() => config), temp)) && (await stat(real)).isDirectory()) { roots.push(resolve(cwd)); continue; }
       }
     } catch { /* unreadable or vanished */ }
     unresolved.push(file);

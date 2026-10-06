@@ -5,6 +5,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { handleHelpFlag } from './lib/cli-help.mjs'
 
 const SECTIONS = new Set(['Added', 'Changed', 'Fixed'])
 const PRIVATE_ID = /\b18\d{17}\b/g
@@ -92,12 +93,15 @@ function changeset(name, summary) {
 }
 
 function main() {
-  if (process.argv.slice(2).some((arg) => arg === '--help' || arg === '-h')) {
-    process.stdout.write(
-      'Usage: wt-changelog-entry.mjs --summary <text> --section <Added|Changed|Fixed> [--paths <comma-separated paths>] [--version <x.y.z>] [--dry-run]\n',
-    )
-    return
-  }
+  // --summary, --section, --paths and --version take a value, so a `--summary --help` is a summary.
+  handleHelpFlag(
+    process.argv.slice(2),
+    'Usage: wt-changelog-entry.mjs --summary <text> --section <Added|Changed|Fixed> [--paths <comma-separated paths>] [--version <x.y.z>] [--dry-run]\n',
+    {
+      valueFlags: ['--summary', '--section', '--paths', '--version'],
+      booleanFlags: ['--dry-run'],
+    },
+  )
   let input
   try {
     input = args(process.argv.slice(2))
