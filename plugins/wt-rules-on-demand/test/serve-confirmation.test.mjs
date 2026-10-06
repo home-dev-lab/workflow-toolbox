@@ -13,6 +13,7 @@ import { dailyRollback } from '../scripts/daily-rollback.mjs';
 import { checkRollbackScope } from '../scripts/daily-provisional.mjs';
 import { measureInputs } from '../scripts/quality-check.mjs';
 import { scanTranscripts } from '../scripts/transcript-verdicts.mjs';
+import { normal } from '../paths.js';
 
 const spec = { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'none', reason: 'Delivery-only fixture' } };
 const body = 'Keep this instruction available.\n';
@@ -439,7 +440,8 @@ test('fix1 cached OLD generation cannot confirm newly migrated NEW body', async 
   const f = await fixture(t);
   const instance = engine();
   instance.$.env.get = async (name) => name === 'CLAUDE_CONFIG_DIR' ? f.config : undefined;
-  instance.$.fs.list = async (path) => path === f.demand ? [{ kind: 'file', name: 'sample.md' }] : [];
+  // The engine spells host paths with forward slashes (paths.js normal); Windows' native spelling uses backslashes.
+  instance.$.fs.list = async (path) => normal(path) === normal(f.demand) ? [{ kind: 'file', name: 'sample.md' }] : [];
   instance.$.fs.read = async () => readFile(join(f.demand, 'sample.md'), 'utf8');
   instance.$.fs.stat = async (path) => ({ kind: 'dir', size: 4096, realPath: path });
   await instance.call('Read');
@@ -458,7 +460,8 @@ test('fix1 cached OLD generation cannot confirm newly migrated NEW body', async 
   const result = await migrationEvidence({ ...migration, migratedAt: migration.time }, 'sample.md', evaluation(f));
   assert.notEqual(result.decision, 'confirm', 'OLD loaded generation must not confirm NEW migration');
   assert.equal(result.annotation.profiles[0].state, 'not loaded');
-  assert.ok(instance.stored.get('identityActivity')[f.identity].generations?.[f.migration.generation]?.servedAt, 'engine echoes the generation of OLD actually served');
+  const engineIdentity = `user:${normal(f.demand)}:sample.md`;
+  assert.ok(instance.stored.get('identityActivity')[engineIdentity]?.generations?.[f.migration.generation]?.servedAt, 'engine echoes the generation of OLD actually served');
   hooks.resetForSelftest();
   const fresh = await instance.call('Agent');
   assert.ok(JSON.stringify(fresh).includes('NEW instruction'));
