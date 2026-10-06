@@ -1,11 +1,13 @@
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 // @ts-expect-error Node ESM quality module
 import { lintText, ownerRules } from '../../../scripts/quality-changed-lint.mjs'
+// @ts-expect-error Node ESM quality module
+import { git as stageGit } from '../../../scripts/quality-changed-git.mjs'
 
 const toolkit = fileURLToPath(new URL('../../../..', import.meta.url)) + '/toolkit'
 const roots: string[] = []
@@ -26,8 +28,8 @@ function commit(root: string) {
   git(root, 'add', '.'); git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
   return git(root, 'rev-parse', 'HEAD')
 }
-function fixture(files: Record<string, string> = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-changed-quality-')); roots.push(root)
+function fixture(files: Record<string, string> = {}, prefix = 'wt-changed-quality-') {
+  const root = mkdtempSync(join(tmpdir(), prefix)); roots.push(root)
   git(root, 'init', '-q', '-b', 'develop')
   mkdirSync(join(root, 'toolkit/scripts'), { recursive: true })
   const source = process.env.WT_CHANGED_SCRIPTS ?? join(toolkit, 'scripts')
@@ -46,7 +48,7 @@ function fixture(files: Record<string, string> = {}) {
 function run(root: string, args: string[] = [], env: Record<string, string | undefined> = {}, pnpm = false) {
   return spawnSync(pnpm ? 'pnpm' : process.execPath,
     pnpm ? ['run', 'quality:changed', ...args] : [join(root, 'toolkit/scripts/quality-changed.mjs'), ...args],
-    { cwd: join(root, 'toolkit'), encoding: 'utf8', shell: pnpm && process.platform === 'win32',
+    { cwd: join(root, 'toolkit'), encoding: 'utf8', timeout: 15000, shell: pnpm && process.platform === 'win32',
       env: { ...fixtureEnv(root),
       WT_QUALITY_BASE: undefined, WT_QUALITY_CHANGED: undefined, ...env } })
 }
@@ -166,4 +168,82 @@ it.each(['absent result', 'ignored result', 'wrong path', 'wrong config'])('cove
       messages: mode === 'ignored result' ? [{ message: 'File ignored because of a matching ignore pattern.' }] : [] }],
   }
   await expect(lintText(eslint, '/fixture', 'code.mjs', '')).rejects.toThrow()
+})
+
+it.each(['--assume-unchanged', '--skip-worktree'])('checks working code hidden by %s without changing the real index', (flag) => {
+  const root = fixture({ 'plugin/old.mjs': 'export const value = 1\n' })
+  git(root, 'update-index', flag, 'plugin/old.mjs')
+  const before = readFileSync(join(root, '.git/index'))
+  write(root, 'plugin/old.mjs', violation(11))
+  const result = run(root)
+  expect(result.status, result.stderr).toBe(1)
+  expect(readFileSync(join(root, '.git/index'))).toEqual(before)
+})
+it.skipIf(process.platform === 'win32')('every Git invocation disables lazy fetch (offline fake git)', () => {
+  const root = fixture({ 'plugin/new.mjs': 'export const value = 1\n' }), bin = join(root, 'fake-bin'), log = join(root, 'git-calls.jsonl')
+  mkdirSync(bin)
+  write(root, 'fake-bin/git', `#!${process.execPath}
+const { appendFileSync } = require('node:fs');
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({ args, noFetch: process.env.GIT_NO_LAZY_FETCH }) + '\\n');
+const cmd = args[2];
+if (cmd === 'rev-parse') console.log(args.includes('--show-toplevel') ? ${JSON.stringify(root)} : 'a'.repeat(40));
+if (cmd === 'diff') process.stdout.write('M\\0plugin/new.mjs\\0');
+if (cmd === 'ls-tree') process.stdout.write('100644 blob ' + 'b'.repeat(40) + '\\tplugin/new.mjs\\0');
+if (cmd === 'show') console.log('export const value = 1');
+`)
+  chmodSync(join(bin, 'git'), 0o755)
+  const result = run(root, ['--base', 'HEAD', '--subject-ref', 'HEAD'], { PATH: bin + delimiter + process.env.PATH })
+  expect(result.status, result.stderr).toBe(0)
+  const working = run(root, ['--base', 'HEAD'], { PATH: bin + delimiter + process.env.PATH })
+  expect(working.status, working.stderr).toBe(0)
+  const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+  expect(calls.length).toBeGreaterThan(3)
+  expect(calls.every((call) => call.noFetch === '1')).toBe(true)
+})
+it('Git wrapper bounds every subprocess and forces no lazy fetch over caller environment', () => {
+  const calls: { timeout?: number; env: Record<string, string> }[] = []
+  stageGit('/fixture', ['show', 'HEAD:file'], { GIT_NO_LAZY_FETCH: '0' },
+    (_command: string, _args: string[], options: { timeout?: number; env: Record<string, string> }) => {
+      calls.push(options); return ''
+    })
+  expect(calls).toHaveLength(1)
+  expect(calls[0].env.GIT_NO_LAZY_FETCH).toBe('1')
+  expect(calls[0].timeout).toBe(120000)
+})
+it('feature branch at a merge contained in develop checks zero files', () => {
+  const root = fixture(); git(root, 'checkout', '-qb', 'feature')
+  write(root, 'plugin/new.mjs', violation(11)); commit(root); git(root, 'checkout', '-q', 'develop')
+  git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'merge', '--no-ff', '-qm', 'merge', 'feature')
+  git(root, 'checkout', '-qb', 'review')
+  const result = run(root)
+  expect(result.status, result.stdout).toBe(0); expect(result.stdout).toContain('0 files checked')
+})
+it('rejects an option-like subject revision', () => {
+  const result = run(fixture(), ['--base', 'HEAD', '--subject-ref', '-s'])
+  expect(result.status, result.stdout).toBe(2)
+})
+it.skipIf(process.platform === 'win32')('skips a code symlink pointing to an unwritten FIFO without hanging', () => {
+  const root = fixture()
+  expect(spawnSync('mkfifo', [join(root, 'pipe')]).status).toBe(0)
+  mkdirSync(join(root, 'plugin')); symlinkSync('../pipe', join(root, 'plugin/new.mjs'))
+  const result = run(root)
+  expect(result.error).toBeUndefined(); expect(result.status, result.stderr).toBe(0)
+  expect(result.stdout).toContain('0 files checked')
+}, 20000)
+it.skipIf(process.platform === 'win32')('skips code symlinks in subject trees (POSIX symlink fixture)', () => {
+  const root = fixture(), base = git(root, 'rev-parse', 'HEAD')
+  mkdirSync(join(root, 'plugin')); symlinkSync('missing', join(root, 'plugin/new.mjs'))
+  const subject = commit(root), result = run(root, ['--base', base, '--subject-ref', subject])
+  expect(result.status, result.stderr).toBe(0); expect(result.stdout).toContain('0 files checked')
+})
+it.skipIf(process.platform === 'win32')('alternate object path containing colon works (POSIX only; skipped on Windows)', () => {
+  const result = run(fixture({}, 'wt:changed-quality-'))
+  expect(result.status, result.stderr).toBe(0)
+})
+it('ignores unrelated untracked unborn nested repositories', () => {
+  const root = fixture(); mkdirSync(join(root, 'scratch'))
+  git(join(root, 'scratch'), 'init', '-q')
+  const result = run(root)
+  expect(result.status, result.stderr).toBe(0); expect(result.stdout).toContain('0 files checked')
 })
