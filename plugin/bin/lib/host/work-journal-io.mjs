@@ -19,6 +19,24 @@ export const nonce = () => randomBytes(8).toString('hex')
 export const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
 // Complete lines only: neither UTF-8 characters nor JSON records are decoded across chunks.
+function collectBackwardLines(data, boundary, lines) {
+  let end = data.length
+  for (let index = data.length - 1; index >= 0; index--) {
+    if (data[index] !== 0x0a) continue
+    const raw = data.subarray(index + 1, end).toString('utf8')
+    end = index
+    if (!raw) continue
+    if (boundary(raw)) return null
+    lines.push(raw)
+  }
+  return data.subarray(0, end)
+}
+function collectFirstLine(cursor, carry, boundary, lines) {
+  if (!cursor && carry.length) {
+    const raw = carry.toString('utf8')
+    if (!boundary(raw)) lines.push(raw)
+  }
+}
 export function readBackwardLines(file, boundary, limit = 16 * 1024 * 1024) {
   const fd = fs.openSync(file, 'r')
   const lines = []
@@ -33,21 +51,10 @@ export function readBackwardLines(file, boundary, limit = 16 * 1024 * 1024) {
       if (fs.readSync(fd, chunk, 0, size, cursor) !== size) throw new Error('transcript changed during tail read')
       used += size
       const data = Buffer.concat([chunk, carry])
-      let end = data.length
-      for (let index = data.length - 1; index >= 0; index--) {
-        if (data[index] !== 0x0a) continue
-        const raw = data.subarray(index + 1, end).toString('utf8')
-        end = index
-        if (!raw) continue
-        if (boundary(raw)) return { lines: lines.reverse(), limited: false }
-        lines.push(raw)
-      }
-      carry = data.subarray(0, end)
+      carry = collectBackwardLines(data, boundary, lines)
+      if (carry === null) return { lines: lines.reverse(), limited: false }
     }
-    if (!cursor && carry.length) {
-      const raw = carry.toString('utf8')
-      if (!boundary(raw)) lines.push(raw)
-    }
+    collectFirstLine(cursor, carry, boundary, lines)
     return { lines: lines.reverse(), limited: cursor > 0 }
   } finally { fs.closeSync(fd) }
 }

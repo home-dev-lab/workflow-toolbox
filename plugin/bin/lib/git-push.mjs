@@ -115,22 +115,21 @@ function invocationTokens(segment) {
   return tokens
 }
 
+function advanceGitOption(tokens, state) {
+  const token = tokens[state.index]
+  if (token === '-C') { state.repo = path.resolve(state.repo, tokens[state.index + 1] || '.'); state.index += 2 }
+  else if (token === '-c') state.index += 2
+  else if (token === '--git-dir' || token === '--work-tree') { state.unsupportedForm = token; state.index += 2 }
+  else {
+    if (token.startsWith('--git-dir=') || token.startsWith('--work-tree=')) state.unsupportedForm = token
+    state.index++
+  }
+}
 function gitInvocation(tokens, cwd) {
   if (!tokens || tokens[0] !== 'git') return null
-  let repo = cwd
-  let index = 1
-  let unsupportedForm = null
-  while (tokens[index]?.startsWith('-')) {
-    const token = tokens[index]
-    if (token === '-C') { repo = path.resolve(repo, tokens[index + 1] || '.'); index += 2 }
-    else if (token === '-c') index += 2
-    else if (token === '--git-dir' || token === '--work-tree') { unsupportedForm = token; index += 2 }
-    else {
-      if (token.startsWith('--git-dir=') || token.startsWith('--work-tree=')) unsupportedForm = token
-      index++
-    }
-  }
-  return { repo, index, action: tokens[index], unsupportedForm }
+  const state = { repo: cwd, index: 1, unsupportedForm: null }
+  while (tokens[state.index]?.startsWith('-')) advanceGitOption(tokens, state)
+  return { repo: state.repo, index: state.index, action: tokens[state.index], unsupportedForm: state.unsupportedForm }
 }
 
 function parsePushSegment(segment, cwd) {
@@ -168,6 +167,46 @@ function parsePushSegment(segment, cwd) {
   }
 }
 
+function appendDefaultPush(parsed, common, tracking, targets) {
+  const explicitPrefix = parsed.remote ? `refs/remotes/${parsed.remote}/` : null
+  const explicitDestination = explicitPrefix && tracking?.startsWith(explicitPrefix) ? tracking.slice(explicitPrefix.length) : null
+  const inferred = parsed.remote ? null : tracking?.match(/^refs\/remotes\/([^/]+)\/(.+)$/)
+  if (explicitDestination) targets.push({ ...common, source: 'HEAD', destination: explicitDestination })
+  else if (inferred) targets.push({ ...common, remote: inferred[1], source: 'HEAD', destination: inferred[2] })
+  else targets.push({ ...common, source: null, destination: null })
+}
+function appendRefspecPush(refspec, parsed, common, branch, targets) {
+  if (refspec === ':') {
+    targets.push({ ...common, source: null, destination: null, unsafeForm: "matching refspec ':'" })
+    return
+  }
+  const [rawSource, rawDestination] = refspec.split(':', 2)
+  const source = normalizeSource(rawSource)
+  const destination = branchFromDestination(rawDestination || defaultDestination(source, branch))
+  if (refspec.includes('*')) {
+    targets.push({ ...common, source, destination, unsafeForm: `wildcard refspec '${refspec}'` })
+    return
+  }
+  if (parsed.deletion || !source) {
+    targets.push({ ...common, source: null, destination: branchFromDestination(parsed.deletion ? rawSource : rawDestination), deletion: true })
+    return
+  }
+  targets.push({ ...common, source, destination })
+}
+function appendParsedPush(parsed, common, targets, read) {
+  if (parsed.unsupportedForm) {
+    targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.unsupportedForm })
+    return
+  }
+  const branch = currentBranch(parsed.repo, read)
+  const tracking = pushTrackingRef(parsed.repo, read)
+  if (parsed.aggregateForm) {
+    targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.aggregateForm })
+    return
+  }
+  if (parsed.refspecs.length === 0) { appendDefaultPush(parsed, common, tracking, targets); return }
+  for (const refspec of parsed.refspecs) appendRefspecPush(refspec, parsed, common, branch, targets)
+}
 export function parsePushCommand(command, cwd = process.cwd(), read = gitString) {
   const targets = []
   const segments = splitCommandSegments(stripHeredocs(String(command || '')))
@@ -178,51 +217,7 @@ export function parsePushCommand(command, cwd = process.cwd(), read = gitString)
     const parsed = parsePushSegment(segment, currentCwd)
     if (!parsed) continue
     const common = { ...parsed, command: segment, standalone: segments.length === 1 }
-    if (parsed.unsupportedForm) {
-      targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.unsupportedForm })
-      continue
-    }
-    const branch = currentBranch(parsed.repo, read)
-    const tracking = pushTrackingRef(parsed.repo, read)
-    if (parsed.aggregateForm) {
-      targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.aggregateForm })
-      continue
-    }
-    if (parsed.refspecs.length === 0) {
-      const explicitPrefix = parsed.remote ? `refs/remotes/${parsed.remote}/` : null
-      const explicitDestination = explicitPrefix && tracking?.startsWith(explicitPrefix) ? tracking.slice(explicitPrefix.length) : null
-      const inferred = parsed.remote ? null : tracking?.match(/^refs\/remotes\/([^/]+)\/(.+)$/)
-      if (explicitDestination) {
-        targets.push({ ...common, source: 'HEAD', destination: explicitDestination })
-      } else if (inferred) {
-        targets.push({ ...common, remote: inferred[1], source: 'HEAD', destination: inferred[2] })
-      } else {
-        targets.push({ ...common, source: null, destination: null })
-      }
-      continue
-    }
-    for (const refspec of parsed.refspecs) {
-      if (refspec === ':') {
-        targets.push({ ...common, source: null, destination: null, unsafeForm: "matching refspec ':'" })
-        continue
-      }
-      const [rawSource, rawDestination] = refspec.split(':', 2)
-      const source = normalizeSource(rawSource)
-      const destination = branchFromDestination(rawDestination || defaultDestination(source, branch))
-      if (refspec.includes('*')) {
-        targets.push({ ...common, source, destination, unsafeForm: `wildcard refspec '${refspec}'` })
-        continue
-      }
-      if (parsed.deletion || !source) {
-        targets.push({ ...common, source: null, destination: branchFromDestination(parsed.deletion ? rawSource : rawDestination), deletion: true })
-        continue
-      }
-      targets.push({
-        ...common,
-        source,
-        destination,
-      })
-    }
+    appendParsedPush(parsed, common, targets, read)
   }
   return targets
 }

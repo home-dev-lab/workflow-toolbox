@@ -12,22 +12,27 @@ import { hasRecorderCandidate, loadRecorders, matchedRecorders, observableTool }
 import { preTool, postTool } from './lib/work-journal-hook-core.mjs'
 import { sessionStart, stopCheck } from './lib/work-journal-lifecycle.mjs'
 
-export function runJournalHook(input, env = process.env) {
-  const event = input.hook_event_name
-  if (!['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop'].includes(event)) return ''
-  if ((event === 'PreToolUse' || event === 'PostToolUse') && !observableTool(input)) return ''
-  const root = env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd()
-  if ((event === 'PreToolUse' || event === 'PostToolUse') && !hasRecorderCandidate(input, root)) return ''
-  const config = loadRecorders(path.resolve(root))
-  let matches = matchedRecorders(config, input)
-  if ((event === 'PreToolUse' || event === 'PostToolUse') && !matches.length) return config.warnings.map((warning) => `LOUD: ${warning}`).join('\n')
-  const ctx = resolveJournal(input, env)
+const isToolEvent = (event) => event === 'PreToolUse' || event === 'PostToolUse'
+const journalRoot = (input, env) => env.CLAUDE_PROJECT_DIR || input.cwd || process.cwd()
+function dispatchJournalHook(ctx, input, config, event) {
   if (event === 'SessionStart') return sessionStart(ctx, input, config)
   if (event === 'Stop') return stopCheck(ctx, input, config)
-  matches = matchedRecorders(config, input, ctx)
+  const matches = matchedRecorders(config, input, ctx)
   if (!matches.length) return ''
   if (event === 'PreToolUse') { preTool(ctx, input, matches); return '' }
   return postTool(ctx, input, matches).map((message) => `LOUD: work journal: ${message}`).join('\n')
+}
+export function runJournalHook(input, env = process.env) {
+  const event = input.hook_event_name
+  if (!['PreToolUse', 'PostToolUse', 'SessionStart', 'Stop'].includes(event)) return ''
+  if (isToolEvent(event) && !observableTool(input)) return ''
+  const root = journalRoot(input, env)
+  if (isToolEvent(event) && !hasRecorderCandidate(input, root)) return ''
+  const config = loadRecorders(path.resolve(root))
+  const matches = matchedRecorders(config, input)
+  if (isToolEvent(event) && !matches.length) return config.warnings.map((warning) => `LOUD: ${warning}`).join('\n')
+  const ctx = resolveJournal(input, env)
+  return dispatchJournalHook(ctx, input, config, event)
 }
 
 if (isInvokedDirectly(import.meta.url)) {

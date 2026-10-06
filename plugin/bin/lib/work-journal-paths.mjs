@@ -21,18 +21,28 @@ export function refuseRepository(target, project) {
   return resolved
 }
 
+function journalHome(env) {
+  return io.platform() === 'win32' ? env.USERPROFILE || env.HOME || io.home() : env.HOME || io.home()
+}
+function stateHome(env, userHome) {
+  return env.XDG_STATE_HOME && path.isAbsolute(env.XDG_STATE_HOME) ? env.XDG_STATE_HOME : path.join(userHome, '.local', 'state')
+}
+function checkLocations(primary, mirror) {
+  if (!path.isAbsolute(primary) || !path.isAbsolute(mirror)) throw new Error('journal overrides must be absolute')
+}
+function journalTime(env) { return new Date(env.WT_WORK_JOURNAL_NOW || Date.now()) }
 export function resolveJournal(payload = {}, env = process.env) {
-  const userHome = io.platform() === 'win32' ? env.USERPROFILE || env.HOME || io.home() : env.HOME || io.home()
+  const userHome = journalHome(env)
   const project = identity(env.CLAUDE_PROJECT_DIR || payload.cwd || process.cwd(), 12)
   const config = identity(env.CLAUDE_CONFIG_DIR || path.join(userHome, '.claude'), 8)
-  const state = env.XDG_STATE_HOME && path.isAbsolute(env.XDG_STATE_HOME) ? env.XDG_STATE_HOME : path.join(userHome, '.local', 'state')
+  const state = stateHome(env, userHome)
   const primary = env.WT_WORK_JOURNAL_DIR || path.join(state, STORE_LEAF)
   const mirror = env.WT_WORK_JOURNAL_ARCHIVE_DIR || path.join(state, ARCHIVE_LEAF)
-  if (!path.isAbsolute(primary) || !path.isAbsolute(mirror)) throw new Error('journal overrides must be absolute')
+  checkLocations(primary, mirror)
   const store = refuseRepository(path.join(primary, config.key, project.key), project.resolved)
   const archive = refuseRepository(path.join(mirror, config.key, project.key), project.resolved)
   if (store === archive) throw new Error('journal primary and archive must be distinct')
-  const now = new Date(env.WT_WORK_JOURNAL_NOW || Date.now())
+  const now = journalTime(env)
   if (Number.isNaN(now.getTime())) throw new Error('invalid journal time')
-  return { store, archive, root: project.resolved, config: config.resolved, get now() { return new Date(env.WT_WORK_JOURNAL_NOW || Date.now()) }, env }
+  return { store, archive, root: project.resolved, config: config.resolved, get now() { return journalTime(env) }, env }
 }

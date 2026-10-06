@@ -17,28 +17,40 @@ function validateToolPattern(pattern) {
   if (!branches.every((branch) => branch === 'Bash' || /^mcp__[a-zA-Z0-9_.*$^+?\[\]\\-]+$/.test(branch))) throw new Error(`unobservable tool matcher: ${pattern}`)
   return new RegExp(pattern)
 }
+function recorderActors(recorder) {
+  const actors = recorder.actors || ['main']
+  if (!Array.isArray(actors) || !actors.length || actors.some((actor) => !['main', 'subagent', 'unknown'].includes(actor))) throw new Error(`invalid actors for ${recorder.id}`)
+  return actors
+}
+function validateToolRecorder(recorder) {
+  validateToolPattern(recorder.tool)
+  if (recorder.command) new RegExp(recorder.command)
+  if (!/^[a-z][a-z0-9-]{0,23}$/.test(recorder.tag || '') || !recorder.sentence || !recorder.link) throw new Error(`invalid tool recorder ${recorder.id}`)
+}
 function validateRecorder(recorder) {
   if (!recorder || !/^[a-z][a-z0-9-]{0,31}$/.test(recorder.id || '')) throw new Error('invalid recorder id')
   if (![...BUILTIN_KINDS, 'tool'].includes(recorder.kind)) throw new Error(`invalid recorder ${recorder.id}`)
-  const actors = recorder.actors || ['main']
-  if (!Array.isArray(actors) || !actors.length || actors.some((actor) => !['main', 'subagent', 'unknown'].includes(actor))) throw new Error(`invalid actors for ${recorder.id}`)
-  if (recorder.kind === 'tool') {
-    validateToolPattern(recorder.tool)
-    if (recorder.command) new RegExp(recorder.command)
-    if (!/^[a-z][a-z0-9-]{0,23}$/.test(recorder.tag || '') || !recorder.sentence || !recorder.link) throw new Error(`invalid tool recorder ${recorder.id}`)
-  }
+  const actors = recorderActors(recorder)
+  if (recorder.kind === 'tool') validateToolRecorder(recorder)
   return { ...recorder, actors }
+}
+function validateManifestArrays(manifest) {
+  if (!Array.isArray(manifest.recorders || []) || !Array.isArray(manifest.disable || []) || !Array.isArray(manifest.outward || [])) throw new Error('invalid recorder manifest arrays')
+}
+function readManifest(root, warnings) {
+  let manifest = {}
+  try {
+    manifest = io.json(path.join(root, '.claude', 'work-journal.json')) || {}
+    validateManifestArrays(manifest)
+    for (const recorder of manifest.recorders || []) validateRecorder(recorder)
+    for (const matcher of manifest.outward || []) validateToolPattern(matcher.tool)
+  } catch (error) { warnings.push(`invalid work-journal manifest: ${error.message}; using defaults`); manifest = {} }
+  return manifest
 }
 export function loadRecorders(root) {
   const defaults = io.json(new URL('../../config/work-journal-recorders.json', import.meta.url))
   const warnings = []
-  let manifest = {}
-  try {
-    manifest = io.json(path.join(root, '.claude', 'work-journal.json')) || {}
-    if (!Array.isArray(manifest.recorders || []) || !Array.isArray(manifest.disable || []) || !Array.isArray(manifest.outward || [])) throw new Error('invalid recorder manifest arrays')
-    for (const recorder of manifest.recorders || []) validateRecorder(recorder)
-    for (const matcher of manifest.outward || []) validateToolPattern(matcher.tool)
-  } catch (error) { warnings.push(`invalid work-journal manifest: ${error.message}; using defaults`); manifest = {} }
+  const manifest = readManifest(root, warnings)
   const merged = new Map(defaults.recorders.map((item) => [item.id, validateRecorder(item)]))
   for (const item of manifest.recorders || []) merged.set(item.id, validateRecorder(item))
   const disabled = new Set(manifest.disable || [])
@@ -51,21 +63,29 @@ export function needsGitFallback(input, commands = parseGitCommands(input.tool_i
   return !commands.length && /\bgit\b/.test(raw)
     && (commandHeads(raw).some((head) => !/^(?:echo|printf|cat)\b/.test(head)) || /\$\(|`/.test(raw))
 }
-function matchesRecorder(recorder, input) {
-  if (recorder.kind === 'tool') return new RegExp(recorder.tool).test(input.tool_name || '')
+function matchesToolRecorder(recorder, input) {
+  return new RegExp(recorder.tool).test(input.tool_name || '')
     && (!recorder.command || commandHeads(input.tool_input?.command || '').some((head) => new RegExp(recorder.command).test(head)))
-  if (recorder.kind === 'done') return input.tool_name === 'mcp__planka__move_card'
-  if (input.tool_name !== 'Bash') return false
-  const heads = commandHeads(input.tool_input?.command || '')
+}
+function matchesGitRecorder(input) {
+  const commands = parseGitCommands(input.tool_input?.command, input.cwd)
+  return commands.some((item) => GIT_ACTS.has(item.action)) || needsGitFallback(input, commands)
+}
+function matchesShellRecorder(recorder, input, heads) {
   if (recorder.kind === 'git') {
-    const commands = parseGitCommands(input.tool_input?.command, input.cwd)
-    return commands.some((item) => GIT_ACTS.has(item.action))
-      || needsGitFallback(input, commands)
+    return matchesGitRecorder(input)
   }
   if (recorder.kind === 'push') return parseGitCommands(input.tool_input?.command, input.cwd).some((item) => item.action === 'push')
   if (recorder.kind === 'release') return parseGitCommands(input.tool_input?.command, input.cwd).some((item) => item.action === 'tag')
     || heads.some((head) => /^(?:npm|pnpm)\s+publish\b|^gh\s+release\s+create\b/.test(head))
   return heads.some((head) => /^gh\s+pr\s+(?:create|merge)\b/.test(head))
+}
+function matchesRecorder(recorder, input) {
+  if (recorder.kind === 'tool') return matchesToolRecorder(recorder, input)
+  if (recorder.kind === 'done') return input.tool_name === 'mcp__planka__move_card'
+  if (input.tool_name !== 'Bash') return false
+  const heads = commandHeads(input.tool_input?.command || '')
+  return matchesShellRecorder(recorder, input, heads)
 }
 export function hasRecorderCandidate(input, root) {
   if (!observableTool(input)) return false

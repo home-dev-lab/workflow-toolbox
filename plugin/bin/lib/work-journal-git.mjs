@@ -52,27 +52,30 @@ function commitIndex(ctx) {
   }
   return indexed
 }
+function appendGitEntry(ctx, before, entry, branch, indexed, acts, deadline) {
+  const [sha, message] = entry.split('\t')
+  const checkout = /^checkout: moving from .+ to (.+)$/.exec(message)
+  if (checkout) branch = checkout[1]
+  const kind = MERGE.test(message) ? 'merge' : COMMIT.test(message) ? 'commit' : null
+  const key = kind === 'merge' ? `merge:${sha}` : sha
+  if (!kind || indexed.has(key)) return branch
+  const text = kind === 'merge' ? message : io.git(before.repo, ['show', '-s', '--format=%s', sha], deadline) || message
+  acts.push({ kind, subject: subjectOf(ctx, text, branch), text, link: `${path.basename(before.repo)}@${sha}`, sha: kind === 'commit' ? sha : null })
+  indexed.add(key)
+  return branch
+}
+function appendRepoActs(ctx, before, indexed, acts, deadline) {
+  const after = reflog(before.repo, deadline)
+  if (!after.length && io.git(before.repo, ['rev-parse', '--verify', 'HEAD'], deadline) !== before.head) throw new Error('reflog-unavailable')
+  const delta = ledgerDelta(before.reflog, after)
+  if (delta.filter((entry) => COMMIT.test(entry.split('\t')[1]) || MERGE.test(entry.split('\t')[1])).length + acts.length > 200) throw new Error('too-many')
+  let branch = before.branch
+  for (const entry of delta) branch = appendGitEntry(ctx, before, entry, branch, indexed, acts, deadline)
+}
 export function gitActs(ctx, snapshot, deadline) {
   const acts = []
   const indexed = commitIndex(ctx)
-  for (const before of snapshot.repos) {
-    const after = reflog(before.repo, deadline)
-    if (!after.length && io.git(before.repo, ['rev-parse', '--verify', 'HEAD'], deadline) !== before.head) throw new Error('reflog-unavailable')
-    const delta = ledgerDelta(before.reflog, after)
-    if (delta.filter((entry) => COMMIT.test(entry.split('\t')[1]) || MERGE.test(entry.split('\t')[1])).length + acts.length > 200) throw new Error('too-many')
-    let branch = before.branch
-    for (const entry of delta) {
-      const [sha, message] = entry.split('\t')
-      const checkout = /^checkout: moving from .+ to (.+)$/.exec(message)
-      if (checkout) branch = checkout[1]
-      const kind = MERGE.test(message) ? 'merge' : COMMIT.test(message) ? 'commit' : null
-      const key = kind === 'merge' ? `merge:${sha}` : sha
-      if (!kind || indexed.has(key)) continue
-      const text = kind === 'merge' ? message : io.git(before.repo, ['show', '-s', '--format=%s', sha], deadline) || message
-      acts.push({ kind, subject: subjectOf(ctx, text, branch), text, link: `${path.basename(before.repo)}@${sha}`, sha: kind === 'commit' ? sha : null })
-      indexed.add(key)
-    }
-  }
+  for (const before of snapshot.repos) appendRepoActs(ctx, before, indexed, acts, deadline)
   if (acts.length > 200) throw new Error('too-many')
   return acts
 }

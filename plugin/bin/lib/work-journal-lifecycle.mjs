@@ -70,20 +70,21 @@ function missingForRecorder(ctx, input, recorder, outcomes) {
     return outcome === 'recorded' || outcome === 'nothing-new' || outcome === 'not-confirmed' ? [] : [`${src}/${recorder.id}/${id}: ${outcome || 'missing outcome'}`]
   })
 }
+function collectMissingCall(ctx, input, config, call, outcomes, missing) {
+  const payload = { ...input, tool_name: call.name, tool_use_id: call.id, tool_input: call.input }
+  const active = matchedRecorders(config, payload, ctx)
+  for (const id of outwardRecorders(config, payload, ctx)) {
+    if (!active.some((recorder) => recorder.id === id)) missing.push(`${call.id}/${id}: outward act, recorder disabled by project`)
+  }
+  if (!active.length && matchesOutward(config, payload)) missing.push(`${call.id}: outward act has no recorder`)
+  for (const recorder of active) missing.push(...missingForRecorder(ctx, payload, recorder, outcomes))
+}
 export function stopCheck(ctx, input, config) {
   if (!input.transcript_path) return ''
   const turn = currentTurnCalls(input.transcript_path)
   const outcomes = readOutcomes(ctx)
   const missing = []
-  for (const call of turn.calls) {
-    const payload = { ...input, tool_name: call.name, tool_use_id: call.id, tool_input: call.input }
-    const active = matchedRecorders(config, payload, ctx)
-    for (const id of outwardRecorders(config, payload, ctx)) {
-      if (!active.some((recorder) => recorder.id === id)) missing.push(`${call.id}/${id}: outward act, recorder disabled by project`)
-    }
-    if (!active.length && matchesOutward(config, payload)) missing.push(`${call.id}: outward act has no recorder`)
-    for (const recorder of active) missing.push(...missingForRecorder(ctx, payload, recorder, outcomes))
-  }
+  for (const call of turn.calls) collectMissingCall(ctx, input, config, call, outcomes, missing)
   if (!missing.length && !turn.limited) return ''
   const overflow = missing.length > 10 ? `; +${missing.length - 10} more` : ''
   const window = turn.limited ? '\nLOUD: work journal turn exceeded the 16 MiB transcript window' : ''

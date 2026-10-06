@@ -18,11 +18,17 @@ export function preTool(ctx, input, recorders) {
 function doneActs(ctx, input) {
   const board = io.json(path.join(ctx.store, 'board.json'))
   if (!board?.doneId || board.boardId !== boardPointer(ctx)?.boardId) return [{ outcome: 'failed:no-board-cache' }]
+  return doneCardActs(board, input)
+}
+function doneCardActs(board, input) {
   const response = responseObject(input.tool_response)
   const card = response?.card || response
   if (!card?.id || typeof card.listId !== 'string') return [{ outcome: FAILED_RESPONSE }]
   if (String(card.listId) !== String(board.doneId)) return [{ outcome: 'nothing-new' }]
   if (String(card.id) !== String(input.tool_input?.cardId)) return [{ outcome: 'failed:card-mismatch' }]
+  return completedCardAct(card, board)
+}
+function completedCardAct(card, board) {
   const id = String(card.id)
   return [{ kind: 'done', subject: `card:${id}`, text: `Completed ${card.name || 'card'}`,
     link: board.baseUrl ? `${board.baseUrl.replace(/\/$/, '')}/cards/${id}` : `card:${id}` }]
@@ -41,19 +47,23 @@ function releaseActs(ctx, input, before, deadline) {
   // fields are deliberately not accepted as proof of a publish or gh release.
   return [...tags, ...publishes.map(() => ({ outcome: 'unknown' }))]
 }
-function detect(ctx, input, recorder, actor, deadline) {
-  if (!recorder.actors.includes(actor)) return [{ outcome: 'failed:actor' }]
-  if (recorder.kind === 'done') return doneActs(ctx, input)
-  if (recorder.kind === 'pr') return prActs(ctx, input)
-  if (recorder.kind === 'tool') {
-    if (input.tool_response?.isError === true) return [{ outcome: FAILED_RESPONSE }]
-    return [{ kind: recorder.tag, subject: template(recorder.subject, input) || subjectOf(ctx, ''), text: template(recorder.sentence, input), link: template(recorder.link, input) }]
-  }
+function toolActs(ctx, input, recorder) {
+  if (input.tool_response?.isError === true) return [{ outcome: FAILED_RESPONSE }]
+  return [{ kind: recorder.tag, subject: template(recorder.subject, input) || subjectOf(ctx, ''), text: template(recorder.sentence, input), link: template(recorder.link, input) }]
+}
+function snapshotActs(ctx, input, recorder, deadline) {
   const before = io.json(preFile(ctx, input))
   if (before?.error) return [{ outcome: `failed:${before.error}` }]
   if (recorder.kind === 'release') return releaseActs(ctx, input, before, deadline)
   if (!before?.snapshot) return [{ outcome: 'failed:no-pre-snapshot' }]
   return recorder.kind === 'git' ? gitActs(ctx, before.snapshot, deadline) : pushActs(ctx, before.snapshot, deadline)
+}
+function detect(ctx, input, recorder, actor, deadline) {
+  if (!recorder.actors.includes(actor)) return [{ outcome: 'failed:actor' }]
+  if (recorder.kind === 'done') return doneActs(ctx, input)
+  if (recorder.kind === 'pr') return prActs(ctx, input)
+  if (recorder.kind === 'tool') return toolActs(ctx, input, recorder)
+  return snapshotActs(ctx, input, recorder, deadline)
 }
 function detectedActs(ctx, input, recorder, actor, deadline) {
   const file = path.join(ctx.store, 'detections', `${sourceKey(input)}-${recorder.id}.json`)

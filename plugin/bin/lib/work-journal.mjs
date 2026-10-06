@@ -29,30 +29,39 @@ export const dayFile = (root, day) => path.join(root, 'days', `${day}.ndjson`)
 const journalDays = (root) => io.list(path.join(root, 'days')).filter((file) => /^\d{4}-\d{2}-\d{2}\.ndjson$/.test(file)).map((file) => file.slice(0, -7))
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
+function readDayContent(root, day, errors) {
+  try { return utf8.decode(io.readBytes(dayFile(root, day))) }
+  catch (error) {
+    if (error.code !== 'ERR_ENCODING_INVALID_ENCODED_DATA') throw error
+    errors.push(`invalid UTF-8 ${day}`)
+    return null
+  }
+}
+function collectChainLine(raw, day, index, state, lines, errors) {
+  let line
+  try { line = JSON.parse(raw) } catch { errors.push(`unreadable line ${day}:${index + 1}`); return }
+  if (state.prev === null) state.prev = line.prev
+  if (line.prev !== state.prev || line.hash !== hashLine(line)) errors.push(`broken chain ${day}:${index + 1}`)
+  if (line.v !== 1 || !/^[a-f0-9]{16}$/.test(line.id || '')) errors.push(`invalid line ${day}:${index + 1}`)
+  state.prev = line.hash
+  lines.push({ ...line, day })
+}
+function collectDayLines(content, day, state, lines, errors) {
+  if (content && !content.endsWith('\n')) errors.push(`torn tail ${day}`)
+  const rawLines = content.split('\n')
+  for (const [index, raw] of rawLines.entries()) {
+    if (!raw && index === rawLines.length - 1) continue
+    collectChainLine(raw, day, index, state, lines, errors)
+  }
+}
 export function readChain(root, days = journalDays(root), anchored = false) {
   const lines = []
   const errors = []
-  let prev = anchored ? null : GENESIS
+  const state = { prev: anchored ? null : GENESIS }
   for (const day of days) {
-    let content
-    try { content = utf8.decode(io.readBytes(dayFile(root, day))) }
-    catch (error) {
-      if (error.code !== 'ERR_ENCODING_INVALID_ENCODED_DATA') throw error
-      errors.push(`invalid UTF-8 ${day}`)
-      continue
-    }
-    if (content && !content.endsWith('\n')) errors.push(`torn tail ${day}`)
-    const rawLines = content.split('\n')
-    for (const [index, raw] of rawLines.entries()) {
-      if (!raw && index === rawLines.length - 1) continue
-      let line
-      try { line = JSON.parse(raw) } catch { errors.push(`unreadable line ${day}:${index + 1}`); continue }
-      if (prev === null) prev = line.prev
-      if (line.prev !== prev || line.hash !== hashLine(line)) errors.push(`broken chain ${day}:${index + 1}`)
-      if (line.v !== 1 || !/^[a-f0-9]{16}$/.test(line.id || '')) errors.push(`invalid line ${day}:${index + 1}`)
-      prev = line.hash
-      lines.push({ ...line, day })
-    }
+    const content = readDayContent(root, day, errors)
+    if (content === null) continue
+    collectDayLines(content, day, state, lines, errors)
   }
   return { days, lines, errors, countOffset: 0 }
 }
@@ -132,34 +141,29 @@ function quarantineTail(ctx) {
   io.atomicWrite(path.join(ctx.store, 'torn', `${Date.now()}-${io.nonce()}.bin`), data.subarray(end))
   io.truncate(file, end)
 }
+function repairDayMirror(ctx, day) {
+  const live = io.readBytes(dayFile(ctx.store, day))
+  const file = dayFile(ctx.archive, day)
+  const mirror = io.exists(file) ? io.readBytes(file) : Buffer.alloc(0)
+  if (!live.subarray(0, mirror.length).equals(mirror) || (mirror.length && mirror.at(-1) !== 0x0a)) throw new Error(`mirror differs ${day}; repair refused`)
+  if (!mirror.equals(live)) io.append(file, live.subarray(mirror.length))
+}
 function repairMirror(ctx, chain) {
   if (chain.errors.length) throw new Error('live chain broken; mirror repair refused')
   for (const day of journalDays(ctx.archive)) if (!(chain.inventory || chain.days).includes(day)) throw new Error(`live day lost ${day}; restore before appending`)
-  for (const day of chain.days) {
-    const live = io.readBytes(dayFile(ctx.store, day))
-    const file = dayFile(ctx.archive, day)
-    const mirror = io.exists(file) ? io.readBytes(file) : Buffer.alloc(0)
-    if (!live.subarray(0, mirror.length).equals(mirror) || (mirror.length && mirror.at(-1) !== 0x0a)) throw new Error(`mirror differs ${day}; repair refused`)
-    if (!mirror.equals(live)) io.append(file, live.subarray(mirror.length))
-  }
+  for (const day of chain.days) repairDayMirror(ctx, day)
 }
-export function recoverJournal(ctx, { recentOnly = false } = {}) {
-  quarantineTail(ctx)
-  const head = io.json(path.join(ctx.store, 'head.json'))
-  const chain = recentOnly ? recentChain(ctx, head) : readChain(ctx.store)
-  if (chain.errors.length) throw new Error(chain.errors.join('; '))
-  const latest = chainHead(chain)
+function checkRecoveryPrefix(head, latest, chain) {
   if (head && canonical(head) !== canonical(latest)) {
     const prefix = chain.lines[head.count - chain.countOffset - 1]
     if (!prefix || prefix.hash !== head.hash || prefix.day !== head.day) throw new Error('head ahead of or unrelated to ledger; restore before appending')
   }
-  repairMirror(ctx, chain)
-  if (canonical(head) !== canonical(latest)) io.atomicJson(path.join(ctx.store, 'head.json'), latest)
-  if (!recentOnly) {
-    const commits = [...new Set(chain.lines.map(commitSha).filter(Boolean))]
-    io.atomicWrite(path.join(ctx.store, COMMIT_INDEX), commits.length ? `${commits.join('\n')}\n` : '')
-  }
-  const replayed = foldPending(ctx, chain)
+}
+function rebuildCommitIndex(ctx, chain) {
+  const commits = [...new Set(chain.lines.map(commitSha).filter(Boolean))]
+  io.atomicWrite(path.join(ctx.store, COMMIT_INDEX), commits.length ? `${commits.join('\n')}\n` : '')
+}
+function advanceDayFloor(ctx, chain) {
   // An observed later calendar day closes the old day even if it has no acts yet.
   // Persist the floor in both inventories so an export followed by clock rollback cannot
   // reopen a closed file. Empty day files add no line and do not change the durable head.
@@ -169,13 +173,29 @@ export function recoverJournal(ctx, { recentOnly = false } = {}) {
     io.append(dayFile(ctx.archive, today), '')
     chain.days.push(today)
   }
+}
+export function recoverJournal(ctx, { recentOnly = false } = {}) {
+  quarantineTail(ctx)
+  const head = io.json(path.join(ctx.store, 'head.json'))
+  const chain = recentOnly ? recentChain(ctx, head) : readChain(ctx.store)
+  if (chain.errors.length) throw new Error(chain.errors.join('; '))
+  const latest = chainHead(chain)
+  checkRecoveryPrefix(head, latest, chain)
+  repairMirror(ctx, chain)
+  if (canonical(head) !== canonical(latest)) io.atomicJson(path.join(ctx.store, 'head.json'), latest)
+  if (!recentOnly) rebuildCommitIndex(ctx, chain)
+  const replayed = foldPending(ctx, chain)
+  advanceDayFloor(ctx, chain)
   return { ...chain, replayed }
 }
 
+function checkActDetails(value, text) {
+  if (!text || !value.link || !value.subject) throw new Error('journal act needs sentence, subject and detail link')
+}
 export function makeAct(ctx, value) {
   if (!/^[a-z][a-z0-9-]{0,23}$/.test(value.kind || '')) throw new Error('invalid journal kind')
   const text = String(value.text || '').replace(/\s+/g, ' ').trim().slice(0, 200)
-  if (!text || !value.link || !value.subject) throw new Error('journal act needs sentence, subject and detail link')
+  checkActDetails(value, text)
   return { id: value.id || io.nonce(), at: value.at || localTime(ctx.now), kind: value.kind, subject: String(value.subject), text,
     link: String(value.link), src: String(value.src || 'cli'), rec: String(value.rec || 'cli'), actor: value.actor || 'main' }
 }
@@ -263,6 +283,20 @@ export function appendJournalActs(ctx, values, options = {}) {
 }
 export function appendJournal(ctx, value, options = {}) { return appendJournalActs(ctx, [value], options)[0] }
 
+function digestDay(chain, day, output) {
+  output.push(`Work journal ${day}`)
+  const subjects = new Map()
+  let recent = 0
+  for (const line of chain.lines.filter((item) => item.ts.slice(0, 10) === day)) {
+    const group = subjects.get(line.subject) || { count: 0, kinds: new Set(), last: line }
+    group.count++; group.kinds.add(line.kind); group.last = line; subjects.set(line.subject, group); recent++
+  }
+  const groups = [...subjects.entries()].sort((a, b) => b[1].last.ts.localeCompare(a[1].last.ts))
+  for (const [subject, group] of groups.slice(0, 20)) output.push(`${subject} — ${group.count} acts (${[...group.kinds].join(', ')}), last ${group.last.ts.slice(11, 16)} ${group.last.text.slice(0, 100)}`)
+  if (groups.length > 20) output.push(`+${groups.length - 20} more — wt-work-journal.mjs show --date ${day}`)
+  if (!groups.length) output.push('No activity.')
+  return recent
+}
 export function digestJournal(ctx) {
   const chain = readChain(ctx.store)
   if (chain.errors.length) throw new Error('digest refused: live chain broken')
@@ -271,18 +305,7 @@ export function digestJournal(ctx) {
   const dates = [dayOf(yesterday), dayOf(today)]
   const output = []
   let recent = 0
-  for (const day of dates) {
-    output.push(`Work journal ${day}`)
-    const subjects = new Map()
-    for (const line of chain.lines.filter((item) => item.ts.slice(0, 10) === day)) {
-      const group = subjects.get(line.subject) || { count: 0, kinds: new Set(), last: line }
-      group.count++; group.kinds.add(line.kind); group.last = line; subjects.set(line.subject, group); recent++
-    }
-    const groups = [...subjects.entries()].sort((a, b) => b[1].last.ts.localeCompare(a[1].last.ts))
-    for (const [subject, group] of groups.slice(0, 20)) output.push(`${subject} — ${group.count} acts (${[...group.kinds].join(', ')}), last ${group.last.ts.slice(11, 16)} ${group.last.text.slice(0, 100)}`)
-    if (groups.length > 20) output.push(`+${groups.length - 20} more — wt-work-journal.mjs show --date ${day}`)
-    if (!groups.length) output.push('No activity.')
-  }
+  for (const day of dates) recent += digestDay(chain, day, output)
   if (!recent && chain.lines.length) {
     const last = chain.lines.at(-1)?.ts.slice(0, 10)
     output.push(`last activity ${last}: ${chain.lines.filter((line) => line.ts.slice(0, 10) === last).length} acts`)

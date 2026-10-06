@@ -31,32 +31,53 @@ function show(ctx, args) {
     && (!grep || `${line.subject} ${line.text} ${line.link}`.toLowerCase().includes(grep)))
     .map((line) => `${line.ts} [${line.subject}] ${line.text} — ${line.link} (${line.hash})`).join('\n')
 }
-export async function runJournalCli(args, { env = process.env, print = console.log, error = console.error, boardClient, stdin = () => io.read(0) } = {}) {
-  if (args.includes('--help') || args.includes('-h')) { print(HELP); return 0 }
-  if (env.CLAUDECODE !== '1') { error('journal CLI refused: CLAUDECODE=1 required'); return 2 }
+function printVerification(ctx, _args, print) {
+  const result = verifyJournal(ctx)
+  print(result.ok ? 'Journal intact.' : result.errors.join('\n'))
+  return result.ok ? 0 : 1
+}
+function printActResult(result, print) {
+  print(result.outcome === 'recorded' ? result.line.hash : `queued, not yet recorded: ${result.error}`)
+  return result.outcome === 'recorded' ? 0 : 1
+}
+function recordUnsynced(ctx, args, print, stdin) {
+  if (args.includes('--list')) {
+    for (const line of openUnsynced(ctx)) print(`${line.hash} [${line.subject}] ${line.text}\n${unsyncedDetail(ctx, line)}`)
+    return 0
+  }
+  const result = addUnsynced(ctx, args[1], option(args, '--detail-file') ? io.read(option(args, '--detail-file')) : stdin())
+  return printActResult(result, print)
+}
+const COMMANDS = new Map([
+  ['verify', printVerification],
+  ['show', (ctx, args, print) => { print(show(ctx, args)); return 0 }],
+  ['digest', (ctx, _args, print) => { print(digestJournal(ctx)); return 0 }],
+  ['setup-board', null],
+  ['unlock', (ctx, _args, print) => { io.unlockDead(path.join(ctx.store, 'lock')); print('Dead journal lock removed; start a session to recover pending acts.'); return 0 }],
+  ['retire-progress', (ctx, args, print) => { print(JSON.stringify(retireProgress(ctx, { archiveOnly: args.includes('--archive-only') }))); return 0 }],
+  ['export-closed', (ctx, args, print) => { print(exportClosed(ctx, option(args, '--to')).join('\n')); return 0 }],
+  ['restore', (ctx, args, print) => { restoreJournal(ctx, args[1]); print(`Restored ${args[1]}.`); return 0 }],
+  ['unsynced', recordUnsynced],
+  ['resolve', (ctx, args, print) => { const result = resolveUnsynced(ctx, args[1]); return printActResult(result, print) }],
+])
+function cliAdmission(args, env, print, error) {
+  if (args.includes('--help') || args.includes('-h')) { print(HELP); return { status: 0 } }
+  if (env.CLAUDECODE !== '1') { error('journal CLI refused: CLAUDECODE=1 required'); return { status: 2 } }
   const command = args[0]
-  if (!['show', 'digest', 'verify', 'setup-board', 'unlock', 'unsynced', 'resolve', 'retire-progress', 'export-closed', 'restore'].includes(command)) { error(HELP); return 2 }
+  if (!COMMANDS.has(command)) { error(HELP); return { status: 2 } }
+  return { command }
+}
+export async function runJournalCli(args, { env = process.env, print = console.log, error = console.error, boardClient, stdin = () => io.read(0) } = {}) {
+  const admitted = cliAdmission(args, env, print, error)
+  if (admitted.status !== undefined) return admitted.status
+  const command = admitted.command
   try {
     const ctx = resolveJournal({}, env)
-    if (command === 'verify') {
-      const result = verifyJournal(ctx)
-      print(result.ok ? 'Journal intact.' : result.errors.join('\n'))
-      return result.ok ? 0 : 1
+    if (command !== 'setup-board') {
+      const handler = COMMANDS.get(command)
+      return handler(ctx, args, print, stdin)
     }
-    if (command === 'show') print(show(ctx, args))
-    else if (command === 'digest') print(digestJournal(ctx))
-    else if (command === 'setup-board') print(JSON.stringify(await setupBoard(ctx, boardClient)))
-    else if (command === 'unlock') { io.unlockDead(path.join(ctx.store, 'lock')); print('Dead journal lock removed; start a session to recover pending acts.') }
-    else if (command === 'retire-progress') print(JSON.stringify(retireProgress(ctx, { archiveOnly: args.includes('--archive-only') })))
-    else if (command === 'export-closed') print(exportClosed(ctx, option(args, '--to')).join('\n'))
-    else if (command === 'restore') { restoreJournal(ctx, args[1]); print(`Restored ${args[1]}.`) }
-    else if (command === 'unsynced' && args.includes('--list')) {
-      for (const line of openUnsynced(ctx)) print(`${line.hash} [${line.subject}] ${line.text}\n${unsyncedDetail(ctx, line)}`)
-    } else {
-      const result = command === 'resolve' ? resolveUnsynced(ctx, args[1]) : addUnsynced(ctx, args[1], option(args, '--detail-file') ? io.read(option(args, '--detail-file')) : stdin())
-      print(result.outcome === 'recorded' ? result.line.hash : `queued, not yet recorded: ${result.error}`)
-      return result.outcome === 'recorded' ? 0 : 1
-    }
+    print(JSON.stringify(await setupBoard(ctx, boardClient)))
     return 0
   } catch (failure) { error(failure.message); return command === 'verify' ? 2 : 1 }
 }
