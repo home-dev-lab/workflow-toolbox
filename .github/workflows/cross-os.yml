@@ -159,6 +159,9 @@ jobs:
         timeout-minutes: 5
       - name: Quality
         if: ${{ matrix.shard != 1 }}
+        env:
+          # Shallow platform checkouts have no comparison history; merge certification judges changed code.
+          WT_QUALITY_CHANGED: skip
         run: pnpm quality
         timeout-minutes: 5
       - name: Lint
