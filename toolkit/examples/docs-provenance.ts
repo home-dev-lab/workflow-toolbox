@@ -633,7 +633,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-merge-chain-guard-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this PreToolUse merge-chain warning guard under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this PreToolUse merge-chain journal and subagent-reaching commit-chain warning guard under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-merge-target-guard-hook.mjs',
@@ -643,7 +643,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-concurrent-test-guard-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this PreToolUse concurrent-test warning guard under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this PreToolUse concurrent-test journal-only warn paths and role-closed enumeration refusal under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-piped-gate-exit-code-guard-hook.mjs',
@@ -653,7 +653,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-missing-package-script-guard-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this PreToolUse missing-package-script warn-only guard under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this PreToolUse missing-package-script journal-only guard under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-gate-evidence-guard-hook.mjs',
