@@ -68,6 +68,30 @@ function pruneState(dir, now) {
   }
 }
 
+function inflightPruneBatch(dir) {
+  const files = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile())
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const path = join(dir, '..', 'unload-watch', '.inflight-prune');
+  let lastName = '';
+  try { lastName = readState(path)?.lastName ?? ''; } catch { /* Start a new sweep if the cursor is unreadable. */ }
+  const remaining = files.filter((entry) => entry.name.localeCompare(lastName) > 0);
+  return { path, files: (remaining.length ? remaining : files).slice(0, MAX_FILES) };
+}
+
+function pruneInflight(dir, now) {
+  try {
+    const batch = inflightPruneBatch(dir);
+    for (const file of batch.files) {
+      try {
+        const path = join(dir, file.name);
+        if (Date.parse(now) - statSync(path).mtimeMs > MAX_AGE) unlinkSync(path);
+      } catch { /* A raced or inaccessible file does not stop the remaining batch. */ }
+    }
+    // A persisted cursor prevents fresh files at the front from starving old sessions.
+    saveState(batch.path, { lastName: batch.files.at(-1)?.name ?? '' });
+  } catch { /* Missing/inaccessible recorder directories are normal. */ }
+}
+
 function saveState(path, state) {
   const temporary = `${path}.${process.pid}.tmp`;
   try {
@@ -90,6 +114,7 @@ function main() {
   const { state, output } = announcement(scanned, input, now);
   mkdirSync(dir, { recursive: true });
   saveState(path, state);
+  pruneInflight(join(dir, '..', 'inflight'), now);
   pruneState(dir, now);
   if (output) writeSync(1, JSON.stringify(output) + '\n');
 }

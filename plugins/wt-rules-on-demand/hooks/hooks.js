@@ -13,6 +13,8 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
+import { prepareFlight, startFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
+  mergeFlightHealth, noteFlightCall, resetFlightRecorder } from './flight-recorder.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
 
@@ -46,6 +48,57 @@ const activityWrites = new Map();
 const pendingActivity = new Map();
 let activityProfile = null;
 let activityRetryAt = 0;
+let flightReady = null;
+
+// Imported plans are pure: host operations stay literal, local calls here.
+async function flightOperation($, op, path, value) {
+  if (op === 'env') return detectorEnv($, path);
+  if (op === 'session') return $.session.id();
+  if (op === 'write') return $.fs.write(path, value);
+  if (op === 'list') return $.fs.list(path);
+  if (op === 'read') return $.fs.read(path);
+  if (op === 'log') return $.ui.log(path);
+}
+
+async function runFlightPlan($, plan) {
+  try {
+    let step = plan.next();
+    while (!step.done) {
+      const { op, path, value } = step.value;
+      let response;
+      try {
+        response = { value: await flightOperation($, op, path, value) };
+      } catch (error) { response = { error }; }
+      step = plan.next(response);
+    }
+    return step.value;
+  } catch { return null; }
+}
+
+async function collectFlights($, harvested) {
+  try {
+    if (!harvested?.length) return;
+    mergeFlightHealth(pendingHealth, { interruptedCalls: harvested.map(({ row }) => row) });
+    await flushHealth($);
+    await runFlightPlan($, markHarvested(harvested));
+  } catch { /* Leave the files for a later reload if health could not persist. */ }
+}
+
+async function beginFlight($, e, work, start) {
+  try {
+    if (!flightReady) flightReady = initializeFlights($);
+    await flightReady;
+    return await runFlightPlan($, startFlight(e, work, start));
+  } catch { return null; }
+}
+
+async function initializeFlights($) {
+  await runFlightPlan($, prepareFlight());
+  // All concurrent first events share this barrier, before any reusable slot write.
+  const harvested = await runFlightPlan($, harvestFlight());
+  // Interrupted slots stay reserved until background persistence and marking finish.
+  void collectFlights($, harvested);
+}
 
 function noteIdentityActivity(rules, field, now = new Date().toISOString()) {
   noteActivity(pendingActivity, activityWrites, rules, field, now);
@@ -361,6 +414,7 @@ const healthDay = (counts) => Object.fromEntries(HEALTH_FIELDS.map((field) => [f
 // A stored error entry without a timestamp string cannot be ordered, so it is dropped rather than blocking every flush.
 const healthErrors = (entries) => (Array.isArray(entries) ? entries : []).filter((entry) => typeof entry?.at === 'string');
 function mergeHealth(target, batch) {
+  mergeFlightHealth(target, batch);
   for (const [day, counts] of Object.entries(batch.days)) {
     const entry = target.days[day] ?? healthDay(null);
     for (const field of ['calls', 'errors', 'totalMs', 'slow']) entry[field] += counts[field];
@@ -379,13 +433,14 @@ async function flushHealth($) {
   await turn.previous.catch(() => {});
   healthFlushing++;
   try {
-    if (!pendingHealth.calls && !pendingHealth.lastErrors.length) return;
+    if (!pendingHealth.calls && !pendingHealth.lastErrors.length && !pendingHealth.interruptedCalls?.length) return;
     const batch = pendingHealth;
     pendingHealth = emptyHealth();
     try {
       const stored = await $.store.get('health');
       const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, healthDay(counts)])),
         lastErrors: healthErrors(stored?.lastErrors) };
+      mergeFlightHealth(health, stored);
       mergeHealth(health, batch);
       health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
       health.lastErrors = health.lastErrors.slice(-20);
@@ -859,6 +914,7 @@ let triggerClock = Date.now;
 async function trackedEvent($, e, next, work) {
   if (!enabled) return next(e);
   const start = Date.now();
+  const flight = await beginFlight($, e, work, start);
   let downstreamMs = 0, healthMs = 0, downstreamError = false;
   const timedNext = async (value) => {
     const began = Date.now();
@@ -880,9 +936,13 @@ async function trackedEvent($, e, next, work) {
     }
     throw error;
   } finally {
-    await loadedRules($, [...contexts.values()].flatMap((ctx) => ctx.rules ?? []));
-    await flushIdentityActivity($);
-    await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {});
+    await runFlightPlan($, finallyFlight(flight));
+    try {
+      await loadedRules($, [...contexts.values()].flatMap((ctx) => ctx.rules ?? []));
+      await flushIdentityActivity($);
+      noteFlightCall(pendingHealth, flight, Date.now() - start);
+      await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {});
+    } finally { await runFlightPlan($, completeFlight(flight)); }
   }
 }
 async function promptContextEvent($, e, next) { return trackedEvent($, e, next, 'prompt.context'); }
@@ -1042,4 +1102,4 @@ async function turnCompleteWork($, e, next) {
     return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
 }
 
-export function resetForSelftest() { activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest() { resetFlightRecorder(); flightReady = null; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

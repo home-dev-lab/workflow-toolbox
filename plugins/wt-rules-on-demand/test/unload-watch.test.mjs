@@ -202,3 +202,33 @@ test('hook registrations preserve startup and register all three watcher events 
   assert.deepEqual(hooks.UserPromptSubmit, [{ hooks: [expected] }]);
   assert.deepEqual(hooks.PreToolUse, [{ matcher: 'Agent|Task|SendMessage', hooks: [expected] }]);
 });
+
+test('detector prunes inflight files by mtime after seven days, including a small directory', async (t) => {
+  const s = await scope(t);
+  const dir = join(s.config, 'plugins', 'data', 'wt-rules-on-demand', 'inflight');
+  await mkdir(join(dir, 'nested'), { recursive: true });
+  const times = { expired: '2025-12-26T03:04:59.999Z', boundary: '2025-12-26T03:05:00.000Z', fresh: now };
+  for (const [name, time] of Object.entries(times)) {
+    const path = join(dir, `${name}.json`);
+    // Content start time deliberately disagrees with mtime: retention uses mtime only.
+    await writeFile(path, JSON.stringify({ startedAt: name === 'expired' ? now : '2020-01-01' }));
+    await utimes(path, new Date(time), new Date(time));
+  }
+  assert.notEqual(run(s), '');
+  assert.deepEqual((await readdir(dir)).sort(), ['boundary.json', 'fresh.json', 'nested'], 'detector must prune expired inflight files by mtime');
+});
+
+test('inflight pruning visits at most 200 files and advances past fresh files on later hooks', async (t) => {
+  const s = await scope(t);
+  const dir = join(s.config, 'plugins', 'data', 'wt-rules-on-demand', 'inflight');
+  await mkdir(dir, { recursive: true });
+  for (let index = 0; index < 200; index++) await writeFile(join(dir, `fresh-${String(index).padStart(3, '0')}.json`), '{}');
+  const old = join(dir, 'z-old.json');
+  await writeFile(old, '{}');
+  await utimes(old, new Date('2020-01-01'), new Date('2020-01-01'));
+  run(s);
+  assert.ok((await readdir(dir)).includes('z-old.json'), 'a hook must inspect no more than 200 inflight files');
+  run(s);
+  assert.ok(!(await readdir(dir)).includes('z-old.json'), 'pruning must advance so old files cannot starve behind fresh ones');
+  assert.equal((await readdir(dir)).length, 200);
+});

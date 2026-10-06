@@ -19,6 +19,17 @@ but always after compaction while unloaded. Detection scans only the last 4 MiB
 on first use, then new complete rows (at most the last 16 MiB per scan); unloads
 outside those bounds are not observed. This hook only announces the loss.
 
+While enabled, the engine writes small event breadcrumbs under
+`<config dir>/plugins/data/wt-rules-on-demand/inflight/`, reusing at most 32 slots
+per session across reloads. Completed and harvested slots are marked in place;
+the command-hook detector prunes files whose modification time is over seven
+days old. An “interrupted call”
+progress line after reload means an earlier load left that session's event in
+flight; it names the work, tool, phase, input-character estimate and start time.
+The health record's `interruptedCalls` retains the newest 20 such events, and
+`slowestCalls` lists today's ten longest completed calls in descending wall-time
+`ms`, with `work`, `tool`, `inputChars` and completion time `at` (UTC).
+
 Put rules in `<project>/.claude/rules-on-demand/*.md` or
 `<config dir>/rules-on-demand/*.md` (`CLAUDE_CONFIG_DIR`, otherwise
 `HOME/.claude`, or `USERPROFILE/.claude`). The `adopt` skill installs both rule

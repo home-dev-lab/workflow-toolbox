@@ -8,6 +8,7 @@ const alivePrefixes = [
   `${prefix}hooks.json changed — reloaded`,
   `${prefix}wt-rules-on-demand: serving`,
   `${prefix}wt-rules-on-demand: before-act refusal serving`,
+  `${prefix}wt-rules-on-demand: interrupted call`,
 ];
 const time = (value) => typeof value === 'string' ? Date.parse(value) : NaN;
 const timestamp = (value) => Number.isFinite(time(value)) ? value : null;
