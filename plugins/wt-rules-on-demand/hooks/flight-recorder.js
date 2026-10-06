@@ -114,8 +114,7 @@ function parsedBreadcrumb(content) {
 }
 
 function harvestLine(row) {
-  const status = row.phase === 'finally' ? 'reached finally, completion not confirmed' : 'interrupted call';
-  return `wt-rules-on-demand: ${status} ${row.work} (${row.tool || 'no tool'}), phase ${row.phase}, `
+  return `wt-rules-on-demand: call did not confirm completion: ${row.work} (${row.tool || 'no tool'}), last phase ${row.phase}, `
     + `${row.inputChars} input chars, started at ${row.startedAt}; found after the hooks module reloaded`;
 }
 
@@ -125,7 +124,8 @@ function* harvestEntry(entry, directory, sessionId) {
   const path = `${directory}/${entry.name}`;
   const response = yield* request('read', path);
   // Unreadable local slots must not be overwritten: they may hold crash evidence.
-  if (response?.error) occupied.add(path);
+  if (response?.error) { occupied.add(path); return false; }
+  occupied.delete(path);
   const row = parsedBreadcrumb(response?.value);
   if (!row || row.loadToken === loadToken) return null;
   if (row.sessionId !== sessionId) return null;
@@ -139,6 +139,17 @@ function missingDirectory(error) {
   return error?.code === 'ENOENT' || message.startsWith('ENOENT:') || / failed: ENOENT$/.test(message);
 }
 
+function* scanFlights(listing, directory, sessionId) {
+  const harvested = [];
+  let complete = true;
+  for (const entry of rows(listing)) {
+    const record = yield* harvestEntry(entry, directory, sessionId);
+    if (record === false) complete = false;
+    if (record) harvested.push(record);
+  }
+  return complete ? harvested : null;
+}
+
 export function* harvestFlight() {
   if (!metadata) return null;
   if (harvestDone) return [];
@@ -148,17 +159,14 @@ export function* harvestFlight() {
   // Unknown disk state stays protected until a later event can retry the scan.
   if (response.error || !Array.isArray(response.value)) return null;
   const listing = response.value;
-  const harvested = [];
-  for (const entry of rows(listing)) {
-    const record = yield* harvestEntry(entry, directory, sessionId);
-    if (record) harvested.push(record);
-  }
-  harvestDone = true;
+  const harvested = yield* scanFlights(listing, directory, sessionId);
+  harvestDone = harvested !== null;
   return harvested;
 }
 
 export function* markHarvested(harvested) {
   if (!metadata) return;
+  // At-least-once announcements: log before marking; a failed mark can duplicate the line after reload.
   for (const { path, row } of harvested) {
     const logged = yield* request('log', harvestLine(row));
     if (logged?.error) continue;

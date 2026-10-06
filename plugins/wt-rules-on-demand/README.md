@@ -31,14 +31,23 @@ files whose modification time is over seven days old, inspecting at most 200
 files per detector run and advancing a sweep cursor on later runs. Expired
 files beyond that batch remain until a later run. Directory enumeration and
 sorting still cover the entire directory; pruning also runs if saving watcher
-state fails. An “interrupted call” progress line after reload means an earlier
-load left that session's event in phase `work`; a `finally` slot instead says
-“reached finally, completion not confirmed”. These lines name the work, tool,
-phase, input-character estimate and start time.
+state fails. The cursor lives in `inflight/`, independently of watcher-state
+writes, and is ignored by the recorder. A “call did not confirm completion”
+progress line after reload means an earlier load left that session's event in
+phase `work` or `finally`. Neither phase proves an interruption: a completed
+call's trailing writes may not have landed. These lines name the work, tool,
+last phase, input-character estimate and start time. Announcements are
+at-least-once: the line is logged before marking the slot, and a failed mark
+can produce a duplicate line after reload.
 Recorder waits are bounded at 500 ms for the first-load scan and 200 ms for
 the entry write. An unfinished scan skips that event's breadcrumb; later
 events record after it finishes. Finally and completion writes run in order
-in the background, with one retry on a failed completion write.
+in the background, with one retry on a failed completion write. Failed own-slot
+reads leave the scan retryable by a later event under the same bound. Harvest
+only merges rows into the pending health batch; it never takes the engine's
+shared write turn or issues a store operation. The engine's normal flush
+persists the batch. Recorder diagnostics must never stall serving; announcement,
+marking and health persistence are best effort rather than one atomic operation.
 The health record's `interruptedCalls` retains the newest 20 such events, and
 `slowestCalls` lists today's ten longest completed calls in descending wall-time
 `ms`, with `work`, `tool`, `inputChars` and completion time `at` (UTC).

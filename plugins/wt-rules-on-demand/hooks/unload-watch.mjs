@@ -72,9 +72,9 @@ function pruneState(dir, now) {
 }
 
 function inflightPruneBatch(dir) {
-  const files = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile())
+  const files = readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name !== '.inflight-prune')
     .sort((a, b) => a.name.localeCompare(b.name));
-  const path = join(dir, '..', 'unload-watch', '.inflight-prune');
+  const path = join(dir, '.inflight-prune');
   let lastName = '';
   try { lastName = readState(path)?.lastName ?? ''; } catch { /* Start a new sweep if the cursor is unreadable. */ }
   const remaining = files.filter((entry) => entry.name.localeCompare(lastName) > 0);

@@ -100,9 +100,9 @@ async function collectFlights($, harvested) {
   try {
     if (!harvested?.length) return;
     mergeFlightHealth(pendingHealth, { interruptedCalls: harvested.map(({ path, row }) => ({ ...row, path })) });
-    await flushHealth($);
+    // Only the engine's normal flush persists this batch; harvest never takes its write turn.
     await runFlightPlan($, markHarvested(harvested));
-  } catch { /* Leave the files for a later reload if health could not persist. */ }
+  } catch { /* Diagnostic collection must never affect serving. */ }
 }
 
 async function beginFlight($, e, work, start) {
@@ -126,7 +126,7 @@ async function initializeFlights($) {
   // All concurrent first events share this barrier, before any reusable slot write.
   const harvested = await runFlightPlan($, harvestFlight());
   if (!harvested) return false;
-  // Interrupted slots stay reserved until background persistence and marking finish.
+  // Unconfirmed slots stay reserved until background announcement and marking finish.
   void collectFlights($, harvested);
   return true;
 }

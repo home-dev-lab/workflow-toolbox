@@ -8,8 +8,7 @@ const alivePrefixes = [
   `${prefix}hooks.json changed — reloaded`,
   `${prefix}wt-rules-on-demand: serving`,
   `${prefix}wt-rules-on-demand: before-act refusal serving`,
-  `${prefix}wt-rules-on-demand: interrupted call`,
-  `${prefix}wt-rules-on-demand: reached finally, completion not confirmed`,
+  `${prefix}wt-rules-on-demand: call did not confirm completion:`,
 ];
 const time = (value) => typeof value === 'string' ? Date.parse(value) : NaN;
 const timestamp = (value) => Number.isFinite(time(value)) ? value : null;
@@ -32,7 +31,7 @@ function evidence(row) {
   if (row?.type !== 'system' || typeof row.content !== 'string') return null;
   if (row.subtype === 'local_command') {
     // /reload-plugins prints one global summary ("Reloaded: 13 plugins · …") that names no plugin.
-    return /Reloaded: \d+ plugins?\b/.test(row.content) ? 'aliveAt' : null;
+    return /^<local-command-stdout>Reloaded: \d+ plugins? · \d+ skills?(?: · [^<\r\n]+)?<\/local-command-stdout>$/.test(row.content) ? 'aliveAt' : null;
   }
   if (row.subtype !== 'informational') return null;
   if (row.content === unloadContent) return 'unloadedAt';

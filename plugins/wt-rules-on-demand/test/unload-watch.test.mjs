@@ -142,6 +142,29 @@ test('local-command output other than a plugin reload summary cannot prove recov
   }
 });
 
+for (const content of ['<local-command-stdout>Example only: Reloaded: 13 plugins. No reload performed.</local-command-stdout>',
+  'Reloaded: other-plugin', '<local-command-stdout>Reloaded: 13 plugins</local-command-stdout>']) {
+  test(`reload recovery requires stdout to begin with the plugin and skill summary: ${content}`, () => {
+    assert.notEqual(pure(unload + row(content, later, 'local_command')).output, null,
+      'quoted, unrelated or partial reload text must not prove recovery');
+  });
+}
+
+test('inflight prune cursor advances when the watcher state directory is unwritable', async (t) => {
+  const s = await scope(t), dir = join(s.dir, '..', 'inflight');
+  await mkdir(dir, { recursive: true });
+  for (let index = 0; index < 200; index++) await writeFile(join(dir, `fresh-${String(index).padStart(3, '0')}.json`), '{}');
+  const old = join(dir, 'z-old.json');
+  await writeFile(old, '{}');
+  await utimes(old, new Date('2020-01-01'), new Date('2020-01-01'));
+  inject(s, 'writeFileSync', `String(args[0]).startsWith(${JSON.stringify(s.dir + '/')})`);
+  run(s);
+  assert.ok((await readdir(dir)).includes('z-old.json'), 'the first run must retain the 200-file inspection bound');
+  run(s);
+  assert.ok(!(await readdir(dir)).includes('z-old.json'), 'an unwritable watcher state directory must not pin the inflight sweep');
+  assert.ok((await readdir(dir)).includes('.inflight-prune'), 'the sweep cursor must live in inflight');
+});
+
 test('watcher session aliases get distinct hashed state files', async (t) => {
   const s = await scope(t);
   assert.notEqual(run(s, { session_id: 'a/b' }), '');
@@ -159,7 +182,7 @@ test('watcher save failure still prunes expired recorder files', async (t) => {
   await utimes(old, new Date('2020-01-01'), new Date('2020-01-01'));
   inject(s, 'renameSync', `args[1] === ${JSON.stringify(s.state)}`);
   run(s);
-  assert.deepEqual(await readdir(dir), [], 'state persistence failure must not skip retention');
+  assert.deepEqual(await readdir(dir), ['.inflight-prune'], 'state persistence failure must not skip retention');
 });
 
 for (const source of ['startup', 'resume']) {
@@ -291,7 +314,7 @@ test('detector prunes inflight files by mtime after seven days, including a smal
     await utimes(path, new Date(time), new Date(time));
   }
   assert.notEqual(run(s), '');
-  assert.deepEqual((await readdir(dir)).sort(), ['boundary.json', 'fresh.json', 'nested'], 'detector must prune expired inflight files by mtime');
+  assert.deepEqual((await readdir(dir)).sort(), ['.inflight-prune', 'boundary.json', 'fresh.json', 'nested'], 'detector must prune expired inflight files by mtime');
 });
 
 test('inflight pruning visits at most 200 files and advances past fresh files on later hooks', async (t) => {
@@ -306,5 +329,5 @@ test('inflight pruning visits at most 200 files and advances past fresh files on
   assert.ok((await readdir(dir)).includes('z-old.json'), 'a hook must inspect no more than 200 inflight files');
   run(s);
   assert.ok(!(await readdir(dir)).includes('z-old.json'), 'pruning must advance so old files cannot starve behind fresh ones');
-  assert.equal((await readdir(dir)).length, 200);
+  assert.equal((await readdir(dir)).filter((name) => name !== '.inflight-prune').length, 200);
 });

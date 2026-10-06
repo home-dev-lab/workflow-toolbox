@@ -133,15 +133,15 @@ async function abandoned(s, work = 'tool.call') {
   return saved;
 }
 
-test('reload harvests same-session leftovers into health before slot reuse and logs details', async () => {
+test('reload batches same-session leftovers for normal health flush and logs details', async () => {
   const old = fixture(), [path, text] = await abandoned(old);
   const s = fixture({ files: old.files });
-  await s.event();
+  await s.event('turn.complete');
   const row = JSON.parse(text), health = s.stored.get('health');
   assert.deepEqual(health?.interruptedCalls, [{ ...row, path }], 'health must retain the interrupted call after reload');
   assert.ok(s.calls.some((call) => call.op === 'write' && call.path === path && call.row.phase === 'harvested'));
   assert.equal(s.logs.length, 1);
-  for (const word of ['interrupted call', 'tool.call', 'Bash', 'work', '3 input chars']) assert.ok(s.logs[0].includes(word));
+  for (const word of ['call did not confirm completion', 'tool.call', 'Bash', 'work', '3 input chars']) assert.ok(s.logs[0].includes(word));
   assert.ok(s.logs[0].includes(row.startedAt));
   const fresh = s.calls.find((call) => call.op === 'write' && call.row.phase === 'work').row;
   assert.notEqual(fresh.loadToken, row.loadToken);
@@ -182,7 +182,7 @@ test('interrupted history retains only the twenty newest calls', async () => {
     old.files.set(slotPath(path, index), JSON.stringify({ ...row, startedAt: `2026-01-01T00:00:${String(index).padStart(2, '0')}.000Z` }));
   }
   const s = fixture({ files: old.files });
-  await s.event();
+  await s.event('turn.complete');
   assert.equal(s.stored.get('health')?.interruptedCalls.length, 20);
   assert.equal(s.stored.get('health').interruptedCalls[0].startedAt, '2026-01-01T00:00:05.000Z');
   assert.equal(s.logs.length, 25);
@@ -227,11 +227,11 @@ test('disabled recorder makes no host calls', async () => {
   assert.deepEqual(s.logs, []);
 });
 
-test('harvest progress is alive evidence for the unload detector', () => {
+test('unconfirmed harvest progress is alive evidence for the unload detector', () => {
   const timestamp = '2026-01-10T12:00:00.000Z';
   const rows = [
     { content: 'wt-rules-on-demand: wt-rules-on-demand was unloaded: it crashed the hooks worker', timestamp: '2026-01-10T11:59:00.000Z' },
-    { content: 'wt-rules-on-demand: wt-rules-on-demand: interrupted call tool.call (Bash), phase work, 3 input chars, started at 2026-01-10T11:58:00.000Z', timestamp },
+    { content: 'wt-rules-on-demand: wt-rules-on-demand: call did not confirm completion: tool.call (Bash), last phase work, 3 input chars, started at 2026-01-10T11:58:00.000Z', timestamp },
   ];
   const bytes = Buffer.from(rows.map((row) => JSON.stringify({ type: 'system', subtype: 'informational', ...row }) + '\n').join(''));
   const state = scanTranscript(bytes, scanPlan(bytes.length, null));
@@ -255,17 +255,16 @@ test('first-load harvest finishes reading before any breadcrumb can overwrite a 
   assert.deepEqual(s.logs, []);
 });
 
-test('failed harvest health write leaves evidence for a later load and failed log never changes a result', async () => {
-  const old = fixture(), [path] = await abandoned(old), s = fixture({ files: old.files });
+test('failed normal health flush retains pending harvested rows for a later normal flush', async () => {
+  const old = fixture(), [path, text] = await abandoned(old), s = fixture({ files: old.files });
+  const save = s.$.store.set;
   s.$.store.set = async () => { throw new Error('health unavailable'); };
-  assert.deepEqual(await s.event(), { answer: 42 });
-  assert.equal(s.files.has(path), true);
-  const nextLoad = fixture({ files: s.files });
-  nextLoad.$.ui.log = () => { throw new Error('log unavailable'); };
-  assert.deepEqual(await nextLoad.event(), { answer: 42 });
-  assert.equal(nextLoad.stored.get('health').interruptedCalls.length, 1);
-  assert.equal(nextLoad.calls.some((call) => call.op === 'write' && call.path === path && call.row.phase === 'harvested'), false,
-    'a failed announcement must leave evidence unmarked');
+  assert.deepEqual(await s.event('turn.complete'), { answer: 42 });
+  assert.equal(s.stored.has('health'), false);
+  s.$.store.set = save;
+  assert.deepEqual(await s.event('turn.complete'), { answer: 42 });
+  assert.deepEqual(s.stored.get('health').interruptedCalls, [{ ...JSON.parse(text), path }],
+    'a failed engine flush must retain the pending harvested rows');
 });
 
 test('failed breadcrumb writes still retain completed-call timing', async (t) => {
@@ -322,7 +321,7 @@ test('harvested slots cannot be reported again on later reloads', async () => {
   assert.equal(JSON.parse(s.files.get(path)).phase, 'harvested', 'harvest must mark its slot as already reported');
   const nextLoad = fixture({ files: s.files });
   await nextLoad.event();
-  assert.deepEqual(nextLoad.logs, [], 'an interrupted call must never be reported twice');
+  assert.deepEqual(nextLoad.logs, [], 'a successfully marked slot must not be reported again');
 });
 
 test('slowest calls are capped at exactly ten even in a single large batch', () => {
@@ -373,23 +372,48 @@ test('session ids that sanitize alike still have distinct bounded slot filenames
   assert.equal(breadcrumbs(second).length, 2);
 });
 
-test('harvest health persistence stays off the serving path while old slots are protected', async () => {
+test('harvest never takes the shared write turn or issues a health store operation', async () => {
   const old = fixture(), [path, text] = await abandoned(old), s = fixture({ files: old.files });
-  let release, entered, workEntered = false;
-  const hold = new Promise((resolve) => { release = resolve; });
-  const ready = new Promise((resolve) => { entered = resolve; });
-  const save = s.$.store.set;
-  s.$.store.set = async (name, value) => { if (name === 'health') { entered(); await hold; } await save(name, value); };
+  const hold = deferred(), get = s.$.store.get;
+  let workEntered = false, harvestReads = 0;
+  s.$.store.get = (name) => {
+    if (name === 'health' && !workEntered) { harvestReads++; return hold.promise; }
+    return get(name);
+  };
   const result = { deny: 'fixture refusal' };
-  const pending = s.event('session.compact', {}, async () => { workEntered = true; return result; });
-  await ready;
-  await new Promise(setImmediate);
-  const served = workEntered, protectedSlot = s.files.get(path);
-  release();
-  assert.equal(await pending, result);
-  assert.equal(served, true, 'harvest health persistence must not delay serving');
-  assert.equal(protectedSlot, text, 'unpersisted interruption evidence must remain protected from slot reuse');
+  try {
+    assert.equal(await within(s.event('turn.complete', {}, () => { workEntered = true; return result; }),
+      650, 'turn.complete return must not depend on a harvest-issued health read'), result);
+    assert.equal(harvestReads, 0, 'harvest must issue no health store operation');
+    assert.deepEqual(s.stored.get('health').interruptedCalls, [{ ...JSON.parse(text), path }],
+      'normal turn completion must persist the pending harvest batch');
+  } finally { hold.resolve(); await new Promise(setImmediate); }
 });
+
+test('harvest only batches health rows until an engine flush is due', async () => {
+  const old = fixture(), [path, text] = await abandoned(old), s = fixture({ files: old.files });
+  const get = s.$.store.get, healthReads = [];
+  s.$.store.get = async (name) => { if (name === 'health') { healthReads.push(name); } return get(name); };
+  await s.event();
+  assert.deepEqual(healthReads, [], 'harvest must not read the health store');
+  assert.equal(s.calls.some((call) => call.op === 'store'), false, 'harvest must not write the health store');
+  assert.equal(s.logs.length, 1, 'the diagnostic line must not wait for health persistence');
+  await s.event('turn.complete');
+  assert.ok(healthReads.length > 0, 'the engine flush must read health');
+  assert.deepEqual(s.stored.get('health').interruptedCalls, [{ ...JSON.parse(text), path }]);
+});
+
+for (const op of ['log', 'mark']) {
+  test(`a never resolving harvest ${op} cannot delay a hook return`, async () => {
+    const old = fixture();
+    await abandoned(old);
+    const s = fixture({ files: old.files }), hold = deferred(), write = s.$.fs.write;
+    if (op === 'log') s.$.ui.log = () => hold.promise;
+    else s.$.fs.write = (path, text) => JSON.parse(text).phase === 'harvested' ? hold.promise : write(path, text);
+    assert.deepEqual(await within(s.event('turn.complete'), 250, `hook return must not depend on harvest ${op}`), { answer: 42 });
+    assert.equal(s.stored.get('health').interruptedCalls.length, 1);
+  });
+}
 
 // The real host (2.1.292) rethrows a failed $.fs call as `<plugin>: $.fs.<op>(<path>) failed: <errno>`,
 // with no `code` property; the node-style shape is kept for older hosts and fixtures.
@@ -479,14 +503,18 @@ test('one failed complete write is retried and creates no reload report', async 
   assert.equal(attempts, 2, 'complete must retry once');
 });
 
-test('finally harvest describes unconfirmed completion without a confident interruption', async () => {
-  const old = fixture(), [path, text] = await abandoned(old);
-  old.files.set(path, JSON.stringify({ ...JSON.parse(text), phase: 'finally' }));
-  const s = fixture({ files: old.files });
-  await s.event();
-  assert.match(s.logs[0], /reached finally, completion not confirmed/);
-  assert.doesNotMatch(s.logs[0], /interrupted call/);
-});
+for (const phase of ['work', 'finally']) {
+  test(`${phase} harvest says completion is unconfirmed and never claims an interruption`, async () => {
+    const old = fixture(), [path, text] = await abandoned(old);
+    old.files.set(path, JSON.stringify({ ...JSON.parse(text), phase }));
+    const s = fixture({ files: old.files });
+    await s.event();
+    assert.ok(s.logs[0].startsWith(`wt-rules-on-demand: call did not confirm completion: tool.call (Bash), last phase ${phase},`),
+      'every incomplete phase must use the same unconfirmed-completion line shape');
+    assert.doesNotMatch(s.logs[0], /interrupt/i, 'no harvest line may claim an interruption');
+    assert.equal(s.logs.length, 1);
+  });
+}
 
 test('announcement failure leaves the slot available to announce after reload', async () => {
   const old = fixture(), [path, text] = await abandoned(old), s = fixture({ files: old.files });
@@ -498,19 +526,24 @@ test('announcement failure leaves the slot available to announce after reload', 
   assert.equal(next.logs.length, 1, 'a failed log must not consume the announcement');
 });
 
-test('persist then failed mark then reload retains one health row per slot identity', async () => {
+test('persist then failed mark then reload retains one health row per slot identity including path', async () => {
   const old = fixture(), [path] = await abandoned(old), s = fixture({ files: old.files });
+  const secondPath = slotPath(path, 1);
+  s.files.set(secondPath, s.files.get(path));
   const write = s.$.fs.write;
   s.$.fs.write = async (file, text) => {
     if (JSON.parse(text).phase === 'harvested') throw hostFailure('write', file);
     return write(file, text);
   };
-  await s.event();
+  await s.event('turn.complete');
   const next = fixture({ files: s.files });
   next.stored.set('health', structuredClone(s.stored.get('health')));
-  await next.event();
-  assert.equal(next.stored.get('health').interruptedCalls.length, 1, 're-harvest must deduplicate the persisted slot');
-  assert.equal(next.stored.get('health').interruptedCalls[0].path, path, 'identity includes the slot path');
+  await next.event('turn.complete');
+  assert.equal(next.stored.get('health').interruptedCalls.length, 2, 'distinct paths must survive re-harvest even with identical loadToken and startedAt');
+  assert.deepEqual(next.stored.get('health').interruptedCalls.map((row) => row.path).sort(), [path, secondPath].sort(),
+    'identity includes the slot path');
+  assert.equal(s.logs.length, 2);
+  assert.equal(next.logs.length, 2, 'a failed mark permits duplicate announcements on reload');
 });
 
 test('transient listing failure retries on a later event without unsafe writes', async () => {
@@ -525,4 +558,46 @@ test('transient listing failure retries on a later event without unsafe writes',
   await s.event();
   assert.equal(breadcrumbs(s).length, 1, 'a later event must retry a transient list failure');
   assert.equal(attempts, 2);
+});
+
+test('a never resolving harvest slot read delays no registered hook beyond the scan bound', async () => {
+  const old = fixture();
+  await abandoned(old);
+  for (const work of ['prompt.context', 'prompt.submit', 'tool.call', 'turn.complete', 'session.compact']) {
+    const s = fixture({ files: new Map(old.files) }), hold = deferred();
+    s.$.fs.read = () => hold.promise;
+    assert.deepEqual(await within(s.event(work), 650, `${work} exceeded the 500 ms harvest scan bound`), { answer: 42 });
+    assert.equal(s.calls.some((call) => call.op === 'write'), false, 'an unfinished slot scan must write no breadcrumb');
+  }
+});
+
+for (const failures of [1, 32]) {
+  test(`failed own-slot reads retry on later events under the scan bound and release recovered slots (${failures})`, async () => {
+    const old = fixture(), [path, text] = await abandoned(old);
+    const complete = JSON.stringify({ ...JSON.parse(text), phase: 'complete' });
+    old.files.clear();
+    for (let index = 0; index < 32; index++) old.files.set(slotPath(path, index), complete);
+    const s = fixture({ files: old.files }), read = s.$.fs.read, hold = deferred();
+    const failed = new Set(Array.from({ length: failures }, (_, index) => slotPath(path, index)));
+    s.$.fs.read = async (file) => { if (failed.has(file)) { throw hostFailure('read', file); } return read(file); };
+    await s.event();
+    assert.equal(s.calls.some((call) => call.op === 'write'), false, 'failed own-slot scan must not write a breadcrumb');
+    s.$.fs.read = async (file) => { await hold.promise; return read(file); };
+    await within(s.event('turn.complete'), 650, 'retried slot scan exceeded the 500 ms bound');
+    assert.equal(s.calls.filter((call) => call.op === 'list').length, 2, 'failed own-slot reads must leave the scan retryable');
+    hold.resolve();
+    await new Promise(setImmediate);
+    await s.event();
+    assert.ok(s.calls.some((call) => call.op === 'write' && call.row.phase === 'work'), 'recovered own-slot reads must release all 32 reservations');
+  });
+}
+
+test('recorder ignores the inflight prune cursor', async () => {
+  const old = fixture(), [, text] = await abandoned(old), s = fixture();
+  const path = `${directory}/.inflight-prune`;
+  s.files.set(path, text);
+  await s.event();
+  assert.equal(s.calls.some((call) => call.op === 'read' && call.path === path), false, 'the prune cursor is not a safe slot filename');
+  assert.equal(s.files.get(path), text);
+  assert.deepEqual(s.logs, []);
 });
