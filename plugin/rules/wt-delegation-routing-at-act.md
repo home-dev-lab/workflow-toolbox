@@ -20,6 +20,9 @@ per-step instead of per-milestone pays the envelope to say nothing.
 
 ## Picking the tier and effort at each spawn
 
+Compose pilot/orchestrator spawn (environment brief + model elevation) via
+`workflow-toolbox:pilot-wave` skill.
+
 Choose BOTH axes by task, never by identity or what session happens to run:
 
 - Model tier: top-judgment (rarest — arbitration/adversarial verification strong tier can't

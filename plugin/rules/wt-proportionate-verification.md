@@ -23,6 +23,14 @@ Cut the COUNT, never the MODEL.
 Adding agents does NOT add independence. These levers do. **The ORDER is the point**: each one
 worth more than everything below it. Spend the cheap top before buying the expensive bottom.
 
+Rank levers 3 to 6 between method diversity and temporal re-verification. Have each verifier build
+its own explanation before seeing another's and state what it could not verify. Vary information,
+functional and model-family diversity next; treat model family as one axis, not the master lever.
+Collect verdicts in parallel and in isolation, never as a debate, and aggregate mechanically; the
+arbiter resolves the disagreement. A cross-family verifier's findings are input weighted by type,
+never an autonomous verdict. Read the full text in the `proportionate-verification-decorrelation`
+block of `wt-proportionate-verification-at-act.md`.
+
 ### 1. Mechanical ground truth — strongest lever. NOT self-validating.
 Claim decidable by exit code, rendered pixel, source re-read at right revision, re-run of failing
 case? Decide it that way. Not by judgment.
@@ -62,28 +70,6 @@ This is the operational answer to "was the failure it prevent actually exercised
 green suite cannot settle about itself.
 <!-- embedded-copy:mutation-red-proof:end -->
 
-### 3. Hypothesis independence.
-Each verifier construct its OWN explanation BEFORE seeing anyone
-else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
-it.
-
-### 4. Information diversity.
-Different sources, tools, slices. Shared source list cap coverage at
-what it happened to include.
-
-### 5. Functional diversity.
-Distinct lenses, distinct objectives (correctness, security,
-performance, does-it-reproduce). Not N identical reviewers.
-
-### 6. Model-family diversity — ONE axis among these. NOT the master lever.
-Real and worth using, documented reason: LLM judges score their OWN outputs higher AND rate
-same-family outputs higher — >5000 prompt-completion pairs against expert human annotation, nine
-judges (arXiv:2508.06709). Same-family verifier is not merely blind in same places. It is BIASED
-IN FAVOUR of the work.
-But different family does NOT buy independence on every axis. Two different families can share a
-ROLE-LEVEL blind spot — severity ranking is the observed one: one lane flatten it, another is
-unstable across runs on the same input.
-
 ### 7. Temporal re-verification.
 Re-check after the fix, against the case that FAILED. Not against
 the author's account of it.
@@ -110,23 +96,6 @@ modes, running the thing, reading the source), NOT by being a different family. 
 ranking teach the wrong lesson to whoever read the outcome.
 State it at same prominence as the result. An unstated axis reads as an axis covered.
 
-## Never buy independence then spend it on a debate
-
-Verdicts are collected in PARALLEL and in ISOLATION. Moment one verifier see another's answer, the
-independence you paid for is GONE. It does not degrade gracefully.
-Inter-agent sycophancy collapse debate into premature consensus before the correct conclusion is
-reached. Measured multi-agent debate under it score LOWER than a single agent on the same task,
-through distinct debater-driven and judge-driven failure modes (arXiv:2509.23055).
-So: no sequential rounds where agents read each other. No "reviewer 2 comments on reviewer 1". No
-consensus-seeking step. Aggregate MECHANICALLY (majority, or any-critical-wins). Arbiter resolve
-the disagreement — **disagreement is the signal you were buying**, not a defect to smooth away
-before reporting.
-
-Cross-family verifier has no project context. Weight its findings BY TYPE: high signal on
-checkable / reproducible-crash issues, low on "this convention is wrong". It is INPUT, never an
-autonomous verdict. You stay arbiter. A verdict contradicting your richer in-context read does not
-auto-win.
-
 ## Breadth is a SECOND, independent axis
 
 The ladder scale verification to what the CHANGE introduce — that is DEPTH. It is structurally
@@ -151,13 +120,14 @@ or outward-facing changes. Lower rung otherwise.
 
 <!-- Embedded elsewhere in this plugin (delegated agents run with no ambient rules — only
      their own definition reaches them): the pilot and pilot-orchestrator definitions each carry
-     a byte-identical copy of the block above, between the same
-     `embedded-copy:proportionate-verification-ladder` markers. This file is the canonical
-     source — if you edit the ladder, copy the exact text into every embedded copy; never edit
-     an embedded copy independently of this source.
+     byte-identical copies between the `embedded-copy:proportionate-verification-ladder`
+     and `embedded-copy:proportionate-verification-decorrelation` markers. This file and
+     wt-proportionate-verification-at-act.md are their canonical sources — if you edit either
+     block, copy the exact text into every embedded copy; never edit an embedded copy
+     independently of its source.
 
      ⚠ Find the copies by SEARCHING FOR THE MARKER, not by the paths that used to hold them:
-       grep -rl "embedded-copy:proportionate-verification-ladder" <plugin dir>
+       grep -rl "embedded-copy:proportionate-verification-" <plugin dir>
      This note previously named two paths that a later reorganisation emptied, so it sent a
      reader to files that no longer existed while reading perfectly plausible. A tree move is
      exactly the kind of change nobody re-reads as a change to a safety mechanism. -->
