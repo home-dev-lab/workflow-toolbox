@@ -592,6 +592,8 @@ describe('wt-spawn-capability-guard-hook', () => {
       'You cannot modify code; give the summary in your final message and write the full report to /tmp/r.md.',
       'If you cannot finish, return your partial verdict in your final message. Write your report to /tmp/r.md.',
       'Write your report to /tmp/r.md. Your final message is ONE line: REPORT WRITTEN: <verdict>',
+      // A carrier verb with an inability, followed by the status line: only the status-line exclusion keeps it silent.
+      "Since you can't write files here, return in your final message one line: REPORT WRITTEN: <verdict>. Write your report to /tmp/r.md",
     ])('R2: a status-line or unrelated mention names no shadow: %s', (prompt) => {
       shadowDeny(spawnWith('tools: Read, Grep', prompt), [])
     })
