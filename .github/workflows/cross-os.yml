@@ -53,11 +53,15 @@ jobs:
         timeout-minutes: 5
         with:
           node-version: 24
-      # The checkout is shallow; the suite-lock interop tests unpack an older lock client from history.
-      # Fetch that one commit (its id lives in the descriptor) rather than the whole history.
+      # The checkout is shallow; suite-lock interop tests unpack historical clients by descriptor role.
+      # Fetch every descriptor commit rather than the whole history.
       - name: Fetch the base-version lock client
         shell: bash
-        run: git fetch --no-tags --depth=1 origin "$(node -p "require('./test-support/base-version-client.json').commit")"
+        run: |
+          commits=$(node -p "Object.values(require('./test-support/base-version-client.json').clients).join('\n')")
+          for commit in $commits; do
+            git fetch --no-tags --depth=1 origin "$commit"
+          done
         timeout-minutes: 3
       - name: Enable corepack (pnpm pinned via packageManager)
         run: corepack enable

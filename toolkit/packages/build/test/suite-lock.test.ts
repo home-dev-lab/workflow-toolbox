@@ -135,7 +135,8 @@ describe('suite lock library', () => {
     const lockDir = join(root, 'lock.d')
     const replacement = { pid: process.pid, argv: ['replacement'], startedAt: new Date().toISOString() }
     let replaced = false
-    await expect(acquireSuiteLock({ root, waitS: 0.2, staleS: 0.2, pollMs: 10, beforePublish: () => {
+    // Windows reclaims by age and uses staleS as the head wait budget; fail fast to keep the replacement non-stale.
+    await expect(acquireSuiteLock({ root, waitS: process.platform === 'win32' ? 0 : 0.2, staleS: process.platform === 'win32' ? 2 : 0.2, pollMs: 10, beforePublish: () => {
       if (replaced) return
       replaced = true
       rmSync(lockDir, { recursive: true })
