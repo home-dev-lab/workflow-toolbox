@@ -279,9 +279,15 @@ function subagentNotice(stdoutJson, reachSubagents) {
  * @param {string} [event.agent] - bounded agent id, if known.
  * @param {object} [event.evidence] - up to six bounded string/number fields chosen by the guard.
  */
+/** Names of precision rules that matched but did not change the decision (measured before they may). */
+function shadowField(shadow, mask) {
+  const names = Array.isArray(shadow) ? shadow.filter((name) => typeof name === 'string') : []
+  return names.length ? { shadow: names.map((name) => mask(name)) } : {}
+}
+
 export function recordGuardEvent(event = {}) {
   try {
-    const { guard, decision, class: cls, reason, cwd, session, agent, evidence } = event || {}
+    const { guard, decision, class: cls, reason, cwd, session, agent, evidence, shadow } = event || {}
     if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
     // Classify from the raw target before secret masking can alter a path segment, and fall back
     // to this process's own directory when the call site omitted one — see effectiveCwd.
@@ -312,6 +318,7 @@ export function recordGuardEvent(event = {}) {
       pid: process.pid,
       ppid: process.ppid,
       ...(safeEvidence ? { evidence: safeEvidence } : {}),
+      ...shadowField(shadow, mask),
     }
     appendFileSync(journalPath(), `${JSON.stringify(entry)}\n`)
   } catch {

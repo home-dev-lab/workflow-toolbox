@@ -15,5 +15,5 @@ export function resolveAgentTypeTools(type, cwd) {
   if (tools === undefined || definition.data.tools !== undefined && definition.data.tools !== null && typeof definition.data.tools !== 'string' && !Array.isArray(definition.data.tools)) return { resolved: false, tools: null, unresolved: 'invalid tools definition' }
   const denied = toolList(definition.data.disallowedTools)
   if (denied === undefined || definition.data.disallowedTools !== undefined && typeof definition.data.disallowedTools !== 'string' && !Array.isArray(definition.data.disallowedTools)) return { resolved: false, tools: null, unresolved: 'invalid disallowedTools definition' }
-  return { resolved: true, tools, denied, unresolved: null }
+  return { resolved: true, tools, denied, body: definition.body ?? '', unresolved: null }
 }
