@@ -45,7 +45,7 @@ export function cellWidth(value) {
 
 // An unreported width is treated as wide, as the header layout does (`narrow` needs a reported width below 72):
 // shortening labels for a width nobody measured would hide text on hosts that simply do not report one.
-export const UNREPORTED_PANE_COLUMNS = 160;
+const UNREPORTED_PANE_COLUMNS = 160;
 export function paneColumns(value) {
   if (value === undefined || value === null || !Number.isFinite(Number(value))) return UNREPORTED_PANE_COLUMNS;
   return Number(value) >= 40 ? Math.floor(Number(value)) : 40;
