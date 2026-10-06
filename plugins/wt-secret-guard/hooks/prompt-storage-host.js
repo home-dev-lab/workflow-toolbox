@@ -149,7 +149,15 @@ export async function scrubPromptStorage($, replacements, signal) {
   return false;
 }
 
-export async function scrubToolUseStorage($, replacements, toolUseId, signal) {
+function toolStorageNotice(forwarded) {
+  if (!forwarded && toolStorageFailureNoticed) return null;
+  toolStorageFailureNoticed = true;
+  return forwarded
+    ? 'wt-secret-guard: forwarded with body redaction, but persisted input could not be repaired; a raw secret may remain in its transcript.'
+    : 'wt-secret-guard: could not scrub a denied tool input from Claude Code storage; the call was refused but a raw secret may remain in its transcript.';
+}
+
+export async function scrubToolUseStorage($, replacements, toolUseId, signal, forwarded = false) {
   try {
     const root = await configDir($);
     const cwd = await $.sessionCwd();
@@ -163,10 +171,8 @@ export async function scrubToolUseStorage($, replacements, toolUseId, signal) {
     }
     throw new Error('record not found');
   } catch {
-    if (!toolStorageFailureNoticed) {
-      toolStorageFailureNoticed = true;
-      await $.uiLog('wt-secret-guard: could not scrub a denied tool input from Claude Code storage; the call was refused but a raw secret may remain in its transcript.');
-    }
+    const notice = toolStorageNotice(forwarded);
+    if (notice) await $.uiLog(notice);
     return false;
   }
 }

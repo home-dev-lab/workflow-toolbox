@@ -108,7 +108,8 @@ test('rollback cutoff compares instants and refuses unknown migration', async (t
   await migrateRule(root, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'tool-input', tool: '^Agent$', 'require-input-regex': 'yes', window: 1, 'on-close': 'not applicable' } }, {});
   const ledger = join(root, '.claude/rules-on-demand-ledger.jsonl');
   const entry = JSON.parse((await readFile(ledger, 'utf8')).trim());
-  await writeFile(ledger, JSON.stringify({ ...entry, time: '2026-09-26T10:00:00Z' }) + '\n');
+  // This lock concerns the legacy compliance cutoff, independently of provisional exposure.
+  await writeFile(ledger, JSON.stringify({ ...entry, state: undefined, time: '2026-09-26T10:00:00Z' }) + '\n');
   const store = join(root, 'store.json'), verdicts = join(root, 'verdicts.jsonl'); await writeFile(store, '{}');
   const rows = Array.from({ length: 5 }, () => JSON.stringify({ rule: 'sample.md', scope: 'project', rulesDir: join(root, '.claude/rules-on-demand'), at: '2026-09-26T11:00:00+02:00', verdict: 'trigger miss', triggerMatched: false }));
   await writeFile(verdicts, rows.join('\n') + '\n');

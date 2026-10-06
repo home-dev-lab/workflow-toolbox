@@ -52,7 +52,10 @@ function readNumber(value) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--project', '--poll'],
+    booleanFlags: ['--once'],
+  })
   const relayLine = relaySkipLine('WAKE FLOOR')
   if (relayLine) {
     write(relayLine)

@@ -198,6 +198,7 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_response: { agent_id: 'agent-helper-1' },
       }
     case 'wt-outbound-guard-hook.mjs':
+    case 'wt-duplicate-pilot-guard-hook.mjs':
       return {
         hook_event_name: 'Stop',
         session_id: 'selftest-session',

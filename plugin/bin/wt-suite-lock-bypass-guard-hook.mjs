@@ -31,6 +31,7 @@
 //   lock-stale-reclaim    `wt-suite-lock run|release --stale-s 0` (the separate form, the only one
 //                         the CLI reads), on win32 only: only there does age alone reclaim a live
 //                         holder.
+//   priority-release      `wt-suite-lock run --priority release` or `gate-chain.sh --priority release`.
 //   state-root-moved      a variable the lock directory is derived from (artifactStateDir with
 //                         os.homedir()), assigned for a locked gate: XDG_STATE_HOME or HOME on
 //                         Linux and macOS; XDG_STATE_HOME, LOCALAPPDATA or USERPROFILE on win32
@@ -84,7 +85,7 @@ import { isWorkflowSubagentPayload } from './lib/subagent-delivery-shape.mjs'
 
 const GUARD = 'wt-suite-lock-bypass-guard-hook.mjs'
 const TAG = '[workflow-toolbox suite-lock bypass guard]'
-const PREFILTER = /WT_SUITE_L|wt-suite-lock|HOME|LOCALAPPDATA|USERPROFILE/i
+const PREFILTER = /WT_SUITE_L|wt-suite-lock|gate-chain\.sh|HOME|LOCALAPPDATA|USERPROFILE/i
 const MAX_DEPTH = 4
 
 // Mirrors artifactStateDir (lib/artifact-server.mjs) and os.homedir(): which variables move the
@@ -130,13 +131,14 @@ const WT_SUITE_LOCK_RUNNER = /^wt-suite-lock-run(?:\.mjs|\.cmd)?$/
 const VITEST_WATCH = new Set(['watch', 'dev', '--watch', '-w'])
 
 const LOCATION_CLASS = { temp: 'lock-dir-temp', unresolved: 'lock-dir-unresolved', elsewhere: 'lock-dir-elsewhere' }
-const BYPASS_CLASSES = new Set(['lock-disabled', 'lock-dir-elsewhere', 'lease-forged', 'lock-released-forced', 'lock-stale-reclaim', 'state-root-moved'])
+const BYPASS_CLASSES = new Set(['lock-disabled', 'lock-dir-elsewhere', 'lease-forged', 'lock-released-forced', 'lock-stale-reclaim', 'state-root-moved', 'priority-release'])
 const WHAT = {
   'lock-disabled': '`WT_SUITE_LOCK=0` switches the machine suite lock off for this command',
   'lock-dir-elsewhere': '`WT_SUITE_LOCK_DIR` points this command at a lock other than the machine suite lock',
   'lease-forged': '`WT_SUITE_LEASE` claims a suite lease this command does not hold',
   'lock-released-forced': '`wt-suite-lock release --force` removes a lock that a live run may hold',
   'lock-stale-reclaim': '`--stale-s 0` lets a Windows waiter reclaim a live holder\'s lock by age alone',
+  'priority-release': 'release priority is reserved for the main session\'s release and merge-train gates',
   'state-root-moved': 'moving the state or home directory the suite lock lives under (XDG_STATE_HOME or HOME; LOCALAPPDATA or USERPROFILE on Windows) for a test gate moves the lock with it, so the gate runs outside the machine queue',
   'lock-dir-temp': '`WT_SUITE_LOCK_DIR` under the temporary directory gives this command its own lock, outside the machine queue',
   'lock-dir-unresolved': '`WT_SUITE_LOCK_DIR` set from an expansion gives this command its own lock, outside the machine queue',
@@ -270,6 +272,29 @@ function staleBoundIsZero(args) {
   return false
 }
 
+function asksReleasePriority(args) {
+  const end = args.includes('--') ? args.indexOf('--') : args.length
+  return args.slice(0, end - 1).some((arg, index) => arg === '--priority' && args[index + 1] === 'release')
+}
+
+function gateChainArgs(command) {
+  let index = 0
+  if (POSIX_SHELLS.has(commandName(command[0] ?? ''))) {
+    index = 1
+    while (index < command.length) {
+      const flag = shellUnquote(command[index])
+      if (flag === '--') { index += 1; break }
+      if (!/^[-+][A-Za-z]+$/.test(flag) && !flag.startsWith('--')) break
+      // A -c script is shell source, never a script path even if its last word names gate-chain.sh.
+      if (/^-[A-Za-z]*c/.test(flag)) return null
+      index += 1
+      if (flag === '-o' || flag === '+o' || flag === '-O' || flag === '+O' || /^-[A-Za-z]+o$/.test(flag) || SHELL_LONG_FLAGS_WITH_ARGUMENT.has(flag)) index += 1
+    }
+  }
+  if (commandName(command[index] ?? '') !== 'gate-chain.sh') return null
+  return command.slice(index + 1).map(shellUnquote)
+}
+
 function isLockRunner(command) {
   const name = commandName(command[0] ?? '')
   if (WT_SUITE_LOCK_RUNNER.test(name)) return true
@@ -357,8 +382,13 @@ function scanPosix(text, scan, depth) {
 // `wt-suite-lock release --force` or `run|release --stale-s 0`; true when the command is the lock CLI.
 function inspectLockCommand(command, scan, form) {
   const lockArgs = wtSuiteLockArgs(command)
-  if (!lockArgs) return false
+  if (!lockArgs) {
+    const chainArgs = gateChainArgs(command)
+    if (chainArgs && asksReleasePriority(chainArgs)) scan.add('priority-release', form)
+    return Boolean(chainArgs)
+  }
   const sub = lockArgs[0]
+  if (sub === 'run' && asksReleasePriority(lockArgs)) scan.add('priority-release', form)
   if (sub === 'release' && lockArgs.includes('--force')) scan.add('lock-released-forced', form)
   if ((sub === 'run' || sub === 'release') && scan.platform === 'win32' && staleBoundIsZero(lockArgs)) scan.add('lock-stale-reclaim', form)
   return true

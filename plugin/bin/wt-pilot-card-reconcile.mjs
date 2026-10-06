@@ -69,7 +69,10 @@ const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || resolvePluginDataDir({ fallback: join(homedir(), '.local', 'state', 'wt-outbound-guard'), pluginName: pluginName() }).dir;
 
 const argv = process.argv.slice(2);
-handleHelpFlag(argv, HELP);
+handleHelpFlag(argv, HELP, {
+  valueFlags: ['--cards', '--tolerance-min', '--session'],
+  booleanFlags: ['--json'],
+});
 
 const KNOWN_FLAGS = new Set(['--cards', '--tolerance-min', '--session', '--json']);
 for (const token of argv) {

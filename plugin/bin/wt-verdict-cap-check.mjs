@@ -29,7 +29,10 @@ Exit codes: 0 compliant · 1 VIOLATION (uncapped "yes" despite a declared-unreac
 2 malformed (required sections missing, or the file could not be read).
 `;
 
-handleHelpFlag(process.argv.slice(2), HELP);
+handleHelpFlag(process.argv.slice(2), HELP, {
+  valueFlags: [],
+  booleanFlags: [],
+});
 
 function out(obj, code) {
   process.stdout.write(JSON.stringify(obj) + '\n');
