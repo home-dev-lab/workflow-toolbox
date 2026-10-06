@@ -29,8 +29,14 @@ function fixture({ enabled = true, session = 'fixture/session', files = new Map(
         calls.push({ op: 'list', path });
         return [...files.keys()].filter((file) => file.startsWith(`${path}/`)).map((file) => ({ name: file.slice(path.length + 1), kind: 'file' }));
       },
-      read: async (path) => { calls.push({ op: 'read', path }); return files.get(path); },
+      read: async (path) => {
+        calls.push({ op: 'read', path });
+        if (!files.has(path)) throw hostFailure('read', path, 'ENOENT');
+        return files.get(path);
+      },
       stat: async () => ({ kind: 'dir' }),
+      exists: async (path) => files.has(path),
+      ancestors: async () => [],
     },
   };
   const event = async (name = 'session.compact', input = {}, next = async () => ({ answer: 42 })) => {
@@ -132,7 +138,7 @@ test('reload harvests same-session leftovers into health before slot reuse and l
   const s = fixture({ files: old.files });
   await s.event();
   const row = JSON.parse(text), health = s.stored.get('health');
-  assert.deepEqual(health?.interruptedCalls, [row], 'health must retain the interrupted call after reload');
+  assert.deepEqual(health?.interruptedCalls, [{ ...row, path }], 'health must retain the interrupted call after reload');
   assert.ok(s.calls.some((call) => call.op === 'write' && call.path === path && call.row.phase === 'harvested'));
   assert.equal(s.logs.length, 1);
   for (const word of ['interrupted call', 'tool.call', 'Bash', 'work', '3 input chars']) assert.ok(s.logs[0].includes(word));
@@ -206,7 +212,7 @@ for (const method of ['write', 'list', 'read']) {
       await abandoned(old);
       const s = fixture({ files: old.files });
       if (missing) delete s.$.fs[method];
-      else s.$.fs[method] = async () => { throw new Error('recorder I/O failed'); };
+      else s.$.fs[method] = async (path) => { throw hostFailure(method, path); };
       const result = { deny: 'fixture refusal' }, failure = new Error('fixture downstream error');
       assert.equal(await s.event('session.compact', {}, async () => result), result);
       await assert.rejects(s.event('session.compact', {}, async () => { throw failure; }), (error) => error === failure);
@@ -245,6 +251,7 @@ test('first-load harvest finishes reading before any breadcrumb can overwrite a 
   assert.equal(s.calls.some((call) => call.op === 'write'), false, 'harvest must precede the first slot write');
   release([]);
   assert.equal(await pending, result);
+  assert.equal(breadcrumbs(s).length, 1, 'the barrier must eventually allow this event to record');
   assert.deepEqual(s.logs, []);
 });
 
@@ -257,12 +264,13 @@ test('failed harvest health write leaves evidence for a later load and failed lo
   nextLoad.$.ui.log = () => { throw new Error('log unavailable'); };
   assert.deepEqual(await nextLoad.event(), { answer: 42 });
   assert.equal(nextLoad.stored.get('health').interruptedCalls.length, 1);
-  assert.ok(nextLoad.calls.some((call) => call.op === 'write' && call.path === path && call.row.phase === 'harvested'));
+  assert.equal(nextLoad.calls.some((call) => call.op === 'write' && call.path === path && call.row.phase === 'harvested'), false,
+    'a failed announcement must leave evidence unmarked');
 });
 
 test('failed breadcrumb writes still retain completed-call timing', async (t) => {
   const time = clock(t), s = fixture();
-  s.$.fs.write = async () => { throw new Error('disk unavailable'); };
+  s.$.fs.write = async (path) => { throw hostFailure('write', path); };
   await s.event('turn.complete', {}, async () => { time.advance(25); return {}; });
   assert.equal(s.stored.get('health').slowestCalls[0].ms, 25);
   assert.equal(breadcrumbs(s).length, 0);
@@ -400,3 +408,121 @@ for (const [shape, error] of Object.entries(missingDirectoryErrors)) {
     assert.equal(JSON.parse(breadcrumbs(s)[0][1]).phase, 'complete');
   });
 }
+
+const hostFailure = (op, path, errno = 'EIO') => new Error(`wt-rules-on-demand: $.fs.${op}(${path}) failed: ${errno}`);
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
+async function within(promise, ms, message) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+test('never resolving filesystem calls cannot stall a hook', async () => {
+  const s = fixture(), hold = deferred();
+  for (const op of Object.keys(s.$.fs)) s.$.fs[op] = () => hold.promise;
+  assert.deepEqual(await within(s.event(), 650, 'recorder scan exceeded its serving bound'), { answer: 42 });
+  assert.equal(breadcrumbs(s).length, 0, 'an unfinished scan must not write a slot');
+});
+
+test('entry is dispatched before work and trailing writes never delay return', async () => {
+  const s = fixture(), holds = [], phases = [];
+  s.$.fs.write = (path, text) => {
+    const hold = deferred(), row = JSON.parse(text);
+    phases.push(row.phase);
+    holds.push(() => { s.files.set(path, text); hold.resolve(); });
+    return hold.promise;
+  };
+  await within(s.event('session.compact', {}, () => {
+    assert.deepEqual(phases, ['work'], 'entry must be dispatched before synchronous work');
+    return { answer: 42 };
+  }), 350, 'entry or trailing writes exceeded the serving bound');
+  assert.deepEqual(phases, ['work']);
+  for (const phase of ['work', 'finally', 'complete']) {
+    holds.shift()();
+    await new Promise(setImmediate);
+    assert.equal(JSON.parse(breadcrumbs(s)[0][1]).phase, phase, 'slot writes must land in phase order');
+  }
+  assert.deepEqual(phases, ['work', 'finally', 'complete']);
+});
+
+test('a timed out scan protects old evidence and later events resume recording', async () => {
+  const old = fixture(), [path, text] = await abandoned(old), s = fixture({ files: old.files });
+  const hold = deferred(), read = s.$.fs.read;
+  s.$.fs.read = async (file) => { await hold.promise; return read(file); };
+  await within(s.event(), 650, 'deferred harvest read exceeded the serving bound');
+  assert.equal(s.files.get(path), text, 'pending harvest must protect previous evidence');
+  assert.equal(s.calls.some((call) => call.op === 'write'), false);
+  hold.resolve();
+  await new Promise(setImmediate);
+  await s.event();
+  assert.ok(s.calls.some((call) => call.op === 'write' && call.row.phase === 'work'), 'later events must record after scan completion');
+});
+
+test('one failed complete write is retried and creates no reload report', async () => {
+  const s = fixture(), write = s.$.fs.write;
+  let attempts = 0;
+  s.$.fs.write = async (path, text) => {
+    if (JSON.parse(text).phase === 'complete' && ++attempts === 1) throw hostFailure('write', path);
+    return write(path, text);
+  };
+  await s.event();
+  const next = fixture({ files: s.files });
+  await next.event();
+  assert.deepEqual(next.logs, [], 'a transient complete failure must not report an interruption');
+  assert.equal(attempts, 2, 'complete must retry once');
+});
+
+test('finally harvest describes unconfirmed completion without a confident interruption', async () => {
+  const old = fixture(), [path, text] = await abandoned(old);
+  old.files.set(path, JSON.stringify({ ...JSON.parse(text), phase: 'finally' }));
+  const s = fixture({ files: old.files });
+  await s.event();
+  assert.match(s.logs[0], /reached finally, completion not confirmed/);
+  assert.doesNotMatch(s.logs[0], /interrupted call/);
+});
+
+test('announcement failure leaves the slot available to announce after reload', async () => {
+  const old = fixture(), [path, text] = await abandoned(old), s = fixture({ files: old.files });
+  s.$.ui.log = () => { throw new Error('ui unavailable'); };
+  await s.event();
+  assert.equal(s.files.get(path), text, 'log must precede the harvested marker');
+  const next = fixture({ files: s.files });
+  await next.event();
+  assert.equal(next.logs.length, 1, 'a failed log must not consume the announcement');
+});
+
+test('persist then failed mark then reload retains one health row per slot identity', async () => {
+  const old = fixture(), [path] = await abandoned(old), s = fixture({ files: old.files });
+  const write = s.$.fs.write;
+  s.$.fs.write = async (file, text) => {
+    if (JSON.parse(text).phase === 'harvested') throw hostFailure('write', file);
+    return write(file, text);
+  };
+  await s.event();
+  const next = fixture({ files: s.files });
+  next.stored.set('health', structuredClone(s.stored.get('health')));
+  await next.event();
+  assert.equal(next.stored.get('health').interruptedCalls.length, 1, 're-harvest must deduplicate the persisted slot');
+  assert.equal(next.stored.get('health').interruptedCalls[0].path, path, 'identity includes the slot path');
+});
+
+test('transient listing failure retries on a later event without unsafe writes', async () => {
+  const s = fixture(), list = s.$.fs.list;
+  let attempts = 0;
+  s.$.fs.list = async (path) => {
+    if (++attempts === 1) throw hostFailure('list', path);
+    return list(path);
+  };
+  await s.event();
+  assert.equal(breadcrumbs(s).length, 0, 'failed scan must not write a slot');
+  await s.event();
+  assert.equal(breadcrumbs(s).length, 1, 'a later event must retry a transient list failure');
+  assert.equal(attempts, 2);
+});

@@ -1,5 +1,6 @@
 import { configDirectory } from '../paths.js';
 import { ownerNumber } from './owner-number.js';
+import { sessionKey } from '../session-key.mjs';
 
 // Pure plans: only hooks.js touches the host handle. Stable session slots survive
 // reloads; a fresh token identifies the load that wrote each active record.
@@ -24,18 +25,6 @@ export function resetFlightRecorder() {
 
 function* request(op, path, value) {
   return yield { op, path, value };
-}
-
-function sessionKey(sessionId) {
-  // FNV-1a/128 over UTF-16 bytes avoids sanitized-name aliases and bounds long ids.
-  let hash = 0x6c62272e07bb014262b821756295c58dn;
-  const prime = 0x1000000000000000000013bn, mask = (1n << 128n) - 1n;
-  for (let index = 0; index < sessionId.length; index++) {
-    const code = sessionId.charCodeAt(index);
-    hash = ((hash ^ BigInt(code & 255)) * prime) & mask;
-    hash = ((hash ^ BigInt(code >>> 8)) * prime) & mask;
-  }
-  return `${sessionId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 48)}-${hash.toString(16).padStart(32, '0')}`;
 }
 
 export function* prepareFlight() {
@@ -73,7 +62,7 @@ function claimSlot() {
   return null;
 }
 
-export function* startFlight(event, work, started) {
+export function startFlight(event, work, started) {
   if (!metadata) return null;
   const { sessionId } = metadata;
   const row = { work, tool: work === 'tool.call' ? text(event.tool) : '', inputChars: inputCharacters(event),
@@ -82,8 +71,13 @@ export function* startFlight(event, work, started) {
   const path = claimSlot();
   // Saturation loses breadcrumb coverage, never serving or completed-call timing.
   if (!path) return { row, available: true };
-  const response = yield* request('write', path, JSON.stringify(row));
-  return { path, row, available: response?.error?.name !== 'TypeError' };
+  return { path, row, available: true };
+}
+
+export function* entryFlight(flight) {
+  if (!flight?.path) return;
+  const response = yield* request('write', flight.path, JSON.stringify(flight.row));
+  flight.available = response?.error?.name !== 'TypeError';
 }
 
 export function* finallyFlight(flight) {
@@ -95,7 +89,8 @@ export function* finallyFlight(flight) {
 export function* completeFlight(flight) {
   if (!flight?.path) return;
   flight.row.phase = 'complete';
-  const response = yield* request('write', flight.path, JSON.stringify(flight.row));
+  let response = yield* request('write', flight.path, JSON.stringify(flight.row));
+  if (response?.error) response = yield* request('write', flight.path, JSON.stringify(flight.row));
   if (!response?.error) occupied.delete(flight.path);
 }
 
@@ -119,7 +114,8 @@ function parsedBreadcrumb(content) {
 }
 
 function harvestLine(row) {
-  return `wt-rules-on-demand: interrupted call ${row.work} (${row.tool || 'no tool'}), phase ${row.phase}, `
+  const status = row.phase === 'finally' ? 'reached finally, completion not confirmed' : 'interrupted call';
+  return `wt-rules-on-demand: ${status} ${row.work} (${row.tool || 'no tool'}), phase ${row.phase}, `
     + `${row.inputChars} input chars, started at ${row.startedAt}; found after the hooks module reloaded`;
 }
 
@@ -144,34 +140,41 @@ function missingDirectory(error) {
 }
 
 export function* harvestFlight() {
-  if (harvestDone || !metadata) return [];
-  harvestDone = true;
+  if (!metadata) return null;
+  if (harvestDone) return [];
   const { directory, sessionId } = metadata;
   const response = (yield* request('list', directory)) ?? {};
-  if (missingDirectory(response.error)) return [];
-  // Unknown disk state cannot safely be reused in this load.
-  if (response.error || !Array.isArray(response.value)) { metadata = null; return []; }
+  if (missingDirectory(response.error)) { harvestDone = true; return []; }
+  // Unknown disk state stays protected until a later event can retry the scan.
+  if (response.error || !Array.isArray(response.value)) return null;
   const listing = response.value;
   const harvested = [];
   for (const entry of rows(listing)) {
     const record = yield* harvestEntry(entry, directory, sessionId);
     if (record) harvested.push(record);
   }
+  harvestDone = true;
   return harvested;
 }
 
 export function* markHarvested(harvested) {
   if (!metadata) return;
   for (const { path, row } of harvested) {
+    const logged = yield* request('log', harvestLine(row));
+    if (logged?.error) continue;
     const response = yield* request('write', path, JSON.stringify({ ...row, phase: 'harvested' }));
     if (response?.error) continue;
     occupied.delete(path);
-    yield* request('log', harvestLine(row));
   }
 }
 
 function recentInterruptions(previous, incoming) {
-  return [...rows(previous), ...rows(incoming)].filter((row) => typeof row?.startedAt === 'string')
+  const unique = new Map();
+  for (const row of [...rows(previous), ...rows(incoming)]) {
+    if (typeof row?.startedAt !== 'string') continue;
+    unique.set(JSON.stringify([row.path, row.loadToken, row.startedAt]), row);
+  }
+  return [...unique.values()]
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt)).slice(-20);
 }
 

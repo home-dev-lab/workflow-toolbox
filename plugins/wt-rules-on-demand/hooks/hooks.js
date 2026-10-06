@@ -13,7 +13,7 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
-import { prepareFlight, startFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
+import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
   mergeFlightHealth, noteFlightCall, resetFlightRecorder } from './flight-recorder.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
@@ -49,6 +49,27 @@ const pendingActivity = new Map();
 let activityProfile = null;
 let activityRetryAt = 0;
 let flightReady = null;
+// Recorder I/O gets a short serving budget; the underlying operations keep running.
+const FLIGHT_SCAN_WAIT_MS = 500;
+const FLIGHT_ENTRY_WAIT_MS = 200;
+
+async function waitForFlight(promise, ms) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((resolve) => { timer = setTimeout(() => resolve(null), ms); })]);
+  } finally { clearTimeout(timer); }
+}
+
+// A named async step, not a closure: the host validator refuses $ captured in a function expression.
+async function chainFlightPhase($, previous, plan) {
+  await previous;
+  return runFlightPlan($, plan);
+}
+
+function queueFlightPhase($, flight, plan) {
+  if (!flight?.path) return;
+  flight.writes = chainFlightPhase($, flight.writes, plan);
+}
 
 // Imported plans are pure: host operations stay literal, local calls here.
 async function flightOperation($, op, path, value) {
@@ -78,7 +99,7 @@ async function runFlightPlan($, plan) {
 async function collectFlights($, harvested) {
   try {
     if (!harvested?.length) return;
-    mergeFlightHealth(pendingHealth, { interruptedCalls: harvested.map(({ row }) => row) });
+    mergeFlightHealth(pendingHealth, { interruptedCalls: harvested.map(({ path, row }) => ({ ...row, path })) });
     await flushHealth($);
     await runFlightPlan($, markHarvested(harvested));
   } catch { /* Leave the files for a later reload if health could not persist. */ }
@@ -86,9 +107,17 @@ async function collectFlights($, harvested) {
 
 async function beginFlight($, e, work, start) {
   try {
-    if (!flightReady) flightReady = initializeFlights($);
-    await flightReady;
-    return await runFlightPlan($, startFlight(e, work, start));
+    if (!flightReady) flightReady = initializeFlights($).then((ready) => {
+      if (!ready) flightReady = null;
+      return ready;
+    });
+    if (!await waitForFlight(flightReady, FLIGHT_SCAN_WAIT_MS)) return null;
+    const flight = startFlight(e, work, start);
+    if (!flight?.path) return flight;
+    // Calling the runner dispatches the write now, before even synchronous work starts.
+    flight.writes = runFlightPlan($, entryFlight(flight));
+    await waitForFlight(flight.writes, FLIGHT_ENTRY_WAIT_MS);
+    return flight;
   } catch { return null; }
 }
 
@@ -96,8 +125,10 @@ async function initializeFlights($) {
   await runFlightPlan($, prepareFlight());
   // All concurrent first events share this barrier, before any reusable slot write.
   const harvested = await runFlightPlan($, harvestFlight());
+  if (!harvested) return false;
   // Interrupted slots stay reserved until background persistence and marking finish.
   void collectFlights($, harvested);
+  return true;
 }
 
 function noteIdentityActivity(rules, field, now = new Date().toISOString()) {
@@ -936,13 +967,13 @@ async function trackedEvent($, e, next, work) {
     }
     throw error;
   } finally {
-    await runFlightPlan($, finallyFlight(flight));
+    queueFlightPhase($, flight, finallyFlight(flight));
     try {
       await loadedRules($, [...contexts.values()].flatMap((ctx) => ctx.rules ?? []));
       await flushIdentityActivity($);
       noteFlightCall(pendingHealth, flight, Date.now() - start);
       await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {});
-    } finally { await runFlightPlan($, completeFlight(flight)); }
+    } finally { queueFlightPhase($, flight, completeFlight(flight)); }
   }
 }
 async function promptContextEvent($, e, next) { return trackedEvent($, e, next, 'prompt.context'); }

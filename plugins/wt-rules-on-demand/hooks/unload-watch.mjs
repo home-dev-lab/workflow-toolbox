@@ -2,6 +2,7 @@ import { openSync, closeSync, readSync, fstatSync, mkdirSync, readdirSync, statS
   writeFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { configDirectory } from '../paths.js';
+import { sessionKey } from '../session-key.mjs';
 import { scanPlan, scanTranscript, announcement } from '../scripts/unload-watch-lib.mjs';
 
 const INPUT_CAP = 64 * 1024;
@@ -39,15 +40,17 @@ function readRange(fd, start, length) {
 
 function readState(path) {
   let fd;
-  try { fd = openSync(path, 'r'); } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
   try {
+    fd = openSync(path, 'r');
     const size = fstatSync(fd).size;
     if (size > STATE_CAP) throw new Error('State exceeds bound');
     return JSON.parse(readRange(fd, 0, size).toString('utf8'));
-  } finally { closeSync(fd); }
+  } catch { return null; }
+  finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* A bad state file never disables detection. */ }
+    }
+  }
 }
 
 function transcriptState(path, state) {
@@ -108,15 +111,19 @@ function main() {
   const now = process.env.WT_ROD_NOW ?? new Date().toISOString();
   if (!config || !Number.isFinite(Date.parse(now))) return;
   const dir = join(config, 'plugins', 'data', 'wt-rules-on-demand', 'unload-watch');
-  const session = input.session_id.replace(/[^A-Za-z0-9._-]/g, '_');
+  const session = sessionKey(input.session_id);
   const path = join(dir, `${session}.json`);
   const scanned = transcriptState(input.transcript_path, readState(path));
   const { state, output } = announcement(scanned, input, now);
-  mkdirSync(dir, { recursive: true });
-  saveState(path, state);
-  pruneInflight(join(dir, '..', 'inflight'), now);
-  pruneState(dir, now);
-  if (output) writeSync(1, JSON.stringify(output) + '\n');
+  try {
+    // Announce before committing warnedAt: duplicates are preferable to lost warnings.
+    if (output) writeSync(1, JSON.stringify(output) + '\n');
+    mkdirSync(dir, { recursive: true });
+    saveState(path, state);
+  } finally {
+    pruneInflight(join(dir, '..', 'inflight'), now);
+    try { pruneState(dir, now); } catch { /* Retention cannot consume a warning. */ }
+  }
 }
 
 // This command hook survives a Function Hooks worker crash and never blocks a session on errors.

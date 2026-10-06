@@ -9,14 +9,14 @@ const alivePrefixes = [
   `${prefix}wt-rules-on-demand: serving`,
   `${prefix}wt-rules-on-demand: before-act refusal serving`,
   `${prefix}wt-rules-on-demand: interrupted call`,
+  `${prefix}wt-rules-on-demand: reached finally, completion not confirmed`,
 ];
 const time = (value) => typeof value === 'string' ? Date.parse(value) : NaN;
 const timestamp = (value) => Number.isFinite(time(value)) ? value : null;
-const newest = (current, candidate) => !current || time(candidate) > time(current) ? candidate : current;
 
 function initialState(state) {
   return { offset: 0, unloadedAt: timestamp(state?.unloadedAt),
-    aliveAt: timestamp(state?.aliveAt), warnedAt: timestamp(state?.warnedAt) };
+    aliveAt: timestamp(state?.aliveAt), warnedAt: timestamp(state?.warnedAt), lastEvidence: state?.lastEvidence ?? null };
 }
 
 // A capped scan may start inside a row; the I/O adapter checks the preceding byte too.
@@ -30,7 +30,10 @@ export function scanPlan(size, state) {
 
 function evidence(row) {
   if (row?.type !== 'system' || typeof row.content !== 'string') return null;
-  if (row.subtype === 'local_command') return row.content.includes('Reloaded:') ? 'aliveAt' : null;
+  if (row.subtype === 'local_command') {
+    // /reload-plugins prints one global summary ("Reloaded: 13 plugins · …") that names no plugin.
+    return /Reloaded: \d+ plugins?\b/.test(row.content) ? 'aliveAt' : null;
+  }
   if (row.subtype !== 'informational') return null;
   if (row.content === unloadContent) return 'unloadedAt';
   return alivePrefixes.some((start) => row.content.startsWith(start)) ? 'aliveAt' : null;
@@ -40,7 +43,10 @@ function observeLine(state, line) {
   let row;
   try { row = JSON.parse(line); } catch { return; }
   const field = evidence(row);
-  if (field && timestamp(row.timestamp)) state[field] = newest(state[field], row.timestamp);
+  if (field && timestamp(row.timestamp)) {
+    state[field] = row.timestamp;
+    state.lastEvidence = field;
+  }
 }
 
 // Offsets count bytes, never decoded UTF-8 characters. An unfinished row stays for the next scan.
@@ -70,8 +76,11 @@ function warningText(unloadedAt) {
 export function announcement(previous, input, now) {
   const state = { ...previous };
   const sessionStart = input.hook_event_name === 'SessionStart';
-  if (sessionStart && ['startup', 'resume'].includes(input.source)) state.aliveAt = now;
-  const unloaded = state.unloadedAt && (!state.aliveAt || time(state.unloadedAt) > time(state.aliveAt));
+  if (sessionStart && ['startup', 'resume'].includes(input.source)) {
+    state.aliveAt = now;
+    state.lastEvidence = 'aliveAt';
+  }
+  const unloaded = state.lastEvidence === 'unloadedAt';
   const compact = sessionStart && input.source === 'compact';
   const due = !state.warnedAt || time(now) - time(state.warnedAt) >= WARNING_INTERVAL;
   if (!unloaded || (!compact && !due)) return { state, output: null };

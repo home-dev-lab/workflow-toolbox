@@ -12,8 +12,11 @@ See [TRIGGERS.md](TRIGGERS.md).
 
 A separate command hook announces when the host unloads the rules-on-demand
 engine after its hooks worker misses a heartbeat: no at-act rule is then served
-or refused. The announcement ends after a plugin manifest reload, `/reload-plugins`,
-or a fresh process (restart or resume); observed engine serving also confirms recovery.
+or refused. It announces on the next user prompt, session start, or Agent, Task
+or SendMessage tool call; hook input over 64 KiB is skipped. The announcement
+ends after this plugin's manifest reload, a `/reload-plugins` summary
+(it names no plugin), or a fresh process (restart or resume); observed engine
+serving also confirms recovery. Evidence is interpreted in transcript order.
 A sub-agent tells its main session. Warnings repeat at most every ten minutes,
 but always after compaction while unloaded. Detection scans only the last 4 MiB
 on first use, then new complete rows (at most the last 16 MiB per scan); unloads
@@ -21,11 +24,21 @@ outside those bounds are not observed. This hook only announces the loss.
 
 While enabled, the engine writes small event breadcrumbs under
 `<config dir>/plugins/data/wt-rules-on-demand/inflight/`, reusing at most 32 slots
-per session across reloads. Completed and harvested slots are marked in place;
-the command-hook detector prunes files whose modification time is over seven
-days old. An “interrupted call”
-progress line after reload means an earlier load left that session's event in
-flight; it names the work, tool, phase, input-character estimate and start time.
+per session across reloads. Coverage is bounded at 32 concurrent calls per
+session: a 33rd concurrent call gets no breadcrumb. Completed and harvested
+slots are marked in place. Across sessions, the command-hook detector deletes
+files whose modification time is over seven days old, inspecting at most 200
+files per detector run and advancing a sweep cursor on later runs. Expired
+files beyond that batch remain until a later run. Directory enumeration and
+sorting still cover the entire directory; pruning also runs if saving watcher
+state fails. An “interrupted call” progress line after reload means an earlier
+load left that session's event in phase `work`; a `finally` slot instead says
+“reached finally, completion not confirmed”. These lines name the work, tool,
+phase, input-character estimate and start time.
+Recorder waits are bounded at 500 ms for the first-load scan and 200 ms for
+the entry write. An unfinished scan skips that event's breadcrumb; later
+events record after it finishes. Finally and completion writes run in order
+in the background, with one retry on a failed completion write.
 The health record's `interruptedCalls` retains the newest 20 such events, and
 `slowestCalls` lists today's ten longest completed calls in descending wall-time
 `ms`, with `work`, `tool`, `inputChars` and completion time `at` (UTC).
