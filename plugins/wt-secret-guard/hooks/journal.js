@@ -1,9 +1,9 @@
 // Audit without disclosure: persist only closed enums and identifiers while owning legacy publication.
 import { sha256 } from './sha256.js';
-import { knownTokens, restorePending, restoreRefusedRegistrations, takePending, takeRefusedRegistrations } from './token-vault.js';
+import { knownTokens, restoreDirty, restorePending, restoreRefusedRegistrations, takeDirty, takePending, takeRefusedRegistrations } from './token-vault.js';
 
-const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'web-fetch', 'web-search', 'agent', 'task', 'assistant', 'attachment']);
-const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool']);
+const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'web-fetch', 'web-search', 'agent', 'task', 'assistant', 'attachment', 'prompt']);
+const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool', 'released']);
 const RULES = new Set(['guarded-path-read', 'guarded-path-mention', 'policy']);
 const PATH_CLASSES = new Set(['npm-config', 'env-file', 'cloud-secret', 'aws-credentials', 'ssh-key', 'gh-hosts', 'netrc', 'shell-history', 'docker-config', 'kube-config', 'pypi-config', 'git-credentials', 'other-guarded']);
 const COMMAND_CLASSES = new Set(['bash', 'read', 'notebook-read', 'metadata', 'prose', 'other']);
@@ -129,7 +129,8 @@ export async function publishRefusals($) {
 export async function publish($) {
   await publishRefusals($);
   const added = takePending();
-  if (!added.length) return;
+  const deleted = takeDirty();
+  if (!added.length && !deleted) return;
   try {
     const key = await ensureSalt($);
     const entries = [...knownTokens()].filter(([, entry]) => !entry.ephemeral).map(([token, entry]) => ({ token, kind: entry.kind, sha256: sha256(`${key}:${entry.value}`) }));
@@ -138,7 +139,7 @@ export async function publish($) {
     for (const entry of added) stats[entry.kind] = Number(stats[entry.kind] ?? 0) + 1;
     await $.setStats(stats);
     await $.setLastPublishedAt(new Date().toISOString());
-  } catch { restorePending(added); }
+  } catch { restorePending(added); if (deleted) restoreDirty(); }
 }
 
 export function journalSnapshot() { return new Map(journalText); }

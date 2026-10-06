@@ -44,10 +44,10 @@ function rememberFailure(key, reason = '') {
 
 async function registerReference($, kind, value) {
   const token = tokenize(kind, value);
-  const reason = registrationRefusalReason(value);
-  if (!reason) return { token };
+  const reason = registrationRefusalReason(value, kind);
+  if (!reason && knownTokens().has(token) && !knownTokens().get(token).ephemeral) return { token };
   await publishRefusals($);
-  return { token: null, reason: `a ${kind} reference whose value was refused by the vault floor (${reason})` };
+  return { token: null, reason: `a ${kind} reference whose value was refused by the vault floor (${reason || 'unheld'})` };
 }
 
 /** Resident sizes, for the bound's own locks. */
@@ -126,6 +126,12 @@ const refused = (command, reason, extra = {}) => ({ command, count: 0, reference
 // vault does not hold, so the command is refused instead.
 const unrepresentable = (value) => value.includes('\0') || !value.isWellFormed();
 
+function tokenReferenceReason(label, value) {
+  const entry = knownTokens().get(label);
+  const reason = registrationRefusalReason(value, 'token');
+  return reason || (entry?.ephemeral ? 'unheld' : '');
+}
+
 // The variants bash can produce from a bound value in a substitution: `"$(printf ...)"` and every
 // `$( )` remove ALL trailing newlines. Each variant is registered and masked with the value itself
 // (Astra H5 at f98cf712: a prefetch of `value\n\n` reached the output as `value`, unmasked).
@@ -133,7 +139,7 @@ function substitutionVariants(kind, value) {
   const stripped = value.replace(/\n+$/, '');
   if (stripped === value) return [];
   const token = tokenize(kind, stripped);
-  return registrationRefusalReason(stripped) ? [] : [token];
+  return knownTokens().get(token)?.ephemeral ? [] : [token];
 }
 
 export async function rewriteReferences($, command) {
@@ -174,7 +180,7 @@ export async function rewriteReferences($, command) {
       value = occurrence.form === 'file' ? await fileContent($, occurrence) : knownTokens().get(occurrence.label)?.value;
       if (typeof value !== 'string') return refused(command, 'a reference whose value could not be read');
       if (occurrence.form === 'token') {
-        const reason = registrationRefusalReason(value);
+        const reason = tokenReferenceReason(occurrence.label, value);
         if (reason) return refused(command, `a token reference whose value was refused by the vault floor (${reason})`);
         substituted.push(occurrence.label);
       }

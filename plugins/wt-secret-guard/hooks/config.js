@@ -5,6 +5,7 @@ const defaults = Object.freeze({
   maskEmails: false,
   maskIpAddresses: false,
   secretFileReadWarnings: true,
+  ownerChannelRedaction: true,
 });
 
 let configured = defaults;
@@ -16,6 +17,7 @@ export function configure(options = {}) {
     maskEmails: options.maskEmails === true || options.maskEmails === 'true',
     maskIpAddresses: options.maskIpAddresses === true || options.maskIpAddresses === 'true',
     secretFileReadWarnings: options.secretFileReadWarnings !== false && options.secretFileReadWarnings !== 'false',
+    ownerChannelRedaction: options.ownerChannelRedaction !== false && options.ownerChannelRedaction !== 'false',
   });
   return configured;
 }

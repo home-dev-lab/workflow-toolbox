@@ -1,6 +1,6 @@
 {
   "name": "wt-secret-guard",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Function-hook secret scrubber for prompts, assistant text, tool results, and raw outbound tool inputs",
   "author": {
     "name": "Frederic Thomas",
@@ -20,6 +20,13 @@
     ]
   },
   "userConfig": {
+    "ownerChannelRedaction": {
+      "title": "Redact Atrium message bodies instead of refusing them",
+      "description": "Only the text field of the supported Atrium speak adapters is rewritten; routing fields stay unchanged or the call is refused. Disable to retain refusal for all raw MCP inputs.",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    },
     "opAccount": {
       "title": "1Password account passed to `op read --account` (empty = the CLI's default account)",
       "type": "string",
