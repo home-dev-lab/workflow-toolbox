@@ -526,10 +526,23 @@ const triggerItem = (e, prompt) => prompt
   ? { channel: 'prompt', text: e.text } : { channel: 'tool', tool: e.tool, command: e.command, path: pathOf(e), input: textOf(e) };
 const exhaustionRefuses = (rule, item) => rule.triggers.some((trigger) => trigger.beforeFirstAct
   && (!trigger.detector || item.detected.get(trigger) === true));
-async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatched }) {
+// Synchronous matching never runs longer than this before handing control back to the shared hooks worker, which can only answer its host ping at an await.
+const SLICE_MS = 50;
+async function breathe($, slice, budget) {
+  if (Date.now() - slice.start < SLICE_MS) return;
+  // Only a synchronous throw means "this host has no clock"; a rejection (abort, reload) is the host speaking and propagates.
+  // Time spent yielding belongs to other agents' work, so it is not charged to this event's regex budget.
+  let pending;
+  try { pending = $.clock.sleep(0); } catch { return; }
+  const started = budget?.pause();
+  try { await pending; } finally { budget?.resume(started); }
+  slice.start = Date.now();
+}
+async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatched, slice }) {
   const item = { ...triggerItem(e, prompt), detected: new Map(), prechecked: new Map(), inputPrechecked: new Map() };
   const chosen = [];
   for (const rule of rules) {
+    await breathe($, slice, budget);
     let matched = false;
     for (const trigger of rule.triggers) {
       if (trigger.detector) {
@@ -791,7 +804,8 @@ function servedVerdict(c, e) {
 }
  async function closeCorrelation($, ctx, loop, actSeq) {
   const events = [...ctx.correlation, { kind: 'turn' }];
-    for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation' && servedAs(ctx, rule)) {
+  const slice = { start: Date.now() };
+    for (const rule of ctx.rules ?? []) if (await breathe($, slice), rule.compliance?.kind === 'turn-correlation' && servedAs(ctx, rule)) {
       try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail, { seq: actSeq }); }
      catch (error) { await notice($, `${rule.name}: correlation failed: ${error.message}`).catch(() => {}); }
    }
@@ -909,7 +923,7 @@ async function sessionCompactWork($, e, next) {
      const rules = await rulesFor($, ctx, e.cwd ?? '.');
        const triggerErrors = [];
         const budget = regexCallBudget(triggerClock);
-          const candidates = await selected($, ctx, rules, e, true, { errors: triggerErrors, budget });
+          const candidates = await selected($, ctx, rules, e, true, { errors: triggerErrors, budget, slice: { start: Date.now() } });
         await journal($, [], MAIN, [], [], [], { channel: 'prompt.submit', triggerErrors });
         if (budget.exhausted) await progress($, exhaustionNotice(budget));
       while (true) {
@@ -965,15 +979,17 @@ async function turnCompleteWork($, e, next) {
       await evaluate($, ctx, e, loop, measured, admission);
       const triggerErrors = [];
       const budget = regexCallBudget(triggerClock);
+      const slice = { start: Date.now() };
        if (textOf(e) === null) for (const rule of rules) {
         if (budget.exhausted) break;
+        await breathe($, slice, budget);
         let failed = false;
          if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.input && !trigger.detector && testTriggerRegex(trigger, trigger.tool, e.tool, (error) => {
           failed = true; triggerErrors.push({ rule: rule.name, ...error });
         }, budget)) && !failed) await notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
       }
       const beforeMatched = new Set();
-        const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched });
+        const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
       const before = chosen.filter((rule) => beforeMatched.has(rule.name) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !servedAs(ctx, rule)));
       await journal($, [], loop, [], [], [], { triggerErrors: [...new Map(triggerErrors.map((error) => [JSON.stringify(error), error])).values()] });
       if (budget.exhausted) await progress($, exhaustionNotice(budget));
@@ -1005,14 +1021,14 @@ async function turnCompleteWork($, e, next) {
       const injected = inject(ctx, ride, `tool.call:${e.tool}`, admission, e);
        await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
        const classified = classify(e.tool, e.input ?? e);
-        for (const rule of rules) if (rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
+        for (const rule of rules) if (await breathe($, slice, budget), rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
          for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
            await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
               item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e), undefined, { seq: admission });
        }
       for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
      // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
-      for (const rule of rules) if (servedAs(ctx, rule)) {
+      for (const rule of rules) if (await breathe($, slice, budget), servedAs(ctx, rule)) {
        const { verdict: value, matchError } = servedVerdict(rule.compliance, e);
        if (value === null) continue;
        const discharged = ctx.pending.filter((pending) => pending.rule === rule);

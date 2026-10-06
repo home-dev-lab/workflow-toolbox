@@ -197,7 +197,7 @@ function requiredLiterals(node) {
     return requiredLiterals(node.body);
   if (node.type === 'alt') {
     const branches = node.branches.map(requiredLiterals);
-    return branches.every((row) => row.length) && branches.flat().length <= 16 ? branches.flat() : [];
+    return branches.every((row) => row.length) && branches.flat().length <= 64 ? branches.flat() : [];
   }
   if (node.type === 'seq') {
     let best = [], run = '';
@@ -278,19 +278,35 @@ function compile(tree, programs, reversed = false) {
 
 const terminal = (c) => c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029';
 
+// Test seam: counts the native atom RegExp objects ever built.
+export const costCounters = { atomRows: 0 };
+// Atom rows and the last split subject outlive one call: the same subject is scanned by many patterns in a row.
+// Rows are keyed by native flags, then atom; chars and offsets are read-only after creation.
+const atomRowsByFlags = new Map();
+let lastSplit = { subject: null, chars: [], offsets: [0] };
+function atomRows(flags) {
+  let rows = atomRowsByFlags.get(flags);
+  if (!rows) { rows = new Map(); atomRowsByFlags.set(flags, rows); }
+  return rows;
+}
+
 function context(subject, flags, programs) {
   // Keep every UTF-16 boundary: V8 evaluates zero-width assertions even
   // between surrogate halves. Consuming atoms can still span a full pair.
-  const chars = subject.split('');
-  const offsets = new Array(chars.length + 1);
-  let offset = 0;
-  for (let j = 0; j < chars.length; j++) { offsets[j] = offset; offset += chars[j].length; }
-  offsets[chars.length] = offset;
-  const atoms = new Map();
+  if (lastSplit.subject !== subject) {
+    const split = subject.split('');
+    const at = new Array(split.length + 1);
+    let offset = 0;
+    for (let j = 0; j < split.length; j++) { at[j] = offset; offset += split[j].length; }
+    at[split.length] = offset;
+    lastSplit = { subject, chars: split, offsets: at };
+  }
+  const { chars, offsets } = lastSplit;
   const nativeFlags = flags.replace(/[gy]/g, '');
+  const atoms = atomRows(nativeFlags);
   const atom = (value, char) => {
     let row = atoms.get(value);
-    if (!row) { row = { regex: new RegExp(`^(?:${value})$`, nativeFlags), cache: new Map() }; atoms.set(value, row); }
+    if (!row) { costCounters.atomRows++; row = { regex: new RegExp(`^(?:${value})$`, nativeFlags), cache: new Map() }; atoms.set(value, row); }
     if (!row.cache.has(char)) {
       const result = row.regex.test(char);
       if (row.cache.size < 512) row.cache.set(char, result);
@@ -471,7 +487,13 @@ export function linearRegex(source, flags = '', { capture = false } = {}) {
   if (capture) checkNullableCaptureRepeat(tree);
   size(tree);
   const candidates = requiredLiterals(tree);
-  const literals = !flags.includes('i') && candidates.length && candidates.every((value) => value.length >= 2) ? candidates : [];
+  // Case-insensitive patterns keep their literals lower-cased and compare against the lower-cased subject. Without u,
+  // ECMAScript Canonicalize never maps a non-ASCII character to an ASCII one, and the literals are ASCII only. With u,
+  // simple case folding maps U+017F (long s) to s, which lower-casing does not reproduce: such a subject goes to the VM.
+  // U+212A (Kelvin sign) needs no guard: it lower-cases to k itself.
+  const folded = flags.includes('i');
+  const unicodeFold = folded && flags.includes('u');
+  const literals = candidates.length && candidates.every((value) => value.length >= 2) ? (folded ? candidates.map((value) => value.toLowerCase()) : candidates) : [];
   const programs = [];
   const main = compile(tree, programs);
   let lastIndex = 0;
@@ -523,7 +545,8 @@ export function linearRegex(source, flags = '', { capture = false } = {}) {
     const text = String(subject);
     const stateful = flags.includes('g') || flags.includes('y');
     const at = stateful ? Math.max(0, Math.trunc(Number(lastIndex)) || 0) : 0;
-    if (literals.length && !literals.some((value) => text.includes(value))) {
+    const haystack = !folded ? text : unicodeFold && /\u017F/.test(text) ? null : text.toLowerCase();
+    if (literals.length && haystack !== null && !literals.some((value) => haystack.includes(value))) {
       matcher.steps = 0;
       if (stateful) lastIndex = 0;
       return null;
