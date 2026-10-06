@@ -588,7 +588,8 @@ for (const failures of [1, 32]) {
     hold.resolve();
     await new Promise(setImmediate);
     await s.event();
-    assert.ok(s.calls.some((call) => call.op === 'write' && call.row.phase === 'work'), 'recovered own-slot reads must release all 32 reservations');
+    const work = s.calls.find((call) => call.op === 'write' && call.row.phase === 'work');
+    assert.equal(work?.path, slotPath(path, 0), 'a recovered own-slot read must release its reservation, so the lowest slot is reused');
   });
 }
 

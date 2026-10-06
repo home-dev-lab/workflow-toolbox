@@ -143,7 +143,9 @@ test('local-command output other than a plugin reload summary cannot prove recov
 });
 
 for (const content of ['<local-command-stdout>Example only: Reloaded: 13 plugins. No reload performed.</local-command-stdout>',
-  'Reloaded: other-plugin', '<local-command-stdout>Reloaded: 13 plugins</local-command-stdout>']) {
+  'Reloaded: other-plugin', '<local-command-stdout>Reloaded: 13 plugins</local-command-stdout>',
+  'Example: <local-command-stdout>Reloaded: 13 plugins · 26 skills · 46 agents</local-command-stdout>',
+  '<local-command-stdout>Reloaded: 13 plugins · 26 skills · 46 agents</local-command-stdout> was quoted']) {
   test(`reload recovery requires stdout to begin with the plugin and skill summary: ${content}`, () => {
     assert.notEqual(pure(unload + row(content, later, 'local_command')).output, null,
       'quoted, unrelated or partial reload text must not prove recovery');
@@ -163,6 +165,18 @@ test('inflight prune cursor advances when the watcher state directory is unwrita
   run(s);
   assert.ok(!(await readdir(dir)).includes('z-old.json'), 'an unwritable watcher state directory must not pin the inflight sweep');
   assert.ok((await readdir(dir)).includes('.inflight-prune'), 'the sweep cursor must live in inflight');
+});
+
+test('the inflight prune cursor never takes one of the 200 inspection slots', async (t) => {
+  const s = await scope(t), dir = join(s.dir, '..', 'inflight');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, '.inflight-prune'), JSON.stringify({ lastName: '' }));
+  for (let index = 0; index < 199; index++) await writeFile(join(dir, `fresh-${String(index).padStart(3, '0')}.json`), '{}');
+  const old = join(dir, 'z-old.json');
+  await writeFile(old, '{}');
+  await utimes(old, new Date('2020-01-01'), new Date('2020-01-01'));
+  run(s);
+  assert.ok(!(await readdir(dir)).includes('z-old.json'), 'the 200th recorder file must be inspected in the first batch');
 });
 
 test('watcher session aliases get distinct hashed state files', async (t) => {
