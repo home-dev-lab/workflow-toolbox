@@ -1,5 +1,5 @@
 // The default dependency convention for projects without a local parser, and the one
-// triage rule the actionability gate and the what-next skill share.
+// triage rule the actionability gate relies on.
 // Table rows are deliberately excluded: their leading | is not decoration.
 const DECORATION_RUN = /^(?:[`*_>#-]+\s*)+/
 
