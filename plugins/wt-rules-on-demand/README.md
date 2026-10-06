@@ -10,6 +10,15 @@ to `true`. Claude Code exports this option to the startup hook as
 quality check. When rules exist but the switch is off, startup reports their count.
 See [TRIGGERS.md](TRIGGERS.md).
 
+A separate command hook announces when the host unloads the rules-on-demand
+engine after its hooks worker misses a heartbeat: no at-act rule is then served
+or refused. The announcement ends after a plugin manifest reload, `/reload-plugins`,
+or a fresh process (restart or resume); observed engine serving also confirms recovery.
+A sub-agent tells its main session. Warnings repeat at most every ten minutes,
+but always after compaction while unloaded. Detection scans only the last 4 MiB
+on first use, then new complete rows (at most the last 16 MiB per scan); unloads
+outside those bounds are not observed. This hook only announces the loss.
+
 Put rules in `<project>/.claude/rules-on-demand/*.md` or
 `<config dir>/rules-on-demand/*.md` (`CLAUDE_CONFIG_DIR`, otherwise
 `HOME/.claude`, or `USERPROFILE/.claude`). The `adopt` skill installs both rule
