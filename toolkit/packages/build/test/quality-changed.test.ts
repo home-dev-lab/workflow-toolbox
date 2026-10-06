@@ -208,8 +208,8 @@ it('Git wrapper bounds every subprocess and forces no lazy fetch over caller env
       calls.push(options); return ''
     })
   expect(calls).toHaveLength(1)
-  expect(calls[0].env.GIT_NO_LAZY_FETCH).toBe('1')
-  expect(calls[0].timeout).toBe(120000)
+  expect(calls[0]!.env.GIT_NO_LAZY_FETCH).toBe('1')
+  expect(calls[0]!.timeout).toBe(120000)
 })
 it('feature branch at a merge contained in develop checks zero files', () => {
   const root = fixture(); git(root, 'checkout', '-qb', 'feature')
