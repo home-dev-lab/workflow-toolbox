@@ -1001,7 +1001,10 @@ describe('wt-adopt-check-hook — compact digest', () => {
     expect(compact).not.toContain('were printed at session start')
     expect(compact).toContain('prints the current full remedies')
     const res = spawnSync('bash', ['-c', command as string], { encoding: 'utf8', env: f.env })
-    expect(res.status).toBe(0)
+    const shell = spawnSync('bash', ['-c', 'command -v bash; uname -s; command -v node'], { encoding: 'utf8', env: f.env })
+    const evidence = `command: ${command}\nstderr: ${res.stderr}\nshell: ${shell.stdout}${shell.stderr}`
+    expect(res.status, evidence).toBe(0)
+    expect(res.stdout.trim(), `the re-run command printed nothing\n${evidence}`).not.toBe('')
     expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toBe(startup)
   })
 
