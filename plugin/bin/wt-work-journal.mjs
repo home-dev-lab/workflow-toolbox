@@ -60,8 +60,12 @@ const COMMANDS = new Map([
   ['unsynced', recordUnsynced],
   ['resolve', (ctx, args, print) => { const result = resolveUnsynced(ctx, args[1]); return printActResult(result, print) }],
 ])
+const isHelp = (arg) => arg === '--help' || arg === '-h'
+// Help is a request only in a command position: first, or right after a known command. Anywhere else the token is an
+// option value or follows an unknown option, and printing the usage there would hide the refusal.
+const helpRequested = (args) => isHelp(args[0]) || (COMMANDS.has(args[0]) && isHelp(args[1]))
 function cliAdmission(args, env, print, error) {
-  if (args.includes('--help') || args.includes('-h')) { print(HELP); return { status: 0 } }
+  if (helpRequested(args)) { print(HELP); return { status: 0 } }
   if (env.CLAUDECODE !== '1') { error('journal CLI refused: CLAUDECODE=1 required'); return { status: 2 } }
   const command = args[0]
   if (!COMMANDS.has(command)) { error(HELP); return { status: 2 } }
