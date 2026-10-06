@@ -130,7 +130,9 @@ function fixtureLayout(dir, scope) {
 }
 
 async function fixture(t, { scope = 'user', mirrors = [], profileAlias = false } = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'rod-observed-'));
+  // Physical root: the engine and the reader compare physical identities, and macOS (/var) and Windows (8.3 names)
+  // hand out temp paths that are not their own real path. Aliases under test are created explicitly below.
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'rod-observed-')));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const { config, root, staticDir, ledger, demand } = fixtureLayout(dir, scope);
   await mkdir(staticDir, { recursive: true });
