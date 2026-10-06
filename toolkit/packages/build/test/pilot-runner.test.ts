@@ -582,7 +582,8 @@ describe('SDK pilot runner', () => {
       prompts.push((await prompt.next()).value.message.content)
     })()
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
-    expect(prompts[0].includes(PLAN_SHAPE_DESCRIPTION)).toBe(expected)
+    expect(prompts).toHaveLength(1)
+    expect((prompts[0] ?? '').includes(PLAN_SHAPE_DESCRIPTION)).toBe(expected)
   })
 
   it('refuses a card with no DoD criterion before query starts', async () => {
