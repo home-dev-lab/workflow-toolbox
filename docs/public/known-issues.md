@@ -128,7 +128,7 @@ must use meaningful public wording rather than an internal identifier.
 
 ### `wt-adopt-check-hook.mjs` — rule-adoption state check (SessionStart + PostToolUse)
 
-Checks BOTH managed sets — `.claude/rules/` and `.claude/agents/` — in the project AND global config dirs, by running the adopt installer in `--check` mode and reusing its absent, clean, stale, edited, symlink, and hand-authored classification. A file counts as OK if either the project or the global copy is current (the union, not an intersection), so an adopted-globally rule never falsely reads as absent. It is silent when everything checked is adopted and current; otherwise it names the absent/stale/edited files per set and suggests the adoption fix (for agents, only `stale` is a finding — the pilot suite's project copies are opt-in by design). It never installs or changes anything: adoption requires the owner's consent. Besides SessionStart, it also re-fires on PostToolUse after a `git push` — the moment the shipped rules can move ahead of the adopted copies — with a preface explaining why the notice appears mid-session. Any internal error exits 0 silently so it cannot break a session or a push. When the session runs a stale plugin root (see the registry hook above), it skips comparing adopted copies with the running version and says why; the install and refresh commands it suggests in that state still come from the running, older root until `/reload-plugins` or a restart.
+Checks the rules and agents sets in the project and global config directories by running the adopt installer in `--check` mode and reusing its classifications. A rule or agent counts as current if either checked location is current, so global adoption never falsely reads as absent. Agent copies are opt-in; absent agents are silent. The scripts set is checked only in the active config's `scripts/` directory: stale or edited shims, symlinked scripts, hand-authored files under shipped names, and missing canonical targets are reported per file with reconciliation and `--fail-on-drift` re-check commands. A symlink remedy uses `--replace-symlinks`. Current or absent scripts are silent, and script diffs compare rendered shims rather than canonical program bodies. If the scripts child fails or emits no parsable status while one of the four script files is present, the hook reports once that the scripts drift check could not run. The hook never installs or changes anything. It also re-fires after a PostToolUse `git push`-shaped command, with a preface explaining the timing. Internal errors exit 0 so they cannot break a session or push. When the session runs a stale plugin root, stale/ahead comparisons for rules, agents, and scripts are skipped and the session is told to reload or restart; commands still come from the running hook's installer.
 
 ### `wt-arc-watch.mjs` — delegated-agent transcript watcher (monitor)
 
@@ -210,7 +210,7 @@ Codex app-server brokers are discovery-only: they are journaled as `broker-obser
 
 The append-only journal is `<plugin-data-dir>/lane-supervisor/lane-supervisor.jsonl`, where `<plugin-data-dir>` is resolved by `plugin-data-dir.mjs`: installed marketplace registry first, valid `CLAUDE_PLUGIN_DATA` for an uninstalled plugin session second, otherwise `${XDG_STATE_HOME:-$HOME/.local/state}/workflow-toolbox`. It rotates at 10 MiB and keeps one `.1` predecessor. Each version-1 JSON line has `time`, `event`, `pid`, shortened `argv`, `worktree`, `owner`, and `reason`, plus `decision`, `source`, or `evidence` when applicable. Consumers may count `event:"cleaned"` records by local date for “cleaned today”; `event:"unattributed"` is the never-killed warning population. A journal or stdout failure is reported once per failing streak and the watcher retries rather than exiting.
 
-Process-group termination works on POSIX, including Linux and macOS. Exact supervision discovery and control are Linux-only; elsewhere the watcher prints `lane supervision unavailable on <platform>` once per session and refuses cleanup rather than guessing, while the launcher's bounded no-answer default still applies. It invokes the same consent gate before launch, while the consent and saturation hooks recognize `node .../wt-lane.mjs`. Adopt it to `<configDir>/scripts/wt-lane.mjs` for a stable allow-rule path. This upgrade requires re-adoption; a newly adopted launcher used against an older installed plugin refuses with an update-and-re-adopt remedy instead of crashing during module load. The bundled plugin-cache path changes with plugin versions.
+Process-group termination works on POSIX, including Linux and macOS. Exact supervision discovery and control are Linux-only; elsewhere the watcher prints `lane supervision unavailable on <platform>` once per session and refuses cleanup rather than guessing, while the launcher's bounded no-answer default still applies. It invokes the same consent gate before launch, while the consent and saturation hooks recognize `node .../wt-lane.mjs`. Adopt it to `<configDir>/scripts/wt-lane.mjs` for a stable allow-rule path. Re-adopt an older copied launcher once to switch to the thin shim; each later launch runs the installed plugin's own executable and consent gate. A missing canonical target refuses with exit 2. The bundled plugin-cache path changes with plugin versions.
 
 ⚠ **A long-lived orphan-watch process does not pick up the host-state relocation on its own.** The watcher started by an older plugin version keeps reading the old in-worktree `.lane/supervision*` location for as long as that process stays alive — restarting the launcher for a new lane is not enough. After upgrading the plugin, restart the orphan-watch process itself so the host-side protection above applies; the installed plugin version, not only the re-adopted scripts, decides which location a running watcher reads.
 
@@ -684,8 +684,35 @@ not decide the lane's exit.
 
 ## Adopted lane launcher dependency
 
-The adopted `wt-lane.mjs` launcher resolves and imports the installed Workflow Toolbox consent
-resolver from `CLAUDE_PLUGIN_ROOT`, `WT_PLUGIN_ROOT`, or the active config directory's
-`~/.claude/plugins/installed_plugins.json` (the config dir's plugin registry). If none is available, or the resolver cannot load, it refuses to
-launch. This deliberately prevents an adopted launcher from making a stale or fail-open consent
-decision without the plugin.
+Adopted `wt-lane.mjs`, `wt-lane-wait.mjs`, `wt-arc-watch.mjs`, and `wt-quota-watch.mjs`
+are fingerprinted thin launchers. They run the installed plugin's canonical `bin/` file,
+so the lane's consent gate and supervisor come from that same executable and bundle.
+Resolution is `WT_PLUGIN_ROOT` first, then applicable `workflow-toolbox@*` entries in
+`<configDir>/plugins/installed_plugins.json`, then `CLAUDE_PLUGIN_ROOT`. Project/local
+entries apply to their canonical project directory and descendants and take precedence over user
+entries; only `user` applies globally, and missing/null/unknown scopes are ignored. Equal-rank
+entries keep registry order. The first present candidate decides: an unusable explicit override
+or selected registry entry refuses rather than falling through. `CLAUDE_PLUGIN_ROOT` is consulted
+only without an applicable registry entry. Root and registry project paths must be absolute;
+the manifest must name `workflow-toolbox` and the target must be a regular file. This checks
+existence, not module loadability: direct execution has identical import/syntax failures and
+follows the same target symlinks.
+
+No usable target produces one synchronous diagnostic on both stdout and stderr and exit 2;
+each write is independently guarded so a closed descriptor cannot prevent the other diagnostic
+or exit 2. With `--help`/`-h` as the first script argument, it instead prints a short launcher note
+and exits 0. On Linux and macOS with
+`process.execve` available, the shim replaces itself using the checked running Node executable,
+preserving the pid, canonical argv, and Node interpreter options (`process.execArgv`). The
+interpreter preflight checks both regular-file status and execute access; replacement between
+check and exec remains a race. Windows and Node versions without execve (before 23.11) use
+inherited-stdio spawn with best-effort SIGTERM/SIGINT/SIGHUP forwarding and faithful child
+outcomes; this is not POSIX-signal-equivalent. Windows has no POSIX signals, and older POSIX
+runtimes have a wrapper process that can orphan its child when force-killed. Re-execution also
+repeats `NODE_OPTIONS` preloads and normalizes native `argv0`, inherent launcher effects that
+do not occur when executing the canonical program directly.
+
+Re-adopt an older copied launcher once. Later canonical-body updates need no re-adoption;
+template changes are detected by `--set scripts --check --global --fail-on-drift` and by the
+SessionStart adoption hook, which scans only the active config's `scripts/` directory.
+Deleting a copy means not adopted; absence is intentionally silent, not evidence of a current shim.

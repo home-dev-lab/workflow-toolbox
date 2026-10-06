@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,7 +67,8 @@ test('fix3 default applying daily CLI reports restoration once and startup keeps
 });
 
 async function scope(t) {
-  const root = await mkdtemp(join(tmpdir(), 'rod-start-'));
+  // Physical root: the engine stamps physical paths, and macOS and Windows temp paths are not their own real path.
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'rod-start-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = join(root, 'config');
   const project = join(root, 'project');

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, cp, symlink, readlink, stat, utimes, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -131,7 +131,9 @@ ruleTest('project migration records the --config-dir profile, not the environmen
     { encoding: 'utf8', env: cleanEnv({ CLAUDE_CONFIG_DIR: environmentProfile }) });
   assert.equal(run.status, 0, run.stderr);
   const migration = JSON.parse((await readFile(join(root, '.claude/rules-on-demand-ledger.jsonl'), 'utf8')).trim().split('\n').at(-1));
-  assert.deepEqual(migration.profiles, [await realpath(selectedProfile)], 'the profile named on the command line is the one required to serve');
+  // The ledger keeps the profile as named; its physical identity is recorded beside it (macOS /var and Windows 8.3 temp paths differ).
+  assert.deepEqual(migration.profiles, [resolve(selectedProfile)], 'the profile named on the command line is the one required to serve');
+  assert.deepEqual(migration.profileIdentities.map((row) => row.physical), [await realpath(selectedProfile)], 'its physical identity is the selected profile, not the environment one');
 });
 
 ruleTest('user migration requires enabled plugin and Function Hooks for every profile', async (t, realRule) => {

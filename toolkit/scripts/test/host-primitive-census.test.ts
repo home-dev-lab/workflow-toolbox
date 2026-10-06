@@ -129,7 +129,8 @@ describe('raw host primitive quality ratchet', () => {
     // The What is running pane design helper (hooks/pane-design.js) adds one pure module with no host operation.
     // The duplicate pilot guard adds its hook and its card-id parser; their file access lives in bin/lib/host.
     // Five pure suite-lock policy/display modules add files without host primitives.
-    expect(result.perimeterFiles).toBe(268)
+    // The rule-narrative guard adds its detector and split modules; their host access lives in bin/lib/host.
+    expect(result.perimeterFiles).toBe(270)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
