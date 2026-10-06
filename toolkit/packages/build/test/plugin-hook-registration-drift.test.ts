@@ -43,6 +43,10 @@ function makeSandbox(tag: string) {
   ]) {
     writeFileSync(join(file === REAL_HOOK ? binDir : libDir, basename(file)), readFileSync(file, 'utf8'))
   }
+  // plugin-data-dir.mjs takes its default carry-over filesystem from bin/lib/host.
+  mkdirSync(join(libDir, 'host'), { recursive: true })
+  const carryFs = join(REAL_PLUGIN_ROOT, 'bin', 'lib', 'host', 'legacy-carry-filesystem.mjs')
+  writeFileSync(join(libDir, 'host', basename(carryFs)), readFileSync(carryFs, 'utf8'))
 
   return {
     root,
