@@ -20,7 +20,7 @@ const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: 
 const pytestFailure = readFileSync(new URL('./fixtures/failed-test-output/pytest.txt', import.meta.url), 'utf8')
 const gradleJunitFailure = readFileSync(new URL('./fixtures/failed-test-output/gradle-junit.txt', import.meta.url), 'utf8')
 const roots: string[] = []
-const numberedAnchorPlan = plan.replace(/^## Tasks\b[\s\S]*?(?=\n## Gates)/m, `## Tasks
+const numberedAnchorPlan = plan.replace(/^## Tasks\b[\s\S]*?(?=\n## Quality coverage)/m, `## Tasks
 1. baseline. DoD: locked.
 2. regression. DoD: red first.
 3. safety. DoD: green after.
@@ -94,7 +94,7 @@ describe.sequential('plan task anchor lifecycle', { timeout: FIXTURE_TEST_TIMEOU
 
   it('counts detected tasks rather than quoted DoD example labels for fallback anchors', async () => {
     const lifecycle = fullLifecycle({ cardText: undefined })
-    const examplePlan = numberedAnchorPlan.replace(/^## Tasks\b[\s\S]*?(?=\n## Gates)/m, '## Tasks\n- implement. DoD: green. Example token: `Definition of done: fake`\n')
+    const examplePlan = numberedAnchorPlan.replace(/^## Tasks\b[\s\S]*?(?=\n## Quality coverage)/m, '## Tasks\n- implement. DoD: green. Example token: `Definition of done: fake`\n')
     await reachReview(lifecycle, examplePlan)
     const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
     expect(brief.match(/^Anchors that resolve: .*$/m)?.[0]).toBe('Anchors that resolve: DoD 1')

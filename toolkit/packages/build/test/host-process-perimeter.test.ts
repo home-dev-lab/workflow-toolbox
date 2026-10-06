@@ -42,6 +42,8 @@ describe('pid to parent-pid host perimeter', () => {
     // The cancelled-call relay guard hook adds one process-table-free module.
     // Nine journal modules replace one reminder and the session-env dedup hook adds one; host operations remain in the adapter.
     // The duplicate pilot guard adds its hook and its card-id parser, both process-table-free.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 259, violations: [] })
+    // Five pure suite-lock policy/display modules add entries without process-table access.
+    // The rule-narrative guard adds its detector and split modules; process and file access live in bin/lib/host.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 266, violations: [] })
   })
 })

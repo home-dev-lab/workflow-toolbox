@@ -1,8 +1,8 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 
 // These skills can mutate shared memory or a board; lanes must remain single-writer safe.
-// save-memory, planka-tracking/SKILL.md, and what-next/SKILL.md are their respective writers.
-export const REFUSED_LANE_SKILLS = Object.freeze(['save-memory', 'planka-tracking', 'what-next'])
+// save-memory and planka-tracking/SKILL.md are their respective writers.
+export const REFUSED_LANE_SKILLS = Object.freeze(['save-memory', 'planka-tracking'])
 
 // OpenCode accepts frontmatter names with either separator and any case. Keep
 // policy comparison stable across every identity spelling it can discover.

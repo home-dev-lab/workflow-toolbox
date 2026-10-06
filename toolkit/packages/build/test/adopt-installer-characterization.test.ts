@@ -49,6 +49,7 @@ function fixturePlugin(options: { version?: unknown; copyRules?: boolean; copyAg
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
   mkdirSync(join(root, 'bin/lib/host'))
   cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), join(root, 'bin/lib/host/adopted-script-shim.mjs'))
   cpSync(SCRIPT, script)
   return { root, script }
 }
@@ -134,6 +135,7 @@ describe('adopt installer characterization - incomplete plugin bundles', () => {
     cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
     mkdirSync(join(root, 'bin/lib/host'))
     cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), join(root, 'bin/lib/host/adopt-placement.mjs'))
+    cpSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), join(root, 'bin/lib/host/adopted-script-shim.mjs'))
     cpSync(SCRIPT, script)
     const result = run(['--check', '--dir', tempDir()], { script })
     expect(result.status).not.toBe(0)

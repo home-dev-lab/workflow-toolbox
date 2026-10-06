@@ -92,6 +92,7 @@ describe('adopt audit-overlap', () => {
     writeFileSync(join(pluginRoot, 'bin/lib/remedy-quote.mjs'), readFileSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), 'utf8'))
     mkdirSync(join(pluginRoot, 'bin/lib/host'), { recursive: true })
     writeFileSync(join(pluginRoot, 'bin/lib/host/adopt-placement.mjs'), readFileSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopt-placement.mjs'), 'utf8'))
+    writeFileSync(join(pluginRoot, 'bin/lib/host/adopted-script-shim.mjs'), readFileSync(join(REPO_ROOT, 'plugin/bin/lib/host/adopted-script-shim.mjs'), 'utf8'))
     mkdirSync(rulesDir)
     mkdirSync(userDir)
     writeFileSync(join(pluginRoot, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'fixture', version: '1.0.0' }))

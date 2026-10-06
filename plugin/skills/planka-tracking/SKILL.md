@@ -135,35 +135,16 @@ Create .claude/planka.json at the project root:
 ```
 
 This is what makes the project "managed" — the presence of this file is the signal
-board-aware tooling (starting with the `what-next` skill) keys off.
+board-aware tooling keys off.
 
 Run `node <plugin-root>/bin/wt-work-journal.mjs setup-board` to cache the Done list. Supply
 the pointer's `mcpUrl` (the HTTP MCP endpoint) when it is not configured already. Once cards
 and comments are verified on the board, run `retire-progress` to empty the original safely.
 
-### 4. `what-next` is available directly — deposit a project copy only on request
-
-The `what-next` skill ships alongside this one and works out of the box against the board you
-just created — no extra step is needed for a newly onboarded project.
-
-If the user wants a project-specific, freely-editable version (to add domain framing, a
-project's own tracker-CLI specifics, or anything else they want to specialize), copy the shipped
-skill into the project on request:
-
-```bash
-mkdir -p .claude/skills/what-next
-cp -f "<this skill's own directory>/../what-next/SKILL.md" .claude/skills/what-next/SKILL.md
-```
-
-Only do this when asked — an unwanted project copy would silently shadow future improvements to
-the shipped skill. If .claude/skills/what-next/SKILL.md already exists, leave it alone; the
-project already has a (possibly specialized) copy.
-
-### 5. Report
+### 4. Report
 
 Report concisely: project + board created (with the Planka URL if known), lists + labels, how
-many cards migrated (and that task history was archived, verified and safely retired), the pointer written,
-and whether a project copy of `what-next` was deposited. Note anything that could NOT be
+many cards migrated (and that task history was archived, verified and safely retired), the pointer written. Note anything that could NOT be
 migrated cleanly (ambiguous entries left for the user to triage).
 
 ## Gotchas (Planka 2.1 — hard-won; don't relearn them)

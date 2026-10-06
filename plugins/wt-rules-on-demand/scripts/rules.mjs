@@ -194,7 +194,7 @@ async function migrate() {
   } else {
     throw new Error('proof is required; pass --proof <report.json> or --no-proof "<reason>"');
   }
-  const result = await migrateRule(lifecycleRoot, subject, spec, { ...proof, assumedLoaded }, { scope, mirrorDirs });
+  const result = await migrateRule(lifecycleRoot, subject, spec, { ...proof, assumedLoaded }, { scope, mirrorDirs, configDir });
   console.log(`migrated ${result.name} to ${result.destination}`);
 }
 

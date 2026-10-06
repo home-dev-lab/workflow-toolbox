@@ -125,7 +125,7 @@ process.stdout.write('pid=' + process.pid + '\\n');`)
       section('project/rule.md', '## Revision only', ['pilot'], ['critic->plan']),
     ], 'FULL', { laneLauncher: launcher, laneWaitMs: 10_000 })
     expect(await lifecycle.transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'start' })).toContain('## Initial plan only')
-    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: rule selection fixture; unit tests and lint.\nSeams: none: unchanged fixture boundaries.\n## State and recovery\nN/A: no state or data boundary touched by this fixture.\n' })
     expect(await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })).toContain('accepted phase=critic')
     await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
     expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 10 })).toBe('lane critic EXIT=0')

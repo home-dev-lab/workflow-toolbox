@@ -4,6 +4,14 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dailyRollback } from '../scripts/daily-rollback.mjs';
+import * as provisional from '../scripts/daily-provisional.mjs';
+
+test('the provisional pass forwards each mirror as its own literal --mirror-dir', () => {
+  const mirrors = ['/profiles/team,blue', '/profiles/other'];
+  const args = provisional.provisionalArgs('user', '/profiles/main', { configDirs: [], mirrorDirs: mirrors, apply: true }, '/profiles/main/journal.jsonl');
+  const forwarded = args.flatMap((arg, index) => arg === '--mirror-dir' ? [args[index + 1]] : []);
+  assert.deepEqual(forwarded, mirrors, 'rollback-check reads one path per --mirror-dir; commas are literal path characters');
+});
 
 test('daily rollback gates mutations on coverage and records a durable fallback notification', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'rod-daily-'));

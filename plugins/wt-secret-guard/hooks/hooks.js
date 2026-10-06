@@ -13,6 +13,8 @@ import { knownTokens, replacementFor, testState, tokenize } from './token-vault.
 import { classifyOutbound, describeFindings } from './outbound-tools.js';
 import { maskAssistantRender, maskTurnStep } from './assistant-stream.js';
 import { REDACTION_NOTE } from './constants.js';
+import { handleOwnerRelease, redactConfirmationCodes, releaseGrammarRefusal } from './owner-release.js';
+import { planOwnerChannel } from './owner-channel.js';
 
 export { configure, testState, tokenize };
 
@@ -63,6 +65,8 @@ function withNotes(result, rewrites, entropy, tokenised = false) {
 }
 
 async function scrubInbound($, event, next) {
+  const privateText = typeof event.text === 'string' ? redactConfirmationCodes(event.text) : event.text;
+  if (privateText !== event.text) event = { ...event, text: privateText };
   const found = detections(event.text);
   if (!found.length) return next(event);
   let text = event.text;
@@ -83,7 +87,7 @@ async function scrubInbound($, event, next) {
 function erroredAnswer(original, cleaned, rewrites = 0) {
   const answer = cleaned.value;
   const unchanged = () => withNotes(answer, rewrites, cleaned.entropy, cleaned.changed);
-  if (!answer || answer.deny !== undefined || answer.isError !== true) return unchanged();
+  if (!isErrorAnswer(answer)) return unchanged();
   if (JSON.stringify(answer.result ?? null) === JSON.stringify(original?.result ?? null)) return unchanged();
   const body = typeof answer.result === 'string' ? answer.result : JSON.stringify(answer.result ?? '');
   const context = Array.isArray(answer.context) ? answer.context.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))) : [];
@@ -91,7 +95,11 @@ function erroredAnswer(original, cleaned, rewrites = 0) {
   return { deny: [assembled.value, ...noteLines(rewrites, assembled.entropy, true)].join('\n') };
 }
 
+function isErrorAnswer(answer) { return answer && answer.deny === undefined && answer.isError === true; }
+
 async function scrubToolResult($, event, next) {
+  const grammar = releaseGrammarRefusal(event);
+  if (grammar) return grammar;
   const response = await next(event);
   const cleaned = scrubSettled(response, '');
   const answer = erroredAnswer(response, cleaned);
@@ -101,6 +109,8 @@ async function scrubToolResult($, event, next) {
 }
 
 async function measuredRead($, event, next, surface) {
+  const grammar = releaseGrammarRefusal(event);
+  if (grammar) return grammar;
   const host = journalHost($);
   if (!config().secretFileReadWarnings) {
     await appendEvent(host, { surface, action: 'policy-disabled', ruleId: 'policy', commandClass: surface, toolUseId: event.tool_use_id });
@@ -112,6 +122,8 @@ async function measuredRead($, event, next, surface) {
 }
 
 async function refuseRawOutbound($, event) {
+  const grammar = releaseGrammarRefusal(event);
+  if (grammar) return grammar;
   const classified = await classifyOutbound({}, event);
   if (!classified.findings.length) return null;
   // Described before the findings are tokenised below: a pattern match must read as its detector, not as a held value.
@@ -127,10 +139,22 @@ async function refuseRawOutbound($, event) {
   const guidance = classified.surface === 'bash'
     ? ' Use a supported secret reference instead.'
     : ' Remove the raw value from the outbound content.';
-  return { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input: ${described.join('; ')}.${guidance}` };
+  return { deny: redactConfirmationCodes(`wt-secret-guard refused raw secret-bearing ${classified.surface} input: ${described.join('; ')}.${guidance}`) };
 }
 
 async function guardedOutbound($, event, next) {
+  const grammar = releaseGrammarRefusal(event);
+  if (grammar) return grammar;
+  const owner = await planOwnerChannel(event);
+  if (owner) {
+    // The forwarded body is already clean: a failed notice or storage repair is reported, never a reason to block.
+    try {
+      if (event.agentId) await $.ui.log('wt-secret-guard: forwarded with body redaction; subagent persisted input was not repaired.');
+      else await scrubToolUseStorage(storageHost($), owner.replacements, event.tool_use_id, undefined, true);
+      await $.ui.log(`wt-secret-guard: forwarded with ${owner.count} values replaced.`);
+    } catch { /* ui.log is void and may throw; forwarding does not depend on it. */ }
+    return scrubToolResult($, owner.forwarded, next);
+  }
   const refusal = await refuseRawOutbound($, event);
   if (refusal) return refusal;
   return scrubToolResult($, event, next);
@@ -146,12 +170,39 @@ async function warnHookAttachment($, event, next) {
   return next(cleaned.value);
 }
 
+async function submitScrubbedPrompt($, event, next) {
+  const cleaned = scrub(event, '');
+  const detected = new Set(typeof event.text === 'string' ? detections(event.text).map(({ value, secret = value }) => secret) : []);
+  const replacements = typeof event.text === 'string'
+    ? [...knownTokens()].filter(([, entry]) => (!entry.ephemeral || detected.has(entry.value)) && event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
+    : [];
+  await publish(journalHost($));
+  if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
+  const noted = withNotes(cleaned.value, 0, cleaned.entropy);
+  const result = await next(cleaned.changed ? { ...noted, context: [...(noted.context ?? []), REDACTION_NOTE] } : noted);
+  if (cleaned.changed && replacements.length && event.origin?.kind) {
+    await scrubPromptStorage(storageHost($), replacements, next.signal);
+  }
+  return result;
+}
+
+async function submitPrompt($, event, next) {
+  const release = handleOwnerRelease(event, (line) => $.ui.log(line));
+  if (!release.handled) return submitScrubbedPrompt($, event, next);
+  if (release.released) await appendEvent(journalHost($), { surface: 'prompt', action: 'released', kinds: [release.released.kind] });
+  await publish(journalHost($));
+  // { drop } is the host's answer for "this prompt does not enter"; the reason is shown to the user only.
+  return { drop: 'wt-secret-guard handled a release request; see the guard line above.' };
+}
+
 /** @type {import('claude-code').Register} */
 export const register = (on, options) => {
   configure(options);
   on('session.receive', scrubInbound);
   on('prompt.attachment', warnHookAttachment);
   on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
+    const grammar = releaseGrammarRefusal(event);
+    if (grammar) return grammar;
     const audit = journalHost($);
     const references = referenceHost($);
     const originalCommand = typeof event.command === 'string' ? event.command : '';
@@ -166,7 +217,17 @@ export const register = (on, options) => {
     }
     const refusal = await refuseRawOutbound($, checked === originalCommand ? event : { ...event, command: checked });
     if (refusal) return refusal;
-    const execute = async (originalEvent) => {
+    const execute = (originalEvent) => executeBash($, next, audit, references, originalCommand, originalEvent);
+    if (!config().secretFileReadWarnings) {
+      await appendEvent(audit, { surface: 'bash', action: 'policy-disabled', ruleId: 'policy', commandClass: 'bash', toolUseId: event.tool_use_id });
+      return execute(event);
+    }
+    return applySecretReadGuard(audit, event, execute, verdictForBash(originalCommand), 'bash');
+  });
+  registerOtherHooks(on);
+};
+
+async function executeBash($, next, audit, references, originalCommand, originalEvent) {
       // The rewrite prefetches every 1Password value and binds it into the command as data.
       const rewrite = await rewriteReferences(references, originalCommand);
       await publishRefusals(audit);
@@ -182,13 +243,9 @@ export const register = (on, options) => {
       await publish(audit);
       if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
       return answer;
-    };
-    if (!config().secretFileReadWarnings) {
-      await appendEvent(audit, { surface: 'bash', action: 'policy-disabled', ruleId: 'policy', commandClass: 'bash', toolUseId: event.tool_use_id });
-      return execute(event);
-    }
-    return applySecretReadGuard(audit, event, execute, verdictForBash(originalCommand), 'bash');
-  });
+}
+
+function registerOtherHooks(on) {
   on('tool.call', { tool: 'Read' }, ($, event, next) => measuredRead($, event, next, 'read'));
   on('tool.call', { tool: 'NotebookRead' }, ($, event, next) => measuredRead($, event, next, 'notebook-read'));
   on('tool.call', { tool: 'Write' }, guardedOutbound);
@@ -201,6 +258,7 @@ export const register = (on, options) => {
   on('tool.call', { tool: 'Grep' }, scrubToolResult);
   on('tool.call', { tool: 'Glob' }, scrubToolResult);
   on('tool.call', { tool: /^mcp__/ }, guardedOutbound);
+  on('tool.call', { tool: /.*/ }, async ($, event, next) => releaseGrammarRefusal(event) ?? next(event));
   on('turn.step', async function* ($, event, next) {
     const correlation = event.turnId ?? event.index;
     const stream = maskTurnStep(event, next, REDACTION_NOTE, () => appendEvent(journalHost($), { surface: 'assistant', action: 'masked', dedupeKey: correlation ? `assistant:${correlation}` : undefined }));
@@ -216,19 +274,5 @@ export const register = (on, options) => {
   on('ui.render', { component: 'AssistantMessage' }, async ($, event, next) => {
     try { return await maskAssistantRender(event, next); } finally { await publish(journalHost($)); }
   });
-  on('prompt.submit', async ($, event, next) => {
-    const cleaned = scrub(event, '');
-    const detected = new Set(typeof event.text === 'string' ? detections(event.text).map(({ value, secret = value }) => secret) : []);
-    const replacements = typeof event.text === 'string'
-      ? [...knownTokens()].filter(([, entry]) => (!entry.ephemeral || detected.has(entry.value)) && event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
-      : [];
-    await publish(journalHost($));
-    if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-    const noted = withNotes(cleaned.value, 0, cleaned.entropy);
-    const result = await next(cleaned.changed ? { ...noted, context: [...(noted.context ?? []), REDACTION_NOTE] } : noted);
-    if (cleaned.changed && replacements.length && event.origin?.kind) {
-      await scrubPromptStorage(storageHost($), replacements, next.signal);
-    }
-    return result;
-  });
-};
+  on('prompt.submit', submitPrompt);
+}
