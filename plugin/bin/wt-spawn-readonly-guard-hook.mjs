@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { resolveAgentTypeTools } from './lib/agent-type-tools.mjs'
+import { briefScopesAgentReadOnly } from './lib/readonly-brief-scope.mjs'
 
 const WRITERS = /^(Bash|Write|Edit)$|^mcp__/i
 function textWithoutQuotes(text) { return text.replace(/```[\s\S]*?```|["'][^"'\n]*["']/g, ' ') }
@@ -11,7 +12,7 @@ function main() {
   if (input.tool_name !== 'Agent') return
   const type = input.tool_input?.subagent_type?.trim()
   const prompt = typeof input.tool_input?.prompt === 'string' ? textWithoutQuotes(input.tool_input.prompt) : ''
-  if (!type || !/\b(read-only|do not modify|investigate only)\b/i.test(prompt)) return
+  if (!type || !briefScopesAgentReadOnly(prompt)) return
   const resolved = resolveAgentTypeTools(type, input.cwd || '')
   if (resolved.unresolved) {
     recordGuardEvent({ guard: 'wt-spawn-readonly-guard-hook.mjs', decision: 'warned', class: 'unresolved', reason: resolved.unresolved, session: input.session_id, agent: input.agent_id })

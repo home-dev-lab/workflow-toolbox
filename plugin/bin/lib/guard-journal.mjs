@@ -262,6 +262,12 @@ function subagentNotice(stdoutJson, reachSubagents) {
   return { hookSpecificOutput: { hookEventName: output.hookEventName, additionalContext: output.additionalContext } }
 }
 
+/** Names of precision rules that matched but did not change the decision (measured before they may). */
+function shadowField(shadow, mask) {
+  const names = Array.isArray(shadow) ? shadow.filter((name) => typeof name === 'string') : []
+  return names.length ? { shadow: names.map((name) => mask(name)) } : {}
+}
+
 /**
  * Record ONE guard decision durably. NEVER throws, always returns.
  *
@@ -278,13 +284,8 @@ function subagentNotice(stdoutJson, reachSubagents) {
  * @param {string} [event.session] - bounded session id, if known.
  * @param {string} [event.agent] - bounded agent id, if known.
  * @param {object} [event.evidence] - up to six bounded string/number fields chosen by the guard.
+ * @param {string[]} [event.shadow] - names of the shadow rules that matched without changing the decision.
  */
-/** Names of precision rules that matched but did not change the decision (measured before they may). */
-function shadowField(shadow, mask) {
-  const names = Array.isArray(shadow) ? shadow.filter((name) => typeof name === 'string') : []
-  return names.length ? { shadow: names.map((name) => mask(name)) } : {}
-}
-
 export function recordGuardEvent(event = {}) {
   try {
     const { guard, decision, class: cls, reason, cwd, session, agent, evidence, shadow } = event || {}

@@ -45,6 +45,7 @@ describe('pid to parent-pid host perimeter', () => {
     // Five pure suite-lock policy/display modules add entries without process-table access.
     // The rule-narrative guard adds its detector and split modules; process and file access live in bin/lib/host.
     // The spawn-capability guard's brief-intent predicates add one process-table-free module.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 259, violations: [] })
+    // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 260, violations: [] })
   })
 })
