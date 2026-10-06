@@ -8,6 +8,8 @@ export function sealedPluginCliEnv(
   const home = join(root, 'home')
   return {
     ...process.env,
+    WT_SUITE_LOCK_PRIORITY: undefined,
+    WT_SUITE_LOCK_LONG_HOLD_S: undefined,
     PATH: process.env.PATH,
     NPM_CONFIG_PREFIX: join(root, 'npm-prefix'),
     XDG_STATE_HOME: join(root, 'state'),

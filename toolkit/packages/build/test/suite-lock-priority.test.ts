@@ -32,7 +32,7 @@ afterEach(() => {
 const tempRoot = () => { const root = mkdtempSync(join(tmpdir(), 'wt-lock-priority-')); roots.push(root); return root }
 const records = (root: string) => (existsSync(join(root, 'queue.d')) ? readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).sort() : [])
 const readRecord = (root: string, name: string) => JSON.parse(readFileSync(join(root, 'queue.d', name), 'utf8')) as { light?: boolean }
-const isolatedEnv = (root: string, extra: NodeJS.ProcessEnv = {}) => ({ ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extra })
+const isolatedEnv = (root: string, extra: NodeJS.ProcessEnv = {}) => ({ ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extra })
 
 async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
@@ -221,7 +221,7 @@ describe('suite lock priority for light runs: order only, one holder at a time',
       const address = join(root, 'broker.sock')
       const saved = { dir: process.env.WT_SUITE_LOCK_DIR, broker: process.env.WT_SUITE_LOCK_BROKER, lease: process.env.WT_SUITE_LEASE }
       process.env.WT_SUITE_LOCK_DIR = join(root, 'locks'); process.env.WT_SUITE_LOCK_BROKER = ''; delete process.env.WT_SUITE_LEASE
-      const server = createSuiteLockBroker() as net.Server
+      const server = createSuiteLockBroker({ env: isolatedEnv(join(root, 'locks')) }) as net.Server
       const holder = await acquireSuiteLock({ root: join(root, 'locks'), argv: ['H'] })
       try {
         await new Promise<void>((resolve) => server.listen(address, resolve))
@@ -346,7 +346,7 @@ describe('release priority', () => {
     }
     releaseSuiteLock(holder); await Promise.all(all)
     expect(order, 'release priority has no per-waiter bypass bound').toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'L', 'E'])
-    expect(readdirSync(root).sort(), 'release admissions add no persistent state').toEqual(['light-grants', 'queue.d'])
+    expect(readdirSync(root).sort(), 'release admissions add no release-specific state').toEqual(['admissions', 'light-grants', 'queue.d'])
     expect(readLightCounter(root).grants).toBe(1)
   }, 20_000)
 
@@ -476,7 +476,7 @@ describe('release priority', () => {
 
   it('R6 validates priority before an inherited lease and rejects light release', async () => {
     const root = tempRoot(); const lease = await acquireSuiteLock({ root })
-    const env = { ...process.env, WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` }
+    const env = isolatedEnv(root, { WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` })
     try {
       await expect(acquireSuiteLock({ root, env, priority: 'foo' })).rejects.toThrow('unknown suite lock priority: foo')
       await expect(acquireSuiteLock({ root, env, priority: 'release', light: true })).rejects.toThrow(/release priority.*light|light.*release priority/)
@@ -599,7 +599,7 @@ describe('wt-suite-lock status judges the holder like release does', () => {
     const root = tempRoot(); deadHolder(root)
     const text = status(root)
     expect(text.status, text.stderr).toBe(0)
-    expect(text.stdout).toMatch(/^suite lock held by a stale holder \(gone or expired\): holder pid \d+ \(pnpm test\) since \d\d:\d\d; `wt-suite-lock release` clears it\n$/)
+    expect(text.stdout).toMatch(/^suite lock held by a stale holder \(gone or expired\): holder pid \d+ \(pnpm test\) since \d\d:\d\d, held 0 min; `wt-suite-lock release` clears it\n$/)
     const json = JSON.parse(status(root, '--json').stdout)
     expect(json.held).toBe(true)
     expect(json.stale).toBe(true)
@@ -609,7 +609,7 @@ describe('wt-suite-lock status judges the holder like release does', () => {
     const root = tempRoot()
     const lease = await acquireSuiteLock({ root, argv: ['pnpm', 'test'] })
     try {
-      expect(status(root).stdout).toMatch(/^suite lock held: holder pid \d+ \(pnpm test\) since \d\d:\d\d\n$/)
+      expect(status(root).stdout).toMatch(/^suite lock held: holder pid \d+ \(pnpm test\) since \d\d:\d\d, held 0 min, P1\n$/)
       expect(JSON.parse(status(root, '--json').stdout).stale).toBe(false)
     } finally { releaseSuiteLock(lease) }
   })

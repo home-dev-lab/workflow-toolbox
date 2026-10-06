@@ -94,7 +94,7 @@ async function localBroker(options: Record<string, unknown> = {}) {
   process.env.WT_SUITE_LOCK_DIR = join(root, 'locks')
   process.env.WT_SUITE_LOCK_BROKER = ''
   delete process.env.WT_SUITE_LEASE
-  const server = createSuiteLockBroker(options) as net.Server
+  const server = createSuiteLockBroker({ env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }), ...options }) as net.Server
   await new Promise<void>((resolve) => server.listen(address, resolve))
   return { address, server, restore: () => {
     if (previous === undefined) delete process.env.WT_SUITE_LOCK_DIR; else process.env.WT_SUITE_LOCK_DIR = previous

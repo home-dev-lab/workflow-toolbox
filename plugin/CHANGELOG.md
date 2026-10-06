@@ -36,6 +36,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Suite-lock runs can declare `P0`, `P1` or `P2` with `--priority` or `WT_SUITE_LOCK_PRIORITY`. Levels age one step every 30 minutes; release stays first and holders are never pre-empted. Every non-release exclusive ticket, including P0, becomes unpassable by later light tickets of the same effective level after 30 minutes, with ticket-number order breaking equal-tier/rank ties. Mixed queues retain the existing comparator, and lane priority comes from the host broker. Read-only text/JSON status now shows service order, waiting times, declared/effective levels, stale tickets and holder age, with a configurable long-hold notice. Waiters also renew on admissions missed between polls.
 - Add a sequential duplicate-pilot spawn guard with explicit card ownership, RESPAWN-OF handoffs, and human-reviewed probation before refusals; hook registration is left to integration.
 - The commit-chain guard warns through additional context, including to subagents, when a gate precedes a git commit without a pure success-only `&&` chain from an unnegated gate. Shell-option and status-test patterns also warn by design. It remains warn-only pending precision measurement; recall is unmeasured.
 

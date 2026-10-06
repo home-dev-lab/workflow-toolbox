@@ -16,7 +16,7 @@ const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
 const roots: string[] = []
 const root = () => { const name = mkdtempSync(join(tmpdir(), 'wt-exclusive-')); roots.push(name); return name }
 function envFor(directory: string): NodeJS.ProcessEnv {
-  const env = { ...process.env }
+  const env: NodeJS.ProcessEnv = { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined }
   for (const key of Object.keys(env)) if (key.startsWith('WT_SUITE_LEASE')) delete env[key]
   return { ...env, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK_DIR: directory }
 }
