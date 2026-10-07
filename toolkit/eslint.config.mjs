@@ -71,8 +71,8 @@ const replacementRuleFiles = [
   ...qualityFiles,
   ...newAreaQualityFiles,
   ...commonJsFiles,
-  'plugin/**/*.{ts,mts,cts}',
-  '../plugin/**/*.{ts,mts,cts}',
+  'plugin/**/*.{ts,tsx,mts,cts}',
+  '../plugin/**/*.{ts,tsx,mts,cts}',
 ]
 const sonarRules = Object.fromEntries(
   Object.entries(sonarjs.configs.recommended.rules)

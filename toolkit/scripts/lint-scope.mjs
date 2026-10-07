@@ -9,7 +9,7 @@ import { LINT_SCOPE_DATA, LINT_SCOPE_EXCLUSIONS } from '../eslint.config.mjs'
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const RATCHET_PASS = {
   gate: 'quality', name: 'ratchet', cwd: '.', maxWarnings: 685,
-  targets: ['toolkit/packages/*/src/**/*.ts', 'plugin/**/*.mjs', 'plugin/**/*.js', 'plugin/**/*.{ts,mts,cts}',
+  targets: ['toolkit/packages/*/src/**/*.ts', 'plugin/**/*.mjs', 'plugin/**/*.js', 'plugin/**/*.{ts,tsx,mts,cts}',
     'plugins/wt-rules-on-demand/**/*.mjs', 'plugins/wt-rules-on-demand/**/*.js'],
 }
 
