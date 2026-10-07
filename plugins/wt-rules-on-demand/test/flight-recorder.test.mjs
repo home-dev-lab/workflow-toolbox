@@ -11,6 +11,33 @@ const directory = '/fixture/config/plugins/data/wt-rules-on-demand/inflight';
 const inflight = (path) => path.startsWith(`${directory}/`);
 const breadcrumbs = (s) => [...s.files].filter(([path]) => inflight(path));
 
+const hookNames = ['prompt.context', 'prompt.submit', 'tool.call', 'turn.complete', 'session.compact'];
+const never = () => new Promise(() => {});
+const tick = () => new Promise(setImmediate);
+function signalled(next, signal) { next.signal = signal; return next; }
+async function settles(pending, message) {
+  let timer;
+  try {
+    const result = await Promise.race([pending.then((value) => ({ settled: true, value })),
+      new Promise((resolve) => { timer = setTimeout(() => resolve({ settled: false }), 200); })]);
+    assert.equal(result.settled, true, message);
+    return result.value;
+  } finally { clearTimeout(timer); }
+}
+class CountingSignal extends EventTarget {
+  aborted = false;
+  listeners = new Set();
+  addEventListener(type, listener, options) {
+    if (type === 'abort') this.listeners.add(listener);
+    super.addEventListener(type, listener, options);
+  }
+  removeEventListener(type, listener, options) {
+    if (type === 'abort') this.listeners.delete(listener);
+    super.removeEventListener(type, listener, options);
+  }
+  abort() { this.aborted = true; this.dispatchEvent(new Event('abort')); }
+}
+
 function fixture({ enabled = true, session = 'fixture/session', files = new Map() } = {}) {
   const handlers = new Map(), calls = [], logs = [], stored = new Map();
   resetForSelftest();
@@ -57,6 +84,123 @@ function clock(t) {
   t.after(() => { globalThis.Date = RealDate; });
   return { advance: (ms) => { now += ms; } };
 }
+
+for (const work of hookNames) {
+  test(`abort settles ${work} during a never-settling store operation`, async () => {
+    const s = fixture(), entered = deferred(), controller = new AbortController();
+    for (let i = 0; i < 49; i++) await s.event('tool.call', { tool: 'Agent', cwd: '/fixture' });
+    for (const name of ['get', 'set', 'keys']) s.$.store[name] = () => { entered.resolve(); return never(); };
+    const pending = s.event(work, { tool: 'Agent', cwd: '/fixture' }, signalled(async () => ({}), controller.signal));
+    await entered.promise;
+    controller.abort();
+    await settles(pending, `${work} must settle within 200 ms of abort while store I/O never settles`);
+  });
+  test(`abort settles ${work} waiting for the write turn without releasing it`, async (t) => {
+    const time = clock(t), s = fixture(), entered = deferred(), controller = new AbortController();
+    let reads = 0;
+    s.$.store.get = () => { reads++; entered.resolve(); return never(); };
+    void s.event('turn.complete');
+    await entered.promise;
+    time.advance(60_001);
+    const pending = s.event(work, { tool: 'Agent', cwd: '/fixture' }, signalled(async () => ({}), controller.signal));
+    await tick();
+    assert.equal(reads, 1, 'the target must wait behind the held write turn');
+    controller.abort();
+    await settles(pending, `${work} must settle within 200 ms of abort while the write turn never settles`);
+    await tick();
+    assert.equal(reads, 1, 'abandonment must not release the detached body\'s write turn');
+  });
+  test(`already-aborted ${work} settles without starting work`, async () => {
+    const s = fixture(), controller = new AbortController();
+    let called = false, started = 0;
+    s.$.env.get = () => { started++; return never(); };
+    controller.abort();
+    const next = signalled(async () => { called = true; return {}; }, controller.signal);
+    await settles(s.event(work, {}, next), `${work} must settle at entry when its signal is already aborted`);
+    assert.equal(called, false, 'already-aborted hooks must not call downstream');
+    assert.equal(started, 0, 'already-aborted hooks must not start their body');
+    assert.equal(s.calls.length, 0, 'already-aborted hooks must not start recorder I/O');
+  });
+  test(`normal ${work} keeps its answer and removes abort listeners across repeated calls`, async () => {
+    const s = fixture(), signal = new CountingSignal();
+    for (let i = 0; i < 20; i++) {
+      const answer = { answer: i }, entered = deferred(), held = deferred();
+      const pending = s.event(work, {}, signalled(async () => { entered.resolve(); return held.promise; }, signal));
+      await entered.promise;
+      const listeners = signal.listeners.size;
+      held.resolve(answer);
+      assert.equal(await pending, answer, `${work} must preserve its downstream answer without abort`);
+      assert.equal(listeners, 1, 'a running signalled hook must install one abort listener');
+      assert.equal(signal.listeners.size, 0, 'a normally settled hook must remove its abort listener');
+    }
+  });
+}
+
+for (const rejects of [false, true]) {
+  test(`aborted body stays recorded until its late ${rejects ? 'rejection' : 'completion'}`, async () => {
+    const s = fixture(), controller = new AbortController(), held = deferred(), entered = deferred();
+    const unhandled = [];
+    const observe = (error) => unhandled.push(error);
+    process.on('unhandledRejection', observe);
+    try {
+      const pending = s.event('session.compact', {}, signalled(async () => { entered.resolve(); return held.promise; }, controller.signal));
+      await entered.promise;
+      const [path] = breadcrumbs(s)[0];
+      controller.abort();
+      await settles(pending, 'aborted hook must settle while its recorded body is still running');
+      assert.equal(JSON.parse(s.files.get(path)).phase, 'work', 'abort must not confirm or release the running slot');
+      await s.event('session.compact');
+      assert.equal(breadcrumbs(s).length, 2, 'another call must not reuse the detached body\'s slot');
+      if (rejects) held.reject(new Error('late detached failure'));
+      else held.resolve({ answer: 42 });
+      for (let i = 0; i < 20 && JSON.parse(s.files.get(path)).phase !== 'complete'; i++) await tick();
+      assert.deepEqual(s.calls.filter((call) => call.path === path && call.op === 'write').map((call) => call.row.phase),
+        ['work', 'finally', 'complete'], 'detached bodies must write their real finally and completion phases');
+      await tick();
+      assert.deepEqual(unhandled, [], 'late detached rejection must never become unhandled');
+    } finally { process.removeListener('unhandledRejection', observe); }
+  });
+}
+
+test('aborted never-ending body remains unconfirmed and is named after reload', async () => {
+  const old = fixture(), entered = deferred(), controller = new AbortController();
+  const pending = old.event('tool.call', { tool: 'Bash', input: { command: 'abc' } },
+    signalled(async () => { entered.resolve(); return never(); }, controller.signal));
+  await entered.promise;
+  const [path, text] = breadcrumbs(old)[0];
+  controller.abort();
+  await settles(pending, 'aborted never-ending body must release the host-facing hook');
+  assert.equal(old.files.get(path), text, 'abort must leave the never-ending body unconfirmed');
+  const s = fixture({ files: old.files });
+  await s.event('turn.complete');
+  assert.ok(s.logs.some((line) => line.includes('call did not confirm completion: tool.call (Bash), last phase work')),
+    'reload must name the body that never confirmed completion');
+  assert.ok(s.stored.get('health').interruptedCalls.some((call) => call.path === path));
+});
+
+test('disabled hooks also settle on abort without waiting for downstream', async () => {
+  const s = fixture({ enabled: false }), controller = new AbortController(), entered = deferred();
+  const pending = s.event('session.compact', {}, signalled(async () => { entered.resolve(); return never(); }, controller.signal));
+  await entered.promise;
+  controller.abort();
+  await settles(pending, 'disabled hooks must obey the host abort signal too');
+  assert.deepEqual(s.calls, []);
+});
+
+test('abort during recorder preparation settles and leaves the body detached', async () => {
+  const s = fixture(), controller = new AbortController(), entered = deferred();
+  s.$.env.get = () => { controller.abort(); entered.resolve(); return never(); };
+  const pending = s.event('session.compact', {}, signalled(async () => ({}), controller.signal));
+  await entered.promise;
+  await settles(pending, 'abort during body startup must settle even before the listener is installed');
+});
+
+test('normal rejection is preserved and removes the abort listener', async () => {
+  const s = fixture(), signal = new CountingSignal(), failure = new Error('normal downstream failure');
+  await assert.rejects(s.event('session.compact', {}, signalled(async () => { throw failure; }, signal)),
+    (error) => error === failure);
+  assert.equal(signal.listeners.size, 0, 'a normally rejected hook must remove its abort listener');
+});
 
 for (const throws of [false, true]) {
   test(`breadcrumb precedes work, enters finally and completes on ${throws ? 'throw' : 'success'}`, async (t) => {
@@ -435,9 +579,9 @@ for (const [shape, error] of Object.entries(missingDirectoryErrors)) {
 
 const hostFailure = (op, path, errno = 'EIO') => new Error(`wt-rules-on-demand: $.fs.${op}(${path}) failed: ${errno}`);
 const deferred = () => {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let resolve, reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 };
 async function within(promise, ms, message) {
   let timer;

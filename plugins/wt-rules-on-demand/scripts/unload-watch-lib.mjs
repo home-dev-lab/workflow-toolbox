@@ -68,7 +68,7 @@ export function scanTranscript(bytes, plan) {
 
 function warningText(unloadedAt) {
   return `The rules-on-demand engine was unloaded by the host at ${new Date(time(unloadedAt)).toISOString()} `
-    + '(its hooks worker missed its heartbeat). Since then no at-act rule is served or refused in this session. '
+    + '(its hooks worker was terminated). Since then no at-act rule is served or refused in this session. '
     + 'A main session restores it with /reload-plugins or a restart; a sub-agent tells its main session.';
 }
 

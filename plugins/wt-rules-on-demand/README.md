@@ -11,16 +11,23 @@ quality check. When rules exist but the switch is off, startup reports their cou
 See [TRIGGERS.md](TRIGGERS.md).
 
 A separate command hook announces when the host unloads the rules-on-demand
-engine after its hooks worker misses a heartbeat: no at-act rule is then served
+engine because its hooks worker was terminated: no at-act rule is then served
 or refused. It announces on the next user prompt, session start, or Agent, Task
 or SendMessage tool call; hook input over 64 KiB is skipped. The announcement
 ends after this plugin's manifest reload, a `/reload-plugins` summary
 (it names no plugin), or a fresh process (restart or resume); observed engine
-serving also confirms recovery. Evidence is interpreted in transcript order.
+serving or an unconfirmed-call harvest line also confirms recovery. Evidence is
+interpreted in transcript order; an unload row does not identify whether the
+worker was terminated for a heartbeat miss or repeated hook-budget overruns.
 A sub-agent tells its main session. Warnings repeat at most every ten minutes,
 but always after compaction while unloaded. Detection scans only the last 4 MiB
 on first use, then new complete rows (at most the last 16 MiB per scan); unloads
 outside those bounds are not observed. This hook only announces the loss.
+
+Each event hook settles when the host aborts `next.signal`; a signal already
+aborted on entry starts no work. A running body continues detached, with its
+rejections observed and its recorder slot held until that body actually ends.
+Without an abort, the downstream answer or error is preserved.
 
 While enabled, the engine writes small event breadcrumbs under
 `<config dir>/plugins/data/wt-rules-on-demand/inflight/`, reusing at most 32 slots

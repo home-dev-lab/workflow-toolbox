@@ -942,6 +942,29 @@ export const register = (on, options, clock = Date.now) => {
 };
 
 let triggerClock = Date.now;
+
+// Only the host-facing promise settles on abort; the body retains its real lifetime.
+async function settleHook(signal, body) {
+  let abandon;
+  const settled = new Promise((resolve, reject) => {
+    abandon = () => resolve();
+    // Keep observing rejection even after abandonment.
+    body.then(resolve, reject);
+    signal.addEventListener('abort', abandon, { once: true });
+    if (signal.aborted) abandon();
+  });
+  try { return await settled; }
+  finally { signal.removeEventListener('abort', abandon); }
+}
+
+async function abortableEvent($, e, next, work) {
+  const signal = next.signal;
+  if (signal?.aborted) return;
+  const body = trackedEvent($, e, next, work);
+  if (!signal) return body;
+  return settleHook(signal, body);
+}
+
 async function trackedEvent($, e, next, work) {
   if (!enabled) return next(e);
   const start = Date.now();
@@ -976,11 +999,11 @@ async function trackedEvent($, e, next, work) {
     } finally { queueFlightPhase($, flight, completeFlight(flight)); }
   }
 }
-async function promptContextEvent($, e, next) { return trackedEvent($, e, next, 'prompt.context'); }
-async function sessionCompactEvent($, e, next) { return trackedEvent($, e, next, 'session.compact'); }
-async function promptSubmitEvent($, e, next) { return trackedEvent($, e, next, 'prompt.submit'); }
-async function turnCompleteEvent($, e, next) { return trackedEvent($, e, next, 'turn.complete'); }
-async function toolCallEvent($, e, next) { return trackedEvent($, e, next, 'tool.call'); }
+async function promptContextEvent($, e, next) { return abortableEvent($, e, next, 'prompt.context'); }
+async function sessionCompactEvent($, e, next) { return abortableEvent($, e, next, 'session.compact'); }
+async function promptSubmitEvent($, e, next) { return abortableEvent($, e, next, 'prompt.submit'); }
+async function turnCompleteEvent($, e, next) { return abortableEvent($, e, next, 'turn.complete'); }
+async function toolCallEvent($, e, next) { return abortableEvent($, e, next, 'tool.call'); }
 
 async function promptContextWork($, e, next) {
     if (enabled) {

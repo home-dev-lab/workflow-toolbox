@@ -54,7 +54,9 @@ test('unload without later alive evidence announces delivery loss in both hook c
   assert.equal(output.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
   assert.equal(output.hookSpecificOutput.additionalContext, output.systemMessage);
   assert.ok(output.systemMessage.includes(unloadTime), 'announcement must retain the unload timestamp');
-  assert.match(output.systemMessage, /unloaded by the host.*heartbeat/);
+  assert.match(output.systemMessage, /unloaded by the host.*hooks worker was terminated/);
+  assert.doesNotMatch(output.systemMessage, /missed its heartbeat|ignored its signal|budget overrun/,
+    'the unload row cannot establish why the host terminated its worker');
   assert.match(output.systemMessage, /no at-act rule is served or refused/);
   assert.match(output.systemMessage, /main session.*\/reload-plugins.*restart/);
   assert.match(output.systemMessage, /sub-agent.*main session/);
@@ -68,6 +70,7 @@ const aliveContents = [
   ['local reload command', '<local-command-stdout>Reloaded: 13 plugins · 26 skills · 50 agents · 106 hooks · 7 plugin MCP servers · 0 plugin LSP servers</local-command-stdout>', 'local_command'],
   ['engine serve', 'wt-rules-on-demand: wt-rules-on-demand: serving fixture rule', 'informational'],
   ['engine refusal', 'wt-rules-on-demand: wt-rules-on-demand: before-act refusal serving fixture rule', 'informational'],
+  ['unconfirmed call', 'wt-rules-on-demand: wt-rules-on-demand: call did not confirm completion: tool.call (Bash), last phase work', 'informational'],
 ];
 for (const [label, content, subtype] of aliveContents) {
   test(`${label} ends the announcement, preserving millisecond ordering`, async (t) => {
