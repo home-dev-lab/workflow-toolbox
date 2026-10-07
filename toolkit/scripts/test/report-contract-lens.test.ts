@@ -7,8 +7,10 @@
 // not "the lens never complains"). Both fixtures live in
 // scripts/test/fixtures/ and are reused by the manual CLI demonstration
 // (see report-contract-lens.ts's own header for the invocation).
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { describe, it, expect, afterEach } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkReport, RULE_POLICIES } from '../report-contract-lens.ts'
@@ -23,6 +25,30 @@ describe('report-contract-lens - package entry point', () => {
       scripts: Record<string, string>
     }
     expect(packageJson.scripts['wt:report-lens']).toBe('tsx scripts/report-contract-lens.ts')
+  })
+})
+
+// Reached through a symlink, argv[1] keeps the link while import.meta.url is the
+// real path. A raw comparison of the two skipped main(): the lens printed nothing
+// and exited 0, and a caller parsing its output read "unavailable".
+describe('report-contract-lens - CLI entry through a symlink', () => {
+  const roots: string[] = []
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  it.skipIf(process.platform === 'win32')('prints its contract when launched through a symlinked path', () => {
+    const root = mkdtempSync(join(tmpdir(), 'report-lens-symlink-'))
+    roots.push(root)
+    const link = join(root, 'lens-link.ts')
+    symlinkSync(join(TOOLKIT_ROOT, 'scripts', 'report-contract-lens.ts'), link)
+    const tsx = join(TOOLKIT_ROOT, 'node_modules', '.bin', 'tsx')
+
+    const result = spawnSync(tsx, [link, join(FIXTURES, 'sample-compliant.md')], { cwd: TOOLKIT_ROOT, encoding: 'utf8' })
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/^BLOCKING FINDINGS: none$/m)
+    expect(result.stdout).toContain('RESULT: PASS (exit 0)')
   })
 })
 
