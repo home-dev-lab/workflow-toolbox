@@ -38,8 +38,36 @@ class CountingSignal extends EventTarget {
   abort() { this.aborted = true; this.dispatchEvent(new Event('abort')); }
 }
 
-function fixture({ enabled = true, session = 'fixture/session', files = new Map() } = {}) {
+async function warmFixture($, handlers, calls, logs, stored) {
+  // Resolve both inputs through real engine loading/journaling, then reset the cold recorder.
+  // Snapshot capabilities so a test's deferred/throwing instrument applies to its event, not this warm-up.
+  const host = { ...$, env: { ...$.env }, session: { ...$.session }, fs: { ...$.fs }, ui: { ...$.ui }, store: { ...$.store } };
+  const list = host.fs.list, read = host.fs.read;
+  host.fs.list = (path) => {
+    if (path === directory) return [];
+    if (path === '/fixture/config/rules-on-demand') return [{ name: 'warm.md', kind: 'file' }];
+    return list(path);
+  };
+  host.fs.read = (path) => path === '/fixture/config/rules-on-demand/warm.md'
+    ? '---\non-demand:\n  triggers:\n    - kind: tool\n      tool: "^Agent$"\n      unconditional: true\n  compliance:\n    kind: none\n    reason: fixture\n---\nWarm rule.\n' : read(path);
+  await handlers.get('tool.call')(host, { cwd: '/fixture', tool: 'Agent' }, async () => ({}));
+  await new Promise(setImmediate);
+  resetForSelftest(true);
+  calls.length = 0;
+  logs.length = 0;
+  stored.clear();
+  return host;
+}
+
+async function bootstrapFixture($, host, handlers) {
+  await handlers.get('session.compact')({ ...host, fs: $.fs, ui: $.ui }, {}, async () => ({}));
+  // Only fixture preparation yields for background diagnostics; serving hooks do not.
+  await new Promise(setImmediate);
+}
+
+function fixture({ enabled = true, session = 'fixture/session', files = new Map(), prime = true } = {}) {
   const handlers = new Map(), calls = [], logs = [], stored = new Map();
+  let primed = false;
   resetForSelftest();
   register((name, handler) => handlers.set(name, handler), { enabled });
   const $ = {
@@ -66,7 +94,10 @@ function fixture({ enabled = true, session = 'fixture/session', files = new Map(
       ancestors: async () => [],
     },
   };
+  const ready = enabled ? warmFixture($, handlers, calls, logs, stored) : Promise.resolve();
   const event = async (name = 'session.compact', input = {}, next = async () => ({ answer: 42 })) => {
+    const host = await ready;
+    if (enabled && prime && !primed && !next.signal?.aborted) { primed = true; await bootstrapFixture($, host, handlers); }
     try { return await handlers.get(name)($, input, next); }
     finally { await new Promise(setImmediate); }
   };
@@ -87,7 +118,7 @@ function clock(t) {
 
 for (const work of hookNames) {
   test(`abort settles ${work} during a never-settling store operation`, async () => {
-    const s = fixture(), entered = deferred(), controller = new AbortController();
+    const s = fixture({ prime: false }), entered = deferred(), controller = new AbortController();
     for (let i = 0; i < 49; i++) await s.event('tool.call', { tool: 'Agent', cwd: '/fixture' });
     for (const name of ['get', 'set', 'keys']) s.$.store[name] = () => { entered.resolve(); return never(); };
     const pending = s.event(work, { tool: 'Agent', cwd: '/fixture' }, signalled(async () => ({}), controller.signal));
@@ -189,8 +220,12 @@ test('disabled hooks also settle on abort without waiting for downstream', async
 
 test('abort during recorder preparation settles and leaves the body detached', async () => {
   const s = fixture(), controller = new AbortController(), entered = deferred();
-  s.$.env.get = () => { controller.abort(); entered.resolve(); return never(); };
-  const pending = s.event('session.compact', {}, signalled(async () => ({}), controller.signal));
+  s.$.session.root = never;
+  const input = { get agentId() {
+    if (new Error().stack.includes('toolCallWork')) { controller.abort(); entered.resolve(); }
+    return 'helper';
+  } };
+  const pending = s.event('tool.call', input, signalled(async () => ({}), controller.signal));
   await entered.promise;
   await settles(pending, 'abort during body startup must settle even before the listener is installed');
 });
@@ -203,11 +238,12 @@ test('normal rejection is preserved and removes the abort listener', async () =>
 });
 
 for (const throws of [false, true]) {
-  test(`breadcrumb precedes work, enters finally and completes on ${throws ? 'throw' : 'success'}`, async (t) => {
+  test(`breadcrumb dispatch precedes work, enters finally and completes on ${throws ? 'throw' : 'success'}`, async (t) => {
     const time = clock(t), s = fixture(), failure = new Error('downstream failed');
     const promise = s.event('session.compact', { agentId: 'helper' }, async () => {
-      assert.equal(breadcrumbs(s).length, 1, 'one breadcrumb must exist before work runs');
-      const [path, text] = breadcrumbs(s)[0], row = JSON.parse(text);
+      const entries = s.calls.filter((call) => call.op === 'write');
+      assert.equal(entries.length, 1, 'one breadcrumb write must be dispatched before work runs');
+      const { path, row } = entries[0];
       assert.match(path.slice(directory.length + 1), /^[A-Za-z0-9._-]+\.json$/);
       assert.equal(row.work, 'session.compact');
       assert.equal(row.phase, 'work');
@@ -232,7 +268,7 @@ test('every registered event records its work and tool input is measured only on
   const input = { command: 'abcd', description: 'xy', nested: { text: 'ignored' } };
   for (const work of ['prompt.context', 'prompt.submit', 'tool.call', 'turn.complete', 'session.compact']) {
     await s.event(work, { tool: 'Bash', input, prompt: 'ignored when input exists' }, async () => {
-      const row = JSON.parse(breadcrumbs(s)[0][1]);
+      const row = s.calls.filter((call) => call.op === 'write' && call.row.phase === 'work').at(-1).row;
       assert.equal(row.work, work);
       assert.equal(row.tool, work === 'tool.call' ? 'Bash' : '');
       assert.equal(row.inputChars, 6);
@@ -241,7 +277,7 @@ test('every registered event records its work and tool input is measured only on
   }
   await s.event('session.compact', { input: { ...input, toJSON() { throw new Error('must not serialize input'); } } });
   await s.event('tool.call', { tool: 'Bash', input: { command: 'x'.repeat(2_000_000) } }, async () => {
-    assert.equal(JSON.parse(breadcrumbs(s)[0][1]).inputChars, 1_000_000);
+    assert.equal(s.calls.filter((call) => call.op === 'write' && call.row.phase === 'work').at(-1).row.inputChars, 1_000_000);
     return {};
   });
 });
@@ -254,8 +290,9 @@ test('concurrent events have distinct files and list the directory once per load
   const first = s.event('session.compact', { agentId: 'one' }, async () => { entered(); await hold; return {}; });
   await ready;
   await s.event('session.compact', { agentId: 'two' }, async () => {
-    assert.equal(breadcrumbs(s).length, 2);
-    assert.equal(new Set(breadcrumbs(s).map(([path]) => path)).size, 2);
+    const entries = s.calls.filter((call) => call.op === 'write' && call.row.phase === 'work');
+    assert.equal(entries.length, 2, 'both entry writes must be dispatched before the second body runs');
+    assert.equal(new Set(entries.map(({ path }) => path)).size, 2);
     return {};
   });
   release();
@@ -270,7 +307,8 @@ const slotPath = (path, index) => path.replace(/-\d+\.json$/, () => `-${index}.j
 async function abandoned(s, work = 'tool.call') {
   let saved;
   await s.event(work, { tool: 'Bash', agentId: 'helper', input: { command: 'abc' } }, async () => {
-    saved = breadcrumbs(s)[0];
+    const { path, row } = s.calls.filter((call) => call.op === 'write' && call.row.phase === 'work').at(-1);
+    saved = [path, JSON.stringify(row)];
     return {};
   });
   s.files.set(...saved);
@@ -384,7 +422,7 @@ test('unconfirmed harvest progress is alive evidence for the unload detector', (
 });
 
 test('first-load harvest finishes reading before any breadcrumb can overwrite a slot', async () => {
-  const s = fixture();
+  const s = fixture({ prime: false });
   let release, entered;
   const hold = new Promise((resolve) => { release = resolve; });
   const ready = new Promise((resolve) => { entered = resolve; });
@@ -393,9 +431,12 @@ test('first-load harvest finishes reading before any breadcrumb can overwrite a 
   const pending = s.event('session.compact', {}, async () => result);
   await ready;
   assert.equal(s.calls.some((call) => call.op === 'write'), false, 'harvest must precede the first slot write');
+  assert.equal(await within(pending, 100, 'a hook must return without waiting for its cold harvest scan'), result);
+  assert.equal(breadcrumbs(s).length, 0, 'a call before setup finishes must remain unrecorded');
   release([]);
-  assert.equal(await pending, result);
-  assert.equal(breadcrumbs(s).length, 1, 'the barrier must eventually allow this event to record');
+  await new Promise(setImmediate);
+  await s.event('session.compact', {}, async () => result);
+  assert.equal(breadcrumbs(s).length, 1, 'a later event must record once the background scan finishes');
   assert.deepEqual(s.logs, []);
 });
 
@@ -570,7 +611,8 @@ for (const [shape, error] of Object.entries(missingDirectoryErrors)) {
     const s = fixture();
     s.$.fs.list = async (path) => { throw error(path); };
     await s.event('session.compact', {}, async () => {
-      assert.equal(breadcrumbs(s).length, 1, 'a missing inflight directory must not disable the recorder');
+      assert.equal(s.calls.filter((call) => call.op === 'write' && call.row.phase === 'work').length, 1,
+        'a missing inflight directory must not disable entry dispatch');
       return {};
     });
     assert.equal(JSON.parse(breadcrumbs(s)[0][1]).phase, 'complete');
@@ -609,6 +651,7 @@ test('entry is dispatched before work and trailing writes never delay return', a
   };
   await within(s.event('session.compact', {}, () => {
     assert.deepEqual(phases, ['work'], 'entry must be dispatched before synchronous work');
+    assert.deepEqual(breadcrumbs(s), [], 'dispatch must not require the breadcrumb to have landed');
     return { answer: 42 };
   }), 350, 'entry or trailing writes exceeded the serving bound');
   assert.deepEqual(phases, ['work']);
@@ -691,7 +734,7 @@ test('persist then failed mark then reload retains one health row per slot ident
 });
 
 test('transient listing failure retries on a later event without unsafe writes', async () => {
-  const s = fixture(), list = s.$.fs.list;
+  const s = fixture({ prime: false }), list = s.$.fs.list;
   let attempts = 0;
   s.$.fs.list = async (path) => {
     if (++attempts === 1) throw hostFailure('list', path);
@@ -699,6 +742,8 @@ test('transient listing failure retries on a later event without unsafe writes',
   };
   await s.event();
   assert.equal(breadcrumbs(s).length, 0, 'failed scan must not write a slot');
+  await s.event();
+  assert.equal(breadcrumbs(s).length, 0, 'the retrying call must not wait for setup or record itself');
   await s.event();
   assert.equal(breadcrumbs(s).length, 1, 'a later event must retry a transient list failure');
   assert.equal(attempts, 2);
@@ -721,7 +766,7 @@ for (const failures of [1, 32]) {
     const complete = JSON.stringify({ ...JSON.parse(text), phase: 'complete' });
     old.files.clear();
     for (let index = 0; index < 32; index++) old.files.set(slotPath(path, index), complete);
-    const s = fixture({ files: old.files }), read = s.$.fs.read, hold = deferred();
+    const s = fixture({ files: old.files, prime: false }), read = s.$.fs.read, hold = deferred();
     const failed = new Set(Array.from({ length: failures }, (_, index) => slotPath(path, index)));
     s.$.fs.read = async (file) => { if (failed.has(file)) { throw hostFailure('read', file); } return read(file); };
     await s.event();

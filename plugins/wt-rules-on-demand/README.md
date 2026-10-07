@@ -46,11 +46,19 @@ call's trailing writes may not have landed. These lines name the work, tool,
 last phase, input-character estimate and start time. Announcements are
 at-least-once: the line is logged before marking the slot, and a failed mark
 can produce a duplicate line after reload.
-Recorder waits are bounded at 500 ms for the first-load scan and 200 ms for
-the entry write. An unfinished scan skips that event's breadcrumb; later
-events record after it finishes. Finally and completion writes run in order
-in the background, with one retry on a failed completion write. Failed own-slot
-reads leave the scan retryable by a later event under the same bound. Harvest
+The recorder reuses the config directory and session identity resolved by the
+engine's own rule loading and journaling; it makes no separate environment or
+session-identity reads. Setup scans and marking run in the background after
+those values are available. A call made before setup finishes is unrecorded,
+including the call that first resolves them. Hooks never wait for recorder
+setup or writes: the recorder adds no await or diagnostic read before serving
+starts. Once ready, it dispatches the entry breadcrumb write before serving,
+but nothing makes that breadcrumb reach disk before the work. A worker loss
+can therefore leave no evidence of a call whose write never landed. Finally
+and completion writes stay ordered behind the entry write in the background,
+with one retry on a failed completion write. Hosts without `fs.write` disable
+recording for that module load. Failed own-slot reads leave the background
+scan retryable by a later event. Harvest
 only merges rows into the pending health batch; it never takes the engine's
 shared write turn or issues a store operation. The engine's normal flush
 persists the batch. Recorder diagnostics must never stall serving; announcement,

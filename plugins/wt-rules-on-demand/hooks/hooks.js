@@ -14,7 +14,7 @@ import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } fr
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
 import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
-  mergeFlightHealth, noteFlightCall, resetFlightRecorder } from './flight-recorder.js';
+  mergeFlightHealth, noteFlightCall, resetFlightRecorder, disableFlightRecorder } from './flight-recorder.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
 
@@ -48,16 +48,15 @@ const activityWrites = new Map();
 const pendingActivity = new Map();
 let activityProfile = null;
 let activityRetryAt = 0;
-let flightReady = null;
-// Recorder I/O gets a short serving budget; the underlying operations keep running.
-const FLIGHT_SCAN_WAIT_MS = 500;
-const FLIGHT_ENTRY_WAIT_MS = 200;
+let flightReady = false;
+let flightPending = false;
+let flightConfig = null;
+let flightSession = null;
+let flightDisabled = false;
 
-async function waitForFlight(promise, ms) {
-  let timer;
-  try {
-    return await Promise.race([promise, new Promise((resolve) => { timer = setTimeout(() => resolve(null), ms); })]);
-  } finally { clearTimeout(timer); }
+function rememberFlightConfig(config) {
+  flightConfig ??= config;
+  return config;
 }
 
 // A named async step, not a closure: the host validator refuses $ captured in a function expression.
@@ -72,10 +71,18 @@ function queueFlightPhase($, flight, plan) {
 }
 
 // Imported plans are pure: host operations stay literal, local calls here.
+async function writeFlight($, path, value) {
+  try { return await $.fs.write(path, value); }
+  catch (error) {
+    // The host forbids capability member reads; detect an unavailable operation by calling it.
+    if (error?.name === 'TypeError') { flightDisabled = true; disableFlightRecorder(); }
+    throw error;
+  }
+}
+
 async function flightOperation($, op, path, value) {
-  if (op === 'env') return detectorEnv($, path);
-  if (op === 'session') return $.session.id();
-  if (op === 'write') return $.fs.write(path, value);
+  if (flightDisabled) throw new TypeError('flight recorder disabled for this load');
+  if (op === 'write') return writeFlight($, path, value);
   if (op === 'list') return $.fs.list(path);
   if (op === 'read') return $.fs.read(path);
   if (op === 'log') return $.ui.log(path);
@@ -105,29 +112,32 @@ async function collectFlights($, harvested) {
   } catch { /* Diagnostic collection must never affect serving. */ }
 }
 
-async function beginFlight($, e, work, start) {
+function beginFlight(e, work, start) {
   try {
-    if (!flightReady) flightReady = initializeFlights($).then((ready) => {
-      if (!ready) flightReady = null;
-      return ready;
-    });
-    if (!await waitForFlight(flightReady, FLIGHT_SCAN_WAIT_MS)) return null;
-    const flight = startFlight(e, work, start);
-    if (!flight?.path) return flight;
-    // Calling the runner dispatches the write now, before even synchronous work starts.
-    flight.writes = runFlightPlan($, entryFlight(flight));
-    await waitForFlight(flight.writes, FLIGHT_ENTRY_WAIT_MS);
-    return flight;
+    if (flightDisabled || !flightReady) return null;
+    return startFlight(e, work, start);
   } catch { return null; }
 }
 
+async function scheduleFlights($) {
+  if (flightDisabled || flightReady || flightPending || !flightConfig || !flightSession) return;
+  flightPending = true;
+  void finishFlightSetup($);
+}
+
+async function finishFlightSetup($) {
+  try { flightReady = await initializeFlights($); }
+  catch { flightReady = false; }
+  finally { flightPending = false; }
+}
+
 async function initializeFlights($) {
-  await runFlightPlan($, prepareFlight());
-  // All concurrent first events share this barrier, before any reusable slot write.
+  prepareFlight(flightConfig, flightSession);
+  // Setup is background-only; calls cannot claim a slot until scanning and marking finish.
   const harvested = await runFlightPlan($, harvestFlight());
   if (!harvested) return false;
   // Unconfirmed slots stay reserved until background announcement and marking finish.
-  void collectFlights($, harvested);
+  await collectFlights($, harvested);
   return true;
 }
 
@@ -550,7 +560,7 @@ async function readCapped($, file) {
 }
 async function load($, root, fallback = false) {
   const env = { CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') };
-  const config = configDirectory(env);
+  const config = rememberFlightConfig(configDirectory(env));
   if (!config) { await notice($, 'HOME and USERPROFILE unavailable; cannot locate user rules'); return []; }
   const { mainRepoRoot = null, worktreeRoot = null } = await linkedWorktree($, root);
   let candidates = projectRuleRoots(root, { configDir: config, mainRepoRoot, worktreeRoot });
@@ -679,7 +689,13 @@ async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatche
 }
 const exhaustionNotice = (budget) => `wt-rules-on-demand: shared regex budget exhausted: ${budget.unresolved.size} rules served unevaluated`;
 const block = (rule) => `<rule name="${rule.name}">\n${rule.content}\n</rule>`;
-async function sessionId($) { try { return await $.session.id(); } catch { return null; } }
+async function sessionId($) {
+  try {
+    const id = await $.session.id();
+    flightSession ??= id;
+    return id;
+  } catch { return null; }
+}
 const summary = (e) => e.tool === 'Bash' ? `Bash: ${bounded(e.command ?? '').trim().split(/\s+/).slice(0, 2).join(' ')}`
   : `${e.tool}: ${String(pathOf(e)).split(/[\\/]/).at(-1) || 'call'}`;
 
@@ -968,7 +984,9 @@ async function abortableEvent($, e, next, work) {
 async function trackedEvent($, e, next, work) {
   if (!enabled) return next(e);
   const start = Date.now();
-  const flight = await beginFlight($, e, work, start);
+  const flight = beginFlight(e, work, start);
+  // Dispatch immediately from a named async host step; never wait for the write.
+  if (flight?.path) flight.writes = runFlightPlan($, entryFlight(flight));
   let downstreamMs = 0, healthMs = 0, downstreamError = false;
   const timedNext = async (value) => {
     const began = Date.now();
@@ -991,6 +1009,7 @@ async function trackedEvent($, e, next, work) {
     throw error;
   } finally {
     queueFlightPhase($, flight, finallyFlight(flight));
+    void scheduleFlights($);
     try {
       await loadedRules($, [...contexts.values()].flatMap((ctx) => ctx.rules ?? []));
       await flushIdentityActivity($);
@@ -1156,4 +1175,4 @@ async function turnCompleteWork($, e, next) {
     return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
 }
 
-export function resetForSelftest() { resetFlightRecorder(); flightReady = null; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest(keepFlightConfig = false) { resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

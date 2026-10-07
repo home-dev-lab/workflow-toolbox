@@ -1,4 +1,3 @@
-import { configDirectory } from '../paths.js';
 import { ownerNumber } from './owner-number.js';
 import { sessionKey } from '../session-key.mjs';
 
@@ -23,17 +22,16 @@ export function resetFlightRecorder() {
   harvestDone = false;
 }
 
+export function disableFlightRecorder() {
+  occupied.clear();
+  metadata = null;
+}
+
 function* request(op, path, value) {
   return yield { op, path, value };
 }
 
-export function* prepareFlight() {
-  const env = {};
-  for (const name of ['CLAUDE_CONFIG_DIR', 'HOME', 'USERPROFILE']) {
-    env[name] = (yield* request('env', name))?.value;
-  }
-  const config = configDirectory(env);
-  const sessionId = (yield* request('session'))?.value;
+export function prepareFlight(config, sessionId) {
   if (!config || typeof sessionId !== 'string' || !sessionId || sessionId.length > 512 || JSON.stringify(sessionId).length > 514) return;
   metadata = { directory: `${config}/plugins/data/wt-rules-on-demand/inflight`, sessionId, key: sessionKey(sessionId) };
 }
@@ -78,6 +76,7 @@ export function* entryFlight(flight) {
   if (!flight?.path) return;
   const response = yield* request('write', flight.path, JSON.stringify(flight.row));
   flight.available = response?.error?.name !== 'TypeError';
+  if (!flight.available) flight.path = null;
 }
 
 export function* finallyFlight(flight) {
