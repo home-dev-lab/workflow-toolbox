@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -70,51 +70,62 @@ export function ensureLaneHostDir(worktree, options = {}) {
 }
 
 // A marker is the worktree's absolute path followed by one newline. Anything else (an empty file,
-// a write cut short, a relative path) names no worktree and is ignored rather than trusted.
+// a write cut short before its newline, a relative path) names no worktree and is ignored.
 function readWorktreeMarker(marker) {
   if (!statSync(marker).isFile()) return null
   const content = readFileSync(marker, 'utf8')
   if (!content.endsWith('\n')) return null
   const recorded = content.slice(0, -1)
-  return recorded && !recorded.includes('\n') && path.isAbsolute(recorded) ? recorded : null
+  return recorded && path.isAbsolute(recorded) ? recorded : null
 }
 
 function currentMarker(marker) {
   try { return readWorktreeMarker(marker) } catch { return null }
 }
 
-// Readers must never observe a marker that exists before its bytes: write a private temporary
-// file, then publish it whole. A missing marker is created without replacing one a concurrent
-// writer published first (a hard link fails with EEXIST), so the first valid marker is kept.
-// Only an invalid marker (left by an interrupted writer) is replaced, best effort. `fs` is a seam
-// for the write, link and rename steps.
+// `fs` is a seam for the write, link and rename steps of marker publication.
 const MARKER_FS = { writeFileSync, linkSync, renameSync }
 
+// Readers must never observe a marker that exists before its bytes, and a valid marker is never
+// replaced (the first writer wins, as the former exclusive create did): the path is written to a
+// private staging file and published without clobbering. An invalid marker left by an interrupted
+// writer is repaired best effort; when that fails the launch proceeds, as it did before.
 function publishWorktreeMarker(marker, worktree, fs) {
   if (currentMarker(marker) !== null) return
-  const invalidPresent = existsSync(marker)
-  const temporary = `${marker}.${process.pid}.${Date.now()}.tmp`
+  const stage = `${marker}.${process.pid}.${randomBytes(8).toString('hex')}`
+  const repairing = existsSync(marker)
   try {
-    fs.writeFileSync(temporary, `${worktree}\n`, { flag: 'wx', mode: 0o600 })
-    if (invalidPresent) fs.renameSync(temporary, marker)
-    else linkMarker(temporary, marker, fs)
+    if (repairing) moveInvalidMarkerAside(marker, `${stage}.invalid`, fs)
+    fs.writeFileSync(`${stage}.tmp`, `${worktree}\n`, { flag: 'wx', mode: 0o600 })
+    publishNoClobber(`${stage}.tmp`, marker, fs)
   } catch (error) {
-    // An invalid marker that cannot be replaced (Windows refuses a rename over a file another
-    // process holds open) stays ignored by readers, as before; a valid marker published by a
-    // concurrent writer is as good as our own. Anything else is a real failure to record.
-    if (!invalidPresent && currentMarker(marker) === null) throw error
+    if (!repairing && currentMarker(marker) === null) throw error
   } finally {
-    rmSync(temporary, { force: true })
+    for (const leftover of [`${stage}.tmp`, `${stage}.invalid`]) {
+      try { rmSync(leftover, { force: true }) } catch { /* a leftover staging file is never read as a marker */ }
+    }
   }
 }
 
-// A file system without hard links falls back to a rename, which can replace a marker published
-// in the same instant by another writer for the same key.
-function linkMarker(temporary, marker, fs) {
-  try { fs.linkSync(temporary, marker) } catch (error) {
+// Whatever sits at the marker path moves aside. If it proves valid (a writer published between our
+// read and this move), it is published back, so the repair never replaces a valid marker.
+function moveInvalidMarkerAside(marker, aside, fs) {
+  try { fs.renameSync(marker, aside) } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  }
+  if (currentMarker(aside) !== null) publishNoClobber(aside, marker, fs)
+}
+
+// A hard link publishes the complete file or fails with EEXIST. Where the file system refuses hard
+// links (whatever error it reports), an exclusive create of the same bytes keeps the no-clobber
+// guarantee; readers ignore its brief empty state.
+function publishNoClobber(source, marker, fs) {
+  try { fs.linkSync(source, marker); return } catch (error) {
     if (error?.code === 'EEXIST') return
-    if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(error?.code)) throw error
-    fs.renameSync(temporary, marker)
+  }
+  try { fs.writeFileSync(marker, readFileSync(source), { flag: 'wx', mode: 0o600 }) } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
   }
 }
 
