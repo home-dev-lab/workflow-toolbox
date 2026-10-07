@@ -205,6 +205,7 @@ export const spawningTestFiles = [
   'packages/patterns/test/provenance-gate.test.ts',
   'scripts/test/child-process-coverage.test.ts',
   'scripts/test/citation-marker-check.test.ts',
+  'scripts/test/git-ignored-inputs.test.ts',
   'scripts/test/host-entry-guard.test.ts',
   'scripts/test/label-intent-lens.test.ts',
   'scripts/test/plugin-bin-import-safety.test.ts',
