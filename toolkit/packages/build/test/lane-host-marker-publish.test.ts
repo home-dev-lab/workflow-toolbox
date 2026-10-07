@@ -10,8 +10,8 @@ import { ensureLaneHostDir, laneHostDir, laneWritablePath } from '../../../../pl
 // The marker publication goes through an injected write/link/rename seam, so a test can cut a write
 // short, let a concurrent writer publish first, or have the OS refuse a step, at an exact point.
 type Step = (...args: unknown[]) => unknown
-function markerFs(overrides: { writeFileSync?: Step, linkSync?: Step, renameSync?: Step }) {
-  return { writeFileSync: fs.writeFileSync, linkSync: fs.linkSync, renameSync: fs.renameSync, ...overrides }
+function markerFs(overrides: { writeFileSync?: Step, linkSync?: Step }) {
+  return { writeFileSync: fs.writeFileSync, linkSync: fs.linkSync, openSync: fs.openSync, closeSync: fs.closeSync, unlinkSync: fs.unlinkSync, ...overrides }
 }
 const failure = (code: string) => Object.assign(new Error(code), { code })
 
@@ -77,23 +77,26 @@ it('publishes the marker where the file system refuses hard links', () => {
   expect(f.staged()).toEqual([])
 })
 
-it('never replaces a valid marker published while an empty one is being repaired', () => {
+it('removes its own half-written marker when the fallback write fails', () => {
   const f = fixture()
-  withEmptyMarker(f)
-  const competitor = join(f.root, 'competitor')
-  const renameSync = (from: unknown, to: unknown) => {
-    if (from === f.marker()) writeFileSync(f.marker(), `${competitor}\n`)
-    return fs.renameSync(from as string, to as string)
+  const writeFileSync = (file: unknown, ...rest: unknown[]) => {
+    if (typeof file === 'number') {
+      fs.writeSync(file, f.worktree.slice(0, 4))
+      throw failure('ENOSPC')
+    }
+    return (fs.writeFileSync as Step)(file, ...rest)
   }
-  ensureLaneHostDir(f.worktree, { markerFs: markerFs({ renameSync }) })
-  expect(readFileSync(f.marker(), 'utf8')).toBe(`${competitor}\n`)
+  const linkSync = () => { throw failure('EPERM') }
+  expect(() => ensureLaneHostDir(f.worktree, { markerFs: markerFs({ writeFileSync, linkSync }) })).toThrow('ENOSPC')
+  expect(existsSync(f.marker())).toBe(false)
   expect(f.staged()).toEqual([])
 })
 
-it('still launches when the OS refuses to move an empty marker aside', () => {
+it('leaves an invalid marker in place, never replacing what sits at the marker path, and still launches', () => {
   const f = fixture()
   withEmptyMarker(f)
-  expect(ensureLaneHostDir(f.worktree, { markerFs: markerFs({ renameSync: () => { throw failure('EPERM') } }) })).toBe(f.host())
+  const refuse = () => { throw failure('unexpected publication') }
+  expect(ensureLaneHostDir(f.worktree, { markerFs: markerFs({ writeFileSync: refuse, linkSync: refuse }) })).toBe(f.host())
   expect(readFileSync(f.marker(), 'utf8')).toBe('')
 })
 

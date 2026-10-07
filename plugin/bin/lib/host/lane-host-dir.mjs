@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -83,50 +83,42 @@ function currentMarker(marker) {
   try { return readWorktreeMarker(marker) } catch { return null }
 }
 
-// `fs` is a seam for the write, link and rename steps of marker publication.
-const MARKER_FS = { writeFileSync, linkSync, renameSync }
+// `fs` is a seam for the write, link and exclusive-open steps of marker publication.
+const MARKER_FS = { writeFileSync, linkSync, openSync, closeSync, unlinkSync }
 
-// Readers must never observe a marker that exists before its bytes, and a valid marker is never
+// Readers must never observe a marker that exists before its bytes, and an existing marker is never
 // replaced (the first writer wins, as the former exclusive create did): the path is written to a
-// private staging file and published without clobbering. An invalid marker left by an interrupted
-// writer is repaired best effort; when that fails the launch proceeds, as it did before.
+// private staging file and published without clobbering. An invalid marker already in place is left
+// alone; readers ignore it.
 function publishWorktreeMarker(marker, worktree, fs) {
-  if (currentMarker(marker) !== null) return
-  const stage = `${marker}.${process.pid}.${randomBytes(8).toString('hex')}`
-  const repairing = existsSync(marker)
+  if (existsSync(marker)) return
+  const staging = `${marker}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
   try {
-    if (repairing) moveInvalidMarkerAside(marker, `${stage}.invalid`, fs)
-    fs.writeFileSync(`${stage}.tmp`, `${worktree}\n`, { flag: 'wx', mode: 0o600 })
-    publishNoClobber(`${stage}.tmp`, marker, fs)
+    fs.writeFileSync(staging, `${worktree}\n`, { flag: 'wx', mode: 0o600 })
+    publishNoClobber(staging, marker, fs)
   } catch (error) {
-    if (!repairing && currentMarker(marker) === null) throw error
+    if (currentMarker(marker) === null) throw error
   } finally {
-    for (const leftover of [`${stage}.tmp`, `${stage}.invalid`]) {
-      try { rmSync(leftover, { force: true }) } catch { /* a leftover staging file is never read as a marker */ }
-    }
+    try { rmSync(staging, { force: true }) } catch { /* a leftover staging file is never read as a marker */ }
   }
-}
-
-// Whatever sits at the marker path moves aside. If it proves valid (a writer published between our
-// read and this move), it is published back, so the repair never replaces a valid marker.
-function moveInvalidMarkerAside(marker, aside, fs) {
-  try { fs.renameSync(marker, aside) } catch (error) {
-    if (error?.code === 'ENOENT') return
-    throw error
-  }
-  if (currentMarker(aside) !== null) publishNoClobber(aside, marker, fs)
 }
 
 // A hard link publishes the complete file or fails with EEXIST. Where the file system refuses hard
 // links (whatever error it reports), an exclusive create of the same bytes keeps the no-clobber
-// guarantee; readers ignore its brief empty state.
+// guarantee; a write that fails after that create removes the file it created.
 function publishNoClobber(source, marker, fs) {
   try { fs.linkSync(source, marker); return } catch (error) {
     if (error?.code === 'EEXIST') return
   }
-  try { fs.writeFileSync(marker, readFileSync(source), { flag: 'wx', mode: 0o600 }) } catch (error) {
-    if (error?.code !== 'EEXIST') throw error
+  let fd
+  try { fd = fs.openSync(marker, 'wx', 0o600) } catch (error) {
+    if (error?.code === 'EEXIST') return
+    throw error
   }
+  try { fs.writeFileSync(fd, readFileSync(source)) } catch (error) {
+    try { fs.unlinkSync(marker) } catch { /* readers ignore an unterminated marker */ }
+    throw error
+  } finally { fs.closeSync(fd) }
 }
 
 export function laneWritablePath(worktree, candidate) {

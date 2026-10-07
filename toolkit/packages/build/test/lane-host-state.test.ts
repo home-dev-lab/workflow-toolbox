@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -445,28 +445,19 @@ it('never reads an empty worktree marker as a path containing every other path',
 
 it('never reads a marker cut short before its newline as a worktree path', () => {
   const { dir, worktree, stateRoot } = withMarker((real) => real)
-  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false))
+  const real = realpathSync.native(dir)
+  withStateRoot(stateRoot, () => {
+    expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false)
+    expect(laneWritablePath(worktree, real.slice(0, -1))).toBe(false)
+  })
 })
 
 it('never reads a relative marker as a worktree path', () => {
-  const { worktree, stateRoot } = withMarker(() => 'relative\n')
-  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join('relative', 'file.log'))).toBe(false))
+  const { worktree, stateRoot } = withMarker(() => `${join('relative', 'child')}\n`)
+  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join('relative', 'child', 'file.log'))).toBe(false))
 })
 
 it('still reads a complete marker as a lane worktree', () => {
   const { dir, worktree, stateRoot } = withMarker((real) => `${real}\n`)
   withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(true))
-})
-
-it('repairs an empty marker left by an interrupted write and leaves no temporary file behind', () => {
-  const { dir, worktree } = fixture()
-  const stateRoot = join(dir, 'state')
-  withStateRoot(stateRoot, () => {
-    const host = laneHostDir(worktree)
-    mkdirSync(host, { recursive: true, mode: 0o700 })
-    writeFileSync(join(host, 'worktree'), '', { mode: 0o600 })
-    expect(ensureLaneHostDir(worktree)).toBe(host)
-    expect(readFileSync(join(host, 'worktree'), 'utf8')).toBe(`${realpathSync.native(worktree)}\n`)
-    expect(readdirSync(host).filter((name) => name.startsWith('worktree'))).toEqual(['worktree'])
-  })
 })
