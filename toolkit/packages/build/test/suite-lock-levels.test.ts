@@ -18,6 +18,7 @@ import { suiteQueueAdvanced } from '../../../../plugin/bin/lib/suite-lock-progre
 // @ts-expect-error runtime JavaScript under plugin/
 import { currentPidNamespace } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { baseSuiteLock } from './helpers/base-version-client.js'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
@@ -40,14 +41,6 @@ async function waitFor(check: () => boolean) {
 }
 function cli(root: string, args: string[], extra: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [CLI, ...args], { env: envFor(root, extra), encoding: 'utf8', timeout: 15_000 })
-}
-async function archived(root: string, ref = 'b9118d49') {
-  const archive = spawnSync('git', ['archive', ref, 'plugin/bin/lib'], { cwd: ROOT, maxBuffer: 10 * 1024 * 1024 })
-  expect(archive.status, String(archive.stderr)).toBe(0)
-  expect(spawnSync('tar', ['-x', '-C', root], { input: archive.stdout }).status).toBe(0)
-  mkdirSync(join(root, 'plugin/.claude-plugin'))
-  writeFileSync(join(root, 'plugin/.claude-plugin/plugin.json'), readFileSync(join(ROOT, 'plugin/.claude-plugin/plugin.json')))
-  return import(pathToFileURL(join(root, 'plugin/bin/lib/suite-lock.mjs')).href)
 }
 async function service(root: string, specs: Array<{ name: string; priority?: string; light?: boolean; api?: typeof lock }>) {
   const holder = await lock.acquireSuiteLock({ root, env: envFor(root) })
@@ -127,19 +120,25 @@ describe('card levels and exact mixed-version ordering', () => {
     }
     expect(admitted, 'P0 must acquire within bounded admissions despite replenished aged P1 exclusives').toBe(true)
   })
-  it('C4 actual develop exclusive and new light P0 both acquire, with develop light ordering', async () => {
-    const old = await archived(temp()); const root = temp()
+  it('C4 actual develop exclusive and new light P0 both acquire, with develop light ordering', async ({ skip }) => {
+    const base = await baseSuiteLock(temp(), 'preLevels')
+    if (!base.client) { skip(base.unavailable); return }
+    const old = base.client; const root = temp()
     const result = await service(root, [{ name: 'old-E', api: old }, { name: 'new-L', priority: 'P0', light: true }])
     expect(result.order).toEqual(['new-L', 'old-E'])
     expect(result.peak).toBe(1)
   })
-  it('C4b an old ticket preserves exact develop order in a mixed queue', async () => {
-    const old = await archived(temp())
+  it('C4b an old ticket preserves exact develop order in a mixed queue', async ({ skip }) => {
+    const base = await baseSuiteLock(temp(), 'preLevels')
+    if (!base.client) { skip(base.unavailable); return }
+    const old = base.client
     const result = await service(temp(), [{ name: 'P0', priority: 'P0' }, { name: 'old', api: old }, { name: 'P2-L', priority: 'P2', light: true }, { name: 'R', priority: 'release' }])
     expect(result.order).toEqual(['R', 'P2-L', 'P0', 'old'])
   })
-  it('C5 mixed levels, light, release and actual older clients all acquire singly', async () => {
-    const old = await archived(temp(), '95b4150b')
+  it('C5 mixed levels, light, release and actual older clients all acquire singly', async ({ skip }) => {
+    const base = await baseSuiteLock(temp(), 'preRelease')
+    if (!base.client) { skip(base.unavailable); return }
+    const old = base.client
     const result = await service(temp(), [{ name: 'P2', priority: 'P2' }, { name: 'P1-L', priority: 'P1', light: true }, { name: 'P0', priority: 'P0' }, { name: 'R', priority: 'release' }, { name: 'old', api: old }])
     expect(result.peak).toBe(1)
     expect(result.order.slice().sort()).toEqual(['P0', 'P1-L', 'P2', 'R', 'old'].sort())
@@ -380,8 +379,9 @@ describe.skipIf(process.platform === 'win32')('broker host level and protocol co
       expect(JSON.stringify(snapshot).length).toBeLessThan(4000)
     } finally { server.releaseAll(); server.close(); lock.releaseSuiteLock(held) }
   })
-  it.each(['b9118d49', '95b4150b'])('C4c actual %s broker agrees with a new light waiter', async (ref) => {
-    const archiveRoot = temp(); await archived(archiveRoot, ref)
+  it.for(['preLevels', 'preRelease'] as const)('C4c actual %s broker agrees with a new light waiter', { timeout: 15_000 }, async (role, { skip }) => {
+    const archiveRoot = temp(); const base = await baseSuiteLock(archiveRoot, role)
+    if (!base.client) { skip(base.unavailable); return }
     const oldBroker = await import(pathToFileURL(join(archiveRoot, 'plugin/bin/lib/host/lane-suite-lock-broker.mjs')).href)
     const root = temp(); const address = join(root, 'old.sock')
     vi.stubEnv('WT_SUITE_LOCK_DIR', root); vi.stubEnv('WT_SUITE_LOCK_BROKER', ''); vi.stubEnv('WT_SUITE_LEASE', '')
@@ -399,7 +399,7 @@ describe.skipIf(process.platform === 'win32')('broker host level and protocol co
       expect(text, 'old broker must still wait while the new light holder is inside').not.toContain('granted ')
       lock.releaseSuiteLock(lease); await waitFor(() => text.includes('granted '))
     } finally { socket.destroy(); server.releaseAll(); server.close(); lock.releaseSuiteLock(holder) }
-  }, 15_000)
+  })
   it.each([undefined, 'P0'])('C7 host env/option level %s applies and sandbox flag is ignored', async (priority) => {
     const { root, address, server } = await localBroker({ priority })
     try {
@@ -424,8 +424,10 @@ describe.skipIf(process.platform === 'win32')('broker host level and protocol co
       expect(reply).toContain('error argv must be an array')
     } finally { broker.server.releaseAll(); broker.server.close() }
   })
-  it('C7c renewal line renews a new watchdog and actual develop ignores the added line', async () => {
-    const old = await archived(temp()); const root = temp(); const address = join(root, 'renew.sock')
+  it('C7c renewal line renews a new watchdog and actual develop ignores the added line', async ({ skip }) => {
+    const base = await baseSuiteLock(temp(), 'preLevels')
+    if (!base.client) { skip(base.unavailable); return }
+    const old = base.client; const root = temp(); const address = join(root, 'renew.sock')
     const server = net.createServer((socket) => socket.once('data', () => {
       socket.write('progress 1 3 1\n')
       const timer = setInterval(() => socket.write('renew 1 3 1\n'), 100)

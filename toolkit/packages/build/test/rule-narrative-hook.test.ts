@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -89,7 +89,8 @@ describe.skipIf(process.platform === 'win32')('rule narrative hook', () => {
     expect(record.stdin).toContain('Alice (11:45)')
     expect(record.stdin).toContain('Context')
     expect(record.stdin).toContain('After')
-    expect(record.cwd).toBe(tmpdir())
+    // The stub reports process.cwd(), which the OS resolves through symlinks (macOS /var -> /private/var).
+    expect(realpathSync(record.cwd)).toBe(realpathSync(tmpdir()))
     expect(record.env).toEqual({ CLAUDE_CODE_DISABLE_THINKING: '1', WT_RULE_NARRATIVE_SPLIT_CHILD: '1' })
   })
 

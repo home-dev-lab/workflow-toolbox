@@ -3,8 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { baseSuiteLock } from './helpers/base-version-client.js'
 // @ts-expect-error runtime JavaScript under plugin/
 import { LIGHT_BYPASS_MAX_GRANTS, acquireSuiteLock, formatSuiteLockHolder, lightRunCommand, operatorReleaseSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
@@ -43,24 +44,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
 }
 
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve))
-
-// The older lock client these interop tests run lives in git history, not in the tree. A shallow clone lacks it:
-// the cross-OS workflow fetches it by the id below, so on CI its absence is a red, elsewhere a named skip.
-const BASE_CLIENT = JSON.parse(readFileSync(join(ROOT, 'toolkit/test-support/base-version-client.json'), 'utf8')) as { commit: string, paths: string[] }
-
-/** Unpack the base-version lock client under `root`; return why it is unavailable instead when it cannot be. */
-async function baseSuiteLock(root: string, onCi = /^(1|true)$/i.test(process.env.CI ?? '')) {
-  const archive = spawnSync('git', ['archive', BASE_CLIENT.commit, ...BASE_CLIENT.paths], { cwd: ROOT, maxBuffer: 10 * 1024 * 1024 })
-  const unpack = archive.status === 0 ? spawnSync('tar', ['-x', '-C', root], { input: archive.stdout }) : null
-  if (!unpack || unpack.status !== 0) {
-    const reason = `base-version client ${BASE_CLIENT.commit} unavailable in this clone: ${String((unpack ?? archive).stderr).trim()}`
-    if (onCi) throw new Error(`${reason}; the cross-OS workflow must fetch it (toolkit/test-support/base-version-client.json)`)
-    return { unavailable: reason }
-  }
-  mkdirSync(join(root, 'plugin/.claude-plugin'))
-  writeFileSync(join(root, 'plugin/.claude-plugin/plugin.json'), readFileSync(join(ROOT, 'plugin/.claude-plugin/plugin.json')))
-  return { client: await import(pathToFileURL(join(root, 'plugin/bin/lib/suite-lock.mjs')).href) }
-}
 
 // One in-process acquirer on a temp root: records its name when it acquires, then releases.
 function waiter(root: string, name: string, order: string[], options: Record<string, unknown> = {}) {
@@ -300,7 +283,7 @@ describe('suite lock priority for light runs: order only, one holder at a time',
 
 describe('release priority', () => {
   it.for(['before', 'after'])('A6a claims a free lock with a base-version ticket queued %s the remaining release', { timeout: 30_000 }, async (placement, { skip }) => {
-    const root = tempRoot(); const base = await baseSuiteLock(root)
+    const root = tempRoot(); const base = await baseSuiteLock(root, 'preRelease')
     if (!base.client) { skip(base.unavailable); return }
     const old = base.client; const lock = join(root, 'shared')
     const holder = await acquireSuiteLock({ root: lock, env: isolatedEnv(lock) })
@@ -518,7 +501,7 @@ describe('release priority', () => {
   }, 20_000)
 
   it('R9 old clients and new releases share one holder and all finish', async ({ skip }) => {
-    const root = tempRoot(); const base = await baseSuiteLock(root)
+    const root = tempRoot(); const base = await baseSuiteLock(root, 'preRelease')
     if (!base.client) { skip(base.unavailable); return }
     const old = base.client; const lock = join(root, 'shared')
     const holder = await acquireSuiteLock({ root: lock })

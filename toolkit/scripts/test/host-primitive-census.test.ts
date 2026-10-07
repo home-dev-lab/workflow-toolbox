@@ -126,12 +126,13 @@ describe('raw host primitive quality ratchet', () => {
     // The suite-lock bypass guard adds its hook; its platform and temp-root reads live in bin/lib/host.
     // The cancelled-call relay guard adds its hook; its file access lives in bin/lib/host.
     // The session-env dedup hook adds one perimeter file; its filesystem primitives live in bin/lib/host.
+    // The What is running pane design helper (hooks/pane-design.js) adds one pure module with no host operation.
     // The duplicate pilot guard adds its hook and its card-id parser; their file access lives in bin/lib/host.
     // Five pure suite-lock policy/display modules add files without host primitives.
     // The rule-narrative guard adds its detector and split modules; their host access lives in bin/lib/host.
     // The spawn-capability guard's brief-intent predicates add one module without host primitives.
     // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one module without host primitives.
-    expect(result.perimeterFiles).toBe(271)
+    expect(result.perimeterFiles).toBe(272)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
