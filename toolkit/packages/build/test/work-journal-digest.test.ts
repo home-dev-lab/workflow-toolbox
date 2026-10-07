@@ -239,14 +239,14 @@ function sections(digest: string) {
   let current: string[] | undefined
   for (const line of digest.split('\n')) {
     const header = /^Work journal (\d{4}-\d{2}-\d{2})$/.exec(line)
-    if (header) { current = []; days.set(header[1], current) } else if (current && line.includes(' acts (')) current.push(line)
+    if (header) { current = []; days.set(header[1] ?? '', current) } else if (current && line.includes(' acts (')) current.push(line)
   }
   return { condensed: condensed(digest), days }
 }
 function isPrefix(part: string[], whole: string[]) { return part.every((line, index) => line === whole[index]) }
 function isSuffix(part: string[], whole: string[]) { return isPrefix([...part].reverse(), [...whole].reverse()) }
 function expectDropOrder(trimmed: ReturnType<typeof sections>, full: ReturnType<typeof sections>, label: string) {
-  const [older, newer] = [...full.days.keys()]
+  const [older = '', newer = ''] = [...full.days.keys()]
   const keptOlder = trimmed.days.get(older) || []
   const keptNewer = trimmed.days.get(newer) || []
   expect(isSuffix(trimmed.condensed, full.condensed), `${label}: oldest condensed days go first`).toBe(true)
