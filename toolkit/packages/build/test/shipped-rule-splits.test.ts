@@ -194,6 +194,18 @@ describe('shipped at-act moves', () => {
   it('does not serve proportionate verification for a diagnostic diff', () => {
     expect(matchesBash('wt-proportionate-verification', 'git diff --check')).toBe(false)
   })
+
+  it('keeps a static anchor for every moved duty', () => {
+    // Static anchors that keep a moved duty in force where its companion's trigger does not fire.
+    const flat = (name: string) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8').replace(/\s+/g, ' ')
+    for (const [name, anchors] of Object.entries({
+      'wt-proportionate-verification': ['Collect verdicts in parallel and in isolation', 'arbiter resolves the disagreement', 'never an autonomous verdict'],
+      'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason'],
+      'wt-verify-by-ground-truth': ['claims a property against the body under it in the same pass'],
+      'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
+      'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
+    })) for (const anchor of anchors) expect(flat(name), `${name} anchor: ${anchor}`).toContain(anchor)
+  })
 })
 
 describe('shipped split rules', () => {
@@ -311,16 +323,6 @@ describe('shipped split rules', () => {
       'wt-memory-hygiene': ['every disk fact is reachable AND every index/hub reference resolves', 'deliberate', 'operative principle and the invariant', 'no narrative, incident stories'],
       'wt-answer-first-reporting': ["nothing hands control back", "watcher's emission to an idle session", 'watcher IS the engine'],
     })) for (const duty of duties) expect(staticRule(name), `${name}: ${duty}`).toContain(duty)
-
-    // Static anchors that keep a moved duty in force where its companion's trigger does not fire.
-    const flat = (name: string) => staticRule(name).replace(/\s+/g, ' ')
-    for (const [name, anchors] of Object.entries({
-      'wt-proportionate-verification': ['Collect verdicts in parallel and in isolation', 'arbiter resolves the disagreement', 'never an autonomous verdict'],
-      'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason'],
-      'wt-verify-by-ground-truth': ['claims a property against the body under it in the same pass'],
-      'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
-      'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
-    })) for (const anchor of anchors) expect(flat(name), `${name} anchor: ${anchor}`).toContain(anchor)
 
     const triggers = JSON.parse(readFileSync(join(ROOT, 'plugin/rules/wt-workflows-as-reasoning-at-act.spec.json'), 'utf8'))['on-demand'].triggers as Trigger[]
     for (const tool of ['Workflow', 'Agent', 'Task']) {
