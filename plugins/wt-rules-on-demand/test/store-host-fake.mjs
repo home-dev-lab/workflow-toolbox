@@ -1,7 +1,7 @@
 // A host-faithful plugin store and a real-filesystem `$` for hook tests that must see the store limit and the archives.
 // The host contract (`$.store.set`): "Rejects ... a store over 4 MiB of JSON text in all"; measured on the real store
 // as the length of the compact JSON text of the WHOLE store object, with the message shape below.
-import { mkdir, readFile, readdir, rm, stat, lstat, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, lstat, realpath, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,8 @@ export function hostStore(initial = {}, { limit = HOST_STORE_LIMIT, refuse = () 
 }
 
 // The Function Hooks `$.fs` surface over the real filesystem: what an archive write leaves is what a reader reads.
-export const realFs = {
+const hostFsSurface = JSON.parse(await readFile(new URL('./fixtures/host-fs-surface.json', import.meta.url), 'utf8')).fs;
+const fsOperations = {
   read: async (path) => readFile(path, 'utf8'),
   // The host contract (index.d.ts, `$.fs`): "A read or write over 4 MiB rejects".
   write: async (path, text) => {
@@ -43,7 +44,6 @@ export const realFs = {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, text);
   },
-  remove: async (path) => rm(path, { force: false }),
   exists: async (path) => lstat(path).then(() => true, () => false),
   list: async (path) => Promise.all((await readdir(path, { withFileTypes: true })).map(async (entry) => {
     const kind = entry.isFile() ? 'file' : entry.isDirectory() ? 'dir' : 'other';
@@ -54,7 +54,20 @@ export const realFs = {
     return { kind: info.isFile() ? 'file' : info.isDirectory() ? 'dir' : 'other', size: info.size, mtimeMs: info.mtimeMs,
       isLink: (await lstat(path)).isSymbolicLink(), ...(options?.resolve ? { realPath: await realpath(path) } : {}) };
   },
+  ancestors: async (path) => {
+    const paths = [];
+    for (let parent = dirname(path); ; parent = dirname(parent)) {
+      paths.push(parent);
+      if (dirname(parent) === parent) return paths;
+    }
+  },
 };
+
+// Only the recorded members exist; any other member reads as undefined, as on the host, so calling it is a TypeError.
+export const realFs = Object.freeze(Object.fromEntries(hostFsSurface.map((name) => {
+  if (typeof fsOperations[name] !== 'function') throw new Error(`missing fake for host fs member ${name}`);
+  return [name, fsOperations[name]];
+})));
 
 export const bashRule = `---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: 'git push'\n  compliance:\n    kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'\n---\nCheck destination.\n`;
 

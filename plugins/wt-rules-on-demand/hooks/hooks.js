@@ -8,7 +8,7 @@ import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-
 import { regexCallBudget } from './linear-regex.js';
 import { refusedAfterRun } from './guard-refusal.js';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
-import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archiveTexts, familyOf, archiveName, retentionVictims,
+import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archiveTexts, familyOf, archiveName,
   unsafeQualityPath, isSizeRefusal, jsonLength, property, sequenceNumber, OWNER_BITS } from './store-budget.js';
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
@@ -364,13 +364,13 @@ async function freshArchivePath($, directory, family) {
   }
   throw new Error('no free archive name');
 }
-// A write the host rejected may have left part of the file: it is removed, so no reader parses a broken archive.
+// A rejected host write may have left a partial: empty it so readers count no rows; Node startup later removes it.
 async function removePartial($, path, error) {
-  try { await $.fs.remove(path); }
-  catch (removal) {
+  try { await $.fs.write(path, ''); }
+  catch (neutralisation) {
     let left = true;
     try { left = await $.fs.exists(path); } catch { /* Unknown: reported as left. */ }
-    if (left) throw new Error(`archive write failed (${error.message}) and its partial file ${path} could not be removed: ${removal.message}`, { cause: removal });
+    if (left) throw new Error(`archive write failed (${error.message}) and its partial file ${path} could not be neutralised: ${neutralisation.message}`, { cause: neutralisation });
   }
   throw error;
 }
@@ -387,24 +387,15 @@ async function writeArchives($, name, evicted) {
   }
   return { directory, written };
 }
-async function retainArchives($, directory, family) {
-  let entries;
-  try { entries = await $.fs.list(directory); } catch { return; }
-  for (const name of retentionVictims(entries, family)) await $.fs.remove(`${directory}/${name}`);
-}
 // Archive what the budget pushes out, then write. A rejected write is returned with the value it tried, so a retry
 // starts from that value and never archives the same part twice.
 async function setBounded($, name, value, budget, keep) {
   const { value: planned, evicted } = shrink(name, value, budget, keep);
-  const archive = evicted ? await writeArchives($, name, evicted) : null;
+  if (evicted) await writeArchives($, name, evicted);
   // The host get/set/keys API has no verified atomic merge. Refresh after any intervening sweep/archive I/O.
   const kept = name === 'identityActivity' ? await freshIdentityActivity($, planned, budget, keep) : planned;
   try { await $.store.set(name, kept); }
   catch (error) { return { kept, error }; }
-  if (archive && Number.isFinite(familyOf(name).retained)) {
-    try { await retainArchives($, archive.directory, familyOf(name)); }
-    catch (error) { await notice($, `archive retention failed: ${error.message}`); }
-  }
   return { kept };
 }
 async function freshIdentityActivity($, value, budget, keep) {

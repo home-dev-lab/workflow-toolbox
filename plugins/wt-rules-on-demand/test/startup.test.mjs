@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, realpath, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,9 +76,9 @@ async function scope(t) {
   await mkdir(join(config, 'rules-on-demand'), { recursive: true });
   return { root, config, project };
 }
-function start({ config, project }, env = {}) {
+function start({ config, project }, env = {}, source = 'startup') {
   return spawnSync(process.execPath, [script], {
-    encoding: 'utf8', input: JSON.stringify({ source: 'startup', cwd: project }),
+    encoding: 'utf8', input: JSON.stringify({ source, cwd: project }),
     env: cleanEnv({ CLAUDE_CONFIG_DIR: config, WT_ROD_QUALITY_SPAWN: '0', CLAUDE_PLUGIN_OPTION_ENABLED: 'false', CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1', ...env }),
   });
 }
@@ -95,6 +95,49 @@ test('disabled engine reports unserved rules and does not spawn', async (t) => {
   const run = start(s);
   assert.match(run.stdout, /engine disabled; 1 on-demand rules are neither static nor served/);
   assert.deepEqual(await readdir(s.config), ['rules-on-demand']);
+});
+test('startup sweeps the hook archive directory even with the engine disabled and data overrides', async (t) => {
+  const s = await scope(t);
+  await writeFile(join(s.config, 'rules-on-demand/sample.md'), sample);
+  const directory = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  const override = join(s.root, 'override'), inline = join(s.root, 'inline');
+  const name = 'rod-store-archive-1-1.json';
+  for (const dir of [directory, override, join(inline, 'quality')]) {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, name), '');
+    await utimes(join(dir, name), new Date(0), new Date(0));
+  }
+  const run = start(s, { WT_ROD_QUALITY_DATA: override, CLAUDE_PLUGIN_DATA: inline,
+    CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /engine disabled/);
+  assert.deepEqual(await readdir(directory), [], 'disabled startup must remove the old neutralised archive');
+  assert.deepEqual(await readdir(override), [name], 'the override is not the hook writer directory');
+  assert.deepEqual(await readdir(join(inline, 'quality')), [name], 'inline plugin data is not swept');
+});
+
+for (const source of ['resume', 'clear', 'compact']) test(`a ${source} session start sweeps archives too, and does nothing else`, async (t) => {
+  const s = await scope(t);
+  const directory = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  const name = 'rod-store-archive-1-1.json';
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, name), '');
+  await utimes(join(directory, name), new Date(0), new Date(0));
+  const run = start(s, {}, source);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, '', `a ${source} start prints nothing`);
+  assert.deepEqual(await readdir(directory), [], `a ${source} start must sweep the old neutralised archive`);
+});
+
+test('startup reports archive retention errors once and still returns successfully', async (t) => {
+  const s = await scope(t);
+  const directory = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  await mkdir(join(s.config, 'plugins/data/wt-rules-on-demand'), { recursive: true });
+  await writeFile(directory, 'not a directory');
+  const run = start(s);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.split('\n').filter((line) => line.startsWith('wt-rules-on-demand: archive retention failed: ')).length, 1,
+    'a retention failure is one stdout line, not a failed startup');
 });
 test('cross-scope static duplicate named; enabled startup records correct quality arguments', async (t) => {
   const s = await scope(t);

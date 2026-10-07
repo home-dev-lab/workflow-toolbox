@@ -5,6 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const memberCall = /(?:\]|\.\w+)\s*\(\s*\$[,)]/g;
 const dollarUse = /\b\w+\(\s*\$[,)]|\$\.(?:fs|env|store|ui|session|model)\b/g;
@@ -12,6 +14,32 @@ const propertyFunction = /:\s*async\s*\(\s*\$|:\s*function\s*\(/g;
 const importedName = /\bimport\s*\{([^}]+)\}\s*from\s*['"](?:\.\.?\/)[^'"]+['"]/g;
 const importedDefault = /\bimport\s+([A-Za-z_$][\w$]*)\s+from\s*['"](?:\.\.?\/)[^'"]+['"]/g;
 const importedNamespace = /\bimport\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s*['"](?:\.\.?\/)[^'"]+['"]/g;
+
+async function hostModuleGraph() {
+  const pending = [new URL('../hooks/hooks.js', import.meta.url)];
+  const visited = new Set(), modules = [];
+  for (const url of pending) {
+    if (visited.has(url.href)) continue;
+    visited.add(url.href);
+    const source = await readFile(url, 'utf8');
+    modules.push({ url, source });
+    for (const match of source.matchAll(/\b(?:import|export)\s+(?:[^;'"]*?\s+from\s*)?['"](\.[^'"]+)['"]/g)) {
+      pending.push(new URL(match[1], url));
+    }
+  }
+  return modules;
+}
+
+test('Function Hooks fs call sites match the recorded host surface throughout the imported graph', async () => {
+  const fixture = JSON.parse(await readFile(new URL('./fixtures/host-fs-surface.json', import.meta.url), 'utf8'));
+  const failures = [];
+  for (const { url, source } of await hostModuleGraph()) {
+    for (const match of source.matchAll(/\$\s*\??\.\s*fs\s*\??\.\s*([A-Za-z_$][\w$]*)\s*(?:\?\.\s*)?\(/g)) {
+      if (!fixture.fs.includes(match[1])) failures.push(`${basename(fileURLToPath(url))}: $.fs.${match[1]} is not a function on the recorded host`);
+    }
+  }
+  assert.deepEqual(failures, [], 'every fs call must exist on the recorded Function Hooks host');
+});
 
 function violations(source, name = 'hooks.js') {
   const errors = [];
