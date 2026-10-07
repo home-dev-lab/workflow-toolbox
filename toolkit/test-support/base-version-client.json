@@ -1,5 +1,8 @@
 {
-  "commit": "95b4150bcc843e57218e3a6d28298727a80c5480",
+  "clients": {
+    "preLevels": "b9118d4904bc94f4946fcacde1490392ca9a5ac4",
+    "preRelease": "95b4150bcc843e57218e3a6d28298727a80c5480"
+  },
   "paths": ["plugin/bin/lib"],
-  "why": "Suite-lock interop tests unpack this commit's lock client to prove an older client and the current one share one queue. A shallow CI checkout does not carry it: .github/workflows/cross-os.yml fetches it by this id."
+  "why": "Suite-lock interop tests unpack preLevels and preRelease clients to prove older clients and the current one share one queue. A shallow CI checkout does not carry them: .github/workflows/cross-os.yml fetches every id in clients."
 }

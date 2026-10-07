@@ -23,11 +23,12 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // that replaced the duplicate-hook notice reads the home directory through host/home-directory.mjs.
 // The board-pointer walk and the worktree remover's canonical path moved into host/board-pointer.mjs; the
 // retention helpers read the platform from host/platform.mjs.
-// The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs.
+// The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs, and the
+// legacy state carry-over in plugin-data-dir.mjs gets its own from host/legacy-carry-filesystem.mjs.
 // The adopt installer dropped its script import-rewrite transform (one readFileSync, one homedir) while
 // the adopt-check hook gained one lstatSync to report a symlinked script.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1892
+export const HOST_PRIMITIVE_CEILING = 1883
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

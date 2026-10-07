@@ -28,7 +28,11 @@ try {
     $expectedSize = [int64]$args[6]
     $expectedPrefix = [Convert]::FromBase64String($args[7])
     $recordOffset = [int64]$args[8]
-    $recordLength = [int]$args[9]
+    # The host passes an empty argument for a bare range; [int]'' would incorrectly turn it into a record.
+    $recordLength = -1
+    if (-not [string]::IsNullOrEmpty($args[9])) {
+      try { $recordLength = [int]$args[9] } catch { exit 3 }
+    }
     $toolUseId = $args[10]
     if ($stream.Length -ne $expectedSize) { exit 6 }
     $currentPrefix = New-Object byte[] $expectedPrefix.Length
@@ -52,11 +56,12 @@ try {
         $null = $stream.Seek($recordOffset + $recordLength, [IO.SeekOrigin]::Begin)
         if ($stream.ReadByte() -ne 10) { exit 3 }
       }
-      try { $record = [Text.Encoding]::UTF8.GetString($recordBytes) | ConvertFrom-Json -Depth 100 } catch { exit 3 }
+      # Windows PowerShell 5.1 has no ConvertFrom-Json -Depth parameter; the default also works on PowerShell 7.
+      try { $record = [Text.Encoding]::UTF8.GetString($recordBytes) | ConvertFrom-Json -ErrorAction Stop } catch { exit 3 }
       if ($toolUseId -and -not (Test-ToolUseId $record $toolUseId)) { exit 3 }
       if ($bytes.Length -ne $length -or $offset -lt $recordOffset -or $offset + $length -gt $recordOffset + $recordLength) { exit 3 }
       [Array]::Copy($bytes, 0, $recordBytes, $offset - $recordOffset, $bytes.Length)
-      try { $null = [Text.Encoding]::UTF8.GetString($recordBytes) | ConvertFrom-Json -Depth 100 } catch { exit 3 }
+      try { $null = [Text.Encoding]::UTF8.GetString($recordBytes) | ConvertFrom-Json -ErrorAction Stop } catch { exit 3 }
     }
     $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
     $stream.Write($bytes, 0, $bytes.Length)

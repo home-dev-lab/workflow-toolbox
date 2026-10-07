@@ -45,7 +45,10 @@
   "functionHooks": {
     "status": "shipped",
     "manifest": "plugin/hooks/hooks.json",
-    "events": ["session.start", "command.run", "ui.render"],
+    "events": ["session.start", "command.run", "ui.render", "ui.message"],
+    "renderElements": ["Box", "Text", "Button", "Link", "Client"],
+    "clientModules": ["plugin/hooks/inverse-button.ts"],
+    "surfaceCapabilities": ["surface.onPointer", "surface.setState", "surface.post"],
     "capabilities": ["$.command.register", "$.process.run", "$.ui.open", "$.ui.close", "$.ui.invalidate", "$.ui.resolve", "$.clock.every", "$.store.get", "$.store.set"]
   },
   "sdk": {

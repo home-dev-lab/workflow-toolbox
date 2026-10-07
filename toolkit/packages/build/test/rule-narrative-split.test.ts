@@ -124,8 +124,9 @@ describe('rule narrative proposal validation', () => {
       stdout: Object.assign(new EventEmitter(), { setEncoding: vi.fn(), destroy: vi.fn() }),
       kill: vi.fn(), unref: vi.fn(),
     })
+    // The file-level seal exports a claude.cmd stub on a Windows host; a native child needs an explicit .exe name.
     const promise = runSplitChild({ instruction: 'test', stdin: 'test', timeoutMs: 1000,
-      env: { ...process.env }, platform: 'win32', spawnChild: () => child })
+      env: { ...process.env, WT_RULE_NARRATIVE_CLAUDE_BIN: 'native.exe' }, platform: 'win32', spawnChild: () => child })
     child.stdin.emit('error', Object.assign(new Error('pipe closed'), { code: 'EPIPE' }))
     expect(await promise).toEqual({ ok: false, reason: 'stdin pipe error EPIPE' })
     expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL')
