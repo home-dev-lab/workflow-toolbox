@@ -30,6 +30,48 @@ function trackedFiles(): string[] {
   return result.stdout.split('\0').filter(Boolean)
 }
 
+function linkToolkit(root: string): void {
+  symlinkSync(join(ROOT, 'toolkit'), join(root, 'toolkit'), process.platform === 'win32' ? 'junction' : 'dir')
+}
+
+function areaPass(areaName: string): Pass {
+  return passes.find((pass) => pass.name === `area:${areaName}`)!
+}
+
+const WITNESSES = ['__witness__.mjs', '__witness__.js', '__parse__.mjs', '__parse__.js']
+
+function plantWitnesses(root: string, directory: string): void {
+  for (const file of WITNESSES) {
+    writeFileSync(join(root, directory, file), file.startsWith('__parse__') ? 'return 1\n' : 'const planted = 1\nundefinedName()\n')
+  }
+}
+
+function expectWitnessFault(result: { results: ESLint.LintResult[] }, where: { root: string; directory: string; areaName: string }, file: string): void {
+  const { root, directory, areaName } = where
+  const found = result.results.find((entry: ESLint.LintResult) => entry.filePath === join(root, directory, file))
+  expect(found, `${areaName}/${file}: widened pass did not read this file`).toBeDefined()
+  expect(found!.errorCount, `${areaName}/${file}: planted fault went green`).toBeGreaterThan(0)
+  if (file.startsWith('__parse__')) expect(found!.fatalErrorCount).toBeGreaterThan(0)
+  else {
+    for (const rule of ['no-unused-vars', 'no-undef']) {
+      expect(found!.messages.some((message: Linter.LintMessage) => message.ruleId === rule && message.severity === 2), `${areaName}/${file}: missing ${rule} error`).toBe(true)
+    }
+  }
+}
+
+async function expectWarnFirstConfig(root: string, directory: string, areaName: string): Promise<void> {
+  const eslint = new ESLint({ cwd: root, overrideConfigFile: join(root, 'toolkit/eslint.config.mjs') })
+  for (const extension of ['mjs', 'js']) {
+    const config = await eslint.calculateConfigForFile(join(root, directory, `__witness__.${extension}`))
+    expect(config?.rules['sonarjs/cognitive-complexity'], `${areaName}: sonar block missing`).toEqual([1, 282])
+    for (const rule of ['complexity', 'max-lines', 'max-lines-per-function', 'max-depth', 'max-params']) {
+      expect(config?.rules[rule]?.[0], `${areaName}: ${rule} must warn`).toBe(1)
+    }
+    expect(config?.rules['no-undef']?.[0]).toBe(2)
+    expect(config?.rules['workflow-toolbox/no-dynamic-replace']?.[0]).toBe(2)
+  }
+}
+
 describe('fail-closed tracked lint scope', () => {
   it.each(['missing.mjs', 'missing.py', 'missing.zig', 'hooks/new-hook'])('refuses an uncovered source: %s', async (file) => {
     expect((await classifyTrackedFiles([file], () => false, [])).escaped).toEqual([file])
@@ -127,21 +169,21 @@ describe('shared gate pass definitions', () => {
 describe('widened quality passes planted-fault witnesses', () => {
   it.each(['plugins/wt-deep-search', 'plugins/wt-secret-guard', 'probes'])
     ('keeps the shipped warn-first area free of correctness errors: %s', async (areaName) => {
-      const area = passes.find((pass) => pass.name === `area:${areaName}`)!
-      const result = await runAreaPass(area, { root: ROOT })
+      const result = await runAreaPass(areaPass(areaName), { root: ROOT })
       expect(result.errors, result.output).toBe(0)
     }, 120_000)
+})
 
+describe('widened quality passes planted-fault witnesses', () => {
   it.each(['plugins/wt-deep-search', 'plugins/wt-secret-guard', 'probes'])
     ('counts a crossed complexity ceiling as a warning without failing correctness: %s', async (areaName) => {
       const root = mkdtempSync(join(tmpdir(), 'wt-lint-ceiling-'))
       try {
-        symlinkSync(join(ROOT, 'toolkit'), join(root, 'toolkit'), process.platform === 'win32' ? 'junction' : 'dir')
+        linkToolkit(root)
         mkdirSync(join(root, areaName), { recursive: true })
         const branches = Array.from({ length: 128 }, (_, index) => `if (value === ${index}) return ${index}`).join('\n')
         writeFileSync(join(root, areaName, '__ceiling__.mjs'), `export function check(value) {\n${branches}\nreturn -1\n}\n`)
-        const area = passes.find((pass) => pass.name === `area:${areaName}`)!
-        const result = await runAreaPass(area, { root })
+        const result = await runAreaPass(areaPass(areaName), { root })
         expect(result.errors, result.output).toBe(0)
         expect(result.warnings, `${areaName}: crossed ceiling went green-for-wrong-reason`).toBeGreaterThan(0)
         expect(result.results[0].messages.some((message: Linter.LintMessage) => message.ruleId === 'complexity' && message.severity === 1)).toBe(true)
@@ -150,42 +192,21 @@ describe('widened quality passes planted-fault witnesses', () => {
         rmSync(root, { recursive: true, force: true })
       }
     }, 120_000)
+})
 
+describe('widened quality passes planted-fault witnesses', () => {
   it.each(['plugins/wt-deep-search', 'plugins/wt-secret-guard', 'probes'])
     ('reads both extensions, reports correctness errors, and applies warning-only ceilings: %s', async (areaName) => {
       const root = mkdtempSync(join(tmpdir(), 'wt-lint-scope-'))
       try {
-        symlinkSync(join(ROOT, 'toolkit'), join(root, 'toolkit'), process.platform === 'win32' ? 'junction' : 'dir')
+        linkToolkit(root)
         const directory = areaName === 'probes' ? 'probes/host-platform' : areaName
         mkdirSync(join(root, directory), { recursive: true })
-        const witnesses = ['__witness__.mjs', '__witness__.js', '__parse__.mjs', '__parse__.js']
-        for (const file of witnesses) {
-          writeFileSync(join(root, directory, file), file.startsWith('__parse__') ? 'return 1\n' : 'const planted = 1\nundefinedName()\n')
-        }
-        const area = passes.find((pass) => pass.name === `area:${areaName}`)!
-        const result = await runAreaPass(area, { root })
+        plantWitnesses(root, directory)
+        const result = await runAreaPass(areaPass(areaName), { root })
         expect(result.line).toBe(`quality:lint area ${areaName}: ${result.warnings} warnings, ${result.errors} errors (warn-only; a follow-up sets its ratchet)`)
-        for (const file of witnesses) {
-          const found = result.results.find((entry: ESLint.LintResult) => entry.filePath === join(root, directory, file))
-          expect(found, `${areaName}/${file}: widened pass did not read this file`).toBeDefined()
-          expect(found!.errorCount, `${areaName}/${file}: planted fault went green`).toBeGreaterThan(0)
-          if (file.startsWith('__parse__')) expect(found!.fatalErrorCount).toBeGreaterThan(0)
-          else {
-            for (const rule of ['no-unused-vars', 'no-undef']) {
-              expect(found!.messages.some((message: Linter.LintMessage) => message.ruleId === rule && message.severity === 2), `${areaName}/${file}: missing ${rule} error`).toBe(true)
-            }
-          }
-        }
-        const eslint = new ESLint({ cwd: root, overrideConfigFile: join(root, 'toolkit/eslint.config.mjs') })
-        for (const extension of ['mjs', 'js']) {
-          const config = await eslint.calculateConfigForFile(join(root, directory, `__witness__.${extension}`))
-          expect(config?.rules['sonarjs/cognitive-complexity'], `${areaName}: sonar block missing`).toEqual([1, 282])
-          for (const rule of ['complexity', 'max-lines', 'max-lines-per-function', 'max-depth', 'max-params']) {
-            expect(config?.rules[rule]?.[0], `${areaName}: ${rule} must warn`).toBe(1)
-          }
-          expect(config?.rules['no-undef']?.[0]).toBe(2)
-          expect(config?.rules['workflow-toolbox/no-dynamic-replace']?.[0]).toBe(2)
-        }
+        for (const file of WITNESSES) expectWitnessFault(result, { root, directory, areaName }, file)
+        await expectWarnFirstConfig(root, directory, areaName)
       } finally {
         unlinkSync(join(root, 'toolkit'))
         rmSync(root, { recursive: true, force: true })

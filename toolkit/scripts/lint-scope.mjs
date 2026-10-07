@@ -45,32 +45,44 @@ function unsupported(glob) {
   throw new Error(`Unsupported glob: ${glob}`)
 }
 
+// Token readers return the RegExp text for one glob token and the index of its last character.
+function readStar(glob, index) {
+  if (glob[index + 1] !== '*') return { text: '[^/]*', end: index }
+  if (index > 0 && glob[index - 1] !== '/') unsupported(glob)
+  const second = index + 1
+  if (glob[second + 1] === '/') return { text: '(?:[^/]+/)*', end: second + 1 }
+  if (second === glob.length - 1) return { text: '(?:[^/]+/)*[^/]*', end: second }
+  return unsupported(glob)
+}
+
+function readBraces(glob, index) {
+  const end = glob.indexOf('}', index)
+  if (end < 0) unsupported(glob)
+  const choices = glob.slice(index + 1, end).split(',')
+  if (choices.length < 2 || choices.some((choice) => !/^[A-Za-z0-9_-]+$/.test(choice))) unsupported(glob)
+  return { text: `(?:${choices.join('|')})`, end }
+}
+
+function readLiteral(glob, index) {
+  const char = glob[index]
+  if (!/^[A-Za-z0-9_./-]$/.test(char)) unsupported(glob)
+  return { text: char === '.' ? '\\.' : char, end: index }
+}
+
+function readToken(glob, index) {
+  if (glob[index] === '*') return readStar(glob, index)
+  if (glob[index] === '{') return readBraces(glob, index)
+  return readLiteral(glob, index)
+}
+
 // Only the CLI glob subset used above and by the config exclusions is accepted.
 // Reject new syntax instead of guessing, and match POSIX git paths on every OS.
 export function globToRegExp(glob) {
   let expression = ''
   for (let index = 0; index < glob.length; index += 1) {
-    const char = glob[index]
-    if (char === '*') {
-      if (glob[index + 1] !== '*') expression += '[^/]*'
-      else {
-        if (index > 0 && glob[index - 1] !== '/') unsupported(glob)
-        index += 1
-        if (glob[index + 1] === '/') { expression += '(?:[^/]+/)*'; index += 1 }
-        else if (index === glob.length - 1) expression += '(?:[^/]+/)*[^/]*'
-        else unsupported(glob)
-      }
-    } else if (char === '{') {
-      const end = glob.indexOf('}', index)
-      if (end < 0) unsupported(glob)
-      const choices = glob.slice(index + 1, end).split(',')
-      if (choices.length < 2 || choices.some((choice) => !/^[A-Za-z0-9_-]+$/.test(choice))) unsupported(glob)
-      expression += `(?:${choices.join('|')})`
-      index = end
-    } else {
-      if (!/^[A-Za-z0-9_./-]$/.test(char)) unsupported(glob)
-      expression += char === '.' ? '\\.' : char
-    }
+    const token = readToken(glob, index)
+    expression += token.text
+    index = token.end
   }
   return new RegExp(`^${expression}$`)
 }

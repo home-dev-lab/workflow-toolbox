@@ -54,6 +54,9 @@ describe('review locks for effective gate scope', () => {
     }
   }, 120_000)
 
+})
+
+describe('review locks for effective gate scope', () => {
   it('fails the lint exit decision for escaped sources and preserves pass failures', () => {
     expect(lint.lintExitCode, 'lint gate must centralize its exit decision').toBeTypeOf('function')
     expect(lint.lintExitCode(0, { escaped: ['probes/escaped.ts'] })).toBe(1)
@@ -88,6 +91,9 @@ describe('review locks for effective gate scope', () => {
     }
   }, 120_000)
 
+})
+
+describe('review locks for effective gate scope', () => {
   it('gives all real-area and on-disk witness locks a generous timeout', () => {
     const text = readFileSync(join(ROOT, 'toolkit/scripts/test/lint-scope.test.ts'), 'utf8')
     const section = text.slice(text.indexOf("describe('widened quality passes"))
@@ -123,6 +129,9 @@ describe('review locks for effective gate scope', () => {
     }
   }, 120_000)
 
+})
+
+describe('review locks for effective gate scope', () => {
   it('matches dotfiles and dot-directories using ESLint dot-inclusive glob semantics', () => {
     for (const file of ['probes/.hidden.mjs', 'probes/.private/a.js', 'probes/a/.hidden.js']) {
       expect(scope.globToRegExp('probes/**/*.{mjs,js}').test(file), file).toBe(true)
@@ -149,6 +158,9 @@ describe('review locks for effective gate scope', () => {
     }
   })
 
+})
+
+describe('review locks for effective gate scope', () => {
   it('counts every tracked marketplace/probe source directory and discovers a newly added area', async () => {
     const files = scope.listTrackedFiles(ROOT)
     const directories = new Set(files.filter((file: string) => /^(plugins|probes)\/[^/]+\/.*\.(mjs|js)$/.test(file)).map((file: string) => file.split('/').slice(0, 2).join('/')))
