@@ -44,6 +44,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The duplicate pilot guard adds its hook and its card-id parser, both process-table-free.
     // Five pure suite-lock policy/display modules add entries without process-table access.
     // The rule-narrative guard adds its detector and split modules; process and file access live in bin/lib/host.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 266, violations: [] })
+    // The work-journal digest projection (work-journal-digest.mjs) adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 267, violations: [] })
   })
 })
