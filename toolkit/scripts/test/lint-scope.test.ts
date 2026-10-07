@@ -149,7 +149,7 @@ describe('shared gate pass definitions', () => {
   it('keeps the existing ratchet file set and 685-warning ceiling exactly', () => {
     expect(passes.find((pass) => pass.gate === 'quality' && pass.name === 'ratchet')).toEqual({
       gate: 'quality', name: 'ratchet', cwd: '.', maxWarnings: 685,
-      targets: ['toolkit/packages/*/src/**/*.ts', 'plugin/**/*.mjs', 'plugin/**/*.js', 'plugin/**/*.{ts,mts,cts}',
+      targets: ['toolkit/packages/*/src/**/*.ts', 'plugin/**/*.mjs', 'plugin/**/*.js', 'plugin/**/*.{ts,tsx,mts,cts}',
         'plugins/wt-rules-on-demand/**/*.mjs', 'plugins/wt-rules-on-demand/**/*.js'],
     })
   })
