@@ -53,8 +53,23 @@ Disabling a default recorder does not disable its outward-act Stop warning.
 Run `node <plugin-root>/bin/wt-work-journal.mjs --help` for the full syntax.
 
 - `show --days 30 --grep X` follows recent acts about a subject; `--date` and `--subject`
-  narrow the query. `digest` prints yesterday and today, grouped by subject, at most twenty
-  subjects per day. Yesterday means the literal previous calendar date.
+  narrow the query. `digest` details the two most recent worked days, even after a long idle
+  period, with at most twelve subjects per day. Other worked days in the last fourteen
+  calendar days (today inclusive) are condensed into one line each: act count, the three
+  busiest subjects and an omitted-subject count. Dates point to `show --date YYYY-MM-DD`;
+  the full journal remains available on demand. Card subjects with the same first ten
+  digits are folded together under the longest id seen; stored lines are unchanged.
+  The digest is deterministic and capped at 7,000 UTF-16 characters. Fields are sanitized
+  and limited by code point; kinds are limited to three plus a count. Budget trimming
+  removes oldest condensed days first, then the least recent subjects of the older detail
+  day, then the newer day, and always includes a trim marker. SessionStart puts integrity
+  and other notices first, caps configuration warnings to five lines of 300 characters,
+  and gives the digest the remaining space within a 9,500-character total. CLI `digest`
+  verifies first and prints a loud warning on failure; a broken selected live chain refuses
+  the digest. Its anchored, contiguous read covers the window and the last two worked
+  day files through the newest file, including rollback timestamps in later-dated files.
+  SessionStart still separately reads the full chain for verification and recovery; the
+  digest's smaller read does not reduce total SessionStart I/O.
 - `verify` checks the chain across daily files, durable head, two-way day inventory and
   mirror equality: exit 0 intact, 1 broken, 2 unreadable. Hooks never block the session on
   an internal error; they print a loud notice. Stop is warn-only probation until the owner

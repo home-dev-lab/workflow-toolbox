@@ -6,12 +6,27 @@ import { matchedRecorders, matchesOutward, outwardRecorders, sourceKey } from '.
 import { sha256 } from './work-journal-paths.mjs'
 import { parseTranscriptText } from './transcript-delta.mjs'
 import { recordGuardEvent } from './guard-journal.mjs'
+import { DIGEST_MAX_CHARS, field } from './work-journal-digest.mjs'
 
+function notice(value) {
+  let text = ''
+  for (const point of field(value, 300)) {
+    if (text.length + point.length > 300) break
+    text += point
+  }
+  return text
+}
 function attempt(messages, operation) {
-  try { operation() } catch (error) { messages.push(`LOUD: work journal: ${error.message}`) }
+  try { operation() } catch (error) { messages.push(notice(`LOUD: work journal: ${error.message}`)) }
+}
+function appendDigest(ctx, messages) {
+  for (let index = 0; index < messages.length; index++) messages[index] = notice(messages[index])
+  const other = messages.join('\n')
+  const budget = Math.min(DIGEST_MAX_CHARS, 9500 - other.length - (messages.length ? 1 : 0))
+  attempt(messages, () => { messages.push(digestJournal(ctx, { budget })) })
 }
 export function sessionStart(ctx, input, config) {
-  const messages = config.warnings.map((warning) => `LOUD: ${warning}`)
+  const messages = config.warnings.slice(0, 5).map((warning) => notice(`LOUD: ${warning}`))
   attempt(messages, () => {
     const verified = verifyJournal(ctx)
     for (const error of verified.errors.slice(0, 8)) messages.push(`LOUD: work journal: ${error}`)
@@ -24,7 +39,6 @@ export function sessionStart(ctx, input, config) {
       if (!input.agent_id && input.session_id && input.transcript_path) io.atomicJson(path.join(ctx.store, 'sessions', `${sha256(input.session_id)}.json`), { transcript: io.canonical(input.transcript_path) })
     })
   })
-  attempt(messages, () => { messages.push(digestJournal(ctx)) })
   attempt(messages, () => {
     const open = openUnsynced(ctx)
     if (open.length) messages.push(`LOUD: ${open.length} unsynced entries; run wt-work-journal.mjs unsynced --list and fold their full details into the board, then resolve each hash`)
@@ -42,6 +56,7 @@ export function sessionStart(ctx, input, config) {
     const pending = io.list(path.join(ctx.store, 'pending')).filter((name) => name.endsWith('.json'))
     if (pending.some((name) => Date.now() - io.stat(path.join(ctx.store, 'pending', name)).mtimeMs > 3600000)) messages.push('LOUD: pending journal acts are older than one hour; inspect the lock, run unlock if its owner is proven dead, then start a session to recover.')
   })
+  appendDigest(ctx, messages)
   return messages.join('\n')
 }
 function realUser(record) {

@@ -25,7 +25,7 @@ function act(text = 'Committed the change', extra = {}) { return { kind: 'commit
 function day(ctx: { store: string }, date = '2026-06-02') { return join(ctx.store, 'days', `${date}.ndjson`) }
 function lines(ctx: { store: string }, date = '2026-06-02') { return readFileSync(day(ctx, date), 'utf8').trim().split('\n').map((line) => JSON.parse(line)) }
 
-describe('work journal durable chain', () => {
+function registerPathTests() {
   it('does not interpret a push argument to another git subcommand as a push act', () => {
     const f = fixture()
     expect(parsePushCommand('git log push', f.project, () => null)).toEqual([])
@@ -58,6 +58,8 @@ describe('work journal durable chain', () => {
     expect(journal.hashLine(value)).toBe(createHash('sha256').update(`${value.prev}\n${canonical}`).digest('hex'))
     expect(journal.hashLine(value)).toBe(journal.hashLine({ text: 'one', prev: value.prev, v: 1 }))
   })
+}
+function registerDateTests() {
   it('links across day files and mirrors exact bytes', () => {
     const f = fixture()
     journal.appendJournal(f.ctx, act())
@@ -90,6 +92,8 @@ describe('work journal durable chain', () => {
     expect(existsSync(day(ctx, '2026-06-03'))).toBe(true)
     expect(existsSync(day(ctx, '2026-06-02'))).toBe(false)
   })
+}
+function registerPendingTests() {
   it('queues a stable act while a live lock is held and never reclaims by age', () => {
     const f = fixture()
     mkdirSync(join(f.ctx.store, 'lock'), { recursive: true })
@@ -114,6 +118,8 @@ describe('work journal durable chain', () => {
     expect(lines(f.ctx).filter((line) => line.id === id)).toHaveLength(1)
     expect(readdirSync(join(f.ctx.store, 'pending'))).toHaveLength(0)
   })
+}
+function registerCorruptionTests() {
   it.each(['edit', 'tail', 'head', 'archive-only', 'mirror'])('detects %s corruption', (damage) => {
     const f = fixture()
     journal.appendJournal(f.ctx, act())
@@ -145,6 +151,8 @@ describe('work journal durable chain', () => {
     expect(journal.appendJournal(f.ctx, act('Must wait')).outcome).toMatch(/^failed:/)
     expect(lines(f.ctx)).toHaveLength(1)
   })
+}
+function registerRecoveryTests() {
   it('detects mirrored tail deletion even when inventories and surviving chains agree', () => {
     const f = fixture()
     journal.appendJournal(f.ctx, act())
@@ -173,21 +181,31 @@ describe('work journal durable chain', () => {
     expect(journal.verifyJournal(f.ctx).ok).toBe(true)
     expect(lines(f.ctx).map((line: { kind: string }) => line.kind)).toEqual(['commit', 'restored'])
   })
-  it('bounds a per-subject digest to twenty subjects and labels literal yesterday', () => {
+}
+function registerDigestTests() {
+  it('bounds a worked-day digest to twelve subjects without an empty yesterday', () => {
     const f = fixture()
     for (let i = 0; i < 23; i++) journal.appendJournal(f.ctx, act(`Change ${i}`, { subject: `topic-${i}` }))
     const digest = journal.digestJournal(f.ctx)
-    expect(digest).toContain('2026-06-01')
+    expect(digest).not.toContain('Work journal 2026-06-01')
     expect(digest).toContain('2026-06-02')
-    expect(digest).toContain('+3 more')
-    expect(digest.split('\n').filter((line: string) => line.includes(' — '))).toHaveLength(21)
+    expect(digest).toContain('+11 more subjects — show --date 2026-06-02')
+    expect(digest.split('\n').filter((line: string) => line.includes(' acts ('))).toHaveLength(12)
   })
-  it('does not relabel old activity as yesterday when both recent dates are empty', () => {
+  it('details the last worked day under its own date after quiet calendar days', () => {
     const f = fixture()
     journal.appendJournal(f.ctx, act())
     const later = journal.resolveJournal({}, { ...f.env, WT_WORK_JOURNAL_NOW: '2026-06-10T12:00:00Z' })
     const digest = journal.digestJournal(later)
-    expect(digest).toContain('last activity 2026-06-02: 1 acts')
-    expect(digest).toContain('2026-06-09')
+    expect(digest).toContain('Work journal 2026-06-02\nfeature — 1 acts')
+    expect(digest).not.toContain('Work journal 2026-06-09')
   })
+}
+describe('work journal durable chain', () => {
+  registerPathTests()
+  registerDateTests()
+  registerPendingTests()
+  registerCorruptionTests()
+  registerRecoveryTests()
+  registerDigestTests()
 })

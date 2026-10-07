@@ -40,6 +40,11 @@ function printActResult(result, print) {
   print(result.outcome === 'recorded' ? result.line.hash : `queued, not yet recorded: ${result.error}`)
   return result.outcome === 'recorded' ? 0 : 1
 }
+function printDigest(ctx, _args, print) {
+  if (!verifyJournal(ctx).ok) print('LOUD: work journal: journal did not verify; run wt-work-journal.mjs verify')
+  print(digestJournal(ctx))
+  return 0
+}
 function recordUnsynced(ctx, args, print, stdin) {
   if (args.includes('--list')) {
     for (const line of openUnsynced(ctx)) print(`${line.hash} [${line.subject}] ${line.text}\n${unsyncedDetail(ctx, line)}`)
@@ -51,7 +56,7 @@ function recordUnsynced(ctx, args, print, stdin) {
 const COMMANDS = new Map([
   ['verify', printVerification],
   ['show', (ctx, args, print) => { print(show(ctx, args)); return 0 }],
-  ['digest', (ctx, _args, print) => { print(digestJournal(ctx)); return 0 }],
+  ['digest', printDigest],
   ['setup-board', null],
   ['unlock', (ctx, _args, print) => { io.unlockDead(path.join(ctx.store, 'lock')); print('Dead journal lock removed; start a session to recover pending acts.'); return 0 }],
   ['retire-progress', (ctx, args, print) => { print(JSON.stringify(retireProgress(ctx, { archiveOnly: args.includes('--archive-only') }))); return 0 }],

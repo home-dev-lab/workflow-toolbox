@@ -5,6 +5,7 @@
 import path from 'node:path'
 import * as io from './host/work-journal-io.mjs'
 import { resolveJournal, sha256 } from './work-journal-paths.mjs'
+import { createDigest } from './work-journal-digest.mjs'
 export { resolveJournal }
 
 const GENESIS = '0'.repeat(64)
@@ -65,6 +66,8 @@ export function readChain(root, days = journalDays(root), anchored = false) {
   }
   return { days, lines, errors, countOffset: 0 }
 }
+// Bind the unchanged readers once, keeping the public export without a circular import.
+export const digestJournal = createDigest({ dayOf, journalDays, readChain })
 function recentChain(ctx, head) {
   const inventory = journalDays(ctx.store)
   const days = [...new Set([...(head ? [head.day] : []), ...inventory.slice(-2)])].sort()
@@ -283,35 +286,6 @@ export function appendJournalActs(ctx, values, options = {}) {
 }
 export function appendJournal(ctx, value, options = {}) { return appendJournalActs(ctx, [value], options)[0] }
 
-function digestDay(chain, day, output) {
-  output.push(`Work journal ${day}`)
-  const subjects = new Map()
-  let recent = 0
-  for (const line of chain.lines.filter((item) => item.ts.slice(0, 10) === day)) {
-    const group = subjects.get(line.subject) || { count: 0, kinds: new Set(), last: line }
-    group.count++; group.kinds.add(line.kind); group.last = line; subjects.set(line.subject, group); recent++
-  }
-  const groups = [...subjects.entries()].sort((a, b) => b[1].last.ts.localeCompare(a[1].last.ts))
-  for (const [subject, group] of groups.slice(0, 20)) output.push(`${subject} — ${group.count} acts (${[...group.kinds].join(', ')}), last ${group.last.ts.slice(11, 16)} ${group.last.text.slice(0, 100)}`)
-  if (groups.length > 20) output.push(`+${groups.length - 20} more — wt-work-journal.mjs show --date ${day}`)
-  if (!groups.length) output.push('No activity.')
-  return recent
-}
-export function digestJournal(ctx) {
-  const chain = readChain(ctx.store)
-  if (chain.errors.length) throw new Error('digest refused: live chain broken')
-  const today = ctx.now
-  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1)
-  const dates = [dayOf(yesterday), dayOf(today)]
-  const output = []
-  let recent = 0
-  for (const day of dates) recent += digestDay(chain, day, output)
-  if (!recent && chain.lines.length) {
-    const last = chain.lines.at(-1)?.ts.slice(0, 10)
-    output.push(`last activity ${last}: ${chain.lines.filter((line) => line.ts.slice(0, 10) === last).length} acts`)
-  }
-  return output.join('\n')
-}
 export function restoreJournal(ctx, date) {
   if (!DATE.test(date)) throw new Error('restore needs YYYY-MM-DD')
   return withJournalLock(ctx, () => {
