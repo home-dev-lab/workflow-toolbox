@@ -605,6 +605,17 @@ await test('exported source declarations pass while an exported credential is sc
   assert.equal(result.text.includes(source), true, 'exported source declaration control matched');
 });
 await test('allow-list', async () => { const input = '0123456789abcdef0123456789abcdef01234567 123e4567-e89b-12d3-a456-426614174000 secret:github#abcdef'; const result = await call('cat fixture.txt', input); assert.equal(result.text, input); });
+await test('a long high-entropy run that no detector holds adds no note to a tool result or a prompt', async () => {
+  const path = '/home/someone/projects/wt-suite/plugins/wt-secret-guard/hooks/fixtures/Kq7Zx2';
+  const snake = 'hub_greens_from_gate_and_runner_mechanics_v2';
+  const input = `see ${path} and ${snake}`;
+  const result = await call('cat notes.txt', input);
+  assert.equal(result.text, input, 'a tool result with nothing held was changed');
+  let received;
+  await prompt($, { text: input, source: 'user' }, async (event) => { received = event; return {}; });
+  assert.equal(received.text, input, 'a prompt with nothing held was changed');
+  assert.equal(received.context, undefined, 'a prompt with nothing held gained context');
+});
 await test('UUID Exa API key in a provider client constructor is scrubbed', async () => { const result = await call('node app.mjs', `const client = new Exa("${exa}");`); assert.equal(result.text.includes(exa), false, 'Exa UUID API key reached the tool result'); assert.match(result.text, /secret:credential-uuid#/); });
 await test('bare UUID in a plain log line stays untouched', async () => { const input = `run id ${exa} completed`; const result = await call('cat run.log', input); assert.equal(result.text, input); });
 await test('Brave API key shape is scrubbed', async () => { const result = await call('env', `BRAVE_API_KEY=${brave}`); assert.equal(result.text.includes(brave), false, 'Brave API key reached the tool result'); assert.match(result.text, /secret:brave-api-key#/); });
