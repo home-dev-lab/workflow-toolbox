@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { appendFileSync, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -65,11 +65,57 @@ export function ensureLaneHostDir(worktree, options = {}) {
       throw new Error(`lane host state directory is not privately owned: ${candidate}`)
     }
   }
-  const marker = path.join(dir, 'worktree')
-  try { writeFileSync(marker, `${realpathSync.native(worktree)}\n`, { flag: 'wx', mode: 0o600 }) } catch (error) {
-    if (error?.code !== 'EEXIST') throw error
-  }
+  publishWorktreeMarker(path.join(dir, 'worktree'), realpathSync.native(worktree), { ...MARKER_FS, ...options.markerFs })
   return dir
+}
+
+// A marker is the worktree's absolute path followed by one newline. Anything else (an empty file,
+// a write cut short, a relative path) names no worktree and is ignored rather than trusted.
+function readWorktreeMarker(marker) {
+  if (!statSync(marker).isFile()) return null
+  const content = readFileSync(marker, 'utf8')
+  if (!content.endsWith('\n')) return null
+  const recorded = content.slice(0, -1)
+  return recorded && !recorded.includes('\n') && path.isAbsolute(recorded) ? recorded : null
+}
+
+function currentMarker(marker) {
+  try { return readWorktreeMarker(marker) } catch { return null }
+}
+
+// Readers must never observe a marker that exists before its bytes: write a private temporary
+// file, then publish it whole. A missing marker is created without replacing one a concurrent
+// writer published first (a hard link fails with EEXIST), so the first valid marker is kept.
+// Only an invalid marker (left by an interrupted writer) is replaced, best effort. `fs` is a seam
+// for the write, link and rename steps.
+const MARKER_FS = { writeFileSync, linkSync, renameSync }
+
+function publishWorktreeMarker(marker, worktree, fs) {
+  if (currentMarker(marker) !== null) return
+  const invalidPresent = existsSync(marker)
+  const temporary = `${marker}.${process.pid}.${Date.now()}.tmp`
+  try {
+    fs.writeFileSync(temporary, `${worktree}\n`, { flag: 'wx', mode: 0o600 })
+    if (invalidPresent) fs.renameSync(temporary, marker)
+    else linkMarker(temporary, marker, fs)
+  } catch (error) {
+    // An invalid marker that cannot be replaced (Windows refuses a rename over a file another
+    // process holds open) stays ignored by readers, as before; a valid marker published by a
+    // concurrent writer is as good as our own. Anything else is a real failure to record.
+    if (!invalidPresent && currentMarker(marker) === null) throw error
+  } finally {
+    rmSync(temporary, { force: true })
+  }
+}
+
+// A file system without hard links falls back to a rename, which can replace a marker published
+// in the same instant by another writer for the same key.
+function linkMarker(temporary, marker, fs) {
+  try { fs.linkSync(temporary, marker) } catch (error) {
+    if (error?.code === 'EEXIST') return
+    if (!['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'].includes(error?.code)) throw error
+    fs.renameSync(temporary, marker)
+  }
 }
 
 export function laneWritablePath(worktree, candidate) {
@@ -92,11 +138,9 @@ export function laneWritablePath(worktree, candidate) {
   for (const entry of entries) {
     if (!/^[0-9a-f]{32}$/.test(entry)) continue
     const marker = path.join(laneHostStateRoot(), entry, 'worktree')
-    try {
-      if (!statSync(marker).isFile()) continue
-      const other = readFileSync(marker, 'utf8').replace(/\n$/, '')
-      if (candidate === other || candidate.startsWith(`${other}${path.sep}`) || probe === other || probe.startsWith(`${other}${path.sep}`)) return true
-    } catch { continue }
+    const other = currentMarker(marker)
+    if (other === null) continue
+    if (candidate === other || candidate.startsWith(`${other}${path.sep}`) || probe === other || probe.startsWith(`${other}${path.sep}`)) return true
   }
   return false
 }
