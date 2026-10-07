@@ -26,12 +26,26 @@ function selectedChain(ctx, windowStart, readers) {
   }
   return readers.readChain(ctx.store, inventory.slice(start), start > 0)
 }
-function subjectKey(subject) {
-  const text = String(subject ?? '')
-  const card = /^card:(\d+)$/.exec(text)
-  return card ? `card:${card[1].slice(0, 10)}` : text
+const CARD = /^card:(\d+)$/
+// Fold card subjects by their first ten digits only when the prefix names ONE full id:
+// two distinct full ids sharing a prefix are different cards and stay apart.
+function folding(lines) {
+  const fullIds = new Map()
+  for (const line of lines) {
+    const card = CARD.exec(String(line.subject ?? ''))
+    if (!card || card[1].length <= 10) continue
+    const prefix = card[1].slice(0, 10)
+    fullIds.set(prefix, (fullIds.get(prefix) || new Set()).add(card[1]))
+  }
+  return function subjectKey(subject) {
+    const text = String(subject ?? '')
+    const card = CARD.exec(text)
+    if (!card) return text
+    const prefix = card[1].slice(0, 10)
+    return (fullIds.get(prefix)?.size ?? 0) > 1 ? text : `card:${prefix}`
+  }
 }
-function subjectNames(lines) {
+function subjectNames(lines, subjectKey) {
   const names = new Map()
   for (const line of lines) {
     const subject = String(line.subject ?? '')
@@ -42,7 +56,8 @@ function subjectNames(lines) {
   return names
 }
 function groupedDays(lines) {
-  const names = subjectNames(lines)
+  const subjectKey = folding(lines)
+  const names = subjectNames(lines, subjectKey)
   const days = new Map()
   for (const line of lines) {
     const day = line.ts.slice(0, 10)

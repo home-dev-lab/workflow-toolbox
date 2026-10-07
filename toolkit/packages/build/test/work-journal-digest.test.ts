@@ -10,7 +10,9 @@ import { sessionStart } from '../../../../plugin/bin/lib/work-journal-lifecycle.
 type Row = { ts?: string; fileDay?: string; subject?: string; kind?: string; text?: string }
 const fixtures: ReturnType<typeof journalFixture>[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const f of fixtures.splice(0)) f.cleanup() })
-function fixture(now = '2026-06-02T12:00:00Z') {
+// Local noon: day boundaries are computed in the runner's own time zone, so a UTC instant would
+// land on another calendar day east or west of UTC.
+function fixture(now = '2026-06-02T12:00:00') {
   const f = journalFixture(); f.env.WT_WORK_JOURNAL_NOW = now; fixtures.push(f)
   return f
 }
@@ -216,6 +218,63 @@ it('folding: combines short and full card subjects, displays longest id without 
   expect(digest).not.toContain('card:1234567890 — ')
   expect(digest).toContain('card:1234567891 — 1 acts')
   expect(readFileSync(file)).toEqual(before)
+})
+
+it('folding: never merges two different full card ids that share their first ten digits', () => {
+  const f = fixture()
+  const ctx = seed(f, [
+    row('2026-06-02', { subject: 'card:1234567890' }),
+    row('2026-06-02', { subject: 'card:1234567890123456789' }),
+    row('2026-06-02', { subject: 'card:1234567890987654321' }),
+  ])
+  const digest: string = api.digestJournal(ctx)
+  expect(digest).toContain('card:1234567890123456789 — 1 acts')
+  expect(digest).toContain('card:1234567890987654321 — 1 acts')
+  expect(digest).toContain('card:1234567890 — 1 acts')
+})
+
+// Splits a digest into its condensed lines and, per detail day, its subject rows.
+function sections(digest: string) {
+  const days = new Map<string, string[]>()
+  let current: string[] | undefined
+  for (const line of digest.split('\n')) {
+    const header = /^Work journal (\d{4}-\d{2}-\d{2})$/.exec(line)
+    if (header) { current = []; days.set(header[1], current) } else if (current && line.includes(' acts (')) current.push(line)
+  }
+  return { condensed: condensed(digest), days }
+}
+function isPrefix(part: string[], whole: string[]) { return part.every((line, index) => line === whole[index]) }
+function isSuffix(part: string[], whole: string[]) { return isPrefix([...part].reverse(), [...whole].reverse()) }
+function expectDropOrder(trimmed: ReturnType<typeof sections>, full: ReturnType<typeof sections>, label: string) {
+  const [older, newer] = [...full.days.keys()]
+  const keptOlder = trimmed.days.get(older) || []
+  const keptNewer = trimmed.days.get(newer) || []
+  expect(isSuffix(trimmed.condensed, full.condensed), `${label}: oldest condensed days go first`).toBe(true)
+  expect(isPrefix(keptOlder, full.days.get(older) || []), `${label}: least recent older-day subjects go first`).toBe(true)
+  expect(isPrefix(keptNewer, full.days.get(newer) || []), `${label}: least recent newer-day subjects go first`).toBe(true)
+  if (keptOlder.length < (full.days.get(older) || []).length) expect(trimmed.condensed, `${label}: condensed days before detail`).toEqual([])
+  if (keptNewer.length < (full.days.get(newer) || []).length) expect(keptOlder, `${label}: older day before newer day`).toEqual([])
+}
+
+it('drop order: oldest condensed days, then the older detail day, then the newer one, at every budget', () => {
+  const f = fixture()
+  const ctx = seed(f, windowRows(6, 'y'.repeat(60)))
+  const full = sections(api.digestJournal(ctx, { budget: 7000 }))
+  expect(full.condensed.length).toBeGreaterThan(3)
+  for (let budget = 7000; budget >= 400; budget -= 37) {
+    const digest: string = api.digestJournal(ctx, { budget })
+    expect(digest.length, `budget ${budget}`).toBeLessThanOrEqual(budget)
+    expectDropOrder(sections(digest), full, `budget ${budget}`)
+  }
+})
+
+it('CLI digest: still prints the warning and the digest when verification itself throws', () => {
+  const f = fixture()
+  const ctx = seed(f, [row('2026-06-02')])
+  writeFileSync(join(ctx.store, 'head.json'), '{')
+  const result = f.cli(['digest'])
+  expect(result.status).toBe(0)
+  expect(result.stdout).toMatch(/^LOUD: work journal: journal did not verify; run wt-work-journal\.mjs verify\nWork journal — detail /)
 })
 
 it('CLI digest: prepends a LOUD verification line even when the selected live chain is intact', () => {

@@ -40,8 +40,12 @@ function printActResult(result, print) {
   print(result.outcome === 'recorded' ? result.line.hash : `queued, not yet recorded: ${result.error}`)
   return result.outcome === 'recorded' ? 0 : 1
 }
+function verifiedQuietly(ctx) {
+  // A verifier that cannot even read its state (a truncated head.json) is a failed verification, not a crash.
+  try { return verifyJournal(ctx).ok } catch { return false }
+}
 function printDigest(ctx, _args, print) {
-  if (!verifyJournal(ctx).ok) print('LOUD: work journal: journal did not verify; run wt-work-journal.mjs verify')
+  if (!verifiedQuietly(ctx)) print('LOUD: work journal: journal did not verify; run wt-work-journal.mjs verify')
   print(digestJournal(ctx))
   return 0
 }
