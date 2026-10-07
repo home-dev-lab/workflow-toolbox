@@ -1677,12 +1677,12 @@ printf 'report\n' > "$report"
       expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
-    it('keeps a paraphrased numbered-task re-anchor blocking when its task line does not quote the settled criterion', async () => {
+    it('keeps a paraphrased numbered-task re-anchor blocking when its own task line does not quote the settled criterion', async () => {
       const logs: string[] = []
-      const numbered = plan.replace('- T1 list the documents. DoD: green', '1. list the documents. DoD: green')
-      const finding = '- [blocking][missing][anchor: plan task 1][location: plan.md:5] The inventory requirement is still unmet'
+      const numbered = plan.replace('- T1 list the documents. DoD: green', `1. list the documents. DoD: ${term}\n2. archive the documents. DoD: green`)
+      const finding = '- [blocking][missing][anchor: plan task 2][location: plan.md:6] The inventory requirement is still unmet'
       const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 1, pollMs: 1, log: (line: string) => logs.push(line) }, numbered, [rounds[0]!, rounds[1]!, [finding]])
-      expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=(?!tdd)/)
+      expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=plan/)
       expect(logs.join('\n')).not.toContain('ignored-by-no-reblock rule')
     })
     it('fails closed when the store reader fails', async () => {
