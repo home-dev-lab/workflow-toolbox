@@ -157,6 +157,22 @@ test('malformed verdict file fails closed on propose and apply without overwriti
   assert.equal(await readFile(f.record, 'utf8'), invalidDate);
 });
 
+function comparativeVerdicts(rulesDir, before, after) {
+  return [
+    ...Array.from({ length: 5 }, (_, i) => ({ rule: 'alpha.md', scope: 'project', rulesDir, verdict: 'static baseline', checkVerdict: 'followed', phase: 'before', at: before, file: 'fixture', line: i + 1 })),
+    ...Array.from({ length: 5 }, (_, i) => ({ rule: 'alpha.md', scope: 'project', rulesDir, verdict: 'not followed', phase: 'after', at: after, decidedAt: after, window: '7d', file: 'fixture', line: i + 6 })),
+  ].map((row) => JSON.stringify(row)).join('\n') + '\n';
+}
+
+function assertRolledBackRecord(saved) {
+  assert.equal(saved.state, 'rolled-back');
+  assert.equal(saved.sha256, hash('Original alpha\n'));
+  assert.equal(saved.followed, 0);
+  assert.equal(saved.applicable, 5);
+  assert.equal(saved.rate, 0);
+  assert.match(saved.date, /^\d{4}-\d\d-\d\dT/);
+}
+
 test('project daily rollback records reverted nested source and rate, dry run does not, and reports pending rules', async (t) => {
   const f = await fixture(t);
   const spec = { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'check', check: 'agent-model' } };
@@ -177,10 +193,7 @@ test('project daily rollback records reverted nested source and rate, dry run do
   const rulesDir = join(f.project, '.claude', 'rules-on-demand');
   const before = new Date(Date.now() - 3600000).toISOString();
   const after = new Date(Date.now() + 1000).toISOString();
-  await writeFile(verdicts, [
-    ...Array.from({ length: 5 }, (_, i) => ({ rule: 'alpha.md', scope: 'project', rulesDir, verdict: 'static baseline', checkVerdict: 'followed', phase: 'before', at: before, file: 'fixture', line: i + 1 })),
-    ...Array.from({ length: 5 }, (_, i) => ({ rule: 'alpha.md', scope: 'project', rulesDir, verdict: 'not followed', phase: 'after', at: after, decidedAt: after, window: '7d', file: 'fixture', line: i + 6 })),
-  ].map((row) => JSON.stringify(row)).join('\n') + '\n');
+  await writeFile(verdicts, comparativeVerdicts(rulesDir, before, after));
   const run = (...args) => spawnSync(process.execPath, [rollback, '--project', f.project, '--store', store, '--verdicts', verdicts, ...args], { encoding: 'utf8', env: f.env });
   const dry = run('--dry-run', '--json');
   ok(dry);
@@ -195,12 +208,7 @@ test('project daily rollback records reverted nested source and rate, dry run do
   assert.match(result.stderr, /rollback-check: pending changed\.md: changed since static/);
   assert.match(result.stderr, /rollback-check: pending new\.md: new/);
   const saved = (await json(f.record)).rules['nested/alpha.md'];
-  assert.equal(saved.state, 'rolled-back');
-  assert.equal(saved.sha256, hash('Original alpha\n'));
-  assert.equal(saved.followed, 0);
-  assert.equal(saved.applicable, 5);
-  assert.equal(saved.rate, 0);
-  assert.match(saved.date, /^\d{4}-\d\d-\d\dT/);
+  assertRolledBackRecord(saved);
   const plain = run();
   ok(plain);
   assert.match(plain.stderr, /rollback-check: pending changed\.md/);
