@@ -1,9 +1,10 @@
 // Resolve one config-scoped state root for every plugin and shell caller.
-import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { basename, dirname, join, win32 } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
+import { legacyCarryFilesystem as DEFAULT_FS } from './host/legacy-carry-filesystem.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ROOT = join(HERE, '..', '..')
@@ -76,16 +77,16 @@ export function carryOverAllowed({ configDir, pluginName: name, minimumVersion =
   return Boolean(entry && versionAtLeast(entry.version, minimumVersion))
 }
 
-function moveLegacyDir(legacyDir, dir, stderr) {
+function moveLegacyDir(legacyDir, dir, stderr, fs) {
   // MERGE, not move-once: an OLDER installed plugin keeps writing the legacy dir until the owner
   // updates it, while a newer checkout already resolves canonical — measured 2026-09-06, the
   // split existed within an hour. So every canonical resolution carries over whatever the legacy
   // dir holds that the canonical one lacks (name-wise, never overwriting), file by file, and
-  // removes the legacy dir only once it is empty. Idempotent and cheap when nothing is there.
+  // removes the legacy dir non-recursively: the OS tests emptiness. Idempotent when nothing is there.
   let entries
   try {
-    if (!existsSync(legacyDir)) return
-    entries = readdirSync(legacyDir)
+    if (!fs.existsSync(legacyDir)) return
+    entries = fs.readdirSync(legacyDir)
   } catch {
     return
   }
@@ -93,15 +94,15 @@ function moveLegacyDir(legacyDir, dir, stderr) {
   for (const name of entries) {
     const from = join(legacyDir, name)
     const to = join(dir, name)
-    if (existsSync(to)) continue
+    if (fs.existsSync(to)) continue
     try {
-      mkdirSync(dir, { recursive: true })
+      fs.mkdirSync(dir, { recursive: true })
       try {
-        renameSync(from, to)
+        fs.renameSync(from, to)
       } catch (error) {
         if (error?.code !== 'EXDEV') continue
-        cpSync(from, to, { recursive: true })
-        rmSync(from, { recursive: true, force: true })
+        fs.cpSync(from, to, { recursive: true })
+        fs.rmSync(from, { recursive: true, force: true })
       }
       moved += 1
     } catch {
@@ -109,9 +110,9 @@ function moveLegacyDir(legacyDir, dir, stderr) {
     }
   }
   try {
-    if (readdirSync(legacyDir).length === 0) rmSync(legacyDir, { recursive: true, force: true })
+    fs.rmdirSync(legacyDir)
   } catch {
-    // a non-empty legacy dir stays: something there already exists canonically under the same name
+    // Leave a non-empty or busy dir for retry; disappearance and other removal refusals are harmless.
   }
   if (moved > 0) stderr.write(`[workflow-toolbox] carried ${moved} legacy plugin state entr${moved === 1 ? 'y' : 'ies'} from ${legacyDir} to ${dir}\n`)
 }
@@ -121,7 +122,7 @@ function moveLegacyDir(legacyDir, dir, stderr) {
  * CLAUDE_PLUGIN_DATA is used only for an uninstalled --plugin-dir session; its value
  * never overrides an installed plugin's canonical directory.
  */
-export function resolvePluginDataDir({ env = process.env, configDir = env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), pluginName: name = pluginName(), fallback, platform = process.platform, stderr = process.stderr, minimumVersion = ownVersion() }) {
+export function resolvePluginDataDir({ env = process.env, configDir = env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), pluginName: name = pluginName(), fallback, platform = process.platform, stderr = process.stderr, minimumVersion = ownVersion(), fs = DEFAULT_FS }) {
   const legacyDir = fallback || join(env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), name)
   const candidate = env.CLAUDE_PLUGIN_DATA
   const marketplace = installedMarketplace(configDir, name)
@@ -132,7 +133,7 @@ export function resolvePluginDataDir({ env = process.env, configDir = env.CLAUDE
       ? 'unset'
       : candidate === dataDir ? 'agrees' : 'disagrees'
     const carry = carryOverAllowed({ configDir, pluginName: name, minimumVersion })
-    if (carry) moveLegacyDir(legacyDir, dir, stderr)
+    if (carry) moveLegacyDir(legacyDir, dir, stderr, fs)
     else if (!existsSync(dir)) return { dir: legacyDir, source: 'fallback', reason: `installed ${name} is older than ${minimumVersion}; canonical dir not created yet`, pluginData }
     return { dir, source: 'installed_plugins', reason: `installed_plugins.json selects ${name}@${marketplace}${carry ? '' : ' (read-only until the installed plugin is updated)'}`, pluginData }
   }
