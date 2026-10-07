@@ -57,8 +57,9 @@ Run `node <plugin-root>/bin/wt-work-journal.mjs --help` for the full syntax.
   period, with at most twelve subjects per day. Other worked days in the last fourteen
   calendar days (today inclusive) are condensed into one line each: act count, the three
   busiest subjects and an omitted-subject count. Dates point to `show --date YYYY-MM-DD`;
-  the full journal remains available on demand. Card subjects with the same first ten
-  digits are folded together under the longest id seen; stored lines are unchanged.
+  the full journal remains available on demand. A short card subject is folded into the
+  full card id that starts with the same ten digits, when exactly one such id appears;
+  two different full ids are never merged. Stored lines are unchanged.
   The digest is deterministic and capped at 7,000 UTF-16 characters. Fields are sanitized
   and limited by code point; kinds are limited to three plus a count. Budget trimming
   removes oldest condensed days first, then the least recent subjects of the older detail
