@@ -1,18 +1,20 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { ESLint } from 'eslint'
 import ts from 'typescript'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { eslintIgnorePatterns, listGitIgnoredPaths, pathsRegexSource } from '../git-ignored-inputs.mjs'
+import { eslintGitIgnores, listGitIgnoredPaths, pathsRegexSource } from '../git-ignored-inputs.mjs'
+import * as knipModule from '../knip-config.mjs'
 import { scanHostPrimitives, sourceFiles } from '../host-primitive-census.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 const toolkit = join(root, 'toolkit')
 const directories: string[] = []
 const require = createRequire(import.meta.url)
+const { knipConfigWithIgnored } = knipModule
 
 function put(dir: string, file: string, text: string) {
   const path = join(dir, file)
@@ -29,13 +31,6 @@ function repo() {
   execFileSync('git', ['-C', dir, 'add', '.'])
   execFileSync('git', ['-C', dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'fixture'], { stdio: 'pipe' })
   return dir
-}
-
-function hostFixture() {
-  const dir = mkdtempSync(join(root, 'plugin/.claude-plugin/types-fixture-'))
-  directories.push(dir)
-  put(dir, '.gitignore', '*\n')
-  return { dir, file: put(dir, 'index.d.ts', 'export interface Empty {}\n') }
 }
 
 afterEach(() => {
@@ -106,21 +101,35 @@ describe('git-ignored quality inputs', () => {
     expect(regex.test('plugin/types/x.d.ts')).toBe(false)
   })
 
-  it('deduplicates base forms and escapes glob metacharacters', () => {
-    expect(eslintIgnorePatterns(['plugin/[x]*?{a}/'], root, [toolkit, root, root])).toEqual([
-      '../plugin/\\[x\\]\\*\\?\\{a\\}/', 'plugin/\\[x\\]\\*\\?\\{a\\}/',
-    ])
+  it('anchors ESLint glob patterns to one repository base and escapes metacharacters', () => {
+    const list = () => ({ paths: ['plugin/[x]*?{a}/'] })
+    expect(eslintGitIgnores(root, { list })).toEqual({
+      basePath: root, ignores: ['plugin/\\[x\\]\\*\\?\\{a\\}/'],
+    })
+    expect(eslintGitIgnores(root, { list: () => ({ paths: [] }) })).toEqual({ basePath: root, ignores: [] })
   })
 
-  it('ESLint excludes the host shape with the real config from the repository root', async () => {
-    const fixture = hostFixture()
-    try {
-      const eslint = new ESLint({ cwd: root, overrideConfigFile: join(toolkit, 'eslint.config.mjs') })
-      expect(await eslint.isPathIgnored(fixture.file)).toBe(true)
-      expect(await eslint.isPathIgnored(join(root, 'plugin/bin/wt-suite-lock.mjs'))).toBe(false)
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true })
-    }
+  it.each(['.', 'toolkit'])('ESLint keeps the tracked same-spelling control from cwd %s', async (cwd) => {
+    const dir = repo()
+    const control = put(dir, 'toolkit/plugin/generated.mjs', 'export {}')
+    execFileSync('git', ['-C', dir, 'add', 'toolkit/plugin/generated.mjs'])
+    put(dir, '.gitignore', '/plugin/generated.mjs\n')
+    const ignored = put(dir, 'plugin/generated.mjs', 'export {}')
+    const eslint = new ESLint({ cwd: resolve(dir, cwd), overrideConfigFile: true,
+      overrideConfig: [{ files: ['**/*.mjs'] }, eslintGitIgnores(dir)] })
+    expect(await eslint.isPathIgnored(ignored)).toBe(true)
+    expect(await eslint.isPathIgnored(control)).toBe(false)
+  })
+
+  it('wires the real ESLint config to the repository base', async () => {
+    const { default: config } = await import('../../eslint.config.mjs')
+    expect(config.some((item) => item.basePath === root)).toBe(true)
+  })
+
+  it('keeps generated test fixtures outside the real repository', () => {
+    const source = readFileSync(join(import.meta.dirname, 'git-ignored-inputs.test.ts'), 'utf8')
+    expect(source.includes('function ' + 'hostFixture(')).toBe(false)
+    expect(source.includes('mkdtempSync(' + 'join(root,')).toBe(false)
   })
 
   it('census skips ignored directories and individual files but counts the control', () => {
@@ -134,22 +143,69 @@ describe('git-ignored quality inputs', () => {
     expect(scanHostPrimitives(dir).findings).toEqual([{ file: 'visible/x.mjs', line: 1, primitive: 'fs import' }])
   })
 
-  it('knip merges ignored paths while preserving JSONC workspace data', async () => {
-    const fixture = hostFixture()
-    const { default: config } = await import('../knip-config.mjs')
-    const file = join(root, 'knip.json')
-    const original = ts.parseConfigFileTextToJson(file, readFileSync(file, 'utf8')).config
-    expect(config.ignore).toContain(`${relative(root, fixture.dir).replaceAll('\\', '/')}/**`)
-    expect(config.workspaces).toEqual(original.workspaces)
+  it.skipIf(process.platform === 'win32')('census preserves literal POSIX backslashes in ignored names', () => {
+    const dir = repo()
+    put(dir, '.gitignore', 'literal\\\\name.mjs\n')
+    const ignored = put(dir, 'literal\\name.mjs', "import fs from 'node:fs'\n")
+    put(dir, 'control.mjs', "import fs from 'node:fs'\n")
+    expect(listGitIgnoredPaths(dir).paths).toContain('literal\\name.mjs')
+    expect(sourceFiles(dir)).not.toContain(ignored)
+    expect(scanHostPrimitives(dir).findings).toEqual([{ file: 'control.mjs', line: 1, primitive: 'fs import' }])
   })
 
-  it('dependency-cruiser excludes ignored modules and keeps the control', () => {
-    const fixture = hostFixture()
+  it('knip excludes ignored inputs at entry and project selection in each workspace', () => {
+    const config = { workspaces: {
+      '.': { entry: ['plugin/bin/*.mjs'], project: ['plugin/**/*.mjs'] },
+      'toolkit/packages/runtime': { entry: ['src/index.ts'], project: ['src/**/*.ts'] },
+      'toolkit/packages/build': { entry: ['src/index.ts'], project: ['src/**/*.ts'] },
+    } }
+    const merged = knipConfigWithIgnored(config, ['plugin/types/', 'toolkit/packages/runtime/src/generated.ts'])
+    expect(merged.workspaces['.'].entry).toEqual(['plugin/bin/*.mjs', '!plugin/types/**', '!toolkit/packages/runtime/src/generated.ts'])
+    expect(merged.workspaces['.'].project).toEqual(['plugin/**/*.mjs', '!plugin/types/**', '!toolkit/packages/runtime/src/generated.ts'])
+    expect(merged.workspaces['toolkit/packages/runtime'].entry).toEqual(['src/index.ts', '!src/generated.ts'])
+    expect(merged.workspaces['toolkit/packages/runtime'].project).toEqual(['src/**/*.ts', '!src/generated.ts'])
+    expect(merged.workspaces['toolkit/packages/build']).toEqual(config.workspaces['toolkit/packages/build'])
+    expect(merged).not.toHaveProperty('ignore')
+    expect(config.workspaces['.'].entry).toEqual(['plugin/bin/*.mjs'])
+    expect(knipConfigWithIgnored(config, [])).toEqual(config)
+  })
+
+  it.each(['quality-root-gate.mjs', 'quality.mjs'])('wires %s to the knip selection config', (caller) => {
+    const source = readFileSync(join(toolkit, 'scripts', caller), 'utf8')
+    expect(source).toContain("'--config', 'toolkit/scripts/knip-config.mjs'")
+    expect(source).not.toContain("'--config', 'knip.json'")
+  })
+
+  it('wires the default knip config to Git exclusions without a report filter', () => {
+    const file = join(root, 'knip.json')
+    const original = ts.parseConfigFileTextToJson(file, readFileSync(file, 'utf8')).config
+    expect(knipModule.default).toEqual(knipConfigWithIgnored(original, listGitIgnoredPaths(root).paths))
+    expect(knipModule.default).not.toHaveProperty('ignore')
+  })
+
+  it('dependency-cruiser regex skips ignored temporary inputs and keeps the control', () => {
+    const dir = repo()
+    put(dir, '.gitignore', 'plugin/generated/\n')
+    const ignored = put(dir, 'plugin/generated/index.mjs', 'export {}')
+    const control = put(dir, 'plugin/generated-control/index.mjs', 'export {}')
+    mkdirSync(join(dir, 'toolkit'))
+    const regex = new RegExp(pathsRegexSource(listGitIgnoredPaths(dir).paths, dir, join(dir, 'toolkit'))!)
+    expect(regex.test(relative(join(dir, 'toolkit'), ignored).split(sep).join('/'))).toBe(true)
+    expect(regex.test(relative(join(dir, 'toolkit'), control).split(sep).join('/'))).toBe(false)
+  })
+
+  it('wires dependency-cruiser exclusion to the real Git listing and regex helper', () => {
     const file = join(toolkit, '.dependency-cruiser.cjs')
     delete require.cache[require.resolve(file)]
     const config = require(file)
-    const regex = new RegExp(config.options.exclude?.path ?? '(?!)')
-    expect(regex.test(relative(toolkit, fixture.file).replaceAll('\\', '/'))).toBe(true)
-    expect(regex.test('../plugin/bin/wt-suite-lock.mjs')).toBe(false)
+    const paths = listGitIgnoredPaths(root).paths
+    if (paths.length) {
+      expect(typeof config.options.exclude?.path).toBe('string')
+      expect(config.options.exclude.path).toMatch(/^\^\(\?:/)
+      expect(config.options.exclude.path).toBe(pathsRegexSource(paths, root, toolkit))
+    } else {
+      expect(config.options).not.toHaveProperty('exclude')
+    }
   })
+
 })

@@ -3,12 +3,12 @@ import sonarjs from 'eslint-plugin-sonarjs'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
 import { resolve } from 'node:path'
-import { eslintIgnorePatterns, listGitIgnoredPaths } from './scripts/git-ignored-inputs.mjs'
+import { eslintGitIgnores } from './scripts/git-ignored-inputs.mjs'
 import { noDynamicReplace } from './eslint-rules/no-dynamic-replace.mjs'
 
 const toolkitRoot = import.meta.dirname
 const repoRoot = resolve(toolkitRoot, '..')
-const gitIgnores = eslintIgnorePatterns(listGitIgnoredPaths(repoRoot).paths, repoRoot, [toolkitRoot, repoRoot, process.cwd()])
+const gitIgnores = eslintGitIgnores(repoRoot)
 
 const qualityFiles = [
   'packages/*/src/**/*.ts',
@@ -133,5 +133,5 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
-  ...(gitIgnores.length ? [{ ignores: gitIgnores }] : []),
+  { ...gitIgnores },
 )

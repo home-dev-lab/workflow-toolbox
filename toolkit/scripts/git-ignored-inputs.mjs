@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { relative, resolve, sep } from 'node:path'
 
 const slash = (path) => path.split(sep).join('/')
-const escapeGlob = (path) => path.replace(/[\\*?\[\]{}()!+@]/g, '\\$&')
+export const escapeGlob = (path) => path.replace(/[\\*?\[\]{}()!+@]/g, '\\$&')
 const escapeRegex = (path) => path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 export function listGitIgnoredPaths(dir, { run = execFileSync } = {}) {
@@ -27,8 +27,8 @@ function relativeInput(path, root, baseDir) {
   return path.endsWith('/') ? `${rel}/` : rel
 }
 
-export function eslintIgnorePatterns(paths, root, baseDirs) {
-  return [...new Set(baseDirs.flatMap((base) => paths.map((path) => escapeGlob(relativeInput(path, root, base)))))]
+export function eslintGitIgnores(repoRoot, { list = listGitIgnoredPaths } = {}) {
+  return { basePath: repoRoot, ignores: list(repoRoot).paths.map(escapeGlob) }
 }
 
 export function pathsRegexSource(paths, root, baseDir) {

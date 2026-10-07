@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs'
-import { extname, join, relative, resolve } from 'node:path'
+import { extname, join, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
 import { listGitIgnoredPaths, pathsRegexSource } from './git-ignored-inputs.mjs'
 
@@ -40,7 +40,7 @@ export function sourceFiles(root) {
   function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const path = join(directory, entry.name)
-      const input = relative(root, path).replaceAll('\\', '/') + (entry.isDirectory() ? '/' : '')
+      const input = relative(root, path).split(sep).join('/') + (entry.isDirectory() ? '/' : '')
       if (ignored?.test(input)) return []
       if (entry.isDirectory()) return path === hostRoot ? [] : walk(path)
       return entry.isFile() && EXECUTABLE_EXTENSIONS.has(extname(path)) && !generated.has(path) ? [path] : []
