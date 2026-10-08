@@ -57,6 +57,9 @@ export default tseslint.config(
       // Vendored, byte-identity-checked upstream artifact; lint its generator instead.
        'plugin/bin/lib/vendor/yaml.mjs',
        '../plugin/bin/lib/vendor/yaml.mjs',
+      // Type stubs Claude Code generates (git-ignored) when it loads the plugin from a checkout.
+      'plugin/.claude-plugin/types/**',
+      '../plugin/.claude-plugin/types/**',
     ],
   },
   {

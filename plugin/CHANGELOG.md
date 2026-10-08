@@ -8,6 +8,31 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 - `wt-secret-guard` 0.1.4 no longer replaces ordinary help text with an `op-output` token. A line such as `password: see the docs for the details here` in a completed tool result now stays readable when its value is a plain sentence (six or more letter-only words, with common function words) that the vault would never hold. Output of `op` or `op.exe`, in any path, quoted, escaped or joined spelling, still masks such lines, and so does any command containing `$`, a backtick, a brace or a glob character. Unfinished assistant text and structured outbound fields also keep the mask. Residual: a password that is itself such a sentence, printed after an unquoted password key by a command other than `op`, is no longer masked on first sight.
 - Lifecycle receipt waits now allow a bounded settling window for a matching live pilot worker after its child exits, including the brief moment when the exiting child's identity cannot be read, so genuine completion receipts are not mistaken for inconsistent-record or unreadable-identity timeouts.
+## [0.191.1] - 2026-10-08
+
+### Fixed
+- Mouse clicks in the Claude Code console land where you click again. In 0.191.0 the What is running buttons were drawn by a custom client module that listened to the pointer, and a pointer listener makes Claude Code ask the terminal for mouse positions in pixels. A multiplexer that only knows cells (herdr on WSL, for example) still sent cell positions, so every click in the console landed several lines away. The pane and the prompt hint now draw the host's native buttons again, and a test refuses any shipped plugin file that mentions `onPointer`. If clicks still misbehave after updating, restart the session.
+
+### Quality
+
+Patch release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; no baseline was recorded at 0.190.0 or 0.191.0). No judge regressed. The static totals equal 0.191.0's. Coverage comes from this release tree's own test run. The ESLint scope now excludes the git-ignored type stubs Claude Code writes into `plugin/.claude-plugin/types/` when a session loads the plugin from a checkout; a test keeps every committed plugin file in scope.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 124 | -2 |
+| Cognitive complexity | 268 -> 243 | -25 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 640 | -44 |
+| Duplication % | 2.43 -> 2.21 | -0.23 |
+| Knip issues | 196 -> 189 | -7 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 81.06 | +2.45 |
+| Coverage branches % | 69.76 -> 72.81 | +3.05 |
+| Coverage functions % | 80.86 -> 83.35 | +2.49 |
+| Coverage statements % | 76.5 -> 79.06 | +2.56 |
 
 ## [0.191.0] - 2026-10-08
 
