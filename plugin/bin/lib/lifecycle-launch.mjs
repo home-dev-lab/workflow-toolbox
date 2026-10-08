@@ -35,7 +35,9 @@ function laneReceiptPollDeadline(record, verdict, workerPid, transitionDueAt, se
   const finishing = verdict.status === 'unknown' && verdict.reason === 'inconsistent-record'
     && verdict.worker === 'running' && verdict.child === 'gone'
     && ['running', 'decision-needed'].includes(record.state)
-  if (!finishing) return null
+  // The worker publishes state 'exited' before it appends EXIT= (wt-lane.mjs onChildClose).
+  const publishing = verdict.status === 'terminal' && verdict.reason === 'exited' && verdict.worker === 'running'
+  if (!finishing && !publishing) return null
   settle.dueAt ??= Date.now() + LANE_FINISH_SETTLE_MS
   return Math.max(Number.isFinite(transitionDueAt) ? transitionDueAt : 0, settle.dueAt)
 }
@@ -519,7 +521,9 @@ export function createLifecycleLaunch({
               verdict = classify(parsed)
               pollDeadline = laneReceiptPollDeadline(parsed, verdict, workerPid, transitionDueAt, settle)
             }
-            verdict = classify(parsed)
+            // Branch on the verdict the loop last judged, and read the receipt once more: it can land
+            // between the last receipt poll and the state read that ended the loop.
+            logEntry ??= await waitForLaneReceipt({ log, nonce, timeoutMs: 0, pollMs: lanePollMs, readAttestation, readRegularFile })
             if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'decision-needed') {
               const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
               snapshot = null

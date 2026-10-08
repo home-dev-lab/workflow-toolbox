@@ -448,7 +448,7 @@ printf 'report\n' > "$report"
 
   it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
     const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
-    for (const entry of ['running', 'finishing'] as const) {
+    for (const entry of ['running', 'finishing', 'exited-first'] as const) {
       const workerSource = `
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -474,8 +474,11 @@ if (initial.status !== 'running') throw new Error('fixture must start with match
 writeFileSync(join(root, '.lane', 'initial-verdict.json'), JSON.stringify(initial))
 await childExited
 writeFileSync(join(root, '.lane', 'finishing-verdict.json'), JSON.stringify(classifyLane(record)))
-await new Promise((resolve) => setTimeout(resolve, 1_500))
-const report = /Write the report to \x60([^\x60]+)\x60/.exec(readFileSync(brief, 'utf8'))[1]
+await new Promise((resolve) => setTimeout(resolve, ${entry === 'exited-first' ? 300 : 1_500}))
+${entry === 'exited-first'
+  // The shipped worker publishes state 'exited' before it appends EXIT= (wt-lane.mjs onChildClose).
+  ? "writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))\nawait new Promise((resolve) => setTimeout(resolve, 1_000))\n"
+  : ''}const report = /Write the report to \x60([^\x60]+)\x60/.exec(readFileSync(brief, 'utf8'))[1]
 writeFileSync(report, 'report\\n')
 appendFileSync(log, 'genuine\\nEXIT=0\\n')
 writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))
