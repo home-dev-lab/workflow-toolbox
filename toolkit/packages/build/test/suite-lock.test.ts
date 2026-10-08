@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { competitorArgs, POSIX_STALENESS } from './helpers/suite-lock-platform.js'
 // @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
 import { spawnHeld, stopHeld } from '../../../test-support/held-processes.mjs'
 // @ts-expect-error Node script under toolkit/scripts/
@@ -395,11 +396,12 @@ describe('suite lock no-progress budget', () => {
   it('times out a stuck non-head and a stuck head, naming the live holder', async () => {
     const root = tempRoot('stuck')
     const holder = await acquireSuiteLock({ root, argv: ['live-holder'] })
-    const pending = acquireSuiteLock({ root, waitS: 1, staleS: 2.4, pollMs: 30, argv: ['ahead'] }).catch((cause: Error) => cause)
+    // POSIX_STALENESS: this test is about the queue budget; Windows judges a live holder stale by age and would reclaim it.
+    const pending = acquireSuiteLock({ root, waitS: 1, staleS: 2.4, pollMs: 30, argv: ['ahead'], ...POSIX_STALENESS }).catch((cause: Error) => cause)
     try {
       await waitFor(() => queueRecords(root).length === 1)
       const start = Date.now()
-      const error = await acquireSuiteLock({ root, waitS: 1, staleS: 1.4, pollMs: 30 }).catch((cause: Error) => cause)
+      const error = await acquireSuiteLock({ root, waitS: 1, staleS: 1.4, pollMs: 30, ...POSIX_STALENESS }).catch((cause: Error) => cause)
       expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT', holder: { pid: process.pid } })
       expect(error.message).toContain(`holder pid ${process.pid} (live-holder)`)
       expect(error.message).toContain('no queue progress for')
@@ -630,7 +632,7 @@ describe('wt-suite-lock CLI', () => {
     const owner = runAsync(['run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(holderPid)}, String(process.pid));setInterval(()=>{},1000)`], root)
     try {
       await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
-       const result = cli(['run', '--wait-s', '0.05', '--stale-s', '0.05', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
+       const result = cli(['run', ...competitorArgs({ waitS: 0.05, staleS: 0.05 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
       expect(result.status).toBe(75)
       expect(result.stderr).toContain('timed out waiting for suite lock: holder pid')
       expect(existsSync(marker)).toBe(false)
@@ -644,7 +646,7 @@ describe('wt-suite-lock CLI', () => {
     const marker = join(root, 'ran')
     const owner = await acquireSuiteLock({ root, argv: ['live-holder'] })
     try {
-      const result = cli(['run', '--wait-s', '1', '--stale-s', '1', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes')`], root)
+      const result = cli(['run', ...competitorArgs({ waitS: 1, staleS: 1 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes')`], root)
       expect(result.status).toBe(75)
       expect(result.stderr).toContain(`holder pid ${process.pid} (live-holder)`)
       expect(result.stderr).toContain('no queue progress for')
@@ -1007,6 +1009,24 @@ releaseSuiteLock(lease)
     await expect(acquireSuiteLock(windowsView)).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     await expect(acquireSuiteLock({ ...sandboxView, staleS: 0.3 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     expect(readSuiteLock({ root }).holder?.pid).toBe(process.pid)
+  })
+
+  // The Windows contract the CLI tests above fail fast around (see helpers/suite-lock-platform.ts): through the injected
+  // platform, so it runs on every OS. A signalable PID proves nothing on win32, so age against --stale-s decides.
+  it('on win32 reclaims a live-PID holder older than --stale-s at the head, and keeps a younger one', async () => {
+    const view = { platform: 'win32', insideSandbox: false, pidNamespace: null, staleS: 60, pollMs: 10 }
+    const young = tempRoot('excl-win-young')
+    const youngHolder = await acquireSuiteLock({ root: young, argv: ['young'] })
+    await expect(acquireSuiteLock({ root: young, ...view, waitS: 0 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(readSuiteLock({ root: young }).holder?.leaseId).toBe(youngHolder.holder.leaseId)
+    const old = tempRoot('excl-win-old')
+    const oldHolder = await acquireSuiteLock({ root: old, argv: ['old'] })
+    const twoMinutesAgo = new Date(Date.now() - 120_000)
+    utimesSync(join(old, 'lock.d'), twoMinutesAgo, twoMinutesAgo)
+    const lease = await acquireSuiteLock({ root: old, ...view, waitS: 5 })
+    expect(lease.holder.pid).toBe(process.pid)
+    expect(lease.holder.leaseId).not.toBe(oldHolder.holder.leaseId)
+    releaseSuiteLock(lease)
   })
 
   it('reclaims a half-created lock.d (no valid holder.json) after its bound, and not before', async () => {

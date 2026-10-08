@@ -45,7 +45,7 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
-import { quoteRemedyWord } from './lib/remedy-quote.mjs'
+import { quoteRemedyWord, remedyJson } from './lib/remedy-quote.mjs'
 import { pluginRootState } from './lib/plugin-root-state.mjs'
 import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
@@ -415,7 +415,7 @@ function buildDigestMessage(perFile, set) {
 
 /** The one closing line of a digest: how to print the per-file remedies again. */
 function digestClosing(root, noticeOnly) {
-  const payload = JSON.stringify({ source: 'startup', hook_event_name: 'SessionStart', cwd: root })
+  const payload = remedyJson({ source: 'startup', hook_event_name: 'SessionStart', cwd: root })
   const rerun = `printf '%s' ${shellQuote(payload)} | node ${shellQuote(path.join(HERE, 'wt-adopt-check-hook.mjs'))}`
   return 'This digest omits the per-file remedies; the command that prints the current full remedies is ' +
     `\`${rerun}\`` +
