@@ -432,10 +432,11 @@ export const locks = [
     assert.deepEqual(manifest.modules, ['./hooks.js'], 'A Client button needs a pointer listener, which breaks clicks under cell-only multiplexers');
     const hooks = [];
     let opens = 0;
+    let closes = 0;
     const $ = {
       env: { get: async () => undefined }, process: { run: async () => ({ exitCode: 0, stdout: JSON.stringify(snapshot) }) },
       command: { register: async () => {} }, clock: { every: () => ({ cancel() {} }) },
-      ui: { resolve: async () => ui, invalidate: () => {}, log: async () => {}, open: async () => { opens += 1 }, close: async () => {} },
+      ui: { resolve: async () => ui, invalidate: () => {}, log: async () => {}, open: async () => { opens += 1 }, close: async () => { closes += 1 } },
     };
     register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : {}, hook: hook || matcher }), {});
     const call = (event, data) => hooks.find((entry) => entry.event === event && (!data.component || entry.matcher.component === data.component))?.hook($, data, async () => null);
@@ -448,7 +449,13 @@ export const locks = [
     assert.equal(opens, 1, 'The native opener Button opens the pane');
     const pane = descendants(await call('ui.render', { component: 'Pane', requestId: 'wt-what-is-running', props: { bodyColumns: 66 } }));
     assert.equal(pane.filter((item) => item.name === 'Client').length, 0, 'The pane must not render a Client');
-    assert.ok(pane.filter((item) => item.name === 'Button').length > 0, 'The pane must render native Buttons');
+    const buttons = pane.filter((item) => item.name === 'Button');
+    assert.ok(buttons.length > 1, 'The pane must render native Buttons');
+    buttons.forEach((button) => assert.equal(typeof button.props.onPress, 'function', `Native Button ${label(button)} must carry its onPress`));
+    const close = buttons.find((button) => label(button).includes('Close'));
+    assert.ok(close, 'The pane must render a native Close Button');
+    await close.props.onPress();
+    assert.equal(closes, 1, 'The native Close Button closes the pane');
   }],
 ];
 
