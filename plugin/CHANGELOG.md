@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - `wt-secret-guard` 0.1.4 no longer replaces ordinary help text with an `op-output` token. A line such as `password: see the docs for the details here` in a completed tool result now stays readable when its value is a plain sentence (six or more letter-only words, with common function words) that the vault would never hold. Output of `op` or `op.exe`, in any path, quoted, escaped or joined spelling, still masks such lines, and so does any command containing `$`, a backtick, a brace or a glob character. Unfinished assistant text and structured outbound fields also keep the mask. Residual: a password that is itself such a sentence, printed after an unquoted password key by a command other than `op`, is no longer masked on first sight.
+- Detached lane workers now end their run logs with a clear failure reason and `EXIT=1` when startup fails before OpenCode starts. A startup that never reports back is cut off after a bounded wait and reported the same way.
 - Lifecycle receipt waits now allow a bounded settling window for a matching live pilot worker after its child exits, including the brief moment when the exiting child's identity cannot be read, so genuine completion receipts are not mistaken for inconsistent-record or unreadable-identity timeouts.
 ## [0.191.1] - 2026-10-08
 
