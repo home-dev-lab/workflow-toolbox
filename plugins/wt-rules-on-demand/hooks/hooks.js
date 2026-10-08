@@ -151,9 +151,15 @@ function writeTurn() {
 const key = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
 // Reserve the new context and detach the victim before any close I/O: a concurrent caller for the
 // same loop then receives the same object, and no second caller can pick the same victim.
+// A hit moves the loop to the recent end of the map (delete then set), so the first non-main key is always the least recently used.
 const context = async ($, loop) => {
   const existing = contexts.get(loop);
-  if (existing) return existing;
+  if (existing) {
+    contexts.delete(loop);
+    contexts.set(loop, existing);
+    if (existing.filling) await existing.filling;
+    return existing;
+  }
   let victim = null;
   if (contexts.size >= MAX_CONTEXTS) {
     const oldest = [...contexts.keys()].find((name) => name !== MAIN);
@@ -163,13 +169,15 @@ const context = async ($, loop) => {
       victim = { loop: oldest, evicted, actSeq: ++sequence, closing: [...evicted.pending.splice(0), ...detachNext(evicted)] };
     }
   }
-  const created = { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [] };
+  const created = { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [], filling: null, held: null };
   contexts.set(loop, created);
+  created.filling = conversationHeld($, loop).then((held) => { created.held = held; }).finally(() => { created.filling = null; });
   if (victim) {
     for (const pending of victim.closing) await close($, pending, victim.loop, 'context evicted', victim.actSeq);
     await closeCorrelation($, victim.evicted, victim.loop, victim.actSeq);
     await journal($, [], victim.loop, [], [], [], { close: { seq: victim.actSeq } });
   }
+  if (created.filling) await created.filling;
   return created;
 };
 // The session root decides the project rule set, whatever directory the event (a sub-agent's included) runs in.
@@ -185,6 +193,29 @@ async function sessionRoot($, cwd) {
 function publish(ctx, root, rules) {
   ctx.rules = rules;
   ctx.rulesRoot = root;
+  holdServed(ctx, rules);
+}
+// The only record of what a context was served is the conversation its next request is built from: a rule counts as
+// served only when that conversation holds the rule's exact block. The text is read once, when the context is created,
+// and spent by the first load of its rules; unreadable (a throw, a refusal, no list) it holds nothing, so every rule is
+// served again, never withheld.
+async function conversationHeld($, loop) {
+  let failure = 'the host returned no message list';
+  try {
+    const found = await $.session.messages(loop === MAIN ? { as: 'api' } : { as: 'api', agentId: loop });
+    if (Array.isArray(found)) return JSON.stringify(found);
+    if (found && typeof found === 'object' && 'deny' in found) failure = 'the host refused the messages';
+  } catch (error) { failure = error.message; }
+  await notice($, `conversation unavailable, every rule counts as unserved: ${failure}`).catch(() => {});
+  return null;
+}
+function holdServed(ctx, rules) {
+  const held = ctx.held;
+  ctx.held = null;
+  if (!held) return;
+  for (const rule of rules) {
+    if (!servedAs(ctx, rule) && held.includes(JSON.stringify(block(rule)).slice(1, -1))) ctx.served.set(rule.name, { count: 1, at: Date.now(), identity: rule.identity });
+  }
 }
 // A rule counts as served in a context only when its identity matches the LAST copy of that name served there: a
 // same-name rule from another root (another file) is a different rule. Only one copy per name is remembered, so a
@@ -909,6 +940,8 @@ async function sessionCompactWork($, e, next) {
           await journal($, [], loop, [], [], [], { close: { seq: actSeq } });
           ctx.rules = null;
           ctx.loading = null;
+           if (ctx.filling) await ctx.filling;
+           ctx.held = null;
            ctx.served.clear();
            ctx.lspServed = null;
             ctx.prompting = new Map(ctx.prompting);
@@ -962,6 +995,7 @@ async function turnCompleteWork($, e, next) {
          await closePending($, ctx, loop, 'turn ended', actSeq);
         await closeCorrelation($, ctx, loop, actSeq);
         await journal($, [], loop, [], [], [], { close: { seq: actSeq } });
+        if (loop !== MAIN && contexts.get(loop) === ctx) contexts.delete(loop);
      }
     return result;
 }
