@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.191.0] - 2026-10-08
+
 ### Changed
 - The rule-convention guard now warns about month dates, dated attributions, message references and incident stories in newly added rule or agent-definition lines. Its existing refusals and whole-line allow marker remain intact. Feedback preserves the flagged original lines as HISTORY and offers optional, checked RULE wording through an isolated small-model call; unavailable or slow calls leave the decision intact. Set `WT_RULE_NARRATIVE_SPLIT=off` to disable proposals.
 - Adopted lane, waiter, arc watcher, and quota watcher scripts are now fingerprinted thin launchers for the installed plugin's canonical executables. Existing copied lane launchers need one re-adoption; later executable updates are picked up at launch. POSIX Node runtimes with `process.execve` preserve the pid; the spawn fallback forwards signals and re-raises child signals after removing its handlers.
@@ -56,6 +58,23 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Removed
 
 - The `what-next` skill is removed from the plugin (`/what-next` no longer exists), and `planka-tracking` no longer offers to copy it into a project. It was never invoked as a skill in the last five weeks. The label-intent hook stays: it runs on any `get_board` read, not only on a `/what-next` pass. `what-next` is also dropped from the refused-lane-skill list, so a lane that names it is no longer refused for that name.
+
+### Quality
+
+Minor release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; no baseline was recorded at 0.190.0). No judge regressed. Against 0.190.0's figures, Knip issues fell from 215 to 189 and duplication from 2.30 % to 2.21 %; the other totals are unchanged. Coverage is not reported: the coverage artifact the delta read dates from 2026-10-02 and predates this release tree, so its figures would not describe this release.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 124 | -2 |
+| Cognitive complexity | 268 -> 243 | -25 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 640 | -44 |
+| Duplication % | 2.4324 -> 2.2063 | -0.23 |
+| Knip issues | 196 -> 189 | -7 |
+| Dependency cycles | 2 -> 2 | 0 |
 
 ## [0.190.0] - 2026-10-02
 
