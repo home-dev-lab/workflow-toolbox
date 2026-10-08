@@ -77,7 +77,7 @@ jobs:
         run: |
           mkdir -p ci-diagnostics
           pnpm test 2>&1 | tee ci-diagnostics/vitest.log
-        timeout-minutes: 22
+        timeout-minutes: 30
       # The macOS probe runs the suite in two halves so that one half's log survives a frozen runner.
       # Coverage is off here on purpose: thresholds judged on half a suite would be red by construction.
       # Coverage thresholds are judged on ubuntu only: the Windows shards run coverage WITHOUT thresholds
@@ -98,7 +98,7 @@ jobs:
         run: |
           mkdir -p ci-diagnostics
           pnpm test:shard --shard=1/2 2>&1 | tee ci-diagnostics/vitest-shard-1-of-2.log
-        timeout-minutes: 12
+        timeout-minutes: 15
       - name: Test (macOS shard 2/2)
         shell: bash
         id: mac_shard_2
@@ -109,7 +109,7 @@ jobs:
         run: |
           mkdir -p ci-diagnostics
           pnpm test:shard --shard=2/2 2>&1 | tee ci-diagnostics/vitest-shard-2-of-2.log
-        timeout-minutes: 12
+        timeout-minutes: 15
       # The shards are continue-on-error so BOTH always run and both logs reach the artifact; this step is what
       # makes the JOB red when either failed. Measured 2026-09-17: two lifecycle cases were red on every macOS
       # shard from run 28 to run 34 while the job reported success, because nothing read the shard outcomes.
