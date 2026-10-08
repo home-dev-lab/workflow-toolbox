@@ -42,7 +42,7 @@ function pushStringFindings(found, value, key, path, options) {
   });
   found.push(...direct, ...optionalDetections(candidate, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }));
   if (key) {
-    for (const item of detections(`${key}: ${candidate}`)) {
+    for (const item of detections(`${key}: ${candidate}`, '', undefined, { prose: false })) {
       if (!direct.some(({ value: directValue }) => directValue === item.value)) found.push({ ...item, value, secret: value, path, index: 0 });
     }
   }

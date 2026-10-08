@@ -4053,4 +4053,160 @@ await test('a successful result scrubs a value that only a later field revealed'
 const { runRevisionLocks } = await import('./revision-locks.mjs');
 await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
 console.log(`hooks registered: ${hooks.length}`);
+const helpProse = 'read from the file named by EXAMPLE_USER_TOKEN_FILE; else from the example_token_file';
+const helpLine = `${'Tok' + 'en'}: ${helpProse}`;
+const proseCommand = 'node example.mjs --help';
+await test('T1 ordinary token help is unchanged without detections or issued tokens', () => freshVault(async () => {
+  const result = await call(proseCommand, helpLine);
+  assert.equal(result.text, helpLine, 'ordinary token help was masked');
+  assert.equal(result.result.stdout, helpLine);
+  assert.equal(detections(helpLine, proseCommand, undefined, { complete: true }).filter(({ kind }) => kind === 'op-output').length, 0);
+  const { testVaultSnapshot } = await import('./token-vault.js');
+  assert.equal(testVaultSnapshot().tokens.size, 0, 'ordinary help issued a redaction token');
+}));
+await test('T1 a tool result without a trailing newline explicitly completes help prose', () => freshVault(async () => {
+  assert.equal(helpLine.endsWith('\n'), false);
+  const result = await call(proseCommand, helpLine);
+  assert.equal(result.text, helpLine, 'unterminated tool help was masked');
+  assert.equal(result.result.stdout, helpLine);
+}));
+await test('T2 a distinctive word inside help prose stays masked', () => freshVault(async () => {
+  const value = helpProse.replace('named', 'named FAKE-q7X9m2R8v4Z6');
+  const result = await call(proseCommand, `token: ${value}`);
+  assert.equal(result.text.includes('FAKE-q7X9m2R8v4Z6'), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('T3 a four word passphrase stays masked', () => freshVault(async () => {
+  const result = await call(proseCommand, 'password: correct horse battery staple');
+  assert.equal(result.text.includes('correct horse battery staple'), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+for (const value of ['in the 739 482', 'in the Q7! z9@', 'in the qzxvbnm plmoknij']) {
+  for (const quoted of [false, true]) {
+    await test(`T4 ${quoted ? 'quoted' : 'bare'} ${value} stays masked`, () => freshVault(async () => {
+      const result = await call(proseCommand, `password: ${quoted ? `"${value}"` : value}`);
+      assert.equal(result.text.includes(value), false);
+      assert.match(result.text, /secret:op-output#/);
+    }));
+  }
+}
+await test('T4 an alternating case word inside a sentence stays masked', () => freshVault(async () => {
+  const value = 'river of the stone by mQvZtLpRsNxBcDa lake';
+  const result = await call(proseCommand, `password: ${value}`);
+  assert.equal(result.text.includes('mQvZtLpRsNxBcDa'), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+for (const command of ['op item get example --reveal', 'op.exe item get example', 'x && op item get example', 'x;op item get example', 'x|op.exe item get example', '(op item get example)', '`op item get example`', '$(op item get example)', 'op>example.txt item get example', 'op.exe<example.txt item get example', '/usr/local/bin/op item get example', 'C:\\Tools\\op.exe item get example', '"op" item get example', "'op.exe' item get example"]) {
+  await test(`T5 prose from ${command} stays masked`, () => freshVault(async () => {
+    const result = await call(command, 'password: see the docs for the details here');
+    assert.equal(result.text.includes('see the docs for the details here'), false);
+    assert.match(result.text, /secret:op-output#/);
+  }));
+}
+for (const [spelling, command] of [
+  ['single-quote joining', "o'p' item get example"],
+  ['double-quote joining', 'o"p" item get example'],
+  ['backslash escaping', 'o\\p item get example'],
+  ['backslash newline joining', 'o\\\np item get example'],
+  ['ANSI-C octal escapes', "$'\\157\\160' item get example"],
+  ['ANSI-C hex escapes', "$'\\x6f\\x70' item get example"],
+  ['variable expansion', '$CLI item get example'],
+  ['braced expansion', '${CLI} item get example'],
+  ['command substitution', '$(cli) item get example'],
+  ['backtick substitution', '`cli` item get example'],
+  ['locale quoting', '$"op" item get example'],
+  ['brace expansion', '{op,} item get example'],
+  ['inner brace expansion', 'o{p,} item get example'],
+  ['bracket glob', '/usr/bin/o[p] item get example'],
+  ['question-mark glob', '/usr/bin/o? item get example'],
+  ['star glob', '/usr/bin/o* item get example'],
+  ['empty positional splice', 'o$1p item get example'],
+  ['empty all-arguments splice', 'o$@p item get example'],
+  ['locale quoting splice', 'o$"p" item get example'],
+]) {
+  await test(`F1 ${spelling} retains command-provenance masking`, () => freshVault(async () => {
+    const result = await call(command, 'password: see the docs for the details here');
+    assert.equal(result.text.includes('see the docs for the details here'), false, 'unknown or disguised command released password prose');
+    assert.match(result.text, /secret:op-output#/);
+  }));
+}
+await test('F2 assistant render keeps an unterminated prose prefix masked', () => freshVault(async () => {
+  const text = 'password: see the docs for the details here';
+  const rendered = await assistantRender($, { props: { text } }, async (event) => event.props.text);
+  assert.equal(rendered.includes('see the docs for the details here'), false, 'unfinished assistant render released password prose');
+  assert.match(rendered, /secret:op-output#/);
+}));
+await test('T6 unfinished prose prefix is held until its secret continuation ends', () => freshVault(async () => {
+  const prefix = `password: ${'see the docs for the details here '.repeat(30)}`;
+  const secret = 'FAKE-q7X9m2R8v4Z6';
+  let continued = false;
+  const seen = [];
+  const iterator = turnStep($, {}, async function* () {
+    yield { kind: 'text', index: 0, text: prefix };
+    continued = true;
+    yield { kind: 'text', index: 0, text: `${secret}\nvisible after the value\n` };
+    yield { kind: 'stop' };
+  });
+  for await (const chunk of iterator) {
+    if (!continued) assert.equal(leakedRunAt(chunk.text ?? '', prefix.slice('password: '.length)), -1, 'unfinished prose prefix was released before its continuation');
+    seen.push(chunk.text ?? '');
+  }
+  const output = seen.join('');
+  assert.equal(output.includes(secret), false, 'secret continuation reached the stream');
+  assert.equal(leakedRunAt(output, secret), -1, 'secret continuation bytes reached the stream');
+  assert.match(output, /visible after the value/);
+}));
+await test('T7 structured password prose retains outbound refusal', () => freshVault(async () => {
+  // The synthetic key scan is needed: the value itself has no credential key.
+  for (const value of [helpProse, `${helpProse}\n`]) {
+    const result = await classifyOutbound($, { tool: 'Agent', prompt: { password: value } });
+    assert.deepEqual(result, { surface: 'agent', findings: [{ kind: 'op-output', value, secret: value, path: ['prompt', 'password'], index: 0 }] });
+  }
+}));
+await test('T8 complete plain token guidance is not masked', () => freshVault(async () => {
+  const line = 'token: see the docs for the details here';
+  assert.equal((await call(proseCommand, line)).text, line);
+}));
+await test('T9 six plain words without function words stay masked', () => freshVault(async () => {
+  const value = 'river stone meadow forest valley lake';
+  const result = await call(proseCommand, `password: ${value}`);
+  assert.equal(result.text.includes(value), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('prose with nonword separators stays masked despite the vault floor', () => freshVault(async () => {
+  const value = 'in the river/stone by the lake';
+  const result = await call(proseCommand, `password: ${value}`);
+  assert.equal(result.text.includes(value), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('prose requires both a function word count and its quarter share', () => freshVault(async () => {
+  for (const value of ['river stone meadow forest valley the', 'in the river stone meadow forest valley lake mountain']) {
+    const result = await call(proseCommand, `password: ${value}`);
+    assert.equal(result.text.includes(value), false, value);
+    assert.match(result.text, /secret:op-output#/);
+  }
+}));
+await test('prose stripping permits edge punctuation and internal word separators', () => freshVault(async () => {
+  const value = '(read) from "the" file named by example_token_file; else from the example-token-file';
+  assert.equal((await call(proseCommand, `token: ${value}`)).text, `token: ${value}`);
+}));
+await test('the whole prose value must also fail the vault holding floor', () => freshVault(async () => {
+  const value = 'see the docs for the details here!';
+  const result = await call(proseCommand, `token: ${value}`);
+  assert.equal(result.text.includes(value), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('held values still mask inside otherwise exempt help prose', () => freshVault(async () => {
+  tokenize('fixture', 'EXAMPLE_USER_TOKEN_FILE');
+  const result = await call(proseCommand, helpLine);
+  assert.equal(result.text.includes('EXAMPLE_USER_TOKEN_FILE'), false);
+  assert.match(result.text, /secret:fixture#/);
+}));
+await test('default detection treats the last line as unfinished until a newline', () => freshVault(async () => {
+  const line = 'token: see the docs for the details here';
+  assert.equal(detections(line).filter(({ kind }) => kind === 'op-output').length, 1);
+  assert.equal(detections(`${line}\n`).filter(({ kind }) => kind === 'op-output').length, 0);
+  const streamed = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${line}\n` }, { kind: 'stop' }]);
+  assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join(''), `${line}\n`);
+}));
 process.exit(failures ? 1 : 0);
