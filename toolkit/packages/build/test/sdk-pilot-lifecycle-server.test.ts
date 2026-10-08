@@ -18,7 +18,7 @@ import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { classifyLane, inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { loadRules } from '../../../../plugin/bin/lib/rules-manifest.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -73,7 +73,39 @@ function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, sig
   try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
 }
 
+// Reads this host's processes for a lifecycle that classifies lanes as another platform would.
+function emulatedLaneProcessReader() {
+  return {
+    inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
+    processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+    // inspectProcess answers null for a zombie; the platforms it emulates (ps on darwin) report it as Z.
+    processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? linuxProcState(pid),
+  }
+}
+
+function linuxProcState(pid: number) {
+  if (process.platform !== 'linux') return null
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] ?? null
+  } catch { return null }
+}
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const alive = inspectProcess(child.pid!)
+    const worker = inspectProcess(process.pid)
+    expect(alive).not.toBeNull()
+    // Block the event loop past the child's exit so it cannot be reaped: it stays a zombie.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
+    const verdict = classifyLane({ runId: 'zombie-1', state: 'running', workerPid: process.pid, workerArgv: worker!.argv, workerStartTime: worker!.startTime, childPid: child.pid, childArgv: alive!.argv, childStartTime: alive!.startTime }, { platform: 'darwin', ...emulatedLaneProcessReader() })
+    await exited
+    expect(verdict).toMatchObject({ worker: 'running', child: 'gone' })
+  })
+
   it('does not report a live native process absent when platform inspection is unavailable', () => {
     expect(nativeProcessExists(42, () => null, () => true)).not.toBe(false)
   })
@@ -1156,11 +1188,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), DESCENDANT_LANE_WAIT_MS, {
       git,
       lanePlatform: 'darwin',
-      laneProcessReader: {
-        inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
-        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
-        processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? null,
-      },
+      laneProcessReader: emulatedLaneProcessReader(),
       models: { lane: 'openai/gpt-5.6-luna', review: 'openai/gpt-5.6-luna' },
     })
     try {
