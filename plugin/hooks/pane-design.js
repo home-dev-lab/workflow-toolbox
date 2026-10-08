@@ -111,9 +111,11 @@ export function drawControl(ui, props, label, actions = {}) {
     button = element(ui.Box, { flexShrink: 0, width, backgroundColor: COLORS.action },
       element(ui.Button, { ...props, hover: { color: COLORS.buttonText, backgroundColor: COLORS.buttonSurface, bold: true } }, shown.label));
   }
-  // The light rim remains visible when the pressed surface turns dark.
+  // The client button keeps a light rim that stays visible when its pressed surface turns dark.
+  // A native button has no rim: its padding cells show whatever lies behind the control.
+  const rim = useClient ? { backgroundColor: COLORS.buttonSurface } : {};
   return element(ui.Box, { key: `control:${props.key}`, flexShrink: 0, width: width + 2,
-    height, paddingLeft: 1, paddingRight: 1, backgroundColor: COLORS.buttonSurface }, button);
+    height, paddingLeft: 1, paddingRight: 1, ...rim }, button);
 }
 
 export function snapshotClock(timestamp) {

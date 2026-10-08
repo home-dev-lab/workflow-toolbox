@@ -46,6 +46,11 @@ function label(tree) {
   if (tree.name === 'Link') return tree.props.label;
   return [tree.props?.children ?? []].flat().filter((child) => typeof child === 'string').join('');
 }
+// Every frame painted around a native Button, from the pane root down: a light one shows as bright cells beside the label.
+function lightFramesAroundButtons(tree, frames = []) {
+  if (tree?.name === 'Button') return frames.filter((frame) => frame.props?.backgroundColor && luminance(frame.props.backgroundColor) > 0.5);
+  return children(tree).flatMap((child) => lightFramesAroundButtons(child, [...frames, tree]));
+}
 function text(tree) { return descendants(tree).map(label).filter(Boolean).join(' '); }
 function luminance(hex) {
   assert.match(hex, /^#[\da-f]{6}$/i, `Explicit hex colour required: ${hex}`);
@@ -61,7 +66,13 @@ function contrastTree(tree, fg = '#d7d7d7', bg = '#1e1e1e') {
   const props = tree.props || {};
   const foreground = props.color || fg;
   const background = props.backgroundColor || bg;
-  if (background !== bg) assert.ok(contrast(background, bg) >= 3, `Neighbouring surface contrast below 3:1: ${background} / ${bg}`);
+  // The host renders native Button text light and fixed, so a native button's surface must stay dark and cannot
+  // also differ from the dark pane by 3:1; its bracketed label is the shape cue instead, and no light rim may flank it.
+  const nativeButton = tree.name === 'Box' && children(tree).find((child) => child.name === 'Button');
+  if (nativeButton) {
+    assert.ok(luminance(background) <= 0.1, `Native button surface must stay dark under light host text: ${background}`);
+    assert.match(label(nativeButton), /^\[.*\]$/, `Native button ${label(nativeButton)} must keep its bracket shape cue`);
+  } else if (background !== bg) assert.ok(contrast(background, bg) >= 3, `Neighbouring surface contrast below 3:1: ${background} / ${bg}`);
   if (['Text', 'Button'].includes(tree.name)) {
     assert.equal(Boolean(props.dimColor), false, `Unmeasured terminal dimming: ${label(tree)}`);
     assert.ok(contrast(foreground, background) >= 4.5, `${label(tree)} contrast below 4.5:1`);
@@ -441,13 +452,17 @@ export const locks = [
     register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : {}, hook: hook || matcher }), {});
     const call = (event, data) => hooks.find((entry) => entry.event === event && (!data.component || entry.matcher.component === data.component))?.hook($, data, async () => null);
     await call('session.start', { cwd: '/workspace/demo' });
-    const hint = descendants(await call('ui.render', { component: 'PromptHint' }));
+    const hintTree = await call('ui.render', { component: 'PromptHint' });
+    assert.deepEqual(lightFramesAroundButtons(hintTree).map((frame) => frame.props.key), [], 'No light cell may flank the native opener Button');
+    const hint = descendants(hintTree);
     assert.equal(hint.filter((item) => item.name === 'Client').length, 0, 'PromptHint must not render a Client');
     const opener = hint.find((item) => item.name === 'Button');
     assert.ok(opener, 'PromptHint must render a native Button');
     await opener.props.onPress();
     assert.equal(opens, 1, 'The native opener Button opens the pane');
-    const pane = descendants(await call('ui.render', { component: 'Pane', requestId: 'wt-what-is-running', props: { bodyColumns: 66 } }));
+    const paneTree = await call('ui.render', { component: 'Pane', requestId: 'wt-what-is-running', props: { bodyColumns: 66 } });
+    assert.deepEqual(lightFramesAroundButtons(paneTree).map((frame) => frame.props.key), [], 'No light cell may flank a native pane Button');
+    const pane = descendants(paneTree);
     assert.equal(pane.filter((item) => item.name === 'Client').length, 0, 'The pane must not render a Client');
     const buttons = pane.filter((item) => item.name === 'Button');
     assert.ok(buttons.length > 1, 'The pane must render native Buttons');
