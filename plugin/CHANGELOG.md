@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Lifecycle receipt waits now allow a bounded settling window for a matching live pilot worker after its child exits, including the brief moment when the exiting child's identity cannot be read, so genuine completion receipts are not mistaken for inconsistent-record or unreadable-identity timeouts.
+
 ## [0.191.0] - 2026-10-08
 
 ### Changed

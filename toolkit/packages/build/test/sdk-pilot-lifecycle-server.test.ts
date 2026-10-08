@@ -18,7 +18,7 @@ import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { classifyLane, inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { loadRules } from '../../../../plugin/bin/lib/rules-manifest.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -73,7 +73,44 @@ function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, sig
   try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
 }
 
+// Reads this host's processes for a lifecycle that classifies lanes as another platform would.
+function emulatedLaneProcessReader() {
+  return {
+    inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
+    processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+    // inspectProcess answers null for a zombie; the platforms it emulates (ps on darwin) report it as Z.
+    processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? linuxProcState(pid),
+  }
+}
+
+const ZOMBIE_POLL_MS = 10
+
+function linuxProcState(pid: number) {
+  if (process.platform !== 'linux') return null
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] ?? null
+  } catch { return null }
+}
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+    await new Promise((resolve) => child.once('spawn', resolve))
+    const alive = inspectProcess(child.pid!)
+    const worker = inspectProcess(process.pid)
+    expect(alive).not.toBeNull()
+    // Hold the event loop until the kernel reports the child as a zombie: unreaped, because this
+    // loop cannot run its exit handler. The held loop IS the subject; the deadline is a hang guard.
+    const zombieDeadline = Date.now() + 10_000
+    while (linuxProcState(child.pid!) !== 'Z' && Date.now() < zombieDeadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ZOMBIE_POLL_MS)
+    expect(linuxProcState(child.pid!)).toBe('Z')
+    const verdict = classifyLane({ runId: 'zombie-1', state: 'running', workerPid: process.pid, workerArgv: worker!.argv, workerStartTime: worker!.startTime, childPid: child.pid, childArgv: alive!.argv, childStartTime: alive!.startTime }, { platform: 'darwin', ...emulatedLaneProcessReader() })
+    await exited
+    expect(verdict).toMatchObject({ worker: 'running', child: 'gone' })
+  })
+
   it('does not report a live native process absent when platform inspection is unavailable', () => {
     expect(nativeProcessExists(42, () => null, () => true)).not.toBe(false)
   })
@@ -444,6 +481,80 @@ printf 'report\n' > "$report"
     expect(() => process.kill(pid, 0)).not.toThrow()
     const record = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', '996-1.json'), 'utf8'))
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
+  })
+
+  it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
+    const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
+    for (const entry of ['running', 'finishing', 'exited-first', 'child-unreadable'] as const) {
+      const workerSource = `
+import { spawn } from 'node:child_process'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { classifyLane, inspectProcess } from ${JSON.stringify(supervisor)}
+const [root, log, brief] = process.argv.slice(1)
+const runId = '993-1', dir = process.env.WT_LANE_SUPERVISION_DIR
+mkdirSync(dir, { recursive: true })
+const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},300)'], { stdio: 'ignore' })
+const childExited = new Promise((resolve) => child.once('exit', resolve))
+await new Promise((resolve) => setTimeout(resolve, 100))
+const workerIdentity = inspectProcess(process.pid), childIdentity = inspectProcess(child.pid)
+const record = {
+  runId, worktree: root, owner: 'pilot', state: 'running',
+  workerPid: process.pid, workerArgv: workerIdentity.argv, workerStartTime: workerIdentity.startTime,
+  childPid: child.pid, childArgv: childIdentity.argv, childStartTime: childIdentity.startTime,
+  decisionTransitionDueAt: new Date(Date.now() + 10_000).toISOString(),
+}
+writeFileSync(join(dir, runId + '.json'), JSON.stringify(record))
+writeFileSync(join(dir, 'current.json'), JSON.stringify({ runId }))
+const initial = classifyLane(record)
+if (initial.status !== 'running') throw new Error('fixture must start with matching live identities')
+writeFileSync(join(root, '.lane', 'initial-verdict.json'), JSON.stringify(initial))
+await childExited
+writeFileSync(join(root, '.lane', 'finishing-verdict.json'), JSON.stringify(classifyLane(record)))
+await new Promise((resolve) => setTimeout(resolve, ${entry === 'exited-first' ? 300 : 1_500}))
+${entry === 'exited-first'
+  // The shipped worker publishes state 'exited' before it appends EXIT= (wt-lane.mjs onChildClose).
+  ? "writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))\nawait new Promise((resolve) => setTimeout(resolve, 1_000))\n"
+  : ''}const report = /Write the report to \x60([^\x60]+)\x60/.exec(readFileSync(brief, 'utf8'))[1]
+writeFileSync(report, 'report\\n')
+appendFileSync(log, 'genuine\\nEXIT=0\\n')
+writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))
+`
+      const finishing = rawLauncher(`import { spawn } from 'node:child_process'; import { existsSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],log=args[args.indexOf('--log')+1],brief=args[args.indexOf('--brief')+1]; const worker=spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(workerSource)},root,log,brief],{detached:true,stdio:'ignore'}); worker.unref(); const ready=join(root,'.lane',${JSON.stringify(`${entry === 'running' ? 'initial' : 'finishing'}-verdict.json`)}),deadline=Date.now()+15_000; while(!existsSync(ready)&&Date.now()<deadline) await new Promise((resolve)=>setTimeout(resolve,10)); process.stdout.write('pid='+worker.pid+'\\nrun=993-1\\n')`)
+      // While a child exits, Linux /proc can serve its stat with an empty cmdline: identity reads unknown, not gone.
+      // The emulated window lasts until the worker records its exit, far longer than the real one.
+      let laneRoot = ''
+      const exitingChildReader = {
+        inspect: (pid: number) => {
+          const actual = inspectProcess(pid, { platform: process.platform })
+          if (actual || !laneRoot) return actual
+          const record = JSON.parse(readFileSync(join(laneRoot, '.lane', 'supervision', '993-1.json'), 'utf8'))
+          return pid === record.childPid && record.state === 'running' ? { pid, argv: [], startTime: record.childStartTime, cwd: null, groupId: null } : null
+        },
+        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+        processState: linuxProcState,
+      }
+      const lifecycle = testLifecycle('LITE', [], finishing, 30, entry === 'child-unreadable' ? { laneProcessReader: exitingChildReader } : {})
+      laneRoot = lifecycle.root
+      await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+      try {
+        const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
+        expect(result, entry).toBe('lane tdd EXIT=0')
+        expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'initial-verdict.json'), 'utf8'))).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
+        expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'finishing-verdict.json'), 'utf8'))).toMatchObject({ status: 'unknown', reason: 'inconsistent-record', worker: 'running', child: 'gone' })
+        expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'utf8')).toContain('genuine\nEXIT=0\n')
+      } finally {
+        const file = join(lifecycle.root, '.lane', 'supervision', '993-1.json')
+        if (existsSync(file)) {
+          const record = JSON.parse(readFileSync(file, 'utf8'))
+          for (const role of ['child', 'worker']) {
+            const expected = { pid: record[`${role}Pid`], argv: record[`${role}Argv`], startTime: record[`${role}StartTime`] }
+            // The worker exits on its own once it has written EXIT=; it may do so between this read and the kill.
+            if (sameIdentity(expected, inspectProcess(expected.pid))) try { process.kill(expected.pid, 'SIGKILL') } catch { /* already exited */ }
+          }
+        }
+      }
+    }
   })
 
   it.skipIf(process.platform !== 'linux')('returns TIMEOUT naming a surviving child when the worker is gone [fixture records Linux argv identity]', async () => {
@@ -1097,11 +1208,7 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), DESCENDANT_LANE_WAIT_MS, {
       git,
       lanePlatform: 'darwin',
-      laneProcessReader: {
-        inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
-        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
-        processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? null,
-      },
+      laneProcessReader: emulatedLaneProcessReader(),
       models: { lane: 'openai/gpt-5.6-luna', review: 'openai/gpt-5.6-luna' },
     })
     try {
