@@ -50,17 +50,18 @@ function inboundNotice(found) {
   return `[wt-secret-guard: A credential was detected in this message. Its value has been withheld from this session to stop us from spreading it. This cannot unsend anything; the only remedy is revocation.${provider}]`;
 }
 
-function noteLines(rewrites, entropy, tokenised) {
+// A high-entropy run that no detector holds is not reported: nothing was masked or held, so neither the model nor
+// the owner can act on it, and dot-free paths and long identifiers made it fire on almost every turn.
+function noteLines(rewrites, tokenised) {
   const notes = [];
   if (tokenised) notes.push(REDACTION_NOTE);
   if (rewrites) notes.push(`[wt-secret-guard: rewrote ${rewrites} secret reference${rewrites === 1 ? '' : 's'}]`);
-  if (entropy) notes.push(`[wt-secret-guard: ${entropy} candidate${entropy === 1 ? '' : 's'} not tokenised - entropy only]`);
   return notes;
 }
 
-function withNotes(result, rewrites, entropy, tokenised = false) {
-  if (!result || result.deny || (!rewrites && !entropy && !tokenised)) return result;
-  const notes = noteLines(rewrites, entropy, tokenised);
+function withNotes(result, rewrites, tokenised = false) {
+  if (!result || result.deny || (!rewrites && !tokenised)) return result;
+  const notes = noteLines(rewrites, tokenised);
   return { ...result, text: typeof result.text === 'string' ? `${result.text}\n${notes.join('\n')}` : notes.join('\n') };
 }
 
@@ -86,13 +87,13 @@ async function scrubInbound($, event, next) {
 // the assembled refusal is scrubbed once more: joining the context could rebuild a held value no single piece held.
 function erroredAnswer(original, cleaned, rewrites = 0) {
   const answer = cleaned.value;
-  const unchanged = () => withNotes(answer, rewrites, cleaned.entropy, cleaned.changed);
+  const unchanged = () => withNotes(answer, rewrites, cleaned.changed);
   if (!isErrorAnswer(answer)) return unchanged();
   if (JSON.stringify(answer.result ?? null) === JSON.stringify(original?.result ?? null)) return unchanged();
   const body = typeof answer.result === 'string' ? answer.result : JSON.stringify(answer.result ?? '');
   const context = Array.isArray(answer.context) ? answer.context.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))) : [];
   const assembled = scrubSettled([body, ...context].join('\n\n'), '');
-  return { deny: [assembled.value, ...noteLines(rewrites, assembled.entropy, true)].join('\n') };
+  return { deny: [assembled.value, ...noteLines(rewrites, true)].join('\n') };
 }
 
 function isErrorAnswer(answer) { return answer && answer.deny === undefined && answer.isError === true; }
@@ -178,7 +179,7 @@ async function submitScrubbedPrompt($, event, next) {
     : [];
   await publish(journalHost($));
   if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
-  const noted = withNotes(cleaned.value, 0, cleaned.entropy);
+  const noted = withNotes(cleaned.value, 0);
   const result = await next(cleaned.changed ? { ...noted, context: [...(noted.context ?? []), REDACTION_NOTE] } : noted);
   if (cleaned.changed && replacements.length && event.origin?.kind) {
     await scrubPromptStorage(storageHost($), replacements, next.signal);

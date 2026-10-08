@@ -10,6 +10,7 @@ import { acquireSuiteLock, hasSuiteLeaseAsync, releaseSuiteLock } from '../../..
 // @ts-expect-error runtime JavaScript under toolkit/scripts/
 import { runGate, certify } from '../../../scripts/release-certify.mjs'
 import { EventEmitter } from 'node:events'
+import { competitorArgs, competitorWaitEnv } from './helpers/suite-lock-platform.js'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
@@ -147,7 +148,7 @@ it('an old holder without a marker makes a nested client wait and name the holde
   const directory = root()
   const lease = await acquireSuiteLock({ root: directory, env: envFor(directory), argv: ['older holder'] })
   try {
-    const result = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.15', '--stale-s', '0.15', '--', process.execPath, '-e', ''], { env: envFor(directory), encoding: 'utf8', timeout: 3000 })
+    const result = spawnSync(process.execPath, [CLI, 'run', ...competitorArgs({ waitS: 0.15, staleS: 0.15 }), '--', process.execPath, '-e', ''], { env: envFor(directory), encoding: 'utf8', timeout: 3000 })
     expect(result.status, result.stderr).toBe(75)
     expect(result.stderr).toMatch(/older holder.*wt-suite-lock status/)
   } finally { releaseSuiteLock(lease) }
@@ -311,7 +312,7 @@ it('keeps the lease through the ordinary chain: a package manager waiting on a t
   const holderDone = new Promise<number | null>((resolve) => holder.once('exit', resolve))
   await withChainCleanup(release, holder, holderDone, async () => {
     await waitFor(() => existsSync(ready), 8000)
-    const blocked = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.8', '--stale-s', '0.8', '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 4000 })
+    const blocked = spawnSync(process.execPath, [CLI, 'run', ...competitorArgs({ waitS: 0.8, staleS: 0.8 }), '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 4000 })
     expect(blocked.status, 'a competitor was admitted while the worker of the covered chain still ran').toBe(75)
     expect(blocked.stdout).toBe('')
     writeFileSync(release, '1')
@@ -343,7 +344,7 @@ it.skipIf(!pnpmAvailable)('keeps the lease through a real `pnpm run` chain until
     // and stop at once, naming the holder's stderr, when the chain exited before its worker was ready.
     await waitFor(() => existsSync(ready) || hasExited(holder), 40_000)
     expect(existsSync(ready), `the chain exited before its worker was ready: ${stderr}`).toBe(true)
-    const blocked = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.8', '--stale-s', '0.8', '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 4000 })
+    const blocked = spawnSync(process.execPath, [CLI, 'run', ...competitorArgs({ waitS: 0.8, staleS: 0.8 }), '--', process.execPath, '-e', 'process.stdout.write("admitted")'], { env: envFor(directory), encoding: 'utf8', timeout: 4000 })
     expect(blocked.status, 'a competitor was admitted while the pnpm-run worker still ran').toBe(75)
     writeFileSync(release, '1')
     expect(await holderDone, stderr).toBe(0)
@@ -445,7 +446,7 @@ it('uses the environment wait override for ordinary top-level commands', async (
   const directory = root()
   const lease = await acquireSuiteLock({ root: directory, argv: ['certification'] })
   try {
-    const result = spawnSync(process.execPath, [CLI, 'run', '--stale-s', '0.1', '--', process.execPath, '-e', ''], { env: { ...envFor(directory), WT_SUITE_LOCK_WAIT_S: '0.1' }, encoding: 'utf8', timeout: 2000 })
+    const result = spawnSync(process.execPath, [CLI, 'run', ...competitorArgs({ staleS: 0.1 }), '--', process.execPath, '-e', ''], { env: { ...envFor(directory), ...competitorWaitEnv(0.1) }, encoding: 'utf8', timeout: 2000 })
     expect(result.status, result.stderr).toBe(75)
     expect(result.stderr).toMatch(/certification.*wt-suite-lock status/)
   } finally { releaseSuiteLock(lease) }
