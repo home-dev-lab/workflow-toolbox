@@ -83,6 +83,8 @@ function emulatedLaneProcessReader() {
   }
 }
 
+const ZOMBIE_POLL_MS = 10
+
 function linuxProcState(pid: number) {
   if (process.platform !== 'linux') return null
   try {
@@ -95,12 +97,15 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })
     const exited = new Promise((resolve) => child.once('exit', resolve))
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await new Promise((resolve) => child.once('spawn', resolve))
     const alive = inspectProcess(child.pid!)
     const worker = inspectProcess(process.pid)
     expect(alive).not.toBeNull()
-    // Block the event loop past the child's exit so it cannot be reaped: it stays a zombie.
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
+    // Hold the event loop until the kernel reports the child as a zombie: unreaped, because this
+    // loop cannot run its exit handler. The held loop IS the subject; the deadline is a hang guard.
+    const zombieDeadline = Date.now() + 10_000
+    while (linuxProcState(child.pid!) !== 'Z' && Date.now() < zombieDeadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ZOMBIE_POLL_MS)
+    expect(linuxProcState(child.pid!)).toBe('Z')
     const verdict = classifyLane({ runId: 'zombie-1', state: 'running', workerPid: process.pid, workerArgv: worker!.argv, workerStartTime: worker!.startTime, childPid: child.pid, childArgv: alive!.argv, childStartTime: alive!.startTime }, { platform: 'darwin', ...emulatedLaneProcessReader() })
     await exited
     expect(verdict).toMatchObject({ worker: 'running', child: 'gone' })
