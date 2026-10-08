@@ -446,6 +446,62 @@ printf 'report\n' > "$report"
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
+  it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
+    const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
+    for (const entry of ['running', 'finishing'] as const) {
+      const workerSource = `
+import { spawn } from 'node:child_process'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { classifyLane, inspectProcess } from ${JSON.stringify(supervisor)}
+const [root, log, brief] = process.argv.slice(1)
+const runId = '993-1', dir = process.env.WT_LANE_SUPERVISION_DIR
+mkdirSync(dir, { recursive: true })
+const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},300)'], { stdio: 'ignore' })
+const childExited = new Promise((resolve) => child.once('exit', resolve))
+await new Promise((resolve) => setTimeout(resolve, 100))
+const workerIdentity = inspectProcess(process.pid), childIdentity = inspectProcess(child.pid)
+const record = {
+  runId, worktree: root, owner: 'pilot', state: 'running',
+  workerPid: process.pid, workerArgv: workerIdentity.argv, workerStartTime: workerIdentity.startTime,
+  childPid: child.pid, childArgv: childIdentity.argv, childStartTime: childIdentity.startTime,
+  decisionTransitionDueAt: new Date(Date.now() + 10_000).toISOString(),
+}
+writeFileSync(join(dir, runId + '.json'), JSON.stringify(record))
+writeFileSync(join(dir, 'current.json'), JSON.stringify({ runId }))
+const initial = classifyLane(record)
+if (initial.status !== 'running') throw new Error('fixture must start with matching live identities')
+writeFileSync(join(root, '.lane', 'initial-verdict.json'), JSON.stringify(initial))
+await childExited
+writeFileSync(join(root, '.lane', 'finishing-verdict.json'), JSON.stringify(classifyLane(record)))
+await new Promise((resolve) => setTimeout(resolve, 1_500))
+const report = /Write the report to \x60([^\x60]+)\x60/.exec(readFileSync(brief, 'utf8'))[1]
+writeFileSync(report, 'report\\n')
+appendFileSync(log, 'genuine\\nEXIT=0\\n')
+writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))
+`
+      const finishing = rawLauncher(`import { spawn } from 'node:child_process'; import { existsSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],log=args[args.indexOf('--log')+1],brief=args[args.indexOf('--brief')+1]; const worker=spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(workerSource)},root,log,brief],{detached:true,stdio:'ignore'}); worker.unref(); const ready=join(root,'.lane',${JSON.stringify(`${entry === 'running' ? 'initial' : 'finishing'}-verdict.json`)}),deadline=Date.now()+15_000; while(!existsSync(ready)&&Date.now()<deadline) await new Promise((resolve)=>setTimeout(resolve,10)); process.stdout.write('pid='+worker.pid+'\\nrun=993-1\\n')`)
+      const lifecycle = testLifecycle('LITE', [], finishing, 30)
+      await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+      try {
+        const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
+        expect(result).toBe('lane tdd EXIT=0')
+        expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'initial-verdict.json'), 'utf8'))).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
+        expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'finishing-verdict.json'), 'utf8'))).toMatchObject({ status: 'unknown', reason: 'inconsistent-record', worker: 'running', child: 'gone' })
+        expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'utf8')).toContain('genuine\nEXIT=0\n')
+      } finally {
+        const file = join(lifecycle.root, '.lane', 'supervision', '993-1.json')
+        if (existsSync(file)) {
+          const record = JSON.parse(readFileSync(file, 'utf8'))
+          for (const role of ['child', 'worker']) {
+            const expected = { pid: record[`${role}Pid`], argv: record[`${role}Argv`], startTime: record[`${role}StartTime`] }
+            if (sameIdentity(expected, inspectProcess(expected.pid))) killIdentity(expected, 'SIGKILL')
+          }
+        }
+      }
+    }
+  })
+
   it.skipIf(process.platform !== 'linux')('returns TIMEOUT naming a surviving child when the worker is gone [fixture records Linux argv identity]', async () => {
     const detached = launcher(`import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],runId='995-1',dir=join(root,'.lane','supervision'),source='setInterval(()=>{},1000)',child=spawn(process.execPath,['-e',source],{detached:true,stdio:'ignore'}); child.unref(); mkdirSync(dir,{recursive:true}); writeFileSync(join(root,'.lane','orphan-pid'),String(child.pid)); writeFileSync(join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv:process.argv,childPid:child.pid,childArgv:[process.execPath,'-e',source],worktree:root,owner:'pilot',ownerToken:args[args.indexOf('--owner-token')+1],timeoutAt:new Date().toISOString()})); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('run='+runId+'\\n')`)
     const lifecycle = testLifecycle('LITE', [], detached, 30)
