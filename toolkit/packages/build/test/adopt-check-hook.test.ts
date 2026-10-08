@@ -50,9 +50,9 @@ function mkRoot(tag: string): string {
 
 /** An isolated fixture: a `proj` dir (the hook's `cwd`) plus an isolated HOME/
  *  CLAUDE_CONFIG_DIR so the global-dir check never touches the real ~/.claude. */
-function fixture(tag: string) {
+function fixture(tag: string, projectDirName = 'proj') {
   const root = mkRoot(tag)
-  const proj = join(root, 'proj')
+  const proj = join(root, projectDirName)
   mkdirSync(proj, { recursive: true })
   const home = join(root, 'home')
   const cfg = join(root, 'cfg')
@@ -952,8 +952,8 @@ function runHookWithSource(cwd: string, env: NodeJS.ProcessEnv, source: string |
 const mdNames = (text: string) => [...new Set(text.match(/[A-Za-z0-9._-]+\.md\b/g) ?? [])].sort()
 
 /** Many edited files and one stale copy in the project dir, plus an unresolved trigger head. */
-function busyFixture(tag: string) {
-  const f = fixture(tag)
+function busyFixture(tag: string, projectDirName?: string) {
+  const f = fixture(tag, projectDirName)
   const dir = join(f.proj, '.claude', 'rules')
   installInto(dir)
   for (const file of readdirSync(dir).filter((name) => name.endsWith('.md') && name !== RULE)) {
@@ -1005,6 +1005,24 @@ describe('wt-adopt-check-hook — compact digest', () => {
     const evidence = `command: ${command}\nstderr: ${res.stderr}\nshell: ${shell.stdout}${shell.stderr}`
     expect(res.status, evidence).toBe(0)
     expect(res.stdout.trim(), `the re-run command printed nothing\n${evidence}`).not.toBe('')
+    expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toBe(startup)
+  })
+
+  // A Windows command line handed to Git Bash collapses every doubled backslash to one (measured on the Windows runner: a
+  // 130-byte payload arrived as 124 bytes). A JSON-escaped backslash is such a doubled pair, so the payload must carry none.
+  // Legal directory names with a backslash exist on POSIX only, which is where this case can run; the real `bash -c` test
+  // above is the Windows proof.
+  it.skipIf(process.platform === 'win32')('prints a re-run command whose payload survives the Windows command-line backslash collapse', () => {
+    const f = busyFixture('compact-rerun-backslash', 'back\\slash')
+    expect(f.proj.endsWith('back\\slash')).toBe(true)
+    const startup = runHookWithSource(f.proj, f.env, 'startup')
+    expect(startup).toContain('SESSION ACTION')
+    const command = /`(printf [^`]+)`/.exec(runHookWithSource(f.proj, f.env, 'compact'))?.[1] as string
+    expect(command).toBeTruthy()
+    const collapsed = command.replace(/\\\\/g, '\\')
+    const res = spawnSync('bash', ['-c', collapsed], { encoding: 'utf8', env: f.env })
+    const evidence = `command: ${command}\ncollapsed: ${collapsed}\nstderr: ${res.stderr}`
+    expect(res.stdout.trim(), `the collapsed re-run command printed nothing\n${evidence}`).not.toBe('')
     expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toBe(startup)
   })
 
