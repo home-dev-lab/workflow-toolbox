@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Mouse clicks in the Claude Code console land where you click again. In 0.191.0 the What is running buttons were drawn by a custom client module that listened to the pointer, and a pointer listener makes Claude Code ask the terminal for mouse positions in pixels. A multiplexer that only knows cells (herdr on WSL, for example) still sent cell positions, so every click in the console landed several lines away. The pane and the prompt hint now draw the host's native buttons again, and a test refuses any shipped plugin file that mentions `onPointer`. If clicks still misbehave after updating, restart the session.
+
 ## [0.191.0] - 2026-10-08
 
 ### Changed

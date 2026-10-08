@@ -1,1 +1,1 @@
-{ "modules": ["./entry.tsx"] }
+{ "modules": ["./hooks.js"] }
