@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { renderPane, registerWithLayout, WORKFLOW_TOOLBOX_LAYOUT } from '../../../../../../plugin/hooks/hooks.js';
+import { register, renderPane, registerWithLayout, WORKFLOW_TOOLBOX_LAYOUT } from '../../../../../../plugin/hooks/hooks.js';
 import { cellWidth } from '../../../../../../plugin/hooks/pane-design.js';
 
 const component = (name) => (props = {}) => ({ name, props });
@@ -427,12 +427,28 @@ export const locks = [
       assert.equal(new Set(phaseColumns.map((position) => position.column)).size, 1, `Stage duration columns differ at ${width}`);
     }
   }],
-  ['host entry declares the literal JSX module and the hook stays plain Node', () => {
+  ['shipped hooks load the plain module and draw native Buttons even where the host offers Client', async () => {
     const manifest = JSON.parse(readFileSync(new URL('../../../../../../plugin/hooks/hooks.json', import.meta.url), 'utf8'));
-    assert.deepEqual(manifest.modules, ['./entry.tsx']);
-    const entry = readFileSync(new URL('../../../../../../plugin/hooks/entry.tsx', import.meta.url), 'utf8');
-    assert.match(entry, /<Client\s[^>]*module="\.\/inverse-button\.ts"/);
-    assert.doesNotMatch(readFileSync(new URL('../../../../../../plugin/hooks/hooks.js', import.meta.url), 'utf8'), /import.*\.tsx/);
+    assert.deepEqual(manifest.modules, ['./hooks.js'], 'A Client button needs a pointer listener, which breaks clicks under cell-only multiplexers');
+    const hooks = [];
+    let opens = 0;
+    const $ = {
+      env: { get: async () => undefined }, process: { run: async () => ({ exitCode: 0, stdout: JSON.stringify(snapshot) }) },
+      command: { register: async () => {} }, clock: { every: () => ({ cancel() {} }) },
+      ui: { resolve: async () => ui, invalidate: () => {}, log: async () => {}, open: async () => { opens += 1 }, close: async () => {} },
+    };
+    register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : {}, hook: hook || matcher }), {});
+    const call = (event, data) => hooks.find((entry) => entry.event === event && (!data.component || entry.matcher.component === data.component))?.hook($, data, async () => null);
+    await call('session.start', { cwd: '/workspace/demo' });
+    const hint = descendants(await call('ui.render', { component: 'PromptHint' }));
+    assert.equal(hint.filter((item) => item.name === 'Client').length, 0, 'PromptHint must not render a Client');
+    const opener = hint.find((item) => item.name === 'Button');
+    assert.ok(opener, 'PromptHint must render a native Button');
+    await opener.props.onPress();
+    assert.equal(opens, 1, 'The native opener Button opens the pane');
+    const pane = descendants(await call('ui.render', { component: 'Pane', requestId: 'wt-what-is-running', props: { bodyColumns: 66 } }));
+    assert.equal(pane.filter((item) => item.name === 'Client').length, 0, 'The pane must not render a Client');
+    assert.ok(pane.filter((item) => item.name === 'Button').length > 0, 'The pane must render native Buttons');
   }],
 ];
 
