@@ -11,7 +11,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 //
 // The scan refuses the bare token in any shipped code file, so every spelling of the
 // call (optional chaining, bracket access, destructuring, aliasing) is caught. A Client
-// module must live inside the plugin, so it is one of the scanned files too.
+// module must live inside the plugin, so it is one of the scanned files too. The host's own
+// type stubs, which Claude Code writes (git-ignored) into .claude-plugin/types/ when it loads
+// the plugin from a checkout, declare onPointer and are not shipped code.
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const CODE_FILE = /\.(?:[cm]?[jt]sx?)$/
@@ -33,6 +35,7 @@ function codeFiles(dir: string, found: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === '.git') continue
     const path = join(dir, name)
+    if (path.endsWith(join('.claude-plugin', 'types'))) continue
     const stat = lstatSync(path)
     if (stat.isDirectory()) codeFiles(path, found)
     else if (stat.isFile() && CODE_FILE.test(name)) found.push(path)
@@ -79,6 +82,13 @@ describe('no shipped plugin registers a pointer listener', () => {
 
   it('accepts a clean tree whose identifiers merely contain the letters', () => {
     expect(pointerListenerViolations(fixtureRoot())).toEqual([])
+  })
+
+  it('skips the host type stubs Claude Code generates under .claude-plugin/types', () => {
+    const root = fixtureRoot()
+    mkdirSync(join(root, 'plugin/.claude-plugin/types/claude-code'), { recursive: true })
+    writeFileSync(join(root, 'plugin/.claude-plugin/types/claude-code/index.d.ts'), 'onPointer(listener: () => void): void\n')
+    expect(pointerListenerViolations(root)).toEqual([])
   })
 
   it.each(SPELLINGS)('refuses the %s spelling in plugin/', (_name, code) => {

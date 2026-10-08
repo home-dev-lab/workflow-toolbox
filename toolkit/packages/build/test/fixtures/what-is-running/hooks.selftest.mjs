@@ -2262,18 +2262,20 @@ await test('[regression] a session inside its project .claude tree resolves to t
   ]) assert.equal(hooksModule.projectRootOf(cwd), root, cwd);
 });
 
-await test('[regression] fallback buttons have light rims and dark interiors, and links retain light backgrounds', async () => {
+await test('[regression] native buttons have dark interiors and no light rim beside them, and links retain light backgrounds', async () => {
   const { tree } = await renderSnapshot({ discovery: 'available', rows: [], sessions: [],
     services: { count: 1, items: [{ id: 'service:1', label: 'Atrium broker', age: '1 min' }] }, helpers: { count: 0, oldest: 'none', items: [] }, collectedAt: paths.now });
   const boxes = descendants(tree, (item) => item.name === 'Box' && item.props.backgroundColor);
   assert(boxes.length > 0, 'coloured controls rendered');
   for (const box of boxes) {
     const direct = [box.props.children || []].flat();
-    if (String(box.props.key || '').startsWith('control:')) assert.equal(box.props.backgroundColor, '#e6e6e6');
     if (direct.some((child) => child?.name === 'Button')) assert.equal(box.props.backgroundColor, '#111111');
     if (direct.some((child) => child?.name === 'Link')) assert.equal(box.props.backgroundColor, '#e6e6e6');
   }
-  assert.equal(boxes.filter((box) => String(box.props.key || '').startsWith('control:')).length, descendants(tree, (item) => item.name === 'Button').length);
+  // A light frame around a native button shows as a bright cell at each edge of the label.
+  const frames = descendants(tree, (item) => item.name === 'Box' && String(item.props.key || '').startsWith('control:'));
+  assert.equal(frames.length, descendants(tree, (item) => item.name === 'Button').length);
+  for (const frame of frames) assert.equal(frame.props.backgroundColor, undefined, `light rim around ${frame.props.key}`);
 });
 
 await test('[Step 6 DoD 5] Services and Idle helpers have exact readable muted explanations, on the label row, name printed once', async () => {
