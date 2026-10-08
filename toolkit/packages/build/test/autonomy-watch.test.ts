@@ -42,15 +42,45 @@ function touch(filePath: string, mtimeMs: number, contents = '{}\n'): void {
   utimesSync(filePath, t, t)
 }
 
-function launchLane(args0: string, cwd: string): number {
-  const child = spawn('bash', ['-lc', `exec -a ${JSON.stringify(args0)} sleep 30`], {
+async function waitForLane(child: ChildProcess, args0: string): Promise<void> {
+  const deadline = Date.now() + 15_000
+  let observed = ''
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`lane ${child.pid} exited before becoming observable as ${args0}`)
+    }
+    try {
+      observed = readFileSync(`/proc/${child.pid}/cmdline`, 'utf8').split('\0')[0] ?? ''
+      if (observed === args0) return
+    } catch {
+      // /proc may not be readable yet; only the observed argv permits progress.
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`lane ${child.pid} was not observable as ${args0} before the deadline (last argv0: ${observed})`)
+}
+
+async function launchLane(args0: string, cwd: string, holdStartup = false): Promise<number> {
+  // Keep the name out of bash's argv: pgrep -f must observe the actual lane,
+  // rather than matching the shell command that will eventually launch it.
+  const command = `${holdStartup ? 'read -r; ' : ''}exec -a "$WT_TEST_LANE_ARGV0" sleep 30`
+  const child = spawn('bash', ['-lc', command], {
     cwd,
     detached: true,
-    stdio: 'ignore',
+    stdio: [holdStartup ? 'pipe' : 'ignore', 'ignore', 'ignore'],
+    env: { ...process.env, HOME: cwd, WT_TEST_LANE_ARGV0: args0 },
   })
   child.unref()
   if (!child.pid) throw new Error('lane did not start')
   laneProcesses.push(child)
+  if (holdStartup) {
+    // An event-loop barrier, not a sleep: a premature synchronous runWatch
+    // prevents this release until after its /proc scan has finished.
+    setImmediate(() => {
+      if (!child.killed) child.stdin?.end('\n')
+    })
+  }
+  await waitForLane(child, args0)
   return child.pid
 }
 
@@ -361,13 +391,13 @@ describe('wt-autonomy-watch', () => {
     expect(existsSync(s.markerPath)).toBe(false)
   })
 
-  it.skipIf(process.platform !== 'linux')('stays silent while an external lane process is running [requires Linux /proc plus bash exec -a process evidence]', () => {
+  it.skipIf(process.platform !== 'linux')('stays silent while an external lane process is running [requires Linux /proc plus bash exec -a process evidence]', async () => {
     const s = scaffold('lane-active')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)
     writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
     writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-7 lane running' })
-    launchLane('opencode run', s.projectDir)
+    await launchLane('opencode run', s.projectDir)
 
     const result = runWatch(s.projectDir, {
       ...process.env,
@@ -376,6 +406,26 @@ describe('wt-autonomy-watch', () => {
       XDG_STATE_HOME: s.stateHome,
     })
 
+    expect(result.stdout).toBe('')
+    expect(existsSync(s.markerPath)).toBe(false)
+  })
+
+  it.skipIf(process.platform !== 'linux')('waits for an external lane whose exec is held behind an event-loop barrier', async () => {
+    const s = scaffold('lane-starting')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 2, next: 'lane starting' })
+    await launchLane('opencode run', s.projectDir, true)
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+    })
+
+    expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
     expect(existsSync(s.markerPath)).toBe(false)
   })

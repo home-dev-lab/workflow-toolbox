@@ -2,7 +2,9 @@
 import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
 import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
-import { acquireSuiteLock, formatSuiteLockHolder, readSuiteLock, releaseSuiteLock } from '../suite-lock.mjs'
+import { acquireSuiteLock, formatSuiteLockHolder, readSuiteLock, readSuiteLockStatus, releaseSuiteLock } from '../suite-lock.mjs'
+import { suiteLockPriority } from '../suite-lock-priority.mjs'
+import { suiteLockStatusJson } from '../suite-lock-status.mjs'
 
 const REQUEST_LIMIT = 4096
 const REQUEST_TIMEOUT_MS = 5000
@@ -61,9 +63,31 @@ export function laneSuiteLockMaxHoldSeconds(env = process.env) {
   return value
 }
 
-export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, stopGraceS = DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S } = {}) {
+function hostLockOptions(env, priority) {
+  const hostEnv = { ...env }
+  const declared = suiteLockPriority({ priority }, hostEnv)
+  if (declared === 'release') throw new Error('release priority is not available to a lane broker')
+  return { env: hostEnv, priority: declared }
+}
+
+function replyStatus(socket, options, finish) {
+  socket.end(`status ${JSON.stringify(suiteLockStatusJson(readSuiteLockStatus(options)))}\n`)
+  finish()
+}
+
+function brokerWaitCallbacks(socket) {
+  return {
+    onWait: (line) => { if (!socket.destroyed) socket.write(`wait ${line}\n`) },
+    onProgress: ({ ahead, aheadExcludingRelease, total }) => { if (!socket.destroyed) socket.write(`progress ${aheadExcludingRelease} ${total} ${ahead}\n`) },
+    onHandover: (holderId, priority) => { if (!socket.destroyed) socket.write(`handover ${holderId}${priority === 'release' ? ' release' : ''}\n`) },
+    onRenew: ({ ahead, aheadExcludingRelease, total }) => { if (!socket.destroyed) socket.write(`renew ${aheadExcludingRelease} ${total} ${ahead}\n`) },
+  }
+}
+
+export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, stopGraceS = DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S, env = process.env, priority } = {}) {
   if (!validMaxHold(maxHoldS)) throw new Error(`maxHoldS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(maxHoldS)})`)
   if (!validMaxHold(stopGraceS)) throw new Error(`stopGraceS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(stopGraceS)})`)
+  const lockOptions = hostLockOptions(env, priority)
   let active = 0
   const releases = new Set()
   const server = net.createServer((socket) => {
@@ -108,22 +132,21 @@ export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUIT
       try {
         request = requestFrom(buffer.subarray(0, newline).toString('utf8'))
         if (request.status) {
-          const lock = readSuiteLock()
-          socket.end(`status ${JSON.stringify({ held: lock.held, holder: lock.holder })}\n`)
-          finish()
+          replyStatus(socket, lockOptions, finish)
           return
         }
         if (active > MAX_CONNECTIONS) {
-          const holder = readSuiteLock().holder
+          const holder = readSuiteLock(lockOptions).holder
           error(`busy: ${formatSuiteLockHolder(holder)}; requested command ${JSON.stringify(request.argv)}; inspect with wt-suite-lock status`)
           return
         }
         const acquired = await acquireSuiteLock({
+          ...lockOptions,
           argv: ['wt-lane-sandbox', label, ...request.argv],
           waitS: request.waitS,
           ...(request.light ? { light: true } : {}),
           signal: controller.signal,
-          onWait: (line) => { if (!socket.destroyed) socket.write(`wait ${line}\n`) },
+          ...brokerWaitCallbacks(socket),
         })
         if (closed) { releaseSuiteLock(acquired); return }
         lease = acquired

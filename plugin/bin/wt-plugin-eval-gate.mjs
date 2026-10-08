@@ -6,6 +6,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { platform } from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { handleHelpFlag } from './lib/cli-help.mjs'
 import { spawnCommand } from './lib/opencode-skill-fence.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
@@ -72,10 +73,8 @@ function expectedFailures() {
 }
 
 function main() {
-  if (process.argv.includes('--help') || process.argv.includes('-h')) {
-    process.stdout.write('Usage: wt-plugin-eval-gate.mjs\nRuns the release-only plugin eval suite when early access is enabled, allowing declared expected failures.\n')
-    return 0
-  }
+  // The gate takes no arguments at all, so its grammar is empty: any option next to --help is refused.
+  handleHelpFlag(process.argv.slice(2), 'Usage: wt-plugin-eval-gate.mjs\nRuns the release-only plugin eval suite when early access is enabled, allowing declared expected failures.\n', { valueFlags: [], booleanFlags: [] })
   if (process.argv.length !== 2) {
     process.stderr.write('Usage: wt-plugin-eval-gate.mjs\n')
     return 2

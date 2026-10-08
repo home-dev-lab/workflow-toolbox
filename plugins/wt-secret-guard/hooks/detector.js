@@ -239,17 +239,3 @@ export function optionalDetections(text, options = {}) {
   return found;
 }
 
-export function entropyCandidates(text) {
-  if (typeof text !== 'string') return 0;
-  const candidates = text.match(/\b[A-Za-z0-9+/_-]{32,}\b/g) ?? [];
-  return candidates.filter((value) => entropy(value) >= 4.2).length;
-}
-
-function entropy(value) {
-  const counts = new Map();
-  for (const character of value) counts.set(character, (counts.get(character) ?? 0) + 1);
-  return [...counts.values()].reduce((sum, count) => {
-    const p = count / value.length;
-    return sum - p * Math.log2(p);
-  }, 0);
-}

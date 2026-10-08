@@ -10,6 +10,7 @@ import { Worker } from 'node:worker_threads';
 import { argumentEvidence, bounded } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { discoverFiles } from './discover-files.mjs';
+import { assertProfiles } from './profile-check.mjs';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 
 const [command, subject, ...remaining] = process.argv.slice(2);
@@ -28,13 +29,15 @@ const project = resolve(String(options.project || process.cwd()));
 const scope = options.user ? 'user' : 'project';
 const configDir = resolve(String(options['config-dir'] || configDirectory(process.env) || (() => { throw new Error('HOME or USERPROFILE required'); })()));
 const lifecycleRoot = scope === 'user' ? configDir : project;
-const mirrorDirs = (options['mirror-dir'] ?? []).flatMap((value) => String(value).split(',')).filter(Boolean).map((path) => resolve(path));
+const mirrorDirs = (options['mirror-dir'] ?? []).map((path) => resolve(String(path)));
+const assumedLoaded = (options['assume-loaded'] ?? []).map((path) => resolve(String(path)));
 
 function usage() {
   console.error('       rules.mjs check-rules --dir <rules-on-demand dir> [--dir <dir> ...] [--corpus <file> --time-bound-ms <n>] [--json]');
   console.error('usage: rules.mjs prove-triggers <rule.md> --transcripts <dir> --spec <file> [--project <dir> | --user [--config-dir <dir>]] [--output <file>]');
-  console.error('       rules.mjs migrate <rule.md | wt/rule.md> (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir>]) --spec <file> (--proof <file> | --no-proof <reason>)');
-  console.error('       rules.mjs revert (<rule.md> | --all) (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir>])');
+  console.error('       rules.mjs migrate <rule.md | wt/rule.md> (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir> ...] [--assume-loaded <dir> ...]) --spec <file> (--proof <file> | --no-proof <reason>)');
+  console.error('       rules.mjs revert (<rule.md> | --all) (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir> ...])');
+  console.error('       Repeat --mirror-dir and --assume-loaded for multiple profiles; commas are literal path characters.');
   console.error('       rules.mjs retire <rule.md | wt/rule.md> --reason "<text>" (--project <dir> | --user [--config-dir <dir>])');
   process.exit(2);
 }
@@ -171,7 +174,11 @@ async function migrate() {
   const spec = await readSpec(resolve(String(options.spec)));
   const hash = triggersHash(spec.triggers);
   const bodyHash = createHash('sha256').update(await readFile(resolve(lifecycleRoot, scope === 'user' ? 'rules' : join('.claude', 'rules'), subject))).digest('hex');
-  if (scope === 'user') await assertProfiles();
+  if (scope === 'user') {
+    await assertProfiles(configDir, mirrorDirs, assumedLoaded);
+    for (const dir of [configDir, ...mirrorDirs])
+      console.error(`rules: profile ${dir}: not refused by static checks; migration is provisional until the engine is observed serving the rule.`);
+  }
   let proof;
   if (options.proof) {
     proof = JSON.parse(await readFile(resolve(String(options.proof)), 'utf8'));
@@ -187,20 +194,8 @@ async function migrate() {
   } else {
     throw new Error('proof is required; pass --proof <report.json> or --no-proof "<reason>"');
   }
-  const result = await migrateRule(lifecycleRoot, subject, spec, { ...proof, assumedLoaded: (options['assume-loaded'] ?? []).map((dir) => resolve(String(dir))) }, { scope, mirrorDirs });
+  const result = await migrateRule(lifecycleRoot, subject, spec, { ...proof, assumedLoaded }, { scope, mirrorDirs, configDir });
   console.log(`migrated ${result.name} to ${result.destination}`);
-}
-
-async function assertProfiles() {
-  const assumed = (options['assume-loaded'] ?? []).flatMap((value) => String(value).split(',')).filter(Boolean).map((dir) => resolve(dir));
-  for (const dir of [configDir, ...mirrorDirs]) {
-    if (assumed.includes(dir)) continue;
-    let settings;
-    try { settings = JSON.parse(await readFile(join(dir, 'settings.json'), 'utf8')); }
-    catch { throw new Error(`profile ${dir}: settings.json missing or invalid; use --assume-loaded ${dir} only with explicit verification`); }
-    if (!Object.entries(settings.enabledPlugins ?? {}).some(([name, active]) => name.startsWith('wt-rules-on-demand@') && active === true)) throw new Error(`profile ${dir}: plugin not enabled`);
-    if (settings.env?.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS !== '1' && process.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS !== '1') throw new Error(`profile ${dir}: Function Hooks not enabled`);
-  }
 }
 
 async function revert() {

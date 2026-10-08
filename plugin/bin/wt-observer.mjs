@@ -59,7 +59,10 @@ function readNumber(value) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--project', '--index', '--poll'],
+    booleanFlags: ['--once'],
+  })
   let projectDir = process.cwd()
   let indexPath = null
   let pollSeconds = DEFAULT_POLL_SECONDS

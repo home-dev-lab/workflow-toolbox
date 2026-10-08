@@ -4,13 +4,15 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { resolveAgentTypeTools } from './lib/agent-type-tools.mjs'
 
+const REPORTING = /\b(report|reply|send|message me|when done)\b/i
+const MESSAGE_DELIVERY = /\b(?:via|using|use|through|with)\s+`?SendMessage\b|\(\s*`?SendMessage`?\s*\)|(?:^|[.:;!]\s+)`?SendMessage\b|\bSendMessage\s+[\w-]+(?:\s+(?:with|to|the|your)\b|(?=\s*(?:[.!?;]|$)))|\bSendMessage\s+(?:to|the|your)\b|\bsend\s+me\s+\S|\b(?:message|reply\s+to)\s+(?:me\b|(?:the\s+)?(?:caller|spawner|parent|pilot|orchestrator)\b|agent\b)|\bsend\s+(?:a\s+|your\s+|the\s+)?(?:message|report|findings|results|update)\s+to\s+(?:me\b|agent\b|(?:the\s+)?(?:caller|spawner|parent|pilot|orchestrator)\b)/i
 function textWithoutQuotes(text) { return text.replace(/```[\s\S]*?```|["'][^"'\n]*["']/g, ' ') }
 function main() {
   const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
   if (input.tool_name !== 'Agent') return
   const type = input.tool_input?.subagent_type?.trim()
   const prompt = typeof input.tool_input?.prompt === 'string' ? textWithoutQuotes(input.tool_input.prompt) : ''
-  if (!type || !/\b(report|reply|send|message me|when done)\b/i.test(prompt)) return
+  if (!type || !REPORTING.test(prompt) || !MESSAGE_DELIVERY.test(prompt)) return
   const resolved = resolveAgentTypeTools(type, input.cwd || '')
   if (resolved.unresolved) {
     recordGuardEvent({ guard: 'wt-spawn-channel-guard-hook.mjs', decision: 'warned', class: 'unresolved', reason: resolved.unresolved, session: input.session_id, agent: input.agent_id })

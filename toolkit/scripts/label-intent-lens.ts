@@ -7,7 +7,7 @@
 // labelled. The hole found on the live board was narrower: the author had
 // already written the trio in plain text, but the labels were never transcribed
 // mechanically into Planka. A lens is the right shape because it reads the
-// artifact actually reviewed by humans (`/what-next`'s board snapshot), compares
+// artifact actually reviewed by humans (a board snapshot), compares
 // the written intent against the applied state, and fails loudly by exit code.
 // Kept as a small standalone module (not a `.workflow.ts` composition) — this is
 // a synchronous, deterministic text check with no agent fan-out and no tracker

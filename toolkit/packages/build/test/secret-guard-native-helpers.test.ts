@@ -113,6 +113,20 @@ describe.skipIf(process.platform === 'win32')('POSIX native prompt-storage range
     expect(await readFile(path)).toEqual(before)
   })
 
+  it('refuses a supplied record range whose replacement would leave unparsable JSON, and accepts the bare byte contract', async () => {
+    const root = await fixture('record-json')
+    const path = join(root, 'prompt.jsonl')
+    const raw = 'secretvalue'
+    const before = Buffer.from(`${JSON.stringify({ type: 'user', message: { content: raw } })}\n`)
+    await writeFile(path, before)
+    const offset = before.indexOf(raw)
+
+    const result = await posixWrite(path, offset, Buffer.from(raw), Buffer.from('bad"quote\\x'), undefined, { length: before.length - 1, toolUseId: '' })
+
+    expect(result.status).toBe(3)
+    expect(await readFile(path)).toEqual(before)
+  })
+
   it('refuses a same-size same-prefix JSONL record carrying a different tool_use id', async () => {
     const root = await fixture('record-identity')
     const path = join(root, 'prompt.jsonl')
@@ -202,6 +216,49 @@ describe.skipIf(process.platform !== 'win32')('Windows native prompt-storage ran
 
     expect(result.status).not.toBe(0)
     expect(await readFile(path)).toEqual(changed)
+  })
+
+  it('writes a record carrying the matching tool_use id', async () => {
+    const config = await fixture('windows-record-write')
+    const path = join(config, 'history.jsonl')
+    const raw = `ghp_${'n'.repeat(36)}`
+    const targetId = 'tool-native-matching'
+    const before = Buffer.from(`${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: targetId, input: { command: raw } }] } })}\n`)
+    const replacement = Buffer.alloc(Buffer.byteLength(raw), 42)
+    const offset = before.indexOf(raw)
+    await writeFile(path, before)
+    const result = await run([
+      'powershell.exe', '-NoProfile', '-NonInteractive', '-File', join(PLUGIN_ROOT, 'hooks', 'prompt-storage-range.ps1'),
+      path, String(offset), String(Buffer.byteLength(raw)), 'write', replacement.toString('base64'),
+      Buffer.from(raw).toString('base64'), String(before.length), before.subarray(0, 64).toString('base64'), '0', String(before.length - 1), targetId,
+    ])
+
+    expect(result.status, result.stderr).toBe(0)
+    const after = await readFile(path)
+    expect(after.subarray(offset, offset + replacement.length)).toEqual(replacement)
+    expect(after.subarray(0, offset)).toEqual(before.subarray(0, offset))
+    expect(after.subarray(offset + Buffer.byteLength(raw))).toEqual(before.subarray(offset + Buffer.byteLength(raw)))
+  })
+
+  it('writes a bare range with empty record arguments through the host argv shape', async () => {
+    const config = await fixture('windows-bare-write')
+    const path = join(config, 'history.jsonl')
+    const before = Buffer.from('prefix-\u20ac-raw-secret-suffix\n')
+    const expected = Buffer.from('raw-secret')
+    const replacement = Buffer.from('safe-token')
+    const offset = before.indexOf(expected)
+    await writeFile(path, before)
+    const result = await run([
+      'powershell.exe', '-NoProfile', '-NonInteractive', '-File', join(PLUGIN_ROOT, 'hooks', 'prompt-storage-range.ps1'),
+      path, String(offset), String(expected.length), 'write', replacement.toString('base64'),
+      expected.toString('base64'), String(before.length), before.subarray(0, 64).toString('base64'), '', '', '',
+    ])
+
+    expect(result.status, result.stderr).toBe(0)
+    const after = await readFile(path)
+    expect(after.subarray(offset, offset + replacement.length)).toEqual(replacement)
+    expect(after.subarray(0, offset)).toEqual(before.subarray(0, offset))
+    expect(after.subarray(offset + expected.length)).toEqual(before.subarray(offset + expected.length))
   })
 
   it('uses the host argv builder for an exact in-place write on a large UTF-8 file and treats punctuation as data', async () => {

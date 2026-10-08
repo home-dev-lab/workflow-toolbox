@@ -53,14 +53,17 @@
 //     every one of those; runFailOpenHook() below is the last-resort backstop for anything this
 //     file itself might still throw (e.g. a future edit to buildMessage()).
 //
-// This hook does not read the SessionStart payload at all — the journal's location does not
-// depend on the project (it is a single machine-wide directory), so there is nothing on stdin
-// this hook needs. It still runs under runFailOpenHook so a broken entry path leaves a trace
+// This hook reads the SessionStart payload only for `source` (compact -> short digest) and
+// agent_id (subagents stay silent) — the journal's location does not depend on the project (it
+// is a single machine-wide directory). It still runs under runFailOpenHook so a broken entry path leaves a trace
 // instead of looking healthy-quiet, matching every other hook in this plugin.
 
 import { readGuardJournal } from './lib/guard-journal-read.mjs'
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { quoteRemedyWord } from './lib/remedy-quote.mjs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 // "more than twice in one week" (wt-durable-fix-at-the-right-level.md) = 3 or more firings.
 const RECURRENCE_THRESHOLD = 3
@@ -88,14 +91,36 @@ function recurringGroups(result) {
   return groups.sort((a, b) => b.count - a.count)
 }
 
+// A compaction re-injects this hook's output into an already-long context, so on
+// SessionStart source=compact the list is cut to its top groups. The count stays total and the
+// full list is one command away (the "Full picture" line is kept).
+const COMPACT_GROUP_CAP = 3
+
+function buildCompactMessage(result, groups) {
+  const lines = [
+    `[wt] guard recurrence this week — ${RECURRENCE_THRESHOLD}+ real-origin firings is the mechanise/fix-` +
+      `the-guard trigger, not a reminder to reflect:`,
+  ]
+  for (const g of groups.slice(0, COMPACT_GROUP_CAP)) lines.push(groupLine(g))
+  if (groups.length > COMPACT_GROUP_CAP) lines.push(`+ ${groups.length - COMPACT_GROUP_CAP} more groups at or above the threshold`)
+  lines.push('⚠ Event count, not a confirmed-defect count; only guards wired to this journal appear.')
+  // An EXECUTABLE command (the compact digest is all a session sees): absolute scanner path, and the
+  // journal-dir variable the reader honours first (lib/guard-journal-read.mjs), pinned to the dir used here.
+  const scan = join(dirname(fileURLToPath(import.meta.url)), 'wt-guard-journal-scan.mjs')
+  lines.push(`Full picture: WT_GUARD_JOURNAL_DIR=${quoteRemedyWord(result.baseDir, true)} node ${quoteRemedyWord(scan, true)} --weeks 1`)
+  return lines.join('\n')
+}
+
+function groupLine(g) {
+  return `  ${g.guard} [${g.label}] — ${g.count} firings this week (${g.testCount} from test runs, excluded); ${g.unknownCount} origin unknown · ${g.sessions} sessions across all origins (+${g.unknownSessionEvents} unattributed)`
+}
+
 function buildMessage(result, groups) {
   const lines = [
     `[wt] guard recurrence this week — ${RECURRENCE_THRESHOLD}+ real-origin firings is the mechanise/fix-` +
       `the-guard trigger, not a reminder to reflect:`,
   ]
-  for (const g of groups) {
-    lines.push(`  ${g.guard} [${g.label}] — ${g.count} firings this week (${g.testCount} from test runs, excluded); ${g.unknownCount} origin unknown · ${g.sessions} sessions across all origins (+${g.unknownSessionEvents} unattributed)`)
-  }
+  for (const g of groups) lines.push(groupLine(g))
   lines.push(
     '⚠ Event count, not a confirmed-defect count: some guards include bounded evidence that ' +
       'lets a reader classify a firing, but this summary does not — read the records before acting. ' +
@@ -107,13 +132,25 @@ function buildMessage(result, groups) {
   return lines.join('\n')
 }
 
-function main() {
-  let input = {}
+/** The SessionStart payload, or undefined when stdin is not JSON (the hook then stays silent).
+ *  A JSON value of null/false/0 is a parsed payload, handled as before (full list). */
+function readInput() {
   try {
-    input = JSON.parse(readFileSync(0, 'utf8') || '{}')
+    return JSON.parse(readFileSync(0, 'utf8') || '{}')
   } catch {
-    return
+    return undefined
   }
+}
+
+/** SessionStart after a compaction; an absent event name counts as SessionStart (as wt-adopt-check-hook). */
+function isCompactStart(input) {
+  const event = typeof input?.hook_event_name === 'string' ? input.hook_event_name : 'SessionStart'
+  return event === 'SessionStart' && input?.source === 'compact'
+}
+
+function main() {
+  const input = readInput()
+  if (input === undefined) return
   if (typeof input?.agent_id === 'string' && input.agent_id) return
   const result = readGuardJournal({ weeks: 1 })
   if (!result.ok) return // missing/unreadable journal degrades to silence — never an error
@@ -124,7 +161,7 @@ function main() {
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
-        additionalContext: buildMessage(result, groups),
+        additionalContext: isCompactStart(input) ? buildCompactMessage(result, groups) : buildMessage(result, groups),
       },
     }),
   )

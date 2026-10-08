@@ -6,10 +6,13 @@ import { ruleDirectories, configDirectory, agentLoop, projectRuleRoots, sameDire
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-match.js';
 import { regexCallBudget } from './linear-regex.js';
+import { refusedAfterRun } from './guard-refusal.js';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
 import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archiveTexts, familyOf, archiveName, retentionVictims,
   unsafeQualityPath, isSizeRefusal, jsonLength, property, sequenceNumber, OWNER_BITS } from './store-budget.js';
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
+import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
+import { ownerNumber } from './owner-number.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
 
@@ -25,14 +28,13 @@ let archiveSequence = 0;
 let storeSwept = false;
 // This module instance's owners, drawn once per load so two instances under one pid (a hot reload) differ as much as
 // two separate hosts do: OWNER_BITS random bits in archive names (the most that keep the name's number a safe integer), and
-// 52 in segment ids, which are strings.
-const owner = Math.floor(Math.random() * 2 ** OWNER_BITS);
-const segOwner = Math.floor(Math.random() * 2 ** 52).toString(36).padStart(11, '0');
+// 52 in segment ids, which are strings. Delivery/verdict tokens use the same generator, redrawn on registration.
+const owner = ownerNumber(OWNER_BITS, Math.random);
+const newToken = () => ownerNumber(52, Math.random).toString(36).padStart(11, '0');
+const segOwner = newToken();
 let segSequence = 0;
 const newSeg = () => `${segOwner}-${Date.now().toString(36)}-${(segSequence++).toString(36)}`;
 let sequence = 0;
-const processPrefix = () => (typeof process !== 'undefined' ? `${process.pid}-` : '');
-const newToken = () => processPrefix() + Date.now().toString(36);
 let token = newToken();
 const deliveryFields = ({ deliveryId, deliverySeq, servingSeq }) => ({ deliveryId, deliverySeq, servingSeq });
 const advancesClose = (previous, closeMark) => closeMark && !(previous?.token === token && previous.seq >= closeMark.seq);
@@ -40,6 +42,58 @@ const logged = new Set();
 const emptyHealth = () => ({ days: {}, lastErrors: [], calls: 0 });
 let pendingHealth = emptyHealth();
 let lastHealthFlush = Date.now();
+const activityWrites = new Map();
+const pendingActivity = new Map();
+let activityProfile = null;
+let activityRetryAt = 0;
+
+function noteIdentityActivity(rules, field, now = new Date().toISOString()) {
+  noteActivity(pendingActivity, activityWrites, rules, field, now);
+}
+
+function activityWriterProfile() {
+  if (!activityProfile) throw new Error('identity activity writer profile unknown');
+  return activityProfile;
+}
+
+async function recordHealthActivity($, batch, health) {
+  if (!activityProfile || Date.now() < activityRetryAt) return;
+  try {
+    const activity = healthActivity(await readKey($, 'identityActivity'), batch, health, activityWriterProfile(), token, new Date().toISOString());
+    await setWithin($, 'identityActivity', activity);
+  } catch (error) {
+    activityRetryAt = Date.now() + 600_000;
+    try { await $.ui.log(`wt-rules-on-demand: health writer activity unavailable: ${error.message}`); } catch { /* Keep the health report. */ }
+  }
+}
+
+async function flushIdentityActivity($) {
+  if (!pendingActivity.size || !activityProfile || Date.now() < activityRetryAt) return;
+  const turn = writeTurn();
+  await turn.previous.catch(() => {});
+  if (Date.now() < activityRetryAt) { turn.release(); return; }
+  const batch = new Map(pendingActivity);
+  pendingActivity.clear();
+  try {
+    if (!batch.size) return;
+    const facts = stampActivity(Object.fromEntries(batch), activityWriterProfile(), token);
+    const activity = joinIdentityActivity(await readKey($, 'identityActivity'), facts);
+    await setWithin($, 'identityActivity', activity);
+  } catch (error) {
+    for (const [identity, fields] of batch) {
+      const pending = pendingActivity.get(identity) ?? {};
+      pendingActivity.set(identity, joinIdentityActivity({ id: fields }, { id: pending }).id);
+    }
+    activityRetryAt = Date.now() + 600_000;
+    // Activity is one write per hook. Do not turn a failed activity write into an immediate health flush and retry storm.
+    try { await $.ui.log(`wt-rules-on-demand: identity activity write failed: ${error.message}`); } catch { /* Reporting cannot abort the hook. */ }
+  } finally { turn.release(); }
+}
+
+async function loadedRules($, rules) {
+  noteIdentityActivity(rules, 'loadedAt');
+  return rules;
+}
 
 // The host lists every variable a module reads, so each environment read names its variable literally.
 async function detectorEnv($, name) {
@@ -150,16 +204,16 @@ async function rulesFor($, ctx, cwd) {
   if (ctx.rules && ctx.rulesRoot === root) {
     // The published root is current again: a load still in flight for another root is retired, never published.
     if (ctx.loading && ctx.loading.root !== root) ctx.loading = null;
-    return ctx.rules;
+    return loadedRules($, ctx.rules);
   }
   if (ctx.loading?.root !== root) ctx.loading = { root, promise: load($, root, found.fallback) };
   const pending = ctx.loading;
   let rules;
   try { rules = await pending.promise; }
-  catch (error) { if (ctx.loading === pending) ctx.loading = null; throw error; }
+  catch (error) { if (ctx.loading === pending) { ctx.loading = null; } throw error; }
   // Only the newest load publishes: one overtaken by a later root, or cleared by a compaction, keeps its result local.
   if (ctx.loading === pending) { ctx.loading = null; publish(ctx, root, rules); }
-  return rules;
+  return loadedRules($, rules);
 }
 async function notice($, message) {
   if (/failed|skipped|unavailable|dangling|cannot|exhausted/i.test(message)) void recordHealth($, null, message).catch(() => {});
@@ -191,7 +245,7 @@ async function removePartial($, path, error) {
   catch (removal) {
     let left = true;
     try { left = await $.fs.exists(path); } catch { /* Unknown: reported as left. */ }
-    if (left) throw new Error(`archive write failed (${error.message}) and its partial file ${path} could not be removed: ${removal.message}`);
+    if (left) throw new Error(`archive write failed (${error.message}) and its partial file ${path} could not be removed: ${removal.message}`, { cause: removal });
   }
   throw error;
 }
@@ -209,15 +263,17 @@ async function writeArchives($, name, evicted) {
   return { directory, written };
 }
 async function retainArchives($, directory, family) {
-  let entries = [];
+  let entries;
   try { entries = await $.fs.list(directory); } catch { return; }
   for (const name of retentionVictims(entries, family)) await $.fs.remove(`${directory}/${name}`);
 }
 // Archive what the budget pushes out, then write. A rejected write is returned with the value it tried, so a retry
 // starts from that value and never archives the same part twice.
 async function setBounded($, name, value, budget, keep) {
-  const { value: kept, evicted } = shrink(name, value, budget, keep);
+  const { value: planned, evicted } = shrink(name, value, budget, keep);
   const archive = evicted ? await writeArchives($, name, evicted) : null;
+  // The host get/set/keys API has no verified atomic merge. Refresh after any intervening sweep/archive I/O.
+  const kept = name === 'identityActivity' ? await freshIdentityActivity($, planned, budget, keep) : planned;
   try { await $.store.set(name, kept); }
   catch (error) { return { kept, error }; }
   if (archive && Number.isFinite(familyOf(name).retained)) {
@@ -225,6 +281,20 @@ async function setBounded($, name, value, budget, keep) {
     catch (error) { await notice($, `archive retention failed: ${error.message}`); }
   }
   return { kept };
+}
+async function freshIdentityActivity($, value, budget, keep) {
+  let incoming = value;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const live = await $.store.get('identityActivity');
+    const merged = joinIdentityActivity(live, incoming);
+    const plan = shrink('identityActivity', merged, budget, keep);
+    if (!plan.evicted) return plan.value;
+    await writeArchives($, 'identityActivity', plan.evicted);
+    const latest = await $.store.get('identityActivity');
+    if (JSON.stringify(latest) === JSON.stringify(live)) return plan.value;
+    incoming = joinIdentityActivity(merged, latest);
+  }
+  throw new Error('identity activity changed repeatedly while archiving; retry later');
 }
 // Bring every budgeted key under its budget: each write here shrinks the store, so it succeeds even on a store already
 // at the limit. Runs before the first write after the hook loads, and again after the host refuses a write for size.
@@ -297,7 +367,7 @@ function mergeHealth(target, batch) {
     entry.maxMs = Math.max(entry.maxMs, counts.maxMs);
     target.days[day] = entry;
   }
-  target.lastErrors.push(...batch.lastErrors);
+  appendValues(target.lastErrors, batch.lastErrors);
   target.lastErrors = target.lastErrors.sort((a, b) => a.at.localeCompare(b.at)).slice(-20);
   if (Object.hasOwn(target, 'calls')) target.calls += batch.calls;
 }
@@ -320,6 +390,7 @@ async function flushHealth($) {
       health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
       health.lastErrors = health.lastErrors.slice(-20);
       await setWithin($, 'health', health);
+      await recordHealthActivity($, batch, health);
       lastHealthFlush = Date.now();
     } catch (error) {
       mergeHealth(pendingHealth, batch);
@@ -352,6 +423,10 @@ async function entryKind($, path, entry) {
     return (await $.fs.stat(path)).kind;
   } catch { await notice($, `dangling symlink ${path}`); return null; }
 }
+// Iteration keeps input-sized arrays out of a function's argument list.
+function appendValues(target, values) {
+  for (const value of values) target.push(value);
+}
 async function staticRules($, root, depth = 0, visited = new Set()) {
   if (depth > 32) return [];
   const entries = await list($, root);
@@ -364,7 +439,7 @@ async function staticRules($, root, depth = 0, visited = new Set()) {
     const path = `${root}/${entry.name}`;
     const kind = await entryKind($, path, entry);
     if (kind === 'file' && entry.name.endsWith('.md')) files.push({ name: entry.name, path });
-    else if (kind === 'dir') files.push(...await staticRules($, path, depth + 1, visited));
+    else if (kind === 'dir') appendValues(files, await staticRules($, path, depth + 1, visited));
   }
   return files;
 }
@@ -395,6 +470,7 @@ async function load($, root, fallback = false) {
   let candidates = projectRuleRoots(root, { configDir: config, mainRepoRoot, worktreeRoot });
   if (!candidates.length && fallback) candidates = [root];
   const configReal = await realPathOf($, config);
+  activityProfile = configReal;
   // One stat per ancestor: an absent `.claude` costs nothing more, and one that IS the config directory is user scope.
   const roots = [];
   for (const dir of candidates) {
@@ -405,7 +481,7 @@ async function load($, root, fallback = false) {
   const user = ruleDirectories(root, config);
   const staticDirs = [...roots.map((item) => ruleDirectories(item, config).projectStatic), user.userStatic];
   const staticFiles = [];
-  for (const dir of staticDirs) staticFiles.push(...await staticRules($, dir));
+  for (const dir of staticDirs) appendValues(staticFiles, await staticRules($, dir));
   // Every copy of a name, user first, then project directories root first: the last one is the nearest, and wins.
   const copies = new Map();
   const physicalDirs = new Map();
@@ -435,7 +511,7 @@ async function load($, root, fallback = false) {
       }
       if (suppressed) continue;
       if (!physicalDirs.has(winner.dir)) physicalDirs.set(winner.dir, await realPathOf($, winner.dir));
-      rules.push({ ...parseRuntimeRule(name, text), identity: `${winner.scope}:${physicalDirs.get(winner.dir)}:${name}` });
+      rules.push({ ...parseRuntimeRule(name, text), generation: migrationGeneration(text), identity: `${winner.scope}:${physicalDirs.get(winner.dir)}:${name}` });
     } catch (error) { await notice($, `skipped ${winner.file}: ${error.message}`).catch(() => {}); }
   }
   return rules;
@@ -450,10 +526,23 @@ const triggerItem = (e, prompt) => prompt
   ? { channel: 'prompt', text: e.text } : { channel: 'tool', tool: e.tool, command: e.command, path: pathOf(e), input: textOf(e) };
 const exhaustionRefuses = (rule, item) => rule.triggers.some((trigger) => trigger.beforeFirstAct
   && (!trigger.detector || item.detected.get(trigger) === true));
-async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatched }) {
+// Synchronous matching never runs longer than this before handing control back to the shared hooks worker, which can only answer its host ping at an await.
+const SLICE_MS = 50;
+async function breathe($, slice, budget) {
+  if (Date.now() - slice.start < SLICE_MS) return;
+  // Only a synchronous throw means "this host has no clock"; a rejection (abort, reload) is the host speaking and propagates.
+  // Time spent yielding belongs to other agents' work, so it is not charged to this event's regex budget.
+  let pending;
+  try { pending = $.clock.sleep(0); } catch { return; }
+  const started = budget?.pause();
+  try { await pending; } finally { budget?.resume(started); }
+  slice.start = Date.now();
+}
+async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatched, slice }) {
   const item = { ...triggerItem(e, prompt), detected: new Map(), prechecked: new Map(), inputPrechecked: new Map() };
   const chosen = [];
   for (const rule of rules) {
+    await breathe($, slice, budget);
     let matched = false;
     for (const trigger of rule.triggers) {
       if (trigger.detector) {
@@ -511,6 +600,7 @@ const summary = (e) => e.tool === 'Bash' ? `Bash: ${bounded(e.command ?? '').tri
 async function journal($, names, loop, suppressed = [], acts = [], injected = [], options = {}) {
   const { channel = 'tool.call', triggerErrors = [], close: closeMark } = options;
   if (!names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length && !closeMark) return;
+  noteIdentityActivity(names, 'servedAt');
   const turn = writeTurn();
   await turn.previous.catch(() => {});
   try {
@@ -553,7 +643,7 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
          ctx.triggerErrors ??= [];
          // Each new row carries an event id from the unique-id generator (random owner, per-load counter), never from the
          // stored context: a refused write rolls the store back, and an id derived from it would be issued twice.
-         ctx.triggerErrors.push(...triggerErrors.map((error) => ({ ...error, at: now, channel, eid: newSeg() })));
+         appendValues(ctx.triggerErrors, triggerErrors.map((error) => ({ ...error, at: now, channel, eid: newSeg() })));
           // Retain every error from this call, even when a mass serve exceeds
           // the usual 100-row history cap; older rows yield first.
           ctx.triggerErrors = ctx.triggerErrors.slice(-Math.max(100, triggerErrors.length));
@@ -595,7 +685,7 @@ function decideEvaluate(ctx, e, measured) {
   for (let index = 0; index < windows.length; index++) {
     const pending = windows[index];
     try { decideWindow(pending, e, measured, actions, remaining); }
-    catch (failure) { error = failure; remaining.push(...windows.slice(index)); break; }
+    catch (failure) { error = failure; appendValues(remaining, windows.slice(index)); break; }
   }
   ctx.pending = remaining;
   return { actions, error };
@@ -714,7 +804,8 @@ function servedVerdict(c, e) {
 }
  async function closeCorrelation($, ctx, loop, actSeq) {
   const events = [...ctx.correlation, { kind: 'turn' }];
-    for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation' && servedAs(ctx, rule)) {
+  const slice = { start: Date.now() };
+    for (const rule of ctx.rules ?? []) if (await breathe($, slice), rule.compliance?.kind === 'turn-correlation' && servedAs(ctx, rule)) {
       try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail, { seq: actSeq }); }
      catch (error) { await notice($, `${rule.name}: correlation failed: ${error.message}`).catch(() => {}); }
    }
@@ -736,6 +827,10 @@ function claim(ctx, rules) {
 /** @type {import('claude-code').Register} */
 export const register = (on, options, clock = Date.now) => {
   token = newToken();
+  activityProfile = null;
+  activityWrites.clear();
+  pendingActivity.clear();
+  activityRetryAt = 0;
   triggerClock = clock;
   enabled = options?.enabled === true;
   reserve = options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
@@ -784,7 +879,11 @@ async function trackedEvent($, e, next, work) {
       finally { healthMs += Date.now() - began; }
     }
     throw error;
-  } finally { await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {}); }
+  } finally {
+    await loadedRules($, [...contexts.values()].flatMap((ctx) => ctx.rules ?? []));
+    await flushIdentityActivity($);
+    await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {});
+  }
 }
 async function promptContextEvent($, e, next) { return trackedEvent($, e, next, 'prompt.context'); }
 async function sessionCompactEvent($, e, next) { return trackedEvent($, e, next, 'session.compact'); }
@@ -824,7 +923,7 @@ async function sessionCompactWork($, e, next) {
      const rules = await rulesFor($, ctx, e.cwd ?? '.');
        const triggerErrors = [];
         const budget = regexCallBudget(triggerClock);
-          const candidates = await selected($, ctx, rules, e, true, { errors: triggerErrors, budget });
+          const candidates = await selected($, ctx, rules, e, true, { errors: triggerErrors, budget, slice: { start: Date.now() } });
         await journal($, [], MAIN, [], [], [], { channel: 'prompt.submit', triggerErrors });
         if (budget.exhausted) await progress($, exhaustionNotice(budget));
       while (true) {
@@ -880,15 +979,17 @@ async function turnCompleteWork($, e, next) {
       await evaluate($, ctx, e, loop, measured, admission);
       const triggerErrors = [];
       const budget = regexCallBudget(triggerClock);
+      const slice = { start: Date.now() };
        if (textOf(e) === null) for (const rule of rules) {
         if (budget.exhausted) break;
+        await breathe($, slice, budget);
         let failed = false;
          if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.input && !trigger.detector && testTriggerRegex(trigger, trigger.tool, e.tool, (error) => {
           failed = true; triggerErrors.push({ rule: rule.name, ...error });
         }, budget)) && !failed) await notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
       }
       const beforeMatched = new Set();
-        const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched });
+        const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
       const before = chosen.filter((rule) => beforeMatched.has(rule.name) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !servedAs(ctx, rule)));
       await journal($, [], loop, [], [], [], { triggerErrors: [...new Map(triggerErrors.map((error) => [JSON.stringify(error), error])).values()] });
       if (budget.exhausted) await progress($, exhaustionNotice(budget));
@@ -907,11 +1008,12 @@ async function turnCompleteWork($, e, next) {
        } finally { for (const rule of before) { const count = ctx.refusing.get(rule.name) - 1; if (count) ctx.refusing.set(rule.name, count); else ctx.refusing.delete(rule.name); } }
     }
       const result = await next(e);
-       if (result && ('deny' in result || 'drop' in result)) return result;
+      const refused = Boolean(result && 'deny' in result);
+       if (result && ('drop' in result || refused && !refusedAfterRun(result.deny))) return result;
      if (rules.some((rule) => rule.compliance?.kind === 'turn-correlation')) {
       const id = String(e.tool_use_id ?? `${ctx.correlation.length}`);
       ctx.correlation.push({ kind: 'use', id, name: e.tool, input: e.input ?? e });
-      ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: result?.isError === true });
+      ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: refused || result?.isError === true });
     }
      const acts = rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
      const ride = chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
@@ -919,14 +1021,14 @@ async function turnCompleteWork($, e, next) {
       const injected = inject(ctx, ride, `tool.call:${e.tool}`, admission, e);
        await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
        const classified = classify(e.tool, e.input ?? e);
-        for (const rule of rules) if (rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
+        for (const rule of rules) if (await breathe($, slice, budget), rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
          for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
            await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
               item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e), undefined, { seq: admission });
        }
       for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
      // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
-      for (const rule of rules) if (servedAs(ctx, rule)) {
+      for (const rule of rules) if (await breathe($, slice, budget), servedAs(ctx, rule)) {
        const { verdict: value, matchError } = servedVerdict(rule.compliance, e);
        if (value === null) continue;
        const discharged = ctx.pending.filter((pending) => pending.rule === rule);
@@ -934,7 +1036,10 @@ async function turnCompleteWork($, e, next) {
        if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError, { seq: admission, discharged });
      }
      for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
-    return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
+    if (!ride.length) return result;
+    // A refusal carries only its text: what rides on it goes inside, after the guard's own words.
+    if (refused) return { deny: [result.deny, ...ride.map(block)].join('\n\n') };
+    return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
 }
 
-export function resetForSelftest() { unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest() { activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

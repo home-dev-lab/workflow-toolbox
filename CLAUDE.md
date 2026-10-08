@@ -11,8 +11,7 @@ This repo has two halves that stand alone but work together:
   `pilot-wave` (compose a delegated pilot/orchestrator wave over tracked cards), `artifact-server`
   (create clickable localhost links for local artifacts),
   `adopt` (install editable, versioned copies of the bundled rules),
-  `planka-tracking` (onboard a project onto a Planka kanban board), `what-next`
-  (propose the logical next step from that board), `stale-card-sweep` (does this diff
+  `planka-tracking` (onboard a project onto a Planka kanban board), `stale-card-sweep` (does this diff
   subsume another open card?), and `lesson-harvest` (extract a closing report's
   reusable lessons) — the
   **pilot agent suite** (`pilot`, `pilot-orchestrator`, `pilot-watchdog`) that skill drives,

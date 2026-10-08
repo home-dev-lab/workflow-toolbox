@@ -93,7 +93,8 @@ test('work count survives capture and iteration exhaustion and resets on the nex
 
 test('long literal-headed alternation on 16,384 shell units does not exhaust membership budget', async () => {
   const heads = Array.from({ length: 30 }, (_, i) => `\\bcommand${String(i).padStart(2, '0')}\\s+--option\\b[^\\n]*--since`);
-  const source = `(?:\\bgit\\s+log\\b[^\\n]*--since|PIPESTATUS|\\bgrep\\s+-[a-zA-Z]*c\\b|${heads.join('|')})`;
+  // One literal-free branch keeps the literal prefilter out, so the stress still reaches the VM.
+  const source = `(?:\\bgit\\s+log\\b[^\\n]*--since|PIPESTATUS|\\bgrep\\s+-[a-zA-Z]*c\\b|[Z]+\\d|${heads.join('|')})`;
   const subject = 'A=1 x; '.repeat(2341).slice(0, 16384);
   const result = await measured(source, '', subject, 'test');
   assert.equal(result.error, undefined, result.error);

@@ -7,22 +7,27 @@ import {
   DEFAULT_SUITE_LOCK_WAIT_S,
   acquireSuiteLock,
   hasSuiteLeaseAsync,
-  holderIsStale,
   formatSuiteLockHolder,
   operatorReleaseSuiteLock,
   readBrokerSuiteLock,
-  readSuiteLock,
+  readSuiteLockStatus,
   releaseSuiteLock,
   suiteLeaseMarker,
   suiteLockWaitSeconds,
   spawnNeedsShell,
   windowsShimArgumentRefusal,
 } from './lib/suite-lock.mjs'
+import { parseSuiteLockPriority } from './lib/suite-lock-priority.mjs'
+import { formatSuiteLockStatus, suiteLockStatusJson } from './lib/suite-lock-status.mjs'
 
 const USAGE = `Usage:
-  node wt-suite-lock.mjs run [--light] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  node wt-suite-lock.mjs run [--light] [--priority <release|P0|P1|P2>] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
   node wt-suite-lock.mjs status [--json]
-  node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]`
+  node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
+  --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
+  WT_SUITE_LOCK_PRIORITY declares P0, P1 (default), or P2; levels age one step per 30 minutes.
+  Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
+  Release priority is reserved for the main session's release and merge-train gates.`
 
 function parseSeconds(args, name, fallback) {
   const index = args.indexOf(name)
@@ -37,6 +42,23 @@ function printHelp() {
   process.stdout.write(`${USAGE}\n`)
 }
 
+function parseRunPriority(flags) {
+  const index = flags.indexOf('--priority')
+  if (index < 0) return undefined
+  const priority = parseSuiteLockPriority(flags[index + 1])
+  flags.splice(index, 2)
+  return priority
+}
+
+function applyRunPriority(priority) {
+  if (priority === undefined || priority === 'release') return
+  if (process.env.WT_SUITE_LOCK_BROKER?.trim()) {
+    process.stderr.write(`wt-suite-lock: the host sets a lane's priority; --priority ${priority} is ignored\n`)
+    return
+  }
+  process.env.WT_SUITE_LOCK_PRIORITY = priority
+}
+
 async function run(args) {
   const separator = args.indexOf('--')
   if (separator < 0 || separator === args.length - 1) throw new Error('run requires -- followed by a command')
@@ -47,7 +69,14 @@ async function run(args) {
   const lightIndex = flags.indexOf('--light')
   const light = lightIndex >= 0
   if (light) flags.splice(lightIndex, 1)
+  const priority = parseRunPriority(flags)
+  if (priority === 'release' && light) throw new Error('release priority cannot be combined with light')
   if (flags.length > 0) throw new Error(`unknown argument: ${flags[0]}`)
+  if (priority === 'release' && process.env.WT_SUITE_LOCK_BROKER?.trim()) {
+    process.stderr.write('wt-suite-lock: release priority is not available inside a lane sandbox\n')
+    return 2
+  }
+  applyRunPriority(priority)
   if (process.env.WT_SUITE_LOCK === '0') {
     process.stderr.write('wt-suite-lock: bypassed because WT_SUITE_LOCK=0\n')
     return spawnCommand(command)
@@ -60,8 +89,12 @@ async function run(args) {
   }
   let lease
   try {
-    lease = await acquireSuiteLock({ waitS, staleS, argv: command, light, onWait: (line) => process.stderr.write(`${line}\n`) })
+    lease = await acquireSuiteLock({ waitS, staleS, argv: command, light, priority, onWait: (line) => process.stderr.write(`${line}\n`) })
   } catch (error) {
+    if (error?.code === 'WT_SUITE_LOCK_PRIORITY_REFUSED') {
+      process.stderr.write(`wt-suite-lock: ${error.message}\n`)
+      return 2
+    }
     if (error?.code === 'WT_SUITE_LOCK_TIMEOUT' || error?.code === 'WT_SUITE_LOCK_UNAVAILABLE') {
       process.stderr.write(`wt-suite-lock: ${error.message}\n`)
       return 75
@@ -123,15 +156,9 @@ async function status(args) {
   const unknown = args.filter((arg) => arg !== '--json')
   if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`)
   const viaBroker = Boolean(process.env.WT_SUITE_LOCK_BROKER)
-  const current = viaBroker ? await readBrokerSuiteLock(process.env.WT_SUITE_LOCK_BROKER) : readSuiteLock()
-  // Judged by the rule `release` applies (holderIsStale); a broker's answer carries no age or namespace to judge by.
-  const stale = !viaBroker && current.held ? holderIsStale(current) : undefined
-  if (json) process.stdout.write(`${JSON.stringify({ held: current.held, holder: current.holder, ...(stale === undefined ? {} : { stale }), ...(current.legacyStatus ? { status: current.legacyStatus } : {}) })}\n`)
-  else {
-    const held = stale ? `suite lock held by a stale holder (gone or expired): ${formatSuiteLockHolder(current.holder)}; \`wt-suite-lock release\` clears it` : `suite lock held: ${formatSuiteLockHolder(current.holder)}`
-    const state = current.legacyStatus ?? (current.held ? held : 'suite lock free')
-    process.stdout.write(`${state}\n`)
-  }
+  const current = viaBroker ? await readBrokerSuiteLock(process.env.WT_SUITE_LOCK_BROKER) : readSuiteLockStatus()
+  if (json) process.stdout.write(`${JSON.stringify(suiteLockStatusJson(current))}\n`)
+  else process.stdout.write(formatSuiteLockStatus(current, formatSuiteLockHolder(current.holder)))
   return 0
 }
 

@@ -14,7 +14,10 @@ Usage:
 `
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--project'],
+    booleanFlags: [],
+  })
   let projectDir = process.cwd()
   for (let i = 0; i < argv.length; i += 1) {
     if (argv[i] === '--project' && typeof argv[i + 1] === 'string') {

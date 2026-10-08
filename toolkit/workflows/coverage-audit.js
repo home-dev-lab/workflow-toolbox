@@ -2194,7 +2194,8 @@ ${request.renderClaim(request.claim)}`;
       ],
       docs: [
         "plugin/skills/workflow-composer/references/model-and-agent-routing.md",
-        "plugin/skills/workflow-composer/SKILL.md"
+        "plugin/skills/workflow-composer/SKILL.md",
+        "plugin/skills/workflow-composer/references/raw-authoring-path.md"
       ]
     },
     {
@@ -2218,7 +2219,8 @@ ${request.renderClaim(request.claim)}`;
       ],
       docs: [
         "plugin/skills/workflow-composer/references/model-and-agent-routing.md",
-        "plugin/skills/workflow-debugger/SKILL.md"
+        "plugin/skills/workflow-debugger/SKILL.md",
+        "plugin/skills/workflow-debugger/references/thin-envelope-runs.md"
       ]
     },
     {
@@ -2306,13 +2308,25 @@ ${request.renderClaim(request.claim)}`;
         // oversight.
         "plugin/bin/wt-lane-consent.mjs"
       ],
-      docs: ["plugin/skills/pilot-wave/SKILL.md"]
+      docs: [
+        "plugin/skills/pilot-wave/SKILL.md",
+        "plugin/skills/pilot-wave/references/delegation-ladder.md",
+        "plugin/skills/pilot-wave/references/resolve-the-environment-brief.md",
+        "plugin/skills/pilot-wave/references/compose-the-spawn-prompt.md",
+        "plugin/skills/pilot-wave/references/environment-brief-contract.md"
+      ]
     },
     {
       // The adopt opt-in installer (writes editable, versioned rule copies of
       // the cross-cutting guardrails) is described by its own skill.
       sources: ["plugin/skills/adopt/scripts/"],
-      docs: ["plugin/skills/adopt/SKILL.md", "README.md"]
+      docs: [
+        "plugin/skills/adopt/SKILL.md",
+        "plugin/skills/adopt/references/how-to-run-it.md",
+        "plugin/skills/adopt/references/what-gets-installed.md",
+        "plugin/skills/adopt/references/detecting-and-refreshing-stale-copies.md",
+        "README.md"
+      ]
     },
     {
       // The bundled cross-cutting rule files (the delegation ladder + companions)
@@ -2390,7 +2404,8 @@ ${request.renderClaim(request.claim)}`;
       docs: [
         "plugin/skills/workflow-composer/SKILL.md",
         "toolkit/README.md",
-        "README.md"
+        "README.md",
+        "plugin/skills/workflow-composer/references/toolkit-path.md"
       ]
     },
     {
@@ -2409,7 +2424,8 @@ ${request.renderClaim(request.claim)}`;
       docs: [
         "plugin/skills/toolkit-scaffold/SKILL.md",
         "plugin/skills/workflow-composer/SKILL.md",
-        "plugin/skills/workflow-composer/references/capability-needs.md"
+        "plugin/skills/workflow-composer/references/capability-needs.md",
+        "plugin/skills/workflow-composer/references/toolkit-path.md"
       ]
     },
     {
@@ -2417,7 +2433,11 @@ ${request.renderClaim(request.claim)}`;
       sources: ["toolkit/packages/debugger/src/"],
       docs: [
         "plugin/skills/workflow-debugger/SKILL.md",
-        "docs/public/known-issues.md"
+        "docs/public/known-issues.md",
+        "plugin/skills/workflow-debugger/references/observed-vs-inferred.md",
+        "plugin/skills/workflow-debugger/references/thin-envelope-runs.md",
+        "plugin/skills/workflow-debugger/references/wt-observe-launcher-cli.md",
+        "plugin/skills/workflow-debugger/references/how-it-works.md"
       ]
     },
     {
@@ -2437,7 +2457,12 @@ ${request.renderClaim(request.claim)}`;
     {
       // Smoke / canaries (the upgrade re-verification story).
       sources: ["toolkit/packages/smoke/src/"],
-      docs: ["plugin/skills/upgrade-canary/SKILL.md"]
+      docs: [
+        "plugin/skills/upgrade-canary/SKILL.md",
+        "plugin/skills/upgrade-canary/references/full-canary-family.md",
+        "plugin/skills/upgrade-canary/references/observer-agent-pairing-probe.md",
+        "plugin/skills/upgrade-canary/references/how-it-works.md"
+      ]
     },
     {
       // The pr-review composition itself (its worked example + the shipped list).
@@ -2480,6 +2505,10 @@ ${request.renderClaim(request.claim)}`;
         "docs/public/architecture.md",
         "plugin/skills/workflow-debugger/SKILL.md",
         "plugin/skills/workflow-composer/references/observing-runs.md",
+        "plugin/skills/workflow-debugger/references/observed-vs-inferred.md",
+        "plugin/skills/workflow-debugger/references/thin-envelope-runs.md",
+        "plugin/skills/workflow-debugger/references/wt-observe-launcher-cli.md",
+        "plugin/skills/workflow-debugger/references/how-it-works.md",
         "PRIVACY.md",
         "SECURITY.md"
       ]
@@ -2544,7 +2573,7 @@ ${request.renderClaim(request.claim)}`;
     {
       // Shipped SessionStart delegation-ladder injection.
       sources: ["plugin/bin/wt-delegation-ladder-hook.mjs"],
-      docs: ["README.md", "plugin/skills/adopt/SKILL.md"]
+      docs: ["README.md", "plugin/skills/adopt/SKILL.md", "plugin/skills/adopt/references/how-to-run-it.md"]
     },
     {
       // Shipped Stop hooks whose operator-facing semantics are documented as known issues/contracts.
@@ -2595,6 +2624,7 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-model-fallback-check.mjs",
         "plugin/bin/wt-model-fallback-hook.mjs",
         "plugin/bin/wt-cancelled-call-relay-guard-hook.mjs",
+        "plugin/bin/wt-duplicate-pilot-guard-hook.mjs",
         "plugin/bin/wt-probe-claim-guard-hook.mjs",
         "plugin/bin/wt-queue-not-empty-gate-hook.mjs",
         "plugin/bin/wt-observer-pairing-guard-hook.mjs",

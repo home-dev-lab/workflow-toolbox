@@ -22,6 +22,12 @@ describe('lane skill allow-list', () => {
     expect(result.refusals.map((refusal: { name: string }) => refusal.name)).toEqual(['../bad', '/bad', ...REFUSED_LANE_SKILLS])
   })
 
+  it('refuses exactly the two single-writer skills; a removed skill name is an ordinary name again', () => {
+    expect([...REFUSED_LANE_SKILLS]).toEqual(['save-memory', 'planka-tracking'])
+    expect(resolveLaneSkillAllowlist({ env: { WT_LANE_SKILLS: 'what-next' } })).toEqual({ allowed: ['what-next'], refusals: [] })
+    expect(existsSync(path.join(__dirname, '../../../../plugin/skills/what-next'))).toBe(false)
+  })
+
   it('copies only requested non-symlink skill trees under .lane, preferring lane sources', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'wt-lane-skills-')); roots.push(root)
     const lane = path.join(root, 'lane'); const home = path.join(root, 'home')

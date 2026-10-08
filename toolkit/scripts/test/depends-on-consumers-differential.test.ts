@@ -57,6 +57,9 @@ const rows: Row[] = [
   { label: 'parenthesised title with a comma and a #id', description: `Depends-on: #${DONE_A} (a title, with #${MENTIONED} inside)`, pick: true, ids: [DONE_A], lensFlags: false },
   { label: 'unparseable value', description: 'Depends-on: TBD', pick: false, ids: [], lensFlags: true },
   { label: 'none followed by a condition', description: `Depends-on: none until #${DONE_A} lands`, pick: false, ids: [], lensFlags: true },
+  { label: 'unclosed parenthesis hiding a second id', description: `Depends-on: #${DONE_A} (unfinished title, #${MENTIONED}`, pick: false, ids: [], lensFlags: true },
+  { label: 'unclosed parenthesis after a closed one', description: `Depends-on: #${DONE_A} (a title) (unfinished, ${MENTIONED}`, pick: false, ids: [], lensFlags: true },
+  { label: 'stray closing parenthesis', description: `Depends-on: #${DONE_A} title) more`, pick: true, ids: [DONE_A], lensFlags: false },
   { label: 'dangling id', description: `Depends-on: #${DANGLING}`, pick: false, ids: [DANGLING], lensFlags: true },
   { label: 'NO Depends-on line', description: 'Some description with no declaring line.', pick: false, ids: [], lensFlags: false },
 ]

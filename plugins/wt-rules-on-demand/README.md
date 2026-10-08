@@ -20,6 +20,94 @@ node /path/to/wt-rules-on-demand/scripts/rules.mjs prove-triggers rule-at-act.md
 node /path/to/wt-rules-on-demand/scripts/rules.mjs migrate rule-at-act.md --project /path/to/project --spec rule-at-act.spec.json --proof proof.json
 ```
 
+A user-scope `migrate --user` first runs a refusal-only static pre-filter in every
+profile it writes to (`--config-dir`, each `--mirror-dir`). A non-refusal does not
+prove the engine loads or delivers rules: migration is provisional until the engine
+is observed serving the rule in that profile. The command reports this limit per
+checked profile on stderr, alongside its other `rules:` diagnostics; the stdout
+`migrated …` summary is unchanged. It reads the platform's
+managed settings first: Linux `/etc/claude-code/managed-settings.json`, macOS
+`/Library/Application Support/ClaudeCode/managed-settings.json`, Windows
+`C:\Program Files\ClaudeCode\managed-settings.json`, plus visible `*.json` files in the
+sibling `managed-settings.d/` directory. Names starting with `.` are ignored.
+Absent files/directories are normal;
+unreadable directories, dangling policy links, and unreadable or invalid files
+are refused by path. Managed values override user values, and sorted drop-ins
+override the managed base file. The effective `disableAllHooks: true`
+refuses migration. An engine identity disabled in `enabledPlugins` or its
+`pluginConfigs["<id>"].options.enabled` cannot authorize migration; a disabled
+obsolete identity does not veto an affirmatively enabled replacement. Effective
+`pluginConfigs["cc-plugin-sec-default@builtin"].options.allowManagedModsOnly: true`,
+`allowManagedHooksOnly: true` also
+refuse: local evidence does not establish an organization-managed deployment of
+this user-installed engine. A top-level `allowManagedModsOnly` is not the guard
+option. The effective guard option is checked with managed precedence, like engine
+options, but this security guard is managed-only policy: a user guard option alone
+does not establish it. `--assume-loaded` remains accepted and recorded in the migration ledger
+for compatibility, but does not waive any decision check. Historical health is
+never read by this checker and cannot change an outcome.
+Effective `disableSideloadFlags: true` refuses inline (`--plugin-dir`)
+or unknown engine sources, even with that flag. Installed-source evidence requires
+the profile's user installation record and a readable engine manifest whose version
+entry sits in its plugin cache (the entry may be a link to a development checkout);
+stale records are skipped so later valid records can supply evidence.
+Current enabled installations are examined even when old inline health exists;
+this check does not call cached plugins organization-managed.
+User and managed keys examined by this checker must have their documented boolean/object
+types (and the Function Hooks environment flag must be a string); wrong types
+refuse with the file, full key path and found type.
+Every accepted profile must have a readable user or managed
+`pluginConfigs["<serving id>"].options.enabled: true`. The manifest default is
+false: missing or malformed enablement is refused even with historical health or
+`--assume-loaded`. Readable user/managed settings must list an installed plugin in
+`enabledPlugins`, and its installation record and cached manifest must establish
+presence. An inline identity instead needs a readable engine manifest at the
+running profile's `CLAUDE_PLUGIN_ROOT`; a plugin directory alone does not replace
+affirmative enablement. These manifest checks match the engine name only; they do
+not validate the loader's schema or hook modules. Even a name-matching manifest
+with a string-valued `keywords` field passes the presence check although Claude Code
+cannot load it. With neither installed nor inline manifest evidence, migration
+is refused. Function
+Hooks must be on: Claude Code 2.1.287 and later load mods by default (the running
+version is read from the `CLAUDE_CODE_EXECPATH` and `AI_AGENT` variables Claude Code
+sets for its commands); an older or unknown build needs
+`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. A readable user/managed environment value
+takes precedence over the process value. Process evidence applies only to the profile
+named by `CLAUDE_CONFIG_DIR`, otherwise `HOME/.claude` or `USERPROFILE/.claude`,
+compared by resolved real paths. The migrating process cannot establish another
+profile's launch version or environment, including a foreign `--config-dir`:
+that profile needs the variable in its own readable user/managed settings.
+
+### Pre-launch verification limits
+
+`--settings`, launch flags (`--safe-mode`, `--bare`, `--setting-sources`, which can
+exclude user settings), project/local settings of whichever repository is opened,
+macOS MDM, Windows registry and server-delivered policy are **not decidable before
+launch** by this checker. An inherited version/Function Hooks environment after
+`CLAUDE_CONFIG_DIR` or HOME is rebound is also not decidable before launch; realpath
+comparison alone does not establish where that inherited evidence originated.
+See the tracked follow-up **migration proven by observed serving** for these
+launch-time conditions. Refusals/warnings name unexamined sources; they do not
+establish that the effective launch policy permits the engine. Verify effective
+settings for every intended launch; earlier activity proves only the launches
+that wrote it.
+
+Affirmative enablement in readable managed settings can leave a profile unrefused
+before its first activity, even with an absent user settings file. An existing
+invalid or unreadable user file, including a dangling settings link, refuses by filename. Enablement
+delivered only through unexamined launch-time policy still needs the observed
+serving follow-up.
+
+Repeat `--mirror-dir <dir>` for each mirror, and `--assume-loaded <dir>` for each
+hand-verified profile. One flag value is one literal path, including commas;
+comma-separated lists are not supported. This also applies to `revert`,
+`rollback-check.mjs`, and `daily-rollback.mjs` mirror flags. A mirror sharing the
+primary's static `rules/` directory but using separate `rules-on-demand/` storage
+is refused before a migration moves anything. Share both directories (with the
+on-demand target already present), or use separate static directories with
+per-file links, before migrating. The command does not repair or rewrite a
+user-owned mirror layout.
+
 An explicit `--no-proof "reason"` marks the rule unproven. `revert` returns a
 rule to static; `retire <rule.md> --reason "reason"` archives it without deleting
 its content. Only explicit CLI actions move rule files. The daily quality check
@@ -271,6 +359,19 @@ limits on every run.
 Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
 from a host timer or cron job; the plugin ships no scheduler. This entry point
 checks the user rules and configured followed projects, and defaults to dry-run.
+The nightly run also measures the static instruction prefix across profiles and
+recently used projects, without moving rule files. Its latest measurement lives
+at `<config dir>/plugins/data/wt-rules-on-demand/quality/static-prefix-latest.json`
+for each profile; SessionStart reports an over-limit, incomplete or stale result.
+Run `node scripts/prefix-size.mjs --config-dir <config dir> --json` to inspect it
+independently. The prefix CLI exits 0 (ok), 2 (near limit), 3 (unknown) or 4
+(over limit); the nightly CLI exits 4 for an over-limit prefix when rollback
+itself succeeded, and 1 for unknown or failed measurement.
+The measurement runs after the night's reverts, so a rule moved back to static
+counts the same night. A file over the per-file limit is left out of the harness's
+combined count but still loaded: the check reports it, with `loadedChars`, and is
+at least near the limit. The session-start line describes the session's own
+check and adds one line when a check elsewhere is over the limit.
 To permit evidence-gated reversions, pass `--apply` explicitly. A host can
 inspect rules before deployment with `rules.mjs check-rules --dir <rules-dir>
 --corpus <commands.json> --time-bound-ms 50`; each slow regex test is reported
@@ -294,3 +395,125 @@ on the same scope. The lock file is a best-effort guard against accidental
 overlap, not an exclusivity guarantee across processes or hosts. An apparently
 dead local owner or remote owner older than five minutes may be reclaimed with
 a warning; a held lock is reported after two seconds.
+
+## Running the plugin's tests
+
+Run `node --test` from this plugin directory. The suite also runs from a
+standalone vendored copy. Checkout integration tests use
+`test/external-test.mjs`: when the toolbox's `plugin/rules/` or the sibling
+`wt-secret-guard` module is absent, each affected test visibly skips with
+`toolbox dependency absent` and the relative and resolved dependency path.
+With those dependencies present, the same tests run their original assertions.
+Only `ENOENT` is skipped; unreadable, malformed or broken dependencies fail.
+The refusal tests that use only this plugin run in both layouts.
+
+New checkout dependencies must use `externalTest(relativePath, import.meta.url)`
+and read or import the URL supplied to its test callback. The suite's
+`external-boundary.test.mjs` scans test sources recursively for unguarded
+checkout-relative URL construction, imports and literal filesystem reads.
+This is a source regression check, not a filesystem sandbox: dynamically
+assembled paths and arbitrary data flow still need review.
+
+## Provisional migrations
+
+New migrations carry `state: 'provisional'` and their migration time in the
+scope's ledger. Confirmation requires the engine's own `identityActivity`
+record to show a serve of that exact rule identity and migration generation **strictly after** migration
+in every required profile. An engine health record or a predicted setting does
+not confirm a migration. The hook records `loadedAt` when it loads a rule and
+`servedAt` when it delivers one; the first write of each field in each process
+is unconditional, then writes are throttled to ten minutes. A generation token
+in generated frontmatter is echoed in load/serve records, so a session caching
+an earlier rule body cannot confirm a later migration. Live store copies
+and store-key archives retain the later timestamp of each field independently.
+Load and serve updates are flushed together once per hook. A failed activity
+write is reported and retried after ten minutes, retaining the original observed
+instants; it does not trigger an immediate retry or health-write loop. Each write
+carries a reporting-capability timestamp; a leftover activity key alone does not
+establish that the current engine can report loads. Writers re-read and merge
+timestamp maxima before writing; the host's get/set API still leaves a narrow
+read-to-write race, which can lose evidence and lead to static restoration.
+
+User migrations record the primary profile and only mirrors that lost static
+delivery (a shared static directory or a removed static link). Independent
+static copies do not need confirmation. The recorded list governs both evidence
+and restoration; omitting a mirror from a later command does not remove it from
+the requirement. Project migrations record the migrating profile and use the
+union of those recorded profiles and the profiles passed to the check
+(`rollback-check --profile-dir`, repeatable; the nightly run passes all its
+`--config-dir` profiles). A profile is exposed only if its transcripts show a
+post-migration session with `cwd` inside the project, including nested worktrees.
+Project confirmation waits until the window ends. A required profile whose
+exposure evidence is missing stays named in an attention outcome; transcript
+cleanup or an omitted argument cannot remove a recorded profile. Exposure reads
+only the project's own transcript slug, streams recent files line by line,
+skips and counts malformed lines, and caches results across rules in a check.
+
+The default window is **168 hours**. Pass `--serve-window-hours <hours>` (finite,
+nonnegative, including zero) to `daily-rollback`, `rollback-check`, or
+`quality-check` to override it. After the window:
+
+- All required profiles served: an applying run writes a matching `confirm`
+  ledger row; the existing compliance rollback still governs the rule.
+- Any required profile neither loaded nor served: an applying nightly run
+  restores the rule to static delivery, including recorded mirror links, and
+  records the reason in the rollback report and revert notifications.
+- Every profile loaded, but some never served: the rule stays provisional and
+  reports `attention` with “loaded but never served”. This avoids moving a rule
+  back merely because its trigger has not fired.
+- Unreadable or unattributed activity evidence, an older engine lacking load records, missing
+  recorded profiles, or physically shared evidence directories or files
+  (including symlinks and hard links): the check
+  reports attention and neither confirms nor automatically restores from that
+  evidence. A rule physically owned by another profile is refused restoration.
+
+Activity records identify the writer's physical profile and engine-run capability,
+so copying a store into another profile cannot establish that profile's serve.
+Capability is evaluated within each store/writer observation. Health calls carry
+writer-run counts, so another store's new engine or another run in the same store
+cannot remove uncertainty about unattributed calls, even within the same day.
+An applying project check appends generation-bound `require` ledger rows for
+additional required profiles. Later checks and locked confirmation use the
+union of migration and requirement rows, even if a caller omits a profile.
+
+The nightly provisional pass runs **before transcript-coverage checks** and
+continues across failed scopes. Reports include `provisional`, `confirmed`,
+`wouldRevert`, and `failed` buckets. Dry runs annotate `wouldConfirm` without
+writing a ledger row or moving a file. A missing provisional on-demand file or
+directory is a named delivery-loss error and fails the daily run. Failed
+restoration also fails the run and reaches the notification channel. Every
+rollback, including compliance rollback after confirmation, restores recorded
+mirrors together with explicitly supplied mirrors.
+The pass inspects supplied profile ledgers together with physical on-demand
+owners' ledgers, every explicitly selected project, and followed projects from
+every supplied profile. Discovered provisional projects excluded from applying
+rollback are named as attention. Child checks have a two-minute timeout and a
+16 MiB output limit; resource failures are named and fail the scope.
+Activity and project exposure are observed once per profile/project per rollback
+process, then evaluated against each rule's cutoff. Exposure streams root and
+descendant transcript slugs and verifies every record's physical cwd.
+SessionStart reads revert notifications
+from both the hook data directory and the host timer's profile data directory,
+including when restoration removed the last on-demand rule. It also reads the
+latest nightly outcomes from both data directories. Would-revert, attention and
+restoration failures are printed in nightly text output and at startup.
+An existing nightly report that cannot be read or parsed produces a named
+startup line; an absent report remains silent.
+
+**Schedule the nightly command from a host timer with `--apply` for automatic
+restoration.** A profile whose hooks cannot load cannot start its own rollback.
+With `WT_ROD_REAL_REVERT` unset and no applying host timer, checks only report:
+they neither confirm in the ledger nor restore files. The plugin supplies no
+scheduler. `rollback-check --provisional-only` can evaluate this safety criterion
+without verdict files or compliance measurements.
+
+This is a one-shot migration check, not a guarantee for every later launch.
+Safe mode, disabled hooks, and MDM, registry or server-delivered policy can
+prevent confirmation, regardless of where their settings live. Changing these
+conditions after confirmation is outside this check. Profiles first exposed
+after a project confirmation, profiles neither recorded at migration nor
+supplied to the nightly run, and
+unrecorded shared static directories are also outside its bound. Legacy migrate
+rows written by older lifecycle tools have no provisional state and retain
+their previous rollback behavior. Migration and activity times assume the same
+host clock; lifecycle locking remains the best-effort guard described above.

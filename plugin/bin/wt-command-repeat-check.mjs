@@ -61,7 +61,10 @@ function parseInteger(raw, flag) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP)
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--session', '--command', '--cwd', '--exit-code', '--stdout', '--stderr', '--signal', '--stdout-file', '--stderr-file', '--at', '--state-dir', '--threshold', '--class-threshold', '--ttl-ms', '--max-pairs', '--max-class-shapes'],
+    booleanFlags: ['--json'],
+  })
   const out = {
     session: '',
     command: '',

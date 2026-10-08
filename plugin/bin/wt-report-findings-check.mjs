@@ -86,7 +86,10 @@ export function checkE2eVerification(markdown) {
 
 function main() {
   const args = process.argv.slice(2)
-  handleHelpFlag(args, HELP)
+  handleHelpFlag(args, HELP, {
+    valueFlags: [],
+    booleanFlags: ['--no-shape'],
+  })
   const skipShape = args.includes('--no-shape')
   const [reportPath] = args.filter((arg) => arg !== '--no-shape')
   if (!reportPath) {
