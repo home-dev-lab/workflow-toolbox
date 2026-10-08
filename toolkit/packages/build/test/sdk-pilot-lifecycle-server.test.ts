@@ -485,7 +485,7 @@ printf 'report\n' > "$report"
 
   it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
     const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
-    for (const entry of ['running', 'finishing', 'exited-first'] as const) {
+    for (const entry of ['running', 'finishing', 'exited-first', 'child-unreadable'] as const) {
       const workerSource = `
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -521,11 +521,25 @@ appendFileSync(log, 'genuine\\nEXIT=0\\n')
 writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))
 `
       const finishing = rawLauncher(`import { spawn } from 'node:child_process'; import { existsSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],log=args[args.indexOf('--log')+1],brief=args[args.indexOf('--brief')+1]; const worker=spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(workerSource)},root,log,brief],{detached:true,stdio:'ignore'}); worker.unref(); const ready=join(root,'.lane',${JSON.stringify(`${entry === 'running' ? 'initial' : 'finishing'}-verdict.json`)}),deadline=Date.now()+15_000; while(!existsSync(ready)&&Date.now()<deadline) await new Promise((resolve)=>setTimeout(resolve,10)); process.stdout.write('pid='+worker.pid+'\\nrun=993-1\\n')`)
-      const lifecycle = testLifecycle('LITE', [], finishing, 30)
+      // While a child exits, Linux /proc can serve its stat with an empty cmdline: identity reads unknown, not gone.
+      // The emulated window lasts until the worker records its exit, far longer than the real one.
+      let laneRoot = ''
+      const exitingChildReader = {
+        inspect: (pid: number) => {
+          const actual = inspectProcess(pid, { platform: process.platform })
+          if (actual || !laneRoot) return actual
+          const record = JSON.parse(readFileSync(join(laneRoot, '.lane', 'supervision', '993-1.json'), 'utf8'))
+          return pid === record.childPid && record.state === 'running' ? { pid, argv: [], startTime: record.childStartTime, cwd: null, groupId: null } : null
+        },
+        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+        processState: linuxProcState,
+      }
+      const lifecycle = testLifecycle('LITE', [], finishing, 30, entry === 'child-unreadable' ? { laneProcessReader: exitingChildReader } : {})
+      laneRoot = lifecycle.root
       await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
       try {
         const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-        expect(result).toBe('lane tdd EXIT=0')
+        expect(result, entry).toBe('lane tdd EXIT=0')
         expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'initial-verdict.json'), 'utf8'))).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
         expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'finishing-verdict.json'), 'utf8'))).toMatchObject({ status: 'unknown', reason: 'inconsistent-record', worker: 'running', child: 'gone' })
         expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'utf8')).toContain('genuine\nEXIT=0\n')
@@ -535,7 +549,8 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
           const record = JSON.parse(readFileSync(file, 'utf8'))
           for (const role of ['child', 'worker']) {
             const expected = { pid: record[`${role}Pid`], argv: record[`${role}Argv`], startTime: record[`${role}StartTime`] }
-            if (sameIdentity(expected, inspectProcess(expected.pid))) killIdentity(expected, 'SIGKILL')
+            // The worker exits on its own once it has written EXIT=; it may do so between this read and the kill.
+            if (sameIdentity(expected, inspectProcess(expected.pid))) try { process.kill(expected.pid, 'SIGKILL') } catch { /* already exited */ }
           }
         }
       }

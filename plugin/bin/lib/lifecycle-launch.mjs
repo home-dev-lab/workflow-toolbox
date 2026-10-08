@@ -32,8 +32,11 @@ const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'w
 function laneReceiptPollDeadline(record, verdict, workerPid, transitionDueAt, settle) {
   if (record.workerPid !== workerPid || record.owner !== 'pilot') return null
   if (verdict.status === 'running') return transitionDueAt
-  const finishing = verdict.status === 'unknown' && verdict.reason === 'inconsistent-record'
-    && verdict.worker === 'running' && verdict.child === 'gone'
+  // A child being torn down can still list its start time with an empty cmdline, reading unknown, not gone.
+  const childExiting = verdict.child === 'gone'
+    ? verdict.reason === 'inconsistent-record'
+    : verdict.child === 'unknown' && /^identity-unreadable/.test(verdict.reason)
+  const finishing = verdict.status === 'unknown' && childExiting && verdict.worker === 'running'
     && ['running', 'decision-needed'].includes(record.state)
   // The worker publishes state 'exited' before it appends EXIT= (wt-lane.mjs onChildClose).
   const publishing = verdict.status === 'terminal' && verdict.reason === 'exited' && verdict.worker === 'running'
