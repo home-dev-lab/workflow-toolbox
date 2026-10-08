@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { hermeticPath } from './helpers/hermetic-path.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
@@ -410,7 +411,7 @@ describe('lane sandbox plan — availability and pass-through', () => {
     const info = statSync(file)
     const bootstrap = (bin: string, args: string[]): [string, string[]] => ['/bin/sh', ['-c', 'true\n"$@"\nec=$?\nexit "$ec"', 'wt-lane-net', bin, ...args]]
     for (const wrap of [(bin: string, args: string[]): [string, string[]] => [bin, args], bootstrap]) {
-      const answer = sandbox.probeRequestPaths([file, closed, missing], { wrap, execPath: process.execPath, env: { PATH: process.env.PATH } })
+      const answer = sandbox.probeRequestPaths([file, closed, missing], { wrap, execPath: process.execPath, env: { PATH: hermeticPath([]) } })
       expect(answer[file]).toBe(`${info.dev}:${info.ino}`)
       expect(answer[missing]).toBeNull()
       if (process.getuid?.() !== 0) expect(answer[closed]).toBeNull()
@@ -423,9 +424,9 @@ describe('lane sandbox plan — availability and pass-through', () => {
     const inside = join(repo, 'inside.md'); const outside = join(sibling, 'outside.md'); const alias = join(repo, 'alias.md'); const hostTmp = join(root, 'host.md')
     for (const file of [inside, outside, hostTmp]) writeFileSync(file, 'content')
     symlinkSync(outside, alias)
-    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: process.execPath, cwd: repo, env: { HOME: home, PATH: process.env.PATH }, optionEnv: {}, paths: {}, bwrap: '/usr/bin/bwrap', socat: null, probe: okProbe, runtimeParent: run, readonlyCwd: true })
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: process.execPath, cwd: repo, env: { HOME: home, PATH: hermeticPath([]) }, optionEnv: {}, paths: {}, bwrap: '/usr/bin/bwrap', socat: null, probe: okProbe, runtimeParent: run, readonlyCwd: true })
     try {
-      expect(p.unreadable([[inside], [outside], [alias], [hostTmp]], { env: { HOME: home, PATH: process.env.PATH } })).toEqual([
+      expect(p.unreadable([[inside], [outside], [alias], [hostTmp]], { env: { HOME: home, PATH: hermeticPath([]) } })).toEqual([
         { path: outside, reason: null }, { path: alias, reason: null }, { path: hostTmp, reason: null },
       ])
     } finally { p.dispose() }
@@ -505,7 +506,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       await new Promise<void>((resolve, reject) => server.once('error', reject).listen(socket, resolve))
       servers.push(server)
     }
-    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: process.execPath, cwd: work, env: { HOME: home, PATH: process.env.PATH }, optionEnv: {}, paths: { readable: [readonly] }, bwrap: '/usr/bin/bwrap', socat: null, probe: okProbe, runtimeParent: run })
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: process.execPath, cwd: work, env: { HOME: home, PATH: hermeticPath([]) }, optionEnv: {}, paths: { readable: [readonly] }, bwrap: '/usr/bin/bwrap', socat: null, probe: okProbe, runtimeParent: run })
     try {
       const [, args] = p.wrap(process.execPath, ['-e', `const net=require('node:net');for(const p of ${JSON.stringify(sockets)}){const s=net.connect(p);s.on('connect',()=>process.exit(7));s.on('error',()=>{});}setTimeout(()=>process.exit(0),500)`])
       for (const socket of sockets) expect(args.join(' ')).toContain(`--ro-bind /dev/null ${socket}`)
@@ -1449,7 +1450,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     try {
       // Allow-list of $HOME children a lane legitimately keeps: the CLI config/data/cache/state.
       const allowed = '.config .cache .local .codex'
-      return fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', CANARY, 'canary', allowed], { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+      return fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', CANARY, 'canary', allowed], { cwd: f.worktree, env: { PATH: hermeticPath([]), HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     } finally { if (prev === undefined) delete process.env.WT_LANE_SANDBOX; else process.env.WT_LANE_SANDBOX = prev }
   }
 
@@ -1464,7 +1465,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     writeFileSync(join(second, 'codex'), '#!/bin/sh\nprintf "OLD\\n"\n')
     for (const file of [tool, helper, join(second, 'codex')]) chmodSync(file, 0o755)
     symlinkSync('../../.codex/releases/current/bin/codex', invoked)
-    const pathValue = `${first}:${second}:${process.env.PATH}`
+    const pathValue = hermeticPath([first, second])
     const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { PATH: pathValue, HOME: home }, paths: { readable: [second] } })
     const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
     const result = spawnSync(command, args, { cwd: worktree, env: { PATH: pathValue, HOME: home }, encoding: 'utf8', timeout: 30_000 })
@@ -1509,7 +1510,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     writeFileSync(join(binDir, 'sibling.cjs'), 'module.exports = "SELECTED"\n')
     chmodSync(script, 0o755)
     symlinkSync(script, join(first, 'codex'))
-    const pathValue = `${first}:${process.env.PATH}`
+    const pathValue = hermeticPath([first])
     const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue } })
     const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
     const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
@@ -1528,7 +1529,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     const binary = join(binDir, 'codex')
     writeFileSync(binary, '#!/bin/sh\nprintf "BINARY_OK\\n"\n')
     chmodSync(binary, 0o755)
-    const pathValue = `${binDir}:${process.env.PATH}`
+    const pathValue = hermeticPath([binDir])
     const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue } })
     const [command, args] = p.wrap('/bin/sh', ['-c', 'test ! -e "$CODEX_HOME/host-marker" && touch "$CODEX_HOME/writable" && test -f "$CODEX_HOME/writable" && codex'])
     const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
@@ -1551,7 +1552,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
       if (!aliasHome) symlinkSync('actual', join(codexHome, 'codex'))
       const fallback = join(second, 'codex')
       writeFileSync(fallback, '#!/bin/sh\nprintf "OLD\\n"\n'); chmodSync(fallback, 0o755)
-      const pathValue = `${join(home, '.codex')}:${second}:${process.env.PATH}`
+      const pathValue = hermeticPath([join(home, '.codex'), second])
       const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue }, paths: { readable: [second] } })
       const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
       const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
@@ -1585,7 +1586,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     mkdirSync(dirname(decision), { recursive: true })
     writeFileSync(decision, 'trusted\n')
     const probe = `printf forged > ${JSON.stringify(decision)} 2>/dev/null && echo WROTE || echo DENIED`
-    const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe], { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+    const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe], { cwd: f.worktree, env: { PATH: hermeticPath([]), HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     expect(r.laneSandbox?.kind).toBe('bwrap')
     expect(String(r.stdout).trim()).toBe('DENIED')
     expect(readFileSync(decision, 'utf8')).toBe('trusted\n')
@@ -1598,7 +1599,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     registerPilotDecisionRequest(file, { requestId: 'visible-in-lane', criteria: [1], deadline: Date.now() + 60_000 })
     cpSync(join(ROOT, 'plugin'), join(f.worktree, 'plugin'), { recursive: true })
     const args = [join(f.worktree, 'plugin', 'bin', 'wt-pilot-runner.mjs'), 'decide', '--run', 'run-1', '--request', 'visible-in-lane', '--dod', '1', '--reading', 'forged', '--state-root', stateRoot]
-    const r = fence.spawnOpencode(spawnSync, process.execPath, args, { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+    const r = fence.spawnOpencode(spawnSync, process.execPath, args, { cwd: f.worktree, env: { PATH: hermeticPath([]), HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     expect(r.laneSandbox?.kind).toBe('bwrap')
     expect(r.status).not.toBe(0)
     expect(String(r.stderr)).toContain('requests')
@@ -1621,7 +1622,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
         try {
           forbiddenPort = (srv.address() as net.AddressInfo).port
           const probe = `printf 'x' | timeout 3 socat - TCP4:127.0.0.1:${forbiddenPort} 2>&1 | head -1 | sed 's/^/result:/'; echo "listeners=$(ss -H -ltn 2>/dev/null | wc -l)"`
-          const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe], { cwd: w, env: { PATH: process.env.PATH, HOME: home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+          const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe], { cwd: w, env: { PATH: hermeticPath([]), HOME: home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
           const out = String(r.stdout)
           expect(r.laneSandbox?.kind).toBe('bwrap')
           expect(out).not.toContain('FORBIDDEN')
@@ -1654,7 +1655,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     const prev = process.env.WT_LANE_EGRESS_LOG
     process.env.WT_LANE_EGRESS_LOG = log
     try {
-      const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe, 'probe', '--model', 'remote/m'], { cwd: w, env: { PATH: process.env.PATH, HOME: home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+      const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe, 'probe', '--model', 'remote/m'], { cwd: w, env: { PATH: hermeticPath([]), HOME: home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
       const out = String(r.stdout)
       expect(r.laneSandbox?.kind).toBe('bwrap')
       expect(out).toContain('proxy=http://127.0.0.1:3128')
@@ -1678,7 +1679,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     process.env.XDG_RUNTIME_DIR = run
     try {
       const boom = (() => { throw Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' }) }) as unknown as typeof spawnSync
-      expect(() => fence.spawnOpencode(boom, '/bin/true', [], { cwd: w, env: { PATH: process.env.PATH, HOME: home } }, 'linux')).toThrow('spawn EAGAIN')
+      expect(() => fence.spawnOpencode(boom, '/bin/true', [], { cwd: w, env: { PATH: hermeticPath([]), HOME: home } }, 'linux')).toThrow('spawn EAGAIN')
       expect(readdirSync(run).filter((name) => name.startsWith('wt-lane-sandbox-'))).toEqual([])
     } finally { if (prev === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = prev }
   })
@@ -1694,7 +1695,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => { written.push(String(chunk)); return true })
     try {
       const stub = (() => ({ status: 0, stdout: '', stderr: '' })) as unknown as typeof spawnSync
-      fence.spawnOpencode(stub, '/bin/true', [], { cwd: w, env: { PATH: process.env.PATH, HOME: home }, sandboxPaths: { readable: [home] } }, 'linux')
+      fence.spawnOpencode(stub, '/bin/true', [], { cwd: w, env: { PATH: hermeticPath([]), HOME: home }, sandboxPaths: { readable: [home] } }, 'linux')
       expect(written).toContain(`workflow-toolbox: lane sandbox dropped caller-named binds ${home} (/, $HOME, an ancestor of $HOME, or host lane state)\n`)
     } finally {
       spy.mockRestore()
@@ -1714,7 +1715,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     const parent = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
       const stub = (() => ({ status: 0, stdout: '', stderr: '' })) as unknown as typeof spawnSync
-      const result = fence.spawnOpencode(stub, '/bin/true', [], { cwd: w, env: { PATH: process.env.PATH, HOME: home }, sandboxPaths: { readable: [home] }, stdio: ['ignore', 'ignore', fd] }, 'linux')
+      const result = fence.spawnOpencode(stub, '/bin/true', [], { cwd: w, env: { PATH: hermeticPath([]), HOME: home }, sandboxPaths: { readable: [home] }, stdio: ['ignore', 'ignore', fd] }, 'linux')
       expect(result.laneSandbox?.kind).toBe('bwrap')
       expect(readFileSync(log, 'utf8')).toContain(`lane sandbox dropped caller-named binds ${home}`)
       expect(readFileSync(log, 'utf8')).toContain('lane sandbox refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /')
@@ -1728,7 +1729,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
 
   it('the git pointer files are read-only inside, so a planted fsmonitor cannot be written (H1)', () => {
     const root = tempRoot('git')
-    const env = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', PATH: process.env.PATH, HOME: join(root, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
+    const env = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', PATH: hermeticPath([]), HOME: join(root, 'home'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' }
     mkdirSync(env.HOME, { recursive: true })
     const main = join(root, 'main')
     execFileSync('git', ['init', '-q', main], { env })
@@ -1738,14 +1739,14 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     execFileSync('git', ['-C', main, 'worktree', 'add', '-q', lane], { env })
     const gitdir = execFileSync('git', ['-C', lane, 'rev-parse', '--absolute-git-dir'], { env, encoding: 'utf8' }).trim()
     const probe = `echo '[core]' > "${gitdir}/config.worktree" 2>&1 && echo WROTE || echo READONLY`
-    const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe], { cwd: lane, env: { PATH: process.env.PATH, HOME: env.HOME }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+    const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe], { cwd: lane, env: { PATH: hermeticPath([]), HOME: env.HOME }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     expect(r.laneSandbox?.kind).toBe('bwrap')
     expect(String(r.stdout).trim()).toBe('READONLY')
   })
 
   it.skipIf(!OPENCODE)('runs the installed opencode without a model inside the sandbox (skips where opencode is not installed)', () => {
     const home = join(tempRoot('oc'), 'home'); mkdirSync(home)
-    const r = fence.spawnOpencode(spawnSync, OPENCODE, ['--version'], { env: { PATH: process.env.PATH, HOME: home }, encoding: 'utf8', timeout: 60_000 }, 'linux')
+    const r = fence.spawnOpencode(spawnSync, OPENCODE, ['--version'], { env: { PATH: hermeticPath([dirname(OPENCODE)]), HOME: home }, encoding: 'utf8', timeout: 60_000 }, 'linux')
     expect(r.status, String(r.stderr)).toBe(0)
     expect(r.laneSandbox?.kind).toBe('bwrap')
     expect(String(r.stdout).trim()).toMatch(/^\d+\.\d+\.\d+/)
@@ -1756,7 +1757,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
   it.skipIf(!OPENCODE)('verifies the OpenCode skill fence with the probe running INSIDE the sandbox (skips where opencode is not installed)', async () => {
     const skillFence = await load<{ verifyOpencodeSkillFence: (bin: string, o: Record<string, unknown>) => { ok: boolean, allowOk: boolean, cached: boolean, reason?: string } }>('opencode-skill-fence.mjs')
     const stateDir = join(tempRoot('fence'), 'cache')
-    const result = skillFence.verifyOpencodeSkillFence('opencode', { stateDir, platform: 'linux' })
+    const result = skillFence.verifyOpencodeSkillFence('opencode', { stateDir, platform: 'linux', env: { ...process.env, PATH: hermeticPath([dirname(OPENCODE)]) } })
     expect(result.cached).toBe(false)
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, allowOk: true })
   })
@@ -1803,12 +1804,12 @@ describe('host relays die with their launcher (card 1872293505129252765)', () =>
     const modulePath = sandboxLib ? join(sandboxLib, 'host/lane-sandbox.mjs') : join(LIB, 'host/lane-sandbox.mjs')
     // The host relay needs no socat after the fix; a placeholder stands in where socat is absent, only
     // to keep the plan's "inside half exists" branch (it is never executed here).
-    const request = { profile: 'opencode', bin: process.execPath, args: ['run', '--model', 'x/m'], cwd: work, env: { HOME: home, PATH: process.env.PATH }, optionEnv: { PATH: process.env.PATH }, platform: 'linux', bwrap: process.execPath, socat: SOCAT || '/bin/sh', find: '/usr/bin/find', runtimeParent: runtime }
+    const request = { profile: 'opencode', bin: process.execPath, args: ['run', '--model', 'x/m'], cwd: work, env: { HOME: home, PATH: hermeticPath([]) }, optionEnv: { PATH: hermeticPath([]) }, platform: 'linux', bwrap: process.execPath, socat: SOCAT || '/bin/sh', find: '/usr/bin/find', runtimeParent: runtime }
     const launcherScript = `const { resolveLaneSandbox } = await import(process.env.WT_TEST_SANDBOX_URL)
       const plan = resolveLaneSandbox({ ...JSON.parse(process.env.WT_TEST_REQUEST), probe: () => ({ ok: true }) })
       console.log('ready ' + plan.endpoints.length)
       setInterval(() => {}, 1000)`
-    const launcher = spawn(process.execPath, ['--input-type=module', '-e', launcherScript], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, HOME: home, XDG_STATE_HOME: join(home, '.local/state'), CLAUDE_CONFIG_DIR: join(home, '.claude'), WT_TEST_SANDBOX_URL: pathToFileURL(modulePath).href, WT_TEST_REQUEST: JSON.stringify(request) } })
+    const launcher = spawn(process.execPath, ['--input-type=module', '-e', launcherScript], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, PATH: hermeticPath([]), HOME: home, XDG_STATE_HOME: join(home, '.local/state'), CLAUDE_CONFIG_DIR: join(home, '.claude'), WT_TEST_SANDBOX_URL: pathToFileURL(modulePath).href, WT_TEST_REQUEST: JSON.stringify(request) } })
     children.push(launcher)
     const ready = await new Promise<string>((resolve) => launcher.stdout.once('data', (d) => resolve(String(d).trim())))
     expect(ready).toBe('ready 1')
