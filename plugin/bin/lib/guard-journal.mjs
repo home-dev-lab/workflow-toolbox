@@ -99,7 +99,7 @@ let warnedAboutSecretStore = false
 function warnSecretStoreUnavailable() {
   if (warnedAboutSecretStore) return
   warnedAboutSecretStore = true
-  try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch {}
+  try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch { /* stderr closed: nowhere left to report */ }
 }
 
 function secretGuardMasker() {
@@ -111,7 +111,7 @@ function secretGuardMasker() {
       try {
         statSync(named)
         return named
-      } catch {}
+      } catch { /* no named store: fall back to the directory scan below */ }
       return readdirSync(storeDir)
         .filter((name) => /^wt-secret-guard_inline-[^.]+\.json$/.test(name))
         .map((name) => ({ path: path.join(storeDir, name), mtime: statSync(path.join(storeDir, name)).mtimeMs }))
@@ -262,6 +262,12 @@ function subagentNotice(stdoutJson, reachSubagents) {
   return { hookSpecificOutput: { hookEventName: output.hookEventName, additionalContext: output.additionalContext } }
 }
 
+/** Names of precision rules that matched but did not change the decision (measured before they may). */
+function shadowField(shadow, mask) {
+  const names = Array.isArray(shadow) ? shadow.filter((name) => typeof name === 'string') : []
+  return names.length ? { shadow: names.map((name) => mask(name)) } : {}
+}
+
 /**
  * Record ONE guard decision durably. NEVER throws, always returns.
  *
@@ -278,10 +284,11 @@ function subagentNotice(stdoutJson, reachSubagents) {
  * @param {string} [event.session] - bounded session id, if known.
  * @param {string} [event.agent] - bounded agent id, if known.
  * @param {object} [event.evidence] - up to six bounded string/number fields chosen by the guard.
+ * @param {string[]} [event.shadow] - names of the shadow rules that matched without changing the decision.
  */
 export function recordGuardEvent(event = {}) {
   try {
-    const { guard, decision, class: cls, reason, cwd, session, agent, evidence } = event || {}
+    const { guard, decision, class: cls, reason, cwd, session, agent, evidence, shadow } = event || {}
     if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
     // Classify from the raw target before secret masking can alter a path segment, and fall back
     // to this process's own directory when the call site omitted one — see effectiveCwd.
@@ -312,6 +319,7 @@ export function recordGuardEvent(event = {}) {
       pid: process.pid,
       ppid: process.ppid,
       ...(safeEvidence ? { evidence: safeEvidence } : {}),
+      ...shadowField(shadow, mask),
     }
     appendFileSync(journalPath(), `${JSON.stringify(entry)}\n`)
   } catch {

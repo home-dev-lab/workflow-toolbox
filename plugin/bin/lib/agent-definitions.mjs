@@ -164,7 +164,7 @@ function agentDefinitionCandidates(type, { cwd = process.cwd(), configDir, env =
       const prefix = scope === 'plugin' ? path.dirname(pluginBase || rel).split(path.sep).filter((part) => part !== '.') : []
       const identity = [...prefix, name].join(':')
       if (scoped ? scope !== 'plugin' || (identity !== wanted && [...prefix, basename].join(':') !== wanted) : name !== leaf && (scope !== 'plugin' || basename !== leaf)) continue
-      candidates.push({ file, scope, rank, identity, data, root, installation, speculative, applicability, uncertain: Boolean(parsed.hadBom), ambiguous: false })
+      candidates.push({ file, scope, rank, identity, data, body: parsed.body ?? '', root, installation, speculative, applicability, uncertain: Boolean(parsed.hadBom), ambiguous: false })
     }
   }
   if (!scoped) {
