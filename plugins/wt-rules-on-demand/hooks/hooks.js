@@ -462,13 +462,53 @@ async function readCapped($, file) {
   if (new TextEncoder().encode(text).length > RULE_CAP) throw new Error(`rule exceeds ${RULE_CAP} bytes`);
   return text;
 }
+function loadRootCandidates(root, config, linked, fallback) {
+  const { mainRepoRoot = null, worktreeRoot = null } = linked;
+  let candidates = projectRuleRoots(root, { configDir: config, mainRepoRoot, worktreeRoot });
+  if (!candidates.length && fallback) candidates = [root];
+  return candidates;
+}
+const projectScope = (real, configReal) => real !== null && !sameDirectory(real, configReal);
+
+// Synchronous plans expose the existing awaited operations without adding a helper's async completion turn.
+function* loadRuleCopies($, locations, copies, staticFiles, physicalDirs, rules) {
+  for (const [scope, dir] of locations) {
+    for (const entry of yield list($, dir)) {
+      const file = `${dir}/${entry.name}`;
+      const kind = yield entryKind($, file, entry);
+      if (kind !== 'file' || !entry.name.endsWith('.md')) continue;
+      if (!copies.has(entry.name)) copies.set(entry.name, []);
+      copies.get(entry.name).push({ scope, dir, file });
+    }
+  }
+  for (const [name, found] of copies) yield* loadWinner($, name, found, staticFiles, physicalDirs, rules);
+}
+
+function* loadWinner($, name, found, staticFiles, physicalDirs, rules) {
+  const winner = found.at(-1);
+  try {
+    const text = yield readCapped($, winner.file);
+    for (const outer of found.slice(0, -1)) {
+      const other = yield readCapped($, outer.file).catch(() => null);
+      if (other !== null && ruleBody(other, true) !== ruleBody(text, true)) yield notice($, `shadowed: ${outer.file} by ${winner.file}`);
+    }
+    let suppressed = false;
+    for (const item of staticFiles.filter((candidate) => candidate.name === name)) {
+      const equal = sameRule(yield $.fs.read(item.path), text);
+      if (equal) suppressed = true;
+      yield notice($, equal ? `loaded twice: ${item.path} and ${winner.file}; the on-demand copy is not served` : `same name, different rule: ${item.path} and ${winner.file}`);
+    }
+    if (suppressed) return;
+    if (!physicalDirs.has(winner.dir)) physicalDirs.set(winner.dir, yield realPathOf($, winner.dir));
+    rules.push({ ...parseRuntimeRule(name, text), generation: migrationGeneration(text), identity: `${winner.scope}:${physicalDirs.get(winner.dir)}:${name}` });
+  } catch (error) { yield notice($, `skipped ${winner.file}: ${error.message}`).catch(() => {}); }
+}
+
 async function load($, root, fallback = false) {
   const env = { CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') };
   const config = configDirectory(env);
   if (!config) { await notice($, 'HOME and USERPROFILE unavailable; cannot locate user rules'); return []; }
-  const { mainRepoRoot = null, worktreeRoot = null } = await linkedWorktree($, root);
-  let candidates = projectRuleRoots(root, { configDir: config, mainRepoRoot, worktreeRoot });
-  if (!candidates.length && fallback) candidates = [root];
+  const candidates = loadRootCandidates(root, config, await linkedWorktree($, root), fallback);
   const configReal = await realPathOf($, config);
   activityProfile = configReal;
   // One stat per ancestor: an absent `.claude` costs nothing more, and one that IS the config directory is user scope.
@@ -476,7 +516,7 @@ async function load($, root, fallback = false) {
   for (const dir of candidates) {
     const claude = dotEntry(dir, '.claude');
     const real = await $.fs.stat(claude, { resolve: true }).then((info) => info.realPath ?? claude, () => null);
-    if (real !== null && !sameDirectory(real, configReal)) roots.push(dir);
+    if (projectScope(real, configReal)) roots.push(dir);
   }
   const user = ruleDirectories(root, config);
   const staticDirs = [...roots.map((item) => ruleDirectories(item, config).projectStatic), user.userStatic];
@@ -485,34 +525,15 @@ async function load($, root, fallback = false) {
   // Every copy of a name, user first, then project directories root first: the last one is the nearest, and wins.
   const copies = new Map();
   const physicalDirs = new Map();
-  for (const [scope, dir] of [['user', user.user], ...roots.map((item) => ['project', ruleDirectories(item, config).project])]) {
-    for (const entry of await list($, dir)) {
-      const file = `${dir}/${entry.name}`;
-      const kind = await entryKind($, file, entry);
-      if (kind !== 'file' || !entry.name.endsWith('.md')) continue;
-      if (!copies.has(entry.name)) copies.set(entry.name, []);
-      copies.get(entry.name).push({ scope, dir, file });
-    }
-  }
   const rules = [];
-  for (const [name, found] of copies) {
-    const winner = found.at(-1);
-    try {
-      const text = await readCapped($, winner.file);
-      for (const outer of found.slice(0, -1)) {
-        const other = await readCapped($, outer.file).catch(() => null);
-        if (other !== null && ruleBody(other, true) !== ruleBody(text, true)) await notice($, `shadowed: ${outer.file} by ${winner.file}`);
-      }
-      let suppressed = false;
-      for (const item of staticFiles.filter((candidate) => candidate.name === name)) {
-        const equal = sameRule(await $.fs.read(item.path), text);
-        if (equal) suppressed = true;
-        await notice($, equal ? `loaded twice: ${item.path} and ${winner.file}; the on-demand copy is not served` : `same name, different rule: ${item.path} and ${winner.file}`);
-      }
-      if (suppressed) continue;
-      if (!physicalDirs.has(winner.dir)) physicalDirs.set(winner.dir, await realPathOf($, winner.dir));
-      rules.push({ ...parseRuntimeRule(name, text), generation: migrationGeneration(text), identity: `${winner.scope}:${physicalDirs.get(winner.dir)}:${name}` });
-    } catch (error) { await notice($, `skipped ${winner.file}: ${error.message}`).catch(() => {}); }
+  const locations = [['user', user.user], ...roots.map((item) => ['project', ruleDirectories(item, config).project])];
+  const plan = loadRuleCopies($, locations, copies, staticFiles, physicalDirs, rules);
+  let step = plan.next();
+  while (!step.done) {
+    let value;
+    try { value = await step.value; }
+    catch (error) { step = plan.throw(error); continue; }
+    step = plan.next(value);
   }
   return rules;
 }
@@ -538,6 +559,64 @@ async function breathe($, slice, budget) {
   try { await pending; } finally { budget?.resume(started); }
   slice.start = Date.now();
 }
+function detectorAllowed(ctx, rule, trigger, prompt, errors, budget) {
+  if ((!eligible(ctx, rule) && !ctx.refusing.has(rule.name)) || prompt) return false;
+  if (budget.exhausted) {
+    errors.push({ rule: rule.name, kind: 'tool', pattern: trigger.detector, error: 'shared regex call budget exhausted; detector unevaluated' });
+    return false;
+  }
+  return true;
+}
+
+function detectorInput(trigger, item, report, budget, failure) {
+  if (item.input === null) return false;
+  const inputMatches = testTriggerRegex(trigger, trigger.input, item.input, report, budget);
+  item.inputPrechecked.set(trigger, !failure.failed && inputMatches);
+  if (failure.failed || !inputMatches || budget.exhausted) return false;
+  return true;
+}
+
+function detectorPrechecked(ctx, rule, trigger, e, prompt, { item, errors, budget }) {
+  if (!detectorAllowed(ctx, rule, trigger, prompt, errors, budget)) return false;
+  const failure = { failed: false };
+  const report = (error) => { failure.failed = true; errors.push({ rule: rule.name, ...error }); };
+  const tool = testTriggerRegex(trigger, trigger.tool, e.tool, report, budget);
+  item.prechecked.set(trigger, !failure.failed && tool);
+  if (failure.failed || !tool || budget.exhausted) return false;
+  if (trigger.input) return detectorInput(trigger, item, report, budget, failure);
+  return true;
+}
+
+function recordExhaustedRule(rule, item, budget, beforeMatched) {
+  budget.unresolved.add(rule.name);
+  if (exhaustionRefuses(rule, item)) beforeMatched?.add(rule.name);
+}
+
+function recordTriggerMatch(trigger, rule, beforeMatched, budget) {
+  if (trigger.beforeFirstAct) beforeMatched?.add(rule.name);
+  return !beforeMatched && !budget.exhausted;
+}
+
+function selectedTrigger(rule, trigger, item, errors, budget, beforeMatched) {
+  if (budget.exhausted) {
+    errors.push({ rule: rule.name, ...unevaluatedTrigger(trigger, item) });
+    recordExhaustedRule(rule, item, budget, beforeMatched);
+    return 'stop';
+  }
+  let matched = false;
+  if (triggerMatches(trigger, item, (error) => errors.push({ rule: rule.name, ...error }), budget)) {
+    matched = true;
+    if (recordTriggerMatch(trigger, rule, beforeMatched, budget)) return 'stop';
+  }
+  if (budget.exhausted && !trigger.detector) {
+    recordExhaustedRule(rule, item, budget, beforeMatched);
+    return 'stop';
+  }
+  return matched ? 'matched' : null;
+}
+
+const detectorFailure = (rule, trigger, error) => ({ rule: rule.name, kind: 'tool', pattern: trigger.detector, error: `detector failed: ${error.message ?? error}` });
+
 async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatched, slice }) {
   const item = { ...triggerItem(e, prompt), detected: new Map(), prechecked: new Map(), inputPrechecked: new Map() };
   const chosen = [];
@@ -546,46 +625,16 @@ async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatche
     let matched = false;
     for (const trigger of rule.triggers) {
       if (trigger.detector) {
-        if ((!eligible(ctx, rule) && !ctx.refusing.has(rule.name)) || prompt) continue;
-        if (budget.exhausted) {
-          errors.push({ rule: rule.name, kind: 'tool', pattern: trigger.detector, error: 'shared regex call budget exhausted; detector unevaluated' });
-          continue;
-        }
-        let failed = false;
-        const report = (error) => { failed = true; errors.push({ rule: rule.name, ...error }); };
-        const tool = testTriggerRegex(trigger, trigger.tool, e.tool, report, budget);
-        item.prechecked.set(trigger, !failed && tool);
-        if (failed || !tool || budget.exhausted) continue;
-        if (trigger.input) {
-          if (item.input === null) continue;
-          const inputMatches = testTriggerRegex(trigger, trigger.input, item.input, report, budget);
-          item.inputPrechecked.set(trigger, !failed && inputMatches);
-          if (failed || !inputMatches || budget.exhausted) continue;
-        }
-         const started = budget.pause();
-         try { item.detected.set(trigger, await lspSymbolGrep($, e, ctx) === true); }
-         catch (error) { errors.push({ rule: rule.name, kind: 'tool', pattern: trigger.detector, error: `detector failed: ${error.message ?? error}` }); }
-         finally { budget.resume(started); }
+        if (!detectorPrechecked(ctx, rule, trigger, e, prompt, { item, errors, budget })) continue;
+        const started = budget.pause();
+        try { item.detected.set(trigger, await lspSymbolGrep($, e, ctx) === true); }
+        catch (error) { errors.push(detectorFailure(rule, trigger, error)); }
+        finally { budget.resume(started); }
         if (item.detected.get(trigger) !== true) continue;
       }
-      if (budget.exhausted) {
-        errors.push({ rule: rule.name, ...unevaluatedTrigger(trigger, item) });
-        budget.unresolved.add(rule.name);
-        matched = true;
-          if (exhaustionRefuses(rule, item)) beforeMatched?.add(rule.name);
-        break;
-      }
-      if (triggerMatches(trigger, item, (error) => errors.push({ rule: rule.name, ...error }), budget)) {
-        matched = true;
-        if (trigger.beforeFirstAct) beforeMatched?.add(rule.name);
-        if (!beforeMatched && !budget.exhausted) break;
-      }
-      if (budget.exhausted && !trigger.detector) {
-        budget.unresolved.add(rule.name);
-        matched = true;
-        if (exhaustionRefuses(rule, item)) beforeMatched?.add(rule.name);
-        break;
-      }
+      const status = selectedTrigger(rule, trigger, item, errors, budget, beforeMatched);
+      if (status) matched = true;
+      if (status === 'stop') break;
     }
     if (matched) chosen.push(rule);
   }
@@ -597,63 +646,86 @@ async function sessionId($) { try { return await $.session.id(); } catch { retur
 const summary = (e) => e.tool === 'Bash' ? `Bash: ${bounded(e.command ?? '').trim().split(/\s+/).slice(0, 2).join(' ')}`
   : `${e.tool}: ${String(pathOf(e)).split(/[\\/]/).at(-1) || 'call'}`;
 
-async function journal($, names, loop, suppressed = [], acts = [], injected = [], options = {}) {
+function journalOptions(options) {
   const { channel = 'tool.call', triggerErrors = [], close: closeMark } = options;
-  if (!names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length && !closeMark) return;
+  return { channel, triggerErrors, closeMark };
+}
+const journalEmpty = (names, suppressed, acts, injected, triggerErrors, closeMark) =>
+  !names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length && !closeMark;
+const storedObject = (value) => value ?? {};
+
+function journalServed(served, names, now, channel) {
+  for (const rule of names) {
+    const name = typeof rule === 'string' ? rule : rule.name;
+    const item = served[key(name)] ?? { count: 0, byChannel: {}, seg: newSeg() };
+    item.count++; item.last = now; item.byChannel[channel] = (item.byChannel[channel] ?? 0) + 1;
+    served[key(name)] = item;
+  }
+}
+
+function journalSession(sessions, id, now, loop) {
+  const session = sessions[id] ?? { first: now, contexts: {} };
+  session.last = now;
+  const ck = loop === MAIN ? String(currentMain) : `agent:${loop}`;
+  const ctx = session.contexts[ck] ?? { served: {}, suppressedCap: {}, governedActs: [], complianceInjected: [], seg: newSeg() };
+  ctx.last = now;
+  return { session, ck, ctx };
+}
+
+function journalRuleCounts(ctx, rules, field, identities) {
+  for (const rule of rules) {
+    const name = typeof rule === 'string' ? rule : rule.name;
+    ctx[field][key(name)] = (ctx[field][key(name)] ?? 0) + 1;
+    if (rule.identity) { ctx[identities] ??= {}; ctx[identities][rule.identity] = (ctx[identities][rule.identity] ?? 0) + 1; }
+  }
+}
+
+function journalActs(ctx, acts, now) {
+  for (const rule of acts) {
+    const existing = ctx.governedActs.find((item) => item.ruleIdentity === rule.identity);
+    if (existing) { existing.count++; existing.last = now; }
+    else ctx.governedActs.push({ rule: rule.name, ruleIdentity: rule.identity, at: now, last: now, count: 1 });
+  }
+}
+
+function journalContext(ctx, names, { suppressed, acts, injected }, { triggerErrors, now, channel, closeMark }) {
+  journalRuleCounts(ctx, names, 'served', 'servedIdentity');
+  journalRuleCounts(ctx, suppressed, 'suppressedCap', 'suppressedIdentity');
+  journalActs(ctx, acts, now);
+  for (const pending of injected) ctx.complianceInjected.push({ rule: pending.rule.name, ruleIdentity: pending.rule.identity, at: now, ...deliveryFields(pending) });
+  if (advancesClose(ctx.lastClose, closeMark)) ctx.lastClose = { token, seq: closeMark.seq, at: now };
+  if (triggerErrors.length) {
+    ctx.triggerErrors ??= [];
+    // IDs belong to this event, not to stored history: a refused write must not issue the same ID twice.
+    appendValues(ctx.triggerErrors, triggerErrors.map((error) => ({ ...error, at: now, channel, eid: newSeg() })));
+    // Retain every error from this call, even when a mass serve exceeds the usual history cap; older rows yield first.
+    ctx.triggerErrors = ctx.triggerErrors.slice(-Math.max(100, triggerErrors.length));
+  }
+}
+
+async function journal($, names, loop, suppressed = [], acts = [], injected = [], options = {}) {
+  const { channel, triggerErrors, closeMark } = journalOptions(options);
+  if (journalEmpty(names, suppressed, acts, injected, triggerErrors, closeMark)) return;
   noteIdentityActivity(names, 'servedAt');
   const turn = writeTurn();
   await turn.previous.catch(() => {});
   try {
-     try {
+    try {
       const now = new Date().toISOString();
-      const served = await readKey($, 'served') ?? {};
-       for (const rule of names) {
-         const name = typeof rule === 'string' ? rule : rule.name;
-        const item = served[key(name)] ?? { count: 0, byChannel: {}, seg: newSeg() };
-         item.count++; item.last = now; item.byChannel[channel] = (item.byChannel[channel] ?? 0) + 1;
-        served[key(name)] = item;
-      }
+      const served = storedObject(await readKey($, 'served'));
+      journalServed(served, names, now, channel);
       if (names.length) await setWithin($, 'served', served);
       const id = await sessionId($);
       if (!id) return;
-      const sessions = await readKey($, 'sessions') ?? {};
-      const session = sessions[id] ?? { first: now, contexts: {} };
-      session.last = now;
-      const ck = loop === MAIN ? String(currentMain) : `agent:${loop}`;
-      const ctx = session.contexts[ck] ?? { served: {}, suppressedCap: {}, governedActs: [], complianceInjected: [], seg: newSeg() };
-      ctx.last = now;
-      for (const rule of names) {
-        const name = typeof rule === 'string' ? rule : rule.name;
-        ctx.served[key(name)] = (ctx.served[key(name)] ?? 0) + 1;
-        if (rule.identity) { ctx.servedIdentity ??= {}; ctx.servedIdentity[rule.identity] = (ctx.servedIdentity[rule.identity] ?? 0) + 1; }
-      }
-      for (const rule of suppressed) {
-        const name = typeof rule === 'string' ? rule : rule.name;
-        ctx.suppressedCap[key(name)] = (ctx.suppressedCap[key(name)] ?? 0) + 1;
-        if (rule.identity) { ctx.suppressedIdentity ??= {}; ctx.suppressedIdentity[rule.identity] = (ctx.suppressedIdentity[rule.identity] ?? 0) + 1; }
-      }
-       for (const rule of acts) {
-         const existing = ctx.governedActs.find((item) => item.ruleIdentity === rule.identity);
-         if (existing) { existing.count++; existing.last = now; }
-         else ctx.governedActs.push({ rule: rule.name, ruleIdentity: rule.identity, at: now, last: now, count: 1 });
-       }
-        for (const pending of injected) ctx.complianceInjected.push({ rule: pending.rule.name, ruleIdentity: pending.rule.identity, at: now, ...deliveryFields(pending) });
-        if (advancesClose(ctx.lastClose, closeMark)) ctx.lastClose = { token, seq: closeMark.seq, at: now };
-       if (triggerErrors.length) {
-         ctx.triggerErrors ??= [];
-         // Each new row carries an event id from the unique-id generator (random owner, per-load counter), never from the
-         // stored context: a refused write rolls the store back, and an id derived from it would be issued twice.
-         appendValues(ctx.triggerErrors, triggerErrors.map((error) => ({ ...error, at: now, channel, eid: newSeg() })));
-          // Retain every error from this call, even when a mass serve exceeds
-          // the usual 100-row history cap; older rows yield first.
-          ctx.triggerErrors = ctx.triggerErrors.slice(-Math.max(100, triggerErrors.length));
-       }
+      const sessions = storedObject(await readKey($, 'sessions'));
+      const { session, ck, ctx } = journalSession(sessions, id, now, loop);
+      journalContext(ctx, names, { suppressed, acts, injected }, { triggerErrors, now, channel, closeMark });
       session.contexts[ck] = ctx;
       sessions[id] = session;
       // Over its budget, the oldest contexts move to an archive file first; this context moves last.
       await setWithin($, 'sessions', sessions, { id, ck, newSeg });
-     } catch (error) { await notice($, `journal write failed: ${error.message}`).catch(() => {}); }
-   } finally { turn.release(); }
+    } catch (error) { await notice($, `journal write failed: ${error.message}`).catch(() => {}); }
+  } finally { turn.release(); }
 }
  async function verdict($, pending, loop, value, evidence, reason, act = {}) {
    const { rule } = pending;
@@ -965,81 +1037,122 @@ async function turnCompleteWork($, e, next) {
      }
     return result;
 }
-  // One matcherless tool.call handler: the host permits only one per module.
- async function toolCallWork($, e, next) {
-     if (!enabled) return next(e);
-     const admission = ++sequence;
-    const loop = agentLoop(e.agentId);
-    const existing = contexts.get(loop);
-    const nextRecords = existing ? decideNext(existing, e) : [];
-    const ctx = await context($, loop);
-       const rules = await rulesFor($, ctx, e.cwd ?? '.');
-          for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission });
-      const measured = new Set();
-      await evaluate($, ctx, e, loop, measured, admission);
-      const triggerErrors = [];
-      const budget = regexCallBudget(triggerClock);
-      const slice = { start: Date.now() };
-       if (textOf(e) === null) for (const rule of rules) {
-        if (budget.exhausted) break;
-        await breathe($, slice, budget);
-        let failed = false;
-         if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.input && !trigger.detector && testTriggerRegex(trigger, trigger.tool, e.tool, (error) => {
-          failed = true; triggerErrors.push({ rule: rule.name, ...error });
-        }, budget)) && !failed) await notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
-      }
-      const beforeMatched = new Set();
-        const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
-      const before = chosen.filter((rule) => beforeMatched.has(rule.name) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !servedAs(ctx, rule)));
-      await journal($, [], loop, [], [], [], { triggerErrors: [...new Map(triggerErrors.map((error) => [JSON.stringify(error), error])).values()] });
-      if (budget.exhausted) await progress($, exhaustionNotice(budget));
-    if (before.length) {
-      // Keep pending refusals in flight until the result is returned; do not claim on failed logging/store.
-       for (const rule of before) ctx.refusing.set(rule.name, (ctx.refusing.get(rule.name) ?? 0) + 1);
-      try {
-        await $.ui.log(`wt-rules-on-demand: before-act refusal serving ${before.map((r) => r.name).join(', ')}`);
-          // A refused call never runs: its retry, seen by evaluate(), is the classifier's evidence.
-           const injected = inject(ctx, before, `tool.call:${e.tool}`, admission);
-         await journal($, before, loop, [], [], injected);
-          for (const rule of before) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
-         const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.', ...before.map(block)].join('\n\n') };
-        claim(ctx, before);
-          return result;
-       } finally { for (const rule of before) { const count = ctx.refusing.get(rule.name) - 1; if (count) ctx.refusing.set(rule.name, count); else ctx.refusing.delete(rule.name); } }
-    }
-      const result = await next(e);
-      const refused = Boolean(result && 'deny' in result);
-       if (result && ('drop' in result || refused && !refusedAfterRun(result.deny))) return result;
-     if (rules.some((rule) => rule.compliance?.kind === 'turn-correlation')) {
-      const id = String(e.tool_use_id ?? `${ctx.correlation.length}`);
-      ctx.correlation.push({ kind: 'use', id, name: e.tool, input: e.input ?? e });
-      ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: refused || result?.isError === true });
-    }
-     const acts = rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
-     const ride = chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
-      if (ride.length) claim(ctx, ride);
-      const injected = inject(ctx, ride, `tool.call:${e.tool}`, admission, e);
-       await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
-       const classified = classify(e.tool, e.input ?? e);
-        for (const rule of rules) if (await breathe($, slice, budget), rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
-         for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
-           await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
-              item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e), undefined, { seq: admission });
-       }
-      for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
-     // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
-      for (const rule of rules) if (await breathe($, slice, budget), servedAs(ctx, rule)) {
-       const { verdict: value, matchError } = servedVerdict(rule.compliance, e);
-       if (value === null) continue;
-       const discharged = ctx.pending.filter((pending) => pending.rule === rule);
-       ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
-       if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError, { seq: admission, discharged });
-     }
-     for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
-    if (!ride.length) return result;
-    // A refusal carries only its text: what rides on it goes inside, after the guard's own words.
-    if (refused) return { deny: [result.deny, ...ride.map(block)].join('\n\n') };
-    return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
+function* inputlessSteps($, e, rules, budget, slice, triggerErrors) {
+  if (textOf(e) === null) for (const rule of rules) {
+    if (budget.exhausted) break;
+    yield breathe($, slice, budget);
+    let failed = false;
+    if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.input && !trigger.detector && testTriggerRegex(trigger, trigger.tool, e.tool, (error) => {
+      failed = true; triggerErrors.push({ rule: rule.name, ...error });
+    }, budget)) && !failed) yield notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
+  }
+}
+
+const beforeRules = (chosen, ctx, beforeMatched) => chosen.filter((rule) => beforeMatched.has(rule.name) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !servedAs(ctx, rule)));
+const uniqueTriggerErrors = (errors) => [...new Map(errors.map((error) => [JSON.stringify(error), error])).values()];
+
+function* unregisteredSteps($, rules, e, loop, admission) {
+  for (const rule of rules) if (rule.compliance?.kind === 'unregistered') yield safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason, { seq: admission });
+}
+
+function* refusalSteps($, ctx, before, e, loop, admission) {
+  // Keep pending refusals in flight until the result is returned; do not claim on failed logging/store.
+  for (const rule of before) ctx.refusing.set(rule.name, (ctx.refusing.get(rule.name) ?? 0) + 1);
+  try {
+    yield $.ui.log(`wt-rules-on-demand: before-act refusal serving ${before.map((r) => r.name).join(', ')}`);
+    // A refused call never runs: its retry, seen by evaluate(), is the classifier's evidence.
+    const injected = inject(ctx, before, `tool.call:${e.tool}`, admission);
+    yield journal($, before, loop, [], [], injected);
+    yield* unregisteredSteps($, before, e, loop, admission);
+    const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.', ...before.map(block)].join('\n\n') };
+    claim(ctx, before);
+    return result;
+  } finally { for (const rule of before) { const count = ctx.refusing.get(rule.name) - 1; if (count) ctx.refusing.set(rule.name, count); else ctx.refusing.delete(rule.name); } }
+}
+
+const skipToolResult = (result, refused) => result && ('drop' in result || refused && !refusedAfterRun(result.deny));
+function recordCorrelation(ctx, rules, e, result, refused) {
+  if (rules.some((rule) => rule.compliance?.kind === 'turn-correlation')) {
+    const id = String(e.tool_use_id ?? `${ctx.correlation.length}`);
+    ctx.correlation.push({ kind: 'use', id, name: e.tool, input: e.input ?? e });
+    ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: refused || result?.isError === true });
+  }
+}
+const toolActs = (rules, e, chosen) => rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
+const ridingRules = (chosen, ctx) => chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
+
+function* checkSteps($, { ctx, e, loop, admission, slice, budget }, rules, classified) {
+  for (const rule of rules) if (yield breathe($, slice, budget), rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
+    for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
+      yield safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
+        item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e), undefined, { seq: admission });
+  }
+}
+
+function* servedSteps($, { ctx, e, loop, admission, slice, budget }, rules, measured) {
+  // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
+  for (const rule of rules) if (yield breathe($, slice, budget), servedAs(ctx, rule)) {
+    const { verdict: value, matchError } = servedVerdict(rule.compliance, e);
+    if (value === null) continue;
+    const discharged = ctx.pending.filter((pending) => pending.rule === rule);
+    ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
+    if (!measured.has(rule.name)) yield safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError, { seq: admission, discharged });
+  }
+}
+
+function* toolResultSteps($, call, next, rules, chosen, measured) {
+  const { ctx, e, loop, admission } = call;
+  const result = yield next(e);
+  const refused = Boolean(result && 'deny' in result);
+  if (skipToolResult(result, refused)) return result;
+  recordCorrelation(ctx, rules, e, result, refused);
+  const acts = toolActs(rules, e, chosen);
+  const ride = ridingRules(chosen, ctx);
+  if (ride.length) claim(ctx, ride);
+  const injected = inject(ctx, ride, `tool.call:${e.tool}`, admission, e);
+  yield journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
+  const classified = classify(e.tool, e.input ?? e);
+  yield* checkSteps($, call, rules, classified);
+  for (const rule of ride) yield progress($, `wt-rules-on-demand: serving ${rule.name}`);
+  yield* servedSteps($, call, rules, measured);
+  yield* unregisteredSteps($, ride, e, loop, admission);
+  if (!ride.length) return result;
+  // A refusal carries only its text: what rides on it goes inside, after the guard's own words.
+  if (refused) return { deny: [result.deny, ...ride.map(block)].join('\n\n') };
+  return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
+}
+
+// One matcherless tool.call handler: the host permits only one per module.
+async function toolCallWork($, e, next) {
+  if (!enabled) return next(e);
+  const admission = ++sequence;
+  const loop = agentLoop(e.agentId);
+  const existing = contexts.get(loop);
+  const nextRecords = existing ? decideNext(existing, e) : [];
+  const ctx = await context($, loop);
+  const rules = await rulesFor($, ctx, e.cwd ?? '.');
+  for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission });
+  const measured = new Set();
+  await evaluate($, ctx, e, loop, measured, admission);
+  const triggerErrors = [];
+  const budget = regexCallBudget(triggerClock);
+  const slice = { start: Date.now() };
+  for (const pending of inputlessSteps($, e, rules, budget, slice, triggerErrors)) await pending;
+  const beforeMatched = new Set();
+  const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
+  const before = beforeRules(chosen, ctx, beforeMatched);
+  await journal($, [], loop, [], [], [], { triggerErrors: uniqueTriggerErrors(triggerErrors) });
+  if (budget.exhausted) await progress($, exhaustionNotice(budget));
+  const plan = before.length ? refusalSteps($, ctx, before, e, loop, admission)
+    : toolResultSteps($, { ctx, e, loop, admission, slice, budget }, next, rules, chosen, measured);
+  let step = plan.next();
+  while (!step.done) {
+    let value;
+    try { value = await step.value; }
+    catch (error) { step = plan.throw(error); continue; }
+    step = plan.next(value);
+  }
+  return step.value;
 }
 
 export function resetForSelftest() { activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
