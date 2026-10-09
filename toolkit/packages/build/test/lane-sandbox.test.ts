@@ -23,6 +23,7 @@ interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[
 type NoticeDestination = ((text: string) => void) | number | { write: (text: string) => unknown }
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
+  realFs: { isWindowsDriveMount?: DriveMountModule['isWindowsDriveMount'] }
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
   laneWritableForLaunch: (request: Record<string, unknown>) => (file: string) => boolean
   announceUnsandboxedLane: (plan: SandboxPlan, write?: NoticeDestination) => void
@@ -48,6 +49,13 @@ const sandboxLib = process.env.WT_LANE_SANDBOX_TEST_LIB
 const sandbox = sandboxLib
   ? (await import(pathToFileURL(join(sandboxLib, 'host/lane-sandbox.mjs')).href)) as SandboxModule
   : await load<SandboxModule>('host/lane-sandbox.mjs')
+interface DriveMountModule {
+  windowsDriveMountPredicate: (text: string) => (file: string) => boolean
+  isWindowsDriveMount: (file: string, readMountinfo?: () => string) => boolean
+}
+const driveMounts = sandboxLib
+  ? (await import(pathToFileURL(join(sandboxLib, 'host/windows-drive-mount.mjs')).href)) as DriveMountModule
+  : await load<DriveMountModule>('host/windows-drive-mount.mjs')
 const suiteLock = await load<SuiteLockModule>('suite-lock.mjs')
 const fence = await load<FenceModule>('opencode-skill-fence.mjs')
 
@@ -93,6 +101,129 @@ function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpat
 
 const HOME = '/home/lane-owner'
 const okProbe = () => ({ ok: true })
+
+describe('lane sandbox Windows drive toolchain mounts', () => {
+  it.each(['node', 'pnpm', 'npm', 'git'])('skips a Windows realpath for %s and binds the next Linux candidate', (tool) => {
+    const first = `/links/bin/${tool}`
+    const windows = `/drives/c/tools/${tool}`
+    const linux = `/opt/linux/bin/${tool}`
+    const isWindowsDriveMount = vi.fn((file: string) => file.startsWith('/drives/c/'))
+    const fs = Object.assign(fakeFs({ [first]: '', [windows]: '', [linux]: '' }, ['/links/bin', '/drives/c/tools', '/opt/linux/bin'], { [first]: windows }), { isWindowsDriveMount })
+    const p = plan({ fs, env: { HOME, PATH: '/links/bin:/opt/linux/bin' } })
+    try {
+      const args = p.wrap('/bin/sh', [])[1]
+      expect(everyBind(args)).toContain('/opt/linux/bin')
+      expect(everyBind(args)).not.toContain('/drives/c/tools')
+      expect(args).not.toContain(windows)
+      expect(isWindowsDriveMount).toHaveBeenCalledWith('/drives/c/tools')
+    } finally { p.dispose() }
+  })
+
+  it('omits a Windows pnpm with no Linux alternative without refusing the launch', () => {
+    const fs = Object.assign(fakeFs({ '/drives/c/tools/pnpm': '' }, ['/drives/c/tools']), { isWindowsDriveMount: () => true })
+    const p = plan({ fs, env: { HOME, PATH: '/drives/c/tools' } })
+    try {
+      expect(p.kind).toBe('bwrap')
+      expect(everyBind(p.wrap('/bin/sh', [])[1])).not.toContain('/drives/c/tools')
+      expect(p.line).toContain('skipped Windows-drive toolchain: pnpm (/drives/c/tools/pnpm)')
+    } finally { p.dispose() }
+  })
+
+  it('names every skipped Windows-drive tool in the sandbox line', () => {
+    const fs = Object.assign(fakeFs({ '/drives/c/tools/pnpm': '', '/drives/c/tools/git': '' }, ['/drives/c/tools']), { isWindowsDriveMount: () => true })
+    const p = plan({ fs, env: { HOME, PATH: '/drives/c/tools' } })
+    try {
+      expect(p.line).toContain('skipped Windows-drive toolchain: pnpm (/drives/c/tools/pnpm), git (/drives/c/tools/git)')
+    } finally { p.dispose() }
+  })
+
+  it('keeps a candidate when the filesystem lacks the mount capability', () => {
+    const fs = fakeFs({ '/drives/c/tools/pnpm': '' }, ['/drives/c/tools'])
+    const p = plan({ fs, env: { HOME, PATH: '/drives/c/tools' } })
+    try { expect(everyBind(p.wrap('/bin/sh', [])[1])).toContain('/drives/c/tools') } finally { p.dispose() }
+  })
+
+  it('rejects a Windows parent directory even when its git file is a Linux mount', () => {
+    const mountinfo = String.raw`1 0 8:1 / / rw - ext4 /dev/root rw
+2 1 0:2 / /mnt/c rw - 9p C:\134 rw,aname=drvfs
+3 2 8:1 /usr/bin/git /mnt/c/tools/git rw - ext4 /dev/root rw`
+    const fs = Object.assign(fakeFs({ '/mnt/c/tools/git': '' }, ['/mnt/c/tools']), {
+      isWindowsDriveMount: driveMounts.windowsDriveMountPredicate(mountinfo),
+    })
+    const p = plan({ fs, env: { HOME, PATH: '/mnt/c/tools' } })
+    try { expect(everyBind(p.wrap('/bin/sh', [])[1])).not.toContain('/mnt/c/tools') } finally { p.dispose() }
+  })
+
+  it('wires the production filesystem to the exported Windows mount predicate', () => {
+    expect(sandbox.realFs.isWindowsDriveMount).toBe(driveMounts.isWindowsDriveMount)
+  })
+
+  it('retains the execPath node mount even on a Windows drive', () => {
+    const fs = Object.assign(fakeFs({ '/drives/c/runtime/bin/node': '' }, ['/drives/c/runtime/bin']), { isWindowsDriveMount: () => true })
+    const p = plan({ fs, execPath: '/drives/c/runtime/bin/node' })
+    try { expect(everyBind(p.wrap('/bin/sh', [])[1])).toContain('/drives/c/runtime') } finally { p.dispose() }
+  })
+})
+
+describe('Windows drive mountinfo predicate', () => {
+  const mountinfo = String.raw`1 0 8:1 / / rw - ext4 /dev/root rw
+2 1 0:2 / /mnt/c rw - 9p C:\134 rw,aname=drvfs;path=C:\;uid=1000
+3 1 0:3 / /usr/lib/wsl/drivers rw - 9p drivers rw,aname=drivers;uid=1000
+4 1 0:4 / /drives/d rw - drvfs D:\134 rw
+5 1 0:5 / /windows\040drive\011tab\134slash rw - 9p E:\134 rw,aname=drvfs
+6 2 8:2 / /mnt/c/linux rw - ext4 /dev/data rw
+7 1 0:7 / /lookalike rw - 9p other rw,aname=drvfs-extra`
+
+  it.each([
+    ['/mnt/c/tools/pnpm', true], ['/mnt/c', true], ['/mnt/cousin/pnpm', false],
+    ['/usr/lib/wsl/drivers/tool', false], ['/drives/d/bin/npm', true],
+    ['/windows drive\ttab\\slash/bin/git', true], ['/usr/bin/node', false],
+    ['/mnt/c/linux/bin/pnpm', false], ['/mnt/c/linuxish/bin/pnpm', true],
+    ['/lookalike/bin/pnpm', false],
+  ])('classifies %s as Windows drive mount = %s', async (file, expected) => {
+    const mounts = await load<{ windowsDriveMountPredicate: (text: string) => (file: string) => boolean }>('host/windows-drive-mount.mjs')
+    expect(mounts.windowsDriveMountPredicate(mountinfo)(String(file))).toBe(expected)
+  })
+
+  const linux = '2 1 8:1 / /opt/tools rw shared:1 - ext4 /dev/root rw'
+  const windows = String.raw`3 1 0:2 / /opt/tools rw shared:1 - 9p C:\134 rw,aname=drvfs`
+  it.each([
+    [linux, windows, true], [windows, linux, false],
+  ])('uses the last duplicate mount record (%s then %s)', (first, last, expected) => {
+    expect(driveMounts.windowsDriveMountPredicate(`${first}\n${last}`)('/opt/tools/pnpm')).toBe(expected)
+  })
+
+  it('parses a Windows mount with optional shared fields before the separator', () => {
+    expect(driveMounts.windowsDriveMountPredicate(windows)('/opt/tools/pnpm')).toBe(true)
+  })
+
+  it.skipIf(process.platform !== 'linux')('refreshes mountinfo on each call after a new drive mount appears', () => {
+    const reader = vi.fn().mockReturnValueOnce(linux).mockReturnValueOnce(windows)
+    expect(driveMounts.isWindowsDriveMount('/opt/tools/pnpm', reader)).toBe(false)
+    expect(driveMounts.isWindowsDriveMount('/opt/tools/pnpm', reader)).toBe(true)
+    expect(reader).toHaveBeenCalledTimes(2)
+  })
+
+  // The one test on the real mechanism: the default reader must read this host's mountinfo. It can
+  // only go red on a host that has a Windows drive mount (WSL); elsewhere every point reads false
+  // both ways.
+  it.skipIf(process.platform !== 'linux')('reads the real /proc/self/mountinfo by default', () => {
+    const real = readFileSync('/proc/self/mountinfo', 'utf8')
+    const points = real.split('\n').map((line) => line.split(' ')[4]).filter((point): point is string => Boolean(point?.startsWith('/')))
+      .map((point) => point.replace(/\\([0-7]{3})/g, (_m, octal: string) => String.fromCharCode(parseInt(octal, 8))))
+    expect(points).toContain('/')
+    for (const point of points) {
+      expect(driveMounts.isWindowsDriveMount(`${point}/probe`), point).toBe(driveMounts.isWindowsDriveMount(`${point}/probe`, () => real))
+    }
+  })
+
+  it.skipIf(process.platform !== 'linux')('retries mountinfo after a reader throws once', () => {
+    const reader = vi.fn().mockImplementationOnce(() => { throw new Error('transient read failure') }).mockReturnValueOnce(windows)
+    expect(driveMounts.isWindowsDriveMount('/opt/tools/pnpm', reader)).toBe(false)
+    expect(driveMounts.isWindowsDriveMount('/opt/tools/pnpm', reader)).toBe(true)
+    expect(reader).toHaveBeenCalledTimes(2)
+  })
+})
 
 describe('lane host output preflight — Windows paths', () => {
   const home = 'C:\\Users\\RUNNER~1'
