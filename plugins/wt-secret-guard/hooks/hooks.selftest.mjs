@@ -778,7 +778,7 @@ await test('compare-then-write mismatch writes nothing and keeps one secret-free
   const changed = `ghp_${'y'.repeat(36)}`;
   setFile(historyPath, `${JSON.stringify({ display: raw, pastedContents: {} })}\n`);
   const writesBefore = calls.filter((call) => call.capability === 'process.run' && call.argv.some((part) => String(part).startsWith('of='))).length;
-  onBeforeCompare = async (path) => { getFile(path).text = getFile(path).text.replace(raw, changed); onBeforeCompare = undefined; };
+  onBeforeCompare = async (path) => { getFile(path).text = getFile(path).text.replace(raw, () => changed); onBeforeCompare = undefined; };
   await prompt($, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
   const writesAfter = calls.filter((call) => call.capability === 'process.run' && call.argv.some((part) => String(part).startsWith('of='))).length;
   assert.equal(writesAfter, writesBefore);
@@ -1038,7 +1038,7 @@ await test('V3 no-inode replacement fails closed on size and prefix identity', a
   const toolUseId = 'tool-no-inode-original';
   const replacementId = 'tool-no-inode-otherxxx';
   const original = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, input: { command: raw } }] } })}\n`;
-  const replacement = original.replace(toolUseId, replacementId);
+  const replacement = original.replace(toolUseId, () => replacementId);
   assert.equal(Buffer.byteLength(replacement), Buffer.byteLength(original));
   assert.equal(Buffer.from(replacement).subarray(0, 64).equals(Buffer.from(original).subarray(0, 64)), true);
   setFile(transcriptPath, original);
@@ -1052,7 +1052,7 @@ await test('V3 Windows helper also refuses a same-prefix record with another too
   const toolUseId = 'tool-windows-original';
   const replacementId = 'tool-windows-otherxxx';
   const original = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, input: { command: raw } }] } })}\n`;
-  const replacement = original.replace(toolUseId, replacementId);
+  const replacement = original.replace(toolUseId, () => replacementId);
   assert.equal(Buffer.byteLength(replacement), Buffer.byteLength(original));
   assert.equal(Buffer.from(replacement).subarray(0, 64).equals(Buffer.from(original).subarray(0, 64)), true);
   setFile(transcriptPath, original);
@@ -1502,7 +1502,7 @@ await test('V4 every supported op read argument placement is prefetched or refus
   // placements after it would assert nothing.
   for (const [index, [shape, account]] of cases.entries()) {
     const ref = `op://vault/item/password-${index}`;
-    const command = shape.replaceAll('op://vault/item/password', ref);
+    const command = shape.replaceAll('op://vault/item/password', () => ref);
     let executed = false; let opArgv;
     const runtime = { ...$, process: { run: async (argv) => { opArgv = argv; return { exitCode: 1, stdout: '' }; } } };
     const result = await bash(runtime, { tool: 'Bash', command }, async () => { executed = true; return { text: 'leaked' }; });
@@ -3165,7 +3165,7 @@ await test('V55 indexed scrubbing is byte-identical to the old algorithm over ge
       if (mark) substituted.add(token);
       if (definition.buildAfter === issued.length) scrub('matcher warmup', '', false);
     }
-    const text = definition.text.replaceAll('$issued', issued[0] ?? '');
+    const text = definition.text.replaceAll('$issued', () => issued[0] ?? '');
     testResetVaultWork();
     const value = (legacy ? testScrubWithVaultOccurrences(text, '', definition.includeOptional, legacyOccurrences, substituted) : scrub(text, '', definition.includeOptional, substituted)).value;
     return { value, work: testVaultWork() };

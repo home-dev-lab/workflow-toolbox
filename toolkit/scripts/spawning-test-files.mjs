@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
@@ -209,6 +210,8 @@ export const spawningTestFiles = [
   'scripts/test/git-ignored-inputs.test.ts',
   'scripts/test/host-entry-guard.test.ts',
   'scripts/test/label-intent-lens.test.ts',
+  'scripts/test/lint-scope-review.test.ts',
+  'scripts/test/lint-scope.test.ts',
   'scripts/test/plugin-bin-import-safety.test.ts',
   'scripts/test/process-enumeration-load.test.ts',
   'scripts/test/report-contract-lens.test.ts',
@@ -306,7 +309,7 @@ export function checkSpawningTestFiles(root = ROOT) {
   return { found, missing, stale }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkSpawningTestFiles()
   if (process.argv.includes('--check')) {
     if (result.missing.length || result.stale.length) {

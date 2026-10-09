@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { join } from 'node:path'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 export function normalizeLine(line) {
   return line.trim().replace(/\s+/gu, ' ')
@@ -131,6 +131,6 @@ export function main(argv, print = console.log) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isInvokedDirectly(import.meta.url)) {
   process.exitCode = main(process.argv.slice(2))
 }

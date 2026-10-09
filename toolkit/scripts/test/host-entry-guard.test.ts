@@ -31,7 +31,7 @@ const CACHE_ENTRYPOINTS = [
 // reached through a symlink: import.meta.url is the realpath, argv[1] keeps the link, the
 // direct-execution branch never runs, and the file silently does nothing. Every shape counts:
 // `file://${argv[1]}`, pathToFileURL(argv[1]), path.resolve(argv[1]) against fileURLToPath or
-// import.meta.filename, either operand order. Every file under plugin/ must route the comparison
+// import.meta.filename, either operand order. Plugin and toolkit/scripts files must route the comparison
 // through the symlink-safe isInvokedDirectly guard, or call realpath on the same line.
 // A line-based tripwire, not a proof: it cannot see a comparison split across lines, argv[1]
 // read through an alias (a variable, process.argv.at(1)), or Object.is. Every raw guard found in
@@ -149,8 +149,8 @@ describe('host entry guard', () => {
     expect(rawEntryGuardLines('// if (import.meta.url === `file://${process.argv[1]}`) main()')).toEqual([])
   })
 
-  it('never lets a raw import.meta / process.argv[1] entry-guard comparison reappear anywhere under plugin/', () => {
-    const offenders = findRawDirectExecutionComparisons(PLUGIN_ROOT)
+  it('never lets a raw import.meta / process.argv[1] entry-guard comparison reappear under plugin/ or toolkit/scripts/', () => {
+    const offenders = [PLUGIN_ROOT, join(import.meta.dirname, '..')].flatMap(findRawDirectExecutionComparisons)
 
     expect(offenders).toEqual([])
   })

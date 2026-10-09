@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { extname, join, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { listGitIgnoredPaths, pathsRegexSource } from './git-ignored-inputs.mjs'
 
 const DEFAULT_PLUGIN_ROOT = resolve(import.meta.dirname, '../../plugin')
@@ -169,7 +170,7 @@ export function formatHostPrimitiveRefusal(result) {
   ].join('\n')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkHostPrimitives()
   process.stdout.write(`Raw host primitives: ${result.count}/${result.ceiling} across ${result.perimeterFiles} perimeter files.\n`)
   if (result.exceeded) {

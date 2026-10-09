@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { quarantinedTests, validateQuarantinedTests } from './quarantined-tests.mjs'
 
 const VITEST = resolve(import.meta.dirname, '../node_modules/vitest/vitest.mjs')
@@ -37,6 +37,6 @@ export function runReleaseBlockingTests(run = spawnSync, write = (text) => proce
   return releaseBlockingExitCode(blocking.status, quarantine.status)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isInvokedDirectly(import.meta.url)) {
   process.exitCode = runReleaseBlockingTests()
 }
