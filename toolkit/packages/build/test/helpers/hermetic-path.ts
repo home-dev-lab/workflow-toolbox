@@ -8,7 +8,9 @@ import { dirname } from 'node:path'
 // against ~1 s with this PATH. So on POSIX the PATH is the fixture's own directories, the running
 // node's directory and the system directories, nothing inherited. Windows has no lane sandbox and
 // resolves `.cmd` shims through the inherited PATH, so it keeps it.
-const POSIX_SYSTEM_DIRS = ['/usr/local/bin', '/usr/bin', '/bin']
+// The sbin directories stay: the lane supervisor reads a macOS process's cwd with `lsof`, which
+// macOS ships in /usr/sbin. Without them every cwd reads as unknown and the cwd guards refuse.
+const POSIX_SYSTEM_DIRS = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
 
 export function hermeticPath(
   prepend: readonly string[],

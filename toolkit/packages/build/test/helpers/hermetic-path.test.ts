@@ -14,7 +14,11 @@ const KEPT_HOST_PATH_LINES: Record<string, readonly string[]> = {
 describe('hermeticPath', () => {
   it('never carries an inherited PATH entry on POSIX', () => {
     const value = hermeticPath(['/fixture/bin'], 'linux', '/mnt/c/Users/x/scoop/shims:/home/x/.local/bin', '/opt/node/bin/node')
-    expect(value.split(':')).toEqual(['/fixture/bin', '/opt/node/bin', '/usr/local/bin', '/usr/bin', '/bin'])
+    expect(value.split(':')).toEqual(['/fixture/bin', '/opt/node/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])
+  })
+
+  it('keeps /usr/sbin on macOS, where the lane supervisor finds lsof to read a process cwd', () => {
+    expect(hermeticPath([], 'darwin', '/Users/x/bin', '/opt/node/bin/node').split(':')).toContain('/usr/sbin')
   })
 
   it('keeps the inherited PATH on Windows, after the fixture directories', () => {
