@@ -7,6 +7,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  ARTIFACT_CHECK_EXIT_CODES,
   ARTIFACT_SERVER_ID,
   ARTIFACT_SERVER_VERSION,
   artifactDiscoveryPath,
@@ -16,10 +17,13 @@ import {
   artifactUrlResult,
   assignArtifactMounts,
   atomicWriteJson,
+  checkArtifactUrl,
   configuredArtifactPort,
   detectTailscale,
   ensureSecureStateDir,
+  formatArtifactCheck,
   listenArtifactLoopback,
+  listenArtifactTailnet,
   normalizeRoots,
   pathIsDenied,
   pathIsUnder,
@@ -34,7 +38,7 @@ const HELP = `wt-artifact-server - serve registered artifacts through local or t
 
 Usage:
   wt-artifact-server serve
-  wt-artifact-server url <path> [--remote]
+  wt-artifact-server url <path> [--remote] [--check]
   wt-artifact-server status
   wt-artifact-server stop [--force]
   wt-artifact-server restart [--force]
@@ -49,6 +53,10 @@ Configuration:
 Options:
   --force     stop or restart despite registered sessions
   --remote    print the tailnet URL
+  --check     after printing the URL, fetch it (from the host tailscale runs on with
+              --remote) and report on stderr: exit 0 reachable, 4 unreachable,
+              5 unverified; 3 means no URL could be printed, 2 is a usage error.
+              A remote URL is checked from the host tailscale runs on, not from a peer.
   --help, -h  print this text and exit 0
 `
 
@@ -462,13 +470,11 @@ async function serve() {
   }
 
   if (!await listenArtifactLoopback(listen, requestedPort)) return
-  if (tailscale.ip && tailscale.ip !== '127.0.0.1') {
-    try { await listen(tailscale.ip) } catch { tailscale.remoteUrl = null }
-  }
+  await listenArtifactTailnet(listen, tailscale, requestedPort)
   discovery = {
     version: ARTIFACT_SERVER_VERSION, pid: process.pid, port: requestedPort,
     baseUrl: `http://localhost:${requestedPort}`, remoteUrl: tailscale.remoteUrl,
-    tailnetDetection: tailscale.detection,
+    tailnetDetection: tailscale.detection, tailnetVia: tailscale.via,
     roots: [], mounts: [], startedAt: new Date().toISOString(),
   }
   await scanRegistrations()
@@ -481,12 +487,14 @@ async function serve() {
   process.once('SIGTERM', shutdown)
 }
 
-function urlCommand(args) {
+const URL_FLAGS = new Set(['--remote', '--check'])
+
+async function urlCommand(args) {
   const remote = args.includes('--remote')
-  const positionals = args.filter((value) => value !== '--remote')
-  // One path and --remote only: a second path is refused, never silently dropped.
+  const positionals = args.filter((value) => !URL_FLAGS.has(value))
+  // One path and the url flags only: a second path is refused, never silently dropped.
   if (positionals.length > 1) {
-    process.stderr.write('usage: wt-artifact-server url <path> [--remote]\n')
+    process.stderr.write('usage: wt-artifact-server url <path> [--remote] [--check]\n')
     process.exitCode = 2
     return
   }
@@ -495,6 +503,10 @@ function urlCommand(args) {
   const result = artifactUrlResult(path.resolve(argument), { remote })
   if (result.url === null) { process.stderr.write(`${result.reason}\n`); process.exitCode = 3; return }
   process.stdout.write(`${result.url}\n`)
+  if (!args.includes('--check')) return
+  const check = await checkArtifactUrl(result.url, { remote, via: result.via })
+  process.stderr.write(`${formatArtifactCheck(check)}\n`)
+  process.exitCode = ARTIFACT_CHECK_EXIT_CODES[check.verdict]
 }
 
 async function stopRunning(action, force) {
@@ -564,28 +576,30 @@ async function statusCommand() {
   const probe = await probeArtifactServer(state.port)
   if (probe.kind !== 'ours' || probe.health.pid !== state.pid) return 'artifact server: stopped (stale state)'
   const roots = state.roots.map((root) => `${root.name}=${root.path}`).join(', ') || '(none)'
-  const tailnet = state.tailnetDetection
-    ? `${state.tailnetDetection.status}${state.tailnetDetection.reason ? ` (${state.tailnetDetection.reason})` : ''}`
-    : 'unknown (server predates tailnet detection status)'
-  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\ntailnetDetection: ${tailnet}\nroots: ${roots}`
+  const detection = state.tailnetDetection
+  const detectionReason = detection?.reason ? ` (${detection.reason})` : ''
+  const tailnet = detection ? `${detection.status}${detectionReason}` : 'unknown (server predates tailnet detection status)'
+  // A state written before the field existed says nothing about the route: unknown, never native.
+  const via = typeof state.tailnetVia === 'string' ? state.tailnetVia : 'unknown'
+  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\ntailnetDetection: ${tailnet}\ntailnetVia: ${via}\nroots: ${roots}`
 }
 
 const argv = process.argv.slice(2)
 handleHelpFlag(argv, HELP, {
   valueFlags: [],
-  booleanFlags: ['--force', '--remote'],
+  booleanFlags: ['--check', '--force', '--remote'],
 })
 const [command, ...args] = argv
 // `serve` takes no arguments: an extra token is refused (usage, exit 2) instead of being ignored while a
 // listener starts.
 if (command === undefined || (command === 'serve' && args.length === 0)) await serve()
-else if (command === 'url') urlCommand(args)
+else if (command === 'url') await urlCommand(args)
 else if (command === 'status' && args.length === 0) process.stdout.write(`${await statusCommand()}\n`)
 else if ((command === 'stop' || command === 'restart') && args.every((arg) => arg === '--force')) {
   const result = await controlCommand(command, args.includes('--force'))
   ;(result.ok ? process.stdout : process.stderr).write(`${result.message}\n`)
   if (!result.ok) process.exitCode = 1
 } else {
-  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote] | status | stop [--force] | restart [--force]]\n')
+  process.stderr.write('usage: wt-artifact-server [serve | url <path> [--remote] [--check] | status | stop [--force] | restart [--force]]\n')
   process.exitCode = 2
 }
