@@ -102,3 +102,20 @@ LIVENESS_AGENT_ID: <raw id>
 
 Do this for every direct spawn of a `pilot` or `pilot-orchestrator`, named or anonymous. Costs
 one short message, closes the gap for exactly the delegates the mechanism most needs to cover.
+
+## Writing a fence with its expiry
+
+The cost is invisible from both sides. Whoever obeys a stale fence reports work correctly blocked
+and names the fence as the trigger; whoever set it reads a well-formed refusal. Both are right, and
+the work stopped for nothing.
+
+So name the EXPIRY IN the fence, never the fence alone: *"until the compression pass finishes"* is
+checkable by the reader, *"don't touch Y"* is forever.
+
+⚠ **Writing the expiry is only half — an expiry nobody re-reads is inert.** A stale fence reads
+exactly like a live one: same text, and no way for a reader to tell which. The cheap remedies:
+
+- name the fence's condition where whatever SATISFIES it gets recorded, so closing the work and
+  lifting the fence are one act rather than two;
+- when a fence quotes a state, quote the SOURCE that decides it, so a reader checks in one command
+  instead of trusting the sentence;

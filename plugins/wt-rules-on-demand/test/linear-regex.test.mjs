@@ -360,7 +360,7 @@ function nativeSpecTrigger(trigger, entry, flags) {
 
 specsTest('shipped specs compile and each has a firing and non-firing trigger through the real consumer', async (_t, dir) => {
   const files = (await readdir(dir)).filter((file) => file.endsWith('.spec.json'));
-  assert.equal(files.length, 12);
+  assert.equal(files.length, 13);
   const tools = ['Agent', 'SendMessage', 'Workflow', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Read', 'Task', 'Skill', 'Monitor', 'TaskOutput'];
   for (const file of files) {
     const spec = JSON.parse(await readFile(new URL(file, dir), 'utf8'));

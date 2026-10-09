@@ -20,6 +20,8 @@ const RULES = [
 const ACT_RULES = [
   'wt-concurrent-sessions-worktree',
   'wt-delegation-ladder',
+  'wt-proportionate-verification',
+  'wt-sdlc',
   'wt-task-tracking',
   'wt-verify-by-ground-truth',
 ] as const
@@ -62,7 +64,7 @@ const paragraphs = (file: string, generated: RegExp) => readFileSync(file, 'utf8
   .slice(1)
   .filter((paragraph) => !generated.test(paragraph))
 
-type Trigger = { kind?: string, regex?: string, tool?: string, flags?: string, unconditional?: boolean, 'before-first-act'?: boolean }
+type Trigger = { kind?: string, regex?: string, tool?: string, flags?: string, 'input-regex'?: string, unconditional?: boolean, 'before-first-act'?: boolean }
 const COMMAND_HEAD = String.raw`^(?:(?:(?:[^'";&|()\n]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')*(?:;|&&|\|\||\||&(?!&)|\()\s*)|(?:[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()]+))\s+|(?:timeout(?:(?:\s+(?:-s|--signal|-k|--kill-after)\s+\S+|\s+--(?:signal|kill-after)=\S+|\s+--(?:foreground|preserve-status|verbose))*)\s+\S+|nice(?:\s+(?:-[^\s]+|\d+))*|time|nohup|setsid|sudo(?:\s+(?:-[ugChpRT]\s+\S+|--(?:user|group|close-from|host|prompt|role|type)(?:=\S+|\s+\S+)|-[^\s]+))*|npx|pnpm\s+exec|env(?:\s+(?:-[uC]\s+\S+|--(?:unset|chdir)(?:=\S+|\s+\S+)|-[^\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()]+)))*)\s+|(?:ba)?sh\s+-c\s+['"]\s*|(?:if|then|do|else|elif|while|until)\s+|\{\s*|!\s*)*`
 const triggersFor = (name: typeof ACT_RULES[number]) => JSON.parse(
   readFileSync(join(ROOT, 'plugin/rules', `${name}-at-act.spec.json`), 'utf8'),
@@ -70,10 +72,140 @@ const triggersFor = (name: typeof ACT_RULES[number]) => JSON.parse(
 const matchesBash = (name: typeof ACT_RULES[number], command: string) => triggersFor(name)
   .some((trigger) => trigger.kind === 'bash' && new RegExp(trigger.regex ?? '', trigger.flags).test(command))
 
+const MOVED_BLOCKS = [
+  ['wt-proportionate-verification', 'wt-proportionate-verification', `### 3. Hypothesis independence.
+Each verifier construct its OWN explanation BEFORE seeing anyone
+else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
+it.`],
+  ['wt-proportionate-verification', 'wt-proportionate-verification', `### 4. Information diversity.
+Different sources, tools, slices. Shared source list cap coverage at
+what it happened to include.`],
+  ['wt-proportionate-verification', 'wt-proportionate-verification', `### 5. Functional diversity.
+Distinct lenses, distinct objectives (correctness, security,
+performance, does-it-reproduce). Not N identical reviewers.`],
+  ['wt-proportionate-verification', 'wt-proportionate-verification', `### 6. Model-family diversity — ONE axis among these. NOT the master lever.
+Real and worth using, documented reason: LLM judges score their OWN outputs higher AND rate
+same-family outputs higher — >5000 prompt-completion pairs against expert human annotation, nine
+judges (arXiv:2508.06709). Same-family verifier is not merely blind in same places. It is BIASED
+IN FAVOUR of the work.
+But different family does NOT buy independence on every axis. Two different families can share a
+ROLE-LEVEL blind spot — severity ranking is the observed one: one lane flatten it, another is
+unstable across runs on the same input.`],
+  ['wt-proportionate-verification', 'wt-proportionate-verification', `## Never buy independence then spend it on a debate
+
+Verdicts are collected in PARALLEL and in ISOLATION. Moment one verifier see another's answer, the
+independence you paid for is GONE. It does not degrade gracefully.
+Inter-agent sycophancy collapse debate into premature consensus before the correct conclusion is
+reached. Measured multi-agent debate under it score LOWER than a single agent on the same task,
+through distinct debater-driven and judge-driven failure modes (arXiv:2509.23055).
+So: no sequential rounds where agents read each other. No "reviewer 2 comments on reviewer 1". No
+consensus-seeking step. Aggregate MECHANICALLY (majority, or any-critical-wins). Arbiter resolve
+the disagreement — **disagreement is the signal you were buying**, not a defect to smooth away
+before reporting.
+
+Cross-family verifier has no project context. Weight its findings BY TYPE: high signal on
+checkable / reproducible-crash issues, low on "this convention is wrong". It is INPUT, never an
+autonomous verdict. You stay arbiter. A verdict contradicting your richer in-context read does not
+auto-win.`],
+  ['wt-sdlc', 'wt-sdlc', `## Plan, task, and test
+
+Before non-trivial coding, state the problem, expected behavior, affected areas, strategy,
+tests, validation, and risks. Break work into dependency-ordered tasks; mark each complete only
+after its own verification passes.
+
+Use red, green, refactor where practical. A bug fix carries a regression test that fails before
+the fix and passes after it. When strict TDD is impractical, tests still accompany the change;
+do not retrofit a superficial test merely to satisfy the protocol.`],
+  ['wt-sdlc', 'wt-sdlc', `Make the simplest correct change using the project's conventions. Do not add unrelated changes,
+duplication, or abstractions that the problem does not require.`],
+  ['wt-sdlc', 'wt-sdlc', `Tests cover relevant happy paths, branches, boundaries, invalid input, expected failures, and
+regressions. A coverage number without a measuring gate is not evidence. For affected
+user-facing flows, exercise the real UI end to end: primary flow, validation errors, navigation,
+state, negative cases, and touched existing scenarios.`],
+  ['wt-sdlc', 'wt-sdlc', `An agent or skill shipped to act on another project is e2e'd from that project's own session:
+deploy it to the copy that project runs, then have that session invoke it. A run driven from the
+builder's session proves the tool, not the agent; the builder never applies the agent's output to
+the other project itself.`],
+  ['wt-sdlc', 'wt-sdlc', `Observe an assumption about the host before building anything on it; treat the observation as
+evidence, not the assumption as a premise.`],
+  ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `## Summary asserting a guarantee is verified against its body, SAME pass
+
+Docstring, header, comment claim a PROPERTY — "this path is literal", "cursor derive from
+acknowledgements", "return everything after X"? Read the body under it before moving on. Not
+later. Not as review step. Same pass — claim and code diverge at the moment code change and claim
+does not.
+
+Failure is not carelessness. Treating it as carelessness is why it repeat. Rewrite body, then
+adjust summary → you describe what you INTENDED, not what you WROTE. That summary is exactly what
+next reader trust when checking quickly. So it mislead exactly when it matter.
+
+This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
+needed: the sentence is reassuring.`],
+  ['wt-delegation-ladder', 'wt-delegation-routing', `Compose pilot/orchestrator spawn (environment brief + model elevation) via
+\`workflow-toolbox:pilot-wave\` skill.`],
+  ['wt-delegation-ladder', 'wt-delegation-addressing', `The cost is invisible from both sides. Whoever obeys a stale fence reports work correctly blocked
+and names the fence as the trigger; whoever set it reads a well-formed refusal. Both are right, and
+the work stopped for nothing.`],
+  ['wt-delegation-ladder', 'wt-delegation-addressing', `So name the EXPIRY IN the fence, never the fence alone: *"until the compression pass finishes"* is
+checkable by the reader, *"don't touch Y"* is forever.`],
+  ['wt-delegation-ladder', 'wt-delegation-addressing', `⚠ **Writing the expiry is only half — an expiry nobody re-reads is inert.** A stale fence reads
+exactly like a live one: same text, and no way for a reader to tell which. The cheap remedies:
+
+- name the fence's condition where whatever SATISFIES it gets recorded, so closing the work and
+  lifting the fence are one act rather than two;
+- when a fence quotes a state, quote the SOURCE that decides it, so a reader checks in one command
+  instead of trusting the sentence;`],
+  ['wt-task-tracking', 'wt-task-tracking', `Managed board keeps small fixed set of lists for lifecycle stages (e.g. Backlog, Next, In
+Progress, Blocked, Done, plus catch-all for descoped work) so "what's open" is mechanical query,
+not per-card judgment call. Every card carries three label axes — priority, type, effort (e.g.
+P0–P2, feature/chore/bug/research, S/M/L) — card missing any of three can't be scheduled: axes
+are what queue is ordered by, not decoration. Trackers without native dependency links need
+written convention (e.g. \`Depends-on: #<id>\` in description) plus mechanical check that only
+proposes or starts a card once all dependencies Done.`],
+] as const
+
 let target: string | undefined
 afterEach(() => {
   if (target) rmSync(target, { recursive: true, force: true })
   target = undefined
+})
+
+describe('shipped at-act moves', () => {
+  it.each(MOVED_BLOCKS)('moves %s block to %s at act: %s', (core, companion, block) => {
+    const normalize = (text: string) => text.replace(/\s+/g, ' ').trim()
+    expect(normalize(readFileSync(join(ROOT, 'plugin/rules', `${core}.md`), 'utf8')), `${core} moved block remains static`).not.toContain(normalize(block))
+    expect(normalize(readFileSync(join(ROOT, 'plugin/rules', `${companion}-at-act.md`), 'utf8')), `${companion} moved block missing`).toContain(normalize(block))
+  })
+
+  it.each([
+    ['wt-proportionate-verification', 'Agent', {}],
+    ['wt-proportionate-verification', 'Task', {}],
+    ['wt-proportionate-verification', 'Workflow', {}],
+    ['wt-proportionate-verification', 'Skill', { skill: 'second-opinion' }],
+    ['wt-proportionate-verification', 'Skill', { skill: 'independent-analysis' }],
+    ['wt-sdlc', 'Edit', { file_path: 'src/example.ts' }],
+    ['wt-verify-by-ground-truth', 'Edit', { file_path: 'src/example.ts' }],
+  ] as const)('serves %s before %s with %j', (name, tool, input) => {
+    expect(triggersFor(name).some((trigger) => trigger.kind === 'tool'
+      && trigger['before-first-act'] === true && new RegExp(trigger.tool ?? '').test(tool)
+      && (trigger.unconditional || new RegExp(trigger['input-regex'] ?? '$a').test(JSON.stringify(input)))), `${name} before ${tool}`).toBe(true)
+  })
+
+  it('does not serve proportionate verification for a diagnostic diff', () => {
+    expect(matchesBash('wt-proportionate-verification', 'git diff --check')).toBe(false)
+  })
+
+  it('keeps a static anchor for every moved duty', () => {
+    // Static anchors that keep a moved duty in force where its companion's trigger does not fire.
+    const flat = (name: string) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8').replace(/\s+/g, ' ')
+    for (const [name, anchors] of Object.entries({
+      'wt-proportionate-verification': ['Collect verdicts in parallel and in isolation', 'arbiter resolves the disagreement', 'never an autonomous verdict'],
+      'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason'],
+      'wt-verify-by-ground-truth': ['claims a property against the body under it in the same pass'],
+      'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
+      'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
+    })) for (const anchor of anchors) expect(flat(name), `${name} anchor: ${anchor}`).toContain(anchor)
+  })
 })
 
 describe('shipped split rules', () => {
@@ -151,7 +283,7 @@ describe('shipped split rules', () => {
     for (const name of [
       'wt-delegation-addressing', 'wt-delegation-routing', 'wt-distributed-twins',
       'wt-memory-hygiene', 'wt-memory-maintenance', 'wt-reporting-monitor',
-      'wt-workflows-as-reasoning', 'wt-sdlc', ...ACT_RULES,
+      'wt-workflows-as-reasoning', ...ACT_RULES,
     ]) {
       const body = readFileSync(join(rulesDir, `${name}-at-act.md`), 'utf8')
       const spec = JSON.parse(readFileSync(join(rulesDir, `${name}-at-act.spec.json`), 'utf8')) as {
@@ -300,7 +432,7 @@ describe('shipped split rules', () => {
     const sharedCorpus: Array<[string, typeof RULES[number][]]> = [
       ['cd x && git -C y merge branch', ['wt-concurrent-sessions-worktree', 'wt-verify-by-ground-truth']],
       ['setsid nohup pnpm test', ['wt-verify-by-ground-truth']],
-      ["cat > .lane/brief.md <<'EOF'", ['wt-delegation-ladder']],
+      ["cat > .lane/brief.md <<'EOF'", ['wt-delegation-ladder', 'wt-proportionate-verification', 'wt-sdlc']],
       ['gh issue close 123', ['wt-task-tracking']],
     ]
     for (const [command, expected] of sharedCorpus) {
@@ -351,10 +483,5 @@ describe('shipped split rules', () => {
     })
     expect(check.status, check.stderr).toBe(0)
     for (const name of ACT_RULES) expect(check.stdout).toContain(`${name}-at-act.md: UP-TO-DATE`)
-    for (const name of ['wt-proportionate-verification']) {
-      expect(existsSync(join(ROOT, 'plugin/rules', `${name}-at-act.md`))).toBe(false)
-      expect(existsSync(join(ROOT, 'plugin/rules', `${name}-at-act.spec.json`))).toBe(false)
-      expect(existsSync(join(target, `${name}-at-act.md`))).toBe(false)
-    }
   })
 })

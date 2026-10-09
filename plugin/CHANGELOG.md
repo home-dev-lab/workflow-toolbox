@@ -16,6 +16,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 - Repository quality gates now exclude Git-ignored generated inputs from ESLint, dependency-cruiser, Knip and the host-primitive census. Plugin TypeScript configuration and generated host typings are ignored rather than tracked.
 
+- Act-bound verification diversity, SDLC, summary-checking, delegation and task-board details now live in on-demand companions, with static anchors and SDK routing preserved; no directive was dropped. With an on-demand engine, the first file edit of a context is now refused once to serve the SDLC and verification companions. Re-adopt the rules and the pilot agent templates: both carry the new `proportionate-verification-decorrelation` block.
+
 ## [0.191.1] - 2026-10-08
 
 ### Fixed
