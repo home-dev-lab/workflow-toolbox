@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Linux lane sandboxes now skip PATH toolchain candidates whose real targets live on Windows drive mounts and continue to the next Linux candidate. Mount detection supports configurable WSL drive roots, escaped mount points, and nested mounts, avoiding socket scans of unusable Windows toolchain directories.
 - Lifecycle receipt waits now allow a bounded settling window for a matching live pilot worker after its child exits, including the brief moment when the exiting child's identity cannot be read, so genuine completion receipts are not mistaken for inconsistent-record or unreadable-identity timeouts.
 
 ## [0.191.0] - 2026-10-08
