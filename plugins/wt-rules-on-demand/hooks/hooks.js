@@ -13,6 +13,8 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
+import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
+  mergeFlightHealth, noteFlightCall, resetFlightRecorder, disableFlightRecorder } from './flight-recorder.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
 
@@ -46,6 +48,98 @@ const activityWrites = new Map();
 const pendingActivity = new Map();
 let activityProfile = null;
 let activityRetryAt = 0;
+let flightReady = false;
+let flightPending = false;
+let flightConfig = null;
+let flightSession = null;
+let flightDisabled = false;
+
+function rememberFlightConfig(config) {
+  flightConfig ??= config;
+  return config;
+}
+
+// A named async step, not a closure: the host validator refuses $ captured in a function expression.
+async function chainFlightPhase($, previous, plan) {
+  await previous;
+  return runFlightPlan($, plan);
+}
+
+function queueFlightPhase($, flight, plan) {
+  if (!flight?.path) return;
+  flight.writes = chainFlightPhase($, flight.writes, plan);
+}
+
+// Imported plans are pure: host operations stay literal, local calls here.
+async function writeFlight($, path, value) {
+  try { return await $.fs.write(path, value); }
+  catch (error) {
+    // The host forbids capability member reads; detect an unavailable operation by calling it.
+    if (error?.name === 'TypeError') { flightDisabled = true; disableFlightRecorder(); }
+    throw error;
+  }
+}
+
+async function flightOperation($, op, path, value) {
+  if (flightDisabled) throw new TypeError('flight recorder disabled for this load');
+  if (op === 'write') return writeFlight($, path, value);
+  if (op === 'list') return $.fs.list(path);
+  if (op === 'read') return $.fs.read(path);
+  if (op === 'log') return $.ui.log(path);
+}
+
+async function runFlightPlan($, plan) {
+  try {
+    let step = plan.next();
+    while (!step.done) {
+      const { op, path, value } = step.value;
+      let response;
+      try {
+        response = { value: await flightOperation($, op, path, value) };
+      } catch (error) { response = { error }; }
+      step = plan.next(response);
+    }
+    return step.value;
+  } catch { return null; }
+}
+
+async function collectFlights($, harvested) {
+  try {
+    if (!harvested?.length) return;
+    mergeFlightHealth(pendingHealth, { interruptedCalls: harvested.map(({ path, row }) => ({ ...row, path })) });
+    // Only the engine's normal flush persists this batch; harvest never takes its write turn.
+    await runFlightPlan($, markHarvested(harvested));
+  } catch { /* Diagnostic collection must never affect serving. */ }
+}
+
+function beginFlight(e, work, start) {
+  try {
+    if (flightDisabled || !flightReady) return null;
+    return startFlight(e, work, start);
+  } catch { return null; }
+}
+
+async function scheduleFlights($) {
+  if (flightDisabled || flightReady || flightPending || !flightConfig || !flightSession) return;
+  flightPending = true;
+  void finishFlightSetup($);
+}
+
+async function finishFlightSetup($) {
+  try { flightReady = await initializeFlights($); }
+  catch { flightReady = false; }
+  finally { flightPending = false; }
+}
+
+async function initializeFlights($) {
+  prepareFlight(flightConfig, flightSession);
+  // Setup is background-only; calls cannot claim a slot until scanning and marking finish.
+  const harvested = await runFlightPlan($, harvestFlight());
+  if (!harvested) return false;
+  // Unconfirmed slots stay reserved until background announcement and marking finish.
+  await collectFlights($, harvested);
+  return true;
+}
 
 function noteIdentityActivity(rules, field, now = new Date().toISOString()) {
   noteActivity(pendingActivity, activityWrites, rules, field, now);
@@ -361,6 +455,7 @@ const healthDay = (counts) => Object.fromEntries(HEALTH_FIELDS.map((field) => [f
 // A stored error entry without a timestamp string cannot be ordered, so it is dropped rather than blocking every flush.
 const healthErrors = (entries) => (Array.isArray(entries) ? entries : []).filter((entry) => typeof entry?.at === 'string');
 function mergeHealth(target, batch) {
+  mergeFlightHealth(target, batch);
   for (const [day, counts] of Object.entries(batch.days)) {
     const entry = target.days[day] ?? healthDay(null);
     for (const field of ['calls', 'errors', 'totalMs', 'slow']) entry[field] += counts[field];
@@ -379,13 +474,14 @@ async function flushHealth($) {
   await turn.previous.catch(() => {});
   healthFlushing++;
   try {
-    if (!pendingHealth.calls && !pendingHealth.lastErrors.length) return;
+    if (!pendingHealth.calls && !pendingHealth.lastErrors.length && !pendingHealth.interruptedCalls?.length) return;
     const batch = pendingHealth;
     pendingHealth = emptyHealth();
     try {
       const stored = await $.store.get('health');
       const health = { days: Object.fromEntries(Object.entries(stored?.days ?? {}).map(([day, counts]) => [day, healthDay(counts)])),
         lastErrors: healthErrors(stored?.lastErrors) };
+      mergeFlightHealth(health, stored);
       mergeHealth(health, batch);
       health.days = Object.fromEntries(Object.entries(health.days).sort().slice(-31));
       health.lastErrors = health.lastErrors.slice(-20);
@@ -506,7 +602,7 @@ function* loadWinner($, name, found, staticFiles, physicalDirs, rules) {
 
 async function load($, root, fallback = false) {
   const env = { CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') };
-  const config = configDirectory(env);
+  const config = rememberFlightConfig(configDirectory(env));
   if (!config) { await notice($, 'HOME and USERPROFILE unavailable; cannot locate user rules'); return []; }
   const candidates = loadRootCandidates(root, config, await linkedWorktree($, root), fallback);
   const configReal = await realPathOf($, config);
@@ -642,7 +738,13 @@ async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatche
 }
 const exhaustionNotice = (budget) => `wt-rules-on-demand: shared regex budget exhausted: ${budget.unresolved.size} rules served unevaluated`;
 const block = (rule) => `<rule name="${rule.name}">\n${rule.content}\n</rule>`;
-async function sessionId($) { try { return await $.session.id(); } catch { return null; } }
+async function sessionId($) {
+  try {
+    const id = await $.session.id();
+    flightSession ??= id;
+    return id;
+  } catch { return null; }
+}
 const summary = (e) => e.tool === 'Bash' ? `Bash: ${bounded(e.command ?? '').trim().split(/\s+/).slice(0, 2).join(' ')}`
   : `${e.tool}: ${String(pathOf(e)).split(/[\\/]/).at(-1) || 'call'}`;
 
@@ -928,9 +1030,35 @@ export const register = (on, options, clock = Date.now) => {
 };
 
 let triggerClock = Date.now;
+
+// Only the host-facing promise settles on abort; the body retains its real lifetime.
+async function settleHook(signal, body) {
+  let abandon;
+  const settled = new Promise((resolve, reject) => {
+    abandon = () => resolve();
+    // Keep observing rejection even after abandonment.
+    body.then(resolve, reject);
+    signal.addEventListener('abort', abandon, { once: true });
+    if (signal.aborted) abandon();
+  });
+  try { return await settled; }
+  finally { signal.removeEventListener('abort', abandon); }
+}
+
+async function abortableEvent($, e, next, work) {
+  const signal = next.signal;
+  if (signal?.aborted) return;
+  const body = trackedEvent($, e, next, work);
+  if (!signal) return body;
+  return settleHook(signal, body);
+}
+
 async function trackedEvent($, e, next, work) {
   if (!enabled) return next(e);
   const start = Date.now();
+  const flight = beginFlight(e, work, start);
+  // Dispatch immediately from a named async host step; never wait for the write.
+  if (flight?.path) flight.writes = runFlightPlan($, entryFlight(flight));
   let downstreamMs = 0, healthMs = 0, downstreamError = false;
   const timedNext = async (value) => {
     const began = Date.now();
@@ -952,16 +1080,21 @@ async function trackedEvent($, e, next, work) {
     }
     throw error;
   } finally {
-    await loadedRules($, [...contexts.values()].flatMap((ctx) => ctx.rules ?? []));
-    await flushIdentityActivity($);
-    await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {});
+    queueFlightPhase($, flight, finallyFlight(flight));
+    void scheduleFlights($);
+    try {
+      await loadedRules($, [...contexts.values()].flatMap((ctx) => ctx.rules ?? []));
+      await flushIdentityActivity($);
+      noteFlightCall(pendingHealth, flight, Date.now() - start);
+      await recordHealth($, Math.max(0, Date.now() - start - downstreamMs - healthMs), null, work).catch(() => {});
+    } finally { queueFlightPhase($, flight, completeFlight(flight)); }
   }
 }
-async function promptContextEvent($, e, next) { return trackedEvent($, e, next, 'prompt.context'); }
-async function sessionCompactEvent($, e, next) { return trackedEvent($, e, next, 'session.compact'); }
-async function promptSubmitEvent($, e, next) { return trackedEvent($, e, next, 'prompt.submit'); }
-async function turnCompleteEvent($, e, next) { return trackedEvent($, e, next, 'turn.complete'); }
-async function toolCallEvent($, e, next) { return trackedEvent($, e, next, 'tool.call'); }
+async function promptContextEvent($, e, next) { return abortableEvent($, e, next, 'prompt.context'); }
+async function sessionCompactEvent($, e, next) { return abortableEvent($, e, next, 'session.compact'); }
+async function promptSubmitEvent($, e, next) { return abortableEvent($, e, next, 'prompt.submit'); }
+async function turnCompleteEvent($, e, next) { return abortableEvent($, e, next, 'turn.complete'); }
+async function toolCallEvent($, e, next) { return abortableEvent($, e, next, 'tool.call'); }
 
 async function promptContextWork($, e, next) {
     if (enabled) {
@@ -1155,4 +1288,4 @@ async function toolCallWork($, e, next) {
   return step.value;
 }
 
-export function resetForSelftest() { activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest(keepFlightConfig = false) { resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

@@ -10,6 +10,63 @@ to `true`. Claude Code exports this option to the startup hook as
 quality check. When rules exist but the switch is off, startup reports their count.
 See [TRIGGERS.md](TRIGGERS.md).
 
+A separate command hook announces when the host unloads the rules-on-demand
+engine because its hooks worker was terminated: no at-act rule is then served
+or refused. It announces on the next user prompt, session start, or Agent, Task
+or SendMessage tool call; hook input over 64 KiB is skipped. The announcement
+ends after this plugin's manifest reload, a `/reload-plugins` summary
+(it names no plugin), or a fresh process (restart or resume); observed engine
+serving or an unconfirmed-call harvest line also confirms recovery. Evidence is
+interpreted in transcript order; an unload row does not identify whether the
+worker was terminated for a heartbeat miss or repeated hook-budget overruns.
+A sub-agent tells its main session. Warnings repeat at most every ten minutes,
+but always after compaction while unloaded. Detection scans only the last 4 MiB
+on first use, then new complete rows (at most the last 16 MiB per scan); unloads
+outside those bounds are not observed. This hook only announces the loss.
+
+Each event hook settles when the host aborts `next.signal`; a signal already
+aborted on entry starts no work. A running body continues detached, with its
+rejections observed and its recorder slot held until that body actually ends.
+Without an abort, the downstream answer or error is preserved.
+
+While enabled, the engine writes small event breadcrumbs under
+`<config dir>/plugins/data/wt-rules-on-demand/inflight/`, reusing at most 32 slots
+per session across reloads. Coverage is bounded at 32 concurrent calls per
+session: a 33rd concurrent call gets no breadcrumb. Completed and harvested
+slots are marked in place. Across sessions, the command-hook detector deletes
+files whose modification time is over seven days old, inspecting at most 200
+files per detector run and advancing a sweep cursor on later runs. Expired
+files beyond that batch remain until a later run. Directory enumeration and
+sorting still cover the entire directory; pruning also runs if saving watcher
+state fails. The cursor lives in `inflight/`, independently of watcher-state
+writes, and is ignored by the recorder. A “call did not confirm completion”
+progress line after reload means an earlier load left that session's event in
+phase `work` or `finally`. Neither phase proves an interruption: a completed
+call's trailing writes may not have landed. These lines name the work, tool,
+last phase, input-character estimate and start time. Announcements are
+at-least-once: the line is logged before marking the slot, and a failed mark
+can produce a duplicate line after reload.
+The recorder reuses the config directory and session identity resolved by the
+engine's own rule loading and journaling; it makes no separate environment or
+session-identity reads. Setup scans and marking run in the background after
+those values are available. A call made before setup finishes is unrecorded,
+including the call that first resolves them. Hooks never wait for recorder
+setup or writes: the recorder adds no await or diagnostic read before serving
+starts. Once ready, it dispatches the entry breadcrumb write before serving,
+but nothing makes that breadcrumb reach disk before the work. A worker loss
+can therefore leave no evidence of a call whose write never landed. Finally
+and completion writes stay ordered behind the entry write in the background,
+with one retry on a failed completion write. Hosts without `fs.write` disable
+recording for that module load. Failed own-slot reads leave the background
+scan retryable by a later event. Harvest
+only merges rows into the pending health batch; it never takes the engine's
+shared write turn or issues a store operation. The engine's normal flush
+persists the batch. Recorder diagnostics must never stall serving; announcement,
+marking and health persistence are best effort rather than one atomic operation.
+The health record's `interruptedCalls` retains the newest 20 such events, and
+`slowestCalls` lists today's ten longest completed calls in descending wall-time
+`ms`, with `work`, `tool`, `inputChars` and completion time `at` (UTC).
+
 Put rules in `<project>/.claude/rules-on-demand/*.md` or
 `<config dir>/rules-on-demand/*.md` (`CLAUDE_CONFIG_DIR`, otherwise
 `HOME/.claude`, or `USERPROFILE/.claude`). The `adopt` skill installs both rule

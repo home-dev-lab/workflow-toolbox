@@ -114,7 +114,9 @@ function shrinkServed(served, budget) {
   return { value, evicted };
 }
 
-// Health is bounded by construction (31 days of five numbers, 20 errors of 160 characters); past its budget it moves out whole.
+// Health is bounded by construction: 31 counter days, 20 short errors, 20 bounded
+// interrupted calls and today's 10 slowest calls fit the unchanged 50k budget.
+// Past its budget it moves out whole.
 function shrinkHealth(health, budget) {
   if (jsonLength(health) <= budget) return { value: health, evicted: null };
   return { value: { days: {}, lastErrors: [] }, evicted: health };
