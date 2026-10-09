@@ -2,10 +2,11 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
-import { delimiter, dirname, join as pathJoin } from 'node:path'
+import { dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { hermeticPath } from './helpers/hermetic-path.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
@@ -49,6 +50,11 @@ const RECURRENT_WORKER_SECONDS = Math.ceil((RECURRENT_TEST_TIMEOUT_MS + 60_000) 
 const RECURRENT_LAUNCH_TIMEOUT_SECONDS = RECURRENT_WORKER_SECONDS + 60
 const BWRAP_WORKS = process.platform === 'linux' && (() => { try { return statSync(realpathSync('/usr/bin/bwrap')).uid === 0 && statSync('/').uid === 0 } catch { return false } })() && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
 const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
+// The control and watcher cleanup paths refuse a child whose cwd the supervisor cannot read. Probe that
+// with the supervisor's own reader (/proc on Linux, lsof on macOS) under the host's environment, so a
+// host without it skips these tests and says why, while a fixture that hides the reader still fails.
+const HOST_READS_PROCESS_CWD = process.platform !== 'win32' && typeof inspectProcess(process.pid, { captureCwd: true })?.cwd === 'string'
+const NEEDS_PROCESS_CWD = '[requires reading a process cwd: /proc on Linux, lsof on macOS]'
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -85,7 +91,8 @@ function fixture(script: string, watcherHostCensus = false) {
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
   const helperFixture = join(root, 'helpers.json')
   writeFileSync(helperFixture, '[]\n')
-  const env: NodeJS.ProcessEnv = { ...sealedPluginCliEnv(root), PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', WT_LANE_SANDBOX: 'off', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
+  const env: NodeJS.ProcessEnv = { ...sealedPluginCliEnv(root), PATH: hermeticPath([bin]), CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', WT_LANE_SANDBOX: 'off', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
+  env.WT_EXTERNAL_MODEL_ENV_ALLOW += ',WT_DISABLE_SPAWN_AT_COUNT,WT_OPENCODE_WRAPPER'
   return { root, dir, config, env }
 }
 function isolateWatcherHostCensus(f: ReturnType<typeof fixture>) {
@@ -434,6 +441,23 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     waitForContent(journal, /"event":"terminated"/)
     expect(journalEvents(journal, 'terminated')).toHaveLength(1)
+  })
+  it('preserves worker identity and reports terminal failure to the waiter when real opencode spawn errors', () => {
+    const f = fixture('true')
+    f.env.WT_DISABLE_SPAWN_AT_COUNT = '2'
+    f.env.WT_OPENCODE_WRAPPER = join(f.root, 'bin', 'opencode')
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    const log = join(f.dir, '.lane', 'run.log')
+    waitForContent(log, /^EXIT=/m)
+    expect(readFileSync(join(f.dir, '.lane', 'preflight-count'), 'utf8')).toBe('2')
+    const state = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
+    expect(state).toMatchObject({ workerPid: Number(/pid=(\d+)/.exec(result.stdout)?.[1]), state: 'launch-failed', reason: expect.stringMatching(/^opencode spawn failed:.*EACCES/) })
+    expect(state.workerArgv).toEqual(expect.any(Array))
+    expect(state.workerStartTime).toEqual(expect.any(Number))
+    expect(readFileSync(log, 'utf8')).toMatch(new RegExp(`wt-lane: launch-failed: ${escapeRegex(state.reason)}\nEXIT=1\n$`))
+    const waited = spawnSync(process.execPath, [join(ROOT, 'plugin/bin/wt-lane-wait.mjs'), '--dir', f.dir, '--timeout', '30', '--poll', '1'], { encoding: 'utf8', env: f.env, timeout: 40_000 })
+    expect(waited.stdout, waited.stderr).toContain('LANE DONE exit=1')
   })
   it('signals an ordinary descendant before publishing the close-path receipt or exited state [requires POSIX process groups]', () => {
     const f = fixture('true')
@@ -842,6 +866,9 @@ const interval = setInterval(() => {
     expect(result.status, result.stderr).toBe(0)
     const stateFile = currentStateFile(f.dir, 4000)
     waitForContent(stateFile, /launch-failed/, 4000)
+    const log = join(f.dir, '.lane', 'run.log')
+    waitForContent(log, /^EXIT=/m, 30_000)
+    expect(readFileSync(log, 'utf8')).toMatch(/wt-lane: launch-failed: worker(?: returned before spawning opencode|'s event loop drained before opencode spawned)[^\n]*\nEXIT=1\n$/)
     expect(readFileSync(countFile, 'utf8')).toBe('2')
     expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toMatchObject({ state: 'launch-failed' })
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
@@ -917,7 +944,10 @@ const interval = setInterval(() => {
     expect(readFileSync(journal, 'utf8')).toContain('"event":"would-clean"')
     killIdentity(orphan, 'SIGKILL')
   })
-  it('abandons a live orphan when its worker is gone', () => {
+  it.runIf(process.platform === 'linux')('reads a process cwd on Linux, so the cwd-guard tests are never skipped there', () => {
+    expect(HOST_READS_PROCESS_CWD).toBe(true)
+  })
+  it.skipIf(!HOST_READS_PROCESS_CWD)(`abandons a live orphan when its worker is gone ${NEEDS_PROCESS_CWD}`, () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const res = run(f, ['--timeout', '1', '--decision-grace', '30']); expect(res.status).toBe(0)
@@ -1122,7 +1152,7 @@ const interval = setInterval(() => {
     expect(watcher.stderr.match(/trace destination is inside a watched worktree/g)).toHaveLength(1)
     expect(existsSync(trace)).toBe(false)
   }, 60_000)
-  it('enforce mode escalates and journals cleaned only after the orphan is gone', () => {
+  it.skipIf(!HOST_READS_PROCESS_CWD)(`enforce mode escalates and journals cleaned only after the orphan is gone ${NEEDS_PROCESS_CWD}`, () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
@@ -1162,7 +1192,7 @@ const interval = setInterval(() => {
     expect(watcher.stderr).toContain('WT_LANE_WATCH_TEST_SWEEP_LOG')
     expect(watcher.stderr).toContain('test sweep log write failed; watcher behavior unchanged')
   })
-  it('reports a failed enforce kill journal on stdout', () => {
+  it.skipIf(!HOST_READS_PROCESS_CWD)(`reports a failed enforce kill journal on stdout ${NEEDS_PROCESS_CWD}`, () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')

@@ -20,7 +20,7 @@ import { hostAdapter } from './lib/host/adapter.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } from './lib/host/lane-host-dir.mjs'
 import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'
-import { spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
+import { appendLaunchFailure, awaitChildSpawn, spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
 import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
 
 const DEFAULT_TIMEOUT = 5400
@@ -32,6 +32,7 @@ const DEFAULT_MIN_AVAILABLE_MIB = 1024
 const DECISION_TRANSITION_BOUND_MS = 5_000
 const LAUNCH_LOCK_MAX_AGE_MS = 120_000
 const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
+const OPENCODE_SPAWN_WAIT_MS = 60_000
 const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
 const PLATFORM = process.platform
 
@@ -439,6 +440,49 @@ function currentLaneLaunchRefusal(opts, modules, paths, current, inspect) {
   return true
 }
 
+export async function spawnAndReportOpencode({ spawnOpencode, onChild, onSpawn, cleanup, writeFailure, log, timeoutMs = OPENCODE_SPAWN_WAIT_MS }) {
+  let child
+  try {
+    child = spawnOpencode()
+    onChild(child)
+    await awaitChildSpawn(child, { timeoutMs })
+    child.on('error', (error) => { child.lateSpawnError = error })
+    onSpawn()
+    return child
+  } catch (error) {
+    let reason = `opencode spawn failed: ${error instanceof Error ? error.message : String(error)}`
+    try { cleanup() } catch { /* reporting the spawn failure must survive cleanup failure */ }
+    try { writeFailure(reason) } catch (recordError) {
+      reason += `; supervision record not written: ${recordError instanceof Error ? recordError.message : String(recordError)}`
+    }
+    appendLaunchFailure(log, reason)
+    if (error?.code === 'OPENCODE_SPAWN_TIMEOUT') {
+      try { child.kill('SIGKILL') } catch { /* the child may already be gone */ }
+    }
+    return null
+  }
+}
+
+function readSupervisionRecord(file) {
+  try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return null }
+}
+
+export function reportWorkerReturnedBeforeSpawn({ dir, runId, log, exitCode }) {
+  const reason = exitCode === undefined
+    ? "worker's event loop drained before opencode spawned (no exit code)"
+    : `worker returned before spawning opencode (exit code ${exitCode})`
+  try {
+    const stateFile = supervisionPaths(dir, runId).record
+    const current = readSupervisionRecord(stateFile)
+    if (current && current.state !== 'launching') return
+    mkdirSync(path.dirname(stateFile), { recursive: true })
+    const temporary = `${stateFile}.${process.pid}.${Date.now()}.tmp`
+    writeFileSync(temporary, `${JSON.stringify({ ...current, version: 1, runId, state: 'launch-failed', exit: 1, worktree: dir, reason }, null, 2)}\n`, { mode: 0o600 })
+    renameSync(temporary, stateFile)
+  } catch {}
+  appendLaunchFailure(log, reason)
+}
+
 async function main() {
   const worker = process.argv[2] === '--worker'
   const opts = parse(process.argv.slice(worker ? 3 : 2))
@@ -447,16 +491,7 @@ async function main() {
   let workerSpawnedChild = false
   if (worker && opts.runId && opts.dir) process.once('beforeExit', () => {
     if (workerSpawnedChild) return
-    const stateFile = supervisionPaths(opts.dir, opts.runId).record
-    let current = null
-    try { current = JSON.parse(readFileSync(stateFile, 'utf8')) } catch {}
-    if (current && current.state !== 'launching') return
-    try {
-      mkdirSync(path.dirname(stateFile), { recursive: true })
-      const temporary = `${stateFile}.${process.pid}.${Date.now()}.tmp`
-      writeFileSync(temporary, `${JSON.stringify({ ...current, version: 1, runId: opts.runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason: 'worker returned before spawning opencode' }, null, 2)}\n`, { mode: 0o600 })
-      renameSync(temporary, stateFile)
-    } catch {}
+    reportWorkerReturnedBeforeSpawn({ dir: opts.dir, runId: opts.runId, log: opts.log, exitCode: process.exitCode })
   })
   if (!existsSync(opts.dir) || !statSync(opts.dir).isDirectory()) { process.stderr.write(`wt-lane: --dir is not a directory: ${opts.dir}\n`); return 2 }
   if (!existsSync(opts.brief)) { process.stderr.write(`wt-lane: --brief does not exist: ${opts.brief}\n`); return 2 }
@@ -748,7 +783,6 @@ async function main() {
   const args = ['run', `Read and execute the complete brief at ${readableBrief}.`, '--auto', '--dir', opts.dir, '--model', opts.model, ...(opts.variant ? ['--variant', opts.variant] : [])]
   // OpenCode honours this runtime flag by skipping ~/.claude/skills and project .claude/skills,
   // preserving its own and .agents skills while fencing the harness's single-writer memory skills.
-  let child
   let earlyChildClose = null
   // A first line BEFORE the spawn and the identity capture: a launcher that is alive but still
   // waiting on capture must never read as `<no output>` to a bounded caller (Windows runs 19–20).
@@ -757,20 +791,15 @@ async function main() {
   appendFileSync(fd, `${new Date().toISOString()} stage=opencode-spawn-start ${progress}\n`)
   writeLaneStage(opts.log, applyLanePriority(opts.priority))
   const childSpawnedAt = Date.now()
-  try {
-    child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames)
-    child.once('close', (code, signal) => { earlyChildClose = [code, signal] })
-    await new Promise((resolve, reject) => {
-      child.once('spawn', resolve)
-      child.once('error', reject)
-    })
-    workerSpawnedChild = true
-  } catch (error) {
-    removeReadableLaneBrief(transientBriefDir)
-    const reason = `opencode spawn failed: ${error instanceof Error ? error.message : String(error)}`
-    consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason })
-    return 1
-  }
+  const child = await spawnAndReportOpencode({
+    spawnOpencode: () => consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames),
+    onChild: (child) => child.once('close', (code, signal) => { earlyChildClose = [code, signal] }),
+    onSpawn: () => { workerSpawnedChild = true },
+    cleanup: () => removeReadableLaneBrief(transientBriefDir),
+    writeFailure: (reason) => consentModules.writeJsonAtomic(statePaths.record, { ...readSupervisionRecord(statePaths.record), version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason }),
+    log: opts.log,
+  })
+  if (!child) return 1
   const stateFile = statePaths.record
   const decisionFile = statePaths.decision
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
@@ -789,7 +818,7 @@ async function main() {
   if (PLATFORM === 'win32' && !childCapture.identity) {
     const reason = captureTimeoutReason(childCapture)
     appendWorkerStage(`child-identity-capture-timeout ${reason}`)
-    consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason })
+    consentModules.writeJsonAtomic(statePaths.record, { ...readSupervisionRecord(statePaths.record), version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason })
     terminateWindowsTree(child.pid)
     removeReadableLaneBrief(transientBriefDir)
     rmSync(opts.brief, { force: true })
@@ -803,7 +832,7 @@ async function main() {
   if (PLATFORM === 'win32' && !workerCapture.identity) {
     const reason = captureTimeoutReason(workerCapture)
     appendWorkerStage(`worker-identity-capture-timeout ${reason}`)
-    consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason })
+    consentModules.writeJsonAtomic(statePaths.record, { ...readSupervisionRecord(statePaths.record), version: 1, runId, state: 'launch-failed', exit: 1, worktree: opts.dir, reason })
     terminateWindowsTree(child.pid)
     removeReadableLaneBrief(transientBriefDir)
     rmSync(opts.brief, { force: true })

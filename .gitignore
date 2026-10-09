@@ -18,6 +18,11 @@
 # Node dependencies (toolkit workspace)
 node_modules/
 
+# Host-generated when Claude Code loads a plugin directory
+/plugin/tsconfig.json
+/plugins/*/tsconfig.json
+.claude-plugin/types/
+
 # Published dist output (tsup-emitted ESM + .d.ts for the 3 npm packages) —
 # generated at publish time, never committed. Scoped to packages/*/dist so the
 # committed toolkit/workflows/*.js artifacts and toolkit/bin/*.mjs are untouched.

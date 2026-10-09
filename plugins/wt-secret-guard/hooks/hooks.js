@@ -92,7 +92,7 @@ function erroredAnswer(original, cleaned, rewrites = 0) {
   if (JSON.stringify(answer.result ?? null) === JSON.stringify(original?.result ?? null)) return unchanged();
   const body = typeof answer.result === 'string' ? answer.result : JSON.stringify(answer.result ?? '');
   const context = Array.isArray(answer.context) ? answer.context.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))) : [];
-  const assembled = scrubSettled([body, ...context].join('\n\n'), '');
+  const assembled = scrubSettled([body, ...context].join('\n\n'), '', true, new Set(), { complete: true });
   return { deny: [assembled.value, ...noteLines(rewrites, true)].join('\n') };
 }
 
@@ -102,7 +102,7 @@ async function scrubToolResult($, event, next) {
   const grammar = releaseGrammarRefusal(event);
   if (grammar) return grammar;
   const response = await next(event);
-  const cleaned = scrubSettled(response, '');
+  const cleaned = scrubSettled(response, '', true, new Set(), { complete: true });
   const answer = erroredAnswer(response, cleaned);
   await publish(journalHost($));
   if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
@@ -239,7 +239,7 @@ async function executeBash($, next, audit, references, originalCommand, original
       // Every value the guard puts into this command is masked in its output, whatever its kind.
       const substituted = new Set(rewrite.substituted);
       const response = await next(rewrite.command === originalCommand ? originalEvent : { ...originalEvent, command: rewrite.command });
-      const cleaned = scrubSettled(response, rewrite.command, true, substituted);
+      const cleaned = scrubSettled(response, rewrite.command, true, substituted, { complete: true });
       const answer = erroredAnswer(response, cleaned, rewrite.count);
       await publish(audit);
       if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);

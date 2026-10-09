@@ -7,6 +7,47 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - A daily work journal mechanically indexes project acts with a hash chain across daily files and a never-rotated mirror outside repositories, separated by configuration profile and project. SessionStart verifies integrity, recovers interrupted writes, details the last two worked days and condenses earlier worked days in a fourteen-day window, with on-demand day pointers and folded card subjects. The digest stays within 7,000 characters and follows loud notices inside a 9,500-character SessionStart total; CLI digest verifies first. SessionStart surfaces unsynced details; Stop warns about missing per-act outcomes. The journal CLI supports verified historical task-file retirement, explicit restore and unlock, board setup, unsynced reconciliation and closed-day export. Planka onboarding archives history before creating cards, and managed projects retire the Markdown task-file fallback.
+### Fixed
+- TypeScript and JavaScript diagnostics now start in a session whose root folder has no TypeScript. Before, the TypeScript language server was launched anyway and stopped with "Could not find a valid TypeScript installation". The launcher now looks for a TypeScript in the sub-folders of the session root (the shallowest project first, `.claude` ahead of its siblings, up to three levels deep), then on the host (TypeScript 7 or `tsserver.js` where `typescript-language-server` would find its own, behind `tsc` on PATH, or in the global npm and pnpm roots), and hands the one it finds to the server. When there is none, the session gets an error naming every place searched and the install command instead of a server that fails. One TypeScript serves the whole workspace, so sub-projects pinned to different TypeScript versions are all checked with the first one found.
+- `wt-secret-guard` 0.1.4 no longer replaces ordinary help text with an `op-output` token. A line such as `password: see the docs for the details here` in a completed tool result now stays readable when its value is a plain sentence (six or more letter-only words, with common function words) that the vault would never hold. Output of `op` or `op.exe`, in any path, quoted, escaped or joined spelling, still masks such lines, and so does any command containing `$`, a backtick, a brace or a glob character. Unfinished assistant text and structured outbound fields also keep the mask. Residual: a password that is itself such a sentence, printed after an unquoted password key by a command other than `op`, is no longer masked on first sight.
+- Detached lane workers now end their run logs with a clear failure reason and `EXIT=1` when startup fails before OpenCode starts. A startup that never reports back is cut off after a bounded wait and reported the same way.
+- Linux lane sandboxes now skip PATH toolchain candidates whose real targets live on Windows drive mounts and continue to the next Linux candidate. Mount detection supports configurable WSL drive roots, escaped mount points, and nested mounts, avoiding socket scans of unusable Windows toolchain directories.
+- Lifecycle receipt waits now allow a bounded settling window for a matching live pilot worker after its child exits, including the brief moment when the exiting child's identity cannot be read, so genuine completion receipts are not mistaken for inconsistent-record or unreadable-identity timeouts.
+- A FULL SDK pilot run now states the required plan sections in its first prompt. Before, the pilot saw them only in a plan->critic refusal or an idle-turn reminder, so a first plan without those sections was refused and had to be rewritten.
+
+- The quota watcher now reads the cache named for its latest live account and rejects foreign-account entries. It refills only the login cache, leaves token-account cache writes to the per-turn hook, and re-baselines on account-key changes. The bundled probe emits a hashed account key without exposing its token; ambiguous or unsafe keys bypass caching.
+
+- Repository quality gates now exclude Git-ignored generated inputs from ESLint, dependency-cruiser, Knip and the host-primitive census. Plugin TypeScript configuration and generated host typings are ignored rather than tracked.
+
+- Act-bound verification diversity, SDLC, summary-checking, delegation and task-board details now live in on-demand companions, with static anchors and SDK routing preserved; no directive was dropped. With an on-demand engine, the first file edit of a context is now refused once to serve the SDLC and verification companions. Re-adopt the rules and the pilot agent templates: both carry the new `proportionate-verification-decorrelation` block.
+
+- The artifact server no longer offers a remote URL that no peer can open when it runs in WSL and Tailscale runs on Windows. Without a Tailscale Serve route to the server, `url --remote` now prints no URL and names the reason with the command that creates the route (`tailscale serve --bg --set-path /artifacts http://127.0.0.1:<port>`); before, it printed `http://<tailnet address>:<port>`, which only WSL itself could reach. A Serve route's HTTPS URL is kept even when the server cannot listen on the tailnet address, since the route forwards to the loopback listener. Outside Windows, a resolved Tailscale command ending in `.exe` (configured or found) counts as Windows Tailscale. When `serve status` or `status --json` cannot be read there, no URL is offered and the reason says so instead of advising a route. `status` shows how Tailscale was reached (`tailnetVia: native`, `windows-interop`, or `unknown` for a server started by an older version). `url <path> --check` fetches the printed URL and reports `reachable`, `unreachable` or `unverified` on stderr (exit 0, 4 or 5); with `--remote` the request runs on the host where Tailscale runs (the side the server recorded), through PowerShell when that is Windows, so `reachable` is measured from that host, not from a peer.
+
+## [0.191.1] - 2026-10-08
+
+### Fixed
+- Mouse clicks in the Claude Code console land where you click again. In 0.191.0 the What is running buttons were drawn by a custom client module that listened to the pointer, and a pointer listener makes Claude Code ask the terminal for mouse positions in pixels. A multiplexer that only knows cells (herdr on WSL, for example) still sent cell positions, so every click in the console landed several lines away. The pane and the prompt hint now draw the host's native buttons again, and a test refuses any shipped plugin file that mentions `onPointer`. If clicks still misbehave after updating, restart the session.
+
+### Quality
+
+Patch release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; no baseline was recorded at 0.190.0 or 0.191.0). No judge regressed. The static totals equal 0.191.0's. Coverage comes from this release tree's own test run. The ESLint scope now excludes the git-ignored type stubs Claude Code writes into `plugin/.claude-plugin/types/` when a session loads the plugin from a checkout; a test keeps every committed plugin file in scope.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 124 | -2 |
+| Cognitive complexity | 268 -> 243 | -25 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 640 | -44 |
+| Duplication % | 2.43 -> 2.21 | -0.23 |
+| Knip issues | 196 -> 189 | -7 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 81.06 | +2.45 |
+| Coverage branches % | 69.76 -> 72.81 | +3.05 |
+| Coverage functions % | 80.86 -> 83.35 | +2.49 |
+| Coverage statements % | 76.5 -> 79.06 | +2.56 |
 
 ## [0.191.0] - 2026-10-08
 

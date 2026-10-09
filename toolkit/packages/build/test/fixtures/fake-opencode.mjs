@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -119,7 +119,8 @@ else if (argv[0] === 'debug' && argv[1] === 'skill') {
   if (process.env.WT_IDENTITY_RECORD) appendFileSync(process.env.WT_IDENTITY_RECORD, `probe|${cwd}|${process.env.WT_IDENTITY_MARKER || ''}|${process.env.OPENCODE_CONFIG || 'unset'}\n`)
   const countFile = path.join(cwd, '.lane', 'preflight-count')
   const count = (existsSync(countFile) ? Number(readFileSync(countFile, 'utf8')) : 0) + 1
-  if (process.env.WT_SLOW_PREFLIGHT_AT_COUNT || process.env.WT_FAIL_PREFLIGHT_AT_COUNT) writeFileSync(countFile, String(count))
+  if (process.env.WT_SLOW_PREFLIGHT_AT_COUNT || process.env.WT_FAIL_PREFLIGHT_AT_COUNT || process.env.WT_DISABLE_SPAWN_AT_COUNT) writeFileSync(countFile, String(count))
+  if (String(count) === process.env.WT_DISABLE_SPAWN_AT_COUNT) chmodSync(process.env.WT_OPENCODE_WRAPPER, 0o644)
   if (String(count) === process.env.WT_SLOW_PREFLIGHT_AT_COUNT) await sleep(6000)
   if (String(count) === process.env.WT_FAIL_PREFLIGHT_AT_COUNT) process.exitCode = 7
   else process.stdout.write(`${process.env.WT_EFFECTIVE_SKILLS || '[]'}\n`)

@@ -335,29 +335,41 @@ test('global/sticky lastIndex and empty match advancement agree with native', ()
 });
 
 const specsTest = externalTest('../../../plugin/rules/', import.meta.url);
+function specTrigger(file, entry, flags) {
+  const pattern = entry.regex ? safeRegex(file, entry.regex, flags) : null;
+  return { kind: entry.kind, regex: pattern, tool: entry.tool ? safeRegex(file, entry.tool) : null,
+    input: entry['input-regex'] ? safeRegex(file, entry['input-regex'], flags) : null,
+    commandHead: entry['command-head'] === true, onMention: entry.mentions === true };
+}
+
+function assertSpecSamples(file, entry, flags) {
+  const samples = ['Agent', 'Bash', 'Write', 'wt-lane.mjs', 'pnpm test', 'gh issue', 'jira', 'hello', 'agentId: 123456', 'LIVENESS_AGENT_ID: xyz'];
+  for (const source of [entry.regex, entry.tool, entry['input-regex']].filter(Boolean)) {
+    const actual = safeRegex(file, source, flags);
+    const native = new RegExp(source, flags);
+    for (const sample of samples) {
+      assert.equal(actual.test(sample), native.test(sample), `${file}: ${source.slice(0, 50)} on ${sample}`);
+    }
+  }
+}
+
+function nativeSpecTrigger(trigger, entry, flags) {
+  return { ...trigger, regex: entry.regex ? new RegExp(entry.regex, flags) : null,
+    tool: entry.tool ? new RegExp(entry.tool) : null, input: entry['input-regex'] ? new RegExp(entry['input-regex'], flags) : null };
+}
+
 specsTest('shipped specs compile and each has a firing and non-firing trigger through the real consumer', async (_t, dir) => {
   const files = (await readdir(dir)).filter((file) => file.endsWith('.spec.json'));
-  assert.equal(files.length, 12);
+  assert.equal(files.length, 13);
   const tools = ['Agent', 'SendMessage', 'Workflow', 'Write', 'Edit', 'MultiEdit', 'Bash', 'Read', 'Task', 'Skill', 'Monitor', 'TaskOutput'];
   for (const file of files) {
     const spec = JSON.parse(await readFile(new URL(file, dir), 'utf8'));
     let fires = false;
     for (const entry of spec['on-demand'].triggers) {
       const flags = entry.flags ?? '';
-      const pattern = entry.regex ? safeRegex(file, entry.regex, flags) : null;
-      const trigger = { kind: entry.kind, regex: pattern, tool: entry.tool ? safeRegex(file, entry.tool) : null,
-        input: entry['input-regex'] ? safeRegex(file, entry['input-regex'], flags) : null,
-        commandHead: entry['command-head'] === true, onMention: entry.mentions === true };
-      const samples = ['Agent', 'Bash', 'Write', 'wt-lane.mjs', 'pnpm test', 'gh issue', 'jira', 'hello', 'agentId: 123456', 'LIVENESS_AGENT_ID: xyz'];
-      for (const source of [entry.regex, entry.tool, entry['input-regex']].filter(Boolean)) {
-        const actual = safeRegex(file, source, flags);
-        const native = new RegExp(source, flags);
-        for (const sample of samples) {
-          assert.equal(actual.test(sample), native.test(sample), `${file}: ${source.slice(0, 50)} on ${sample}`);
-        }
-      }
-      const nativeTrigger = { ...trigger, regex: entry.regex ? new RegExp(entry.regex, flags) : null,
-        tool: entry.tool ? new RegExp(entry.tool) : null, input: entry['input-regex'] ? new RegExp(entry['input-regex'], flags) : null };
+       const trigger = specTrigger(file, entry, flags);
+       assertSpecSamples(file, entry, flags);
+       const nativeTrigger = nativeSpecTrigger(trigger, entry, flags);
       const candidates = [
         ...tools.flatMap((tool) => ['.lane/brief.md', 'hooks/example.js', 'MEMORY.md', 'review.md'].map((path) => ({ channel: 'tool', tool, command: 'gh issue', path, input: { command: 'gh issue' } }))),
         ...['git worktree list', 'git merge main', 'pnpm test', 'wt-lane.mjs', 'vitest', 'jira', 'gh issue'].map((command) => ({ channel: 'tool', tool: 'Bash', command, input: { command } })),

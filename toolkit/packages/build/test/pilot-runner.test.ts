@@ -1836,3 +1836,22 @@ describe('SDK pilot runner', () => {
     expect(registered!.lifecycle.route).toBe(route)
   })
 })
+
+describe('SDK pilot runner: plan shape in the first prompt', () => {
+  const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
+
+  it.each([
+    ['FULL', true],
+    ['LITE', false],
+  ])('states the plan shape in the first prompt only on a %s route that plans', async (route, expected) => {
+    const f = fixture(); writeFileSync(f.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    const prompts: string[] = []
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield initMessage()
+      prompts.push((await prompt.next()).value.message.content)
+    })()
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    expect(prompts).toHaveLength(1)
+    expect((prompts[0] ?? '').includes(PLAN_SHAPE_DESCRIPTION)).toBe(expected)
+  })
+})

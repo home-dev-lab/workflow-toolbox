@@ -1,5 +1,42 @@
 # wt-sdlc — at act
 
+## Plan, task, and test
+
+Before non-trivial coding, state the problem, expected behavior, affected areas, strategy,
+tests, validation, and risks. Break work into dependency-ordered tasks; mark each complete only
+after its own verification passes.
+
+Use red, green, refactor where practical. A bug fix carries a regression test that fails before
+the fix and passes after it. When strict TDD is impractical, tests still accompany the change;
+do not retrofit a superficial test merely to satisfy the protocol.
+
+## Implement and verify
+
+Make the simplest correct change using the project's conventions. Do not add unrelated changes,
+duplication, or abstractions that the problem does not require.
+
+Tests cover relevant happy paths, branches, boundaries, invalid input, expected failures, and
+regressions. A coverage number without a measuring gate is not evidence. For affected
+user-facing flows, exercise the real UI end to end: primary flow, validation errors, navigation,
+state, negative cases, and touched existing scenarios.
+
+## E2E
+
+Every brief carries the e2e in its definition of done. Every card where an end-to-end check is
+possible gets one that:
+
+- Runs against real data and real sources, not fixtures.
+- Is repeatable with a script, or with a written procedure when no tool can drive the host.
+- Has its output pasted verbatim into the report.
+
+An agent or skill shipped to act on another project is e2e'd from that project's own session:
+deploy it to the copy that project runs, then have that session invoke it. A run driven from the
+builder's session proves the tool, not the agent; the builder never applies the agent's output to
+the other project itself.
+
+Observe an assumption about the host before building anything on it; treat the observation as
+evidence, not the assumption as a premise.
+
 ## Independent review and refutation
 
 **implementer → independent reviewer(s) → independent refuter → implementer.** The implementer

@@ -2,7 +2,13 @@ import js from '@eslint/js'
 import sonarjs from 'eslint-plugin-sonarjs'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
+import { resolve } from 'node:path'
+import { eslintGitIgnores } from './scripts/git-ignored-inputs.mjs'
 import { noDynamicReplace } from './eslint-rules/no-dynamic-replace.mjs'
+
+const toolkitRoot = import.meta.dirname
+const repoRoot = resolve(toolkitRoot, '..')
+const gitIgnores = eslintGitIgnores(repoRoot)
 
 const qualityFiles = [
   'packages/*/src/**/*.ts',
@@ -57,6 +63,9 @@ export default tseslint.config(
       // Vendored, byte-identity-checked upstream artifact; lint its generator instead.
        'plugin/bin/lib/vendor/yaml.mjs',
        '../plugin/bin/lib/vendor/yaml.mjs',
+      // Type stubs Claude Code generates (git-ignored) when it loads the plugin from a checkout.
+      'plugin/.claude-plugin/types/**',
+      '../plugin/.claude-plugin/types/**',
     ],
   },
   {
@@ -127,4 +136,5 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
+  { ...gitIgnores },
 )

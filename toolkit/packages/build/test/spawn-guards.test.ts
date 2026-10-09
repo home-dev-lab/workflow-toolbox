@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { channelFalse, channelTrue, readonlyTrue, nestedFalse, nestedTrue } from './spawn-guard-precision-fixtures.js'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { channelFalse, channelTrue, readonlyFalse, readonlyTrue, nestedFalse, nestedTrue } from './spawn-guard-precision-fixtures.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BIN = join(REPO_ROOT, 'plugin/bin')
@@ -93,6 +93,19 @@ describe('spawn surface warn-only guards', () => {
   it.each(channelTrue)('spawn channel retention: %s', (_shape, prompt) => {
     const cwd = fixture('reader', 'Read')
     warns(run('wt-spawn-channel-guard-hook.mjs', agent('reader', prompt, cwd), cwd), 'spawn-channel-missing')
+  })
+  it.each(readonlyFalse)('spawn readonly resource label silence: %s', (_shape, prompt) => {
+    const cwd = fixture('writer', 'Read, Bash')
+    const result = run('wt-spawn-readonly-guard-hook.mjs', agent('writer', prompt, cwd), cwd)
+    silent(result)
+    expect(result.journal).not.toContain('"decision":"warned"')
+  })
+  it('spawn readonly: CRLF line endings keep the resource label and the agent-wide cases apart', () => {
+    const cwd = fixture('writer', 'Read, Bash')
+    const label = 'Implement the change.\r\nKnowledge base (read-only): memory/index.md\r\n'
+    silent(run('wt-spawn-readonly-guard-hook.mjs', agent('writer', label, cwd), cwd))
+    const agentWide = 'Implement the change.\r\nKnowledge base (read-only): memory/index.md\r\nYou are read-only.\r\n'
+    warns(run('wt-spawn-readonly-guard-hook.mjs', agent('writer', agentWide, cwd), cwd), 'spawn-readonly-wide')
   })
   it.each(readonlyTrue)('spawn readonly retention: %s', (_shape, prompt) => {
     const cwd = fixture('writer', 'Read, Bash')
@@ -212,5 +225,25 @@ describe('spawn surface warn-only guards', () => {
     warns(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Review my implementation and verify it.', cwd, 'a-1'), cwd), 'nested-self-verify')
     silent(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Review the upstream patch.', cwd, 'a-1'), cwd))
     silent(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Example only: "review my work".', cwd, 'a-1'), cwd))
+  })
+})
+
+describe('briefScopesAgentReadOnly', () => {
+  const load = async () => (await import(pathToFileURL(join(BIN, 'lib/readonly-brief-scope.mjs')).href)).briefScopesAgentReadOnly as (prompt: string) => boolean
+  it.each([
+    ['rule 2a: followed by "for you"', 'Notes: memory/ is read-only for you.', false],
+    ['rule 2b: a non-you copula precedes it', 'The copies are read-only.', false],
+    ['rule 2b excluded subject: task', 'The task is read-only.', true],
+    ['rule 2b excluded by "everywhere"', 'The copies are read-only everywhere.', true],
+    ['rule 2c: label position after a resource noun', 'Knowledge base (read-only): memory/index.md', false],
+    ['rule 2c: a task noun before the parenthesis is not a label', 'Verification (read-only): check the diff.', true],
+    ['rule 3: do not modify is never a label', 'Index (do not modify): memory/index.md', true],
+    ['rule 3: investigate only is never a label', 'Investigate only the index file.', true],
+    ['rule 4: a label plus an occurrence that is not a label warns', 'Index (read-only): memory/index.md. Be read-only on the rest.', true],
+    ['rule 4: an agent-wide prohibition beside a label warns', 'Index (read-only): memory/index.md. You cannot write anything.', true],
+    ['no trigger', 'Implement the change.', false],
+    ['a quoted example does not count', 'Example only: "you are read-only".', false],
+  ])('%s', async (_name, prompt, expected) => {
+    expect((await load())(prompt)).toBe(expected)
   })
 })

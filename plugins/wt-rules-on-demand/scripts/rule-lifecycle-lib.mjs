@@ -299,29 +299,55 @@ async function planMirrors(root, from, to, mirrorDirs, scope, direction, name) {
   const toDirectory = await realOrNull(dirname(to));
   const plans = [];
   for (const mirrorDir of mirrorDirs) {
-    const mirrorFrom = resolve(mirrorDir, relative(root, from));
-    const mirrorTo = resolve(mirrorDir, relative(root, to));
-    const sharedFrom = fromDirectory !== null && await realOrNull(dirname(mirrorFrom)) === fromDirectory;
-    const sharedTo = toDirectory !== null && await realOrNull(dirname(mirrorTo)) === toDirectory;
-    if (direction === 'migrate' && sharedFrom && !sharedTo) throw new Error(`mirror ${mirrorDir}: shared rules with separate rules-on-demand would lose the migrated rule; share both directories or use a separate static directory with per-file links before migrating`);
-    let removeLink = false;
-    if (!sharedFrom) {
-      const info = await lstat(mirrorFrom).catch((error) => error.code === 'ENOENT' || error.code === 'ENOTDIR' ? null : Promise.reject(error));
-      if (info?.isSymbolicLink()) {
-        const resolved = await realOrNull(mirrorFrom);
-        removeLink = resolved !== null
-          ? resolved === await realOrNull(from)
-          : resolve(dirname(mirrorFrom), await readlink(mirrorFrom)) === from;
-      }
+    const steps = mirrorPlanSteps({ root, from, to, mirrorDir, direction, migration, fromDirectory, toDirectory, plans });
+    let step = steps.next();
+    while (!step.done) {
+      try { step = steps.next(await step.value); }
+      catch (error) { step = steps.throw(error); }
     }
-    // Recreate a per-file link on the arriving side only where the mirror had one: the link just removed, or (revert
-    // into a separate static dir from a shared on-demand dir) the link the migration ledgered as removed.
-    const hadLink = removeLink || (direction === 'revert' && (migration?.mirrors ?? []).some((mirror) => mirror?.from === mirrorTo));
-    const createLink = !sharedTo && hadLink;
-    if (createLink && await lstat(mirrorTo).catch(() => null)) throw new Error(`mirror ${mirrorDir}: ${mirrorTo} already exists; refusing to overwrite it`);
-    if (removeLink || createLink || sharedFrom) plans.push({ from: removeLink ? mirrorFrom : null, to: createLink ? mirrorTo : null, target: to, profile: resolve(mirrorDir), sharedFrom, removeLink });
   }
   return plans;
+}
+
+// Synchronous generators split planning without adding an async helper or an await boundary.
+function* mirrorPlanSteps({ root, from, to, mirrorDir, direction, migration, fromDirectory, toDirectory, plans }) {
+  const mirrorFrom = resolve(mirrorDir, relative(root, from));
+  const mirrorTo = resolve(mirrorDir, relative(root, to));
+  const sharedFrom = fromDirectory !== null && (yield realOrNull(dirname(mirrorFrom))) === fromDirectory;
+  const sharedTo = toDirectory !== null && (yield realOrNull(dirname(mirrorTo))) === toDirectory;
+  assertMirrorLayout(direction, sharedFrom, sharedTo, mirrorDir);
+  const removeLink = yield* removableMirrorLink(sharedFrom, mirrorFrom, from);
+  // Recreate only the link just removed, or the link the migration ledgered before reverting from a shared dir.
+  const hadLink = removedOrRecordedLink(removeLink, direction, migration, mirrorTo);
+  const createLink = !sharedTo && hadLink;
+  if (createLink && (yield lstat(mirrorTo).catch(() => null))) throw new Error(`mirror ${mirrorDir}: ${mirrorTo} already exists; refusing to overwrite it`);
+  appendMirrorPlan(plans, removeLink, createLink, sharedFrom, { mirrorFrom, mirrorTo, to, mirrorDir });
+}
+
+function assertMirrorLayout(direction, sharedFrom, sharedTo, mirrorDir) {
+  if (direction === 'migrate' && sharedFrom && !sharedTo) throw new Error(`mirror ${mirrorDir}: shared rules with separate rules-on-demand would lose the migrated rule; share both directories or use a separate static directory with per-file links before migrating`);
+}
+
+function* removableMirrorLink(sharedFrom, mirrorFrom, from) {
+  let removeLink = false;
+  if (!sharedFrom) {
+    const info = yield lstat(mirrorFrom).catch((error) => error.code === 'ENOENT' || error.code === 'ENOTDIR' ? null : Promise.reject(error));
+    if (info?.isSymbolicLink()) {
+      const resolved = yield realOrNull(mirrorFrom);
+      removeLink = resolved !== null
+        ? resolved === (yield realOrNull(from))
+        : resolve(dirname(mirrorFrom), yield readlink(mirrorFrom)) === from;
+    }
+  }
+  return removeLink;
+}
+
+function removedOrRecordedLink(removeLink, direction, migration, mirrorTo) {
+  return removeLink || (direction === 'revert' && (migration?.mirrors ?? []).some((mirror) => mirror?.from === mirrorTo));
+}
+
+function appendMirrorPlan(plans, removeLink, createLink, sharedFrom, { mirrorFrom, mirrorTo, to, mirrorDir }) {
+  if (removeLink || createLink || sharedFrom) plans.push({ from: removeLink ? mirrorFrom : null, to: createLink ? mirrorTo : null, target: to, profile: resolve(mirrorDir), sharedFrom, removeLink });
 }
 
 async function applyMirrors(plans) {

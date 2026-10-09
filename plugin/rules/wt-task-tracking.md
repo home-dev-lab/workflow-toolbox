@@ -6,13 +6,9 @@ facts, decisions, gotchas, runbooks, preferences) lives in memory/notes, not on 
 pointer note too? Make it thin pointer to card, not parallel narrative — write narrative to CARD
 (one consolidated, deduped comment), preserve human-authored comments.
 
-Managed board keeps small fixed set of lists for lifecycle stages (e.g. Backlog, Next, In
-Progress, Blocked, Done, plus catch-all for descoped work) so "what's open" is mechanical query,
-not per-card judgment call. Every card carries three label axes — priority, type, effort (e.g.
-P0–P2, feature/chore/bug/research, S/M/L) — card missing any of three can't be scheduled: axes
-are what queue is ordered by, not decoration. Trackers without native dependency links need
-written convention (e.g. `Depends-on: #<id>` in description) plus mechanical check that only
-proposes or starts a card once all dependencies Done.
+A card missing a priority, type or effort label, or with a dependency not Done, is never proposed
+or started; write dependencies as a `Depends-on:` line in the description where the tracker has no
+native dependency links.
 
 Periodically sweep the whole Blocked list for satisfied dependencies without waiting for a closure;
 report cards with no `Depends-on:` line as the sweep's blind spot, not as confirmed unblocked.
