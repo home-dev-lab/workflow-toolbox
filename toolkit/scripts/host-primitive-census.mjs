@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs'
-import { extname, join, relative, resolve } from 'node:path'
+import { extname, join, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
+import { listGitIgnoredPaths, pathsRegexSource } from './git-ignored-inputs.mjs'
 
 const DEFAULT_PLUGIN_ROOT = resolve(import.meta.dirname, '../../plugin')
 const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
@@ -29,7 +30,9 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/l
 // It may only decrease as calls move behind the adapter.
 export const HOST_PRIMITIVE_CEILING = 1883
 
-function sourceFiles(root) {
+export function sourceFiles(root) {
+  const ignoredSource = pathsRegexSource(listGitIgnoredPaths(root).paths, root, root)
+  const ignored = ignoredSource ? new RegExp(ignoredSource) : null
   const hostRoot = join(root, 'bin', 'lib', 'host')
   // Generated third-party YAML grammar literals are not host access (same exemption
   // as the generated observatory launcher); their source is byte-identity checked.
@@ -37,6 +40,8 @@ function sourceFiles(root) {
   function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const path = join(directory, entry.name)
+      const input = relative(root, path).split(sep).join('/') + (entry.isDirectory() ? '/' : '')
+      if (ignored?.test(input)) return []
       if (entry.isDirectory()) return path === hostRoot ? [] : walk(path)
       return entry.isFile() && EXECUTABLE_EXTENSIONS.has(extname(path)) && !generated.has(path) ? [path] : []
     })

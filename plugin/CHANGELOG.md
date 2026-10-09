@@ -14,6 +14,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 - The quota watcher now reads the cache named for its latest live account and rejects foreign-account entries. It refills only the login cache, leaves token-account cache writes to the per-turn hook, and re-baselines on account-key changes. The bundled probe emits a hashed account key without exposing its token; ambiguous or unsafe keys bypass caching.
 
+- Repository quality gates now exclude Git-ignored generated inputs from ESLint, dependency-cruiser, Knip and the host-primitive census. Plugin TypeScript configuration and generated host typings are ignored rather than tracked.
+
 ## [0.191.1] - 2026-10-08
 
 ### Fixed
