@@ -1785,6 +1785,14 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
+    it('keeps a paraphrased numbered-task re-anchor blocking when its own task line does not quote the settled criterion', async () => {
+      const logs: string[] = []
+      const numbered = plan.replace('- T1 list the documents. DoD: green', `1. list the documents. DoD: ${term}\n2. archive the documents. DoD: green`)
+      const finding = '- [blocking][missing][anchor: plan task 2][location: plan.md:6] The inventory requirement is still unmet'
+      const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 1, pollMs: 1, log: (line: string) => logs.push(line) }, numbered, [rounds[0]!, rounds[1]!, [finding]])
+      expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=plan/)
+      expect(logs.join('\n')).not.toContain('ignored-by-no-reblock rule')
+    })
     it('fails closed when the store reader fails', async () => {
       const { lifecycle } = await disputed({ readDecisions: () => { throw new Error('ENOENT') }, waitMs: 1, pollMs: 1 })
       await expect(lifecycle.awaitDodDecisions()).rejects.toThrow('ENOENT')
@@ -2413,9 +2421,12 @@ function emptyLauncher() { return launcher('process.exit(0)') }
 function logOnlyLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, ''); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function successLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'report\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function equalMtimeLauncher() { return launcher("import { readFileSync, renameSync, utimesSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1],tmp=log+'.tmp',brief=process.argv[process.argv.indexOf('--brief')+1],report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1],wholeSecond=Math.ceil(Date.now()/1000); writeFileSync(report,'report\\n'); writeFileSync(tmp,readFileSync(log,'utf8')+'done\\nEXIT=0\\n'); utimesSync(tmp,wholeSecond,wholeSecond); renameSync(tmp,log)") }
+// Adds only the tags a fixture finding lacks: the report parser keeps the FIRST anchor of a line, so a default
+// anchor placed ahead of the fixture's own would silently replace the anchor the test means to exercise.
 function structuredCriticFinding(finding: string) {
-  if (/^\[(?:blocking|non-blocking)\]/i.test(finding)) return finding.replace(/^(\[(?:blocking|non-blocking)\])/i, '$1[anchor: DoD 1][location: plan.md:1]')
-  return `[blocking][anchor: DoD 1][location: plan.md:1] ${finding}`
+  const tags = `${/\[anchor:/i.test(finding) ? '' : '[anchor: DoD 1]'}${/\[location:/i.test(finding) ? '' : '[location: plan.md:1]'}`
+  if (/^\[(?:blocking|non-blocking)\]/i.test(finding)) return finding.replace(/^(\[(?:blocking|non-blocking)\])/i, `$1${tags}`)
+  return `[blocking]${tags} ${finding}`
 }
 function verdictLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] blocker\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function criticFindingsLauncher(findings: string[], exit = 0) {
