@@ -35,16 +35,34 @@ This makes diagnostics available to sessions that load this plugin; it does not 
 configuration conditional on pack selection.
 
 The declaration maps `.ts`, `.mts`, `.cts`, `.tsx`, `.js`, `.mjs`, `.cjs` and `.jsx` (with React
-language IDs for TSX/JSX). The launcher reads `initialize` to select a backend in this order:
-an explicitly configured `tsserver.path` or a valid workspace `tsserver.js` uses
-`typescript-language-server`; otherwise a host TypeScript 7+ native executable serves the session;
-otherwise `typescript-language-server` uses its own fallback TypeScript installation. If neither
-is installed, initialize receives an error explaining what to install. Workspace discovery mirrors
-the server's `rootUri`/`rootPath` search and stops at the first TypeScript lib folder, even if unusable.
-The host native executable is resolved from the `tsc` package on PATH, including its matching
-platform package. Resolution reads version metadata without running binaries; the launcher never
-executes a workspace-local `tsc`. The workspace `tsserver.js` selected by
-`typescript-language-server` may execute workspace code, as it already did before this change.
+language IDs for TSX/JSX). The launcher reads `initialize` and selects a backend in this order:
+
+1. An explicitly configured `tsserver.path`, or a valid `tsserver.js` found from the workspace root
+   upwards, uses `typescript-language-server`. That upward search mirrors the server's own
+   `rootUri`/`rootPath` search and stops at the first TypeScript lib folder, even if unusable.
+2. Otherwise a TypeScript in a sub-folder of the workspace root: the first
+   `<folder>/node_modules/typescript` holding `lib/tsserver.js` and a `typescript` package.json.
+   The search is breadth-first up to three levels below the root, so the shallowest project wins;
+   within one level `.claude` comes first, then the other folders by name. `node_modules`, `.git` and
+   symbolic links are not entered, the search stops after 2,000 folders, and a session rooted at the
+   home directory skips this step.
+3. Otherwise a host TypeScript 7+ native executable: from the `tsc` package on PATH, then from the
+   folders where `typescript-language-server` would resolve its own `typescript` (its install, then
+   each enclosing `node_modules`), then from the global npm and pnpm roots of the running node.
+   A package inside the workspace or the current directory is never executed.
+4. Otherwise a host `tsserver.js` is handed to `typescript-language-server`: the one it would
+   resolve itself first, then the `tsc` package on PATH, then the global npm and pnpm roots.
+5. Otherwise `initialize` receives an error naming every place searched and the install command.
+   `typescript-language-server` is not started without a TypeScript, because it would only fail;
+   the exception is a client that configured `tsserver.path` itself, which is passed through as is.
+
+For cases 2 and 4 the launcher adds `initializationOptions.tsserver.path` to the `initialize`
+request it relays, keeping every other option the client sent, and its stderr line names the
+`tsserver.js` used. One server serves the whole workspace, so a workspace whose sub-projects pin
+different TypeScript versions is checked with the single version found first.
+Resolution reads version metadata without running binaries; the launcher never executes a
+workspace-local `tsc`. A `tsserver.js` from the workspace runs workspace code, as it already did for
+the root: case 2 extends that to the `node_modules` of sub-folders, dot-folders included.
 
 The language servers are not vendored. Install a backend separately with:
 
@@ -110,8 +128,10 @@ Missing arm — PASS (same date; `command -v` → not found on the shim PATH, `n
 The Node interpreter must resolve on Claude Code's PATH. The backend must be discoverable on that
 PATH: Linux was measured with the native TypeScript 7 executable and typescript-language-server
 6.0.0. The Windows npm `.cmd` shim layout is supported without running a shell; unrecognized
-wrappers are refused. macOS uses POSIX paths like Linux; macOS and Windows remain unmeasured on
-real hosts.
+wrappers are refused. Sub-folder and host searches build every path with the Windows or POSIX path
+rules of the host; on Windows the global npm root is read beside `node.exe` and under `%APPDATA%\npm`.
+An unreadable folder counts as empty, so the search degrades to the next case, never to a wrong
+path. macOS uses POSIX paths like Linux; macOS and Windows remain unmeasured on real hosts.
 
 ## Optional assets
 

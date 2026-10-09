@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url'
 const LIMIT = 1024 * 1024
 const FOLDERS = ['node_modules/typescript/lib', '.vscode/pnpify/typescript/lib', '.yarn/sdks/typescript/lib', '.pnpm/sdks/typescript/lib']
 const REFUSAL = 'wt-tsls: no TypeScript LSP backend available. Install TypeScript 7 (native platform package) or typescript-language-server on PATH.'
+const SEARCH_DEPTH = 3
+const SEARCH_LIMIT = 2000
+const SEARCH_SKIP = new Set(['node_modules', '.git'])
+const NO_TYPESCRIPT = `wt-tsls: typescript-language-server is installed but no TypeScript was found: not in the workspace or its parents, not in the node_modules of its sub-folders (${SEARCH_DEPTH} levels deep, ${SEARCH_LIMIT} folders at most), not where typescript-language-server resolves its own, behind tsc on PATH, or in the global npm or pnpm root. Install it in the project (npm install -D typescript) or globally (npm install -g typescript).`
 
 function realHost() {
   return {
@@ -15,6 +19,8 @@ function realHost() {
     exists(file) { try { statSync(file); return true } catch { return false } },
     readText(file) { try { return readFileSync(file, 'utf8') } catch { return undefined } },
     realpath(file) { try { return realpathSync.native(file) } catch { return undefined } },
+    // Symbolic links are not followed, so the bounded sub-folder search cannot loop.
+    readdir(dir) { try { return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name) } catch { return [] } },
   }
 }
 
@@ -50,10 +56,13 @@ function metadata(file, host) {
   try { return JSON.parse(host.readText(file)) } catch { return undefined }
 }
 
+function workspaceRoot(params, host) {
+  try { return params.rootUri ? fileURLToPath(params.rootUri, { windows: host.platform === 'win32' }) : params.rootPath } catch { return undefined }
+}
+
 function workspaceVersion(params, host) {
   const path = pathFor(host)
-  let root
-  try { root = params.rootUri ? fileURLToPath(params.rootUri, { windows: host.platform === 'win32' }) : params.rootPath } catch { return false }
+  const root = workspaceRoot(params, host)
   if (!root) return false
   for (let dir = path.resolve(root);;) {
     // tls picks the first folder that exists, even if it is unusable; it then stops walking.
@@ -73,7 +82,104 @@ function tlsBackend(host) {
   if (!bin) return undefined
   const root = packageRoot(bin, 'typescript-language-server', host)
   const script = root && pathFor(host).join(root, 'lib', 'cli.mjs')
-  return script && host.isFile(script) ? { status: 'launch', backend: 'typescript-language-server', command: host.execPath, args: [script, '--stdio'] } : undefined
+  return script && host.isFile(script) ? { status: 'launch', backend: 'typescript-language-server', command: host.execPath, args: [script, '--stdio'], root } : undefined
+}
+
+function typescriptAt(root, host) {
+  if (!root) return undefined
+  const path = pathFor(host)
+  const server = path.join(root, 'lib', 'tsserver.js')
+  const pkg = metadata(path.join(root, 'package.json'), host)
+  return host.isFile(server) && pkg?.name === 'typescript' && pkg.version ? server : undefined
+}
+
+// `.claude` first, then code-unit name order: the same tree always yields the same TypeScript.
+function byCodeUnit(a, b) {
+  if (a === b) return 0
+  return a < b ? -1 : 1
+}
+
+const searchOrder = (names) => names.filter((name) => !SEARCH_SKIP.has(name)).sort((a, b) => Number(b === '.claude') - Number(a === '.claude') || byCodeUnit(a, b))
+
+// Breadth-first from `level`, so the shallowest project wins; `budget.left` bounds the folders read.
+function searchLevels(level, depth, host, budget) {
+  const path = pathFor(host)
+  for (; depth <= SEARCH_DEPTH && level.length; depth++) {
+    const next = []
+    for (const dir of level) {
+      for (const child of searchOrder(host.readdir(dir)).map((name) => path.join(dir, name))) {
+        if (--budget.left < 0) return undefined
+        const found = typescriptAt(path.join(child, 'node_modules', 'typescript'), host)
+        if (found) return found
+        next.push(child)
+      }
+    }
+    level = next
+  }
+  return undefined
+}
+
+// Shallowest first, so a nested checkout under `.claude` never beats a project at the top. A session rooted
+// at the home directory is no project: its sub-folders hold host caches (~/.npm/_npx), so they are not searched.
+function subfolderTypescript(root, host) {
+  const path = pathFor(host)
+  const top = path.resolve(root)
+  if (host.home && top === path.resolve(host.home)) return undefined
+  const found = searchLevels([top], 1, host, { left: SEARCH_LIMIT })
+  return found && { path: found, source: 'workspace sub-folder' }
+}
+
+// The node_modules folders Node's resolution visits from `start`, nearest first.
+function moduleDirs(start, host) {
+  const path = pathFor(host)
+  const dirs = []
+  for (let directory = start;;) {
+    dirs.push(path.basename(directory) === 'node_modules' ? directory : path.join(directory, 'node_modules'))
+    const parent = path.dirname(directory)
+    if (parent === directory) return dirs
+    directory = parent
+  }
+}
+
+function globalModuleDirs(host) {
+  const path = pathFor(host)
+  if (host.platform === 'win32') return [path.join(path.dirname(host.execPath), 'node_modules'), host.env.APPDATA && path.join(host.env.APPDATA, 'npm', 'node_modules')]
+  return [path.join(path.dirname(path.dirname(host.execPath)), 'lib', 'node_modules')]
+}
+
+function pnpmGlobalDirs(host) {
+  if (!host.env.PNPM_HOME) return []
+  const path = pathFor(host)
+  const store = path.join(host.env.PNPM_HOME, 'global')
+  return host.readdir(store).map((name) => path.join(store, name, 'node_modules'))
+}
+
+// Host package roots: those tls's own `require.resolve('typescript')` would visit from its lib folder, then the
+// global npm and pnpm roots of the running node. Symbolic links (pnpm global) are resolved to the real package.
+function hostRoots(host, tls) {
+  const path = pathFor(host)
+  const typescriptIn = (dirs) => dirs.filter(Boolean).map((dir) => {
+    const root = path.join(dir, 'typescript')
+    return host.realpath(root) ?? root
+  })
+  return { tls: typescriptIn(tls ? moduleDirs(path.join(tls.root, 'lib'), host) : []), global: typescriptIn([...globalModuleDirs(host), ...pnpmGlobalDirs(host)]) }
+}
+
+// tls's own fallback first (the TypeScript it would resolve itself), then tsc on PATH, then the global roots.
+function hostTypescript(host, roots) {
+  const tsc = onPath('tsc', host)
+  const tscRoot = tsc && packageRoot(tsc, 'typescript', host)
+  for (const root of [...roots.tls, tscRoot, ...roots.global]) {
+    const found = typescriptAt(root, host)
+    if (found) return { path: found, source: 'host' }
+  }
+  return undefined
+}
+
+function launchTls(tls, typescript) {
+  const plan = { ...tls }
+  delete plan.root
+  return typescript ? { ...plan, tsserverPath: typescript.path, tsserverSource: typescript.source } : plan
 }
 
 function within(file, directory, host) {
@@ -83,32 +189,21 @@ function within(file, directory, host) {
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
 }
 
-function nativeBackend(host, params) {
-  const bin = onPath('tsc', host)
-  if (!bin) return undefined
-  const path = pathFor(host)
-  const root = packageRoot(bin, 'typescript', host)
-  if (!root) return undefined
-  let workspace
-  try { workspace = params.rootUri ? fileURLToPath(params.rootUri, { windows: host.platform === 'win32' }) : params.rootPath } catch { workspace = undefined }
+function blockedBy(host, params) {
+  const workspace = workspaceRoot(params, host)
   // A session opened AT the home directory must keep host installs under it (~/.nvs, ~/.local): there, only
   // `<home>/node_modules` counts as workspace. Any other root blocks everything beneath it.
   const scope = (root) => root && host.home && pathFor(host).resolve(root) === pathFor(host).resolve(host.home) ? pathFor(host).join(root, 'node_modules') : root
-  const blocked = (file) => within(file, scope(workspace), host) || within(file, scope(host.cwd ?? process.cwd()), host)
-  if (blocked(bin.candidate) || blocked(bin.real) || blocked(root)) return undefined
+  return (file) => within(file, scope(workspace), host) || within(file, scope(host.cwd ?? process.cwd()), host)
+}
+
+function nativeAt(root, host, blocked) {
+  const path = pathFor(host)
   const pkg = metadata(path.join(root, 'package.json'), host)
   if (pkg?.name !== 'typescript' || !/^([7-9]|[1-9]\d+)\./.test(pkg.version) || Object.keys(pkg.bin ?? {}).join() !== 'tsc') return undefined
-  const nativeName = `typescript-${host.platform}-${host.arch}`
-  const platformName = `@typescript/${nativeName}`
+  const platformName = `@typescript/typescript-${host.platform}-${host.arch}`
   // Mirror Node's package resolution from typescript/lib/getExePath.js through ancestor node_modules.
-  const locations = []
-  for (let directory = root;;) {
-    locations.push(path.basename(directory) === 'node_modules' ? directory : path.join(directory, 'node_modules'))
-    const parent = path.dirname(directory)
-    if (parent === directory) break
-    directory = parent
-  }
-  for (const modules of locations) {
+  for (const modules of moduleDirs(root, host)) {
     const platformRoot = path.join(modules, platformName)
     const platformPkg = metadata(path.join(platformRoot, 'package.json'), host)
     const executable = path.join(platformRoot, 'lib', `tsc${host.platform === 'win32' ? '.exe' : ''}`)
@@ -119,12 +214,49 @@ function nativeBackend(host, params) {
   return undefined
 }
 
+// TypeScript 7 behind tsc on PATH first, then the host package roots; never one inside the workspace.
+function nativeBackend(host, params, roots) {
+  const blocked = blockedBy(host, params)
+  const bin = onPath('tsc', host)
+  const fromPath = bin && !blocked(bin.candidate) && !blocked(bin.real) ? packageRoot(bin, 'typescript', host) : undefined
+  for (const root of [fromPath, ...roots.tls, ...roots.global]) {
+    const found = root && !blocked(root) ? nativeAt(root, host, blocked) : undefined
+    if (found) return found
+  }
+  return undefined
+}
+
 export function planTsLaunch(params, overrides = {}) {
   const host = { ...realHost(), ...overrides }
   const tls = tlsBackend(host)
-  if (params.initializationOptions?.tsserver?.path) return tls ?? { status: 'refused', message: 'wt-tsls: explicit tsserver.path requires typescript-language-server on PATH; install it.' }
-  if (tls && workspaceVersion(params, host)) return tls
-  return nativeBackend(host, params) ?? tls ?? { status: 'refused', message: REFUSAL }
+  if (params.initializationOptions?.tsserver?.path) return tls ? launchTls(tls) : { status: 'refused', message: 'wt-tsls: explicit tsserver.path requires typescript-language-server on PATH; install it.' }
+  if (tls && workspaceVersion(params, host)) return launchTls(tls)
+  const root = workspaceRoot(params, host)
+  const nested = tls && root ? subfolderTypescript(root, host) : undefined
+  if (nested) return launchTls(tls, nested)
+  const roots = hostRoots(host, tls)
+  return nativeBackend(host, params, roots) ?? (tls ? fallbackTls(tls, host, roots, root) : { status: 'refused', message: REFUSAL })
+}
+
+// tls cannot start without a TypeScript, so a launch with none would only fail later and less legibly.
+function fallbackTls(tls, host, roots, root) {
+  const hosted = hostTypescript(host, roots)
+  if (hosted) return launchTls(tls, hosted)
+  return { status: 'refused', message: root ? NO_TYPESCRIPT : `${NO_TYPESCRIPT} The client sent no workspace root, so only the host was searched.` }
+}
+
+// tls reads initializationOptions.tsserver.path; the client sent none, so the one found is added to its frame.
+function withTsserverPath(bytes, consumed, tsserverPath) {
+  const end = bytes.indexOf('\r\n\r\n')
+  const request = JSON.parse(bytes.subarray(end + 4, consumed).toString('utf8'))
+  const params = request.params ?? {}
+  const options = params.initializationOptions ?? {}
+  const body = JSON.stringify({ ...request, params: { ...params, initializationOptions: { ...options, tsserver: { ...options.tsserver, path: tsserverPath } } } })
+  return Buffer.concat([Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`), bytes.subarray(consumed)])
+}
+
+function launchReplay(prior, buffered, consumed, plan) {
+  return Buffer.concat([prior, plan.tsserverPath ? withTsserverPath(buffered, consumed, plan.tsserverPath) : buffered])
 }
 
 export function inspectInitialize(buffer) {
@@ -142,7 +274,7 @@ export function inspectInitialize(buffer) {
   try { request = JSON.parse(buffer.subarray(end + 4, end + 4 + length).toString('utf8')) } catch { return { status: 'refused', message: 'wt-tsls: malformed initialize JSON' } }
   if (!request || typeof request !== 'object' || Array.isArray(request)) return { status: 'refused', message: 'wt-tsls: malformed initialize message' }
   if (request.method === 'exit') return { status: 'exit' }
-  if (request.method === 'initialize') return { status: 'initialize', id: request.id, params: request.params ?? {} }
+  if (request.method === 'initialize') return { status: 'initialize', id: request.id, params: request.params ?? {}, consumed: end + 4 + length }
   if (request.id !== undefined) return { status: 'refused', message: 'wt-tsls: expected initialize before any request' }
   return { status: 'notification', consumed: end + 4 + length }
 }
@@ -203,11 +335,12 @@ export function runTsLaunch({ input = process.stdin, output = process.stdout, st
     input.pause()
     input.off('data', peek)
     if (result.status === 'exit') return exit(0)
-    const replay = Buffer.concat([prior, buffered])
-    if (result.status === 'refused') return refuse(result.message, replay, streams)
+    if (result.status === 'refused') return refuse(result.message, Buffer.concat([prior, buffered]), streams)
     const plan = select(result.params)
-    if (plan.status !== 'launch') return refuse(plan.message, replay, streams)
-    stderr.write(`wt-tsls: ${plan.backend} (${plan.command})\n`)
+    if (plan.status !== 'launch') return refuse(plan.message, Buffer.concat([prior, buffered]), streams)
+    const replay = launchReplay(prior, buffered, result.consumed, plan)
+    const tsserver = plan.tsserverPath ? ` with tsserver ${plan.tsserverPath} (${plan.tsserverSource})` : ''
+    stderr.write(`wt-tsls: ${plan.backend} (${plan.command})${tsserver}\n`)
     const child = start(plan.command, plan.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     let answered = false
     let started = false
