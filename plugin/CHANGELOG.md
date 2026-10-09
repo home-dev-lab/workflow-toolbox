@@ -12,6 +12,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Lifecycle receipt waits now allow a bounded settling window for a matching live pilot worker after its child exits, including the brief moment when the exiting child's identity cannot be read, so genuine completion receipts are not mistaken for inconsistent-record or unreadable-identity timeouts.
 - A FULL SDK pilot run now states the required plan sections in its first prompt. Before, the pilot saw them only in a plan->critic refusal or an idle-turn reminder, so a first plan without those sections was refused and had to be rewritten.
 
+- The quota watcher now reads the cache named for its latest live account and rejects foreign-account entries. It refills only the login cache, leaves token-account cache writes to the per-turn hook, and re-baselines on account-key changes. The bundled probe emits a hashed account key without exposing its token; ambiguous or unsafe keys bypass caching.
+
 ## [0.191.1] - 2026-10-08
 
 ### Fixed
