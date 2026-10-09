@@ -43,6 +43,8 @@ const NEXT_BY_PHASE = {
   refutation: 'write the refutation brief, run the refutation lane, then transition refutation; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
   report: 'write the pilot report, then transition report',
 }
+// The plan->critic edge refuses any other shape, so a route that plans learns it before its first plan, not from a refusal.
+const planShapeLine = (route) => (route === 'FULL' ? ` When you write the plan, it must match ${PLAN_SHAPE_DESCRIPTION}.` : '')
 const PLANKA_TOOLS = new Set([
   'mcp__planka__get_card',
   'mcp__planka__get_comments',
@@ -584,7 +586,7 @@ export async function runPilot(options, dependencies) {
 
   async function* prompt() {
     const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
-    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${GROUNDING_INITIAL_PROMPT} ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
+    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${GROUNDING_INITIAL_PROMPT} ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.${planShapeLine(routing.route)}`
     yield { type: 'user', message: { role: 'user', content: withRepositoryGuide(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
     while (!completed && !timeoutBoundary) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }

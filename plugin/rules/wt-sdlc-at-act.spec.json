@@ -3,6 +3,12 @@
     "triggers": [
       {
         "kind": "tool",
+        "tool": "^(?:Write|Edit|MultiEdit|NotebookEdit)$",
+        "unconditional": true,
+        "before-first-act": true
+      },
+      {
+        "kind": "tool",
         "tool": "^(?:Agent|Task|Workflow)$",
         "unconditional": true,
         "before-first-act": true
@@ -12,6 +18,12 @@
         "tool": "^(?:Write|Edit|MultiEdit)$",
         "regex": "(?:^|/)(?:review|refut|critic)[^/]*\\.md$",
         "before-first-act": true
+      },
+      {
+        "kind": "bash",
+        "flags": "m",
+        "before-first-act": true,
+        "regex": "^(?:(?:(?:[^'\";&|()\\n]|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')*(?:;|&&|\\|\\||\\||&(?!&)|\\()\\s*)|(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+))\\s+|(?:timeout(?:(?:\\s+(?:-s|--signal|-k|--kill-after)\\s+\\S+|\\s+--(?:signal|kill-after)=\\S+|\\s+--(?:foreground|preserve-status|verbose))*)\\s+\\S+|nice(?:\\s+(?:-[^\\s]+|\\d+))*|time|nohup|setsid|sudo(?:\\s+(?:-[ugChpRT]\\s+\\S+|--(?:user|group|close-from|host|prompt|role|type)(?:=\\S+|\\s+\\S+)|-[^\\s]+))*|npx|pnpm\\s+exec|env(?:\\s+(?:-[uC]\\s+\\S+|--(?:unset|chdir)(?:=\\S+|\\s+\\S+)|-[^\\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+)))*)\\s+|(?:ba)?sh\\s+-c\\s+['\"]\\s*|(?:if|then|do|else|elif|while|until)\\s+|\\{\\s*|!\\s*)*(?:(?:node\\s+\\S*/)?wt-lane\\.mjs\\b|opencode\\s+run\\b|codex\\s+exec\\b|(?:cat\\b[^\\n]*(?:>|>>)\\s*|tee\\b[^\\n]*)(?:\\.lane/brief[^/\\s]*\\.md|briefs/[^/\\s]+\\.md)\\b)"
       }
     ]
   },

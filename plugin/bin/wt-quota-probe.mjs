@@ -18,10 +18,14 @@
 // Exit codes: 0 ok · 1 no/expired credentials · 2 endpoint/network error
 
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+const accountKey = process.env.CLAUDE_CODE_OAUTH_TOKEN
+  ? `token-${createHash('sha256').update(process.env.CLAUDE_CODE_OAUTH_TOKEN).digest('hex').slice(0, 12)}`
+  : 'login'
 
 let oauth
 if (process.env.CLAUDE_CODE_OAUTH_TOKEN) oauth = { accessToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }
@@ -94,6 +98,7 @@ try {
   console.log(
     JSON.stringify({
       configDir,
+      accountKey,
       quota_model: quotaModel,
       five_hour: fmtWindow(d.five_hour),
       seven_day: sevenDay,

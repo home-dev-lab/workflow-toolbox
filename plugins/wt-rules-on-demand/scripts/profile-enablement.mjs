@@ -12,13 +12,17 @@ export function profileEnablement(user, policies) {
     if (Object.hasOwn(guard, 'allowManagedModsOnly')) allowManagedModsOnly = guard.allowManagedModsOnly;
     Object.assign(enabledPlugins, settings.enabledPlugins);
     Object.assign(env, settings.env);
-    for (const key of Object.keys(hooks)) if (Object.hasOwn(settings, key)) hooks[key] = settings[key];
-    for (const [id, config] of Object.entries(settings.pluginConfigs ?? {})) {
-      options[id] = { ...options[id], ...config?.options };
-    }
+    mergePolicyFields(settings, hooks, options);
   }
   const affirmative = Object.keys(options).filter((id) => id.startsWith('wt-rules-on-demand@')
     && options[id].enabled === true && enabledPlugins[id] !== false);
   const listed = affirmative.filter((id) => enabledPlugins[id] === true);
   return { enabledPlugins, options, affirmative, listed, env, ...hooks, allowManagedModsOnly };
+}
+
+function mergePolicyFields(settings, hooks, options) {
+  for (const key of Object.keys(hooks)) if (Object.hasOwn(settings, key)) hooks[key] = settings[key];
+  for (const [id, config] of Object.entries(settings.pluginConfigs ?? {})) {
+    options[id] = { ...options[id], ...config?.options };
+  }
 }

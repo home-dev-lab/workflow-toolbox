@@ -5,6 +5,50 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- TypeScript and JavaScript diagnostics now start in a session whose root folder has no TypeScript. Before, the TypeScript language server was launched anyway and stopped with "Could not find a valid TypeScript installation". The launcher now looks for a TypeScript in the sub-folders of the session root (the shallowest project first, `.claude` ahead of its siblings, up to three levels deep), then on the host (TypeScript 7 or `tsserver.js` where `typescript-language-server` would find its own, behind `tsc` on PATH, or in the global npm and pnpm roots), and hands the one it finds to the server. When there is none, the session gets an error naming every place searched and the install command instead of a server that fails. One TypeScript serves the whole workspace, so sub-projects pinned to different TypeScript versions are all checked with the first one found.
+- `wt-secret-guard` 0.1.4 no longer replaces ordinary help text with an `op-output` token. A line such as `password: see the docs for the details here` in a completed tool result now stays readable when its value is a plain sentence (six or more letter-only words, with common function words) that the vault would never hold. Output of `op` or `op.exe`, in any path, quoted, escaped or joined spelling, still masks such lines, and so does any command containing `$`, a backtick, a brace or a glob character. Unfinished assistant text and structured outbound fields also keep the mask. Residual: a password that is itself such a sentence, printed after an unquoted password key by a command other than `op`, is no longer masked on first sight.
+- Detached lane workers now end their run logs with a clear failure reason and `EXIT=1` when startup fails before OpenCode starts. A startup that never reports back is cut off after a bounded wait and reported the same way.
+- Linux lane sandboxes now skip PATH toolchain candidates whose real targets live on Windows drive mounts and continue to the next Linux candidate. Mount detection supports configurable WSL drive roots, escaped mount points, and nested mounts, avoiding socket scans of unusable Windows toolchain directories.
+- Lifecycle receipt waits now allow a bounded settling window for a matching live pilot worker after its child exits, including the brief moment when the exiting child's identity cannot be read, so genuine completion receipts are not mistaken for inconsistent-record or unreadable-identity timeouts.
+- A FULL SDK pilot run now states the required plan sections in its first prompt. Before, the pilot saw them only in a plan->critic refusal or an idle-turn reminder, so a first plan without those sections was refused and had to be rewritten.
+
+- The quota watcher now reads the cache named for its latest live account and rejects foreign-account entries. It refills only the login cache, leaves token-account cache writes to the per-turn hook, and re-baselines on account-key changes. The bundled probe emits a hashed account key without exposing its token; ambiguous or unsafe keys bypass caching.
+
+- Repository quality gates now exclude Git-ignored generated inputs from ESLint, dependency-cruiser, Knip and the host-primitive census. Plugin TypeScript configuration and generated host typings are ignored rather than tracked.
+
+- Act-bound verification diversity, SDLC, summary-checking, delegation and task-board details now live in on-demand companions, with static anchors and SDK routing preserved; no directive was dropped. With an on-demand engine, the first file edit of a context is now refused once to serve the SDLC and verification companions. Re-adopt the rules and the pilot agent templates: both carry the new `proportionate-verification-decorrelation` block.
+
+- The artifact server no longer offers a remote URL that no peer can open when it runs in WSL and Tailscale runs on Windows. Without a Tailscale Serve route to the server, `url --remote` now prints no URL and names the reason with the command that creates the route (`tailscale serve --bg --set-path /artifacts http://127.0.0.1:<port>`); before, it printed `http://<tailnet address>:<port>`, which only WSL itself could reach. A Serve route's HTTPS URL is kept even when the server cannot listen on the tailnet address, since the route forwards to the loopback listener. Outside Windows, a resolved Tailscale command ending in `.exe` (configured or found) counts as Windows Tailscale. When `serve status` or `status --json` cannot be read there, no URL is offered and the reason says so instead of advising a route. `status` shows how Tailscale was reached (`tailnetVia: native`, `windows-interop`, or `unknown` for a server started by an older version). `url <path> --check` fetches the printed URL and reports `reachable`, `unreachable` or `unverified` on stderr (exit 0, 4 or 5); with `--remote` the request runs on the host where Tailscale runs (the side the server recorded), through PowerShell when that is Windows, so `reachable` is measured from that host, not from a peer.
+
+## [0.191.1] - 2026-10-08
+
+### Fixed
+- Mouse clicks in the Claude Code console land where you click again. In 0.191.0 the What is running buttons were drawn by a custom client module that listened to the pointer, and a pointer listener makes Claude Code ask the terminal for mouse positions in pixels. A multiplexer that only knows cells (herdr on WSL, for example) still sent cell positions, so every click in the console landed several lines away. The pane and the prompt hint now draw the host's native buttons again, and a test refuses any shipped plugin file that mentions `onPointer`. If clicks still misbehave after updating, restart the session.
+
+### Quality
+
+Patch release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; no baseline was recorded at 0.190.0 or 0.191.0). No judge regressed. The static totals equal 0.191.0's. Coverage comes from this release tree's own test run. The ESLint scope now excludes the git-ignored type stubs Claude Code writes into `plugin/.claude-plugin/types/` when a session loads the plugin from a checkout; a test keeps every committed plugin file in scope.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 124 | -2 |
+| Cognitive complexity | 268 -> 243 | -25 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 640 | -44 |
+| Duplication % | 2.43 -> 2.21 | -0.23 |
+| Knip issues | 196 -> 189 | -7 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 81.06 | +2.45 |
+| Coverage branches % | 69.76 -> 72.81 | +3.05 |
+| Coverage functions % | 80.86 -> 83.35 | +2.49 |
+| Coverage statements % | 76.5 -> 79.06 | +2.56 |
+
+## [0.191.0] - 2026-10-08
+
 ### Changed
 - The rule-convention guard now warns about month dates, dated attributions, message references and incident stories in newly added rule or agent-definition lines. Its existing refusals and whole-line allow marker remain intact. Feedback preserves the flagged original lines as HISTORY and offers optional, checked RULE wording through an isolated small-model call; unavailable or slow calls leave the decision intact. Set `WT_RULE_NARRATIVE_SPLIT=off` to disable proposals.
 - Adopted lane, waiter, arc watcher, and quota watcher scripts are now fingerprinted thin launchers for the installed plugin's canonical executables. Existing copied lane launchers need one re-adoption; later executable updates are picked up at launch. POSIX Node runtimes with `process.execve` preserve the pid; the spawn fallback forwards signals and re-raises child signals after removing its handlers.
@@ -15,11 +59,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - FULL pilot plans now require non-empty quality coverage, gates, and state/recovery answers, plus card-term readings when card acceptance criteria are present. The runner refuses missing or empty sections and labels with a named example; the plan critic checks each answer's truth, including reasoned `N/A` exemptions.
 - The workflow-composer, adopt, pilot-wave, delegation-chain, upgrade-canary, and workflow-debugger skills now keep their detailed guides in linked references opened on demand, preserving the full instructions. A new size-and-link test keeps every shipped skill within 15,000 characters and checks that its references are discoverable from the skill body.
 - The adopted `pilot` template no longer runs the full test suite for every card. After its fix rounds, a pilot now runs only the tests its change affects, using the project's affected-test selection when the project has one. A change to shared test infrastructure (the suite lock, test setup, test runners, dependency manifests) still runs the full suite. The full suite runs once per integration batch, where the cards are merged. With several pilots working at once, each card's gate now holds the machine's suite lock for minutes, not for a whole suite. Re-adopt the template to pick this up.
+- The command the adoption check's compaction digest prints for re-running the full remedies now survives a Windows command line into Git Bash. Each backslash inside the JSON payload (a Windows project path) is written as the JSON escape `\u005c`, so the payload carries no doubled backslash for the command line to collapse; before, the collapse broke the JSON, the check found no project directory and the command printed nothing. The re-run output is unchanged byte for byte.
 ### Fixed
 - The commit-chain lexer now preserves uncertain heredoc and quote text instead of hiding later commands, recognizes arithmetic shifts and mixed-quoted heredoc delimiters with bash quote removal, keeps quotes in a removed heredoc body from pairing with later quotes, treats an escaped space before `#` as part of a word, and skips leading redirections when identifying gates and commits. Malformed-quote scanning is linear; shared merge detection benefits from the same repairs.
 - The zsh word-split guard now warns after `emulate foo sh` and `emulate sh -c cmd`. Before, it treated `sh`, `ksh` or `bash` anywhere in an `emulate` command as turning word splitting on. In zsh, only the first argument after the flags sets the emulation mode, and `-c` limits that mode to the one command it runs. So both forms leave splitting off, and the guard used to miss real word splits after them.
-- `wt-secret-guard` 0.1.2: generic credential-key matches no longer hold ordinary letter-only identifiers, passphrases with few case transitions, dates, versions or paths across the session. Explicit references promote those values to monotonic trusted protection; token ids are opaque random draws. A false generic hold can be forgotten only through an engine-attested owner prompt and a UI-only confirmation within five minutes, and deletion republishes the held table. The fixed Atrium speak adapters redact only their message body, including repeated values and held-value base64, then re-classify before forwarding; routing fields retain refusal. `ownerChannelRedaction` defaults to true and can disable that adapter. Trusted entries cannot be released.
-- `wt-secret-guard` 0.1.2 on Windows: transcript repair works again under Windows PowerShell 5.1. Its range helper passed a JSON depth option that 5.1 does not support, so every write that checked its record was refused and secrets stayed in Claude Code storage. A write that names no record keeps the byte-only check, as on macOS and Linux. Repair of a recorded tool call, which never worked on 5.1, now works too.
+- `wt-secret-guard` 0.1.3 no longer appends "N candidates not tokenised - entropy only" to prompts and tool results. Nothing was masked or held for those strings, so the line only made ordinary paths and long identifiers look like leaked secrets on almost every turn.
+- `wt-secret-guard` 0.1.3: generic credential-key matches no longer hold ordinary letter-only identifiers, passphrases with few case transitions, dates, versions or paths across the session. Explicit references promote those values to monotonic trusted protection; token ids are opaque random draws. A false generic hold can be forgotten only through an engine-attested owner prompt and a UI-only confirmation within five minutes, and deletion republishes the held table. The fixed Atrium speak adapters redact only their message body, including repeated values and held-value base64, then re-classify before forwarding; routing fields retain refusal. `ownerChannelRedaction` defaults to true and can disable that adapter. Trusted entries cannot be released.
+- `wt-secret-guard` 0.1.3 on Windows: transcript repair works again under Windows PowerShell 5.1. Its range helper passed a JSON depth option that 5.1 does not support, so every write that checked its record was refused and secrets stayed in Claude Code storage. A write that names no record keeps the byte-only check, as on macOS and Linux. Repair of a recorded tool call, which never worked on 5.1, now works too.
 - The report-channel and nested self-review spawn advisories now require message-delivery cues or a direct request to review the caller's work, instead of warning on unrelated report nouns and ownership words. Delivery includes sending the spawner a plan and replying to an agent; self-review tolerates nearby modifiers and includes pull requests, commits and branches. Both guards remain warn-only and continue to ignore quoted and fenced examples.
 - Depends-on parser: a line with an unclosed parenthesis is now held as unparseable instead of silently dropping every dependency after it, so the card is no longer released early
 - A flag value spelled --help or -h no longer makes a wt-* CLI print usage and exit 0: help is recognised only where the CLI's own grammar puts a flag, an unknown option next to a help request is refused (exit 2) before anything runs, and wt-artifact-server serve now refuses extra arguments.
@@ -54,6 +100,23 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Removed
 
 - The `what-next` skill is removed from the plugin (`/what-next` no longer exists), and `planka-tracking` no longer offers to copy it into a project. It was never invoked as a skill in the last five weeks. The label-intent hook stays: it runs on any `get_board` read, not only on a `/what-next` pass. `what-next` is also dropped from the refused-lane-skill list, so a lane that names it is no longer refused for that name.
+
+### Quality
+
+Minor release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; no baseline was recorded at 0.190.0). No judge regressed. Against 0.190.0's figures, Knip issues fell from 215 to 189 and duplication from 2.30 % to 2.21 %; the other totals are unchanged. Coverage is not reported: the coverage artifact the delta read dates from 2026-10-02 and predates this release tree, so its figures would not describe this release.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 124 | -2 |
+| Cognitive complexity | 268 -> 243 | -25 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 640 | -44 |
+| Duplication % | 2.4324 -> 2.2063 | -0.23 |
+| Knip issues | 196 -> 189 | -7 |
+| Dependency cycles | 2 -> 2 | 0 |
 
 ## [0.190.0] - 2026-10-02
 

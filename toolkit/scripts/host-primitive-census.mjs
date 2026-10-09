@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs'
-import { extname, join, relative, resolve } from 'node:path'
+import { extname, join, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
 import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
+import { listGitIgnoredPaths, pathsRegexSource } from './git-ignored-inputs.mjs'
 
 const DEFAULT_PLUGIN_ROOT = resolve(import.meta.dirname, '../../plugin')
 const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
@@ -9,10 +10,10 @@ const FILESYSTEM_MODULES = new Set(['fs', 'fs/promises', 'node:fs', 'node:fs/pro
 const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
-// A parser of Bash command text: its `/` and `\` literals are POSIX paths written inside the
-// command and shell quoting, whatever the host. Only the separator check is skipped for it; its
-// imports and host calls are counted like any other file's.
-const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
+// A parser of Bash command text, and the quoting of commands printed for a POSIX shell: their `/` and
+// `\` literals are command text and shell or JSON escapes, whatever the host. Only the separator check
+// is skipped for them; their imports and host calls are counted like any other file's.
+const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/lib/remedy-quote.mjs'])
 
 // Lowered by independent reductions: the suite lock's reclaim moved its file operations into
 // host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
@@ -30,7 +31,9 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // It may only decrease as calls move behind the adapter.
 export const HOST_PRIMITIVE_CEILING = 1883
 
-function sourceFiles(root) {
+export function sourceFiles(root) {
+  const ignoredSource = pathsRegexSource(listGitIgnoredPaths(root).paths, root, root)
+  const ignored = ignoredSource ? new RegExp(ignoredSource) : null
   const hostRoot = join(root, 'bin', 'lib', 'host')
   // Generated third-party YAML grammar literals are not host access (same exemption
   // as the generated observatory launcher); their source is byte-identity checked.
@@ -38,6 +41,8 @@ function sourceFiles(root) {
   function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const path = join(directory, entry.name)
+      const input = relative(root, path).split(sep).join('/') + (entry.isDirectory() ? '/' : '')
+      if (ignored?.test(input)) return []
       if (entry.isDirectory()) return path === hostRoot ? [] : walk(path)
       return entry.isFile() && EXECUTABLE_EXTENSIONS.has(extname(path)) && !generated.has(path) ? [path] : []
     })

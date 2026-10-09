@@ -6,18 +6,25 @@ const inside = (root, path) => {
   return child !== '' && child !== '..' && !child.startsWith('../') && !child.startsWith('..\\') && !isAbsolute(child);
 };
 
+function installationRecords(registry, name) {
+  if (name === 'wt-rules-on-demand@inline') return null;
+  const records = registry.plugins?.[name];
+  return Array.isArray(records) ? records : null;
+}
+
+const userInstallation = (record) => record?.scope === 'user' && typeof record.installPath === 'string';
+
 // Require this profile's user installation registry and a readable engine manifest inside its cache.
 export async function installedEngine(dir, names) {
   try {
     const registry = JSON.parse(await readFile(join(dir, 'plugins', 'installed_plugins.json'), 'utf8'));
     const cache = await realpath(join(dir, 'plugins', 'cache'));
     for (const name of names) {
-      if (name === 'wt-rules-on-demand@inline') continue;
-      const records = registry.plugins?.[name];
-      if (!Array.isArray(records)) continue;
+      const records = installationRecords(registry, name);
+      if (!records) continue;
       for (const record of records) {
         try {
-          if (record?.scope !== 'user' || typeof record.installPath !== 'string') continue;
+          if (!userInstallation(record)) continue;
           // The version ENTRY must sit in this profile's cache; the entry itself may be a link to a development
           // checkout, a documented installation mode, so its parent is resolved and the entry name kept.
           const entry = join(await realpath(dirname(record.installPath)), basename(record.installPath));

@@ -1,5 +1,5 @@
 // Functional core: recursively mask values without performing host I/O.
-import { detections, entropyCandidates, optionalDetections } from './detector.js';
+import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
 import { confirmationKeyCollision, redactConfirmationCodes } from './owner-release.js';
 import { GENERIC_KINDS, isIssuedToken, knownTokens, knownValueOccurrences, replacementFor, tokenize } from './token-vault.js';
@@ -21,7 +21,7 @@ function occurrences(text, value) {
 // Such a value is masked in that output whatever its kind: a credential UUID or an address is kept
 // out of unconditional masking because it is ordinary elsewhere, never in the output of a command the
 // guard handed it to.
-function replaceKnown(text, command, includeOptional, substituted, vaultOccurrences = knownValueOccurrences) {
+function replaceKnown(text, command, includeOptional, substituted, vaultOccurrences = knownValueOccurrences, detectionOptions = {}) {
   const options = config();
   const spans = [];
   const eligible = (match) => eligibleMatch(match, options, includeOptional, substituted);
@@ -33,12 +33,12 @@ function replaceKnown(text, command, includeOptional, substituted, vaultOccurren
     spans.push({ from: match.from, to: match.to, token });
   }
   const found = [
-    ...detections(text, command),
+    ...detections(text, command, undefined, detectionOptions),
     ...findOptional(text, includeOptional, options),
   ];
   for (const detection of found) for (const [from, to] of occurrences(text, detection.value)) spans.push({ from, to, detection });
   clipIssuedTokens(text, spans);
-  if (!spans.length) return { value: text, changed: false, entropy: entropyCandidates(text) };
+  if (!spans.length) return { value: text, changed: false };
   spans.sort((left, right) => left.from - right.from || right.to - left.to);
   const groups = mergeSpans(spans);
   return replaceGroups(text, groups);
@@ -117,51 +117,52 @@ function replaceGroups(text, groups) {
     for (const part of group.parts) if (part.detection) tokenFor(part);
   }
   scrubbed += text.slice(cursor);
-  return { value: scrubbed, changed: scrubbed !== text, entropy: entropyCandidates(scrubbed), replacements };
+  return { value: scrubbed, changed: scrubbed !== text, replacements };
 }
 
-function scrubString(value, command, includeOptional, substituted) {
-  const result = replaceKnown(value, command, includeOptional, substituted);
+function scrubString(value, command, includeOptional, substituted, detectionOptions) {
+  const result = replaceKnown(value, command, includeOptional, substituted, knownValueOccurrences, detectionOptions);
   const text = redactConfirmationCodes(result.value);
   return { ...result, value: text, changed: result.changed || text !== value };
 }
 
-export function scrub(value, command, includeOptional = true, substituted = new Set()) {
-  if (confirmationKeyCollision(value)) return { value: { deny: 'wt-secret-guard refused confirmation-code key collision.' }, changed: true, entropy: 0 };
-  if (typeof value === 'string') return scrubString(value, command, includeOptional, substituted);
+// Completion belongs to the caller; assistant render and other callers keep the conservative default.
+export function scrub(value, command, includeOptional = true, substituted = new Set(), detectionOptions = {}) {
+  if (confirmationKeyCollision(value)) return { value: { deny: 'wt-secret-guard refused confirmation-code key collision.' }, changed: true };
+  if (typeof value === 'string') return scrubString(value, command, includeOptional, substituted, detectionOptions);
   if (Array.isArray(value)) {
-    let changed = false; let entropy = 0;
-    const result = value.map((item) => { const next = scrub(item, command, includeOptional, substituted); changed ||= next.changed; entropy += next.entropy; return next.value; });
-    return { value: result, changed, entropy };
+    let changed = false;
+    const result = value.map((item) => { const next = scrub(item, command, includeOptional, substituted, detectionOptions); changed ||= next.changed; return next.value; });
+    return { value: result, changed };
   }
   if (value && typeof value === 'object') {
-    let changed = false; let entropy = 0;
+    let changed = false;
     const result = {};
     // defineProperty, not assignment: `result['__proto__'] = …` sets the prototype and drops the field.
-    for (const [key, item] of Object.entries(value)) { const next = scrubField(result, key, item, command, includeOptional, substituted); changed ||= next.changed; entropy += next.entropy; }
-    return { value: result, changed, entropy };
+    for (const [key, item] of Object.entries(value)) { const next = scrubField(result, key, item, command, includeOptional, substituted, detectionOptions); changed ||= next.changed; }
+    return { value: result, changed };
   }
-  return { value, changed: false, entropy: 0 };
+  return { value, changed: false };
 }
 
-function scrubField(result, key, item, command, includeOptional, substituted) {
-  const next = scrub(item, command, includeOptional, substituted);
+function scrubField(result, key, item, command, includeOptional, substituted, detectionOptions) {
+  const next = scrub(item, command, includeOptional, substituted, detectionOptions);
   const safeKey = redactConfirmationCodes(key);
   Object.defineProperty(result, safeKey, { value: next.value, enumerable: true, writable: true, configurable: true });
-  return { changed: next.changed || safeKey !== key, entropy: next.entropy };
+  return { changed: next.changed || safeKey !== key };
 }
 
 // One pass scrubs the fields of an object in order, so a value a LATER field revealed (a concealed JSON
 // in an error's context) stayed raw in an earlier field. Passes repeat until nothing changes; each pass only
 // adds tokens, and an issued token is never scrubbed again, so this ends - the bound is a backstop.
-export function scrubSettled(value, command, includeOptional = true, substituted = new Set()) {
-  let current = scrub(value, command, includeOptional, substituted);
+export function scrubSettled(value, command, includeOptional = true, substituted = new Set(), detectionOptions = {}) {
+  let current = scrub(value, command, includeOptional, substituted, detectionOptions);
   let changed = current.changed;
   for (let pass = 1; current.changed && pass < 4; pass += 1) {
-    current = scrub(current.value, command, includeOptional, substituted);
+    current = scrub(current.value, command, includeOptional, substituted, detectionOptions);
     changed ||= current.changed;
   }
-  return { value: current.value, changed, entropy: current.entropy };
+  return { value: current.value, changed };
 }
 
 export function testScrubWithVaultOccurrences(value, command, includeOptional, vaultOccurrences, substituted = new Set()) {

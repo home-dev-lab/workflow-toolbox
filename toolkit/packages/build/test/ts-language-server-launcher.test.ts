@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -19,6 +19,13 @@ function host(files: Record<string, string> = {}, env: Record<string, string> = 
     isFile: (file: string) => file in files,
     exists: (file: string) => file in files || Object.keys(files).some((name) => name.startsWith(`${file}${platform === 'win32' ? '\\' : '/'}`)),
     readText: (file: string) => files[file],
+    readdir: (dir: string) => {
+      const sep = platform === 'win32' ? '\\' : '/'
+      const prefix = dir.endsWith(sep) ? dir : `${dir}${sep}`
+      const names = Object.keys(files).filter((name) => name.startsWith(prefix) && name.slice(prefix.length).includes(sep)).map((name) => name.slice(prefix.length).split(sep)[0] ?? '')
+      // Reverse name order, so a search that trusted the directory order would pick the wrong folder.
+      return [...new Set(names)].sort().reverse()
+    },
     realpath: (file: string) => file === '/bin/tsc' && files['/bin/node_modules/typescript/bin/tsc'] !== undefined ? '/bin/node_modules/typescript/bin/tsc' : file === '/bin/typescript-language-server' && files['/bin/node_modules/typescript-language-server/lib/cli.mjs'] !== undefined ? '/bin/node_modules/typescript-language-server/lib/cli.mjs' : files[file] !== undefined ? file : undefined,
   }
 }
@@ -31,6 +38,8 @@ const native = {
   '/bin/node_modules/@typescript/typescript-linux-x64/package.json': JSON.stringify({ version: '7.0.2' }),
   '/bin/node_modules/@typescript/typescript-linux-x64/lib/tsc': '',
 }
+
+const tsAt = (root: string, version = '5.9.3') => ({ [`${root}/lib/tsserver.js`]: '', [`${root}/package.json`]: JSON.stringify({ name: 'typescript', version }) })
 
 describe('TypeScript LSP backend selection', () => {
   it('uses the first valid workspace tsserver with tls, ahead of host TS7', () => {
@@ -60,9 +69,100 @@ describe('TypeScript LSP backend selection', () => {
     seams.realpath = (file: string) => file
     expect(planTsLaunch({}, seams)).toMatchObject({ status: 'refused' })
   })
-  it('falls back to tls with old or unresolved host tsc', () => {
-    expect(planTsLaunch({}, host({ ...tls, '/bin/tsc': '' }))).toMatchObject({ status: 'launch', backend: 'typescript-language-server' })
-    expect(planTsLaunch({}, host({ ...tls, ...native, '/bin/node_modules/@typescript/typescript-linux-x64/package.json': '{"version":"7.1"}' }))).toMatchObject({ status: 'launch', backend: 'typescript-language-server' })
+  it('refuses rather than launching tls with no TypeScript anywhere, even beside an old or unresolved host tsc', () => {
+    expect(planTsLaunch({}, host({ ...tls, '/bin/tsc': '' }))).toMatchObject({ status: 'refused', message: expect.stringContaining('no TypeScript') })
+    expect(planTsLaunch({}, host({ ...tls, ...native, '/bin/node_modules/@typescript/typescript-linux-x64/package.json': '{"version":"7.1"}' }))).toMatchObject({ status: 'refused' })
+    expect(planTsLaunch({ rootUri: 'file:///w' }, host({ ...tls, '/w/src/a.ts': '' }))).toMatchObject({ status: 'refused', message: expect.stringContaining('no TypeScript') })
+  })
+  it('finds the TypeScript of the owner layout: none at the root, one in .claude/ and one in a sub-project, .claude first', () => {
+    const files = { ...tls, ...tsAt('/w/app/sub/node_modules/typescript'), ...tsAt('/w/.claude/node_modules/typescript'), ...tsAt('/w/.cache/node_modules/typescript'), '/w/src/a.ts': '' }
+    expect(planTsLaunch({ rootUri: 'file:///w' }, host(files))).toMatchObject({ status: 'launch', backend: 'typescript-language-server', tsserverPath: '/w/.claude/node_modules/typescript/lib/tsserver.js' })
+    const deep = { ...tls, ...tsAt('/w/app/node_modules/typescript'), ...tsAt('/w/.claude/worktrees/x/node_modules/typescript') }
+    expect(planTsLaunch({ rootUri: 'file:///w' }, host(deep))).toMatchObject({ tsserverPath: '/w/app/node_modules/typescript/lib/tsserver.js' })
+    expect(planTsLaunch({ rootUri: 'file:///w' }, host({ ...files, ...tsAt('/w/.claude/node_modules/typescript', '') }))).toMatchObject({ tsserverPath: '/w/.cache/node_modules/typescript/lib/tsserver.js' })
+  })
+  it('stops the sub-folder search after its folder budget', () => {
+    const wide = Object.fromEntries(Array.from({ length: 2001 }, (_, index) => [`/w/d${String(index).padStart(4, '0')}/x`, '']))
+    expect(planTsLaunch({ rootPath: '/w' }, host({ ...tls, ...wide, ...tsAt('/w/d1998/node_modules/typescript') }))).toMatchObject({ tsserverPath: '/w/d1998/node_modules/typescript/lib/tsserver.js' })
+    expect(planTsLaunch({ rootPath: '/w' }, host({ ...tls, ...wide, ...tsAt('/w/e/node_modules/typescript') }))).toMatchObject({ status: 'refused' })
+  })
+  it('does not search the sub-folders of a session rooted at the home directory', () => {
+    const seams = { ...host({ ...tls, ...tsAt('/home/u/a/node_modules/typescript') }), home: '/home/u', cwd: '/tmp' }
+    expect(planTsLaunch({ rootUri: 'file:///home/u' }, seams)).toMatchObject({ status: 'refused' })
+  })
+  it('says when the client sent no workspace root', () => {
+    expect(planTsLaunch({}, host(tls))).toMatchObject({ status: 'refused', message: expect.stringContaining('no workspace root') })
+    expect(planTsLaunch({ rootPath: '/w' }, host(tls))).toMatchObject({ status: 'refused', message: expect.not.stringContaining('no workspace root') })
+  })
+  it('hands tls the TypeScript its own resolution would find, nested under its install', () => {
+    const seams = host({ ...tsAt('/g/lib/node_modules/typescript-language-server/node_modules/typescript'), '/bin/typescript-language-server': '', '/g/lib/node_modules/typescript-language-server/lib/cli.mjs': '' })
+    seams.realpath = (file: string) => file === '/bin/typescript-language-server' ? '/g/lib/node_modules/typescript-language-server/lib/cli.mjs' : file
+    expect(planTsLaunch({ rootPath: '/w' }, seams)).toMatchObject({ tsserverPath: '/g/lib/node_modules/typescript-language-server/node_modules/typescript/lib/tsserver.js' })
+  })
+  it('never enters a symbolic link during the sub-folder search on the real file system', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-tsls-link-'))
+    try {
+      const outside = join(root, 'outside')
+      const workspace = join(root, 'w')
+      for (const dir of [join(outside, 'node_modules', 'typescript', 'lib'), workspace]) mkdirSync(dir, { recursive: true })
+      writeFileSync(join(outside, 'node_modules', 'typescript', 'lib', 'tsserver.js'), '')
+      writeFileSync(join(outside, 'node_modules', 'typescript', 'package.json'), '{"name":"typescript","version":"5.9.3"}')
+      symlinkSync(outside, join(workspace, 'linked'), 'junction')
+      const bin = join(root, 'bin')
+      const cli = join(bin, 'node_modules', 'typescript-language-server', 'lib', 'cli.mjs')
+      mkdirSync(dirname(cli), { recursive: true })
+      writeFileSync(cli, '')
+      if (process.platform === 'win32') writeFileSync(join(bin, 'typescript-language-server.cmd'), '@rem npm shim fixture\r\n')
+      else symlinkSync(cli, join(bin, 'typescript-language-server'))
+      const seams = { env: { PATH: bin, Path: bin }, execPath: join(root, 'node', 'bin', 'node'), home: join(root, 'home'), cwd: join(root, 'cwd') }
+      expect(planTsLaunch({ rootPath: workspace }, seams)).toMatchObject({ status: 'refused' })
+      mkdirSync(join(workspace, 'project'))
+      symlinkSync(join(outside, 'node_modules'), join(workspace, 'project', 'node_modules'), 'junction')
+      expect(planTsLaunch({ rootPath: workspace }, seams)).toMatchObject({ backend: 'typescript-language-server', tsserverPath: join(workspace, 'project', 'node_modules', 'typescript', 'lib', 'tsserver.js') })
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+  it('takes the shallowest sub-project TypeScript, in name order, and never searches node_modules, .git or past the depth cap', () => {
+    const files = { ...tls, ...tsAt('/w/b/node_modules/typescript'), ...tsAt('/w/a/deep/node_modules/typescript'), ...tsAt('/w/c/node_modules/typescript') }
+    expect(planTsLaunch({ rootPath: '/w' }, host(files))).toMatchObject({ tsserverPath: '/w/b/node_modules/typescript/lib/tsserver.js' })
+    const hidden = { ...tls, ...tsAt('/w/node_modules/x/node_modules/typescript'), ...tsAt('/w/.git/y/node_modules/typescript'), ...tsAt('/w/1/2/3/4/node_modules/typescript') }
+    expect(planTsLaunch({ rootPath: '/w' }, host(hidden))).toMatchObject({ status: 'refused' })
+    expect(planTsLaunch({ rootPath: '/w' }, host({ ...hidden, ...tsAt('/w/1/2/3/node_modules/typescript') }))).toMatchObject({ tsserverPath: '/w/1/2/3/node_modules/typescript/lib/tsserver.js' })
+  })
+  it('prefers a sub-project TypeScript over native host TS7, and native TS7 over a host TypeScript injected into tls', () => {
+    expect(planTsLaunch({ rootPath: '/w' }, host({ ...tls, ...native, ...tsAt('/w/.claude/node_modules/typescript') }))).toMatchObject({ backend: 'typescript-language-server', tsserverPath: '/w/.claude/node_modules/typescript/lib/tsserver.js' })
+    expect(planTsLaunch({ rootPath: '/w' }, host({ ...tls, ...native, ...tsAt('/lib/node_modules/typescript') }))).toMatchObject({ backend: 'typescript-go' })
+    expect(planTsLaunch({ rootPath: '/w' }, host({ ...tls, ...tsAt('/lib/node_modules/typescript') }))).toMatchObject({ backend: 'typescript-language-server', tsserverPath: '/lib/node_modules/typescript/lib/tsserver.js' })
+  })
+  it('launches a host TypeScript 7 installed beside typescript-language-server or in the global npm root, never one inside the workspace', () => {
+    const ts7 = (root: string) => ({ [`${root}/typescript/bin/tsc`]: '', [`${root}/typescript/package.json`]: native['/bin/node_modules/typescript/package.json'], [`${root}/typescript/node_modules/@typescript/typescript-linux-x64/package.json`]: '{"version":"7.0.2"}', [`${root}/typescript/node_modules/@typescript/typescript-linux-x64/lib/tsc`]: '' })
+    const beside = host({ ...ts7('/g/lib/node_modules'), '/bin/typescript-language-server': '', '/g/lib/node_modules/typescript-language-server/lib/cli.mjs': '' })
+    beside.realpath = (file: string) => file === '/bin/typescript-language-server' ? '/g/lib/node_modules/typescript-language-server/lib/cli.mjs' : file
+    expect(planTsLaunch({ rootUri: 'file:///w' }, beside)).toMatchObject({ backend: 'typescript-go', command: '/g/lib/node_modules/typescript/node_modules/@typescript/typescript-linux-x64/lib/tsc' })
+    const global = { ...host(ts7('/opt/node/lib/node_modules')), execPath: '/opt/node/bin/node' }
+    expect(planTsLaunch({ rootPath: '/w' }, global)).toMatchObject({ backend: 'typescript-go' })
+    expect(planTsLaunch({ rootPath: '/opt' }, global)).toMatchObject({ status: 'refused' })
+  })
+  it('falls back to the host TypeScript installed beside typescript-language-server', () => {
+    const files = { ...tsAt('/g/lib/node_modules/typescript'), '/bin/typescript-language-server': '', '/g/lib/node_modules/typescript-language-server/lib/cli.mjs': '' }
+    const seams = host(files)
+    seams.realpath = (file: string) => file === '/bin/typescript-language-server' ? '/g/lib/node_modules/typescript-language-server/lib/cli.mjs' : file
+    expect(planTsLaunch({ rootUri: 'file:///w' }, seams)).toMatchObject({ backend: 'typescript-language-server', tsserverPath: '/g/lib/node_modules/typescript/lib/tsserver.js' })
+  })
+  it('falls back to the TypeScript package of tsc on PATH, then to the global npm root of the running node', () => {
+    const viaTsc = host({ ...tls, ...tsAt('/t/typescript'), '/bin/tsc': '', '/t/typescript/bin/tsc': '' })
+    const realpath = viaTsc.realpath
+    viaTsc.realpath = (file: string) => file === '/bin/tsc' ? '/t/typescript/bin/tsc' : realpath(file)
+    expect(planTsLaunch({}, viaTsc)).toMatchObject({ tsserverPath: '/t/typescript/lib/tsserver.js' })
+    const seams = { ...host({ ...tls, ...tsAt('/opt/node/lib/node_modules/typescript') }), execPath: '/opt/node/bin/node' }
+    expect(planTsLaunch({}, seams)).toMatchObject({ tsserverPath: '/opt/node/lib/node_modules/typescript/lib/tsserver.js' })
+  })
+  it('rejects a TypeScript candidate without a tsserver.js or a typescript package.json', () => {
+    const files = { ...tls, '/w/.claude/node_modules/typescript/lib/tsserver.js': '', '/w/.claude/node_modules/typescript/package.json': '{"name":"other","version":"5"}', '/w/a/node_modules/typescript/package.json': '{"name":"typescript","version":"5"}' }
+    expect(planTsLaunch({ rootPath: '/w' }, host(files))).toMatchObject({ status: 'refused' })
+  })
+  it('searches Windows sub-projects with win32 separators', () => {
+    const files = { 'C:\\bin\\typescript-language-server.cmd': '', 'C:\\bin\\node_modules\\typescript-language-server\\lib\\cli.mjs': '', 'C:\\w\\.claude\\node_modules\\typescript\\lib\\tsserver.js': '', 'C:\\w\\.claude\\node_modules\\typescript\\package.json': '{"name":"typescript","version":"5.9.3"}' }
+    expect(planTsLaunch({ rootUri: 'file:///C:/w' }, host(files, { Path: 'C:\\bin' }, 'win32'))).toMatchObject({ backend: 'typescript-language-server', tsserverPath: 'C:\\w\\.claude\\node_modules\\typescript\\lib\\tsserver.js' })
   })
   it('refuses without either backend', () => {
     expect(planTsLaunch({}, host())).toMatchObject({ status: 'refused', message: expect.stringContaining('Install') })
@@ -94,8 +194,9 @@ describe('TypeScript LSP backend selection', () => {
     expect(planTsLaunch({}, host(files, { PATH: 'C:\\bin' }, 'win32'))).toMatchObject({ backend: 'typescript-go', command: 'C:\\bin\\node_modules\\@typescript\\typescript-win32-x64\\lib\\tsc.exe' })
   })
   it('resolves the Windows tls npm shim to the package CLI using node directly', () => {
-    const files = { 'C:\\bin\\typescript-language-server.cmd': '', 'C:\\bin\\node_modules\\typescript-language-server\\lib\\cli.mjs': '' }
-    expect(planTsLaunch({}, host(files, { Path: 'C:\\bin' }, 'win32'))).toMatchObject({ backend: 'typescript-language-server', command: '/node', args: ['C:\\bin\\node_modules\\typescript-language-server\\lib\\cli.mjs', '--stdio'] })
+    const files = { 'C:\\bin\\typescript-language-server.cmd': '', 'C:\\bin\\node_modules\\typescript-language-server\\lib\\cli.mjs': '', 'C:\\bin\\node_modules\\typescript\\lib\\tsserver.js': '', 'C:\\bin\\node_modules\\typescript\\package.json': '{"name":"typescript","version":"5.9.3"}' }
+    expect(planTsLaunch({}, host(files, { Path: 'C:\\bin' }, 'win32'))).toMatchObject({ backend: 'typescript-language-server', command: '/node', args: ['C:\\bin\\node_modules\\typescript-language-server\\lib\\cli.mjs', '--stdio'], tsserverPath: 'C:\\bin\\node_modules\\typescript\\lib\\tsserver.js' })
+    expect(planTsLaunch({}, host(Object.fromEntries(Object.entries(files).filter(([name]) => !name.endsWith('tsserver.js'))), { Path: 'C:\\bin', APPDATA: 'C:\\Users\\u\\AppData\\Roaming' }, 'win32'))).toMatchObject({ status: 'refused' })
   })
   it('looks up a hoisted native platform dependency using Node ancestor resolution', () => {
     const files = {
@@ -174,6 +275,29 @@ describe('initialize framing', () => {
     await new Promise<void>((resolve) => child.stdin.on('end', resolve))
     expect(Buffer.concat(received)).toEqual(Buffer.concat([first, second]))
   })
+  it('adds the resolved tsserver.path to the initialize frame and keeps the client options and the next frames', async () => {
+    const input = new PassThrough()
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, kill: () => true })
+    const received: Buffer[] = []
+    child.stdin.on('data', (chunk: Buffer) => received.push(chunk))
+    const stderr = new PassThrough()
+    let log = ''
+    stderr.on('data', (chunk: Buffer) => { log += chunk.toString() })
+    runTsLaunch({ input, output: new PassThrough(), stderr, exit: () => {}, select: () => ({ status: 'launch', backend: 'typescript-language-server', command: '/node', args: [], tsserverPath: '/w/.claude/node_modules/typescript/lib/tsserver.js', tsserverSource: 'workspace sub-folder' }), start: (() => child) as never })
+    const notice = frame({ method: '$/progress', params: {} })
+    const second = frame({ method: 'initialized' })
+    input.write(Buffer.concat([notice, frame({ id: 3, method: 'initialize', params: { rootUri: 'file:///w', initializationOptions: { preferences: { quoteStyle: 'single' }, tsserver: { logVerbosity: 'off' } } } }), second]))
+    child.emit('spawn')
+    input.end()
+    await new Promise<void>((resolve) => child.stdin.on('end', resolve))
+    const sent = Buffer.concat(received)
+    expect(sent.subarray(0, notice.length)).toEqual(notice)
+    expect(sent.subarray(sent.length - second.length)).toEqual(second)
+    const relayed = inspectInitialize(sent.subarray(notice.length))
+    expect(relayed).toMatchObject({ status: 'initialize', id: 3, params: { rootUri: 'file:///w', initializationOptions: { preferences: { quoteStyle: 'single' }, tsserver: { logVerbosity: 'off', path: '/w/.claude/node_modules/typescript/lib/tsserver.js' } } } })
+    expect(notice.length + (relayed as { consumed: number }).consumed + second.length).toBe(sent.length)
+    expect(log).toContain('with tsserver /w/.claude/node_modules/typescript/lib/tsserver.js (workspace sub-folder)')
+  })
   it('finishes an initialize refusal after the client has already closed stdin', async () => {
     const input = new PassThrough()
     const output = new PassThrough()
@@ -236,7 +360,9 @@ describe('initialize framing', () => {
   })
   it('returns a protocol refusal when neither backend is reachable', () => {
     const launcher = new URL('../../../../plugin/bin/wt-tsls.mjs', import.meta.url)
-    const result = spawnSync(process.execPath, [fileURLToPath(launcher)], { input: frame({ id: 0, method: 'initialize', params: {} }), env: { PATH: '' }, timeout: 30_000 })
+    // The launcher also reads the global npm root beside the running node; point it at a folder that cannot exist.
+    const isolate = `data:text/javascript,Object.defineProperty(process, 'execPath', { value: ${JSON.stringify(join(tmpdir(), 'wt-tsls-no-node', 'bin', 'node'))} })`
+    const result = spawnSync(process.execPath, ['--import', isolate, fileURLToPath(launcher)], { input: frame({ id: 0, method: 'initialize', params: {} }), env: { PATH: '' }, timeout: 30_000 })
     expect(result.stdout.toString()).toContain('"retry":false')
     expect(result.stderr.toString()).toContain('wt-tsls:')
   })
@@ -250,7 +376,11 @@ describe('initialize framing', () => {
       writeFileSync(cli, `let bytes = Buffer.alloc(0); process.stdin.on('data', chunk => { bytes = Buffer.concat([bytes, chunk]) }); process.stdin.on('end', () => { process.stderr.write('received:' + bytes.toString('hex') + '\\n'); process.stdout.write(Buffer.from('${reply.toString('hex')}', 'hex'), () => process.exit(7)) })`)
       if (process.platform === 'win32') writeFileSync(join(bin, 'typescript-language-server.cmd'), '@rem npm shim fixture\r\n')
       else symlinkSync(cli, join(bin, 'typescript-language-server'))
-      const input = Buffer.concat([frame({ id: 0, method: 'initialize', params: {} }), frame({ method: 'initialized' })])
+      const workspace = join(root, 'w')
+      mkdirSync(join(workspace, 'node_modules', 'typescript', 'lib'), { recursive: true })
+      writeFileSync(join(workspace, 'node_modules', 'typescript', 'lib', 'tsserver.js'), '')
+      writeFileSync(join(workspace, 'node_modules', 'typescript', 'package.json'), '{"name":"typescript","version":"5.9.3"}')
+      const input = Buffer.concat([frame({ id: 0, method: 'initialize', params: { rootPath: workspace } }), frame({ method: 'initialized' })])
       const launcher = new URL('../../../../plugin/bin/wt-tsls.mjs', import.meta.url)
       const result = spawnSync(process.execPath, [fileURLToPath(launcher)], { input, env: { PATH: bin, SystemRoot: process.env.SystemRoot }, timeout: 30_000 })
       expect(result.stdout).toEqual(reply)

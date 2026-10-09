@@ -21,10 +21,13 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-spawn-capability-guard-hook.mjs')
+const BRIEF_INTENT = join(REPO_ROOT, 'plugin/bin/lib/spawn-brief-intent.mjs')
+const PLUGIN_AGENTS = join(REPO_ROOT, 'plugin/agents')
 const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
 const roots: string[] = []
@@ -33,12 +36,12 @@ afterEach(() => {
 })
 
 /** Build a temp project whose `.claude/agents/` holds one definition, and return its path. */
-function projectWithAgent(name: string, frontmatter: string): string {
+function projectWithAgent(name: string, frontmatter: string, body = 'body'): string {
   const root = mkdtempSync(join(tmpdir(), 'wt-capability-guard-'))
   roots.push(root)
   const dir = join(root, '.claude', 'agents')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, `${name}.md`), `---\nname: ${name}\ndescription: test agent\n${frontmatter}\n---\n\nbody\n`)
+  writeFileSync(join(dir, `${name}.md`), `---\nname: ${name}\ndescription: test agent\n${frontmatter}\n---\n\n${body}\n`)
   return root
 }
 
@@ -72,6 +75,7 @@ interface GuardRecord {
   origin: string
   reason: string
   evidence?: { pattern: string; phrase: string }
+  shadow?: string[]
 }
 
 function spawnPayload(type: string, prompt: string, cwd: string) {
@@ -329,17 +333,20 @@ describe('wt-spawn-capability-guard-hook', () => {
           const fs = require('node:fs')
           const vm = require('node:vm')
           const source = fs.readFileSync(process.argv[1], 'utf8')
+            .replace(/^#!.*\\n/, '')
             .replace(/^import .*$/gm, '')
             .replace("runFailOpenHook('wt-spawn-capability-guard-hook.mjs', main)", '')
+          const lib = fs.readFileSync(process.argv[2], 'utf8').replace(/^export /gm, '')
           const prompt = JSON.parse(fs.readFileSync(0, 'utf8'))
-          const result = vm.runInNewContext(source + \`\n
+          const result = vm.runInNewContext(lib + '\\n' + source + \`\n
             const start = performance.now()
-            const intent = findWriteIntent(prompt);
-            ({ elapsed: performance.now() - start, pattern: intent.pattern, suppression: intent.suppression })
+            const intent = findWriteIntent(prompt)
+            const routed = finalMessageRoutes(prompt).length > 0;
+            ({ elapsed: performance.now() - start, pattern: intent.pattern, suppression: intent.suppression, routed })
           \`, { prompt, performance })
           console.log(JSON.stringify(result))
         `
-        const res = spawnSync(process.execPath, ['-e', script, HOOK], {
+        const res = spawnSync(process.execPath, ['-e', script, HOOK, BRIEF_INTENT], {
           input: JSON.stringify(clause.repeat(20000)), encoding: 'utf8', timeout: 90000,
         })
         expect(res.status, res.stderr).toBe(0)
@@ -347,6 +354,7 @@ describe('wt-spawn-capability-guard-hook', () => {
         process.stdout.write(`classifier ${JSON.stringify(clause)}: ${result.elapsed.toFixed(1)} ms\n`)
         expect(result.pattern).toBe(clause.startsWith('Write') ? 'write-to-path' : 'save-to-path')
         expect(result.suppression).toBe(clause.startsWith('Write') ? undefined : 'noun')
+        expect(result.routed).toBe(false)
         expect(result.elapsed).toBeLessThan(5000)
       }, 100000,
     )
@@ -485,6 +493,128 @@ describe('wt-spawn-capability-guard-hook', () => {
       expect(res.stdout.trim()).toBe('')
       expect(res.status).toBe(0)
       expect(res.stderr).not.toContain('FAILED OPEN')
+    })
+  })
+
+  describe('Bash write route (active advisory) and shadow rules (decision unchanged)', () => {
+    const FILE_BRIEF = 'Write your report to /tmp/r.md'
+    function spawnWith(tools: string, prompt: string, body?: string, mode = 'enforce') {
+      const cwd = projectWithAgent('typed', tools, body)
+      return run(spawnPayload('typed', prompt, cwd), cwd, mode)
+    }
+    function bashAdvisory(result: ReturnType<typeof run>) {
+      expect(result.denied).toBe(false)
+      const record = singleRecord(result, 'warned', 'bash-write-route')
+      expect(record.shadow).toBeUndefined()
+      const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext as string
+      expect(context.startsWith('[workflow-toolbox spawn-capability] ADVISORY')).toBe(true)
+      expect(context).toContain('is not refused: this type can write through its Bash tool')
+      expect(context).not.toContain('\n')
+      expect(result.stdout).not.toContain('permissionDecision')
+    }
+    function shadowDeny(result: ReturnType<typeof run>, classes: string[]) {
+      expect(result.denied).toBe(true)
+      const record = singleRecord(result, 'blocked', 'no-write-tool')
+      const reason = JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason as string
+      if (classes.length === 0) {
+        expect(record.shadow).toBeUndefined()
+        expect(reason).not.toContain('Shadow:')
+        return
+      }
+      expect(record.shadow).toEqual(classes)
+      expect(reason).toContain(`Shadow: the ${classes.join(' and ')} precision rule would lift this refusal (measuring before it decides).`)
+    }
+
+    it('R4: a bare Bash tool is a write route, so the spawn is advised, not refused', () => {
+      bashAdvisory(spawnWith('tools: Read, Bash', FILE_BRIEF))
+    })
+    it('R4: a scoped Bash(git *) entry is not a write route', () => {
+      shadowDeny(spawnWith('tools: Read, Bash(git *)', FILE_BRIEF), [])
+    })
+    it('R4: a type without Bash keeps the refusal', () => {
+      shadowDeny(spawnWith('tools: Read', FILE_BRIEF), [])
+    })
+    it('R4: disallowedTools naming Bash keeps the refusal', () => {
+      shadowDeny(spawnWith('tools: Read, Bash\ndisallowedTools: Bash', FILE_BRIEF), [])
+    })
+    it.each([
+      'Make exactly one Bash call and nothing else.',
+      'Your entire job is exactly ONE Bash tool call.',
+      'Use only one Bash command.',
+      'Run ONE Bash call with no heredoc.',
+      'Make only a single Bash invocation.',
+    ])('R4: a definition pinning Bash to one call keeps the refusal: %s', (body) => {
+      shadowDeny(spawnWith('tools: Bash, Read', FILE_BRIEF, body), [])
+    })
+    it('R4: the pin is found when CR characters sit in the definition body and frontmatter', () => {
+      const root = mkdtempSync(join(tmpdir(), 'wt-capability-guard-'))
+      roots.push(root)
+      const dir = join(root, '.claude', 'agents')
+      mkdirSync(dir, { recursive: true })
+      const text = '---\r\nname: typed\r\ndescription: test agent\r\ntools: Bash, Read\r\n---\r\n\r\nMake exactly one Bash call\r\nand nothing else.\r\n'
+      writeFileSync(join(dir, 'typed.md'), text)
+      shadowDeny(run(spawnPayload('typed', FILE_BRIEF, root), root), [])
+    })
+    it.each(['opencode-envelope', 'opencode-verifier'])('R4: the shipped %s definition is pinned, so the refusal stays', (name) => {
+      const root = mkdtempSync(join(tmpdir(), 'wt-capability-guard-'))
+      roots.push(root)
+      const dir = join(root, '.claude', 'agents')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, `${name}.md`), readFileSync(join(PLUGIN_AGENTS, `${name}.md`), 'utf8'))
+      shadowDeny(run(spawnPayload(name, FILE_BRIEF, root), root), [])
+    })
+    it('R4: observe mode still speaks for the Bash advisory, and stays silent for a negation advisory', () => {
+      const result = spawnWith('tools: Read, Bash', FILE_BRIEF, undefined, 'observe')
+      expect(result.stdout).toContain('ADVISORY')
+      expect(result.denied).toBe(false)
+      const quiet = spawnWith('tools: Read, Bash', 'Do not write to /tmp/x', undefined, 'observe')
+      expect(quiet.stdout).toBe('')
+    })
+
+    // Each row matches exactly ONE of the router's shapes (checked against the lib's own list), and the
+    // refusal still stands with the shadow sentence.
+    it.each([
+      [0, 'Write your report to /tmp/r.md. If you lack the write tool, put the report in your final message.'],
+      [1, 'Write your report to /tmp/r.md. It is not possible for you to write there; put the report in your final message.'],
+      [2, 'Write your report to /tmp/r.md if you can write; you are blocked here, so instead make your FINAL MESSAGE the full report.'],
+      [3, 'Write to /tmp/r.md? No: your final message is the full report.'],
+      [4, 'Write your findings to your final message.'],
+    ])('R2 shape %i: the refusal stands and the shadow names final-message-fallback', async (index, prompt) => {
+      const lib = await import(pathToFileURL(BRIEF_INTENT).href)
+      expect(lib.finalMessageRoutes(prompt)).toEqual([index])
+      shadowDeny(spawnWith('tools: Read, Grep', prompt), ['final-message-fallback'])
+    })
+    it.each([
+      'Refute-first, read-only; your final message is ONE line: REPORT WRITTEN: <verdict>. Write your full report to /tmp/r.md',
+      'You are read-only, and your last message must be one line with the path. Write your report to /tmp/r.md',
+      'Write your report to /tmp/r.md; you cannot write anywhere else, and your final message is one line: the path.',
+      'You cannot modify code; give the summary in your final message and write the full report to /tmp/r.md.',
+      'If you cannot finish, return your partial verdict in your final message. Write your report to /tmp/r.md.',
+      'Write your report to /tmp/r.md. Your final message is ONE line: REPORT WRITTEN: <verdict>',
+      // A carrier verb with an inability, followed by the status line: only the status-line exclusion keeps it silent.
+      "Since you can't write files here, return in your final message one line: REPORT WRITTEN: <verdict>. Write your report to /tmp/r.md",
+    ])('R2: a status-line or unrelated mention names no shadow: %s', (prompt) => {
+      shadowDeny(spawnWith('tools: Read, Grep', prompt), [])
+    })
+    it.each([
+      ['Please write into /home/x/.claude', 'write-to-path'],
+      ['Écris dans /home/x/.claude', 'fr-ecris-dans'],
+      ['Save the notes to /tmp/dir/', 'save-to-path'],
+    ])('R1: a destination without a file extension still refuses and names the shadow: %s', (prompt, pattern) => {
+      const result = spawnWith('tools: Read, Grep', prompt)
+      shadowDeny(result, ['no-file-path'])
+      expect(result.records[0]!.evidence!.pattern).toBe(pattern)
+    })
+    it('R1: one destination with a file extension, or a non-path candidate, leaves no shadow', () => {
+      shadowDeny(spawnWith('tools: Read, Grep', 'Do X to /tmp/dir, then write your report to /tmp/r.md'), [])
+      shadowDeny(spawnWith('tools: Read, Grep', 'Write into /tmp/dir/ and then write your report to /tmp/r.md'), [])
+      shadowDeny(spawnWith('tools: Read, Grep', 'Write your findings to the agreed location'), [])
+    })
+    it('R1 and R2 together name both shadow classes', () => {
+      shadowDeny(
+        spawnWith('tools: Read, Grep', 'Write into /home/x/.claude. If you cannot write files, put the report in your final message.'),
+        ['no-file-path', 'final-message-fallback'],
+      )
     })
   })
 

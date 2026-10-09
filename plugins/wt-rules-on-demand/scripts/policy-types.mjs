@@ -19,6 +19,10 @@ export function assertPolicyTypes(settings, source) {
   for (const name of Object.keys(settings.enabledPlugins ?? {})) {
     if (name.startsWith('wt-rules-on-demand@')) checkType(settings.enabledPlugins, name, 'boolean', `enabledPlugins["${name}"]`, source);
   }
+  assertPluginConfigTypes(settings, source);
+}
+
+function assertPluginConfigTypes(settings, source) {
   for (const [name, config] of Object.entries(settings.pluginConfigs ?? {})) {
     if (name !== 'cc-plugin-sec-default@builtin' && !name.startsWith('wt-rules-on-demand@')) continue;
     const path = `pluginConfigs["${name}"]`;

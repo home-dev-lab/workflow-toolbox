@@ -18,19 +18,21 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 const roots: string[] = []
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
-// Paragraph multisets composed for each role from the pre-split tree at 434b5cf2^.
+// Paragraph multisets per role, re-pinned after sections moved into at-act companions. A pin taken
+// from the moved tree cannot prove that move lost nothing; that was checked separately against the
+// earlier tree (every earlier paragraph reaches the same roles; the one E2E paragraph split between
+// the core anchor and the companion reaches pilot and tdd in both halves).
 const PRE_SPLIT_ROLE_FIXTURE = {
-  // The six newly routed sections add E2E/bounds/goal to pilot and stagnation/evidence to critics;
-  // every base paragraph survives (except the reviewed Same trigger -> Step back also rewording).
-  pilot: { count: 66, union: 'f6073b62fe575b917bf869fd86d6972f15116790e5283aad4ebcfbedda18cbea' },
-  critic: { count: 25, union: 'b4a621dba6d3e887656bcaf85b18449a3d0e739c66fbeb48b9a60c245618df3d' },
+  // The six newly routed sections add E2E/bounds/goal to pilot and stagnation/evidence to critics.
+  pilot: { count: 69, union: '0d57bca4e902596811ce7c3f2d1b631dd6df534e0492da78b11f2b4cb1fa8fde' },
+  critic: { count: 26, union: '4b8925be0557ba4442aba8fd136a87e9cb3cfe7b5b713d463769ad689e7db2d9' },
   // Card 1874298674087986849: step-back rewrite adds 4 paragraphs (route priors, persist-on-goal
   // wording, bounded BLOCKED, the recognise-it names line) to the pre-split baseline below.
   // TDD gains E2E, durable bounds and method diversity; section headings now split the step-back text.
-  tdd: { count: 54, union: '68d30ac3db487db342149578f70ba537808568821a2f05430a912edab7406f98' },
+  tdd: { count: 57, union: '14afef80139ea7a3a38b1a6fa01f2f2ad618df1245f7f91c74043c7a70136986' },
   // Review gains stagnation and evidence; refutation gains evidence only.
-  review: { count: 38, union: '70ef591015b1d61ac12c25e7fb56c1adeb5bce706d235ac962abcc9dc965a184' },
-  refutation: { count: 36, union: '5cf6992b3a8981d774999d6e1d9f2a514bd2bb12d7fdff44ac8afd0d1d800a49' },
+  review: { count: 40, union: 'ba7ea686ad2156c3896aa7c9b4b7e498c44d5ee0688101df901bf6823047a80b' },
+  refutation: { count: 38, union: '07b303e595056f81267d12922ea36b807f4d1c53961cf3c8101f54120b746e33' },
 } as const
 const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 const section = (source: string, heading: string, recipients: string[], triggers: string[], level = 'test') => ({ source, heading, recipients, triggers, level, section: `${heading}\n\nExact rule bytes.\n` })
@@ -41,8 +43,8 @@ describe('SDK role rules manifest', () => {
   it('validates every shipped source and exact heading against the published schema enums', () => {
     const rules = loadRules({ shippedRoot: PLUGIN_ROOT })
     const schema = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'rules-manifest.schema.json'), 'utf8'))
-    // Six exact new SDK routing entries augment the original 17.
-    expect(rules).toHaveLength(23)
+    // Split Implement and verify / E2E sections each retain both delivery entries.
+    expect(rules).toHaveLength(25)
     expect(schema.properties.entries.items.properties.recipients.items.enum).toEqual(RULE_RECIPIENTS)
     expect(schema.properties.entries.items.properties.triggers.items.enum).toEqual(RULE_TRIGGERS)
     const punctuated = rules.find((entry: { heading: string }) => entry.heading.includes('—'))!
@@ -75,8 +77,8 @@ describe('SDK role rules manifest', () => {
     mkdirSync(join(root, '.claude'))
     writeFileSync(join(root, '.claude', 'wt-rules-manifest.json'), JSON.stringify({ version: 1, entries: [{ source: 'rule.md', heading: '## Project rule', recipients: ['pilot'], triggers: ['standing'] }] }))
     const rules = loadRules({ projectRoot: root, shippedRoot: PLUGIN_ROOT })
-    // Project additions never displace any of the 23 shipped entries.
-    expect(rules.filter((entry: { level: string }) => entry.level === 'shipped')).toHaveLength(23)
+    // Project additions never displace any of the 25 shipped entries.
+    expect(rules.filter((entry: { level: string }) => entry.level === 'shipped')).toHaveLength(25)
     expect(rules.at(-1)).toMatchObject({ level: 'project', section: '## Project rule\r\nproject bytes\r\n' })
   })
 
@@ -84,7 +86,7 @@ describe('SDK role rules manifest', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
     expect(Buffer.byteLength(contract)).toBe(6135)
-    expect(Buffer.byteLength(composed)).toBe(8367)
+    expect(Buffer.byteLength(composed)).toBe(8593)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 

@@ -400,6 +400,18 @@ describe('second-opinion advisor', () => {
     expect(process.listenerCount('exit')).toBe(baseline)
   })
 
+  it('writes a socket-enumeration sandbox refusal cause before EXIT=1 without starting the reviewer', async () => {
+    const f = fixture(true)
+    const cause = 'cannot enumerate unix sockets under /fixture/toolchain: spawnSync find ETIMEDOUT'
+    const stop = vi.fn(() => [])
+    const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, stop, capture: vi.fn() }) }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: () => { throw new LaneSandboxRefusal(cause) } })
+    deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toEqual(['ROUTE=gpt-astra', cause, 'EXIT=1'])
+    expect(stop).toHaveBeenCalledOnce()
+  })
+
   it.skipIf(process.platform === 'win32')('the real Linux planner supplies the path checker to Codex and refuses an invisible named file', async () => {
     const f = fixture(true)
     const outside = join(resolve(f.repo, '..'), 'outside.md')

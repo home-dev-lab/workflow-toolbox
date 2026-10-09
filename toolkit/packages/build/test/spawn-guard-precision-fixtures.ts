@@ -89,6 +89,18 @@ export const readonlyTrue = [
   ['direct role', 'You are read-only. Inspect the repository and return evidence.'],
   ['direct instruction', 'Investigate read-only. Return a concise verdict.'],
 ]
+// Resource labels: "read-only" qualifies a thing the brief names, while the agent itself writes.
+const IMPLEMENT = 'Implement the parser change and commit it.'
+export const readonlyFalse = [
+  ['label in parentheses after a noun', `${IMPLEMENT}\nKnowledge base (read-only): memory/index.md`],
+  ['label after an identifier', `${IMPLEMENT}\nKNOWLEDGE_BASE_INDEX (read-only): memory/index.md`],
+  ['label after a path', `${IMPLEMENT}\nmemory/index.md (read-only; lessons go in your report)`],
+  ['read-only for you', `${IMPLEMENT}\nThe memory store is in memory/. It is read-only for you.`],
+  ['copula with a plural subject', `${IMPLEMENT}\nthe adopted copies under rules/: they are read-only`],
+  ['label with an appositive', `${IMPLEMENT}\nReleased plugin (read-only source of truth): plugin/`],
+  ['label with a role description', `${IMPLEMENT}\nnotes.md (read-only explorer, line counts)`],
+  ['label with a comma list', `${IMPLEMENT}\nthe worktree (read-only, diff saved under .lane/)`],
+]
 export const nestedFalse = [
   ['independent view', 'Verify the proposed plan. Form your own view before judging.'],
   ['own worktree', 'Verify the upstream patch. You have your own worktree for inspection.'],

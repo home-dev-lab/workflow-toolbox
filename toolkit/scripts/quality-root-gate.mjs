@@ -32,7 +32,7 @@ export function qualityExitCode(failed, areaResults) {
 
 async function main(gate) {
   if (gate === 'dead') {
-    process.exitCode = run(['toolkit/node_modules/knip/bin/knip.js', '--config', 'knip.json', '--max-issues', '189'])
+    process.exitCode = run(['toolkit/node_modules/knip/bin/knip.js', '--config', 'toolkit/scripts/knip-config.mjs', '--max-issues', '189'])
     return
   }
   if (gate !== 'lint') throw new Error('usage: quality-root-gate.mjs lint|dead')

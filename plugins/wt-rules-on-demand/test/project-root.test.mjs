@@ -6,7 +6,8 @@ const ruleText = (body = 'Follow this rule.') => `---\non-demand:\n  triggers:\n
 
 const servedNames = (result) => [...String(result?.deny ?? '').matchAll(/<rule name="([^"]+)">/g)].map((match) => match[1]).sort();
 // Measured at the eight-level root of the cost test below; a change that adds host calls must raise these knowingly.
-const COST = { list: 6, stat: 17, read: 4 };
+// One extra inflight list per hooks module load; each recorded call adds three slot writes.
+const COST = { list: 7, stat: 17, read: 4, write: 3 };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 // A linked worktree `wt` of the main checkout `main`, as git writes it: a `.git` file naming a gitdir whose
 // `commondir` leads back to the main `.git` directory.
@@ -206,14 +207,20 @@ test('cost: one load at an eight-level session root stays within a fixed number 
     [`${wt}/.git`]: 'gitdir: /sample-elsewhere/toolbox/.git/worktrees/x\n',
     [`${wt}/.claude/rules/w.md`]: 'Worktree static.\n',
   } });
+  let writes = 0;
+  h.$.fs.write = async () => { writes++; };
   const result = await h.call({ cwd: wt });
   assert.match(result.deny ?? '', /u\.md/);
   assert.match(result.deny ?? '', /p\.md/);
+  // The first engine load resolves config without a breadcrumb. A cache hit starts the recorder's scan.
+  await h.call({ cwd: wt });
+  await tick();
+  assert.equal(h.calls.loads, 1, 'the recorder must not add a config read beside the engine load');
   const total = h.calls.list + h.calls.stat + h.calls.read;
   console.log(`host fs calls for one load at depth 8: list=${h.calls.list} stat=${h.calls.stat} read=${h.calls.read} total=${total}`);
   // Upper bounds. The 17 stats: 1 config, 8 ancestor `.claude`, 2 for the worktree check (`.git`, common directory), and
   // the rest for non-empty static dirs and the two winners; the 4 reads: `.git`, `commondir`, the two winners.
-  assert.ok(h.calls.list <= COST.list && h.calls.stat <= COST.stat && h.calls.read <= COST.read, JSON.stringify(h.calls));
+  assert.ok(h.calls.list <= COST.list && h.calls.stat <= COST.stat && h.calls.read <= COST.read && writes <= COST.write, JSON.stringify({ ...h.calls, writes }));
 });
 
 test('T4c: a nearest copy whose static twin has a DIFFERENT body is served, with the different-rule notice', async () => {

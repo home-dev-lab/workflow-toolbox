@@ -177,7 +177,7 @@ function readJscpd() {
 function readKnip() {
   const executable = join(TOOLKIT_ROOT, 'node_modules/knip/bin/knip.js')
   const report = JSON.parse(run(process.execPath, [
-    executable, '--config', 'knip.json', '--reporter', 'json', '--max-issues', '999999',
+    executable, '--config', 'toolkit/scripts/knip-config.mjs', '--reporter', 'json', '--max-issues', '999999',
   ], { cwd: REPO_ROOT, allowFailure: true }))
   const offenders = topOffenders(report.issues.map((entry) => ({
     value: issueCount({ issues: [entry] }), file: slash(entry.file),

@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { competitorArgs, POSIX_STALENESS } from './helpers/suite-lock-platform.js'
+import { hermeticPath } from './helpers/hermetic-path.js'
 // @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
 import { spawnHeld, stopHeld } from '../../../test-support/held-processes.mjs'
 // @ts-expect-error Node script under toolkit/scripts/
@@ -35,21 +37,21 @@ function tempRoot(tag: string): string {
 function cli(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
+    env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
   })
 }
 
 function runner(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
+    env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
   })
 }
 
 // Held: the runner's own child stays in its process group, so stopping the runner stops that child too.
 function runAsync(args: string[], root: string) {
   const child = spawnHeld(process.execPath, [CLI, ...args], {
-    env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+    env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stderr = ''
@@ -73,7 +75,7 @@ describe('suite lock library', () => {
   it('recognizes a matching marker while held, and refuses it once the holder is gone', async () => {
     const root = tempRoot('inherited-identity')
     const lease = await acquireSuiteLock({ root })
-    const env = { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` }
+    const env = { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` }
     try {
       expect(await hasSuiteLeaseAsync(env)).toBe(true)
     } finally { releaseSuiteLock(lease) }
@@ -189,7 +191,7 @@ describe('package gate lease boundary', () => {
 
   it('holds focused Vitest and package typecheck behind a certification, then admits both on release', async () => {
     const root = tempRoot('gate-boundary')
-    const env = { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
+    const env = { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
     const marker = join(root, 'exclusive-started')
     const holder = spawnHeld(process.execPath, [CLI, 'run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes');setInterval(()=>{},1000)`], { env, stdio: 'ignore' })
     const clients: Array<ReturnType<typeof spawn>> = []
@@ -395,11 +397,12 @@ describe('suite lock no-progress budget', () => {
   it('times out a stuck non-head and a stuck head, naming the live holder', async () => {
     const root = tempRoot('stuck')
     const holder = await acquireSuiteLock({ root, argv: ['live-holder'] })
-    const pending = acquireSuiteLock({ root, waitS: 1, staleS: 2.4, pollMs: 30, argv: ['ahead'] }).catch((cause: Error) => cause)
+    // POSIX_STALENESS: this test is about the queue budget; Windows judges a live holder stale by age and would reclaim it.
+    const pending = acquireSuiteLock({ root, waitS: 1, staleS: 2.4, pollMs: 30, argv: ['ahead'], ...POSIX_STALENESS }).catch((cause: Error) => cause)
     try {
       await waitFor(() => queueRecords(root).length === 1)
       const start = Date.now()
-      const error = await acquireSuiteLock({ root, waitS: 1, staleS: 1.4, pollMs: 30 }).catch((cause: Error) => cause)
+      const error = await acquireSuiteLock({ root, waitS: 1, staleS: 1.4, pollMs: 30, ...POSIX_STALENESS }).catch((cause: Error) => cause)
       expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT', holder: { pid: process.pid } })
       expect(error.message).toContain(`holder pid ${process.pid} (live-holder)`)
       expect(error.message).toContain('no queue progress for')
@@ -602,7 +605,7 @@ describe('wt-suite-lock CLI', () => {
     const script = 'import pty,sys;sys.exit(pty.spawn(sys.argv[1:]))'
     const command = 'require("fs").openSync("/dev/tty","r");process.stdout.write("TTY OK")'
     const result = spawnSync('python3', ['-c', script, process.execPath, CLI, 'run', '--', process.execPath, '-e', command], {
-      encoding: 'utf8', timeout: 5000, env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+      encoding: 'utf8', timeout: 5000, env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
     })
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain('TTY OK')
@@ -611,7 +614,7 @@ describe('wt-suite-lock CLI', () => {
   it('reuses an inherited ancestor in the direct library entrypoint without releasing its lease', () => {
     const root = tempRoot('direct-nesting')
     const script = `import {acquireSuiteLock,releaseSuiteLock} from ${JSON.stringify(LIB_URL)};const lease=await acquireSuiteLock({waitS:0.3});releaseSuiteLock(lease);process.stdout.write('direct ok')`
-    const result = spawnSync(process.execPath, [CLI, 'run', '--', process.execPath, '--input-type=module', '-e', script], { env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, XDG_STATE_HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }, encoding: 'utf8', timeout: 12_000 })
+    const result = spawnSync(process.execPath, [CLI, 'run', '--', process.execPath, '--input-type=module', '-e', script], { env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, XDG_STATE_HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }, encoding: 'utf8', timeout: 12_000 })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toBe('direct ok')
   }, 6000)
@@ -630,7 +633,7 @@ describe('wt-suite-lock CLI', () => {
     const owner = runAsync(['run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(holderPid)}, String(process.pid));setInterval(()=>{},1000)`], root)
     try {
       await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
-       const result = cli(['run', '--wait-s', '0.05', '--stale-s', '0.05', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
+       const result = cli(['run', ...competitorArgs({ waitS: 0.05, staleS: 0.05 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
       expect(result.status).toBe(75)
       expect(result.stderr).toContain('timed out waiting for suite lock: holder pid')
       expect(existsSync(marker)).toBe(false)
@@ -644,7 +647,7 @@ describe('wt-suite-lock CLI', () => {
     const marker = join(root, 'ran')
     const owner = await acquireSuiteLock({ root, argv: ['live-holder'] })
     try {
-      const result = cli(['run', '--wait-s', '1', '--stale-s', '1', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes')`], root)
+      const result = cli(['run', ...competitorArgs({ waitS: 1, staleS: 1 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes')`], root)
       expect(result.status).toBe(75)
       expect(result.stderr).toContain(`holder pid ${process.pid} (live-holder)`)
       expect(result.stderr).toContain('no queue progress for')
@@ -700,7 +703,7 @@ describe('wt-suite-lock CLI', () => {
     for (const command of ['status', 'run']) {
       const result = spawnSync('zsh', ['-c', '"$WT_SUITE_LOCK_CMD" "$1"', 'zsh', command], {
         encoding: 'utf8',
-        env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, PATH: `${root}${delimiter}${process.env.PATH}`, WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+        env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, PATH: hermeticPath([root]), WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
       })
       expect(result.error, 'zsh spawn itself failed rather than the child exiting').toBeUndefined()
       expect(result.status).toBe(7)
@@ -750,7 +753,7 @@ describe('wt-suite-lock-run runner', () => {
   it('takes the suite lock itself while the child runs, and a second runner waits for it', async () => {
     const root = tempRoot('runner-takes-lock')
     const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {
-      env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+      env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
@@ -984,7 +987,7 @@ releaseSuiteLock(lease)
     const root = tempRoot('excl-bwrap')
     const log = join(root, 'events.log')
     const mark = (name: string, holdMs: number) => `const f=require('fs');f.appendFileSync(${JSON.stringify(log)},'${name} START '+Date.now()+'\\n');setTimeout(()=>f.appendFileSync(${JSON.stringify(log)},'${name} END '+Date.now()+'\\n'),${holdMs})`
-    const env = { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
+    const env = { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
     const host = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', mark('HOST', 3000)], { env, stdio: 'ignore' })
     const hostDone = new Promise((resolve) => host.once('exit', resolve))
     // Same reasoning as the sibling non-bwrap test: HOST's own START event already proves the lock
@@ -1007,6 +1010,24 @@ releaseSuiteLock(lease)
     await expect(acquireSuiteLock(windowsView)).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     await expect(acquireSuiteLock({ ...sandboxView, staleS: 0.3 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     expect(readSuiteLock({ root }).holder?.pid).toBe(process.pid)
+  })
+
+  // The Windows contract the CLI tests above fail fast around (see helpers/suite-lock-platform.ts): through the injected
+  // platform, so it runs on every OS. A signalable PID proves nothing on win32, so age against --stale-s decides.
+  it('on win32 reclaims a live-PID holder older than --stale-s at the head, and keeps a younger one', async () => {
+    const view = { platform: 'win32', insideSandbox: false, pidNamespace: null, staleS: 60, pollMs: 10 }
+    const young = tempRoot('excl-win-young')
+    const youngHolder = await acquireSuiteLock({ root: young, argv: ['young'] })
+    await expect(acquireSuiteLock({ root: young, ...view, waitS: 0 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(readSuiteLock({ root: young }).holder?.leaseId).toBe(youngHolder.holder.leaseId)
+    const old = tempRoot('excl-win-old')
+    const oldHolder = await acquireSuiteLock({ root: old, argv: ['old'] })
+    const twoMinutesAgo = new Date(Date.now() - 120_000)
+    utimesSync(join(old, 'lock.d'), twoMinutesAgo, twoMinutesAgo)
+    const lease = await acquireSuiteLock({ root: old, ...view, waitS: 5 })
+    expect(lease.holder.pid).toBe(process.pid)
+    expect(lease.holder.leaseId).not.toBe(oldHolder.holder.leaseId)
+    releaseSuiteLock(lease)
   })
 
   it('reclaims a half-created lock.d (no valid holder.json) after its bound, and not before', async () => {

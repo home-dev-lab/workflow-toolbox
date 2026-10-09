@@ -17,8 +17,7 @@ arbiter.
 cost, zero latency, zero ambiguity. Routing a deterministic predicate to a model instead isn't
 rigor — it's over-delegation, introducing uncertainty into a question that had none.
 
-Compose pilot/orchestrator spawn (environment brief + model elevation) via
-`workflow-toolbox:pilot-wave` skill. Non-delegable duties: owning wake-ups (delegate's
+Non-delegable duties: owning wake-ups (delegate's
 background wait doesn't reliably re-wake it — inbound message does), user-gates (publish /
 deploy / destructive / business preference), memory writes, Workflow tool.
 
@@ -96,20 +95,11 @@ A brief, a rule or a card fences something off because a condition holds NOW: an
 that directory, a proof is missing, a version is unpublished. That condition ends. **Nothing
 re-checks the fence.**
 
-The cost is invisible from both sides. Whoever obeys a stale fence reports work correctly blocked
-and names the fence as the trigger; whoever set it reads a well-formed refusal. Both are right, and
-the work stopped for nothing.
+Name the expiry in the fence and quote the source that decides it; record the fence's condition
+where whatever satisfies it gets recorded, so closing the work lifts the fence. The writing detail
+is in `wt-delegation-addressing-at-act.md`.
 
-So name the EXPIRY IN the fence, never the fence alone: *"until the compression pass finishes"* is
-checkable by the reader, *"don't touch Y"* is forever.
-
-⚠ **Writing the expiry is only half — an expiry nobody re-reads is inert.** A stale fence reads
-exactly like a live one: same text, and no way for a reader to tell which. The cheap remedies:
-
-- name the fence's condition where whatever SATISFIES it gets recorded, so closing the work and
-  lifting the fence are one act rather than two;
-- when a fence quotes a state, quote the SOURCE that decides it, so a reader checks in one command
-  instead of trusting the sentence;
+For a fence you did not write:
 - finding a fence whose condition appears met and that is NOT yours: report it with the evidence
   and state what you could not resolve, rather than lifting it. A fence's wording and the evidence
   offered against it often name subtly different objects, and its author is who knows which was

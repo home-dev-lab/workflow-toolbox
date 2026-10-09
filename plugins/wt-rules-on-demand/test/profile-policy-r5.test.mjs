@@ -41,21 +41,33 @@ const rows = [
   { name: 'existing dangling user file is not absent', absentUser: true, danglingUser: true, managed: enabled, allow: false },
 ];
 
+const userText = (row) => row.raw ?? JSON.stringify(row.user ?? enabled);
+const needsInstallation = (row) => row.installed !== false && !row.inline;
+const profileEnvironment = (row, profile) => ({ CLAUDE_CONFIG_DIR: profile, CLAUDE_CODE_EXECPATH: `/v/${row.version ?? '2.1.287'}`, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: row.processFlag ?? '0' });
+const healthStoreName = (row) => `wt-rules-on-demand_${row.healthSource ?? 'local'}-0123456789ab.json`;
+const managedText = (row) => JSON.stringify(row.managed ?? {});
+function assertRawRefusal(row, error, profile) {
+  if (row.raw) assert.ok(error.message.includes(join(profile, 'settings.json')), error.message);
+}
+function assertPolicyResult(row, outcome, health, assumed) {
+  assert.equal(outcome, row.allow ? 'ALLOW' : 'REFUSE', `${row.name}: health=${health}, assumed=${assumed.length > 0}`);
+}
+
 for (const row of rows) test(`effective profile policy: ${row.name}`, async (t) => {
   const root = await fs.mkdtemp(join(tmpdir(), 'rod-policy-matrix-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const profile = join(root, 'profile');
   const managedFile = join(root, 'managed-settings.json');
   await fs.mkdir(profile);
-  if (!row.absentUser) await fs.writeFile(join(profile, 'settings.json'), row.raw ?? JSON.stringify(row.user ?? enabled));
+  if (!row.absentUser) await fs.writeFile(join(profile, 'settings.json'), userText(row));
   if (row.danglingUser) await fs.symlink(join(root, 'missing-settings.json'), join(profile, 'settings.json'));
-  await fs.writeFile(managedFile, JSON.stringify(row.managed ?? {}));
+  await fs.writeFile(managedFile, managedText(row));
   if (row.dropin) {
     await fs.mkdir(join(root, 'managed-settings.d'));
     await fs.writeFile(join(root, 'managed-settings.d', 'policy.json'), JSON.stringify(row.dropin));
   }
-  if (row.installed !== false && !row.inline) await installFixture(profile, row.stale);
-  const env = { CLAUDE_CONFIG_DIR: profile, CLAUDE_CODE_EXECPATH: `/v/${row.version ?? '2.1.287'}`, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: row.processFlag ?? '0' };
+  if (needsInstallation(row)) await installFixture(profile, row.stale);
+  const env = profileEnvironment(row, profile);
   if (row.inline) {
     env.CLAUDE_PLUGIN_ROOT = join(root, 'inline');
     await fs.mkdir(join(env.CLAUDE_PLUGIN_ROOT, '.claude-plugin'), { recursive: true });
@@ -65,13 +77,13 @@ for (const row of rows) test(`effective profile policy: ${row.name}`, async (t) 
     if (health) {
       const store = join(profile, 'plugins', 'store');
       await fs.mkdir(store, { recursive: true });
-      await fs.writeFile(join(store, `wt-rules-on-demand_${row.healthSource ?? 'local'}-0123456789ab.json`), JSON.stringify({ health: { days: { [new Date().toISOString().slice(0, 10)]: { calls: 1 } } } }));
+      await fs.writeFile(join(store, healthStoreName(row)), JSON.stringify({ health: { days: { [new Date().toISOString().slice(0, 10)]: { calls: 1 } } } }));
     }
     for (const assumed of [[], [profile]]) {
       let outcome = 'ALLOW';
       try { await assertProfiles(profile, [], assumed, env, { managedFile, warn: () => {} }); }
-      catch (error) { outcome = 'REFUSE'; if (row.raw) assert.ok(error.message.includes(join(profile, 'settings.json')), error.message); }
-      assert.equal(outcome, row.allow ? 'ALLOW' : 'REFUSE', `${row.name}: health=${health}, assumed=${assumed.length > 0}`);
+      catch (error) { outcome = 'REFUSE'; assertRawRefusal(row, error, profile); }
+      assertPolicyResult(row, outcome, health, assumed);
     }
   }
 });

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { baseSuiteLock } from './helpers/base-version-client.js'
+import { POSIX_STALENESS } from './helpers/suite-lock-platform.js'
 // @ts-expect-error runtime JavaScript under plugin/
 import { LIGHT_BYPASS_MAX_GRANTS, acquireSuiteLock, formatSuiteLockHolder, lightRunCommand, operatorReleaseSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
@@ -676,13 +677,15 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
     mkdirSync(lockDir, { recursive: true })
     const longAgo = new Date(Date.now() - 300_000)
     utimesSync(lockDir, longAgo, longAgo)
+    // POSIX_STALENESS (here and in the light acquirer's script): the subject is the reclaim critical section. Windows would judge
+    // the live holder A stale by the age of this lock.d and reclaim it, which is the opposite of what this test pins.
     let reclaimed = false
     const publishA = () => { if (reclaimed) return; writeFileSync(join(lockDir, 'holder.json'), JSON.stringify({ ...OLD_CLIENT_RECORD, argv: ['A'], startedAt: new Date().toISOString(), leaseId: 'A-lease' })) }
     const libUrl = new URL('../../../../plugin/bin/lib/suite-lock.mjs', import.meta.url).href
-     const script = `import { acquireSuiteLock } from ${JSON.stringify(libUrl)};try{await acquireSuiteLock({root:${JSON.stringify(root)},light:true,waitS:0.6,staleS:0.6,pollMs:10,insideSandbox:false});process.stdout.write('granted')}catch(e){process.stdout.write(String(e.code))}`
+     const script = `import { acquireSuiteLock } from ${JSON.stringify(libUrl)};try{await acquireSuiteLock({root:${JSON.stringify(root)},light:true,waitS:0.6,staleS:0.6,pollMs:10,insideSandbox:false,platform:${JSON.stringify(POSIX_STALENESS.platform)}});process.stdout.write('granted')}catch(e){process.stdout.write(String(e.code))}`
     let lightResult = ''
     const runLight = () => { if (reclaimed) return; reclaimed = true; lightResult = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env: isolatedEnv(root), encoding: 'utf8', timeout: 20_000 }).stdout }
-    const reclaimer = await outcome(root, { argv: ['B'], waitS: 2, beforeReclaimRemoval: publishA, afterLockAside: runLight })
+    const reclaimer = await outcome(root, { argv: ['B'], waitS: 2, beforeReclaimRemoval: publishA, afterLockAside: runLight, ...POSIX_STALENESS })
     expect(lightResult, 'a light acquirer completed while the reclaimer held the lock directory aside').toBe('WT_SUITE_LOCK_TIMEOUT')
     expect(reclaimer).toBe('WT_SUITE_LOCK_TIMEOUT')
     expect(JSON.parse(readFileSync(join(lockDir, 'holder.json'), 'utf8')).leaseId, 'A keeps its lock').toBe('A-lease')

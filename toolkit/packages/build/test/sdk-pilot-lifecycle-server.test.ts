@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join as pathJoin, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { hermeticPath } from './helpers/hermetic-path.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { deriveRoute } from '../../../../plugin/bin/lib/route-from-card.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -18,7 +19,7 @@ import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { classifyLane, inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { loadRules } from '../../../../plugin/bin/lib/rules-manifest.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -73,7 +74,44 @@ function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, sig
   try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
 }
 
+// Reads this host's processes for a lifecycle that classifies lanes as another platform would.
+function emulatedLaneProcessReader() {
+  return {
+    inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
+    processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+    // inspectProcess answers null for a zombie; the platforms it emulates (ps on darwin) report it as Z.
+    processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? linuxProcState(pid),
+  }
+}
+
+const ZOMBIE_POLL_MS = 10
+
+function linuxProcState(pid: number) {
+  if (process.platform !== 'linux') return null
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] ?? null
+  } catch { return null }
+}
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+    await new Promise((resolve) => child.once('spawn', resolve))
+    const alive = inspectProcess(child.pid!)
+    const worker = inspectProcess(process.pid)
+    expect(alive).not.toBeNull()
+    // Hold the event loop until the kernel reports the child as a zombie: unreaped, because this
+    // loop cannot run its exit handler. The held loop IS the subject; the deadline is a hang guard.
+    const zombieDeadline = Date.now() + 10_000
+    while (linuxProcState(child.pid!) !== 'Z' && Date.now() < zombieDeadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ZOMBIE_POLL_MS)
+    expect(linuxProcState(child.pid!)).toBe('Z')
+    const verdict = classifyLane({ runId: 'zombie-1', state: 'running', workerPid: process.pid, workerArgv: worker!.argv, workerStartTime: worker!.startTime, childPid: child.pid, childArgv: alive!.argv, childStartTime: alive!.startTime }, { platform: 'darwin', ...emulatedLaneProcessReader() })
+    await exited
+    expect(verdict).toMatchObject({ worker: 'running', child: 'gone' })
+  })
+
   it('does not report a live native process absent when platform inspection is unavailable', () => {
     expect(nativeProcessExists(42, () => null, () => true)).not.toBe(false)
   })
@@ -350,7 +388,7 @@ if [ "$count" = "1" ]; then sleep 30; exit 0; fi
 report=$(node -e 'const fs=require("fs"),tick=String.fromCharCode(96),text=fs.readFileSync(process.argv[1],"utf8");process.stdout.write(text.split("Write the report to "+tick)[1].split(tick)[0])' "$brief")
 printf 'report\n' > "$report"
 `
-    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
+    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
     const lifecycle = testLifecycle('LITE', [], wrapper, 7_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const first = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
@@ -375,7 +413,7 @@ printf 'report\n' > "$report"
 
   it.skipIf(realLaunchUnavailable)('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [requires POSIX and host user namespace]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
-    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
+    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
     const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
@@ -392,7 +430,7 @@ printf 'report\n' > "$report"
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = '#!/bin/sh\nif [ "$1" = "--version" ]; then printf \'fixture-1\\n\'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf \'[{"name":"workflow-toolbox-allowed-sentinel"}]\\n\'; exit 0; fi\nif [ "$1" = "debug" ]; then printf \'[]\\n\'; exit 0; fi\nsleep 30\n'
     const helperSource = "const fs=require('fs');const path=require('path');const root=process.argv[1],pid=Number(process.argv[2]);const pointer=path.join(root,'.lane','supervision','current.json');const poll=setInterval(()=>{try{const run=JSON.parse(fs.readFileSync(pointer)).runId;const record=path.join(root,'.lane','supervision',run+'.json');const state=JSON.parse(fs.readFileSync(record));if(state.state==='running'&&Date.parse(state.timeoutAt)){clearInterval(poll);setTimeout(()=>{process.kill(pid,'SIGSTOP');setTimeout(()=>{try{process.kill(pid,'SIGCONT')}catch{}},1500)},Math.max(0,Date.parse(state.timeoutAt)-Date.now()-25))}}catch{}},10)"
-    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawn, spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); const worker=Number(/^pid=(\\d+)$/m.exec(result.stdout)?.[1]); const helper=spawn(process.execPath,['-e',${JSON.stringify(helperSource)},root,String(worker)],{detached:true,stdio:'ignore'}); helper.unref(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
+    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawn, spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); const worker=Number(/^pid=(\\d+)$/m.exec(result.stdout)?.[1]); const helper=spawn(process.execPath,['-e',${JSON.stringify(helperSource)},root,String(worker)],{detached:true,stdio:'ignore'}); helper.unref(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
     const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
@@ -444,6 +482,80 @@ printf 'report\n' > "$report"
     expect(() => process.kill(pid, 0)).not.toThrow()
     const record = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', '996-1.json'), 'utf8'))
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
+  })
+
+  it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
+    const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
+    for (const entry of ['running', 'finishing', 'exited-first', 'child-unreadable'] as const) {
+      const workerSource = `
+import { spawn } from 'node:child_process'
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { classifyLane, inspectProcess } from ${JSON.stringify(supervisor)}
+const [root, log, brief] = process.argv.slice(1)
+const runId = '993-1', dir = process.env.WT_LANE_SUPERVISION_DIR
+mkdirSync(dir, { recursive: true })
+const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},300)'], { stdio: 'ignore' })
+const childExited = new Promise((resolve) => child.once('exit', resolve))
+await new Promise((resolve) => setTimeout(resolve, 100))
+const workerIdentity = inspectProcess(process.pid), childIdentity = inspectProcess(child.pid)
+const record = {
+  runId, worktree: root, owner: 'pilot', state: 'running',
+  workerPid: process.pid, workerArgv: workerIdentity.argv, workerStartTime: workerIdentity.startTime,
+  childPid: child.pid, childArgv: childIdentity.argv, childStartTime: childIdentity.startTime,
+  decisionTransitionDueAt: new Date(Date.now() + 10_000).toISOString(),
+}
+writeFileSync(join(dir, runId + '.json'), JSON.stringify(record))
+writeFileSync(join(dir, 'current.json'), JSON.stringify({ runId }))
+const initial = classifyLane(record)
+if (initial.status !== 'running') throw new Error('fixture must start with matching live identities')
+writeFileSync(join(root, '.lane', 'initial-verdict.json'), JSON.stringify(initial))
+await childExited
+writeFileSync(join(root, '.lane', 'finishing-verdict.json'), JSON.stringify(classifyLane(record)))
+await new Promise((resolve) => setTimeout(resolve, ${entry === 'exited-first' ? 300 : 1_500}))
+${entry === 'exited-first'
+  // The shipped worker publishes state 'exited' before it appends EXIT= (wt-lane.mjs onChildClose).
+  ? "writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))\nawait new Promise((resolve) => setTimeout(resolve, 1_000))\n"
+  : ''}const report = /Write the report to \x60([^\x60]+)\x60/.exec(readFileSync(brief, 'utf8'))[1]
+writeFileSync(report, 'report\\n')
+appendFileSync(log, 'genuine\\nEXIT=0\\n')
+writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))
+`
+      const finishing = rawLauncher(`import { spawn } from 'node:child_process'; import { existsSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],log=args[args.indexOf('--log')+1],brief=args[args.indexOf('--brief')+1]; const worker=spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(workerSource)},root,log,brief],{detached:true,stdio:'ignore'}); worker.unref(); const ready=join(root,'.lane',${JSON.stringify(`${entry === 'running' ? 'initial' : 'finishing'}-verdict.json`)}),deadline=Date.now()+15_000; while(!existsSync(ready)&&Date.now()<deadline) await new Promise((resolve)=>setTimeout(resolve,10)); process.stdout.write('pid='+worker.pid+'\\nrun=993-1\\n')`)
+      // While a child exits, Linux /proc can serve its stat with an empty cmdline: identity reads unknown, not gone.
+      // The emulated window lasts until the worker records its exit, far longer than the real one.
+      let laneRoot = ''
+      const exitingChildReader = {
+        inspect: (pid: number) => {
+          const actual = inspectProcess(pid, { platform: process.platform })
+          if (actual || !laneRoot) return actual
+          const record = JSON.parse(readFileSync(join(laneRoot, '.lane', 'supervision', '993-1.json'), 'utf8'))
+          return pid === record.childPid && record.state === 'running' ? { pid, argv: [], startTime: record.childStartTime, cwd: null, groupId: null } : null
+        },
+        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+        processState: linuxProcState,
+      }
+      const lifecycle = testLifecycle('LITE', [], finishing, 30, entry === 'child-unreadable' ? { laneProcessReader: exitingChildReader } : {})
+      laneRoot = lifecycle.root
+      await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+      try {
+        const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
+        expect(result, entry).toBe('lane tdd EXIT=0')
+        expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'initial-verdict.json'), 'utf8'))).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
+        expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'finishing-verdict.json'), 'utf8'))).toMatchObject({ status: 'unknown', reason: 'inconsistent-record', worker: 'running', child: 'gone' })
+        expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'utf8')).toContain('genuine\nEXIT=0\n')
+      } finally {
+        const file = join(lifecycle.root, '.lane', 'supervision', '993-1.json')
+        if (existsSync(file)) {
+          const record = JSON.parse(readFileSync(file, 'utf8'))
+          for (const role of ['child', 'worker']) {
+            const expected = { pid: record[`${role}Pid`], argv: record[`${role}Argv`], startTime: record[`${role}StartTime`] }
+            // The worker exits on its own once it has written EXIT=; it may do so between this read and the kill.
+            if (sameIdentity(expected, inspectProcess(expected.pid))) try { process.kill(expected.pid, 'SIGKILL') } catch { /* already exited */ }
+          }
+        }
+      }
+    }
   })
 
   it.skipIf(process.platform !== 'linux')('returns TIMEOUT naming a surviving child when the worker is gone [fixture records Linux argv identity]', async () => {
@@ -970,7 +1082,7 @@ printf 'report\n' > "$report"
     writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@test': { options: { planka_mcp_url: `http://127.0.0.1:${address.port}/mcp` } } } }))
     const cli = resolve(fileURLToPath(new URL('../../../../plugin/bin/wt-worktree-remove.mjs', import.meta.url)))
     const run = (worktree: string) => new Promise<{ code: number | null, stdout: string, stderr: string }>((resolveRun) => {
-      const child = spawn(process.execPath, [cli, '--dir', worktree], { env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, WT_PLANKA_MCP_URL: '' } })
+      const child = spawn(process.execPath, [cli, '--dir', worktree], { env: { ...process.env, PATH: hermeticPath([]), CLAUDE_CONFIG_DIR: configDir, WT_PLANKA_MCP_URL: '' } })
       let stdout = ''; let stderr = ''; child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
       child.stdout.on('data', (chunk) => { stdout += chunk }); child.stderr.on('data', (chunk) => { stderr += chunk })
       child.on('close', (code) => resolveRun({ code, stdout, stderr }))
@@ -1084,7 +1196,7 @@ printf 'report\n' > "$report"
     ))
     fs.chmodSync(opencodeStub, 0o755)
     const oldPath = process.env.PATH; const oldConfig = process.env.CLAUDE_CONFIG_DIR; const oldState = process.env.XDG_STATE_HOME; const oldNodeOptions = process.env.NODE_OPTIONS; const oldMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-    process.env.PATH = `${bin}:${oldPath}`; process.env.CLAUDE_CONFIG_DIR = config; process.env.XDG_STATE_HOME = join(config, 'state')
+    process.env.PATH = hermeticPath([bin]); process.env.CLAUDE_CONFIG_DIR = config; process.env.XDG_STATE_HOME = join(config, 'state')
     process.env.NODE_OPTIONS = `${oldNodeOptions ? `${oldNodeOptions} ` : ''}--require=${platformPreload}`
     process.env.WT_LANE_MIN_AVAILABLE_MIB = '0'
     const git = (_program: string, args: string[]) => args[0] === 'write-tree'
@@ -1097,11 +1209,7 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), DESCENDANT_LANE_WAIT_MS, {
       git,
       lanePlatform: 'darwin',
-      laneProcessReader: {
-        inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
-        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
-        processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? null,
-      },
+      laneProcessReader: emulatedLaneProcessReader(),
       models: { lane: 'openai/gpt-5.6-luna', review: 'openai/gpt-5.6-luna' },
     })
     try {
@@ -1677,6 +1785,14 @@ printf 'report\n' > "$report"
       expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
+    it('keeps a paraphrased numbered-task re-anchor blocking when its own task line does not quote the settled criterion', async () => {
+      const logs: string[] = []
+      const numbered = plan.replace('- T1 list the documents. DoD: green', `1. list the documents. DoD: ${term}\n2. archive the documents. DoD: green`)
+      const finding = '- [blocking][missing][anchor: plan task 2][location: plan.md:6] The inventory requirement is still unmet'
+      const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 1, pollMs: 1, log: (line: string) => logs.push(line) }, numbered, [rounds[0]!, rounds[1]!, [finding]])
+      expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=plan/)
+      expect(logs.join('\n')).not.toContain('ignored-by-no-reblock rule')
+    })
     it('fails closed when the store reader fails', async () => {
       const { lifecycle } = await disputed({ readDecisions: () => { throw new Error('ENOENT') }, waitMs: 1, pollMs: 1 })
       await expect(lifecycle.awaitDodDecisions()).rejects.toThrow('ENOENT')
@@ -2139,7 +2255,7 @@ printf 'report\n' > "$report"
     const bin = realpathSync(mkdtempSync(join(tmpdir(), 'wt-gate-env-bin-'))); roots.push(bin)
     writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'for (const [k, v] of Object.entries(process.env)) console.log(k + "=" + v)'\n`)
     fs.chmodSync(join(bin, 'pnpm'), 0o755)
-    const gatePath = `${bin}:${process.env.PATH}`
+    const gatePath = hermeticPath([bin])
     vi.stubEnv('PATH', gatePath)
     vi.stubEnv('HOME', '/tmp/wt-gate-env-home')
     // The runner sets it to a real SDK entry (the lifecycle itself resolves the SDK through it).
@@ -2305,9 +2421,12 @@ function emptyLauncher() { return launcher('process.exit(0)') }
 function logOnlyLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, ''); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function successLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'report\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function equalMtimeLauncher() { return launcher("import { readFileSync, renameSync, utimesSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1],tmp=log+'.tmp',brief=process.argv[process.argv.indexOf('--brief')+1],report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1],wholeSecond=Math.ceil(Date.now()/1000); writeFileSync(report,'report\\n'); writeFileSync(tmp,readFileSync(log,'utf8')+'done\\nEXIT=0\\n'); utimesSync(tmp,wholeSecond,wholeSecond); renameSync(tmp,log)") }
+// Adds only the tags a fixture finding lacks: the report parser keeps the FIRST anchor of a line, so a default
+// anchor placed ahead of the fixture's own would silently replace the anchor the test means to exercise.
 function structuredCriticFinding(finding: string) {
-  if (/^\[(?:blocking|non-blocking)\]/i.test(finding)) return finding.replace(/^(\[(?:blocking|non-blocking)\])/i, '$1[anchor: DoD 1][location: plan.md:1]')
-  return `[blocking][anchor: DoD 1][location: plan.md:1] ${finding}`
+  const tags = `${/\[anchor:/i.test(finding) ? '' : '[anchor: DoD 1]'}${/\[location:/i.test(finding) ? '' : '[location: plan.md:1]'}`
+  if (/^\[(?:blocking|non-blocking)\]/i.test(finding)) return finding.replace(/^(\[(?:blocking|non-blocking)\])/i, `$1${tags}`)
+  return `[blocking]${tags} ${finding}`
 }
 function verdictLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] blocker\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function criticFindingsLauncher(findings: string[], exit = 0) {

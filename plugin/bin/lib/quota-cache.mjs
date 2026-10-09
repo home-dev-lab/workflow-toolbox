@@ -8,8 +8,8 @@
 // several sessions and their watchers active at once, that is enough independent,
 // uncoordinated traffic against one account to trip the endpoint's own rate limit
 // (observed: HTTP 429). This module lets the watcher READ that same cache before
-// probing, and REFILL it after a live probe, so a fresh reading is shared instead of
-// re-fetched by every reader.
+// probing, and REFILL the login cache after a live login probe. Token-account files
+// use `.quota-cache.<accountKey>.json`; the watcher reads but never refills those.
 //
 // FORMAT CONTRACT — byte-compatible with the hook, on purpose. The hook writes
 // `{ at: <ms epoch>, data: <parsed probe JSON> }` with a 300_000ms TTL. This module
@@ -42,6 +42,20 @@ export const DEFAULT_CACHE_TTL_MS = 300_000
 /** Default path, honouring CLAUDE_CONFIG_DIR like the rest of the plugin (and the hook). */
 export function defaultQuotaCachePath(configDir = process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude')) {
   return path.join(configDir, '.quota-cache.json')
+}
+
+function safeAccountKey(accountKey) {
+  return typeof accountKey === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(accountKey) && accountKey !== '.' && accountKey !== '..'
+}
+
+/** Hook-compatible names; validate untrusted probe keys before constructing any path. */
+export function quotaCachePathFor(configDir, accountKey) {
+  if (!safeAccountKey(accountKey)) throw new TypeError('quotaCachePathFor: unsafe accountKey')
+  return accountKey === 'login' ? defaultQuotaCachePath(configDir) : path.join(configDir, `.quota-cache.${accountKey}.json`)
+}
+
+function sameAccount(data, expectedAccountKey) {
+  return safeAccountKey(expectedAccountKey) && (data?.accountKey ?? 'login') === expectedAccountKey
 }
 
 // Cross-family review (2026-08-04) flagged raw `===` on configDir strings as too strict:
@@ -83,6 +97,7 @@ function sameConfigDir(a, b) {
  * same reason, so it is discarded too (`undefined !== expectedConfigDir`).
  *
  * @param {string} cachePath
+ * @param {string} [expectedAccountKey='login'] key of the account-specific cache file
  * @param {number} [ttlMs]
  * @param {string} expectedConfigDir the caller's own config dir (e.g. `CLAUDE_CONFIG_DIR`
  *   as resolved by the caller) — REQUIRED, not optional, so a new call site cannot skip
@@ -96,7 +111,7 @@ function sameConfigDir(a, b) {
  *   non-fresh reading is returned too (a caller may still want `at`/`data` for
  *   diagnostics) but must not be used in place of a probe.
  */
-export async function readQuotaCache(cachePath, ttlMs = DEFAULT_CACHE_TTL_MS, expectedConfigDir) {
+export async function readQuotaCache(cachePath, ttlMs = DEFAULT_CACHE_TTL_MS, expectedConfigDir, expectedAccountKey = 'login') {
   if (typeof expectedConfigDir !== 'string' || expectedConfigDir.length === 0) {
     throw new TypeError(
       'readQuotaCache: expectedConfigDir is required — pass the caller\'s own CLAUDE_CONFIG_DIR so an entry describing a different config dir cannot be read as a valid measurement',
@@ -124,6 +139,7 @@ export async function readQuotaCache(cachePath, ttlMs = DEFAULT_CACHE_TTL_MS, ex
   // Provenance gate — see the doc comment above. Deliberately compared BEFORE freshness:
   // a fresh-but-foreign entry is exactly as dangerous as a stale-but-foreign one.
   if (!sameConfigDir(parsed.data.configDir, expectedConfigDir)) return null
+  if (!sameAccount(parsed.data, expectedAccountKey)) return null
 
   const age = Date.now() - parsed.at
   // A negative age (clock skew, or a foreign writer stamping a future `at`) is treated
@@ -144,11 +160,12 @@ export async function readQuotaCache(cachePath, ttlMs = DEFAULT_CACHE_TTL_MS, ex
  * already wraps this call for other reasons) covers it without new call-site changes.
  *
  * @param {string} cachePath
+ * @param {string} [expectedAccountKey='login'] key of the account-specific cache file
  * @param {unknown} data the parsed probe JSON to cache (same shape a live probe prints)
  * @param {string} expectedConfigDir the caller's own config dir — REQUIRED; see
  *   `readQuotaCache` for why this is not optional.
  */
-export async function writeQuotaCacheAtomic(cachePath, data, expectedConfigDir) {
+export async function writeQuotaCacheAtomic(cachePath, data, expectedConfigDir, expectedAccountKey = 'login') {
   if (typeof expectedConfigDir !== 'string' || expectedConfigDir.length === 0) {
     throw new TypeError(
       'writeQuotaCacheAtomic: expectedConfigDir is required — refuse to persist a reading whose provenance cannot be checked',
@@ -159,6 +176,7 @@ export async function writeQuotaCacheAtomic(cachePath, data, expectedConfigDir) 
       `writeQuotaCacheAtomic: refusing to persist a reading for configDir=${JSON.stringify(data?.configDir)}, expected ${JSON.stringify(expectedConfigDir)}`,
     )
   }
+  if (!sameAccount(data, expectedAccountKey)) throw new Error('writeQuotaCacheAtomic: refusing to persist a foreign or unsafe accountKey')
   const dir = path.dirname(cachePath)
   const tmp = path.join(dir, `.quota-cache.${process.pid}.${randomUUID()}.tmp`)
   await writeFile(tmp, JSON.stringify({ at: Date.now(), data }), 'utf8')

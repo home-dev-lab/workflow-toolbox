@@ -23,7 +23,19 @@
 // and looks like success while doing it. So this guard is biased toward refusing, and it says
 // exactly how to fix the brief.
 // Clean prohibitions and noun uses of "output" get an advisory instead: the classifier is
-// deliberately conservative, and every suppression stays visible and journaled.
+// deliberately conservative, and every suppression stays visible and journaled. A type whose
+// definition holds a bare Bash tool (not pinned to one Bash command, not in disallowedTools) gets an
+// advisory too: it can write through the shell, and that rests on the type's capability, not on how
+// the brief is worded.
+//
+// SHADOW RULES. Two brief-wording rules, no-file-path (the destination has no file extension) and
+// final-message-fallback (the brief routes the deliverable to the final message), never change a
+// decision: an advisory does not stop the spawn, so a wrong lift loses the report this guard exists
+// to protect. When one matches, the refusal still stands, names the rule in one sentence, and the
+// journal record gains `shadow: [<class>, ...]`. Promotion exit: after 20 fresh shadow firings of a
+// class, each checked against what the brief actually required, with zero where lifting would have
+// lost a required file, that class may lift (become an advisory). no-file-path additionally needs a
+// path parser that keeps accents and spaces before it can be promoted.
 //
 // WHY IT DOES NOT GUARD OTHER TOOLS. Bash, Edit and the rest have the same failure shape, but a
 // brief mentions commands and files constantly for reasons other than "you must run/write this",
@@ -37,6 +49,7 @@ import fs from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { guardMode, recordGuardEvent } from './lib/guard-journal.mjs'
 import { resolveAgentTypeTools } from './lib/agent-type-tools.mjs'
+import { canWriteThroughBash, finalMessageRoutes, hasNoFileExtension } from './lib/spawn-brief-intent.mjs'
 
 function readInput() {
   try {
@@ -78,14 +91,24 @@ const OUTPUT_INTRODUCERS = new Set([
   'and', 'then', 'please', 'also', 'so', 'finally', 'must', 'should', 'shall', 'will', 'can', 'to', 'now', 'just',
   'do', 'does', 'did', 'would', 'could', 'might', 'may',
 ])
-const SUPPRESSION_CLASSES = { negated: 'negated-write', noun: 'noun-output' }
+const SUPPRESSION_CLASSES = {
+  negated: 'negated-write',
+  noun: 'noun-output',
+  bashroute: 'bash-write-route',
+}
+const SUPPRESSION_READINGS = {
+  bashroute: 'is not refused: this type can write through its Bash tool',
+}
+// Observe mode keeps the pre-existing negation and noun advisories silent. The Bash route replaces a
+// former refusal, so it still speaks there.
+const SILENT_IN_OBSERVE = new Set(['negated', 'noun'])
 
 function normaliseContext(text) {
   return text.replace(/[*_]/g, '').replace(/’/g, "'").toLowerCase()
 }
 
 function contextWords(text) {
-  return text.match(/[\p{L}]+(?:'[\p{L}]*)?/gu) ?? []
+  return text.match(/\p{L}+(?:'\p{L}*)?/gu) ?? []
 }
 
 function isNegationCue(word) {
@@ -116,13 +139,20 @@ function boundaryIndexes(prompt, expression) {
   return [-1, ...Array.from(prompt.matchAll(expression), (match) => match.index), prompt.length]
 }
 
+// Drops trailing Markdown emphasis markers (`*`, `_`) without a backtracking expression.
+function trimEmphasis(text) {
+  let end = text.length
+  while (end > 0 && (text[end - 1] === '*' || text[end - 1] === '_')) end -= 1
+  return text.slice(0, end)
+}
+
 function adjacentNegation(before, after, french) {
   if (french) {
     const frame = before.match(/(?:^|[^\p{L}\p{N}'’])(?:n['’][*_]*|ne[*_]*[ \t]+[*_]*)$/iu)
     if (!frame || !/^[ \t]+(?:pas|jamais|plus|rien)\b/.test(normaliseContext(after))) return null
     return before.slice(0, frame.index)
   }
-  const prefix = before.replace(/[*_]+$/, '')
+  const prefix = trimEmphasis(before)
   if (!/[ \t]$/.test(prefix)) return null
   const cue = prefix.split(/[ \t]+/).at(-2)
   if (!cue || !isNegationCue(normaliseContext(cue))) return null
@@ -206,6 +236,7 @@ function findWriteIntent(rawPrompt) {
   const prompt = rawPrompt.normalize('NFC')
   let surviving = null
   let suppressed = null
+  let pathless = true // every surviving candidate names a destination without a file extension
   // Enumerate once; a filename's internal dot is not a clause boundary.
   const boundaries = {
     clause: boundaryIndexes(prompt, /[!?;:\n]|\.(?=\s|$)/g),
@@ -224,15 +255,36 @@ function findWriteIntent(rawPrompt) {
         scanner.lastIndex = candidate.headEnd
       } else {
         surviving = preferCandidate(surviving, candidate)
+        pathless &&= hasNoFileExtension(candidate)
       }
     }
   }
-  return surviving ?? suppressed
+  return surviving ? { ...surviving, pathless } : suppressed
+}
+
+function advisoryText(type, phrase, suppression) {
+  const reading = SUPPRESSION_READINGS[suppression] ??
+    `was read as not a write request (${SUPPRESSION_CLASSES[suppression]})`
+  return `[workflow-toolbox spawn-capability] ADVISORY: agent type "${type}" has no Write tool; ` +
+    `"${phrase}" ${reading}. If a file is required, spawn a type with Write ` +
+    `or require the report in the agent's final message.`
+}
+
+function refusalText(type, tools, phrase, shadow) {
+  const sentence = shadow.length
+    ? ` Shadow: the ${shadow.join(' and ')} precision rule would lift this refusal (measuring before it decides).`
+    : ''
+  return `[workflow-toolbox spawn-capability] Refused: agent type "${type}" declares ` +
+    `tools: ${tools.join(', ')} — it has NO Write tool, and this brief asks it to write a ` +
+    `file. Matched: "${phrase}". It would do the work, fail to write, and still end its turn reporting success; ` +
+    `the output would survive only in its transcript. Fix the brief, not the agent: ` +
+    `either spawn a type that has Write, or require the report to BE the agent's final ` +
+    `message (and say "your last output IS the deliverable — do not summarise after it", ` +
+    `because only the last message is routed back).${sentence}`
 }
 
 function emitWriteDecision(input, type, tools, intent) {
-  const { pattern, phrase, suppression } = intent
-  const reason = `agent type "${type}" has no Write tool; matched: "${phrase}"`
+  const { pattern, phrase, suppression, shadow = [] } = intent
   recordGuardEvent({
     guard: 'wt-spawn-capability-guard-hook.mjs',
     decision: suppression ? 'warned' : 'blocked',
@@ -240,24 +292,16 @@ function emitWriteDecision(input, type, tools, intent) {
     agent: input.agent_id,
     class: suppression ? SUPPRESSION_CLASSES[suppression] : 'no-write-tool',
     evidence: { pattern, phrase },
-    reason,
+    reason: `agent type "${type}" has no Write tool; matched: "${phrase}"`,
+    shadow,
   })
-  if (suppression && guardMode() === 'observe') return
+  if (SILENT_IN_OBSERVE.has(suppression) && guardMode() === 'observe') return
   const output = { hookEventName: 'PreToolUse' }
   if (suppression) {
-    output.additionalContext = `[workflow-toolbox spawn-capability] ADVISORY: agent type "${type}" has no Write tool; ` +
-      `"${phrase}" was read as not a write request (${suppression}). If a file is required, spawn a type with Write ` +
-      `or require the report in the agent's final message.`
+    output.additionalContext = advisoryText(type, phrase, suppression)
   } else {
     output.permissionDecision = 'deny'
-    output.permissionDecisionReason =
-      `[workflow-toolbox spawn-capability] Refused: agent type "${type}" declares ` +
-      `tools: ${tools.join(', ')} — it has NO Write tool, and this brief asks it to write a ` +
-      `file. Matched: "${phrase}". It would do the work, fail to write, and still end its turn reporting success; ` +
-      `the output would survive only in its transcript. Fix the brief, not the agent: ` +
-      `either spawn a type that has Write, or require the report to BE the agent's final ` +
-      `message (and say "your last output IS the deliverable — do not summarise after it", ` +
-      `because only the last message is routed back).`
+    output.permissionDecisionReason = refusalText(type, tools, phrase, shadow)
   }
   process.stdout.write(JSON.stringify({ hookSpecificOutput: output }))
 }
@@ -283,8 +327,19 @@ function main() {
 
   const hasWrite = tools.some((t) => t === 'Write' || t === '*')
   if (hasWrite) return
-  const intent = findWriteIntent(prompt)
-  if (intent) emitWriteDecision(input, type, tools, intent)
+  const found = findWriteIntent(prompt)
+  if (found) emitWriteDecision(input, type, tools, classifySurviving(found, prompt, resolved))
+}
+
+/** A surviving candidate is advised only when the TYPE can write through Bash. The two brief-wording rules
+ *  never change the decision: they are named on the refusal and journaled until they are measured. */
+function classifySurviving(intent, prompt, resolved) {
+  if (intent.suppression) return intent
+  if (canWriteThroughBash(resolved.tools, resolved.body, resolved.denied)) return { ...intent, suppression: 'bashroute' }
+  const shadow = []
+  if (intent.pathless) shadow.push('no-file-path')
+  if (finalMessageRoutes(prompt).length) shadow.push('final-message-fallback')
+  return { ...intent, shadow }
 }
 
 runFailOpenHook('wt-spawn-capability-guard-hook.mjs', main)

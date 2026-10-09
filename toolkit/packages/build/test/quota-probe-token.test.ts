@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -38,6 +39,17 @@ function run(config: string, stub: string, mode: string) {
 }
 
 describe('quota probe session token', () => {
+  it('emits the hashed session account key without exposing the token', () => {
+    const f = fixture(false)
+    const result = run(f.config, f.stub, 'accept-session')
+    expect(JSON.parse(result.stdout).accountKey).toBe(`token-${createHash('sha256').update('session credential').digest('hex').slice(0, 12)}`)
+    expect(result.stdout).not.toContain('session credential')
+  })
+  it('emits login for saved credentials', () => {
+    const f = fixture()
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(f.stub).href, CLI], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: f.config, CLAUDE_CODE_OAUTH_TOKEN: '' } })
+    expect(JSON.parse(result.stdout).accountKey).toBe('login')
+  })
   it('uses CLAUDE_CODE_OAUTH_TOKEN even when no credentials file exists', () => {
     const f = fixture(false)
     const result = run(f.config, f.stub, 'accept-session')
