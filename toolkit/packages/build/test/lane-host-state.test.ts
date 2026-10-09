@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -12,7 +12,7 @@ import { inspectProcess, readCurrentSupervision, supervisionPaths, supervisionSl
 // @ts-expect-error ESM runtime module
 import { makeReadableLaneBrief, readLifecycleRegular, readWorktreeRegular } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error ESM runtime module
-import { appendLaunchFailure, awaitChildSpawn, laneHostDir, laneHostStateRoot } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+import { appendLaunchFailure, awaitChildSpawn, ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 it.each(['spawn', 'error', 'timeout', 'null-error', 'undefined-error'])('settles child spawn on %s and clears its listeners and timer', async (event) => {
   vi.useFakeTimers()
@@ -418,4 +418,46 @@ it('waiter rejects legacy-only records even when handed a pid', () => {
   const result = spawnSync(process.execPath, [wait, '--dir', worktree, '--pid', String(process.pid), '--timeout', '0.03'], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { WT_LANE_HOST_STATE: join(dir, 'state') }) })
   expect(result.status).toBe(2)
   expect(result.stderr).toContain('legacy lane supervision')
+})
+
+function withStateRoot<T>(stateRoot: string, body: () => T): T {
+  const previous = process.env.WT_LANE_HOST_STATE
+  process.env.WT_LANE_HOST_STATE = stateRoot
+  try { return body() } finally { if (previous === undefined) delete process.env.WT_LANE_HOST_STATE; else process.env.WT_LANE_HOST_STATE = previous }
+}
+
+// Each malformed marker gets its own host state root, so each reading rule is locked on its own.
+function withMarker(content: (dir: string) => string) {
+  const { dir, worktree } = fixture()
+  const stateRoot = join(dir, 'state')
+  mkdirSync(join(stateRoot, 'a'.repeat(32)), { recursive: true })
+  writeFileSync(join(stateRoot, 'a'.repeat(32), 'worktree'), content(realpathSync.native(dir)))
+  return { dir, worktree, stateRoot }
+}
+
+it('never reads an empty worktree marker as a path containing every other path', () => {
+  const { dir, worktree, stateRoot } = withMarker(() => '')
+  withStateRoot(stateRoot, () => {
+    expect(() => ensureLaneHostDir(worktree)).not.toThrow()
+    expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false)
+  })
+})
+
+it('never reads a marker cut short before its newline as a worktree path', () => {
+  const { dir, worktree, stateRoot } = withMarker((real) => real)
+  const real = realpathSync.native(dir)
+  withStateRoot(stateRoot, () => {
+    expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false)
+    expect(laneWritablePath(worktree, real.slice(0, -1))).toBe(false)
+  })
+})
+
+it('never reads a relative marker as a worktree path', () => {
+  const { worktree, stateRoot } = withMarker(() => `${join('relative', 'child')}\n`)
+  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join('relative', 'child', 'file.log'))).toBe(false))
+})
+
+it('still reads a complete marker as a lane worktree', () => {
+  const { dir, worktree, stateRoot } = withMarker((real) => `${real}\n`)
+  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(true))
 })
