@@ -87,6 +87,7 @@ function fixture(script: string, watcherHostCensus = false) {
   const helperFixture = join(root, 'helpers.json')
   writeFileSync(helperFixture, '[]\n')
   const env: NodeJS.ProcessEnv = { ...sealedPluginCliEnv(root), PATH: hermeticPath([bin]), CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', WT_LANE_SANDBOX: 'off', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
+  env.WT_EXTERNAL_MODEL_ENV_ALLOW += ',WT_DISABLE_SPAWN_AT_COUNT,WT_OPENCODE_WRAPPER'
   return { root, dir, config, env }
 }
 function isolateWatcherHostCensus(f: ReturnType<typeof fixture>) {
@@ -435,6 +436,23 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     waitForContent(journal, /"event":"terminated"/)
     expect(journalEvents(journal, 'terminated')).toHaveLength(1)
+  })
+  it('preserves worker identity and reports terminal failure to the waiter when real opencode spawn errors', () => {
+    const f = fixture('true')
+    f.env.WT_DISABLE_SPAWN_AT_COUNT = '2'
+    f.env.WT_OPENCODE_WRAPPER = join(f.root, 'bin', 'opencode')
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    const log = join(f.dir, '.lane', 'run.log')
+    waitForContent(log, /^EXIT=/m)
+    expect(readFileSync(join(f.dir, '.lane', 'preflight-count'), 'utf8')).toBe('2')
+    const state = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
+    expect(state).toMatchObject({ workerPid: Number(/pid=(\d+)/.exec(result.stdout)?.[1]), state: 'launch-failed', reason: expect.stringMatching(/^opencode spawn failed:.*EACCES/) })
+    expect(state.workerArgv).toEqual(expect.any(Array))
+    expect(state.workerStartTime).toEqual(expect.any(Number))
+    expect(readFileSync(log, 'utf8')).toMatch(new RegExp(`wt-lane: launch-failed: ${escapeRegex(state.reason)}\nEXIT=1\n$`))
+    const waited = spawnSync(process.execPath, [join(ROOT, 'plugin/bin/wt-lane-wait.mjs'), '--dir', f.dir, '--timeout', '30', '--poll', '1'], { encoding: 'utf8', env: f.env, timeout: 40_000 })
+    expect(waited.stdout, waited.stderr).toContain('LANE DONE exit=1')
   })
   it('signals an ordinary descendant before publishing the close-path receipt or exited state [requires POSIX process groups]', () => {
     const f = fixture('true')
@@ -843,6 +861,9 @@ const interval = setInterval(() => {
     expect(result.status, result.stderr).toBe(0)
     const stateFile = currentStateFile(f.dir, 4000)
     waitForContent(stateFile, /launch-failed/, 4000)
+    const log = join(f.dir, '.lane', 'run.log')
+    waitForContent(log, /^EXIT=/m, 30_000)
+    expect(readFileSync(log, 'utf8')).toMatch(/wt-lane: launch-failed: worker(?: returned before spawning opencode|'s event loop drained before opencode spawned)[^\n]*\nEXIT=1\n$/)
     expect(readFileSync(countFile, 'utf8')).toBe('2')
     expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toMatchObject({ state: 'launch-failed' })
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)

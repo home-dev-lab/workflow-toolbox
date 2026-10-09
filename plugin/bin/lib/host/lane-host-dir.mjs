@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -152,6 +152,37 @@ export function makeReadableLaneBrief(snapshot, worktree, { temporaryParent = os
 export function spawnWithLaneLogStderr(log, start) {
   const fd = openSync(log, 'a', 0o600)
   try { return start(['ignore', 'ignore', fd]) } finally { closeSync(fd) }
+}
+
+export function appendLaunchFailure(log, reason) {
+  if (!log) return
+  try {
+    let tail = ''
+    try { tail = readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? '' } catch {}
+    if (/^EXIT=\d+$/.test(tail)) return
+    appendFileSync(log, `wt-lane: launch-failed: ${reason}\nEXIT=1\n`)
+  } catch { /* best effort diagnostic */ }
+}
+
+export function awaitChildSpawn(child, { timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const settle = (complete, value) => {
+      clearTimeout(timer)
+      child.removeListener('spawn', onSpawn)
+      child.removeListener('error', onError)
+      complete(value)
+    }
+    const onSpawn = () => settle(resolve)
+    const onError = (error) => settle(reject, error)
+    // Ref'd deliberately: even a child with no live handle must reach the failure reporter.
+    const timer = setTimeout(() => {
+      const error = new Error(`opencode reported neither spawn nor error within ${timeoutMs / 1000} s`)
+      error.code = 'OPENCODE_SPAWN_TIMEOUT'
+      settle(reject, error)
+    }, timeoutMs)
+    child.once('spawn', onSpawn)
+    child.once('error', onError)
+  })
 }
 
 export function removeReadableLaneBrief(directory) {
