@@ -1,5 +1,10 @@
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { stripHeredocs } from './command-invocation.mjs'
+
+const BACKSLASH = '\\'
+const DOUBLE_ESCAPES = new Set([BACKSLASH, '$', '`', '"', '\n'])
+const escapesNext = (quote, next) => quote !== "'" && (!quote || DOUBLE_ESCAPES.has(next))
 
 function splitCommandSegments(command) {
   const segments = []
@@ -10,7 +15,7 @@ function splitCommandSegments(command) {
   for (let index = 0; index < text.length; index += 1) {
     const ch = text[index]
     if (escaped) { current += ch; escaped = false; continue }
-    if (ch === '\\') { current += ch; escaped = true; continue }
+    if (ch === BACKSLASH && escapesNext(quote, text[index + 1])) { current += ch; escaped = true; continue }
     if (quote) {
       current += ch
       if (ch === quote) quote = null
@@ -43,9 +48,11 @@ function tokenize(segment) {
   let current = ''
   let quote = null
   let escaped = false
-  for (const ch of String(segment || '')) {
-    if (escaped) { current += ch; escaped = false; continue }
-    if (ch === '\\') { escaped = true; continue }
+  const text = String(segment || '')
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index]
+    if (escaped) { if (ch !== '\n') current += ch; escaped = false; continue }
+    if (ch === BACKSLASH && escapesNext(quote, text[index + 1])) { escaped = true; continue }
     if (quote) {
       if (ch === quote) quote = null
       else current += ch
@@ -74,12 +81,12 @@ export function gitString(repo, args) {
   }
 }
 
-function currentBranch(repo) {
-  return gitString(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
+function currentBranch(repo, read) {
+  return read(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
 }
 
-function pushTrackingRef(repo) {
-  return gitString(repo, ['rev-parse', '--symbolic-full-name', '@{push}']) || gitString(repo, ['rev-parse', '--symbolic-full-name', '@{upstream}'])
+function pushTrackingRef(repo, read) {
+  return read(repo, ['rev-parse', '--symbolic-full-name', '@{push}']) || read(repo, ['rev-parse', '--symbolic-full-name', '@{upstream}'])
 }
 
 function normalizeSource(source) {
@@ -101,18 +108,35 @@ function defaultDestination(source, branch) {
   return source
 }
 
-function parsePushSegment(segment, cwd) {
+function invocationTokens(segment) {
   const tokens = tokenize(segment)
-  if (!tokens || tokens[0] !== 'git') return null
-  let repo = cwd
-  let index = 1
-  while (index < tokens.length && tokens[index] !== 'push') {
-    if (tokens[index] === '-C' && tokens[index + 1]) {
-      repo = path.resolve(cwd || process.cwd(), tokens[index + 1])
-      index += 2
-    } else index += 1
+  if (!tokens) return null
+  while (tokens[0] === 'sudo' || tokens[0] === 'env' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0] || '')) tokens.shift()
+  return tokens
+}
+
+function advanceGitOption(tokens, state) {
+  const token = tokens[state.index]
+  if (token === '-C') { state.repo = path.resolve(state.repo, tokens[state.index + 1] || '.'); state.index += 2 }
+  else if (token === '-c') state.index += 2
+  else if (token === '--git-dir' || token === '--work-tree') { state.unsupportedForm = token; state.index += 2 }
+  else {
+    if (token.startsWith('--git-dir=') || token.startsWith('--work-tree=')) state.unsupportedForm = token
+    state.index++
   }
-  if (tokens[index] !== 'push') return null
+}
+function gitInvocation(tokens, cwd) {
+  if (!tokens || tokens[0] !== 'git') return null
+  const state = { repo: cwd, index: 1, unsupportedForm: null }
+  while (tokens[state.index]?.startsWith('-')) advanceGitOption(tokens, state)
+  return { repo: state.repo, index: state.index, action: tokens[state.index], unsupportedForm: state.unsupportedForm }
+}
+
+function parsePushSegment(segment, cwd) {
+  const tokens = invocationTokens(segment)
+  const invocation = gitInvocation(tokens, cwd)
+  if (invocation?.action !== 'push') return null
+  const { repo, index, unsupportedForm } = invocation
 
   const positionals = []
   let afterDashDash = false
@@ -139,61 +163,83 @@ function parsePushSegment(segment, cwd) {
     refspecs: optionRemote ? positionals : positionals.slice(1),
     deletion,
     aggregateForm,
+    unsupportedForm,
   }
+}
+
+function appendDefaultPush(parsed, common, tracking, targets) {
+  const explicitPrefix = parsed.remote ? `refs/remotes/${parsed.remote}/` : null
+  const explicitDestination = explicitPrefix && tracking?.startsWith(explicitPrefix) ? tracking.slice(explicitPrefix.length) : null
+  const inferred = parsed.remote ? null : tracking?.match(/^refs\/remotes\/([^/]+)\/(.+)$/)
+  if (explicitDestination) targets.push({ ...common, source: 'HEAD', destination: explicitDestination })
+  else if (inferred) targets.push({ ...common, remote: inferred[1], source: 'HEAD', destination: inferred[2] })
+  else targets.push({ ...common, source: null, destination: null })
+}
+function appendRefspecPush(refspec, parsed, common, branch, targets) {
+  if (refspec === ':') {
+    targets.push({ ...common, source: null, destination: null, unsafeForm: "matching refspec ':'" })
+    return
+  }
+  const [rawSource, rawDestination] = refspec.split(':', 2)
+  const source = normalizeSource(rawSource)
+  const destination = branchFromDestination(rawDestination || defaultDestination(source, branch))
+  if (refspec.includes('*')) {
+    targets.push({ ...common, source, destination, unsafeForm: `wildcard refspec '${refspec}'` })
+    return
+  }
+  if (parsed.deletion || !source) {
+    targets.push({ ...common, source: null, destination: branchFromDestination(parsed.deletion ? rawSource : rawDestination), deletion: true })
+    return
+  }
+  targets.push({ ...common, source, destination })
+}
+function appendParsedPush(parsed, common, targets, read) {
+  if (parsed.unsupportedForm) {
+    targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.unsupportedForm })
+    return
+  }
+  const branch = currentBranch(parsed.repo, read)
+  const tracking = pushTrackingRef(parsed.repo, read)
+  if (parsed.aggregateForm) {
+    targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.aggregateForm })
+    return
+  }
+  if (parsed.refspecs.length === 0) { appendDefaultPush(parsed, common, tracking, targets); return }
+  for (const refspec of parsed.refspecs) appendRefspecPush(refspec, parsed, common, branch, targets)
+}
+export function parsePushCommand(command, cwd = process.cwd(), read = gitString) {
+  const targets = []
+  const segments = splitCommandSegments(stripHeredocs(String(command || '')))
+  let currentCwd = cwd
+  for (const segment of segments) {
+    const tokens = invocationTokens(segment)
+    if (tokens?.[0] === 'cd' && tokens.length === 2) { currentCwd = path.resolve(currentCwd, tokens[1]); continue }
+    const parsed = parsePushSegment(segment, currentCwd)
+    if (!parsed) continue
+    const common = { ...parsed, command: segment, standalone: segments.length === 1 }
+    appendParsedPush(parsed, common, targets, read)
+  }
+  return targets
 }
 
 export function derivePushTargets(input) {
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return []
-  const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()
-  const targets = []
-  const segments = splitCommandSegments(input?.tool_input?.command)
-  for (const segment of segments) {
-    const parsed = parsePushSegment(segment, cwd)
-    if (!parsed) continue
-    const common = { ...parsed, command: segment, standalone: segments.length === 1 }
-    const branch = currentBranch(parsed.repo)
-    const tracking = pushTrackingRef(parsed.repo)
-    if (parsed.aggregateForm) {
-      targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.aggregateForm })
-      continue
-    }
-    if (parsed.refspecs.length === 0) {
-      const explicitPrefix = parsed.remote ? `refs/remotes/${parsed.remote}/` : null
-      const explicitDestination = explicitPrefix && tracking?.startsWith(explicitPrefix) ? tracking.slice(explicitPrefix.length) : null
-      const inferred = parsed.remote ? null : tracking?.match(/^refs\/remotes\/([^/]+)\/(.+)$/)
-      if (explicitDestination) {
-        targets.push({ ...common, source: 'HEAD', destination: explicitDestination })
-      } else if (inferred) {
-        targets.push({ ...common, remote: inferred[1], source: 'HEAD', destination: inferred[2] })
-      } else {
-        targets.push({ ...common, source: null, destination: null })
-      }
-      continue
-    }
-    for (const refspec of parsed.refspecs) {
-      if (refspec === ':') {
-        targets.push({ ...common, source: null, destination: null, unsafeForm: "matching refspec ':'" })
-        continue
-      }
-      const [rawSource, rawDestination] = refspec.split(':', 2)
-      const source = normalizeSource(rawSource)
-      const destination = branchFromDestination(rawDestination || defaultDestination(source, branch))
-      if (refspec.includes('*')) {
-        targets.push({ ...common, source, destination, unsafeForm: `wildcard refspec '${refspec}'` })
-        continue
-      }
-      if (parsed.deletion || !source) {
-        targets.push({ ...common, source: null, destination: branchFromDestination(parsed.deletion ? rawSource : rawDestination), deletion: true })
-        continue
-      }
-      targets.push({
-        ...common,
-        source,
-        destination,
-      })
-    }
+  return parsePushCommand(input?.tool_input?.command, input.cwd || process.cwd())
+}
+
+// Same shell segmentation and tokenization as pushes; recorder callers need repository targets,
+// never a second shell parser. Only executable heads count, not quoted mentions or heredoc data.
+export function parseGitCommands(command, cwd = process.cwd()) {
+  const commands = []
+  let current = cwd
+  for (const segment of splitCommandSegments(stripHeredocs(String(command || '')))) {
+    const tokens = invocationTokens(segment)
+    if (!tokens) continue
+    if (tokens[0] === 'cd' && tokens.length === 2) { current = path.resolve(current, tokens[1]); continue }
+    const invocation = gitInvocation(tokens, current)
+    if (invocation) commands.push({ ...invocation, args: tokens.slice(invocation.index + 1) })
   }
-  return targets
+  return commands
 }
 
 export function derivePushChecks(input) {

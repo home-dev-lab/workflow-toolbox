@@ -39,7 +39,7 @@ function importFlagViolations(source: string) {
 }
 
 function trackedScripts() {
-  const listing = execFileSync('git', ['ls-files', '-z', '--', 'toolkit', 'plugin', 'plugins'], { cwd: REPO, encoding: 'utf8' })
+  const listing = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'toolkit', 'plugin', 'plugins'], { cwd: REPO, encoding: 'utf8' })
   // The index still lists scripts deleted by an unstaged change; scan the current working tree.
   return listing.split('\0').filter((file) => /\.(?:[cm]?[jt]s)$/.test(file) && !file.includes('/node_modules/') && !file.includes('/dist/') && basename(file) !== SELF && existsSync(resolve(REPO, file)))
 }

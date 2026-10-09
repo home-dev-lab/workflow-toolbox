@@ -29,7 +29,8 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/l
 // The adopt installer dropped its script import-rewrite transform (one readFileSync, one homedir) while
 // the adopt-check hook gained one lstatSync to report a symlinked script.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1883
+// The journal replaces the old reminder's raw filesystem reads with host-adapter operations.
+export const HOST_PRIMITIVE_CEILING = 1880
 
 export function sourceFiles(root) {
   const ignoredSource = pathsRegexSource(listGitIgnoredPaths(root).paths, root, root)

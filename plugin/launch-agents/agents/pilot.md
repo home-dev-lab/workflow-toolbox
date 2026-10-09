@@ -54,8 +54,7 @@ Operating shape:
    The TASK TRACKER follows the same abstraction: use the `TASK_TRACKER` block from your
    spawn prompt when present; otherwise auto-detect the project's tracker (a kanban board
    pointer such as `.claude/planka.json` → the board's MCP; else the tracker the project's
-   own rules/config name — e.g. Jira via its CLI; else a task file such as
-   `.claude/progress.md`). Every card duty in this definition (moves, comments, Done)
+   own rules/config name — e.g. Jira via its CLI). Every card duty in this definition (moves, comments, Done)
    applies to that tracker's equivalents.
    **When none of those exist, that is a supported case, not an error: the prompt you were
    spawned with IS the card.** Work from it directly — do not hunt for a tracker that isn't

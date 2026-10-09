@@ -132,7 +132,9 @@ describe('raw host primitive quality ratchet', () => {
     // The rule-narrative guard adds its detector and split modules; their host access lives in bin/lib/host.
     // The spawn-capability guard's brief-intent predicates add one module without host primitives.
     // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one module without host primitives.
-    expect(result.perimeterFiles).toBe(272)
+    // The work journal's modules replace one reminder, and its digest projection adds one pure module;
+    // all journal host access is behind the adapter.
+    expect(result.perimeterFiles).toBe(281)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

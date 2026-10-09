@@ -24,6 +24,10 @@ Follow these orders before settling a checkable fact or outward-facing claim.
    Include sources that could refute the prediction, not only confirm it.
 
 3. Query each applicable, available family.
+   For "what did we do about X?", start with the mechanical work journal:
+   `node <plugin-root>/bin/wt-work-journal.mjs show --grep X --days 30`.
+   Follow its detail links to commits, cards, releases or archived history before asserting
+   what happened. It records recent activity, not pending work; an empty query has bounded reach.
    Query independent families in parallel.
    Follow relevant leads at a low threshold, deduplicate them, and keep a bounded budget.
    Do not treat a `missing` family as searched; name it as unavailable.
