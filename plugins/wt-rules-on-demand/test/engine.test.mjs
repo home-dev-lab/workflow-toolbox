@@ -348,7 +348,7 @@ test('one directory contract and home fallback', () => {
   assert.equal(configDirectory({}), null);
 });
 
-test('overflow rotates verdict files in quality data without growing store keys', async () => {
+test('overflow archives verdict files in quality data without growing store keys or deleting from the host', async () => {
   const f = fixture({ userNames: ['check.md'] });
   f.files.set('/sample-config/rules-on-demand/check.md', `---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: 'git push'\n  compliance:\n    kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'\n---\nCheck destination.\n`);
   f.stored.set('compliance-verdicts-jsonl', 'x'.repeat(3_500_000));
@@ -357,7 +357,6 @@ test('overflow rotates verdict files in quality data without growing store keys'
       if (path.startsWith('/sample-config/plugins/data/wt-rules-on-demand/quality/')) archives.set(path, text);
       else f.files.set(path, text);
     };
-   f.$.fs.remove = async (path) => archives.delete(path);
    const list = f.$.fs.list;
    f.$.fs.list = async (path) => path.endsWith('/quality') ? [...archives.keys()].filter((item) => item.startsWith(`${path}/`)).map((item) => ({ name: item.slice(path.length + 1), kind: 'file' })) : list(path);
   // Use the fixture's registered call adapter by changing only its tool fields.
@@ -369,7 +368,7 @@ test('overflow rotates verdict files in quality data without growing store keys'
      f.stored.set('compliance-verdicts-jsonl', 'x'.repeat(3_500_000));
      await f.call({ tool: 'Bash', command: 'git push origin main', agentId: `agent-${index}` });
    }
-   assert.equal(archives.size, 14);
+    assert.equal(archives.size, 17, 'host writes retain all complete archives until the node startup sweep');
 });
 
 test('input-regex uses the flat host tool-call arguments and narrows a tool match', async () => {
@@ -485,7 +484,6 @@ test('journal answers a host size refusal by archiving older sessions, never dro
      if (path.startsWith('/sample-config/plugins/data/wt-rules-on-demand/quality/')) archives.set(path, text);
      else f.files.set(path, text);
    };
-  f.$.fs.remove = async (path) => archives.delete(path);
   const original = f.$.store.set;
   const originalGet = f.$.store.get;
   f.$.store.get = async (name) => name === 'sessions' ? structuredClone(await originalGet(name)) : originalGet(name);

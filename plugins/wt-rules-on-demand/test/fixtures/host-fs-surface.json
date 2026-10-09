@@ -1,0 +1,6 @@
+{
+  "provenance": "Claude Code 2.1.292, recorded 2026-10-07 from two instruments: the host-generated .claude-plugin/types/claude-code/index.d.ts declares $.fs with exactly these members, and a real-host probe module calling $.fs.remove, $.fs.delete, $.fs.unlink and $.fs.rm got 'TypeError: $.fs.<name> is not a function' for each while the target file stayed on disk. Re-record on a host upgrade that changes the $.fs block.",
+  "hostVersion": "2.1.292",
+  "fs": ["read", "write", "list", "exists", "stat", "ancestors"],
+  "absentDeletionVerbs": ["remove", "delete", "unlink", "rm"]
+}

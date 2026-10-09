@@ -311,7 +311,9 @@ test('hook registrations preserve startup and register all three watcher events 
   const { modules, hooks } = JSON.parse(await readFile(new URL('../hooks/hooks.json', import.meta.url), 'utf8'));
   const expected = { type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/unload-watch.mjs"', timeout: 10 };
   assert.deepEqual(modules, ['./hooks.js']);
-  assert.deepEqual(hooks.SessionStart[0], { matcher: 'startup', hooks: [
+  // Every SessionStart source runs session-start.mjs: archive retention runs on each source, and
+  // the startup-only work checks the source itself.
+  assert.deepEqual(hooks.SessionStart[0], { matcher: 'startup|resume|clear|compact', hooks: [
     { type: 'command', command: 'node "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs"', timeout: 10 },
   ] });
   assert.deepEqual(hooks.SessionStart[1], { hooks: [expected] });
