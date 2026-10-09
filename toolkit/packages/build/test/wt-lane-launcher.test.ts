@@ -50,6 +50,11 @@ const RECURRENT_WORKER_SECONDS = Math.ceil((RECURRENT_TEST_TIMEOUT_MS + 60_000) 
 const RECURRENT_LAUNCH_TIMEOUT_SECONDS = RECURRENT_WORKER_SECONDS + 60
 const BWRAP_WORKS = process.platform === 'linux' && (() => { try { return statSync(realpathSync('/usr/bin/bwrap')).uid === 0 && statSync('/').uid === 0 } catch { return false } })() && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
 const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
+// The control and watcher cleanup paths refuse a child whose cwd the supervisor cannot read. Probe that
+// with the supervisor's own reader (/proc on Linux, lsof on macOS) under the host's environment, so a
+// host without it skips these tests and says why, while a fixture that hides the reader still fails.
+const HOST_READS_PROCESS_CWD = process.platform !== 'win32' && typeof inspectProcess(process.pid, { captureCwd: true })?.cwd === 'string'
+const NEEDS_PROCESS_CWD = '[requires reading a process cwd: /proc on Linux, lsof on macOS]'
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -939,7 +944,10 @@ const interval = setInterval(() => {
     expect(readFileSync(journal, 'utf8')).toContain('"event":"would-clean"')
     killIdentity(orphan, 'SIGKILL')
   })
-  it('abandons a live orphan when its worker is gone', () => {
+  it.runIf(process.platform === 'linux')('reads a process cwd on Linux, so the cwd-guard tests are never skipped there', () => {
+    expect(HOST_READS_PROCESS_CWD).toBe(true)
+  })
+  it.skipIf(!HOST_READS_PROCESS_CWD)(`abandons a live orphan when its worker is gone ${NEEDS_PROCESS_CWD}`, () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const res = run(f, ['--timeout', '1', '--decision-grace', '30']); expect(res.status).toBe(0)
@@ -1144,7 +1152,7 @@ const interval = setInterval(() => {
     expect(watcher.stderr.match(/trace destination is inside a watched worktree/g)).toHaveLength(1)
     expect(existsSync(trace)).toBe(false)
   }, 60_000)
-  it('enforce mode escalates and journals cleaned only after the orphan is gone', () => {
+  it.skipIf(!HOST_READS_PROCESS_CWD)(`enforce mode escalates and journals cleaned only after the orphan is gone ${NEEDS_PROCESS_CWD}`, () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
@@ -1184,7 +1192,7 @@ const interval = setInterval(() => {
     expect(watcher.stderr).toContain('WT_LANE_WATCH_TEST_SWEEP_LOG')
     expect(watcher.stderr).toContain('test sweep log write failed; watcher behavior unchanged')
   })
-  it('reports a failed enforce kill journal on stdout', () => {
+  it.skipIf(!HOST_READS_PROCESS_CWD)(`reports a failed enforce kill journal on stdout ${NEEDS_PROCESS_CWD}`, () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
