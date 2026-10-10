@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, readdir, realpath, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +10,65 @@ import { cleanEnv } from './clean-env.mjs';
 const script = fileURLToPath(new URL('../hooks/session-start.mjs', import.meta.url));
 const watchdog = fileURLToPath(new URL('../scripts/quality-watchdog.mjs', import.meta.url));
 const sample = `---\non-demand:\n  triggers:\n    - kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n  compliance:\n    kind: 'none'\n    reason: 'sample'\n---\nSample\n`;
+test('fix1 startup surfaces host-timer outcomes from both data dirs once without on-demand files', async (t) => {
+  const s = await scope(t);
+  const timer = join(s.config, 'plugins/data/wt-rules-on-demand/quality'), inline = join(s.root, 'inline');
+  await mkdir(timer, { recursive: true });
+  await mkdir(join(inline, 'quality'), { recursive: true });
+  const result = { finishedAt: new Date().toISOString(), wouldRevert: [{ scope: 'user', rule: 'waiting.md', action: 'would revert', reason: 'no observed load' }], attention: [{ scope: 'user', rule: 'loaded.md', action: 'attention', reason: 'loaded but never served' }], failed: [{ scope: 'user', rule: 'broken.md', error: 'revert failed: not writable' }] };
+  await writeFile(join(timer, 'daily-rollback-latest.json'), JSON.stringify(result));
+  const env = { CLAUDE_PLUGIN_DATA: inline, CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) };
+  const onlyTimer = start(s, env);
+  assert.match(onlyTimer.stdout, /waiting\.md.*would revert/, 'timer would-revert outcome must reach startup text');
+  assert.match(onlyTimer.stdout, /loaded\.md.*attention/);
+  assert.match(onlyTimer.stdout, /broken\.md.*revert failed/);
+  await writeFile(join(inline, 'quality/daily-rollback-latest.json'), JSON.stringify(result));
+  assert.equal(start(s, env).stdout.match(/loaded\.md/g)?.length, 1, 'duplicate hook and timer outcomes are shown once');
+});
+
+test('fix1 daily text names restoration failures and loaded-without-serve attention', async (t) => {
+  const s = await scope(t);
+  const { migrateRule } = await import('../scripts/rule-lifecycle-lib.mjs');
+  await mkdir(join(s.config, 'rules'));
+  await writeFile(join(s.config, 'rules/sample.md'), 'Keep this instruction available.\n');
+  await migrateRule(s.config, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'none', reason: 'Delivery-only fixture' } }, {}, { scope: 'user' });
+  const ledger = join(s.config, 'rules-on-demand-ledger.jsonl'), migration = JSON.parse((await readFile(ledger, 'utf8')).trim());
+  migration.time = '2020-01-01T00:00:00.000Z';
+  await writeFile(ledger, JSON.stringify(migration) + '\n');
+  await writeFile(join(s.config, 'rules/sample.md'), 'conflicting static body');
+  const daily = fileURLToPath(new URL('../scripts/daily-rollback.mjs', import.meta.url));
+  const args = [daily, '--config-dir', s.config, '--apply', '--serve-window-hours', '0'];
+  let run = spawnSync(process.execPath, args, { encoding: 'utf8', env: cleanEnv() });
+  assert.match(run.stdout + run.stderr, /sample\.md.*revert failed/, 'daily text must name the restoration failure');
+  await rm(join(s.config, 'rules/sample.md'));
+  await mkdir(join(s.config, 'plugins/store'), { recursive: true });
+  const loadedAt = '2020-01-02T00:00:00.000Z';
+  const row = { loadedAt, reportedAt: loadedAt, generations: { [migration.generation]: { loadedAt } } };
+  row.writers = { 'fixture-run': { ...row, profile: s.config } };
+  await writeFile(join(s.config, 'plugins/store/wt-rules-on-demand_test.json'), JSON.stringify({ identityActivity: { [`user:${join(s.config, 'rules-on-demand')}:sample.md`]: row } }));
+  run = spawnSync(process.execPath, args, { encoding: 'utf8', env: cleanEnv() });
+  assert.match(run.stdout + run.stderr, /sample\.md.*loaded but never served/, 'daily text must name loaded-but-unserved attention');
+});
+
+test('fix3 default applying daily CLI reports restoration once and startup keeps its notification', async (t) => {
+  const s = await scope(t), { migrateRule } = await import('../scripts/rule-lifecycle-lib.mjs');
+  await mkdir(join(s.config, 'rules'));
+  await writeFile(join(s.config, 'rules/sample.md'), 'Keep this instruction available.\n');
+  await migrateRule(s.config, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'none', reason: 'Delivery-only fixture' } }, {}, { scope: 'user' });
+  const daily = fileURLToPath(new URL('../scripts/daily-rollback.mjs', import.meta.url));
+  const run = spawnSync(process.execPath, [daily, '--config-dir', s.config, '--project', s.project, '--apply', '--serve-window-hours', '0'], { encoding: 'utf8', env: cleanEnv({ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '0' }) });
+  assert.equal(run.error, undefined);
+  assert.match(run.stdout, /user sample\.md: reverted: no observed load or serve/, 'default daily CLI must report a successful restoration with hooks disabled');
+  assert.equal(run.stdout.match(/sample\.md/g)?.length, 1);
+  assert.equal(await readFile(join(s.config, 'rules/sample.md'), 'utf8'), 'Keep this instruction available.\n');
+  const startup = start(s);
+  assert.match(startup.stdout, /1 recorded revert notification\(s\); latest user sample.md/);
+  assert.equal(startup.stdout.match(/sample\.md/g)?.length, 1, 'startup must show the restored rule only in its unchanged notification');
+});
+
 async function scope(t) {
-  const root = await mkdtemp(join(tmpdir(), 'rod-start-'));
+  // Physical root: the engine stamps physical paths, and macOS and Windows temp paths are not their own real path.
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'rod-start-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const config = join(root, 'config');
   const project = join(root, 'project');
@@ -19,9 +76,9 @@ async function scope(t) {
   await mkdir(join(config, 'rules-on-demand'), { recursive: true });
   return { root, config, project };
 }
-function start({ config, project }, env = {}) {
+function start({ config, project }, env = {}, source = 'startup') {
   return spawnSync(process.execPath, [script], {
-    encoding: 'utf8', input: JSON.stringify({ source: 'startup', cwd: project }),
+    encoding: 'utf8', input: JSON.stringify({ source, cwd: project }),
     env: cleanEnv({ CLAUDE_CONFIG_DIR: config, WT_ROD_QUALITY_SPAWN: '0', CLAUDE_PLUGIN_OPTION_ENABLED: 'false', CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1', ...env }),
   });
 }
@@ -38,6 +95,49 @@ test('disabled engine reports unserved rules and does not spawn', async (t) => {
   const run = start(s);
   assert.match(run.stdout, /engine disabled; 1 on-demand rules are neither static nor served/);
   assert.deepEqual(await readdir(s.config), ['rules-on-demand']);
+});
+test('startup sweeps the hook archive directory even with the engine disabled and data overrides', async (t) => {
+  const s = await scope(t);
+  await writeFile(join(s.config, 'rules-on-demand/sample.md'), sample);
+  const directory = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  const override = join(s.root, 'override'), inline = join(s.root, 'inline');
+  const name = 'rod-store-archive-1-1.json';
+  for (const dir of [directory, override, join(inline, 'quality')]) {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, name), '');
+    await utimes(join(dir, name), new Date(0), new Date(0));
+  }
+  const run = start(s, { WT_ROD_QUALITY_DATA: override, CLAUDE_PLUGIN_DATA: inline,
+    CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /engine disabled/);
+  assert.deepEqual(await readdir(directory), [], 'disabled startup must remove the old neutralised archive');
+  assert.deepEqual(await readdir(override), [name], 'the override is not the hook writer directory');
+  assert.deepEqual(await readdir(join(inline, 'quality')), [name], 'inline plugin data is not swept');
+});
+
+for (const source of ['resume', 'clear', 'compact']) test(`a ${source} session start sweeps archives too, and does nothing else`, async (t) => {
+  const s = await scope(t);
+  const directory = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  const name = 'rod-store-archive-1-1.json';
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, name), '');
+  await utimes(join(directory, name), new Date(0), new Date(0));
+  const run = start(s, {}, source);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, '', `a ${source} start prints nothing`);
+  assert.deepEqual(await readdir(directory), [], `a ${source} start must sweep the old neutralised archive`);
+});
+
+test('startup reports archive retention errors once and still returns successfully', async (t) => {
+  const s = await scope(t);
+  const directory = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  await mkdir(join(s.config, 'plugins/data/wt-rules-on-demand'), { recursive: true });
+  await writeFile(directory, 'not a directory');
+  const run = start(s);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.split('\n').filter((line) => line.startsWith('wt-rules-on-demand: archive retention failed: ')).length, 1,
+    'a retention failure is one stdout line, not a failed startup');
 });
 test('cross-scope static duplicate named; enabled startup records correct quality arguments', async (t) => {
   const s = await scope(t);
@@ -143,4 +243,18 @@ test('rollback warnings retain short reasons and fit the line budget', async (t)
   assert.match(output, /follow rate below threshold/);
   assert.match(output, /\+\d+ more/);
   assert.ok(output.split('\n')[0].length <= 400);
+});
+
+test('startup reads both notification directories, deduplicated, even after the last rule was restored', async (t) => {
+  const s = await scope(t);
+  const hookData = join(s.root, 'inline-data');
+  const timerData = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  await mkdir(join(hookData, 'quality'), { recursive: true });
+  await mkdir(timerData, { recursive: true });
+  const row = { scope: 'user', rule: 'sample.md', at: '2020-01-01T00:00:00.000Z', reason: 'no observed load or serve within 0h of migration' };
+  for (const data of [join(hookData, 'quality'), timerData]) await writeFile(join(data, 'revert-notifications.jsonl'), JSON.stringify(row) + '\n');
+  const run = start(s, { CLAUDE_PLUGIN_OPTION_ENABLED: 'true', CLAUDE_PLUGIN_DATA: hookData, CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /1 recorded revert notification\(s\); latest user sample.md/, 'a restored last rule must not hide the timer notification');
+  assert.match(run.stdout, /no observed load or serve/);
 });

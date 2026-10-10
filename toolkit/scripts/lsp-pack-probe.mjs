@@ -15,6 +15,7 @@ import {
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { planJdtlsLaunch } from '../../plugin/bin/lib/host/jdtls-java.mjs'
 import { planTsLaunch } from '../../plugin/bin/lib/host/ts-language-server.mjs'
 
@@ -460,7 +461,7 @@ async function probeNavigation(pack, capability, { repoRoot, originalPath, serve
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isInvokedDirectly(import.meta.url)) {
   let parsed
   try {
     parsed = parseProbeArguments(process.argv.slice(2))

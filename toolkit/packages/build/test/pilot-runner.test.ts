@@ -1101,7 +1101,7 @@ describe('SDK pilot runner', () => {
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: plan task T1][location: plan.md:1] tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
     const continuations: string[] = []
     type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
-    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 task. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- none: every term has one reading\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 task. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: runner fixture; unit tests and lint.\nSeams: none: unchanged fixture boundaries.\n## State and recovery\nN/A: no state or data boundary touched by this fixture.\n## Card terms: reading chosen\n- none: every term has one reading\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
     let calls = 0
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => calls++ === 0 ? (async function* () {
       const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
@@ -1154,7 +1154,7 @@ describe('SDK pilot runner', () => {
     const mailbox = join(f.root, 'pilot-mailbox.txt')
     const launcher = f.launcher
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] reading '+round+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
-    const plan = `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- cycle's documents: documents present at the bound\n## Acceptance\n- ${term}\n  Proof: task T1\n`
+    const plan = `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: runner fixture; unit tests and lint.\nSeams: none: unchanged fixture boundaries.\n## State and recovery\nN/A: no state or data boundary touched by this fixture.\n## Card terms: reading chosen\n- cycle's documents: documents present at the bound\n## Acceptance\n- ${term}\n  Proof: task T1\n`
     // One session per phase: each script does its phase's work, ends its turn, and is handed off.
     const phaseStep = (work: (tools: Tools) => Promise<void>): Script => async function* (session) { await work(session.tools); yield* turnEnd(`m${session.index}`); await session.prompt.next() }
     const planStep = (round: number) => phaseStep(async (tools) => { await tools.write_artifact!({ kind: 'plan', content: plan }); await tools.transition!({ phase: 'plan', tool_use_id: `plan-${round}` }) })
@@ -2039,7 +2039,7 @@ describe('SDK pilot runner', () => {
   it('carries the partial-run instruction and every resolved binding decision into the report session\'s opener', async () => {
     const f = phaseFixture('Route: FULL\n## Definition of done\n- exercise partial completion\n')
     writeFileSync(f.launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: plan task T1][location: plan.md:1] tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
-    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 task. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- none: every term has one reading\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 task. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: runner fixture; unit tests and lint.\nSeams: none: unchanged fixture boundaries.\n## State and recovery\nN/A: no state or data boundary touched by this fixture.\n## Card terms: reading chosen\n- none: every term has one reading\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
     const reason = 'plan not approved after 3 critic rounds'
     const { query, seen } = sessions([
       async function* (session) {
@@ -2243,5 +2243,24 @@ describe('SDK pilot runner', () => {
     // An initialized stream's own error is rethrown, as before phase sessions; no second session opens.
     await expect(runSessions(f, query)).rejects.toThrow('socket hang up')
     expect(seen).toHaveLength(1)
+  })
+})
+
+describe('SDK pilot runner: plan shape in the first prompt', () => {
+  const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
+
+  it.each([
+    ['FULL', true],
+    ['LITE', false],
+  ])('states the plan shape in the first prompt only on a %s route that plans', async (route, expected) => {
+    const f = fixture(); writeFileSync(f.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    const prompts: string[] = []
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield initMessage()
+      prompts.push((await prompt.next()).value.message.content)
+    })()
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    expect(prompts).toHaveLength(1)
+    expect((prompts[0] ?? '').includes(PLAN_SHAPE_DESCRIPTION)).toBe(expected)
   })
 })

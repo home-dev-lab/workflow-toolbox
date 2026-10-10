@@ -9,7 +9,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { splitFrontmatter } from './frontmatter.mjs'
 import { independentBrief, prospectivePatch, snapshotPatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
-import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
+import { acceptanceSection, planShapeProblem, planTaskIds, planTasks, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport, artefactIdentitiesAtStart } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
@@ -309,10 +309,9 @@ function tasksBlock(content) {
   return /(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? null
 }
 function validFindingAnchors(dodBullets, planContent) {
-  const planDodCount = [...(tasksBlock(planContent ?? '') ?? '').matchAll(/\bDoD:\s*\S/gi)].length
-  const criterionCount = dodBullets?.length ?? planDodCount
+  const criterionCount = dodBullets?.length ?? planTasks(planContent ?? '').length
   const anchors = Array.from({ length: criterionCount }, (_unused, index) => `DoD ${index + 1}`)
-  for (const match of (tasksBlock(planContent ?? '') ?? '').matchAll(/^\s*-\s+([A-Za-z]+\d+)\b/gm)) anchors.push(`plan task ${match[1]}`)
+  for (const id of planTaskIds(planContent ?? '')) anchors.push(`plan task ${id}`)
   return anchors
 }
 function findingPolicyOptions(phase, state, dodBullets, laneDir, readRegularFile) {
@@ -320,6 +319,12 @@ function findingPolicyOptions(phase, state, dodBullets, laneDir, readRegularFile
   return {
     validAnchors: validFindingAnchors(dodBullets, readRegularFile(path.join(laneDir, 'plan.md'))),
     priorFindingCount: priorRounds.reduce((total, round) => total + round.findings.length, 0),
+  }
+}
+function briefAnchorOptions(dodBullets, laneDir, readRegularFile) {
+  return {
+    validAnchors: validFindingAnchors(dodBullets, readRegularFile(path.join(laneDir, 'plan.md'))),
+    planDodFallback: dodBullets == null,
   }
 }
 function refusal(edge, missing, file) {
@@ -822,7 +827,7 @@ export function createLifecycleStateMachine({
       : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
     const priorRounds = phase === 'critic' ? state.priorCriticRounds : state.priorReviewReports
     const briefBase = phase === 'review' && state.priorReviewReports.length > 0 && state.reviewBase ? state.reviewBase : constructionBase
-    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine, bindingDecisions: phase === 'critic' ? bindingDecisionsSection(state.dodDisputes) : '' }
+    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine, bindingDecisions: phase === 'critic' ? bindingDecisionsSection(state.dodDisputes) : '', ...briefAnchorOptions(dodBullets, laneDir, readRegularFile) }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -909,8 +914,8 @@ export function createLifecycleStateMachine({
       const plan = path.join(laneDir, 'plan.md')
       if (state.dodDisputes.some((dispute) => !dispute.resolution)) return refusal('plan->critic', 'bound DoD decision before revising the plan', plan)
       const planContent = readRegularFile(plan)
-      if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
-        return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
+      const shapeProblem = planShapeProblem(planContent ?? '', dodBullets !== undefined)
+      if (shapeProblem) return refusal('plan->critic', `valid plan artifact: ${shapeProblem} A valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
       const deferredProblem = deferredOutcomeProblem(planContent, timeline.routed_cards)
       if (deferredProblem) return refusal('plan->critic', deferredProblem, plan)
       if (dodBullets !== undefined) {
@@ -948,7 +953,7 @@ export function createLifecycleStateMachine({
       const effectiveFindingDetails = verdict.findingDetails.filter((_finding, index) => {
         const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(verdict.findings[index])?.[1]
         if (id && repeatedContests.has(id)) return false
-        criticFindingAfterNoReblock(verdict.findingDetails[index], state, dodBullets, dodDecisions.log)
+        criticFindingAfterNoReblock(verdict.findingDetails[index], state, dodBullets, dodDecisions.log, readRegularFile(path.join(laneDir, 'plan.md')))
         return true
       })
       if (repeatedContests.size > 0 && !/(?:^|\s)(?:\.?\.?[/\\])?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)*:\d+(?:-\d+)?\b/.test(laneBriefContexts.get('critic') ?? '')) {

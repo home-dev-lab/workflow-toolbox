@@ -278,9 +278,14 @@ export function parseTailscaleServeUrl(served, dnsName, port) {
       const mounted = new URL(mapping[1], `${endpoint}/`)
       if (mounted.origin !== endpoint || mounted.search || mounted.hash || mounted.pathname.split('/').includes('..')) continue
       candidates.add(mounted.pathname === '/' ? endpoint : `${endpoint}${mounted.pathname.replace(/\/$/, '')}`)
-    } catch {}
+    } catch { /* an unparsable mapping is not a candidate */ }
   }
   return candidates.size === 1 ? [...candidates][0] : null
+}
+
+function noRemoteUrlReason(discovery) {
+  const reason = discovery.tailnetDetection?.reason
+  return typeof reason === 'string' && reason ? `artifact server has no remote URL: ${reason}` : 'artifact server has no remote URL'
 }
 
 export function artifactUrlResult(absPath, options = {}) {
@@ -302,85 +307,230 @@ export function artifactUrlResult(absPath, options = {}) {
   const relative = path.relative(root.real, candidate)
   const encoded = relative === '' ? '' : `/${relative.split(path.sep).map(encodeURIComponent).join('/')}`
   const base = options.remote ? discovery.remoteUrl : discovery.baseUrl
-  if (!base) return { url: null, reason: 'artifact server has no remote URL' }
-  return { url: `${base}/${encodeURIComponent(root.name)}${encoded}`, reason: null }
+  if (!base) return { url: null, reason: noRemoteUrlReason(discovery) }
+  return { url: `${base}/${encodeURIComponent(root.name)}${encoded}`, reason: null, via: discovery.tailnetVia }
 }
 
 export function artifactUrl(absPath, options = {}) {
   return artifactUrlResult(absPath, options).url
 }
 
-export function detectTailscale(port) {
-  const commandTimeoutMs = 5_000
-  const run = (command, args) => execFileSync(command, args, {
-    encoding: 'utf8', timeout: commandTimeoutMs, stdio: ['ignore', 'pipe', 'ignore'],
-  })
-  const failureReason = (error, elapsedMs) => {
-    const timeout = error?.code === 'ETIMEDOUT' || error?.killed === true ? String(commandTimeoutMs) + 'ms' : 'no'
-    const fields = [
-      `exit=${Number.isInteger(error?.status) ? error.status : 'none'}`,
-      `signal=${error?.signal ?? 'none'}`,
-      `code=${error?.code ?? 'none'}`,
-      `timeout=${timeout}`,
-    ]
-    return `configured tailscale binary failed after ${elapsedMs} ms: ${fields.join(', ')}`
-  }
-  // Tests and managed launchers can pin the binary instead of relying on PATH discovery.
-  const configuredCommand = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY
-  let command = configuredCommand || 'tailscale'
-  let ipOutput
+const TAILSCALE_COMMAND_TIMEOUT_MS = 5_000
+const UNAVAILABLE_TAILNET = Object.freeze({ ip: null, dnsName: null, remoteUrl: null })
+
+function runTailscaleCommand(command, args, timeout = TAILSCALE_COMMAND_TIMEOUT_MS) {
+  return execFileSync(command, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] })
+}
+
+function tailscaleFailureReason(error, elapsedMs) {
+  const { status, signal, code, killed } = error ?? {}
+  const timeout = code === 'ETIMEDOUT' || killed === true ? `${TAILSCALE_COMMAND_TIMEOUT_MS}ms` : 'no'
+  const exit = Number.isInteger(status) ? status : 'none'
+  return `configured tailscale binary failed after ${elapsedMs} ms: exit=${exit}, signal=${signal ?? 'none'}, code=${code ?? 'none'}, timeout=${timeout}`
+}
+
+function commandErrorCode(error) {
+  return error?.code ?? `exit ${error?.status ?? 'none'}`
+}
+
+// Off win32, a Windows executable (`.exe`) runs on the Windows side through interop, wherever it was found:
+// the configured binary, PATH, or PowerShell. A wrapper script that delegates to Windows cannot be told apart.
+function tailscaleVia(command, platform) {
+  return platform !== 'win32' && /\.exe$/i.test(command) ? 'windows-interop' : 'native'
+}
+
+function resolveWindowsTailscale(run, platform) {
+  const windowsPath = run('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command',
+    '(Get-Command tailscale.exe -ErrorAction SilentlyContinue).Source',
+  ]).trim()
+  if (!windowsPath) throw new Error('PowerShell did not resolve tailscale.exe')
+  if (platform === 'win32') return { command: windowsPath, via: 'native' }
+  const command = run('wslpath', ['-u', windowsPath]).trim()
+  if (!command) throw new Error('wslpath did not resolve the Windows executable')
+  return { command, via: 'windows-interop' }
+}
+
+// The one place that decides how this host reaches tailscale: the configured binary or `tailscale` on PATH,
+// else the Windows executable found through PowerShell. From WSL a Windows executable runs on the Windows side
+// (`windows-interop`): its tailnet address and serve routes belong to Windows, not to WSL.
+function resolveTailscale(run = runTailscaleCommand) {
+  const platform = process.platform
+  const configured = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY
   const startedAt = Date.now()
-  let initialError = null
   try {
-    ipOutput = run(command, ['ip', '-4'])
+    const command = configured || 'tailscale'
+    return { command, via: tailscaleVia(command, platform), ipOutput: run(command, ['ip', '-4']) }
   } catch (error) {
-    initialError = error
-  }
-  if (initialError) {
-    if (configuredCommand) return {
-      ip: null, dnsName: null, remoteUrl: null,
-      detection: { status: 'unavailable', reason: failureReason(initialError, Date.now() - startedAt) },
-    }
-    try {
-      const windowsPath = run('powershell.exe', [
-        '-NoProfile', '-NonInteractive', '-Command',
-        '(Get-Command tailscale.exe -ErrorAction SilentlyContinue).Source',
-      ]).trim()
-      if (!windowsPath) throw new Error('PowerShell did not resolve tailscale.exe')
-      command = process.platform === 'win32' ? windowsPath : run('wslpath', ['-u', windowsPath]).trim()
-      if (!command) throw new Error('wslpath did not resolve the Windows executable')
-      ipOutput = run(command, ['ip', '-4'])
-    } catch {
-      return {
-        ip: null, dnsName: null, remoteUrl: null,
-        detection: { status: 'unavailable', reason: 'could not run tailscale or resolve it through Windows interop' },
-      }
-    }
+    if (configured) return { failure: tailscaleFailureReason(error, Date.now() - startedAt) }
   }
   try {
-    const ip = ipOutput.trim().split(/\s+/)[0]
-    if (!ip) return {
-      ip: null, dnsName: null, remoteUrl: null,
-      detection: { status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' },
-    }
-    let dnsName = null
-    try {
-      const status = JSON.parse(run(command, ['status', '--json']))
-      dnsName = typeof status?.Self?.DNSName === 'string' ? status.Self.DNSName.replace(/\.$/, '') : null
-    } catch {}
-    let httpsUrl = null
-    try {
-      httpsUrl = parseTailscaleServeUrl(run(command, ['serve', 'status']), dnsName, port)
-    } catch {}
-    return {
-      ip, dnsName, remoteUrl: httpsUrl ?? `http://${ip}:${port}`,
-      detection: { status: 'available', reason: null },
-    }
+    const { command, via } = resolveWindowsTailscale(run, platform)
+    return { command, via, ipOutput: run(command, ['ip', '-4']) }
   } catch {
-    return {
-      ip: null, dnsName: null, remoteUrl: null,
-      detection: { status: 'unavailable', reason: 'tailscale returned an unreadable IPv4 result' },
-    }
+    return { failure: 'could not run tailscale or resolve it through Windows interop' }
+  }
+}
+
+// A WSL listener on the Windows tailnet address is not reached by tailnet peers: only a serve route on the
+// Windows side forwards to it. So under Windows interop the http form is never offered. A route is called
+// missing only when `serve status` was read; an unreadable status offers no URL and no route advice.
+export function chooseRemoteUrl({ httpsUrl, readError = null, ip, port, via }) {
+  if (httpsUrl) return { remoteUrl: httpsUrl, status: 'available', reason: null }
+  if (via !== 'windows-interop') return { remoteUrl: `http://${ip}:${port}`, status: 'available', reason: null }
+  if (readError) return { remoteUrl: null, status: 'unavailable', reason: `could not read ${readError}; no URL offered` }
+  return {
+    remoteUrl: null,
+    status: 'no-serve-route',
+    reason: `tailscale runs on Windows and has no serve route to this server; tailnet peers do not reach the WSL listener on ${ip}:${port} ` +
+      `without a Windows-side forward. Create the route: tailscale serve --bg --set-path /artifacts http://127.0.0.1:${port}, ` +
+      'then restart the artifact server (wt-artifact-server restart --force)',
+  }
+}
+
+function readTailscaleOutput(command, run, args) {
+  try {
+    return { output: run(command, args) }
+  } catch (error) {
+    return { error: `tailscale ${args.join(' ')} (${commandErrorCode(error)})` }
+  }
+}
+
+function readTailscaleDnsName(command, run) {
+  const read = readTailscaleOutput(command, run, ['status', '--json'])
+  if (read.error) return { dnsName: null, error: read.error }
+  try {
+    const name = JSON.parse(read.output)?.Self?.DNSName
+    return typeof name === 'string' ? { dnsName: name.replace(/\.$/, ''), error: null } : { dnsName: null, error: 'tailscale status --json (no DNS name)' }
+  } catch {
+    return { dnsName: null, error: 'tailscale status --json (unparsable output)' }
+  }
+}
+
+function readTailscaleServeRoute(command, run, dns, port) {
+  if (dns.error) return { httpsUrl: null, readError: dns.error }
+  const read = readTailscaleOutput(command, run, ['serve', 'status'])
+  if (read.error) return { httpsUrl: null, readError: read.error }
+  return { httpsUrl: parseTailscaleServeUrl(read.output, dns.dnsName, port), readError: null }
+}
+
+function detectionFromAddress({ command, via, ipOutput }, port, run) {
+  if (typeof ipOutput !== 'string') {
+    return { ...UNAVAILABLE_TAILNET, via, detection: { status: 'unavailable', reason: 'tailscale returned an unreadable IPv4 result' } }
+  }
+  const ip = ipOutput.trim().split(/\s+/)[0]
+  if (!ip) return { ...UNAVAILABLE_TAILNET, via, detection: { status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' } }
+  const dns = readTailscaleDnsName(command, run)
+  const choice = chooseRemoteUrl({ ...readTailscaleServeRoute(command, run, dns, port), ip, port, via })
+  return { ip, dnsName: dns.dnsName, remoteUrl: choice.remoteUrl, via, detection: { status: choice.status, reason: choice.reason } }
+}
+
+export function detectTailscale(port, run = runTailscaleCommand) {
+  const resolved = resolveTailscale(run)
+  if (resolved.failure) return { ...UNAVAILABLE_TAILNET, via: null, detection: { status: 'unavailable', reason: resolved.failure } }
+  return detectionFromAddress(resolved, port, run)
+}
+
+// The tailnet-address listener only matters for the `http://<ip>:<port>` form; an https serve route proxies to
+// the loopback listener, so failing to bind the tailnet address never removes it.
+export async function listenArtifactTailnet(listen, tailscale, port) {
+  if (!tailscale.ip || tailscale.ip === '127.0.0.1') return
+  try {
+    await listen(tailscale.ip)
+  } catch (error) {
+    if (tailscale.remoteUrl !== `http://${tailscale.ip}:${port}`) return
+    tailscale.remoteUrl = null
+    tailscale.detection = { status: 'unavailable', reason: `could not listen on the tailnet address ${tailscale.ip}:${port} (${error?.code ?? 'error'})` }
+  }
+}
+
+export const ARTIFACT_CHECK_EXIT_CODES = Object.freeze({ reachable: 0, unreachable: 4, unverified: 5 })
+const CHECK_HTTP_TIMEOUT_S = 8
+const CHECK_PROCESS_TIMEOUT_MS = 10_000
+
+function httpVerdict(status, from) {
+  return status >= 200 && status < 400
+    ? { verdict: 'reachable', status, from }
+    : { verdict: 'unreachable', reason: `HTTP ${status}`, from }
+}
+
+function fetchErrorReason(error) {
+  if (error?.name === 'TimeoutError') return `no answer within ${CHECK_HTTP_TIMEOUT_S} s`
+  const cause = error?.cause ?? {}
+  return cause.code ?? cause.message ?? error?.message ?? 'request failed'
+}
+
+async function fetchInProcess(url, from) {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(CHECK_HTTP_TIMEOUT_S * 1_000) })
+    await response.body?.cancel()
+    return httpVerdict(response.status, from)
+  } catch (error) {
+    return { verdict: 'unreachable', reason: fetchErrorReason(error), from }
+  }
+}
+
+// The URL is a single-quoted PowerShell literal: inside one, only a quote character (ASCII or typographic, which
+// PowerShell also treats as a quote) is special, and doubling it is the language's own escape.
+export function windowsCheckScript(url, timeoutS = CHECK_HTTP_TIMEOUT_S) {
+  const literal = `'${String(url).replace(/['‘’‚‛]/g, '$&$&')}'`
+  return [
+    "$ProgressPreference = 'SilentlyContinue'",
+    `try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec ${timeoutS} -Uri ${literal}; 'STATUS=' + [int]$r.StatusCode } ` +
+      "catch { $s = $_.Exception.Response.StatusCode; if ($s) { 'STATUS=' + [int]$s } else { 'ERROR=' + $_.Exception.Message } }",
+  ].join('\n')
+}
+
+export function parseWindowsCheck(output) {
+  const status = /^STATUS=(\d+)\s*$/m.exec(output)
+  if (status) return httpVerdict(Number(status[1]), 'windows')
+  const failure = /^ERROR=(.*)$/m.exec(output)
+  if (failure) return { verdict: 'unreachable', reason: failure[1].trim() || 'request failed', from: 'windows' }
+  return { verdict: 'unverified', reason: 'powershell.exe printed no check result' }
+}
+
+function fetchThroughWindows(url, run) {
+  let output
+  try {
+    output = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', windowsCheckScript(url)], CHECK_PROCESS_TIMEOUT_MS)
+  } catch (error) {
+    return { verdict: 'unverified', reason: `powershell.exe did not complete the check (${commandErrorCode(error)})` }
+  }
+  return parseWindowsCheck(output)
+}
+
+const RECORDED_VIAS = new Set(['native', 'windows-interop'])
+
+// Fetch the URL from the side tailscale runs on: a WSL-side request answers a different question than a peer's.
+// The side the server recorded when it detected its URL wins; only an older state without it is re-resolved.
+export async function checkArtifactUrl(url, options = {}) {
+  if (!options.remote) return fetchInProcess(url, 'local')
+  const run = options.run ?? runTailscaleCommand
+  let via = RECORDED_VIAS.has(options.via) ? options.via : null
+  if (via === null) {
+    const resolved = resolveTailscale(run)
+    if (resolved.failure) return { verdict: 'unverified', reason: `could not determine where tailscale runs: ${resolved.failure}` }
+    via = resolved.via
+  }
+  return via === 'windows-interop' ? fetchThroughWindows(url, run) : fetchInProcess(url, 'native')
+}
+
+export function formatArtifactCheck(result) {
+  if (result.verdict === 'reachable') return `check: reachable (HTTP ${result.status}, from ${result.from})`
+  if (result.verdict === 'unreachable') return `check: unreachable (${result.reason}, from ${result.from})`
+  return `check: unverified (${result.reason})`
+}
+
+// Keep loopback startup failure separate from the optional tailnet listener.
+export async function listenArtifactLoopback(listen, port) {
+  try {
+    await listen('127.0.0.1')
+    return true
+  } catch (error) {
+    if (error?.code !== 'EADDRINUSE') throw error
+    process.stderr.write(`wt-artifact-server: port ${port} is already in use (EADDRINUSE)\n`)
+    process.exitCode = 1
+    return false
   }
 }
 

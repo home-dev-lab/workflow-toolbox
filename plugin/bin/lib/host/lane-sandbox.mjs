@@ -11,6 +11,7 @@ import { parseJsonc } from './jsonc.mjs'
 import { processStartTime } from './pid-namespace.mjs'
 import { sandboxExtraPaths } from './sandbox-extra-paths.mjs'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
+import { isWindowsDriveMount } from './windows-drive-mount.mjs'
 
 // External lanes (opencode, codex) run as the owner with a shell. The environment allow-list keeps
 // secrets out of their ENVIRONMENT; this sandbox keeps them out of their FILESYSTEM, process table
@@ -87,7 +88,9 @@ export function trustedSystemExecutable(name, searchPath) {
 
 export class LaneSandboxRefusal extends Error {}
 
-const realFs = {
+/** @knipTestSeam Computed import in lane-sandbox.test.ts. */
+export const realFs = {
+  isWindowsDriveMount,
   identity: (file) => { const info = statSync(file); return `${info.dev}:${info.ino}` },
   exists: (file) => existsSync(file),
   realpath: (file) => { try { return realpathSync.native(file) } catch { return null } },
@@ -116,11 +119,11 @@ function probeBwrap(bwrap) {
   return probeCache.get(bwrap)
 }
 
-function findOnPath(name, searchPath, fs) {
+function findOnPath(name, searchPath, fs, accept = () => true) {
   for (const directory of String(searchPath ?? '').split(path.delimiter)) {
     if (!path.isAbsolute(directory)) continue
     const candidate = path.join(directory, name)
-    if (fs.isFile(candidate) && (fs.isExecutable?.(candidate) ?? true)) return candidate
+    if (fs.isFile(candidate) && (fs.isExecutable?.(candidate) ?? true) && accept(candidate)) return candidate
   }
   return null
 }
@@ -380,8 +383,18 @@ export function suiteLockCli(fs = realFs) {
 
 function toolchainPaths({ env, execPath, fs }) {
   const nodeReal = fs.realpath(execPath) ?? execPath
-  const executables = ['node', 'pnpm', 'npm', 'git'].map((name) => findOnPath(name, env.PATH, fs))
+  // On a WSL host the Windows shim ran in the base sandbox but failed with MODULE_NOT_FOUND
+  // for its corepack script under the drive mount. Binding it only bought a multi-second
+  // socket scan of the 9P drive per spawn. Classify the real directory that would be bound.
+  const skipped = []
+  const executables = ['node', 'pnpm', 'npm', 'git'].map((name) => findOnPath(name, env.PATH, fs, (candidate) => {
+    const target = fs.realpath(candidate) ?? candidate
+    if (!fs.isWindowsDriveMount?.(path.dirname(target))) return true
+    skipped.push(`${name} (${candidate})`)
+    return false
+  }))
   return {
+    skipNote: skipped.length ? `; skipped Windows-drive toolchain: ${skipped.join(', ')}` : '',
     executableMounts: [
       { directory: path.dirname(path.dirname(nodeReal)), fallback: ['bin', 'lib'].map((sub) => path.join(path.dirname(path.dirname(nodeReal)), sub)), executable: execPath },
       ...executables.flatMap((invoked) => executableMount(invoked, fs)),
@@ -523,6 +536,7 @@ function unsandboxed(reason) {
 
 const REQUEST_PATH_PROBE = `const fs=require('node:fs');let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>data+=s);process.stdin.on('end',()=>{const answer={};for(const p of JSON.parse(data)){try{const info=fs.statSync(p);fs.accessSync(p,fs.constants.R_OK|(info.isDirectory()?fs.constants.X_OK:0));answer[p]=info.dev+':'+info.ino}catch{answer[p]=null}}process.stdout.write(JSON.stringify(answer))})`
 
+/** @knipTestSeam Computed import in lane-sandbox.test.ts. */
 export function probeRequestPaths(paths, { wrap, execPath, env }) {
   const [command, args] = wrap(execPath, ['-e', REQUEST_PATH_PROBE])
   const result = spawnSync(command, args, { env, input: JSON.stringify(paths), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000 })
@@ -1066,7 +1080,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
    const registryNote = registry.present ? '' : '; registered lane worktree index absent (registered-root clause skipped)'
   // Both the writable AND the readable sets are recorded: a secret leak would come from a readable
   // bind, so a reader can audit exactly what was exposed (LOW 2).
-   const line = `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote}${callerNote})`
+   const line = `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; masked ${masks.length / 3} unix sockets${toolchain.skipNote}; ${netNote}${registryNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote}${callerNote})`
 
   // Write the CLI's refreshed credential back to the shared home only if it actually changed inside
   // the per-run home; the shared file stayed read-only during the run (H3). Lives here (host

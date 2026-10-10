@@ -197,7 +197,7 @@ function requiredLiterals(node) {
     return requiredLiterals(node.body);
   if (node.type === 'alt') {
     const branches = node.branches.map(requiredLiterals);
-    return branches.every((row) => row.length) && branches.flat().length <= 16 ? branches.flat() : [];
+    return branches.every((row) => row.length) && branches.flat().length <= 64 ? branches.flat() : [];
   }
   if (node.type === 'seq') {
     let best = [], run = '';
@@ -278,19 +278,39 @@ function compile(tree, programs, reversed = false) {
 
 const terminal = (c) => c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029';
 
-function context(subject, flags, programs) {
+// Test seam: counts the native atom RegExp objects ever built.
+export const costCounters = { atomRows: 0 };
+// Atom rows and the last split subject outlive one call: the same subject is scanned by many patterns in a row.
+// Rows are keyed by native flags, then atom; chars and offsets are read-only after creation.
+const atomRowsByFlags = new Map();
+let lastSplit = { subject: null, chars: [], offsets: [0] };
+function atomRows(flags) {
+  let rows = atomRowsByFlags.get(flags);
+  if (!rows) { rows = new Map(); atomRowsByFlags.set(flags, rows); }
+  return rows;
+}
+
+function splitSubject(subject) {
   // Keep every UTF-16 boundary: V8 evaluates zero-width assertions even
   // between surrogate halves. Consuming atoms can still span a full pair.
-  const chars = subject.split('');
-  const offsets = new Array(chars.length + 1);
-  let offset = 0;
-  for (let j = 0; j < chars.length; j++) { offsets[j] = offset; offset += chars[j].length; }
-  offsets[chars.length] = offset;
-  const atoms = new Map();
+  if (lastSplit.subject !== subject) {
+    const split = subject.split('');
+    const at = new Array(split.length + 1);
+    let offset = 0;
+    for (let j = 0; j < split.length; j++) { at[j] = offset; offset += split[j].length; }
+    at[split.length] = offset;
+    lastSplit = { subject, chars: split, offsets: at };
+  }
+  return lastSplit;
+}
+
+function context(subject, flags, programs) {
+  const { chars, offsets } = splitSubject(subject);
   const nativeFlags = flags.replace(/[gy]/g, '');
+  const atoms = atomRows(nativeFlags);
   const atom = (value, char) => {
     let row = atoms.get(value);
-    if (!row) { row = { regex: new RegExp(`^(?:${value})$`, nativeFlags), cache: new Map() }; atoms.set(value, row); }
+    if (!row) { costCounters.atomRows++; row = { regex: new RegExp(`^(?:${value})$`, nativeFlags), cache: new Map() }; atoms.set(value, row); }
     if (!row.cache.has(char)) {
       const result = row.regex.test(char);
       if (row.cache.size < 512) row.cache.set(char, result);
@@ -458,8 +478,7 @@ function prepare(ctx, programs, budget) {
   return ctx;
 }
 
-export function linearRegex(source, flags = '', { capture = false } = {}) {
-  source = String(source);
+function validatePattern(source, flags, capture) {
   if (source.length > SOURCE_LIMIT) throw new Error('pattern length exceeds budget');
   if (flags.includes('v')) throw new Error('unsupported v-flag grammar');
   if (!/^(?!.*(.).*\1)[gimsuy]*$/.test(flags)) throw new Error('unsupported or repeated regex flag');
@@ -467,82 +486,121 @@ export function linearRegex(source, flags = '', { capture = false } = {}) {
   // Syntax validation compiles only; the resulting native object never sees a subject.
   const validatedSource = new RegExp(source, flags).source;
   if (validatedSource.length > SOURCE_LIMIT * 2) throw new Error('normalized source exceeds budget');
+}
+
+export function linearRegex(source, flags = '', { capture = false } = {}) {
+  source = String(source);
+  validatePattern(source, flags, capture);
   const tree = parse(source, flags, capture);
   if (capture) checkNullableCaptureRepeat(tree);
   size(tree);
   const candidates = requiredLiterals(tree);
-  const literals = !flags.includes('i') && candidates.length && candidates.every((value) => value.length >= 2) ? candidates : [];
+  // Case-insensitive patterns keep their literals lower-cased and compare against the lower-cased subject. Without u,
+  // ECMAScript Canonicalize never maps a non-ASCII character to an ASCII one, and the literals are ASCII only. With u,
+  // simple case folding maps U+017F (long s) to s, which lower-casing does not reproduce: such a subject goes to the VM.
+  // U+212A (Kelvin sign) needs no guard: it lower-cases to k itself.
+  const folded = flags.includes('i');
+  const unicodeFold = folded && flags.includes('u');
+  const literals = candidates.length && candidates.every((value) => value.length >= 2) ? (folded ? candidates.map((value) => value.toLowerCase()) : candidates) : [];
   const programs = [];
   const main = compile(tree, programs);
-  let lastIndex = 0;
+  return createMatcher({ source, flags, capture, programs, main, folded, unicodeFold, literals, lastIndex: 0 });
+}
+
+function createMatcher(state) {
+  const { source, flags, capture } = state;
+  const execute = execution(state);
   const matcher = {
     source, flags,
-    get lastIndex() { return lastIndex; },
-    set lastIndex(value) { lastIndex = value; },
+    get lastIndex() { return state.lastIndex; },
+    set lastIndex(value) { state.lastIndex = value; },
     test(subject, budget) { return execute(subject, flags.includes('g') || flags.includes('y'), budget) !== null; },
     exec(subject) { requireCapture('exec'); return execute(subject, true); },
-    matchAll(subject) { requireCapture('matchAll'); return iterate(subject); },
+    matchAll(subject) { requireCapture('matchAll'); return iterate(subject, state); },
     steps: 0,
     run(subject, withCaptures) { requireCapture('run'); return execute(subject, withCaptures); },
   };
   function requireCapture(operation) {
     if (!capture) throw new Error(`${operation} requires capture mode; compile with { capture: true }`);
   }
-  function* iterate(subject) {
-    matcher.steps = 0;
-    const text = String(subject);
-    const ctx = context(text, flags, programs);
-    try {
-      prepare(ctx, programs);
-      ctx.iterating = true;
-      const offsets = ctx.offsets;
-      const positions = new Uint32Array(text.length + 1);
-      for (let index = 0; index < ctx.chars.length; index++) {
-        for (let at = offsets[index]; at < offsets[index + 1]; at++) positions[at] = index;
+  state.matcher = matcher;
+  return matcher;
+}
+
+function* iterate(subject, state) {
+  const { matcher, flags, programs, main } = state;
+  matcher.steps = 0;
+  const text = String(subject);
+  const ctx = context(text, flags, programs);
+  try {
+    prepare(ctx, programs);
+    ctx.iterating = true;
+    const offsets = ctx.offsets;
+    const positions = new Uint32Array(text.length + 1);
+    for (let index = 0; index < ctx.chars.length; index++) {
+      for (let at = offsets[index]; at < offsets[index + 1]; at++) positions[at] = index;
+    }
+    positions[text.length] = ctx.chars.length;
+    let at = Math.max(0, Math.trunc(Number(state.lastIndex)) || 0);
+    const budget = Math.min(CAPTURE_STEP_LIMIT, 16 * (text.length + 1) * (main.code.length + programs.reduce((sum, program) => sum + program.code.length, 1)));
+    while (true) {
+      if (at > text.length) return;
+      const start = flags.includes('u') && at > 0 && /[\uDC00-\uDFFF]/.test(text[at] ?? '') && /[\uD800-\uDBFF]/.test(text[at - 1]) ? at - 1 : at;
+      const match = scan(main, ctx, positions[start], true, null, budget, flags.includes('y'));
+      if (match === null) return;
+      if (ctx.steps > budget) throw new Error('regex iteration work budget exceeded; verdict unresolved');
+      yield match;
+      at = match.index + match[0].length;
+      if (!match[0].length) {
+        at += flags.includes('u') && /[\uD800-\uDBFF]/.test(text[at] ?? '') && /[\uDC00-\uDFFF]/.test(text[at + 1] ?? '') ? 2 : 1;
       }
-      positions[text.length] = ctx.chars.length;
-      let at = Math.max(0, Math.trunc(Number(lastIndex)) || 0);
-      const budget = Math.min(CAPTURE_STEP_LIMIT, 16 * (text.length + 1) * (main.code.length + programs.reduce((sum, program) => sum + program.code.length, 1)));
-      while (true) {
-        if (at > text.length) return;
-        const start = flags.includes('u') && at > 0 && /[\uDC00-\uDFFF]/.test(text[at] ?? '') && /[\uD800-\uDBFF]/.test(text[at - 1]) ? at - 1 : at;
-        const match = scan(main, ctx, positions[start], true, null, budget, flags.includes('y'));
-        if (match === null) return;
-        if (ctx.steps > budget) throw new Error('regex iteration work budget exceeded; verdict unresolved');
-        yield match;
-        at = match.index + match[0].length;
-        if (!match[0].length) {
-          at += flags.includes('u') && /[\uD800-\uDBFF]/.test(text[at] ?? '') && /[\uDC00-\uDFFF]/.test(text[at + 1] ?? '') ? 2 : 1;
-        }
-      }
-    } finally { matcher.steps = ctx.steps; }
-  }
-  function execute(subject, withCaptures, budget) {
+    }
+  } finally { matcher.steps = ctx.steps; }
+}
+
+const initialIndex = (lastIndex) => Math.max(0, Math.trunc(Number(lastIndex)) || 0);
+const foldedSubject = (text, folded, unicodeFold) => !folded ? text : unicodeFold && /\u017F/.test(text) ? null : text.toLowerCase();
+const missingLiteral = (literals, haystack) => literals.length && haystack !== null && !literals.some((value) => haystack.includes(value));
+const nextIndex = (value) => value ? value.index + value[0].length : 0;
+
+function executionPosition(ctx, at, flags, text) {
+  const index = ctx.offsets.indexOf(at);
+  let start = index < 0 ? ctx.offsets.findIndex((offset) => offset > at) - 1 : index;
+  if (flags.includes('u') && start > 0 && /[\uDC00-\uDFFF]/.test(text[start] ?? '') && /[\uD800-\uDBFF]/.test(text[start - 1])) start--;
+  return start;
+}
+
+function executeScan(main, ctx, start, withCaptures, flags) {
+  if (start >= 0) return withCaptures ? scan(main, ctx, start, true, null, Infinity, flags.includes('y')) : scanTest(main, ctx, start);
+  return null;
+}
+
+function execution(state) {
+  const { flags, folded, unicodeFold, literals, programs, main } = state;
+  return function execute(subject, withCaptures, budget) {
+    const { matcher } = state;
     matcher.steps = 0;
     budget?.check();
     const text = String(subject);
     const stateful = flags.includes('g') || flags.includes('y');
-    const at = stateful ? Math.max(0, Math.trunc(Number(lastIndex)) || 0) : 0;
-    if (literals.length && !literals.some((value) => text.includes(value))) {
+    const at = stateful ? initialIndex(state.lastIndex) : 0;
+    const haystack = foldedSubject(text, folded, unicodeFold);
+    if (missingLiteral(literals, haystack)) {
       matcher.steps = 0;
-      if (stateful) lastIndex = 0;
+      if (stateful) state.lastIndex = 0;
       return null;
     }
     if (at > text.length) {
-      if (stateful) lastIndex = 0;
+      if (stateful) state.lastIndex = 0;
       return null;
     }
     const ctx = context(text, flags, programs);
     try {
       prepare(ctx, programs, budget);
-      const index = ctx.offsets.indexOf(at);
-      let start = index < 0 ? ctx.offsets.findIndex((offset) => offset > at) - 1 : index;
-      if (flags.includes('u') && start > 0 && /[\uDC00-\uDFFF]/.test(text[start] ?? '') && /[\uD800-\uDBFF]/.test(text[start - 1])) start--;
-      let value = null;
-      if (start >= 0) value = withCaptures ? scan(main, ctx, start, true, null, Infinity, flags.includes('y')) : scanTest(main, ctx, start);
-      if (stateful) lastIndex = value ? value.index + value[0].length : 0;
+      const start = executionPosition(ctx, at, flags, text);
+      const value = executeScan(main, ctx, start, withCaptures, flags);
+      if (stateful) state.lastIndex = nextIndex(value);
       return value === false ? null : value;
     } finally { matcher.steps = ctx.steps; }
-  }
-  return matcher;
+  };
 }

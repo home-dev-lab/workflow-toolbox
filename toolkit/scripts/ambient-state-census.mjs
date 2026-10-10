@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
@@ -42,6 +43,7 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const result = spawnSync('zsh', ['-c', '\"$WT_SUITE_LOCK_CMD\" \"$1\"', 'zsh', command], {", 'zsh regression fixture supplies its lock root, runner, and PATH stubs explicitly; inherited plugin-location state is not read'],
   ["packages/build/test/lsp-root.test.ts:short-negative-output-match:expect(output).not.toContain('//')", 'assertion is over generated fixture output, not ambient process output'],
   ["packages/build/test/merge-chain-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload and suite journal; no plugin-location lookup occurs'],
+  ["packages/build/test/commit-chain-lexer-property.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload, mode and isolated journal; no plugin-location lookup occurs'],
   ["packages/build/test/merge-target-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload and suite journal; no plugin-location lookup occurs'],
   ["packages/build/test/missing-package-script-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload and suite journal; no plugin-location lookup occurs'],
   ["packages/build/test/opencode-envelope-each-source.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [", 'zero-task case exits before opencode or plugin-state discovery'],
@@ -72,7 +74,6 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/stale-date-guard.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case invokes a controlled helper script and does not resolve plugin state'],
   ["packages/build/test/standing-authorizations.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [HOOK], {", 'case invokes a controlled helper script and does not resolve plugin state'],
   ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [CLI, ...args], {", 'case invokes the suite-lock helper with a temp lock root'],
-  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [CLI, ...args], {", 'case invokes an owned fixture command through the temp suite lock'],
   ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [RUNNER, ...args], {", 'case invokes the lane runner with a temp lock root'],
   ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {", 'lock-taken proof runs an owned sleep through the runner under a temp lock root'],
   ["packages/build/test/what-is-running.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [SELFTEST], {", 'case invokes a controlled process-inspection fixture and asserts only injected capabilities'],
@@ -219,7 +220,7 @@ export function formatFinding(finding) {
   return `${finding.file}:${finding.line} ${finding.signal}: ${finding.detail}${reason ? ` [allowed: ${reason}]` : ''}`
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkAmbientState()
   process.stdout.write(`${result.findings.map(formatFinding).join('\n')}${result.findings.length ? '\n' : ''}`)
   if (process.argv.includes('--check') && (result.unapproved.length || result.stale.length)) {

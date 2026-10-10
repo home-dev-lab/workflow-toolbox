@@ -45,6 +45,12 @@ import { homedir } from 'node:os';
 import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 import { agentHasNoMessagingTool, finalTextIsDeliveredByHarness } from './lib/subagent-delivery-shape.mjs';
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs';
+import { pilotCardIds } from './lib/pilot-card-ids.mjs';
+
+function ownershipFields(input) {
+  const cardIds = pilotCardIds(input?.prompt);
+  return cardIds.length ? { cardIds } : {};
+}
 
 const STATE_DIR = process.env.WT_OUTBOUND_GUARD_DIR
   || resolvePluginDataDir({ fallback: join(homedir(), '.local', 'state', 'wt-outbound-guard'), pluginName: pluginName() }).dir;
@@ -250,6 +256,7 @@ function main() {
         ? Object.keys(resp).sort().slice(0, 20) : undefined,
       name: explicitName,
       subagentType: payload?.tool_input?.subagent_type ?? null,
+      ...ownershipFields(payload.tool_input),
       model: payload?.tool_input?.model ?? null,
       // ⚠ NAMED `effortRequested`, never `effort`. The Agent tool exposes no `effort` parameter
       // today (checked: description, prompt, subagent_type, model, name, isolation, mode) — this

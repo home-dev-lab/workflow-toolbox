@@ -275,11 +275,14 @@ test('J6: archives that fail forever on a full store cost one act a small bounde
   const root = await sandbox(t, 'rod-j6-');
   const store = hostStore(atLimitStore((await hookFixture(root, hostStore())).identity));
   const set = store.api.set;
-  let sets = 0, writes = 0;
+  let sets = 0, writes = 0, neutralisations = 0;
   store.api.set = async (key, value) => { sets++; return set(key, value); };
   // The disk refuses every archive; past 300 attempts it gives in, so a feedback loop shows as a large count, not a hang.
   const fs = { ...realFs, write: async (path, text) => {
-    if (path.includes('archive')) { writes++; if (writes <= 300) throw new Error('disk full'); }
+    if (path.includes('archive')) {
+      if (!text) { neutralisations++; throw new Error('disk full'); }
+      writes++; if (writes <= 300) throw new Error('disk full');
+    }
     return realFs.write(path, text);
   } };
   const f = await hookFixture(root, store, { fs });
@@ -287,6 +290,7 @@ test('J6: archives that fail forever on a full store cost one act a small bounde
   let previous = -1;
   for (let round = 0; round < 50 && sets + writes !== previous; round++) { previous = sets + writes; await new Promise((resolve) => setTimeout(resolve, 100)); }
   assert.ok(sets <= 40 && writes <= 12, `one act: ${sets} store writes and ${writes} archive writes`);
+  assert.equal(neutralisations, writes, 'each refused archive attempt gets exactly one neutralising write');
 });
 
 // J7 -------------------------------------------------------------------------------------------------------------------

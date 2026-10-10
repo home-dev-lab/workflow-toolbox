@@ -159,7 +159,7 @@ describe('WT_GUARD_MODE=observe', () => {
     {
       hook: 'wt-merge-chain-guard-hook.mjs',
       make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git merge branch && pnpm test' } } }),
-      contains: 'WARNING (not blocked)',
+      contains: '',
     },
     {
       hook: 'wt-pipestatus-bash-only-guard-hook.mjs',
@@ -184,7 +184,7 @@ describe('WT_GUARD_MODE=observe', () => {
     {
       hook: 'wt-missing-package-script-guard-hook.mjs',
       make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: REPO_ROOT, tool_input: { command: 'pnpm definitely-missing-script' } } }),
-      contains: 'missing-script guard',
+      contains: '',
     },
     {
       hook: 'wt-pgrep-env-dump-guard-hook.mjs',
@@ -245,7 +245,8 @@ describe('WT_GUARD_MODE=observe', () => {
       expect(enforce.status).toBe(0)
       expect(enforce.entries).toHaveLength(1)
       expect(enforce.entries[0]).toMatchObject({ guard: hook, decision: 'warned', mode: 'enforce' })
-      expect(enforce.stdout).not.toBe('')
+      if (contains === '') expect(enforce.stdout).toBe('')
+      else expect(enforce.stdout).not.toBe('')
       if (contains) {
         expect(observe.stdout).not.toContain(contains)
         expect(observe.stderr).not.toContain(contains)

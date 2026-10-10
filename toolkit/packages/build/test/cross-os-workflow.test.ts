@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parse } from 'yaml'
 import { describe, expect, it } from 'vitest'
@@ -10,9 +11,11 @@ import { describe, expect, it } from 'vitest'
 
 const root = resolve(import.meta.dirname, '../../../..')
 const WORKFLOW = join(root, '.github/workflows/cross-os.yml')
+const DESCRIPTOR = 'toolkit/test-support/base-version-client.json'
+const baseClients = JSON.parse(readFileSync(join(root, DESCRIPTOR), 'utf8')) as { clients: Record<string, string> }
 
 type Entry = { os: string; shard?: number }
-type Step = { name?: string; if?: string; run?: string; uses?: string; with?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
+type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
   jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number; steps: Step[] } }
 }
@@ -176,6 +179,50 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
       expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(job['timeout-minutes'])
       expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(job['timeout-minutes'])
     }
+  })
+
+  it('fetches the base-version lock client on every entry before any suite step, since the checkout is shallow', () => {
+    const fetchIndex = steps.findIndex((step) => /git fetch\b/.test(step.run ?? '') && /base-version-client\.json/.test(step.run ?? ''))
+    expect(fetchIndex, 'a step fetches the commit named in test-support/base-version-client.json').toBeGreaterThanOrEqual(0)
+    const fetchStep = steps[fetchIndex] as Step
+    expect(fetchStep.if, 'the fetch runs on every entry').toBeUndefined()
+    expect(fetchStep['continue-on-error'], 'a failed fetch is a red, not a silent skip').toBeUndefined()
+    expect(fetchStep.shell, 'the $(...) substitution needs bash on every runner, Windows included').toBe('bash')
+    expect(baseClients, 'historical clients are named by role, with no legacy single commit').not.toHaveProperty('commit')
+    expect(Object.keys(baseClients.clients)).toEqual(expect.arrayContaining(['preLevels', 'preRelease']))
+    for (const commit of Object.values(baseClients.clients)) expect(commit, 'full historical commit id').toMatch(/^[0-9a-f]{40}$/)
+    // Execute the actual step with git replaced by an argv recorder: no network, but the descriptor reader and shell run normally.
+    const capture = `git() { node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1))+"\\n")' "$@"; }\n${fetchStep.run}`
+    const fetched = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', capture], { cwd: join(root, 'toolkit'), encoding: 'utf8' })
+    expect(fetched.status, fetched.stderr).toBe(0)
+    expect(fetched.stdout.trim().split('\n').map((line) => JSON.parse(line))).toEqual(
+      Object.values(baseClients.clients).map((commit) => ['fetch', '--no-tags', '--depth=1', 'origin', commit]),
+    )
+    for (const entry of entries) {
+      const suites = steps.map((step, index) => ({ step, index })).filter(({ step }) => runsOn(step, entry) && !isDiagnostic(step) && /pnpm test|test:shard/.test(step.run ?? ''))
+      expect(suites.length, `suite steps of ${entry.os} shard ${entry.shard}`).toBeGreaterThanOrEqual(1)
+      for (const { step, index } of suites) expect(index, `"${step.name}" comes after the fetch`).toBeGreaterThan(fetchIndex)
+    }
+  })
+
+  it('resolves every descriptor client in this clone; only a local shallow clone may skip missing history', ({ skip }) => {
+    expect(baseClients.clients, `clients in ${DESCRIPTOR}`).toBeDefined()
+    const missing = Object.entries(baseClients.clients).filter(([, commit]) =>
+      spawnSync('git', ['cat-file', '-e', `${commit}^{commit}`], { cwd: root }).status !== 0,
+    )
+    if (missing.length === 0) return
+    const reason = `${DESCRIPTOR}: historical clients unavailable: ${missing.map(([role, commit]) => `${role} (${commit})`).join(', ')}`
+    const shallow = spawnSync('git', ['rev-parse', '--is-shallow-repository'], { cwd: root, encoding: 'utf8' })
+    if (!/^(1|true)$/i.test(process.env.CI ?? '') && shallow.status === 0 && shallow.stdout.trim() === 'true') skip(reason)
+    expect(missing, reason).toEqual([])
+  })
+
+  it('keeps historical git archive invocations in the shared descriptor helper across every build test', () => {
+    const testRoot = join(root, 'toolkit/packages/build/test')
+    const files = readdirSync(testRoot, { recursive: true }).map(String).filter((file) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file))
+    expect(files.length, 'build test files checked').toBeGreaterThan(0)
+    const bypasses = files.filter((file) => /\[\s*['"]archive['"]\s*,|git\s+archive\s+[0-9a-f]{7,40}\b/.test(readFileSync(join(testRoot, file), 'utf8')))
+    expect(bypasses, 'test files must unpack descriptor roles through helpers/base-version-client.ts').toEqual([])
   })
 
   it('names the diagnostics artifact differently for every matrix entry', () => {

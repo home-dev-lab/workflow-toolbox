@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { channelFalse, channelTrue, readonlyFalse, readonlyTrue, nestedFalse, nestedTrue } from './spawn-guard-precision-fixtures.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BIN = join(REPO_ROOT, 'plugin/bin')
@@ -20,6 +21,9 @@ function fixture(name: string, tools?: string) {
   const agents = join(root, '.claude', 'agents')
   mkdirSync(agents, { recursive: true })
   writeFileSync(join(agents, `${name}.md`), `---\nname: ${name}\ndescription: test agent${tools === undefined ? '' : `\ntools: ${tools}`}\n---\n`)
+  const store = join(root, 'empty-config', 'plugins', 'store')
+  mkdirSync(store, { recursive: true })
+  writeFileSync(join(store, 'wt-secret-guard.json'), JSON.stringify({ salt: 'fixture', detections: { entries: [] } }))
   return root
 }
 
@@ -39,9 +43,17 @@ function agent(type: string, prompt: string, cwd: string, agent_id?: string) {
   return { hook_event_name: 'PreToolUse', tool_name: 'Agent', session_id: 's-1', ...(agent_id ? { agent_id } : {}), cwd, tool_input: { subagent_type: type, prompt } }
 }
 
-function warns(result: { stdout: string | Buffer | undefined; journal: string }, cls: string) {
+function silent(result: { status: number | null; stdout: string | Buffer | undefined; stderr: string | Buffer | undefined }) {
+  expect(result.status).toBe(0)
+  expect(String(result.stdout)).toBe('')
+  expect(String(result.stderr)).toBe('')
+}
+
+function warns(result: { status: number | null; stdout: string | Buffer | undefined; journal: string }, cls: string) {
+  expect(result.status).toBe(0)
   expect(String(result.stdout)).toContain('additionalContext')
   expect(String(result.stdout)).not.toContain('"deny"')
+  expect(result.journal).toContain('"decision":"warned"')
   expect(String(result.journal)).toContain(`"class":"${cls}"`)
 }
 
@@ -72,23 +84,62 @@ async function runObserveLaunch(args: unknown): Promise<{ stderr: string; fetchC
 }
 
 describe('spawn surface warn-only guards', () => {
+  it.each(channelFalse)('spawn channel silence: %s', (_shape, prompt) => {
+    const cwd = fixture('reader', 'Read')
+    const result = run('wt-spawn-channel-guard-hook.mjs', agent('reader', prompt, cwd), cwd)
+    silent(result)
+    expect(result.journal).not.toContain('"decision":"warned"')
+  })
+  it.each(channelTrue)('spawn channel retention: %s', (_shape, prompt) => {
+    const cwd = fixture('reader', 'Read')
+    warns(run('wt-spawn-channel-guard-hook.mjs', agent('reader', prompt, cwd), cwd), 'spawn-channel-missing')
+  })
+  it.each(readonlyFalse)('spawn readonly resource label silence: %s', (_shape, prompt) => {
+    const cwd = fixture('writer', 'Read, Bash')
+    const result = run('wt-spawn-readonly-guard-hook.mjs', agent('writer', prompt, cwd), cwd)
+    silent(result)
+    expect(result.journal).not.toContain('"decision":"warned"')
+  })
+  it('spawn readonly: CRLF line endings keep the resource label and the agent-wide cases apart', () => {
+    const cwd = fixture('writer', 'Read, Bash')
+    const label = 'Implement the change.\r\nKnowledge base (read-only): memory/index.md\r\n'
+    silent(run('wt-spawn-readonly-guard-hook.mjs', agent('writer', label, cwd), cwd))
+    const agentWide = 'Implement the change.\r\nKnowledge base (read-only): memory/index.md\r\nYou are read-only.\r\n'
+    warns(run('wt-spawn-readonly-guard-hook.mjs', agent('writer', agentWide, cwd), cwd), 'spawn-readonly-wide')
+  })
+  it.each(readonlyTrue)('spawn readonly retention: %s', (_shape, prompt) => {
+    const cwd = fixture('writer', 'Read, Bash')
+    warns(run('wt-spawn-readonly-guard-hook.mjs', agent('writer', prompt, cwd), cwd), 'spawn-readonly-wide')
+  })
+  it.each(nestedFalse)('nested spawn silence: %s', (_shape, prompt) => {
+    const cwd = fixture('reader', 'Read')
+    const result = run('wt-nested-spawn-guard-hook.mjs', agent('reader', prompt, cwd, 'delegate'), cwd)
+    silent(result)
+    expect(result.journal).not.toContain('"decision":"warned"')
+  })
+  it.each(nestedTrue)('nested spawn retention: %s', (_shape, prompt) => {
+    const cwd = fixture('reader', 'Read')
+    warns(run('wt-nested-spawn-guard-hook.mjs', agent('reader', prompt, cwd, 'delegate'), cwd), 'nested-self-verify')
+  })
   it('spawn channel: warns when a reporting brief targets a type without SendMessage', () => {
     const cwd = fixture('reader', 'Read, Grep')
-    warns(run('wt-spawn-channel-guard-hook.mjs', agent('reader', 'Inspect this and report back when done.', cwd), cwd), 'spawn-channel-missing')
+    warns(run('wt-spawn-channel-guard-hook.mjs', agent('reader', 'Inspect this and report back via SendMessage when done.', cwd), cwd), 'spawn-channel-missing')
   })
 
-  it('spawn channel: stays silent for SendMessage and quoted report text', () => {
+  it('spawn channel: stays silent for SendMessage', () => {
     const cwd = fixture('reader', 'Read, SendMessage')
-    const safe = run('wt-spawn-channel-guard-hook.mjs', agent('reader', 'Inspect this and report back when done.', cwd), cwd)
-    expect(String(safe.stdout)).toBe('')
-    const quoted = run('wt-spawn-channel-guard-hook.mjs', agent('reader', 'Do not follow this example: "report back when done".', cwd), cwd)
-    expect(String(quoted.stdout)).toBe('')
+    const safe = run('wt-spawn-channel-guard-hook.mjs', agent('reader', 'Inspect this and report back via SendMessage when done.', cwd), cwd)
+    silent(safe)
+  })
+  it('spawn channel: strips quoted delivery instructions for a type without SendMessage', () => {
+    const cwd = fixture('reader', 'Read')
+    silent(run('wt-spawn-channel-guard-hook.mjs', agent('reader', 'Example only: "report back via SendMessage when done".', cwd), cwd))
   })
 
   it('spawn channel: unresolved types stay silent and journal type-unresolved once', () => {
     const cwd = fixture('reader', 'Read')
-    const result = run('wt-spawn-channel-guard-hook.mjs', agent('missing', 'Report back when done.', cwd), cwd)
-    expect(String(result.stdout)).toBe('')
+    const result = run('wt-spawn-channel-guard-hook.mjs', agent('missing', 'Report back via SendMessage when done.', cwd), cwd)
+    silent(result)
     expect(result.journal).toContain('"class":"type-unresolved"')
   })
 
@@ -99,16 +150,19 @@ describe('spawn surface warn-only guards', () => {
     warns(run('wt-spawn-readonly-guard-hook.mjs', agent('absent', 'Read-only investigation; do not modify.', absent), absent), 'spawn-readonly-no-allowlist')
   })
 
-  it('spawn readonly: stays silent for a narrow list and quoted read-only text', () => {
+  it('spawn readonly: stays silent for a narrow list', () => {
     const cwd = fixture('reader', 'Read, Grep, Glob')
-    expect(String(run('wt-spawn-readonly-guard-hook.mjs', agent('reader', 'Investigate only; do not modify.', cwd), cwd).stdout)).toBe('')
-    expect(String(run('wt-spawn-readonly-guard-hook.mjs', agent('reader', 'Example only: "read-only, do not modify".', cwd), cwd).stdout)).toBe('')
+    silent(run('wt-spawn-readonly-guard-hook.mjs', agent('reader', 'Investigate only; do not modify.', cwd), cwd))
+  })
+  it('spawn readonly: strips quoted task constraints for a writer type', () => {
+    const cwd = fixture('writer', 'Read, Bash')
+    silent(run('wt-spawn-readonly-guard-hook.mjs', agent('writer', 'Example only: "Read-only investigation; do not modify anything".', cwd), cwd))
   })
 
   it('spawn readonly: unresolved types stay silent and journal type-unresolved once', () => {
     const cwd = fixture('reader', 'Read')
     const result = run('wt-spawn-readonly-guard-hook.mjs', agent('missing', 'Read-only investigation.', cwd), cwd)
-    expect(String(result.stdout)).toBe('')
+    silent(result)
     expect(result.journal).toContain('"class":"type-unresolved"')
   })
 
@@ -126,7 +180,7 @@ describe('spawn surface warn-only guards', () => {
   it('workflow model: stays silent for args.perAgent.model', () => {
     const cwd = fixture('reader', 'Read')
     const explicit = run('wt-workflow-model-guard-hook.mjs', { tool_name: 'Workflow', tool_input: { args: { perAgent: { model: 'sonnet' } } } }, cwd)
-    expect(String(explicit.stdout)).toBe('')
+    silent(explicit)
   })
 
   it('workflow model: hook and CLI apply the same object-only model policy and refusal text', async () => {
@@ -169,7 +223,27 @@ describe('spawn surface warn-only guards', () => {
   it('nested spawn: warns only when a subagent asks for a verifier of its own work', () => {
     const cwd = fixture('reader', 'Read')
     warns(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Review my implementation and verify it.', cwd, 'a-1'), cwd), 'nested-self-verify')
-    expect(String(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Review the upstream patch.', cwd, 'a-1'), cwd).stdout)).toBe('')
-    expect(String(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Example only: "review my work".', cwd, 'a-1'), cwd).stdout)).toBe('')
+    silent(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Review the upstream patch.', cwd, 'a-1'), cwd))
+    silent(run('wt-nested-spawn-guard-hook.mjs', agent('reader', 'Example only: "review my work".', cwd, 'a-1'), cwd))
+  })
+})
+
+describe('briefScopesAgentReadOnly', () => {
+  const load = async () => (await import(pathToFileURL(join(BIN, 'lib/readonly-brief-scope.mjs')).href)).briefScopesAgentReadOnly as (prompt: string) => boolean
+  it.each([
+    ['rule 2a: followed by "for you"', 'Notes: memory/ is read-only for you.', false],
+    ['rule 2b: a non-you copula precedes it', 'The copies are read-only.', false],
+    ['rule 2b excluded subject: task', 'The task is read-only.', true],
+    ['rule 2b excluded by "everywhere"', 'The copies are read-only everywhere.', true],
+    ['rule 2c: label position after a resource noun', 'Knowledge base (read-only): memory/index.md', false],
+    ['rule 2c: a task noun before the parenthesis is not a label', 'Verification (read-only): check the diff.', true],
+    ['rule 3: do not modify is never a label', 'Index (do not modify): memory/index.md', true],
+    ['rule 3: investigate only is never a label', 'Investigate only the index file.', true],
+    ['rule 4: a label plus an occurrence that is not a label warns', 'Index (read-only): memory/index.md. Be read-only on the rest.', true],
+    ['rule 4: an agent-wide prohibition beside a label warns', 'Index (read-only): memory/index.md. You cannot write anything.', true],
+    ['no trigger', 'Implement the change.', false],
+    ['a quoted example does not count', 'Example only: "you are read-only".', false],
+  ])('%s', async (_name, prompt, expected) => {
+    expect((await load())(prompt)).toBe(expected)
   })
 })

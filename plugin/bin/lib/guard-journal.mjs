@@ -99,7 +99,7 @@ let warnedAboutSecretStore = false
 function warnSecretStoreUnavailable() {
   if (warnedAboutSecretStore) return
   warnedAboutSecretStore = true
-  try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch {}
+  try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch { /* stderr closed: nowhere left to report */ }
 }
 
 function secretGuardMasker() {
@@ -111,7 +111,7 @@ function secretGuardMasker() {
       try {
         statSync(named)
         return named
-      } catch {}
+      } catch { /* no named store: fall back to the directory scan below */ }
       return readdirSync(storeDir)
         .filter((name) => /^wt-secret-guard_inline-[^.]+\.json$/.test(name))
         .map((name) => ({ path: path.join(storeDir, name), mtime: statSync(path.join(storeDir, name)).mtimeMs }))
@@ -231,13 +231,41 @@ export function guardMode() {
   return typeof raw === 'string' && raw.trim().toLowerCase() === 'observe' ? 'observe' : 'enforce'
 }
 
-export function emitGuardNotice({ payload = null, stdoutJson = null, stdoutText = '', stderrText = '' } = {}) {
+/** Emit main-session notices unchanged; subagents opt in to additionalContext JSON only.
+ * Observe mode emits nothing. Subagent text, stderr, and permission decisions never pass through.
+ */
+export function emitGuardNotice(options = {}) {
   if (guardMode() === 'observe') return false
-  if (typeof payload?.agent_id === 'string' && payload.agent_id) return false
+  const agent = options.payload?.agent_id
+  if (typeof agent === 'string' && agent) return emitSubagentNotice(options)
+  writeMainNotice(options)
+  return true
+}
+
+function emitSubagentNotice({ stdoutJson = null, reachSubagents = false }) {
+  const notice = subagentNotice(stdoutJson, reachSubagents)
+  if (notice === null) return false
+  writeSync(1, JSON.stringify(notice))
+  return true
+}
+
+function writeMainNotice({ stdoutJson = null, stdoutText = '', stderrText = '' }) {
   if (stdoutJson !== null) writeSync(1, `${JSON.stringify(stdoutJson)}`)
   else if (stdoutText) writeSync(1, stdoutText)
   if (stderrText) writeSync(2, stderrText)
-  return true
+}
+
+// A subagent receives only hookEventName plus additionalContext, and only when the guard opts in.
+function subagentNotice(stdoutJson, reachSubagents) {
+  const output = stdoutJson?.hookSpecificOutput
+  if (reachSubagents !== true || typeof output?.additionalContext !== 'string') return null
+  return { hookSpecificOutput: { hookEventName: output.hookEventName, additionalContext: output.additionalContext } }
+}
+
+/** Names of precision rules that matched but did not change the decision (measured before they may). */
+function shadowField(shadow, mask) {
+  const names = Array.isArray(shadow) ? shadow.filter((name) => typeof name === 'string') : []
+  return names.length ? { shadow: names.map((name) => mask(name)) } : {}
 }
 
 /**
@@ -256,10 +284,11 @@ export function emitGuardNotice({ payload = null, stdoutJson = null, stdoutText 
  * @param {string} [event.session] - bounded session id, if known.
  * @param {string} [event.agent] - bounded agent id, if known.
  * @param {object} [event.evidence] - up to six bounded string/number fields chosen by the guard.
+ * @param {string[]} [event.shadow] - names of the shadow rules that matched without changing the decision.
  */
 export function recordGuardEvent(event = {}) {
   try {
-    const { guard, decision, class: cls, reason, cwd, session, agent, evidence } = event || {}
+    const { guard, decision, class: cls, reason, cwd, session, agent, evidence, shadow } = event || {}
     if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
     // Classify from the raw target before secret masking can alter a path segment, and fall back
     // to this process's own directory when the call site omitted one — see effectiveCwd.
@@ -290,6 +319,7 @@ export function recordGuardEvent(event = {}) {
       pid: process.pid,
       ppid: process.ppid,
       ...(safeEvidence ? { evidence: safeEvidence } : {}),
+      ...shadowField(shadow, mask),
     }
     appendFileSync(journalPath(), `${JSON.stringify(entry)}\n`)
   } catch {

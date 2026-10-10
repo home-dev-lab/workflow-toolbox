@@ -49,6 +49,7 @@ function pluginScriptsOnDisk(): string[] {
   }
   walk('plugin')
   walk('plugins')
+  walk('probes')
   return found.sort()
 }
 
@@ -104,7 +105,7 @@ describe('the lint gate covers every shipped plugin script', () => {
     expect(weak).toEqual([])
     // Every directory adopters run scripts from is represented; a walk or glob that silently
     // stopped reaching one of them would drop its count to zero.
-    for (const directory of ['plugin/bin', 'plugin/hooks', 'plugin/hooks-modules', 'plugin/skills', 'plugin/workflows', 'plugins/wt-deep-search', 'plugins/wt-rules-on-demand', 'plugins/wt-secret-guard']) {
+    for (const directory of ['plugin/bin', 'plugin/hooks', 'plugin/hooks-modules', 'plugin/skills', 'plugin/workflows', 'plugins/wt-deep-search', 'plugins/wt-rules-on-demand', 'plugins/wt-secret-guard', 'probes/host-platform']) {
       expect(perDirectory[directory] ?? 0, JSON.stringify(perDirectory)).toBeGreaterThan(0)
     }
   })

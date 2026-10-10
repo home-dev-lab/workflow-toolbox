@@ -1,5 +1,13 @@
 # Task tracking — the tracker is the task source of truth (tasks ≠ knowledge) — at act
 
+Managed board keeps small fixed set of lists for lifecycle stages (e.g. Backlog, Next, In
+Progress, Blocked, Done, plus catch-all for descoped work) so "what's open" is mechanical query,
+not per-card judgment call. Every card carries three label axes — priority, type, effort (e.g.
+P0–P2, feature/chore/bug/research, S/M/L) — card missing any of three can't be scheduled: axes
+are what queue is ordered by, not decoration. Trackers without native dependency links need
+written convention (e.g. `Depends-on: #<id>` in description) plus mechanical check that only
+proposes or starts a card once all dependencies Done.
+
 Card quality: concise, action-oriented plain-text title; substance in description; overflow in
 comments.
 

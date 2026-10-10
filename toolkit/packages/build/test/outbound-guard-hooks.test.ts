@@ -138,6 +138,15 @@ const spawnPayload = (
 // wt-outbound-guard-hook.mjs — item 1 (spawn edges) + item 2 (nudge on silence)
 // --------------------------------------------------------------------------
 describe('wt-outbound-guard-hook — spawn edges, delivery detection, one nudge per arc', () => {
+  it('records explicit pilot ownership cardIds and omits the field without an assignment', () => {
+    const { env, dir } = guardEnv('pilot-card-ids')
+    const payload = spawnPayload('sess-card-ids', { childId: 'a0123456789abcdef', name: '', subagentType: 'pilot' })
+    run(GUARD_HOOK, { ...payload, tool_input: { ...payload.tool_input, prompt: 'PILOT-CARD: 9000000000000000001' } }, env)
+    run(GUARD_HOOK, { ...payload, tool_input: { ...payload.tool_input, prompt: 'Dependency card: 9000000000000000002' } }, env)
+    const records = readFileSync(join(dir, 'sess-card-ids.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(records[0].cardIds).toEqual(['9000000000000000001'])
+    expect(records[1]).not.toHaveProperty('cardIds')
+  })
   // POSITIVE CONTROL FIRST: prove a silent subagent DOES produce a nudge before trusting any
   // "silence" result elsewhere in this suite (a broken invocation and a genuine non-match both
   // look like "no output" otherwise).
@@ -1572,7 +1581,7 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
     expect(groups.flatMap((group) => group.hooks ?? []).map((hook) => hook.command ?? '').join('\n')).toContain('wt-cancelled-call-relay-guard-hook.mjs')
   })
 
-  it('SessionStart registers the delegation, registry, lane-consent, and unsynced-buffer hooks', () => {
+  it('SessionStart registers the delegation, registry, lane-consent, and work-journal hooks', () => {
     const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST, 'utf8')) as {
       hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
     }
@@ -1581,7 +1590,7 @@ describe('plugin.json registers the outbound-guard + session-start-registry hook
     expect(commands.some((c) => c.includes('wt-delegation-ladder-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-session-start-registry-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-lane-consent-check-hook.mjs'))).toBe(true)
-    expect(commands.some((c) => c.includes('wt-unsynced-buffer-hook.mjs'))).toBe(true)
+    expect(commands.some((c) => c.includes('wt-work-journal-hook.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('wt-session-env-dedup-hook.mjs'))).toBe(true)
   })
 

@@ -21,7 +21,7 @@
       ]
     },
     {
-      "source": "rules/wt-sdlc.md",
+      "source": "rules/wt-sdlc-at-act.md",
       "heading": "## Plan, task, and test",
       "recipients": [
         "pilot",
@@ -42,6 +42,22 @@
       ],
       "triggers": [
         "critic->plan"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc-at-act.md",
+      "heading": "## Implement and verify",
+      "recipients": [
+        "pilot",
+        "tdd",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "standing",
+        "lane:tdd",
+        "lane:review",
+        "lane:refutation"
       ]
     },
     {
@@ -76,6 +92,18 @@
     },
     {
       "source": "rules/wt-sdlc.md",
+      "heading": "## E2E",
+      "recipients": [
+        "pilot",
+        "tdd"
+      ],
+      "triggers": [
+        "phase:plan",
+        "lane:tdd"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc-at-act.md",
       "heading": "## E2E",
       "recipients": [
         "pilot",
@@ -282,7 +310,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## Summary asserting a guarantee is verified against its body, SAME pass",
       "recipients": [
         "review",

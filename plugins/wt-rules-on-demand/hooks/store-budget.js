@@ -5,9 +5,11 @@
 // quality-check) read it back. Nothing leaves the store without being written to an archive first.
 // Pure: the host I/O that applies these plans lives in hooks.js (a Function Hooks module passes `$` to nothing it imports).
 
+import { ownerNumber } from './owner-number.js';
+
 export const STORE_LIMIT = 4_194_304;
 export const VERDICTS = 'compliance-verdicts-jsonl';
-export const STORE_BUDGETS = Object.freeze({ [VERDICTS]: 1_200_000, sessions: 2_000_000, served: 200_000, health: 50_000 });
+export const STORE_BUDGETS = Object.freeze({ [VERDICTS]: 1_200_000, sessions: 2_000_000, served: 200_000, health: 50_000, identityActivity: 20_000 });
 // Keys this version never writes (an older version's) are counted against this allowance and never evicted.
 export const FOREIGN_KEYS_BUDGET = 50_000;
 // `{`, `}`, one comma between keys, and `"name":` per budgeted key.
@@ -112,13 +114,28 @@ function shrinkServed(served, budget) {
   return { value, evicted };
 }
 
-// Health is bounded by construction (31 days of five numbers, 20 errors of 160 characters); past its budget it moves out whole.
+// Health is bounded by construction: 31 counter days, 20 short errors, 20 bounded
+// interrupted calls and today's 10 slowest calls fit the unchanged 50k budget.
+// Past its budget it moves out whole.
 function shrinkHealth(health, budget) {
   if (jsonLength(health) <= budget) return { value: health, evicted: null };
   return { value: { days: {}, lastErrors: [] }, evicted: health };
 }
 
-const SHRINK = { [VERDICTS]: shrinkVerdicts, sessions: shrinkSessions, served: shrinkServed, health: shrinkHealth };
+function shrinkIdentityActivity(activity, budget) {
+  let size = jsonLength(activity);
+  const value = { ...activity }, evicted = {};
+  const last = (row) => [stamp(row?.loadedAt), stamp(row?.servedAt)].sort().at(-1);
+  for (const [identity, row] of Object.entries(value).sort((a, b) => last(a[1]).localeCompare(last(b[1])))) {
+    if (size <= Math.floor(budget * EVICT_TO)) break;
+    evicted[identity] = row;
+    size -= property(identity, row);
+    delete value[identity];
+  }
+  return { value, evicted };
+}
+
+const SHRINK = { [VERDICTS]: shrinkVerdicts, sessions: shrinkSessions, served: shrinkServed, health: shrinkHealth, identityActivity: shrinkIdentityActivity };
 
 // Cut to the budget; a context or session measured above it by an estimate is caught by the exact measure and cut again.
 export function shrink(name, value, budget = STORE_BUDGETS[name], keep = null) {
@@ -137,7 +154,7 @@ function mergeEvicted(name, previous, next) {
   if (!previous) return next;
   if (name === VERDICTS) return previous + next;
   if (name === 'sessions') return [...previous, ...next];
-  if (name === 'served') return { ...previous, ...next };
+  if (name === 'served' || name === 'identityActivity') return { ...previous, ...next };
   return [].concat(previous, next);
 }
 
@@ -145,20 +162,21 @@ function mergeEvicted(name, previous, next) {
 // A split id when the caller gives none: random part and counter, never a constant (hooks.js passes its segment-id
 // generator, drawn from the module's 52-bit random owner).
 let splitCounter = 0;
-const randomSplitId = () => `split-${Math.floor(Math.random() * 2 ** 52).toString(36)}-${(splitCounter++).toString(36)}`;
-export function archiveTexts(name, evicted, archivedAt = new Date().toISOString(), { splitId = randomSplitId } = {}) {
-  if (name === VERDICTS) {
-    const parts = [];
-    let part = [], bytes = 0;
-    for (const line of String(evicted).split('\n').filter(Boolean)) {
-      const size = byteLength(line) + 1;
-      if (part.length && bytes + size > ARCHIVE_PART_BYTES) { parts.push(`${part.join('\n')}\n`); part = []; bytes = 0; }
-      part.push(line);
-      bytes += size;
-    }
-    if (part.length) parts.push(`${part.join('\n')}\n`);
-    return parts;
+const randomSplitId = () => `split-${ownerNumber(52, Math.random).toString(36)}-${(splitCounter++).toString(36)}`;
+function verdictArchiveTexts(evicted) {
+  const parts = [];
+  let part = [], bytes = 0;
+  for (const line of String(evicted).split('\n').filter(Boolean)) {
+    const size = byteLength(line) + 1;
+    if (part.length && bytes + size > ARCHIVE_PART_BYTES) { parts.push(`${part.join('\n')}\n`); part = []; bytes = 0; }
+    part.push(line);
+    bytes += size;
   }
+  if (part.length) parts.push(`${part.join('\n')}\n`);
+  return parts;
+}
+export function archiveTexts(name, evicted, archivedAt = new Date().toISOString(), { splitId = randomSplitId } = {}) {
+  if (name === VERDICTS) return verdictArchiveTexts(evicted);
   // Sessions are format 2: `value` is the list of units. Served and health stay format 1: `value` is the key's value.
   // Every part, its envelope included, stays within ARCHIVE_PART_BYTES (the host rejects a file write over 4 MiB).
   if (name === 'sessions') {
@@ -167,7 +185,7 @@ export function archiveTexts(name, evicted, archivedAt = new Date().toISOString(
     return chunk(evicted.flatMap((unit) => splitUnit(unit, room, splitId)), text, room, [], (part, unit) => part.push(unit));
   }
   const text = (value) => JSON.stringify({ format: 1, key: name, archivedAt, value });
-  if (name === 'served') return chunk(Object.entries(evicted).map(([key, item]) => ({ [key]: item })), text, ARCHIVE_PART_BYTES - byteLength(text({})), {}, (part, unit) => Object.assign(part, unit));
+  if (name === 'served' || name === 'identityActivity') return chunk(Object.entries(evicted).map(([key, item]) => ({ [key]: item })), text, ARCHIVE_PART_BYTES - byteLength(text({})), {}, (part, unit) => Object.assign(part, unit));
   return [].concat(evicted).map(text);
 }
 // Units packed into parts, each part's units plus one separator byte per unit within `room` bytes.

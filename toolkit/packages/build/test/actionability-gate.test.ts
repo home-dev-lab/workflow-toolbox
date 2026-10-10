@@ -1160,6 +1160,7 @@ describe('plugin manifest wiring', () => {
     const stopHooks = readManifest().hooks?.Stop ?? []
     const commands = stopHooks.flatMap((group) => group.hooks ?? []).map((hook) => hook.command ?? '')
     expect(commands).toEqual([
+      'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-work-journal-hook.mjs"',
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-stop-hook.mjs"',
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-registry-heartbeat-hook.mjs"',
       'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-actionable-gate-hook.mjs"',

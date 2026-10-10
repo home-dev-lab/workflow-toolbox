@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -31,9 +31,8 @@ function run(command: string, cwd: string) {
           .map((line) => JSON.parse(line) as Record<string, unknown>),
       )
     return {
-      // Warn-only guard: `warned` means the predicate matched and a non-blocking reason was
-      // emitted via permissionDecision: 'allow'. `denied` must NEVER be true for this hook.
-      warned: res.stdout.includes('WARNING (not blocked)'),
+      // Detection remains journaled, without granting the tool permission.
+      warned: entries.some((entry) => entry.decision === 'warned'),
       denied: res.stdout.includes('"deny"'),
       stdout: res.stdout,
       stderr: res.stderr,
@@ -121,8 +120,8 @@ describe('wt-missing-package-script-guard-hook', () => {
     const r = run('pnpm lint', join(root, 'packages', 'smoke'))
     expect(r.warned).toBe(true)
     expect(r.denied).toBe(false)
-    expect(r.stdout).toContain('lint')
-    expect(r.stdout).toContain(basename(root))
+    expect(r.stdout).toBe('')
+    expect(r.entries[0]).toMatchObject({ decision: 'warned', class: 'missing-script' })
     expect(r.status).toBe(0)
   })
 
@@ -130,7 +129,7 @@ describe('wt-missing-package-script-guard-hook', () => {
     const r = run('cd packages/smoke && pnpm test', root)
     expect(r.warned).toBe(true)
     expect(r.denied).toBe(false)
-    expect(r.stdout).toContain('test')
+    expect(r.stdout).toBe('')
     expect(r.status).toBe(0)
   })
 
@@ -209,7 +208,9 @@ describe('wt-missing-package-script-guard-hook', () => {
   it('INVENTED: silent — a genuine typo with no ancestor defining it either', () => {
     const r = run('pnpm totally-made-up-script', root)
     expect(r.warned).toBe(true)
-    expect(r.stdout).toContain('genuine typo')
+    // Journal-only warn path: the detection is recorded, nothing is printed to the model.
+    expect(r.stdout).toBe('')
+    expect(r.entries[0]).toMatchObject({ decision: 'warned', class: 'missing-script' })
   })
 
   it('INVENTED: silent — "pnpm lint" mentioned inside a quoted commit message is not a real invocation', () => {

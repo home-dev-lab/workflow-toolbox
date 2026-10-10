@@ -1,5 +1,5 @@
 // The default dependency convention for projects without a local parser, and the one
-// triage rule the actionability gate and the what-next skill share.
+// triage rule the actionability gate relies on.
 // Table rows are deliberately excluded: their leading | is not decoration.
 const DECORATION_RUN = /^(?:[`*_>#-]+\s*)+/
 
@@ -16,6 +16,8 @@ export function hasDependsOnLine(description) {
 // Per comma segment: every `#<4+ digits>` outside parentheses; failing that, the first bare
 // 4+-digit run outside parentheses (a board may write the id without `#`). A parenthesised title
 // such as "(fix #2222 regression)" or "(title 2024)" never contributes an id.
+// Returns null when a `(` is never closed: everything after it would otherwise vanish, ids
+// included, so the caller holds the line as unparseable instead of releasing the card.
 function outsideParentheses(text) {
   let depth = 0
   let out = ''
@@ -24,7 +26,7 @@ function outsideParentheses(text) {
     else if (char === ')' && depth > 0) depth -= 1
     else if (depth === 0) out += char
   }
-  return out
+  return depth === 0 ? out : null
 }
 
 // Takes a segment whose parenthesised text is already removed.
@@ -52,7 +54,9 @@ export function parseDependsOn(description) {
     if (/^none\b/i.test(remainder)) { unparseable.push(original); continue }
     let found = false
     // Parentheses go first: a comma inside a title must never split it into a segment of its own.
-    for (const segment of outsideParentheses(remainder).split(',')) {
+    const outside = outsideParentheses(remainder)
+    if (outside === null) { unparseable.push(original); continue }
+    for (const segment of outside.split(',')) {
       for (const id of segmentIds(segment)) { ids.add(id); found = true }
     }
     if (!found) unparseable.push(original)

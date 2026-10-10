@@ -133,7 +133,10 @@ function readNumber(value) {
   return Number.isFinite(n) && n >= 0 ? n : null
 }
 
-handleHelpFlag(process.argv.slice(2), HELP)
+handleHelpFlag(process.argv.slice(2), HELP, {
+  valueFlags: ['--project', '--reports', '--stale', '--poll', '--wake-grace', '--wake-repeat'],
+  booleanFlags: [],
+})
 const relayLine = relaySkipLine('ARC WATCH')
 if (relayLine) {
   process.stdout.write(`${relayLine}\n`)

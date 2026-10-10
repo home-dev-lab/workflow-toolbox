@@ -21,7 +21,10 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP);
+  handleHelpFlag(argv, HELP, {
+    valueFlags: ['--repo', '--range'],
+    booleanFlags: [],
+  });
   const out = { repo: process.cwd(), range: null };
   const nextValue = (i, flag) => {
     if (i + 1 >= argv.length) fail(`${flag} requires a value`);

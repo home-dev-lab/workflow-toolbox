@@ -24,14 +24,16 @@
 //   • autonomy — the session-autonomy mandate markdown, sourced from the plugin's
 //                autonomy/ dir at run time. Target: <cwd>/.claude. Banner is line 1,
 //                same plain-markdown prepend shape as the rules set.
+//   • scripts — fingerprinted thin launchers for the lane, waiter, arc and quota watchers.
+//               Runtime bodies and their libraries come from the installed plugin on each launch.
 //   • docs — RETIRED. It installed the rules' rationale/field-case overflow into
 //            <cwd>/.claude/docs/wt. The shipped rules no longer point at any rationale
 //            file (the repository history is the record), so nothing is installed; a
 //            copy already installed at an adopter is left untouched and may be deleted.
 //            `--set docs` fails with that explanation instead of a bare unknown-set error.
 //
-// It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
-// hand-authored) file — that needs an explicit `--force`. `--check` and `--diff`
+// It is safe BY CONSTRUCTION: `--install` leaves local managed edits unless given
+// `--force`, and never overwrites a hand-authored file. `--check` and `--diff`
 // are always read-only. Successful writes journal their shipped snapshot so a later
 // edited-copy arbitration can show adopted, local, and currently shipped text.
 //
@@ -70,6 +72,7 @@ import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
 import { firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
+import { renderScriptShim, resolveAdoptedScript } from '../../../bin/lib/host/adopted-script-shim.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
 process.stdout.on('error', (err) => {
@@ -540,7 +543,7 @@ const SETS = {
   // …) stay in agents/ — they declare no observer, so registration serves them correctly.
   agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
   autonomy: { kind: 'autonomy', srcDir: 'autonomy', defaultDir: '.claude', globalSubdir: '', resolveItems: () => MANAGED_AUTONOMY },
-  scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }, { file: 'wt-lane-wait.mjs' }] },
+  scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }, { file: 'wt-lane-wait.mjs' }, { file: 'wt-arc-watch.mjs' }, { file: 'wt-quota-watch.mjs' }] },
 }
 
 const MANAGED_SET_NAMES = Object.keys(SETS)
@@ -718,190 +721,13 @@ function renderBanner(version, fp, stamp = null, file = '') {
 }
 
 /** The fingerprinted CONTENT of a managed item — exactly what the user may edit, so an
- *  unedited installed file reproduces its stamped fingerprint. BOTH sets read the file
- *  verbatim from their plugin bundle dir (rules/ or agents/); each file is its own
- *  single source. */
+ *  unedited installed file reproduces its stamped fingerprint. Markdown sets read their
+ *  bundle source; scripts serialize the shared launcher template instead of copying bodies. */
 function itemContent(set, item, root) {
+  if (set.kind === 'scripts') return renderScriptShim(item.file)
   const src = path.join(root, set.srcDir, item.file)
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
-  const content = fs.readFileSync(src, 'utf8')
-  if (set.kind !== 'scripts') return content
-  const replaceExactlyOnce = (body, fragment, replacement) => {
-    const count = body.split(fragment).length - 1
-    if (count !== 1) fail(`${item.file === 'wt-lane-wait.mjs' ? 'waiter' : 'launcher'} transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
-    return body.replace(fragment, () => replacement)
-  }
-  if (item.file === 'wt-lane-wait.mjs') {
-    return replaceExactlyOnce(content, "import { classifyLane, laneHostPlatform, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'\nimport { laneHostDir } from './lib/host/lane-host-dir.mjs'\nimport { legacySupervision } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
-import { pathToFileURL } from 'node:url'
-const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude')
-let runtimeRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.WT_PLUGIN_ROOT || null
-if (!runtimeRoot) {
-  try {
-    const parsed = JSON.parse(readFileSync(path.join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'))
-    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
-    const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
-    const entry = key ? plugins[key] : null
-    runtimeRoot = (Array.isArray(entry) ? entry[0] : entry)?.installPath || null
-  } catch {}
-}
-if (!runtimeRoot) throw new Error('could not locate workflow-toolbox plugin root; update the plugin and re-adopt wt-lane-wait.mjs')
-const { classifyLane, laneHostPlatform, readCurrentSupervisions, legacySupervision } = await import(pathToFileURL(path.join(runtimeRoot, 'bin', 'lib', 'lane-supervisor-core.mjs')).href)
-const { laneHostDir } = await import(pathToFileURL(path.join(runtimeRoot, 'bin', 'lib', 'host', 'lane-host-dir.mjs')).href)`)
-  }
-  if (item.file !== 'wt-lane.mjs') return content
-  // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
-  // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
-  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, suiteLockCli, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'\nimport { laneModelRefusal, resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'\nimport { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, legacySupervision, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'\nimport { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'", `
-function pluginRoot(env = process.env) {
-  for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
-    if (typeof candidate === 'string' && candidate) return candidate
-  }
-  const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')
-  const registry = path.join(configDir, 'plugins', 'installed_plugins.json')
-  try {
-    const parsed = JSON.parse(readFileSync(registry, 'utf8'))
-    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
-    const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
-    const entry = key ? plugins[key] : null
-    const installed = Array.isArray(entry) ? entry[0] : entry
-    if (typeof installed?.installPath === 'string' && installed.installPath) return installed.installPath
-  } catch { /* handled by the fail-closed caller */ }
-  return null
-}
-
-async function loadAdoptedConsentModules() {
-  const root = pluginRoot()
-  if (!root) throw new Error('could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json')
-  const resolver = path.join(root, 'bin', 'lib', 'lane-consent-check-core.mjs')
-  const gate = path.join(root, 'bin', 'lib', 'lane-consent-gate-core.mjs')
-    const fence = path.join(root, 'bin', 'lib', 'opencode-skill-fence.mjs')
-    const allowlist = path.join(root, 'bin', 'lib', 'lane-skill-allowlist.mjs')
-    const modelAllowlist = path.join(root, 'bin', 'lib', 'lane-model-allowlist.mjs')
-    const pluginOptions = path.join(root, 'bin', 'lib', 'plugin-options.mjs')
-    const supervisor = path.join(root, 'bin', 'lib', 'lane-supervisor-core.mjs')
-    const pluginDataDir = path.join(root, 'bin', 'lib', 'plugin-data-dir.mjs')
-    const host = path.join(root, 'bin', 'lib', 'host', 'adapter.mjs')
-    const laneHostRuntime = path.join(root, 'bin', 'lib', 'host', 'lane-host-dir.mjs')
-    const launcher = path.join(root, 'bin', 'wt-lane.mjs')
-  try {
-    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule, modelAllowlistModule, , supervisorModule, pluginDataModule, hostModule, launcherModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href), import(pathToFileURL(modelAllowlist).href), import(pathToFileURL(pluginOptions).href), import(pathToFileURL(supervisor).href), import(pathToFileURL(pluginDataDir).href), import(pathToFileURL(host).href), import(pathToFileURL(launcher).href), import(pathToFileURL(laneHostRuntime).href)])
-    return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal: fenceModule.effectiveSkillDiscoveryRefusal, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, spawnOpencode: fenceModule.spawnOpencode, verifyEffectiveOpencodeSkillDiscovery: fenceModule.verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist, laneModelRefusal: modelAllowlistModule.laneModelRefusal, resolveRoleVariant: modelAllowlistModule.resolveRoleVariant, variantRefusal: modelAllowlistModule.variantRefusal, appendSupervisorJournal: supervisorModule.appendSupervisorJournal, argvSummary: supervisorModule.argvSummary, claimCurrentSupervision: supervisorModule.claimCurrentSupervision, classifyLane: supervisorModule.classifyLane, inspectProcess: supervisorModule.inspectProcess, inspectStartedProcess: launcherModule.inspectStartedProcess, laneHardBoundAt: supervisorModule.laneHardBoundAt, latestWorktreeWrite: supervisorModule.latestWorktreeWrite, legacySupervision: supervisorModule.legacySupervision, processEvidenceStatus: supervisorModule.processEvidenceStatus, readCurrentSupervision: supervisorModule.readCurrentSupervision, readLogTail: supervisorModule.readLogTail, sameIdentity: supervisorModule.sameIdentity, shellQuote: supervisorModule.shellQuote, supervisionPaths: supervisorModule.supervisionPaths, terminateLane: supervisorModule.terminateLane, writeJsonAtomic: supervisorModule.writeJsonAtomic, resolvePluginDataDir: pluginDataModule.resolvePluginDataDir, hostAdapter: hostModule.hostAdapter, suiteLockCli: fenceModule.suiteLockCli() }
-  } catch {
-    throw new Error(\`the installed workflow-toolbox plugin is older or incompatible; update it and re-adopt wt-lane.mjs (runtime modules: \${resolver}, \${gate}, \${fence}, \${allowlist}, \${modelAllowlist}, \${pluginOptions}, \${supervisor}, \${pluginDataDir}, \${host}, \${launcher})\`)
-  }
-}`)
-  adopted = replaceExactlyOnce(adopted, "import { hostAdapter } from './lib/host/adapter.mjs'\n", '')
-  adopted = replaceExactlyOnce(adopted, "import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } from './lib/host/lane-host-dir.mjs'\n", `const root = pluginRoot()\nconst laneHostModule = root ? await import(pathToFileURL(path.join(root, 'bin', 'lib', 'host', 'lane-host-dir.mjs')).href).catch(() => null) : null\nconst { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } = laneHostModule ?? { ensureLaneHostDir: () => { throw new Error('the installed workflow-toolbox plugin is unavailable, older or incompatible; update it and re-adopt wt-lane.mjs') }, laneHostDir: () => path.join(os.tmpdir(), 'wt-lane-unavailable'), laneHostStateRoot: () => path.join(os.tmpdir(), 'wt-lane-unavailable'), laneWritablePath: () => false, makeReadableLaneBrief: () => { throw new Error('the installed workflow-toolbox plugin is unavailable, older or incompatible; update it and re-adopt wt-lane.mjs') }, removeReadableLaneBrief: () => {} }\n`)
-  // Without the lane host module no lane can start: loading the runtime modules refuses the launch
-  // (plugin root missing, older or incompatible). The brief read that precedes that refusal only
-  // hashes and prints the brief, so a plain read cannot lead the host to act on lane-written bytes.
-  adopted = replaceExactlyOnce(adopted, "import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'\n", 'const { readWorktreeRegular } = laneHostModule ?? { readWorktreeRegular: (file, encoding) => readFileSync(file, encoding === null ? undefined : encoding) }\n')
-  // An installed plugin older than this helper starts the worker as before, with stderr discarded.
-  adopted = replaceExactlyOnce(adopted, "import { spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'\n", "const { spawnWithLaneLogStderr } = laneHostModule?.spawnWithLaneLogStderr ? laneHostModule : { spawnWithLaneLogStderr: (log, start) => start('ignore') }\n")
-  adopted = replaceExactlyOnce(adopted, "import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'\n", `const sandboxModule = root ? await import(pathToFileURL(path.join(root, 'bin', 'lib', 'host', 'lane-sandbox.mjs')).href) : null
-const { laneUnsandboxedAtStart, laneWritableForLaunch } = sandboxModule ?? { laneUnsandboxedAtStart: () => false, laneWritableForLaunch: () => () => false }
-`)
-  adopted = replaceExactlyOnce(adopted, "import { isInvokedDirectly } from './lib/host/entry-guard.mjs'\n", `function isInvokedDirectly(importMetaUrl, argvPath = process.argv[1]) {
-  if (!argvPath) return false
-  try {
-    const moduleUrl = new URL(importMetaUrl)
-    if (moduleUrl.search || moduleUrl.hash) return false
-    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl))
-  } catch { return false }
-}
-`)
-  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, legacySupervision, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter, suiteLockCli: suiteLockCli() }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
-  adopted = replaceExactlyOnce(adopted, "async function loadIntegrationModule() {\n  return import('./lib/lane-integrate.mjs')\n}", `async function loadIntegrationModule() {
-  const root = pluginRoot()
-  if (!root) throw new Error('could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json')
-  const integration = path.join(root, 'bin', 'lib', 'lane-integrate.mjs')
-  return import(pathToFileURL(integration).href)
-}`)
-  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { fileURLToPath, pathToFileURL } from 'node:url'")
-  adopted = loadLauncherRuntimeLibs(adopted, src)
-  // ANY single- or double-quoted literal (or a template literal opening a call) that still starts with
-  // ./lib/ or ../lib/ (named, side-effect, dynamic or multi-line import; prose in comments is not a literal) would resolve next to the adopted copy, where no such directory exists.
-  const relativeRuntimeImport = adopted.match(/(?:['"]|\(\s*`)\.{1,2}\/lib\/[^'"`\n]*/)?.[0]
-  if (relativeRuntimeImport) {
-    fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)
-  }
-  return adopted
-}
-
-/** The launcher's own runtime helpers (the priority module) are loaded from the installed plugin root like
- * the consent modules: an adopted copy has no `./lib/` neighbour. Each named export falls back to a function
- * that throws the "older or incompatible plugin" refusal, so a plugin without a helper fails closed at use. */
-const LAUNCHER_RUNTIME_LIBS = ['lane-priority']
-function loadLauncherRuntimeLibs(adopted, src) {
-  let out = adopted
-  const loaders = []
-  for (const [index, lib] of LAUNCHER_RUNTIME_LIBS.entries()) {
-    const line = new RegExp(`^import \\{([^}]*)\\} from '\\./lib/host/${lib}\\.mjs'\\n`, 'm')
-    const match = out.match(line)
-    if (!match) fail(`launcher transformation could not find the ${lib} import in ${src}`)
-    const names = match[1].split(',').map((name) => name.trim()).filter(Boolean)
-    out = out.replace(line, '')
-    loaders.push(`const runtimeLibPath${index} = root ? path.join(root, 'bin', 'lib', 'host', '${lib}.mjs') : null\nconst runtimeLib${index} = runtimeLibPath${index} ? await import(pathToFileURL(runtimeLibPath${index}).href).catch(() => null) : null\nconst { ${names.join(', ')} } = Object.fromEntries(${JSON.stringify(names)}.map((name) => [name, runtimeLib${index}?.[name] ?? unavailableRuntimeExport]))\n`)
-  }
-  const anchor = out.indexOf('\nconst { ensureLaneHostDir, ')
-  const insertAt = anchor < 0 ? -1 : out.indexOf('\n', anchor + 1) + 1
-  if (insertAt <= 0) fail(`launcher transformation could not place the runtime helper loaders in ${src}`)
-  const unavailable = "function unavailableRuntimeExport() { throw new Error('the installed workflow-toolbox plugin is unavailable, older or incompatible; update it and re-adopt wt-lane.mjs') }\n"
-  return `${out.slice(0, insertAt)}${unavailable}${loaders.join('')}${out.slice(insertAt)}`
-}
-
-/** Resolve the plugin root the adopted wt-lane launcher will use. This intentionally mirrors
- * the generated pluginRoot() above: explicit launcher roots win, then the active config's
- * installed-plugin registry. The launcher cannot import this standalone installer helper, so
- * fixture tests lock the two paths to the same observable result. */
-function adoptedLauncherPluginRoot(env = process.env) {
-  for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
-    if (typeof candidate === 'string' && candidate) return candidate
-  }
-  const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')
-  const registry = path.join(configDir, 'plugins', 'installed_plugins.json')
-  try {
-    const parsed = JSON.parse(fs.readFileSync(registry, 'utf8'))
-    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
-    const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
-    const entry = key ? plugins[key] : null
-    const installed = Array.isArray(entry) ? entry[0] : entry
-    if (typeof installed?.installPath === 'string' && installed.installPath) return installed.installPath
-  } catch {
-    // Reported below with the same remedies as a missing runtime module.
-  }
-  return null
-}
-
-/** Extract runtime modules from the generated dynamic loaders. Keeping no parallel module
- * list means a future path joined from root and passed to import() is automatically part of
- * this preflight. */
-function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
-  const moduleByVariable = new Map()
-  for (const match of adopted.matchAll(/const\s+(\w+)\s*=\s*(?:root\s*\?\s*)?path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
-    const segments = [...match[2].matchAll(/'([^']+)'/g)].map((segment) => segment[1])
-    if (segments.length > 0) moduleByVariable.set(match[1], path.join(runtimeRoot, ...segments))
-  }
-  const modules = [...adopted.matchAll(/import\(pathToFileURL\((\w+)\)\.href\)/g)]
-    .map((match) => moduleByVariable.get(match[1]))
-    .filter(Boolean)
-  if (modules.length === 0) fail('launcher transformation produced no runtime modules')
-  return modules
-}
-
-function preflightAdoptedLauncherRuntime(chosen, sourceRoot) {
-  if (!chosen.includes('scripts')) return
-  const runtimeRoot = adoptedLauncherPluginRoot()
-  if (!runtimeRoot) {
-    fail('wt-lane.mjs plugin root could not be resolved — install or update workflow-toolbox, then retry')
-  }
-  const adopted = itemContent(SETS.scripts, { file: 'wt-lane.mjs' }, sourceRoot)
-  for (const modulePath of adoptedLauncherRuntimeModules(adopted, runtimeRoot)) {
-    if (!realFile(modulePath)) {
-      fail(`wt-lane.mjs runtime module is missing from the resolved plugin root: ${modulePath} — update or reinstall workflow-toolbox, then retry.`)
-    }
-  }
+  return fs.readFileSync(src, 'utf8')
 }
 
 /** The shipped content's fingerprint, or null when the source cannot be read.
@@ -915,8 +741,7 @@ function preflightAdoptedLauncherRuntime(chosen, sourceRoot) {
  *  degrades to null and the caller falls back to the version comparison. */
 function shippedFingerprint(set, item, root, installedBody = null, preserveAgentFrontmatter = false) {
   try {
-    const source = fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8')
-    const rendered = set.kind === 'scripts' ? itemContent(set, item, root) : source
+    const rendered = set.kind === 'scripts' ? renderScriptShim(item.file) : fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8')
     // A clean agent can legitimately retain an installer-preserved local frontmatter field.
     // Compare that copy to the current shipped definition with the same field retained, not to
     // the raw template which could never match it.
@@ -976,10 +801,10 @@ function stripRuleBanner(text) {
 
 function stripScriptBanner(text) {
   const first = text.indexOf('\n')
-  if (first === -1 || !text.startsWith('#!')) return stripRuleBanner(text)
+  if (first === -1 || !text.startsWith('#!')) return text
   const secondEnd = text.indexOf('\n', first + 1)
   const second = secondEnd === -1 ? text.slice(first + 1) : text.slice(first + 1, secondEnd)
-  if (!VERSION_RE.test(second)) return text
+  if (!/^\/\/ installed from workflow-toolbox v\d+\.\d+\.\d+ · content sha256:[a-f0-9]{12} by the adopt skill -- editable copy\.$/.test(second)) return text
   return text.slice(0, first + 1) + text.slice(secondEnd + 1).replace(/^\n+/, '')
 }
 
@@ -993,7 +818,7 @@ function stripScriptBanner(text) {
  *  installer just wrote it from its own template a moment earlier. Returns
  *  `{ text, preserved }`; `preserved` is `[]` when there is nothing local to carry (the common
  *  case, and the only case for the rules/autonomy sets, which pass no `oldContent`). */
-function renderItem(set, item, version, root, oldContent = null, triggers = null, force = false) {
+function renderItem(set, item, version, root, oldContent = null, triggers = null, { force = false } = {}) {
   const rawContent = itemContent(set, item, root)
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
@@ -1654,6 +1479,7 @@ const CLI_VALUE_OPTIONS = {
 
 const CLI_BOOLEAN_OPTIONS = {
   '--force': 'force',
+  '--fail-on-drift': 'failOnDrift',
   '--refresh-triggers': 'refreshTriggers',
   '--keep-triggers': 'keepTriggers',
   '--replace-symlinks': 'replaceSymlinks',
@@ -1676,6 +1502,7 @@ function defaultCliArgs() {
     dir: null,
     global: false,
     force: false,
+    failOnDrift: false,
     refreshTriggers: false,
     keepTriggers: false,
     set: 'rules',
@@ -1731,6 +1558,7 @@ const FLAG_EFFECTIVE_MODES = {
   dir: { cli: '--dir', modes: ['check', 'install', 'migrate', 'diff'] },
   global: { cli: '--global', modes: ['check', 'install', 'migrate', 'diff'] },
   force: { cli: '--force', modes: ['install'] },
+  failOnDrift: { cli: '--fail-on-drift', modes: ['check'], sets: ['scripts', 'all'] },
   refreshTriggers: { cli: '--refresh-triggers', modes: ['install'] },
   keepTriggers: { cli: '--keep-triggers', modes: ['install'] },
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
@@ -2280,6 +2108,20 @@ function migratedStatus({ target, served }) {
       'written, it would load twice there)'
 }
 
+function scriptTargetDecision(set, item, args, classification, decision) {
+  if (set.kind !== 'scripts') return decision
+  const resolved = resolveAdoptedScript(item.file)
+  if (!resolved.target && (classification.state !== 'absent' || args.mode === 'install')) {
+    return { status: `TARGET-MISSING (${resolved.lookup})`, write: false }
+  }
+  return decision
+}
+
+function scriptDrift(set, classification, decision) {
+  return set.kind === 'scripts' && classification.state !== 'absent' &&
+    /^(?:STALE|EDITED|AHEAD|SYMLINK|TARGET-MISSING|PRESENT \(no toolbox banner)/.test(decision.status)
+}
+
 function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const target = path.join(dir, item.file)
   const classification = classify(target, set)
@@ -2293,6 +2135,7 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
     shippedFp,
     currentContentFp,
   })
+  decision = scriptTargetDecision(set, item, args, classification, decision)
   let duplicate = false
   if (alternateDirs.nested && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(alternateDirs.nested, item.file))) {
     duplicate = true
@@ -2375,7 +2218,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
     return
   }
   const oldContent = existingContentForRender(set, target, classification)
-  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, args.force)
+  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent, triggers, { force: args.force })
   if (preserved.length > 0) {
     process.stdout.write(
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
@@ -2469,6 +2312,8 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
     anySymlink: classification.state === 'symlink',
     anyMigrationPending: planned.migrationPending,
     anyDuplicate: planned.duplicate,
+    anyTargetMissing: decision.status.startsWith('TARGET-MISSING'),
+    anyScriptDrift: scriptDrift(set, classification, decision),
   }
 }
 
@@ -2495,6 +2340,8 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
     anyMigrationPending: false,
     anyDuplicate: false,
     anyUnverified: false,
+    anyTargetMissing: false,
+    anyScriptDrift: false,
   }
   for (const item of items.filter((candidate) =>
     (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
@@ -3085,6 +2932,10 @@ function runDiffCommand(args, context) {
 
 function renderCheckHints(args, state) {
   if (args.mode !== 'check') return
+  if (state.anyTargetMissing) {
+    process.stdout.write('adopt: canonical script targets missing — update or reinstall workflow-toolbox before adopting.\n')
+    return
+  }
   if (state.anyAbsent) process.stdout.write('adopt: run with --install to write the ABSENT item(s).\n')
   else if (state.anyStale) process.stdout.write('adopt: run with --install to refresh the STALE item(s).\n')
   else if (state.anyTriggersUnresolved) process.stdout.write('adopt: on-demand triggers unresolved — use the per-file commands above.\n')
@@ -3114,7 +2965,7 @@ function renderCheckHints(args, state) {
 }
 
 function mergeSetState(state, result) {
-  for (const key of ['anyAbsent', 'anyStale', 'anyTriggersUnresolved', 'anyEdited', 'anySymlink', 'anyMigrationPending', 'anyDuplicate', 'anyUnverified']) {
+  for (const key of ['anyAbsent', 'anyStale', 'anyTriggersUnresolved', 'anyEdited', 'anySymlink', 'anyMigrationPending', 'anyDuplicate', 'anyUnverified', 'anyTargetMissing', 'anyScriptDrift']) {
     state[key] = state[key] || result[key]
   }
 }
@@ -3133,11 +2984,16 @@ function managedSetGroups(set, fallbackDir, resolution, root) {
   return groups
 }
 
+// `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under --global the
+// config dir IS the '.claude' layer already, so `globalSubdir` (its own field, NOT derived from
+// defaultDir's basename — see the SETS comment above) is appended instead.
+function managedSetFallbackDir(set, args, globalRoot) {
+  return path.resolve(args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)))
+}
+
 function runManagedCommand(args, context) {
   const { root, version, chosen, globalRoot } = context
   const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
-
-  preflightAdoptedLauncherRuntime(chosen, root)
 
   process.stdout.write(
     `adopt: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
@@ -3153,16 +3009,12 @@ function runManagedCommand(args, context) {
     anyMigrationPending: false,
     anyDuplicate: false,
     anyUnverified: false,
+    anyTargetMissing: false,
+    anyScriptDrift: false,
   }
   for (const name of chosen) {
     const set = SETS[name]
-    // `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under
-    // --global the config dir IS the '.claude' layer already, so `globalSubdir` (its own
-    // field, NOT derived from defaultDir's basename — see the SETS comment above) is
-    // appended instead.
-    const fallbackDir = path.resolve(
-      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
-    )
+    const fallbackDir = managedSetFallbackDir(set, args, globalRoot)
     // Checked once against the whole set: a group the implicit resolution did not give this file skips it.
     if (args.file && !set.resolveItems(root).some((item) => item.file === args.file)) {
       fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
@@ -3176,6 +3028,8 @@ function runManagedCommand(args, context) {
   if (state.anyDuplicate && !args.refreshTriggers && !args.keepTriggers) process.exitCode = 1
   // A held decision is not a success: a caller reading only the exit code must see it.
   if (state.anyUnverified) process.exitCode = 1
+  if (args.mode === 'install' && state.anyTargetMissing) process.exitCode = 1
+  if (args.failOnDrift && state.anyScriptDrift) process.exitCode = 1
 
   const settingsResult = processSettings(globalRoot, chosen, args, version)
   state.anyAbsent = state.anyAbsent || settingsResult.anyAbsent

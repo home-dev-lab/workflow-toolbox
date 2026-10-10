@@ -6,14 +6,14 @@ description: >-
   it to board-based tracking, or when the user says "onboard this project to Planka", "set up
   the board here", "start tracking tasks on Planka", or "track my tasks on a kanban board".
   Create the project, board, lists, and labels through the `planka` MCP, migrate any existing
-  .claude/progress.md zero-loss into cards, and write .claude/planka.json. Requires a reachable
+  Markdown task history zero-loss into cards, and write .claude/planka.json. Requires a reachable
   `planka` MCP server; do not run without it.
 ---
 
 # planka-tracking — onboard a project onto a Planka board
 
 This skill brings the **current project** under board-based task tracking: one Planka project
-+ board, a small set of lists and labels, and (if the project already has a .claude/progress.md
++ board, a small set of lists and labels, and (if the project already has a Markdown task
 buffer) a zero-loss migration of its tasks into cards. It runs *in the project's own session* —
 never on behalf of another project from a different session (the domain discovery and the
 zero-loss migration both need the project's own files and conversation loaded).
@@ -28,14 +28,14 @@ zero-loss migration both need the project's own files and conversation loaded).
 
 1. **Confirm the project is unmanaged**: no .claude/planka.json at the project root. If it
    exists, the project is already onboarded — stop and tell the user (offer to reconcile the
-   board against the current .claude/progress.md/state instead of re-onboarding).
+   board against its current task history/state instead of re-onboarding).
 2. **Confirm the `planka` MCP is reachable** in this session. The tools are MCP tools —
    discover their exact names with `ToolSearch` (`query: "planka"`) before calling them; do not
    hardcode signatures, they vary by server implementation. If the MCP is unreachable, **stop**:
-   onboarding needs it (ongoing task work can still degrade to `progress.md` once a project is
+   onboarding needs it (ongoing task work can still degrade to journal `unsynced` entries once a project is
    already managed — see Degradation below — but the one-time board *setup* can't).
 3. **Get the user's go-ahead** — onboarding creates a Planka project and (if migrating) reads
-   their `progress.md`. One short confirmation, then proceed autonomously.
+   their historical task file. One short confirmation, then proceed autonomously.
 
 ## Conventions this skill uses
 
@@ -49,7 +49,7 @@ over the defaults below and say so before creating anything.
 - **Universal labels** — every card gets all three: priority (`P0` / `P1` / `P2`), type
   (`feature` / `chore` / `bug` / `research`), and effort (`effort:S` for under ~2h, `effort:M`
   for about half a day, `effort:L` for multi-day). Beyond these, **discover 3-6 domain labels by
-  reading the project** (README, `CLAUDE.md`, directory structure, `progress.md`) — don't impose
+   reading the project** (README, `CLAUDE.md`, directory structure, task history) — don't impose
   a generic domain set that doesn't fit.
 - **Card quality**: a concise plain-text title (no `**`/`###`/emoji, roughly ≤70 chars,
   action-oriented), a markdown description trimmed to essentials, and long history/context moved
@@ -64,13 +64,23 @@ over the defaults below and say so before creating anything.
   a blocked chain; a card with no `Depends-on:` line has not been checked. Neither is a candidate
   for "what's next", and the board's actionability gate counts neither as startable.
 - **Degradation**: if the `planka` MCP becomes unreachable *after* onboarding, ongoing task work
-  can fall back to writing into .claude/progress.md under a dated `## Unsynced (Planka down)`
-  section. On the next session, `wt-unsynced-buffer-hook.mjs` names the buffered entries so they
-  are folded back into the board and the section is purged once the MCP is reachable again. That
+  uses `node <plugin-root>/bin/wt-work-journal.mjs unsynced "one sentence" --detail-file <file>`
+  (or the FULL detail on stdin). The helper archives and verifies the narrative before adding
+  an index line outside the repository. SessionStart names open unsynced entries; read them
+  with `unsynced --list`, fold them into the board when reachable, then `resolve <hash>`. That
   fallback is for day-to-day work on an already-managed project — not for the onboarding run itself (see
   Preconditions #2).
 
 ## Procedure
+
+### 0. Archive the untouched historical task file
+
+If the project has a historical Markdown task file, run
+`node <plugin-root>/bin/wt-work-journal.mjs retire-progress --archive-only` BEFORE creating
+cards or rewriting anything. It needs no board pointer. It preserves the full file verbatim
+in a never-rotated external archive, verifies SHA-256 and chains its dated history sections.
+If it fails, stop migration without modifying the original. Keep reading the untouched
+original while constructing the board; do not create an in-repository backup or stub.
 
 ### 1. Create the Planka project + board (via the `planka` MCP — no REST creds)
 
@@ -82,17 +92,11 @@ over the defaults below and say so before creating anything.
 - Create the **universal labels** (priority + type + effort, see Conventions above). Then
   **discover domain labels by reading the project** — don't impose a fixed global set.
 
-### 2. Migrate an existing .claude/progress.md (zero-loss) — if present
+### 2. Migrate existing task history (zero-loss) — if present
 
-If the project has a .claude/progress.md:
+If the project has a historical Markdown task file:
 
-1. **Back it up first** (zero-loss is non-negotiable):
-   ```bash
-   cp -f .claude/progress.md ".claude/progress.md.backup-$(date +%Y%m%d)"
-   ```
-   *(A workflow artifact bans a non-deterministic `date` call, but this skill runs in a normal
-   interactive session, not inside a Workflow-tool script — `date` in Bash is fine here.)*
-   Verify the backup matches (`md5sum` on both) before touching anything.
+1. **Require step 0's verified external archive** before migration; the original stays untouched.
 2. **Parse the file** — adapt to its actual structure; it varies per project. Common shapes are
    status-tagged sections (active / pending / blocked / done) or a flat task list with inline
    status markers. If nothing recognizable is found, read it as free text and extract candidate
@@ -107,13 +111,12 @@ If the project has a .claude/progress.md:
    and list the card for the arbiter (see Conventions above).
 6. **Migrate the historical narrative too, not just the task rows.** Per-task history (commits,
    PR/ticket links, a session-by-session changelog) → **card comments** on the matching card: one
-   consolidated, dated "migrated from progress.md" comment per card. A cross-cutting changelog
+   consolidated, dated "migrated from task history" comment per card. A cross-cutting changelog
    paragraph goes to the single most-relevant card, not duplicated across many.
-7. **Then reduce `progress.md` to the degraded-mode stub** — once cards + comments are in place
-   AND the `.backup-<date>` from step 1 is verified present. The file is **never deleted** (it
-   persists as the degraded-mode buffer described in Conventions above), but on a managed project
-   it must **not** keep a full copy of the board. Reduce it to: a short header pointing at the
-   board + the dated backup, plus an empty `## Unsynced (Planka down)` section.
+7. **Keep the original untouched until step 3** has written the pointer and cached Done.
+   Then run full `retire-progress`; never empty it by hand. The helper re-verifies the archive,
+   requires a chained retirement line naming its SHA and atomically checks the source before
+   creating the empty replacement. Journal `unsynced` entries handle degradation thereafter.
 8. **If the project separately maintains its own reusable-knowledge notes** (some setups keep a
    knowledge index alongside task tracking — e.g. a running notes file with one entry per
    lesson/decision) **and any of those notes are really project-task narrative rather than
@@ -121,7 +124,7 @@ If the project has a .claude/progress.md:
    note down to a short pointer back to the card. **Skip this step entirely if the project has no
    such knowledge-note convention** — most don't, and it's not something this skill should assume.
 
-If there is no `progress.md`, skip migration — the board simply starts empty.
+If there is no historical task file, skip migration — the board simply starts empty.
 
 ### 3. Write the pointer
 
@@ -132,31 +135,16 @@ Create .claude/planka.json at the project root:
 ```
 
 This is what makes the project "managed" — the presence of this file is the signal
-board-aware tooling (starting with the `what-next` skill) keys off.
+board-aware tooling keys off.
 
-### 4. `what-next` is available directly — deposit a project copy only on request
+Run `node <plugin-root>/bin/wt-work-journal.mjs setup-board` to cache the Done list. Supply
+the pointer's `mcpUrl` (the HTTP MCP endpoint) when it is not configured already. Once cards
+and comments are verified on the board, run `retire-progress` to empty the original safely.
 
-The `what-next` skill ships alongside this one and works out of the box against the board you
-just created — no extra step is needed for a newly onboarded project.
-
-If the user wants a project-specific, freely-editable version (to add domain framing, a
-project's own tracker-CLI specifics, or anything else they want to specialize), copy the shipped
-skill into the project on request:
-
-```bash
-mkdir -p .claude/skills/what-next
-cp -f "<this skill's own directory>/../what-next/SKILL.md" .claude/skills/what-next/SKILL.md
-```
-
-Only do this when asked — an unwanted project copy would silently shadow future improvements to
-the shipped skill. If .claude/skills/what-next/SKILL.md already exists, leave it alone; the
-project already has a (possibly specialized) copy.
-
-### 5. Report
+### 4. Report
 
 Report concisely: project + board created (with the Planka URL if known), lists + labels, how
-many cards migrated (and that `progress.md` was backed up and preserved), the pointer written,
-and whether a project copy of `what-next` was deposited. Note anything that could NOT be
+many cards migrated (and that task history was archived, verified and safely retired), the pointer written. Note anything that could NOT be
 migrated cleanly (ambiguous entries left for the user to triage).
 
 ## Gotchas (Planka 2.1 — hard-won; don't relearn them)
@@ -182,5 +170,5 @@ migrated cleanly (ambiguous entries left for the user to triage).
 
 If the `planka` MCP drops mid-onboarding, do not leave a half-migrated board silently: report
 what was created, what wasn't, and tell the user to re-run once the MCP is back. Don't fall back
-to writing tasks into `progress.md` *during onboarding* — that degraded path is for ongoing task
+to creating degraded journal task entries *during onboarding* — that path is for ongoing task
 work on an already-managed project, not for the one-time board setup.

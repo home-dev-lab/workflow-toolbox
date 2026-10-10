@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { ESLint } from 'eslint'
 import sonarjs from 'eslint-plugin-sonarjs'
 
@@ -176,7 +177,7 @@ function readJscpd() {
 function readKnip() {
   const executable = join(TOOLKIT_ROOT, 'node_modules/knip/bin/knip.js')
   const report = JSON.parse(run(process.execPath, [
-    executable, '--config', 'knip.json', '--reporter', 'json', '--max-issues', '999999',
+    executable, '--config', 'toolkit/scripts/knip-config.mjs', '--reporter', 'json', '--max-issues', '999999',
   ], { cwd: REPO_ROOT, allowFailure: true }))
   const offenders = topOffenders(report.issues.map((entry) => ({
     value: issueCount({ issues: [entry] }), file: slash(entry.file),
@@ -293,7 +294,7 @@ async function main() {
   throw new Error('Usage: quality.mjs baseline | delta [--since <git-ref>] | debt-cards [--top N] [--format markdown|json]')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isInvokedDirectly(import.meta.url)) {
   main().catch((error) => {
     // A report that cannot be produced says so by exit code; a silent exit 0 on `delta` once hid a
     // parse failure behind an empty report.

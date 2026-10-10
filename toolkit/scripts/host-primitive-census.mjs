@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs'
-import { extname, join, relative, resolve } from 'node:path'
+import { extname, join, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
+import { listGitIgnoredPaths, pathsRegexSource } from './git-ignored-inputs.mjs'
 
 const DEFAULT_PLUGIN_ROOT = resolve(import.meta.dirname, '../../plugin')
 const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
@@ -8,10 +10,10 @@ const FILESYSTEM_MODULES = new Set(['fs', 'fs/promises', 'node:fs', 'node:fs/pro
 const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
-// A parser of Bash command text: its `/` and `\` literals are POSIX paths written inside the
-// command and shell quoting, whatever the host. Only the separator check is skipped for it; its
-// imports and host calls are counted like any other file's.
-const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
+// A parser of Bash command text, and the quoting of commands printed for a POSIX shell: their `/` and
+// `\` literals are command text and shell or JSON escapes, whatever the host. Only the separator check
+// is skipped for them; their imports and host calls are counted like any other file's.
+const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/lib/remedy-quote.mjs'])
 
 // Lowered by independent reductions: the suite lock's reclaim moved its file operations into
 // host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
@@ -22,11 +24,17 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs'])
 // that replaced the duplicate-hook notice reads the home directory through host/home-directory.mjs.
 // The board-pointer walk and the worktree remover's canonical path moved into host/board-pointer.mjs; the
 // retention helpers read the platform from host/platform.mjs.
-// The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs.
+// The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs, and the
+// legacy state carry-over in plugin-data-dir.mjs gets its own from host/legacy-carry-filesystem.mjs.
+// The adopt installer dropped its script import-rewrite transform (one readFileSync, one homedir) while
+// the adopt-check hook gained one lstatSync to report a symlinked script.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1893
+// The journal replaces the old reminder's raw filesystem reads with host-adapter operations.
+export const HOST_PRIMITIVE_CEILING = 1880
 
-function sourceFiles(root) {
+export function sourceFiles(root) {
+  const ignoredSource = pathsRegexSource(listGitIgnoredPaths(root).paths, root, root)
+  const ignored = ignoredSource ? new RegExp(ignoredSource) : null
   const hostRoot = join(root, 'bin', 'lib', 'host')
   // Generated third-party YAML grammar literals are not host access (same exemption
   // as the generated observatory launcher); their source is byte-identity checked.
@@ -34,6 +42,8 @@ function sourceFiles(root) {
   function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const path = join(directory, entry.name)
+      const input = relative(root, path).split(sep).join('/') + (entry.isDirectory() ? '/' : '')
+      if (ignored?.test(input)) return []
       if (entry.isDirectory()) return path === hostRoot ? [] : walk(path)
       return entry.isFile() && EXECUTABLE_EXTENSIONS.has(extname(path)) && !generated.has(path) ? [path] : []
     })
@@ -161,7 +171,7 @@ export function formatHostPrimitiveRefusal(result) {
   ].join('\n')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkHostPrimitives()
   process.stdout.write(`Raw host primitives: ${result.count}/${result.ceiling} across ${result.perimeterFiles} perimeter files.\n`)
   if (result.exceeded) {

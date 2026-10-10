@@ -234,9 +234,14 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
       'Known-issues documents this SessionStart post-adoption environment-drift light under Shipped Hooks, Guards & Monitors.',
   },
   {
-    script: 'plugin/bin/wt-unsynced-buffer-hook.mjs',
+    script: 'plugin/bin/wt-work-journal-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this SessionStart Planka degraded-mode reminder under Shipped Hooks, Guards & Monitors.',
+    reason: 'The work-journal guide documents mechanical act recorders, integrity recovery, the bounded digest and warn-only Stop pairing.',
+  },
+  {
+    script: 'plugin/bin/wt-work-journal.mjs',
+    status: 'mapped',
+    reason: 'The work-journal guide documents readers, board setup, reconciliation, verified retirement, restore, unlock and closed-day export.',
   },
   {
     script: 'plugin/bin/wt-session-env-dedup-hook.mjs',
@@ -398,6 +403,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-model-fallback-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the model-fallback PostToolUse and SubagentStop warning hooks.',
+  },
+  {
+    script: 'plugin/bin/wt-duplicate-pilot-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse duplicate pilot spawn guard and its review-based probation under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-cancelled-call-relay-guard-hook.mjs',
@@ -628,7 +638,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-merge-chain-guard-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this PreToolUse merge-chain warning guard under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this PreToolUse merge-chain journal and subagent-reaching commit-chain warning guard under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-merge-target-guard-hook.mjs',
@@ -638,7 +648,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-concurrent-test-guard-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this PreToolUse concurrent-test warning guard under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this PreToolUse concurrent-test journal-only warn paths and role-closed enumeration refusal under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-piped-gate-exit-code-guard-hook.mjs',
@@ -648,7 +658,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-missing-package-script-guard-hook.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this PreToolUse missing-package-script warn-only guard under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this PreToolUse missing-package-script journal-only guard under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-gate-evidence-guard-hook.mjs',
@@ -726,6 +736,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: [
       'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
       'plugin/skills/workflow-composer/SKILL.md',
+      'plugin/skills/workflow-composer/references/raw-authoring-path.md',
     ],
   },
   {
@@ -750,6 +761,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: [
       'plugin/skills/workflow-composer/references/model-and-agent-routing.md',
       'plugin/skills/workflow-debugger/SKILL.md',
+      'plugin/skills/workflow-debugger/references/thin-envelope-runs.md',
     ],
   },
   {
@@ -757,7 +769,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/bin/lib/host/lane-sandbox.mjs', 'plugin/bin/lib/host/hardened-git.mjs', 'plugin/bin/lib/host/pid-namespace.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/lib/lane-opencode-attribution.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/bin/lib/host/lane-sandbox.mjs', 'plugin/bin/lib/host/hardened-git.mjs', 'plugin/bin/lib/host/pid-namespace.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
@@ -837,13 +849,25 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       // oversight.
       'plugin/bin/wt-lane-consent.mjs',
     ],
-    docs: ['plugin/skills/pilot-wave/SKILL.md'],
+    docs: [
+      'plugin/skills/pilot-wave/SKILL.md',
+      'plugin/skills/pilot-wave/references/delegation-ladder.md',
+      'plugin/skills/pilot-wave/references/resolve-the-environment-brief.md',
+      'plugin/skills/pilot-wave/references/compose-the-spawn-prompt.md',
+      'plugin/skills/pilot-wave/references/environment-brief-contract.md',
+    ],
   },
   {
     // The adopt opt-in installer (writes editable, versioned rule copies of
     // the cross-cutting guardrails) is described by its own skill.
     sources: ['plugin/skills/adopt/scripts/'],
-    docs: ['plugin/skills/adopt/SKILL.md', 'README.md'],
+    docs: [
+      'plugin/skills/adopt/SKILL.md',
+      'plugin/skills/adopt/references/how-to-run-it.md',
+      'plugin/skills/adopt/references/what-gets-installed.md',
+      'plugin/skills/adopt/references/detecting-and-refreshing-stale-copies.md',
+      'README.md',
+    ],
   },
   {
     // The bundled cross-cutting rule files (the delegation ladder + companions)
@@ -922,6 +946,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/skills/workflow-composer/SKILL.md',
       'toolkit/README.md',
       'README.md',
+      'plugin/skills/workflow-composer/references/toolkit-path.md',
     ],
   },
   {
@@ -941,6 +966,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/skills/toolkit-scaffold/SKILL.md',
       'plugin/skills/workflow-composer/SKILL.md',
       'plugin/skills/workflow-composer/references/capability-needs.md',
+      'plugin/skills/workflow-composer/references/toolkit-path.md',
     ],
   },
   {
@@ -949,6 +975,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: [
       'plugin/skills/workflow-debugger/SKILL.md',
       'docs/public/known-issues.md',
+      'plugin/skills/workflow-debugger/references/observed-vs-inferred.md',
+      'plugin/skills/workflow-debugger/references/thin-envelope-runs.md',
+      'plugin/skills/workflow-debugger/references/wt-observe-launcher-cli.md',
+      'plugin/skills/workflow-debugger/references/how-it-works.md',
     ],
   },
   {
@@ -968,7 +998,12 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     // Smoke / canaries (the upgrade re-verification story).
     sources: ['toolkit/packages/smoke/src/'],
-    docs: ['plugin/skills/upgrade-canary/SKILL.md'],
+    docs: [
+      'plugin/skills/upgrade-canary/SKILL.md',
+      'plugin/skills/upgrade-canary/references/full-canary-family.md',
+      'plugin/skills/upgrade-canary/references/observer-agent-pairing-probe.md',
+      'plugin/skills/upgrade-canary/references/how-it-works.md',
+    ],
   },
   {
     // The pr-review composition itself (its worked example + the shipped list).
@@ -1011,6 +1046,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'docs/public/architecture.md',
       'plugin/skills/workflow-debugger/SKILL.md',
       'plugin/skills/workflow-composer/references/observing-runs.md',
+      'plugin/skills/workflow-debugger/references/observed-vs-inferred.md',
+      'plugin/skills/workflow-debugger/references/thin-envelope-runs.md',
+      'plugin/skills/workflow-debugger/references/wt-observe-launcher-cli.md',
+      'plugin/skills/workflow-debugger/references/how-it-works.md',
       'PRIVACY.md',
       'SECURITY.md',
     ],
@@ -1075,7 +1114,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     // Shipped SessionStart delegation-ladder injection.
     sources: ['plugin/bin/wt-delegation-ladder-hook.mjs'],
-    docs: ['README.md', 'plugin/skills/adopt/SKILL.md'],
+    docs: ['README.md', 'plugin/skills/adopt/SKILL.md', 'plugin/skills/adopt/references/how-to-run-it.md'],
   },
   {
     // Shipped Stop hooks whose operator-facing semantics are documented as known issues/contracts.
@@ -1094,6 +1133,12 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
     // Monitors" section — none had a doc surface before.
+    sources: ['plugin/bin/wt-work-journal.mjs', 'plugin/bin/wt-work-journal-hook.mjs', 'plugin/bin/lib/work-journal.mjs', 'plugin/bin/lib/work-journal-paths.mjs', 'plugin/bin/lib/work-journal-recorders.mjs', 'plugin/bin/lib/work-journal-git.mjs', 'plugin/bin/lib/work-journal-hook-core.mjs', 'plugin/bin/lib/work-journal-lifecycle.mjs', 'plugin/bin/lib/work-journal-commands.mjs', 'plugin/bin/lib/host/work-journal-io.mjs', 'plugin/config/work-journal-recorders.json'],
+    docs: ['docs/public/work-journal.md', 'docs/public/known-issues.md', 'README.md', 'plugin/hooks/README.md', 'plugin/skills/deep-grounding/SKILL.md', 'plugin/skills/planka-tracking/SKILL.md'],
+  },
+  {
+    // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
+    // Monitors" section — none had a doc surface before.
     sources: [
       'plugin/bin/wt-adopt-check-hook.mjs',
       'plugin/bin/wt-label-intent-producer-hook.mjs',
@@ -1102,7 +1147,6 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       // and the shim one release after the rename.
       'plugin/bin/wt-adopt-rules-check-hook.mjs',
       'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
-      'plugin/bin/wt-unsynced-buffer-hook.mjs',
       'plugin/bin/wt-session-env-dedup-hook.mjs',
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
@@ -1126,6 +1170,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-model-fallback-check.mjs',
       'plugin/bin/wt-model-fallback-hook.mjs',
       'plugin/bin/wt-cancelled-call-relay-guard-hook.mjs',
+      'plugin/bin/wt-duplicate-pilot-guard-hook.mjs',
       'plugin/bin/wt-probe-claim-guard-hook.mjs',
       'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
       'plugin/bin/wt-observer-pairing-guard-hook.mjs',

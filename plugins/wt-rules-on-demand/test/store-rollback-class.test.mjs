@@ -30,6 +30,8 @@ const rowsOf = (contexts, into = []) => {
   return into;
 };
 const idsOf = (contexts) => rowsOf(contexts).map(([id]) => id);
+// Deliveries a call made: only sample.md (a bash-command rule) records one; budget.md's compliance 'none' records none.
+const delivering = (result) => (result?.context ?? []).filter((block) => block.startsWith('<rule name="sample.md">')).length;
 const storeContexts = (sessions) => Object.values(sessions ?? {}).flatMap((session) => Object.values(session?.contexts ?? {}));
 
 // A refusal is armed right before the write it refuses, so every one lands on a write.
@@ -38,7 +40,7 @@ const ACTIONS = ['push', 'error', 'error', 'grow', 'refuse-plain error', 'refuse
 // Every step happens one second after the previous one, so two events never share a timestamp: two rows under one id
 // that differ are two events, which an id must never name together.
 let clock = Date.parse(AT);
-async function runSequence(seed, root) {
+async function runSequence(seed, root, frozen = false) {
   const random = prng(seed);
   let plan = null;
   const store = hostStore({}, { refuse: (key) => {
@@ -53,16 +55,28 @@ async function runSequence(seed, root) {
   await writeFile(join(rules, 'budget.md'), promptRule);
   const acked = new Set();
   const steps = [];
-  let grown = 0, copies = 0;
+  let grown = 0, copies = 0, served = 0;
+  const reload = async () => {
+    const hooks = await import(`../hooks/hooks.js?class=${++reloads}`);
+    const logs = f.logs;
+    f = await hookFixture(root, store, { hooks, triggerClock: exhaustedBudgetClock() });
+    f.logs.unshift(...logs);
+  };
   for (let step = 0; step < 14; step++) {
-    clock += 1000;
+    if (frozen) await reload();
+    else clock += 1000;
     const chosen = ACTIONS[Math.floor(random() * ACTIONS.length)];
     steps.push(chosen);
     for (const action of chosen.split(' ')) {
     if (action === 'push' || action === 'error') {
       const before = f.logs.length;
-      if (action === 'push') await f.call({ command: 'git push origin main' });
-      else await f.handlers.get('prompt.submit')(f.$, { text: 'a'.repeat(16000), cwd: f.project }, async () => ({}));
+      if (action === 'push') served += delivering(await f.call({ command: 'git push origin main' }));
+      // The exhausted budget serves every rule unevaluated, sample.md included, so an 'error' call delivers too.
+      else served += delivering(await f.handlers.get('prompt.submit')(f.$, { text: 'a'.repeat(16000), cwd: f.project }, async (event) => event));
+      // Retry a refused write before the forced reload, which discards uncommitted in-memory state.
+      if (frozen && f.logs.slice(before).some((line) => /write failed/.test(line))) {
+        await f.handlers.get('turn.complete')(f.$, { cwd: f.project }, async () => ({}));
+      }
       // Acknowledged: the call's journal reported no failed write; what the store holds then was seen by the caller.
       if (!f.logs.slice(before).some((line) => /write failed/.test(line))) for (const id of idsOf(storeContexts(store.map.get('sessions')))) acked.add(id);
     } else if (action === 'grow') {
@@ -81,17 +95,14 @@ async function runSequence(seed, root) {
         await copyFile(join(f.quality, name), join(f.quality, `${STORE_ARCHIVE.prefix}${9_000_000 + copies++}-1${STORE_ARCHIVE.suffix}`));
       }
     } else if (action === 'reload') {
-      const hooks = await import(`../hooks/hooks.js?class=${++reloads}`);
-      const logs = f.logs;
-      f = await hookFixture(root, store, { hooks, triggerClock: exhaustedBudgetClock() });
-      f.logs.unshift(...logs);
+      await reload();
     }
     }
   }
-  return { f, store, acked, steps };
+  return { f, store, acked, steps, expectedDeliveries: grown + served };
 }
 
-test('L4: every stamped id-row is present exactly once in every reader, across rollbacks, splits, copies and reloads', async (t) => {
+async function checkSequences(t, frozen = false) {
   for (let seed = 1; seed <= 8; seed++) {
     const root = await mkdtemp(join(tmpdir(), `rod-l4-${seed}-`));
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -101,8 +112,8 @@ test('L4: every stamped id-row is present exactly once in every reader, across r
       static now() { return clock; }
     };
     let run;
-    try { run = await runSequence(seed, root); } finally { globalThis.Date = RealDate; }
-    const { f, store, acked, steps } = run;
+    try { run = await runSequence(seed, root, frozen); } finally { globalThis.Date = RealDate; }
+    const { f, store, acked, steps, expectedDeliveries } = run;
     const label = `seed ${seed} (${steps.join(' ')})`;
     const files = (await readdir(f.quality).catch(() => [])).filter((name) => name.startsWith(STORE_ARCHIVE.prefix));
     const raw = [];
@@ -120,6 +131,10 @@ test('L4: every stamped id-row is present exactly once in every reader, across r
     assert.deepEqual(unreadable, [], `${label}: every archive readable`);
     const counts = new Map();
     for (const id of idsOf(storeContexts(withArchivedSessions(archives, live)))) counts.set(id, (counts.get(id) ?? 0) + 1);
+    if (frozen) {
+      const joinedDeliveries = [...counts].filter(([id]) => id.startsWith('d:')).reduce((sum, [, count]) => sum + count, 0);
+      assert.equal(joinedDeliveries, expectedDeliveries, `${label}: the join counts every served and seeded delivery, including byte-identical events`);
+    }
     for (const id of everywhere) assert.equal(counts.get(id), 1, `${label}: ${id} once in the join`);
     for (const id of acked) assert.equal(counts.get(id), 1, `${label}: acknowledged ${id} once in the join`);
     const totals = await readerTotals(f, store.snapshot());
@@ -127,5 +142,15 @@ test('L4: every stamped id-row is present exactly once in every reader, across r
     const errors = [...everywhere].filter((id) => id.startsWith('e:')).length;
     assert.equal(totals.triggerErrors, errors, `${label}: the quality reader's trigger errors`);
     assert.equal(totals.deliveries, deliveries, `${label}: the reconcile reader's deliveries`);
+    if (frozen) assert.equal(totals.deliveries, expectedDeliveries, `${label}: the reconcile reader counts every served and seeded delivery`);
   }
+}
+
+test('L4: every stamped id-row is present exactly once in every reader, across rollbacks, splits, copies and reloads', async (t) => {
+  await checkSequences(t);
+});
+
+test('L4: same-millisecond actions with forced reloads lose no deliveries, even when rows are byte-identical', async (t) => {
+  clock = Date.parse(AT);
+  await checkSequences(t, true);
 });

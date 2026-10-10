@@ -30,7 +30,7 @@ count after a merge is the tell the merge never landed, whatever the gate's own 
 State this one mechanically, not as a thing to remember — a threshold that EXECUTES beats a
 check that depends on recall.
 
-Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: warns when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate).
+Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: journals when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate. It also warns through additional context, including to subagents, when a gate's failure cannot stop a later `git commit`; run the gate alone, read its exit code, then commit, or chain with `&&`).
 
 Enforced by `wt-piped-gate-exit-code-guard-hook.mjs` (PreToolUse Bash: warns, never blocks, when a control gate is piped and `$?` then reads the last pipeline element's code; capture instead with `command > file; echo EXIT=$? >> file`, or use `${pipestatus[1]}` on zsh).
 
@@ -88,3 +88,17 @@ throw, degrade to named `unknown`, or silently return plausible value.
 Third case is the dangerous one. Monitor reporting reassuring number on platform where it cannot
 measure is WORSE than no monitor — broken state look healthy.
 Linux-only is legitimate conclusion. Letting reader assume portability is not.
+
+## Summary asserting a guarantee is verified against its body, SAME pass
+
+Docstring, header, comment claim a PROPERTY — "this path is literal", "cursor derive from
+acknowledgements", "return everything after X"? Read the body under it before moving on. Not
+later. Not as review step. Same pass — claim and code diverge at the moment code change and claim
+does not.
+
+Failure is not carelessness. Treating it as carelessness is why it repeat. Rewrite body, then
+adjust summary → you describe what you INTENDED, not what you WROTE. That summary is exactly what
+next reader trust when checking quickly. So it mislead exactly when it matter.
+
+This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
+needed: the sentence is reassuring.

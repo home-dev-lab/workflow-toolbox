@@ -54,6 +54,7 @@ async function run(env: Record<string, string>) {
     child.on('error', reject)
     child.on('close', (status) => resolve({ stdout, status }))
   })
+  expect(readdirSync(config).filter((name) => /^\.quota-cache.*\.json$/.test(name))).toEqual(['.quota-cache.json'])
   return { result, cache: readFileSync(join(config, '.quota-cache.json'), 'utf8') }
 }
 

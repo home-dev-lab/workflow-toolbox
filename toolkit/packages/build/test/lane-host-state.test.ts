@@ -1,17 +1,193 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { afterEach, expect, it } from 'vitest'
+import { EventEmitter } from 'node:events'
+import { afterEach, expect, it, vi } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error ESM runtime module
-import { parse } from '../../../../plugin/bin/wt-lane.mjs'
+import { parse, reportWorkerReturnedBeforeSpawn, spawnAndReportOpencode } from '../../../../plugin/bin/wt-lane.mjs'
 // @ts-expect-error ESM runtime module
 import { inspectProcess, readCurrentSupervision, supervisionPaths, supervisionSlots } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error ESM runtime module
 import { makeReadableLaneBrief, readLifecycleRegular, readWorktreeRegular } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error ESM runtime module
-import { laneHostDir, laneHostStateRoot } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+import { appendLaunchFailure, awaitChildSpawn, ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+
+it.each(['spawn', 'error', 'timeout', 'null-error', 'undefined-error'])('settles child spawn on %s and clears its listeners and timer', async (event) => {
+  vi.useFakeTimers()
+  try {
+    const child = new EventEmitter()
+    const error = event === 'null-error' ? null : event === 'undefined-error' ? undefined : new Error('spawn unavailable')
+    const result = awaitChildSpawn(child, { timeoutMs: 50 }).then(
+      () => ({ status: 'spawned' }),
+      (failure: Error | null | undefined) => ({ status: 'failed', failure }),
+    )
+    expect(vi.getTimerCount()).toBe(1)
+    if (event === 'timeout') await vi.advanceTimersByTimeAsync(50)
+    else child.emit(event.endsWith('-error') ? 'error' : event, error)
+    const settled = await result
+    if (event === 'spawn') expect(settled).toEqual({ status: 'spawned' })
+    else if (event !== 'timeout') {
+      expect(settled.status).toBe('failed')
+      expect(settled.failure).toBe(error)
+    }
+    else expect(settled).toMatchObject({ status: 'failed', failure: { message: 'opencode reported neither spawn nor error within 0.05 s' } })
+    expect(child.listenerCount('spawn')).toBe(0)
+    expect(child.listenerCount('error')).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  } finally { vi.useRealTimers() }
+})
+
+it('appends a launch failure once and leaves existing terminal logs untouched', () => {
+  const log = join(fixture().dir, 'run.log')
+  writeFileSync(log, 'stage=starting\n')
+  appendLaunchFailure(log, 'worker stopped')
+  appendLaunchFailure(log, 'worker stopped again')
+  expect(readFileSync(log, 'utf8')).toBe('stage=starting\nwt-lane: launch-failed: worker stopped\nEXIT=1\n')
+  writeFileSync(log, 'EXIT=0\n\n')
+  appendLaunchFailure(log, 'late failure')
+  expect(readFileSync(log, 'utf8')).toBe('EXIT=0\n\n')
+})
+
+it('reports to a missing log and tolerates unavailable log writes', () => {
+  const { dir } = fixture()
+  const log = join(dir, 'new.log')
+  appendLaunchFailure(log, 'no child')
+  expect(readFileSync(log, 'utf8')).toBe('wt-lane: launch-failed: no child\nEXIT=1\n')
+  expect(() => appendLaunchFailure(dir, 'cannot write')).not.toThrow()
+  expect(() => appendLaunchFailure(undefined, 'no log')).not.toThrow()
+})
+
+it.each(['spawn', 'error', 'throw'])('keeps worker spawn/report ordering for %s', async (event) => {
+  const log = join(fixture().dir, 'run.log')
+  writeFileSync(log, '')
+  const child = new EventEmitter()
+  const calls: string[] = []
+  const error = new Error('unavailable')
+  const spawned = await spawnAndReportOpencode({
+    spawnOpencode: () => {
+      calls.push('start')
+      if (event === 'throw') throw error
+      queueMicrotask(() => child.emit(event, error))
+      return child
+    },
+    onChild: () => { calls.push('child') },
+    onSpawn: () => { calls.push('spawned') },
+    cleanup: () => { calls.push('cleanup') },
+    writeFailure: (reason: string) => {
+      expect(readFileSync(log, 'utf8')).toBe('')
+      calls.push(reason)
+    },
+    log, timeoutMs: 50,
+  })
+  expect(spawned).toBe(event === 'spawn' ? child : null)
+  expect(calls).toEqual(event === 'spawn' ? ['start', 'child', 'spawned'] : [
+    'start', ...(event === 'error' ? ['child'] : []), 'cleanup', 'opencode spawn failed: unavailable',
+  ])
+  expect(readFileSync(log, 'utf8')).toBe(event === 'spawn' ? '' : 'wt-lane: launch-failed: opencode spawn failed: unavailable\nEXIT=1\n')
+})
+
+it('still logs and kills a timed-out child when writing supervision fails', async () => {
+  vi.useFakeTimers()
+  try {
+    const log = join(fixture().dir, 'run.log')
+    const child = Object.assign(new EventEmitter(), { kill: vi.fn(() => { throw new Error('already gone') }) })
+    const failure = new Error('record unavailable')
+    const result = spawnAndReportOpencode({
+      spawnOpencode: () => child, onChild: () => {}, onSpawn: () => {}, cleanup: () => {},
+      writeFailure: () => { throw failure }, log, timeoutMs: 50,
+    }).catch((error: Error) => error)
+    await vi.advanceTimersByTimeAsync(50)
+    expect(await result).toBeNull()
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL')
+    const contents = readFileSync(log, 'utf8')
+    expect(contents).toMatch(/within 0\.05 s; supervision record not written: record unavailable\nEXIT=1\n$/)
+    expect(contents.match(/^EXIT=/gm)).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+  } finally { vi.useRealTimers() }
+})
+
+it('retains the spawn reason when cleanup throws', async () => {
+  const log = join(fixture().dir, 'run.log')
+  const reasons: string[] = []
+  const result = await spawnAndReportOpencode({
+    spawnOpencode: () => { throw new Error('spawn denied') }, onChild: () => {}, onSpawn: () => {},
+    cleanup: () => { throw new Error('cleanup denied') }, writeFailure: (reason: string) => reasons.push(reason), log,
+  }).catch((error: Error) => error)
+  expect(result).toBeNull()
+  expect(reasons).toEqual(['opencode spawn failed: spawn denied'])
+  expect(readFileSync(log, 'utf8')).toBe('wt-lane: launch-failed: opencode spawn failed: spawn denied\nEXIT=1\n')
+})
+
+it('absorbs a late child error after successful spawn', async () => {
+  const child = new EventEmitter()
+  const result = await spawnAndReportOpencode({
+    spawnOpencode: () => { queueMicrotask(() => child.emit('spawn')); return child },
+    onChild: () => {}, onSpawn: () => {}, cleanup: () => {}, writeFailure: () => {},
+    log: join(fixture().dir, 'run.log'),
+  })
+  expect(result).toBe(child)
+  expect(() => child.emit('error', new Error('late'))).not.toThrow()
+  expect((child as EventEmitter & { lateSpawnError: Error }).lateSpawnError.message).toBe('late')
+})
+
+it.each([undefined, 2])('reports a worker return or drain with exit code %s', (exitCode) => {
+  const { dir, worktree } = fixture()
+  const log = join(dir, 'run.log')
+  reportWorkerReturnedBeforeSpawn({ dir: worktree, runId: '1-1', log, exitCode })
+  const reason = exitCode === undefined ? "worker's event loop drained before opencode spawned (no exit code)" : 'worker returned before spawning opencode (exit code 2)'
+  expect(readFileSync(log, 'utf8')).toBe(`wt-lane: launch-failed: ${reason}\nEXIT=1\n`)
+})
+
+it('reports a worker failure even when its host state cannot be resolved', () => {
+  const { dir } = fixture()
+  const log = join(dir, 'run.log')
+  const previous = process.env.WT_LANE_HOST_STATE
+  process.env.WT_LANE_HOST_STATE = 'relative-state-is-invalid'
+  try {
+    expect(() => reportWorkerReturnedBeforeSpawn({ dir: join(dir, 'missing'), runId: '1-1', log, exitCode: 1 })).not.toThrow()
+    expect(readFileSync(log, 'utf8')).toBe('wt-lane: launch-failed: worker returned before spawning opencode (exit code 1)\nEXIT=1\n')
+  } finally {
+    if (previous === undefined) delete process.env.WT_LANE_HOST_STATE
+    else process.env.WT_LANE_HOST_STATE = previous
+  }
+})
+
+it.each([false, true])('bounds a never-spawning worker child with live handle=%s', (liveHandle) => {
+  const { dir } = fixture()
+  const script = join(dir, 'drain.mjs'), log = join(dir, 'run.log'), record = join(dir, 'record.json')
+  const launcher = new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url).href
+  const helper = new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url).href
+  writeFileSync(script, `
+    import { EventEmitter } from 'node:events';
+    import { readFileSync, writeFileSync } from 'node:fs';
+    import { spawnAndReportOpencode } from ${JSON.stringify(launcher)};
+    import { appendLaunchFailure } from ${JSON.stringify(helper)};
+    const log = ${JSON.stringify(log)}, record = ${JSON.stringify(record)};
+    writeFileSync(log, ''); writeFileSync(record, JSON.stringify({ state: 'launching' }));
+    process.once('beforeExit', () => {
+      if (JSON.parse(readFileSync(record)).state !== 'launching') return;
+      writeFileSync(record, JSON.stringify({ state: 'launch-failed', reason: 'worker drained' }));
+      appendLaunchFailure(log, 'worker drained');
+    });
+    const handle = ${liveHandle} ? setInterval(() => {}, 1000) : null;
+    const child = new EventEmitter();
+    child.kill = signal => { clearInterval(handle); writeFileSync(${JSON.stringify(join(dir, 'killed'))}, signal); };
+    const spawned = await spawnAndReportOpencode({
+      spawnOpencode: () => child, onChild: () => {}, onSpawn: () => {}, cleanup: () => {}, log, timeoutMs: 50,
+      writeFailure: reason => { writeFileSync(record, JSON.stringify({ state: 'launch-failed', reason })); }
+    });
+    process.exitCode = spawned ? 0 : 1; process.stdout.write('settled\\n');
+  `)
+  const result = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 20_000 })
+  expect(result.error).toBeUndefined()
+  expect(result.status, result.stderr).toBe(1)
+  expect(result.stdout).toBe('settled\n')
+  expect(JSON.parse(readFileSync(record, 'utf8')).reason).toBe('opencode spawn failed: opencode reported neither spawn nor error within 0.05 s')
+  expect(readFileSync(join(dir, 'killed'), 'utf8')).toBe('SIGKILL')
+  expect(readFileSync(log, 'utf8')).toBe('wt-lane: launch-failed: opencode spawn failed: opencode reported neither spawn nor error within 0.05 s\nEXIT=1\n')
+})
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) { rmSync(laneHostDir(join(dir, 'worktree')), { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }) } })
@@ -242,4 +418,46 @@ it('waiter rejects legacy-only records even when handed a pid', () => {
   const result = spawnSync(process.execPath, [wait, '--dir', worktree, '--pid', String(process.pid), '--timeout', '0.03'], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { WT_LANE_HOST_STATE: join(dir, 'state') }) })
   expect(result.status).toBe(2)
   expect(result.stderr).toContain('legacy lane supervision')
+})
+
+function withStateRoot<T>(stateRoot: string, body: () => T): T {
+  const previous = process.env.WT_LANE_HOST_STATE
+  process.env.WT_LANE_HOST_STATE = stateRoot
+  try { return body() } finally { if (previous === undefined) delete process.env.WT_LANE_HOST_STATE; else process.env.WT_LANE_HOST_STATE = previous }
+}
+
+// Each malformed marker gets its own host state root, so each reading rule is locked on its own.
+function withMarker(content: (dir: string) => string) {
+  const { dir, worktree } = fixture()
+  const stateRoot = join(dir, 'state')
+  mkdirSync(join(stateRoot, 'a'.repeat(32)), { recursive: true })
+  writeFileSync(join(stateRoot, 'a'.repeat(32), 'worktree'), content(realpathSync.native(dir)))
+  return { dir, worktree, stateRoot }
+}
+
+it('never reads an empty worktree marker as a path containing every other path', () => {
+  const { dir, worktree, stateRoot } = withMarker(() => '')
+  withStateRoot(stateRoot, () => {
+    expect(() => ensureLaneHostDir(worktree)).not.toThrow()
+    expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false)
+  })
+})
+
+it('never reads a marker cut short before its newline as a worktree path', () => {
+  const { dir, worktree, stateRoot } = withMarker((real) => real)
+  const real = realpathSync.native(dir)
+  withStateRoot(stateRoot, () => {
+    expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false)
+    expect(laneWritablePath(worktree, real.slice(0, -1))).toBe(false)
+  })
+})
+
+it('never reads a relative marker as a worktree path', () => {
+  const { worktree, stateRoot } = withMarker(() => `${join('relative', 'child')}\n`)
+  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join('relative', 'child', 'file.log'))).toBe(false))
+})
+
+it('still reads a complete marker as a lane worktree', () => {
+  const { dir, worktree, stateRoot } = withMarker((real) => `${real}\n`)
+  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(true))
 })

@@ -115,8 +115,9 @@ FINDINGS:
   it.each([
     ['[anchor: none]', 'explicit anchor none'],
     ['[anchor: DoD 99]', 'explicit anchor DoD 99 does not resolve'],
+    ['[anchor: plan task 99]', 'explicit anchor plan task 99 does not resolve'],
   ])('routes an explicitly unresolvable MEDIUM+ anchor with its reason: %s', (anchor, routeReason) => {
-    const verdict = verdictFromReport('review', `VERDICT: changes-requested\nFINDINGS:\n- [MEDIUM]${anchor}[location: src/a.ts:1] defect\n`, { validAnchors: ['DoD 1'] })
+    const verdict = verdictFromReport('review', `VERDICT: changes-requested\nFINDINGS:\n- [MEDIUM]${anchor}[location: src/a.ts:1] defect\n`, { validAnchors: ['DoD 1', 'plan task 3'] })
     expect(verdict.findingDetails[0]).toMatchObject({ blocks: false, routeReason })
   })
 
@@ -139,6 +140,11 @@ FINDINGS:
 `, { validAnchors: ['DoD 1'], previousFixPatch: patch })
     expect(ownCode.findingDetails[0]).toMatchObject({ blocks: true })
     expect(cardCriterion.findingDetails[0]).toMatchObject({ blocks: true })
+  })
+
+  it('keeps a bare numeric anchor unresolved against an explicit numbered plan task', () => {
+    const verdict = verdictFromReport('review', 'VERDICT: changes-requested\nFINDINGS:\n- [MEDIUM][anchor: 3][location: src/a.ts:1] defect\n', { validAnchors: ['plan task 3'] })
+    expect(verdict.findingDetails[0]).toMatchObject({ anchor: null, blocks: false, routeReason: 'explicit anchor 3 does not resolve' })
   })
 
   it('never infers an anchor from finding prose', () => {
@@ -333,5 +339,45 @@ FINDINGS:
     expect(brief).toContain('anchor field is mandatory for every `[blocking]` finding')
     expect(brief).toContain('## No-finding attack account')
     expect(brief).toContain('failed critic round and is re-run once')
+  })
+
+  it('gives only plan critics the mandatory-section truth checklist', () => {
+    const options = { context: 'judge the supplied artefact', artifacts: ['plan.md'], reportPath: 'report.md' }
+    const critic = independentBrief({ ...options, phase: 'critic' })
+    const bullets = [
+      '- `## Quality coverage` / `Changed artefacts:`',
+      '- `## Quality coverage` / `Seams:`',
+      '- `## Gates`',
+      '- `## Card terms: reading chosen`',
+      '- `## State and recovery` / `Ownership:`',
+      '- `## State and recovery` / `Writers:`',
+      '- `## State and recovery` / `Terminal paths:`',
+      '- `## State and recovery` / `Published data:`',
+    ]
+    expect(critic).toContain('## Coverage checklist\n')
+    expect(critic).toContain('Plan-stage checklist')
+    for (const bullet of bullets) expect(critic).toContain(bullet)
+    for (const question of [
+      'each changed artefact against each applicable repository quality rule',
+      'approved seams and the census/ratchet checks',
+      'every repository-required validation with exit-code acceptance',
+      'each DoD term the plan interprets, anywhere in the plan',
+      "the narrowest reading that satisfies the card's words",
+      'a wider reading is a DoD-term question, not a plan defect',
+      '`- none:` is still subject to this truth check',
+      'ownership and immutability of each state or data boundary',
+      'lifecycle of all writers through the final observation point',
+      'every terminal/error path and what it preserves',
+      'derived records, commit/crash/deletion policy, and concurrent recovery',
+      'the transaction protocol and visibility at commit',
+      'only when the plan modifies already-published data',
+      'A false `N/A` is judged by the critic under the existing blocking definition',
+    ]) expect(critic).toContain(question)
+    for (const phase of ['review', 'refutation']) {
+      const brief = independentBrief({ ...options, phase })
+      expect(brief).not.toContain('Plan-stage checklist')
+      for (const bullet of bullets) expect(brief).not.toContain(bullet)
+      expect(brief).not.toContain('A false `N/A`')
+    }
   })
 })

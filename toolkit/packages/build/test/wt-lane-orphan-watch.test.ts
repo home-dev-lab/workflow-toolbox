@@ -169,7 +169,9 @@ describe('lane orphan watcher self-detection', () => {
     const plan = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: fake, args: ['run', 'sandboxed', '--dir', wt], cwd: wt, env: { HOME: join(root, 'home'), PATH: process.env.PATH }, runtimeParent: join(root, 'run'), optionEnv: { PATH: process.env.PATH } })
     expect(plan.kind).toBe('bwrap')
     const [command, args] = plan.wrap(fake, ['run', 'sandboxed', '--dir', wt])
-    const lane = spawn(command, args, { cwd: wt, detached: true, stdio: 'ignore' })
+    // The recorded child is a wrapper shell, so the bwrap's parent is not the pid its runtime directory
+    // names: only the supervision record can attribute this lane (the creator path cannot mask it).
+    const lane = spawn('/bin/sh', ['-c', '"$@"; :', 'sh', command, ...args], { cwd: wt, detached: true, stdio: 'ignore' })
     const unowned = spawn('/bin/sh', [fake, 'run', 'unowned', '--dir', wt], { cwd: wt, detached: true, stdio: 'ignore' })
     // An UNSANDBOXED lane whose child starts a nested opencode run: the nested one is not attributed.
     const plain = spawn('/bin/sh', ['-c', `/bin/sh ${fake} run nested --dir ${wt}; :`], { cwd: wt, detached: true, stdio: 'ignore' })
@@ -236,4 +238,135 @@ describe('lane orphan watcher self-detection', () => {
       reports: [],
     })
   })
+})
+
+// A batch launcher (wt-opencode-envelope.mjs) writes no supervision record: each of its opencode calls used
+// to be a fresh "unattributed" warning, one wake of the watching session per call. Real processes, both
+// directions: a live envelope's calls are silent, an unknown launcher's calls warn ONCE for its tree, and an
+// opencode whose launcher is dead is still warned.
+describe.skipIf(process.platform !== 'linux')('lane orphan watcher batch-launcher attribution', { timeout: 90_000 }, () => {
+  // Polls /proc until `count` processes carrying `needle` are visible, under a 30 s cap (returns as soon as they are).
+  const visiblePids = (needle: string, count: number) => waitFor(() => pidsMatching(needle), 30_000, count)
+  const LAUNCHER_SOURCE = [
+    "import { spawn } from 'node:child_process'",
+    'const [fake, wt, label, mode] = process.argv.slice(2)',
+    "const call = (n, extra = {}) => spawn('/bin/sh', [fake, 'run', `${label}-${n}`, '--dir', wt], { cwd: wt, stdio: 'ignore', ...extra })",
+    "if (mode === 'serial') {",
+    "  call(1, { env: { ...process.env, FAKE_SLEEP: '4' } }).once('exit', () => setTimeout(() => call(2), 4000))",
+    "} else {",
+    "  for (const n of [1, 2]) { const child = call(n, { detached: mode === 'orphan' }); if (mode === 'orphan') child.unref() }",
+    '}',
+    "if (mode !== 'orphan') setInterval(() => {}, 1000)",
+  ].join('\n')
+
+  function runWatcher(root: string, wt: string) {
+    const result = spawnSync(process.execPath, [WATCHER, '--project', wt, '--once'], {
+      encoding: 'utf8', timeout: 60_000,
+      env: { ...process.env, TMPDIR: join(root, 'othertmp'), XDG_STATE_HOME: join(root, 'state'), CLAUDE_CONFIG_DIR: join(root, 'config'), CLAUDE_PLUGIN_DATA: '', CLAUDE_CODE_SESSION_ID: 'watcher-session' },
+    })
+    expect(result.status, result.stderr).toBe(0)
+    return { stdout: result.stdout, warned: [...result.stdout.matchAll(/WARNING: unattributed opencode pid=(\d+)/g)].map((m) => Number(m[1])) }
+  }
+
+  function fixture(root: string) {
+    const wt = join(root, 'wt'); const fake = join(wt, 'bin', 'opencode')
+    for (const dir of [join(wt, 'bin'), join(root, 'othertmp'), join(root, 'config'), join(root, 'launchers', 'plugin', 'bin')]) mkdirSync(dir, { recursive: true })
+    writeFileSync(fake, '#!/bin/sh\nsleep "${FAKE_SLEEP:-60}"\n'); chmodSync(fake, 0o755)
+    const envelope = join(root, 'launchers', 'plugin', 'bin', 'wt-opencode-envelope.mjs')
+    const other = join(root, 'launchers', 'other-batch.mjs')
+    writeFileSync(envelope, LAUNCHER_SOURCE); writeFileSync(other, LAUNCHER_SOURCE)
+    return { wt, fake, envelope, other }
+  }
+
+  // SIGKILL each pid AND its descendants (the fake's `sleep` would otherwise outlive its shell), by exact pid.
+  const childPids = (pid: number) => readdirSync('/proc').filter((name) => /^\d+$/.test(name)).flatMap((name) => {
+    try { const stat = readFileSync(`/proc/${name}/stat`, 'utf8'); return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) === pid ? [Number(name)] : [] } catch { return [] }
+  })
+  const killAll = (pids: number[]) => {
+    const all = new Set<number>(); const pending = [...pids]
+    while (pending.length) { const pid = pending.pop()!; if (all.has(pid)) continue; all.add(pid); pending.push(...childPids(pid)) }
+    for (const pid of all) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
+  }
+
+  it('stays silent on the opencode calls of a live envelope and warns once per unknown launcher tree', async () => withTempDirAsync(async (root) => {
+    const { wt, fake, envelope, other } = fixture(root)
+    const env = spawn(process.execPath, [envelope, fake, wt, 'envcall'], { cwd: wt, stdio: 'ignore' })
+    const unknown = spawn(process.execPath, [other, fake, wt, 'othercall'], { cwd: wt, stdio: 'ignore' })
+    // Control: an opencode started straight from this process is a different tree and warns on its own.
+    const direct = spawn('/bin/sh', [fake, 'run', 'directcall', '--dir', wt], { cwd: wt, stdio: 'ignore' })
+    const started: number[] = [env.pid!, unknown.pid!, direct.pid!]
+    try {
+      const envCalls = await visiblePids('opencode run envcall-', 2)
+      const otherCalls = await visiblePids('opencode run othercall-', 2)
+      started.push(...envCalls, ...otherCalls)
+      expect(envCalls.length, 'never vacuous: both envelope calls are running').toBe(2)
+      expect(otherCalls.length, 'never vacuous: both unknown-launcher calls are running').toBe(2)
+      const { stdout, warned } = runWatcher(root, wt)
+      for (const pid of envCalls) expect(warned, `envelope call ${pid} warned: ${stdout}`).not.toContain(pid)
+      expect(warned.filter((pid) => otherCalls.includes(pid)), `one warning for the unknown launcher's tree: ${stdout}`).toHaveLength(1)
+      expect(warned, `a separate tree keeps its own warning: ${stdout}`).toContain(direct.pid)
+    } finally {
+      killAll(started.slice(3)); killAll(started.slice(0, 3))
+    }
+  }))
+
+  // The 10:47 witness: one sandboxed call with no lane record warned four times (outer bwrap, inner bwrap,
+  // bootstrap shell, opencode), each command line carrying the opencode call. Its live creator owns it.
+  it.skipIf(!BWRAP_WORKS)('stays silent on every process of a record-less sandboxed call whose creator is alive', async () => withTempDirAsync(async (root) => {
+    const { wt, fake } = fixture(root)
+    for (const dir of [join(root, 'home'), join(root, 'run')]) mkdirSync(dir, { recursive: true })
+    const plan = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: fake, args: ['run', 'norecord', '--dir', wt], cwd: wt, env: { HOME: join(root, 'home'), PATH: process.env.PATH }, runtimeParent: join(root, 'run'), optionEnv: { PATH: process.env.PATH } })
+    expect(plan.kind).toBe('bwrap')
+    const [command, args] = plan.wrap(fake, ['run', 'norecord', '--dir', wt])
+    const call = spawn(command, args, { cwd: wt, detached: true, stdio: 'ignore' })
+    try {
+      const chain = await visiblePids('opencode run norecord', 3)
+      expect(chain.length, `never vacuous: wrappers and opencode found: ${chain.join(',')}`).toBeGreaterThanOrEqual(3)
+      const { stdout, warned } = runWatcher(root, wt)
+      for (const pid of chain) expect(warned, `sandboxed call process ${pid} warned: ${stdout}`).not.toContain(pid)
+    } finally {
+      try { process.kill(-call.pid!, 'SIGKILL') } catch { /* gone */ }
+      plan.dispose()
+    }
+  }))
+
+  it('warns again for the same launcher once its earlier unattributed call has gone', async () => withTempDirAsync(async (root) => {
+    const { wt, fake, other } = fixture(root)
+    const watcher = spawn(process.execPath, [WATCHER, '--project', wt, '--poll', '0.5'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, TMPDIR: join(root, 'othertmp'), XDG_STATE_HOME: join(root, 'state'), CLAUDE_CONFIG_DIR: join(root, 'config'), CLAUDE_PLUGIN_DATA: '', CLAUDE_CODE_SESSION_ID: 'watcher-session' },
+    })
+    let stdout = ''
+    watcher.stdout!.on('data', (chunk) => { stdout += String(chunk) })
+    const launcher = spawn(process.execPath, [other, fake, wt, 'serialcall', 'serial'], { cwd: wt, stdio: 'ignore' })
+    const seen = new Set<number>()
+    const warnedSeen = () => [...stdout.matchAll(/WARNING: unattributed opencode pid=(\d+)/g)].map((m) => Number(m[1])).filter((pid) => seen.has(pid))
+    try {
+      // Waits on the watcher's own output, never a fixed delay: a slow sweep only makes it wait longer.
+      const deadline = Date.now() + 45_000
+      while (Date.now() < deadline && warnedSeen().length < 2) {
+        for (const pid of pidsMatching('opencode run serialcall-')) seen.add(pid)
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      expect(seen.size, `never vacuous: both serial calls ran: ${[...seen].join(',')}`).toBe(2)
+      expect(warnedSeen(), `each episode of the tree warns once: ${stdout}`).toHaveLength(2)
+    } finally {
+      killAll([...seen]); killAll([launcher.pid!, watcher.pid!])
+    }
+  }), 90_000)
+
+  it('still warns on an opencode call whose envelope is dead', async () => withTempDirAsync(async (root) => {
+    const { wt, fake, envelope } = fixture(root)
+    const env = spawnSync(process.execPath, [envelope, fake, wt, 'orphancall', 'orphan'], { cwd: wt, stdio: 'ignore', timeout: 30_000 })
+    expect(env.status).toBe(0)
+    const orphans = await visiblePids('opencode run orphancall-', 2)
+    try {
+      expect(orphans.length, 'never vacuous: both orphaned calls are running').toBe(2)
+      const { stdout, warned } = runWatcher(root, wt)
+      // Both calls are reparented to a reaper: neither may hide behind the other's notice.
+      expect(warned.filter((pid) => orphans.includes(pid)).sort(), `every orphan of a dead envelope must warn: ${stdout}`).toEqual([...orphans].sort())
+    } finally {
+      killAll(orphans)
+    }
+  }))
 })

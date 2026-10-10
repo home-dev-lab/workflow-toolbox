@@ -507,9 +507,10 @@ await test('promotion query requires duration, volume, projects, all governed to
 });
 await test('prompt planner covers CRLF, primitive JSON, malformed JSON and long-token masking', async () => {
   const text = `${JSON.stringify({ display: 'raw', count: 1, active: true })}\r\n`;
-  const changes = locateReplacements(text, [{ raw: 'raw', token: 'secret:fixture#toolong' }], 'history');
+  const changes = locateReplacements(text, [{ raw: 'raw', token: 'x' }], 'history');
   assert.equal(changes.length, 1);
-  assert.equal(changes[0].replacement, '***');
+  assert.equal(changes[0].replacement, 'x**');
+  assert.deepEqual(locateReplacements(text, [{ raw: 'raw', token: 'secret:fixture#toolong' }], 'history').map((change) => change.replacement), ['***']);
   assert.throws(() => locateReplacements('{"display":"unterminated}', [{ raw: 'x', token: 'y' }], 'history'), /unterminated/i);
   assert.throws(() => locateReplacements('{"display" "x"}', [], 'history'), /property name|invalid JSON object/);
 });
@@ -604,6 +605,17 @@ await test('exported source declarations pass while an exported credential is sc
   assert.equal(result.text.includes(source), true, 'exported source declaration control matched');
 });
 await test('allow-list', async () => { const input = '0123456789abcdef0123456789abcdef01234567 123e4567-e89b-12d3-a456-426614174000 secret:github#abcdef'; const result = await call('cat fixture.txt', input); assert.equal(result.text, input); });
+await test('a long high-entropy run that no detector holds adds no note to a tool result or a prompt', async () => {
+  const path = '/home/someone/projects/wt-suite/plugins/wt-secret-guard/hooks/fixtures/Kq7Zx2';
+  const snake = 'hub_greens_from_gate_and_runner_mechanics_v2';
+  const input = `see ${path} and ${snake}`;
+  const result = await call('cat notes.txt', input);
+  assert.equal(result.text, input, 'a tool result with nothing held was changed');
+  let received;
+  await prompt($, { text: input, source: 'user' }, async (event) => { received = event; return {}; });
+  assert.equal(received.text, input, 'a prompt with nothing held was changed');
+  assert.equal(received.context, undefined, 'a prompt with nothing held gained context');
+});
 await test('UUID Exa API key in a provider client constructor is scrubbed', async () => { const result = await call('node app.mjs', `const client = new Exa("${exa}");`); assert.equal(result.text.includes(exa), false, 'Exa UUID API key reached the tool result'); assert.match(result.text, /secret:credential-uuid#/); });
 await test('bare UUID in a plain log line stays untouched', async () => { const input = `run id ${exa} completed`; const result = await call('cat run.log', input); assert.equal(result.text, input); });
 await test('Brave API key shape is scrubbed', async () => { const result = await call('env', `BRAVE_API_KEY=${brave}`); assert.equal(result.text.includes(brave), false, 'Brave API key reached the tool result'); assert.match(result.text, /secret:brave-api-key#/); });
@@ -766,7 +778,7 @@ await test('compare-then-write mismatch writes nothing and keeps one secret-free
   const changed = `ghp_${'y'.repeat(36)}`;
   setFile(historyPath, `${JSON.stringify({ display: raw, pastedContents: {} })}\n`);
   const writesBefore = calls.filter((call) => call.capability === 'process.run' && call.argv.some((part) => String(part).startsWith('of='))).length;
-  onBeforeCompare = async (path) => { getFile(path).text = getFile(path).text.replace(raw, changed); onBeforeCompare = undefined; };
+  onBeforeCompare = async (path) => { getFile(path).text = getFile(path).text.replace(raw, () => changed); onBeforeCompare = undefined; };
   await prompt($, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
   const writesAfter = calls.filter((call) => call.capability === 'process.run' && call.argv.some((part) => String(part).startsWith('of='))).length;
   assert.equal(writesAfter, writesBefore);
@@ -961,6 +973,7 @@ await test('V2 reference-adjacent refusal repairs the original raw transcript sp
   const result = await hookForTool('Write')($, { tool: 'Write', tool_use_id: toolUseId, file_path: '/tmp/out', content: raw }, async () => ({}));
   assert.match(result.deny, /refused/i);
   assert.equal(getFile(transcriptPath).text.includes(raw), false, 'original reference-adjacent raw span survived transcript repair');
+  assert.doesNotThrow(() => JSON.parse(getFile(transcriptPath).text));
 });
 await test('D11 refusal guidance is surface specific', async () => {
   const raw = `ghp_${'j'.repeat(36)}`;
@@ -990,6 +1003,7 @@ await test('D3 nested password findings carry the raw leaf into transcript repai
   const result = await mcp($, { tool: 'mcp__fixture__send', tool_use_id: toolUseId, nested: { password: raw } }, async () => ({}));
   assert.match(result.deny, /refused/i);
   assert.equal(getFile(transcriptPath).text.includes(raw), false, 'nested password remained in persisted tool input');
+  assert.doesNotThrow(() => JSON.parse(getFile(transcriptPath).text));
 });
 await test('R3 transcript repair reads only a bounded tail above 4 MiB', async () => {
   const raw = `ghp_${'l'.repeat(36)}`;
@@ -1024,7 +1038,7 @@ await test('V3 no-inode replacement fails closed on size and prefix identity', a
   const toolUseId = 'tool-no-inode-original';
   const replacementId = 'tool-no-inode-otherxxx';
   const original = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, input: { command: raw } }] } })}\n`;
-  const replacement = original.replace(toolUseId, replacementId);
+  const replacement = original.replace(toolUseId, () => replacementId);
   assert.equal(Buffer.byteLength(replacement), Buffer.byteLength(original));
   assert.equal(Buffer.from(replacement).subarray(0, 64).equals(Buffer.from(original).subarray(0, 64)), true);
   setFile(transcriptPath, original);
@@ -1038,7 +1052,7 @@ await test('V3 Windows helper also refuses a same-prefix record with another too
   const toolUseId = 'tool-windows-original';
   const replacementId = 'tool-windows-otherxxx';
   const original = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, input: { command: raw } }] } })}\n`;
-  const replacement = original.replace(toolUseId, replacementId);
+  const replacement = original.replace(toolUseId, () => replacementId);
   assert.equal(Buffer.byteLength(replacement), Buffer.byteLength(original));
   assert.equal(Buffer.from(replacement).subarray(0, 64).equals(Buffer.from(original).subarray(0, 64)), true);
   setFile(transcriptPath, original);
@@ -1488,7 +1502,7 @@ await test('V4 every supported op read argument placement is prefetched or refus
   // placements after it would assert nothing.
   for (const [index, [shape, account]] of cases.entries()) {
     const ref = `op://vault/item/password-${index}`;
-    const command = shape.replaceAll('op://vault/item/password', ref);
+    const command = shape.replaceAll('op://vault/item/password', () => ref);
     let executed = false; let opArgv;
     const runtime = { ...$, process: { run: async (argv) => { opArgv = argv; return { exitCode: 1, stdout: '' }; } } };
     const result = await bash(runtime, { tool: 'Bash', command }, async () => { executed = true; return { text: 'leaked' }; });
@@ -2849,8 +2863,7 @@ await test('V49 no lookup in the guard answers for an inherited property name', 
   }
   assert.deepEqual(failures, [], 'a lookup answered for an inherited property name');
 });
-// A fresh-vault run of the full Bash hook, in a child process: the self-alias of verify13 finding 1
-// needs a vault whose serial starts at 0, which this process's vault no longer is.
+// A fresh-vault full Bash hook probe forces the next random draw to be a held token spelling.
 const V50_FRESH_VAULT = `
 import { spawnSync } from 'node:child_process';
 const { register, configure } = await import(new URL('./hooks.js', process.argv[1]).href);
@@ -2860,6 +2873,9 @@ register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher :
 configure({});
 const bash = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Bash').hook;
 const value = process.argv[3];
+const drawn = parseInt(value.slice(-6), 16);
+let draws = 0;
+crypto.getRandomValues = (bytes) => { const id = drawn + draws++; bytes.set([id >>> 16, (id >>> 8) & 255, id & 255]); return bytes; };
 const $ = {
   ui: { log: async () => {} },
   fs: { read: async (path) => { if (path === '/tmp/v50-self-alias') return value; throw new Error('ENOENT'); }, write: async () => {}, stat: async () => { const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error; } },
@@ -2887,10 +2903,15 @@ await test('V50 the verify13 findings are closed and the README describes what t
   // 1: a token never equals the value it stands for (Astra's exact value: in a fresh vault, the first
   // token issued for it is its own spelling), nor any other known value.
   {
-    // The FILE kind's serial-1 fixed point (verify13's environment one was 466fe8; file references are the form now).
-    const selfAlias = 'secret:file#fcc316';
+    // Force a self-spelling candidate; the next draw must be used instead.
+    const shape = await import(`./token-vault.js?v50shape=${Date.now()}`);
+    const selfAlias = shape.tokenize('file', 'v50-self-probe');
     const fresh = await import(`./token-vault.js?v50=${Date.now()}`);
-    const issued = fresh.tokenize('file', selfAlias);
+    const originalRandom = crypto.getRandomValues;
+    let draw = parseInt(selfAlias.slice(-6), 16);
+    crypto.getRandomValues = (bytes) => { const id = draw++; bytes.set([id >>> 16, (id >>> 8) & 255, id & 255]); return bytes; };
+    let issued;
+    try { issued = fresh.tokenize('file', selfAlias); } finally { crypto.getRandomValues = originalRandom; }
     if (issued === selfAlias) failures.push('1 a fresh vault issued a token equal to its own value');
     const run = spawnSync(process.execPath, ['--input-type=module', '-e', V50_FRESH_VAULT, new URL('.', import.meta.url).href, fileURLToPath(new URL('.', import.meta.url)), selfAlias], { encoding: 'utf8' });
     let outcome = null;
@@ -2898,15 +2919,15 @@ await test('V50 the verify13 findings are closed and the README describes what t
     if (outcome?.denied) failures.push('1 the fresh-vault hook refused the command');
     if (outcome?.leaked) failures.push('1 a value equal to its own token reached the output unmasked (fresh vault, full hook)');
     if (outcome && !outcome.flagged) failures.push('1 a value equal to its own token was not flagged outbound (fresh vault)');
-    // Another HELD value: register first the exact spelling the NEXT mint would draw for a second value
-    // (the vault's FNV-1a over `serial:value`, serial 2 in a fresh vault), then mint that second value.
-    const fnv = (text) => { let state = 0x811c9dc5; for (let at = 0; at < text.length; at += 1) { state ^= text.charCodeAt(at); state = Math.imul(state, 0x01000193); } return (state >>> 0).toString(16).padStart(8, '0').slice(0, 6); };
+    // Another held value: derive a spelling from an issued token, then force it as a later draw.
     const second = await import(`./token-vault.js?v50b=${Date.now()}`);
-    const held = `secret:environment#${fnv('2:v50-second-value')}`;
+    const held = second.tokenize('environment', 'v50-probe-marker');
     second.tokenize('environment', held);
-    const minted = second.tokenize('environment', 'v50-second-value');
+    draw = parseInt(held.slice(-6), 16);
+    crypto.getRandomValues = (bytes) => { const id = draw++; bytes.set([id >>> 16, (id >>> 8) & 255, id & 255]); return bytes; };
+    let minted;
+    try { minted = second.tokenize('environment', 'v50-second-value'); } finally { crypto.getRandomValues = originalRandom; }
     if (minted === held) failures.push('1 a token was minted equal to another value the vault holds');
-    if (fnv(`1:${held}`) === held.slice(-6)) failures.push('1 the held-value probe collided with itself; pick another name');
     // The reverse order, in the shared vault: a value that equals a token already issued for ANOTHER value.
     const earlier = tokenize('vfifty', 'v50-earlier-value');
     testEnv.set('WT_V50_ALIAS', earlier);
@@ -3121,6 +3142,7 @@ await test('V55 indexed scrubbing is byte-identical to the old algorithm over ge
   const legacyOccurrences = (text) => {
     const matches = [];
     for (const [token, entry] of knownTokens()) {
+      if (entry.ephemeral) continue;
       for (let at = text.indexOf(entry.value); entry.value && at >= 0; at = text.indexOf(entry.value, at + 1)) matches.push({ from: at, to: at + entry.value.length, token, kind: entry.kind });
     }
     return matches;
@@ -3129,6 +3151,10 @@ await test('V55 indexed scrubbing is byte-identical to the old algorithm over ge
   const next = () => { random = (Math.imul(random, 1664525) + 1013904223) >>> 0; return random; };
   const baseline = testVaultSnapshot();
   const run = (definition, legacy) => {
+    const originalRandom = crypto.getRandomValues;
+    let draw = 0;
+    crypto.getRandomValues = (bytes) => { draw += 1; bytes.set([draw >>> 16, (draw >>> 8) & 255, draw & 255]); return bytes; };
+    try {
     testRestoreVault(baseline);
     configure(definition.options);
     const substituted = new Set();
@@ -3139,10 +3165,11 @@ await test('V55 indexed scrubbing is byte-identical to the old algorithm over ge
       if (mark) substituted.add(token);
       if (definition.buildAfter === issued.length) scrub('matcher warmup', '', false);
     }
-    const text = definition.text.replaceAll('$issued', issued[0] ?? '');
+    const text = definition.text.replaceAll('$issued', () => issued[0] ?? '');
     testResetVaultWork();
     const value = (legacy ? testScrubWithVaultOccurrences(text, '', definition.includeOptional, legacyOccurrences, substituted) : scrub(text, '', definition.includeOptional, substituted)).value;
     return { value, work: testVaultWork() };
+    } finally { crypto.getRandomValues = originalRandom; }
   };
   let prefixCases = 0;
   let postAdditionCases = 0;
@@ -3405,7 +3432,7 @@ await test('V62 prefix matching stays within the old per-entry bound for shared 
 });
 await test('V68 long shared prefixes use one forward search per candidate value', async () => {
   const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
-  const source = `import { knownValueOccurrences, testResetVaultWork, testVaultWork, tokenize } from ${JSON.stringify(vaultUrl)}; const value = 'a'.repeat(32767) + 'b'; const text = 'a'.repeat(65536); tokenize('assignment', value); const oldStarted = performance.now(); for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {} const oldElapsed = performance.now() - oldStarted; testResetVaultWork(); const started = performance.now(); const matches = knownValueOccurrences(text); const elapsed = performance.now() - started; console.log(JSON.stringify({ elapsed, matches: matches.length, oldElapsed, work: testVaultWork() }));`;
+  const source = `import { knownValueOccurrences, testResetVaultWork, testVaultWork, tokenize } from ${JSON.stringify(vaultUrl)}; const value = 'a'.repeat(32767) + 'b'; const text = 'a'.repeat(65536); tokenize('file', value); const oldStarted = performance.now(); for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {} const oldElapsed = performance.now() - oldStarted; testResetVaultWork(); const started = performance.now(); const matches = knownValueOccurrences(text); const elapsed = performance.now() - started; console.log(JSON.stringify({ elapsed, matches: matches.length, oldElapsed, work: testVaultWork() }));`;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 15_000, encoding: 'utf8' });
   assert.equal(child.error?.code, undefined, 'long shared-prefix reproduction exceeded 15,000 ms');
   assert.equal(child.status, 0, child.stderr.trim() || `long shared-prefix reproduction failed (status ${child.status})`);
@@ -3418,7 +3445,7 @@ await test('V68 long shared prefixes use one forward search per candidate value'
 });
 await test('V69 impossible-length candidates are rejected before prefix traversal', async () => {
   const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
-  const source = `import { knownValueOccurrences, testResetVaultWork, testVaultWork, tokenize } from ${JSON.stringify(vaultUrl)}; const text = 'a'.repeat(16000); for (let index = 0; index < 1000; index += 1) tokenize('assignment', text + 'b' + String(index)); testResetVaultWork(); const matches = knownValueOccurrences(text); const work = testVaultWork(); tokenize('assignment', 'aaaaaaaaZ'); testResetVaultWork(); const mixedMatches = knownValueOccurrences(text); console.log(JSON.stringify({ matches: matches.length, mixedMatches: mixedMatches.length, mixedWork: testVaultWork(), work }));`;
+  const source = `import { knownValueOccurrences, testResetVaultWork, testVaultWork, tokenize } from ${JSON.stringify(vaultUrl)}; const text = 'a'.repeat(16000); for (let index = 0; index < 1000; index += 1) tokenize('assignment', text + 'b' + String(index)); testResetVaultWork(); const matches = knownValueOccurrences(text); const work = testVaultWork(); tokenize('file', 'aaaaaaaaZ'); testResetVaultWork(); const mixedMatches = knownValueOccurrences(text); console.log(JSON.stringify({ matches: matches.length, mixedMatches: mixedMatches.length, mixedWork: testVaultWork(), work }));`;
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 5_000, encoding: 'utf8' });
   assert.equal(child.error?.code, undefined, 'impossible-length reproduction exceeded 5,000 ms');
   assert.equal(child.status, 0, child.stderr.trim() || `impossible-length reproduction failed (status ${child.status})`);
@@ -4023,5 +4050,163 @@ await test('a successful result scrubs a value that only a later field revealed'
   const answer = await bash($, { tool: 'Bash', command: 'true' }, async () => ({ result: { stdout: 'PIN 6127\n', stderr: '{"type":"CONCEALED","value":"6127"}' }, text: 'PIN 6127\n', ref: 9 }));
   assert.equal(/(?<![A-Za-z0-9])6127(?![A-Za-z0-9])/.test(JSON.stringify(answer)), false, 'the value revealed by a later field stayed raw in an earlier one');
 }));
+const { runRevisionLocks } = await import('./revision-locks.mjs');
+await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
 console.log(`hooks registered: ${hooks.length}`);
+const helpProse = 'read from the file named by EXAMPLE_USER_TOKEN_FILE; else from the example_token_file';
+const helpLine = `${'Tok' + 'en'}: ${helpProse}`;
+const proseCommand = 'node example.mjs --help';
+await test('T1 ordinary token help is unchanged without detections or issued tokens', () => freshVault(async () => {
+  const result = await call(proseCommand, helpLine);
+  assert.equal(result.text, helpLine, 'ordinary token help was masked');
+  assert.equal(result.result.stdout, helpLine);
+  assert.equal(detections(helpLine, proseCommand, undefined, { complete: true }).filter(({ kind }) => kind === 'op-output').length, 0);
+  const { testVaultSnapshot } = await import('./token-vault.js');
+  assert.equal(testVaultSnapshot().tokens.size, 0, 'ordinary help issued a redaction token');
+}));
+await test('T1 a tool result without a trailing newline explicitly completes help prose', () => freshVault(async () => {
+  assert.equal(helpLine.endsWith('\n'), false);
+  const result = await call(proseCommand, helpLine);
+  assert.equal(result.text, helpLine, 'unterminated tool help was masked');
+  assert.equal(result.result.stdout, helpLine);
+}));
+await test('T2 a distinctive word inside help prose stays masked', () => freshVault(async () => {
+  const value = helpProse.replace('named', 'named FAKE-q7X9m2R8v4Z6');
+  const result = await call(proseCommand, `token: ${value}`);
+  assert.equal(result.text.includes('FAKE-q7X9m2R8v4Z6'), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('T3 a four word passphrase stays masked', () => freshVault(async () => {
+  const result = await call(proseCommand, 'password: correct horse battery staple');
+  assert.equal(result.text.includes('correct horse battery staple'), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+for (const value of ['in the 739 482', 'in the Q7! z9@', 'in the qzxvbnm plmoknij']) {
+  for (const quoted of [false, true]) {
+    await test(`T4 ${quoted ? 'quoted' : 'bare'} ${value} stays masked`, () => freshVault(async () => {
+      const result = await call(proseCommand, `password: ${quoted ? `"${value}"` : value}`);
+      assert.equal(result.text.includes(value), false);
+      assert.match(result.text, /secret:op-output#/);
+    }));
+  }
+}
+await test('T4 an alternating case word inside a sentence stays masked', () => freshVault(async () => {
+  const value = 'river of the stone by mQvZtLpRsNxBcDa lake';
+  const result = await call(proseCommand, `password: ${value}`);
+  assert.equal(result.text.includes('mQvZtLpRsNxBcDa'), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+for (const command of ['op item get example --reveal', 'op.exe item get example', 'x && op item get example', 'x;op item get example', 'x|op.exe item get example', '(op item get example)', '`op item get example`', '$(op item get example)', 'op>example.txt item get example', 'op.exe<example.txt item get example', '/usr/local/bin/op item get example', 'C:\\Tools\\op.exe item get example', '"op" item get example', "'op.exe' item get example"]) {
+  await test(`T5 prose from ${command} stays masked`, () => freshVault(async () => {
+    const result = await call(command, 'password: see the docs for the details here');
+    assert.equal(result.text.includes('see the docs for the details here'), false);
+    assert.match(result.text, /secret:op-output#/);
+  }));
+}
+for (const [spelling, command] of [
+  ['single-quote joining', "o'p' item get example"],
+  ['double-quote joining', 'o"p" item get example'],
+  ['backslash escaping', 'o\\p item get example'],
+  ['backslash newline joining', 'o\\\np item get example'],
+  ['ANSI-C octal escapes', "$'\\157\\160' item get example"],
+  ['ANSI-C hex escapes', "$'\\x6f\\x70' item get example"],
+  ['variable expansion', '$CLI item get example'],
+  ['braced expansion', '${CLI} item get example'],
+  ['command substitution', '$(cli) item get example'],
+  ['backtick substitution', '`cli` item get example'],
+  ['locale quoting', '$"op" item get example'],
+  ['brace expansion', '{op,} item get example'],
+  ['inner brace expansion', 'o{p,} item get example'],
+  ['bracket glob', '/usr/bin/o[p] item get example'],
+  ['question-mark glob', '/usr/bin/o? item get example'],
+  ['star glob', '/usr/bin/o* item get example'],
+  ['empty positional splice', 'o$1p item get example'],
+  ['empty all-arguments splice', 'o$@p item get example'],
+  ['locale quoting splice', 'o$"p" item get example'],
+]) {
+  await test(`F1 ${spelling} retains command-provenance masking`, () => freshVault(async () => {
+    const result = await call(command, 'password: see the docs for the details here');
+    assert.equal(result.text.includes('see the docs for the details here'), false, 'unknown or disguised command released password prose');
+    assert.match(result.text, /secret:op-output#/);
+  }));
+}
+await test('F2 assistant render keeps an unterminated prose prefix masked', () => freshVault(async () => {
+  const text = 'password: see the docs for the details here';
+  const rendered = await assistantRender($, { props: { text } }, async (event) => event.props.text);
+  assert.equal(rendered.includes('see the docs for the details here'), false, 'unfinished assistant render released password prose');
+  assert.match(rendered, /secret:op-output#/);
+}));
+await test('T6 unfinished prose prefix is held until its secret continuation ends', () => freshVault(async () => {
+  const prefix = `password: ${'see the docs for the details here '.repeat(30)}`;
+  const secret = 'FAKE-q7X9m2R8v4Z6';
+  let continued = false;
+  const seen = [];
+  const iterator = turnStep($, {}, async function* () {
+    yield { kind: 'text', index: 0, text: prefix };
+    continued = true;
+    yield { kind: 'text', index: 0, text: `${secret}\nvisible after the value\n` };
+    yield { kind: 'stop' };
+  });
+  for await (const chunk of iterator) {
+    if (!continued) assert.equal(leakedRunAt(chunk.text ?? '', prefix.slice('password: '.length)), -1, 'unfinished prose prefix was released before its continuation');
+    seen.push(chunk.text ?? '');
+  }
+  const output = seen.join('');
+  assert.equal(output.includes(secret), false, 'secret continuation reached the stream');
+  assert.equal(leakedRunAt(output, secret), -1, 'secret continuation bytes reached the stream');
+  assert.match(output, /visible after the value/);
+}));
+await test('T7 structured password prose retains outbound refusal', () => freshVault(async () => {
+  // The synthetic key scan is needed: the value itself has no credential key.
+  for (const value of [helpProse, `${helpProse}\n`]) {
+    const result = await classifyOutbound($, { tool: 'Agent', prompt: { password: value } });
+    assert.deepEqual(result, { surface: 'agent', findings: [{ kind: 'op-output', value, secret: value, path: ['prompt', 'password'], index: 0 }] });
+  }
+}));
+await test('T8 complete plain token guidance is not masked', () => freshVault(async () => {
+  const line = 'token: see the docs for the details here';
+  assert.equal((await call(proseCommand, line)).text, line);
+}));
+await test('T9 six plain words without function words stay masked', () => freshVault(async () => {
+  const value = 'river stone meadow forest valley lake';
+  const result = await call(proseCommand, `password: ${value}`);
+  assert.equal(result.text.includes(value), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('prose with nonword separators stays masked despite the vault floor', () => freshVault(async () => {
+  const value = 'in the river/stone by the lake';
+  const result = await call(proseCommand, `password: ${value}`);
+  assert.equal(result.text.includes(value), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('prose requires both a function word count and its quarter share', () => freshVault(async () => {
+  for (const value of ['river stone meadow forest valley the', 'in the river stone meadow forest valley lake mountain']) {
+    const result = await call(proseCommand, `password: ${value}`);
+    assert.equal(result.text.includes(value), false, value);
+    assert.match(result.text, /secret:op-output#/);
+  }
+}));
+await test('prose stripping permits edge punctuation and internal word separators', () => freshVault(async () => {
+  const value = '(read) from "the" file named by example_token_file; else from the example-token-file';
+  assert.equal((await call(proseCommand, `token: ${value}`)).text, `token: ${value}`);
+}));
+await test('the whole prose value must also fail the vault holding floor', () => freshVault(async () => {
+  const value = 'see the docs for the details here!';
+  const result = await call(proseCommand, `token: ${value}`);
+  assert.equal(result.text.includes(value), false);
+  assert.match(result.text, /secret:op-output#/);
+}));
+await test('held values still mask inside otherwise exempt help prose', () => freshVault(async () => {
+  tokenize('fixture', 'EXAMPLE_USER_TOKEN_FILE');
+  const result = await call(proseCommand, helpLine);
+  assert.equal(result.text.includes('EXAMPLE_USER_TOKEN_FILE'), false);
+  assert.match(result.text, /secret:fixture#/);
+}));
+await test('default detection treats the last line as unfinished until a newline', () => freshVault(async () => {
+  const line = 'token: see the docs for the details here';
+  assert.equal(detections(line).filter(({ kind }) => kind === 'op-output').length, 1);
+  assert.equal(detections(`${line}\n`).filter(({ kind }) => kind === 'op-output').length, 0);
+  const streamed = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${line}\n` }, { kind: 'stop' }]);
+  assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join(''), `${line}\n`);
+}));
 process.exit(failures ? 1 : 0);

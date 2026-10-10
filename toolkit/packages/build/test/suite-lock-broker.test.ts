@@ -94,7 +94,7 @@ async function localBroker(options: Record<string, unknown> = {}) {
   process.env.WT_SUITE_LOCK_DIR = join(root, 'locks')
   process.env.WT_SUITE_LOCK_BROKER = ''
   delete process.env.WT_SUITE_LEASE
-  const server = createSuiteLockBroker(options) as net.Server
+  const server = createSuiteLockBroker({ env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }), ...options }) as net.Server
   await new Promise<void>((resolve) => server.listen(address, resolve))
   return { address, server, restore: () => {
     if (previous === undefined) delete process.env.WT_SUITE_LOCK_DIR; else process.env.WT_SUITE_LOCK_DIR = previous
@@ -115,12 +115,201 @@ async function waitForConnections(server: net.Server, count: number, timeoutMs =
   }
 }
 
+function brokerWaiter(address: string, name: string, waitS = 10) {
+  const controller = new AbortController()
+  const progress: Array<{ ahead: number; aheadExcludingRelease: number; total: number }> = []
+  let failure: unknown
+  const result = acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, argv: [name], waitS, signal: controller.signal,
+    onProgress: (place: { ahead: number; aheadExcludingRelease: number; total: number }) => progress.push(place),
+  }).then((lease: Awaited<ReturnType<typeof acquireSuiteLock>>) => ({ lease }), (error: unknown) => { failure = error; return { error } })
+  return { progress, result, failure: () => failure, stop: async () => {
+    controller.abort()
+    const outcome = await result
+    if ('lease' in outcome) releaseSuiteLock(outcome.lease)
+  } }
+}
+
 // The broker runs only inside the Linux lane sandbox: sandboxAvailability returns { none } on every
 // other platform (plugin/bin/lib/host/lane-sandbox.mjs:491), and only that plan sets
 // WT_SUITE_LOCK_BROKER (lane-sandbox.mjs:477), the one switch that routes a client to a broker
 // (plugin/bin/lib/suite-lock.mjs:319). These tests listen on a unix-socket path under tmpdir, which
 // Windows runners do not serve (every test timed out there), so they run on POSIX hosts only.
 describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires unix-domain sockets; broker is Linux-sandbox-only]', () => {
+  it('renews the client budget only for queue progress while a fake broker grants after five seconds', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-progress-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    const server = net.createServer((socket) => socket.once('data', () => {
+      // A strictly better place every 0.4 s: 14 tickets ahead down to 1, then the grant at 5.2 s.
+      let ahead = 14
+      socket.write(`progress ${ahead} 15\n`)
+      const interval = setInterval(() => { if (ahead > 1) { ahead -= 1; socket.write(`progress ${ahead} 15\n`) } }, 400)
+      const grant = setTimeout(() => { clearInterval(interval); socket.write('granted late-lease\n') }, 5200)
+      socket.once('close', () => { clearInterval(interval); clearTimeout(grant) })
+    }))
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    try {
+      const lease = await acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })
+      expect(lease.holder.leaseId).toBe('late-lease')
+      releaseSuiteLock(lease)
+    } finally { server.close() }
+  }, 15_000)
+
+  it('gives broker clients the same actual and non-release queue positions as direct clients', async () => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    const holder = await acquireSuiteLock({ root, env: {} })
+    const first = brokerWaiter(address, 'E0')
+    await waitFor(() => first.progress.length > 0)
+    const controller = new AbortController()
+    const release = acquireSuiteLock({ root, env: {}, priority: 'release', signal: controller.signal, pollMs: 10 }).catch(() => {})
+    await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 2)
+    const second = brokerWaiter(address, 'E1')
+    try {
+      await waitFor(() => second.progress.length > 0)
+      expect(second.progress[0]).toEqual({ ahead: 2, aheadExcludingRelease: 1, total: 3 })
+      releaseSuiteLock(holder)
+      await waitFor(() => second.progress.length > 1)
+      expect(second.progress[1], 'handover must use the producer current place').toEqual({ ahead: 1, aheadExcludingRelease: 1, total: 2 })
+    } finally {
+      controller.abort(); const released = await release; if (released) releaseSuiteLock(released)
+      await first.stop(); await second.stop()
+      releaseSuiteLock(holder); server.close(); restore()
+    }
+  })
+
+  // A faulty broker repeating the same (or a worse, or an impossible) place renews nothing: the client's
+  // own watchdog still ends the wait about waitS + 2 s after the last real improvement.
+  it('does not renew the client deadline for repeated, worse or impossible progress lines', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-dup-progress-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    const lines = ['progress 2 4', 'progress 3 4', 'progress 1 1', 'progress -1 4', 'progress 1.5 4', 'progress 9999999999 99999999999']
+    const server = net.createServer((socket) => socket.once('data', () => {
+      socket.write('progress 2 4\n')
+      let index = 0
+      const interval = setInterval(() => { socket.write(`${lines[index % lines.length]}\n`); index += 1 }, 200)
+      socket.once('close', () => clearInterval(interval))
+    }))
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    try {
+      const start = Date.now()
+      await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+      expect(Date.now() - start).toBeLessThan(5000)
+    } finally { server.close() }
+  }, 8000)
+
+  it('does not renew the client deadline for wait-only notices', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-wait-only-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    const server = net.createServer((socket) => socket.once('data', () => {
+      socket.write('wait still queued\n')
+      const interval = setInterval(() => socket.write('wait still queued\n'), 400)
+      socket.once('close', () => clearInterval(interval))
+    }))
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    try {
+      const start = Date.now()
+      await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+      expect(Date.now() - start).toBeGreaterThanOrEqual(2900)
+      expect(Date.now() - start).toBeLessThan(5000)
+    } finally { server.close() }
+  }, 8000)
+
+  it('forwards a real broker queue improvement as a progress line', async () => {
+    const broker = await startBroker()
+    const first = connect(broker.socket, { argv: ['first'], waitS: 5 })
+    const second = connect(broker.socket, { argv: ['second'], waitS: 5 })
+    const third = connect(broker.socket, { argv: ['third'], waitS: 5 })
+    try {
+      await first.waitForReply(granted)
+      await second.waitForReply((text) => /progress 0 1(?: 0)?\n/.test(text))
+      await third.waitForReply((text) => /progress 1 2(?: 1)?\n/.test(text))
+      first.socket.end()
+      await second.waitForReply(granted)
+      await third.waitForReply((text) => /progress 0 1(?: 0)?\n/.test(text))
+    } finally { first.socket.destroy(); second.socket.destroy(); third.socket.destroy() }
+  }, 12_000)
+
+  it('reports non-release position with a release ahead and renews the broker client on release handover', async () => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    const holder = await acquireSuiteLock({ root, env: {} })
+    const first = brokerWaiter(address, 'E0')
+    await waitFor(() => first.progress.length > 0)
+    const second = brokerWaiter(address, 'E1', 1)
+    let releaseLease: Awaited<ReturnType<typeof acquireSuiteLock>> | undefined
+    try {
+      await waitFor(() => second.progress.length > 0)
+      const release = acquireSuiteLock({ root, env: {}, priority: 'release', waitS: 4, pollMs: 10 })
+      await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 3)
+      // A release ahead changes actual position to 2, never the client's non-release position 1.
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      releaseSuiteLock(holder)
+      releaseLease = await release
+      await new Promise((resolve) => setTimeout(resolve, 3_600))
+      expect(second.failure(), 'client must survive a release hold longer than its 3 s watchdog').toBeUndefined()
+      releaseSuiteLock(releaseLease); releaseLease = undefined
+      const firstResult = await first.result
+      expect(firstResult).toHaveProperty('lease')
+      await first.stop()
+      expect(await second.result).toHaveProperty('lease')
+    } finally {
+      if (releaseLease) releaseSuiteLock(releaseLease)
+      releaseSuiteLock(holder)
+      await first.stop(); await second.stop(); server.close(); restore()
+    }
+  }, 15_000)
+
+  it.each(['connect during release', 'cancel ordinary ahead'])('preserves release watchdog across progress: %s', async (sequence) => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    let holder = await acquireSuiteLock({ root, env: {}, ...(sequence === 'connect during release' ? { priority: 'release' } : {}) })
+    const first = brokerWaiter(address, 'E0')
+    await waitFor(() => first.progress.length > 0)
+    const middle = sequence === 'cancel ordinary ahead' ? brokerWaiter(address, 'E1') : undefined
+    if (middle) await waitFor(() => middle.progress.length > 0)
+    const second = brokerWaiter(address, 'E2', 1)
+    try {
+      await waitFor(() => second.progress.length > 0)
+      if (middle) {
+        const release = acquireSuiteLock({ root, env: {}, priority: 'release', pollMs: 10 })
+        await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 4)
+        releaseSuiteLock(holder); holder = await release
+        await waitFor(() => second.progress.length >= 2)
+        await middle.stop()
+        await waitFor(() => second.progress.some((place) => place.aheadExcludingRelease === 1))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3_600))
+      expect(second.failure(), 'progress must preserve the current release-holder budget').toBeUndefined()
+      releaseSuiteLock(holder)
+      expect(await first.result).toHaveProperty('lease'); await first.stop()
+      expect(await second.result).toHaveProperty('lease')
+    } finally {
+      releaseSuiteLock(holder); await first.stop(); await middle?.stop(); await second.stop(); server.close(); restore()
+    }
+  }, 20_000)
+
+  it('counts only non-release tickets in broker progress while a release ticket is still ahead', async () => {
+    const { address, server, restore } = await localBroker()
+    const root = process.env.WT_SUITE_LOCK_DIR!
+    const holder = await acquireSuiteLock({ root, env: {} })
+    const first = connect(address, { argv: ['E0'], waitS: 3 })
+    await first.waitForReply((text) => text.includes('progress 0 '))
+    const second = connect(address, { argv: ['E1'], waitS: 3 })
+    const controller = new AbortController()
+    try {
+      await second.waitForReply((text) => text.includes('progress 1 '))
+      const release = acquireSuiteLock({ root, env: {}, priority: 'release', signal: controller.signal, waitS: 3, pollMs: 10 })
+      const cancelled = release.catch(() => {})
+      await waitFor(() => readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).length === 3)
+      first.socket.destroy()
+      await second.waitForReply((text) => text.includes('progress 0 '))
+      expect(second.text()).toContain('progress 0 ')
+      controller.abort(); await cancelled
+    } finally {
+      controller.abort(); first.socket.destroy(); second.socket.destroy(); releaseSuiteLock(holder); server.close(); restore()
+    }
+  }, 12_000)
+
   it('reuses the one exclusive lease across project setups through the current broker', async () => {
     const broker = await startBroker()
     const script = `import setup from ${JSON.stringify(new URL(`file://${GLOBAL_SETUP}`).href)};const teardown=await setup();if(await setup()!==undefined)throw Error('nested setup acquired again');teardown();process.stdout.write('teardown done\\n');process.stdin.once('data',()=>{})`
@@ -128,7 +317,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     let stdout = ''; child.stdout!.on('data', (data) => { stdout += String(data) })
     await waitFor(() => stdout.includes('teardown done'))
     expect(readFileSync(broker.lock, 'utf8')).toContain('vitest')
-    const competitor = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.15', '--', process.execPath, '-e', ''], { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }), encoding: 'utf8', timeout: 2000 })
+    const competitor = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '0.15', '--stale-s', '0.15', '--', process.execPath, '-e', ''], { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'locks'), WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }), encoding: 'utf8', timeout: 2000 })
     expect(competitor.status, competitor.stderr).toBe(75)
     expect(child.exitCode).toBeNull()
     child.stdin!.end('exit')

@@ -329,11 +329,10 @@ describe('OpenCode Claude-skill fence', () => {
     const stdout = JSON.stringify([
       { name: 'save-memory', location: '/one/SKILL.md' },
       { name: 'planka-tracking', location: '/two/SKILL.md' },
-      { name: 'what-next', location: '/three/SKILL.md' },
     ])
     const result = verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout, stderr: '' }) })
     expect(result).toMatchObject({ ok: false, refused: expect.arrayContaining([expect.objectContaining({ name: 'save-memory', location: '/one/SKILL.md' })]) })
-    expect(effectiveSkillDiscoveryRefusal(result)).toBe('wt-lane: Refused: effective OpenCode skill discovery found save-memory at /one/SKILL.md, planka-tracking at /two/SKILL.md, what-next at /three/SKILL.md; refusing to launch.')
+    expect(effectiveSkillDiscoveryRefusal(result)).toBe('wt-lane: Refused: effective OpenCode skill discovery found save-memory at /one/SKILL.md, planka-tracking at /two/SKILL.md; refusing to launch.')
   })
 
   it.each(['Save-Memory', 'save_memory', 'SAVE-MEMORY'])('refuses the OpenCode-visible %s identity variant', (name) => {

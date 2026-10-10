@@ -1,11 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sealRuleNarrative, sealRuleNarrativeFile } from '../../../test-support/rule-narrative-stub.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
+const fileSeal = sealRuleNarrativeFile()
+afterAll(fileSeal.restore)
 
 type HookRun = {
   stdout: string
@@ -54,6 +57,10 @@ function makeSandbox(tag: string): Sandbox {
       HOME: homeDir,
       XDG_STATE_HOME: stateDir,
       CLAUDE_CONFIG_DIR: configDir,
+      CLAUDE_PROJECT_DIR: projectDir,
+      WT_WORK_JOURNAL_DIR: join(stateDir, 'journal-live'),
+      WT_WORK_JOURNAL_ARCHIVE_DIR: join(stateDir, 'journal-archive'),
+      WT_WORK_JOURNAL_NOW: '2026-06-02T12:00:00Z',
       WT_OUTBOUND_GUARD_DIR: join(stateDir, 'outbound-guard'),
       WT_CANCELLED_CALL_RELAY_DIR: join(stateDir, 'cancelled-call-relay'),
       WT_HOOK_DRIFT_DIR: join(stateDir, 'hook-drift'),
@@ -108,7 +115,7 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
-    case 'wt-unsynced-buffer-hook.mjs':
+    case 'wt-work-journal-hook.mjs':
       return {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
@@ -195,6 +202,7 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_response: { agent_id: 'agent-helper-1' },
       }
     case 'wt-outbound-guard-hook.mjs':
+    case 'wt-duplicate-pilot-guard-hook.mjs':
       return {
         hook_event_name: 'Stop',
         session_id: 'selftest-session',
@@ -536,7 +544,8 @@ function runHook(hookPath: string, payload: unknown, sandbox: Sandbox): HookRun 
   const input = payload === null ? undefined : `${JSON.stringify(payload)}\n`
   const res = spawnSync(process.execPath, [hookPath], {
     cwd: sandbox.projectDir,
-    env: sandbox.env,
+    env: basename(hookPath) === 'wt-rule-convention-guard-hook.mjs'
+      ? sealRuleNarrative(sandbox.root, sandbox.env) : sandbox.env,
     input,
     encoding: 'utf8',
     // Hook startup is intentionally exercised under the full child-process suite; allow

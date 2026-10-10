@@ -4,6 +4,9 @@ This protocol binds whoever changes code: a main session working directly, a pil
 executor. No session-mode exemption. Every non-trivial change has a tracker card before its
 first edit; otherwise the work and its review are invisible.
 
+Its act-bound half is `wt-sdlc-at-act.md`, loaded alongside this file or served on demand where
+an engine is installed.
+
 **UNDERSTAND → PLAN → TASK → TEST → IMPLEMENT → VERIFY → INDEPENDENT REVIEW → INDEPENDENT
 REFUTATION → IMPLEMENTER DECISION → REVERIFY → E2E → REPORT.**
 
@@ -24,25 +27,7 @@ Name real consumers where they exist: released users, external services, publish
 deployed systems, downstream repositories, or persisted data. Where none exist, choose the
 cleanest correct design. Do not retain a shim or legacy API merely because it exists.
 
-## Plan, task, and test
-
-Before non-trivial coding, state the problem, expected behavior, affected areas, strategy,
-tests, validation, and risks. Break work into dependency-ordered tasks; mark each complete only
-after its own verification passes.
-
-Use red, green, refactor where practical. A bug fix carries a regression test that fails before
-the fix and passes after it. When strict TDD is impractical, tests still accompany the change;
-do not retrofit a superficial test merely to satisfy the protocol.
-
 ## Implement and verify
-
-Make the simplest correct change using the project's conventions. Do not add unrelated changes,
-duplication, or abstractions that the problem does not require.
-
-Tests cover relevant happy paths, branches, boundaries, invalid input, expected failures, and
-regressions. A coverage number without a measuring gate is not evidence. For affected
-user-facing flows, exercise the real UI end to end: primary flow, validation errors, navigation,
-state, negative cases, and touched existing scenarios.
 
 Run the applicable build, type, lint, format, test, integration, static-analysis, and end-to-end
 checks. Record each by exit code. Never claim a check passed unless it ran; an unrunnable check
@@ -56,20 +41,9 @@ restart the plan from scratch. For each blocking finding, state what changed.
 ## E2E
 
 Every brief carries the e2e in its definition of done. Every card where an end-to-end check is
-possible gets one that:
-
-- Runs against real data and real sources, not fixtures.
-- Is repeatable with a script, or with a written procedure when no tool can drive the host.
-- Has its output pasted verbatim into the report.
-
-An agent or skill shipped to act on another project is e2e'd from that project's own session:
-deploy it to the copy that project runs, then have that session invoke it. A run driven from the
-builder's session proves the tool, not the agent; the builder never applies the agent's output to
-the other project itself.
-
-Observe an assumption about the host before building anything on it; treat the observation as
-evidence, not the assumption as a premise. A delivery without the required output says `e2e not
-run` with a reason instead of being presented as ready.
+possible gets one that runs against real data and real sources, is repeatable with a script or
+written procedure, and has its output pasted verbatim into the report. A delivery without the
+required output says `e2e not run` with a reason instead of being presented as ready.
 
 ## Proportionality
 

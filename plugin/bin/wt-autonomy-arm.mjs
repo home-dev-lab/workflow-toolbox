@@ -82,7 +82,10 @@ Exit codes: 0 armed/disarmed/live-status · 1 no marker at all (--status) · 2 u
 `
 
 const args = process.argv.slice(2)
-handleHelpFlag(args, HELP)
+handleHelpFlag(args, HELP, {
+  valueFlags: ['--project'],
+  booleanFlags: ['--disarm', '--status'],
+})
 const disarm = args.includes('--disarm')
 const statusOnly = args.includes('--status')
 let projectDir = process.cwd()

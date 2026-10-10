@@ -14,6 +14,7 @@ import { launchQuality } from '../scripts/launch-quality.mjs';
 import { EventEmitter } from 'node:events';
 import { argumentEvidence, SUBJECT_CAP } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
+import { externalTest } from './external-test.mjs';
 
 const text = (before = true, compliance = "kind: 'none'\n    reason: 'fixture'") => `---\non-demand:\n  triggers:\n    - kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: '${before}'\n  compliance:\n    ${compliance}\n---\nFollow this rule.\n`;
 function harness(before = true) {
@@ -68,11 +69,12 @@ test('nested unbounded regex compiles in real runtime rules', () => {
     for (const subject of ['', 'a', 'aa', 'a!']) assert.equal(regex.test(subject), new RegExp(pattern).test(subject));
   }
 });
-test('all shipped adjacent trigger specs compile', async () => {
-  const dir = fileURLToPath(new URL('../../../plugin/rules/', import.meta.url));
+const specsTest = externalTest('../../../plugin/rules/', import.meta.url);
+specsTest('all shipped adjacent trigger specs compile', async (_t, url) => {
+  const dir = fileURLToPath(url);
   const names = (await readdir(dir)).filter((name) => name.endsWith('.spec.json'));
   assert.ok(names.length > 0);
-  assert.equal(names.length, 12);
+  assert.equal(names.length, 13);
   for (const name of names) assert.ok(await readSpec(join(dir, name)), name);
 });
 test('foreign plugin data dir ignored, own plugin data dir honored', () => {

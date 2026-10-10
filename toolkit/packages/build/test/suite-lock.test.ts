@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { competitorArgs, POSIX_STALENESS } from './helpers/suite-lock-platform.js'
+import { hermeticPath } from './helpers/hermetic-path.js'
+// @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
+import { spawnHeld, stopHeld } from '../../../test-support/held-processes.mjs'
 // @ts-expect-error Node script under toolkit/scripts/
 import * as certification from '../../../scripts/release-certify.mjs'
 const { certify, sampleLoad } = certification
@@ -33,25 +37,30 @@ function tempRoot(tag: string): string {
 function cli(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
+    env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
   })
 }
 
 function runner(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
+    env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extraEnv },
   })
 }
 
+// Held: the runner's own child stays in its process group, so stopping the runner stops that child too.
 function runAsync(args: string[], root: string) {
-  const child = spawn(process.execPath, [CLI, ...args], {
-    env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+  const child = spawnHeld(process.execPath, [CLI, ...args], {
+    env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stderr = ''
-  child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+  child.stderr!.on('data', (chunk: Buffer) => { stderr += String(chunk) })
   return { child, stderr: () => stderr, done: new Promise<number | null>((resolve) => child.once('exit', resolve)) }
+}
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH' }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
@@ -66,7 +75,7 @@ describe('suite lock library', () => {
   it('recognizes a matching marker while held, and refuses it once the holder is gone', async () => {
     const root = tempRoot('inherited-identity')
     const lease = await acquireSuiteLock({ root })
-    const env = { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` }
+    const env = { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: `${root}|${lease.holder.leaseId}` }
     try {
       expect(await hasSuiteLeaseAsync(env)).toBe(true)
     } finally { releaseSuiteLock(lease) }
@@ -78,6 +87,7 @@ describe('suite lock library', () => {
     const first = await acquireSuiteLock({ root, argv: ['pnpm', 'test'] })
     expect(readSuiteLock({ root }).holder).toEqual({
       leaseId: expect.any(String),
+      level: 1,
       pid: process.pid,
       argv: ['pnpm', 'test'],
       cwd: process.cwd(),
@@ -118,7 +128,7 @@ describe('suite lock library', () => {
   it('keeps a lock.d whose holder is still being published', async () => {
     const root = tempRoot('publishing')
     mkdirSync(join(root, 'lock.d'), { recursive: true })
-    await expect(acquireSuiteLock({ root, waitS: 0.2, pollMs: 5 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    await expect(acquireSuiteLock({ root, waitS: 0.2, staleS: 0.2, pollMs: 5 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     expect(existsSync(join(root, 'lock.d'))).toBe(true)
   })
 
@@ -127,7 +137,8 @@ describe('suite lock library', () => {
     const lockDir = join(root, 'lock.d')
     const replacement = { pid: process.pid, argv: ['replacement'], startedAt: new Date().toISOString() }
     let replaced = false
-    await expect(acquireSuiteLock({ root, waitS: 0.2, pollMs: 10, beforePublish: () => {
+    // Windows reclaims by age and uses staleS as the head wait budget; fail fast to keep the replacement non-stale.
+    await expect(acquireSuiteLock({ root, waitS: process.platform === 'win32' ? 0 : 0.2, staleS: process.platform === 'win32' ? 2 : 0.2, pollMs: 10, beforePublish: () => {
       if (replaced) return
       replaced = true
       rmSync(lockDir, { recursive: true })
@@ -180,9 +191,9 @@ describe('package gate lease boundary', () => {
 
   it('holds focused Vitest and package typecheck behind a certification, then admits both on release', async () => {
     const root = tempRoot('gate-boundary')
-    const env = { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
+    const env = { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
     const marker = join(root, 'exclusive-started')
-    const holder = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes');setInterval(()=>{},1000)`], { env, stdio: 'ignore' })
+    const holder = spawnHeld(process.execPath, [CLI, 'run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes');setInterval(()=>{},1000)`], { env, stdio: 'ignore' })
     const clients: Array<ReturnType<typeof spawn>> = []
     try {
       await waitFor(() => existsSync(marker), 15_000)
@@ -208,7 +219,7 @@ describe('package gate lease boundary', () => {
       expect(await vitest.done, vitest.stderr()).toBe(0)
       expect(await typecheck.done, typecheck.stderr()).toBe(0)
     } finally {
-      holder.kill('SIGKILL')
+      stopHeld(holder)
       for (const client of clients) if (client.exitCode === null) client.kill('SIGKILL')
     }
   }, 180_000)
@@ -241,21 +252,25 @@ import { acquireSuiteLock, releaseSuiteLock } from ${JSON.stringify(LIB_URL)}
 const cfg = JSON.parse(process.argv[1])
 let lease
 try {
-  lease = await acquireSuiteLock({ root: cfg.root, pollMs: cfg.pollMs, noticeMs: 60000, waitS: cfg.waitS, argv: [cfg.name], onWait: (line) => process.stdout.write(line + '\\n') })
+   lease = await acquireSuiteLock({ root: cfg.root, pollMs: cfg.pollMs, noticeMs: 60000, waitS: cfg.waitS, staleS: cfg.staleS, argv: [cfg.name], onWait: (line) => process.stdout.write(line + '\\n') })
 } catch (error) {
   // An error that is not a timeout names its code, so a failure on another OS says what it met.
   appendFileSync(cfg.order, (error?.code === 'WT_SUITE_LOCK_TIMEOUT' ? 'TIMEOUT-' : 'ERROR-' + (error?.code ?? error?.message) + '-') + cfg.name + '\\n')
   process.exit(75)
 }
 appendFileSync(cfg.order, cfg.name + '\\n')
+if (cfg.releaseFile) {
+  const { existsSync } = await import('node:fs')
+  while (!existsSync(cfg.releaseFile)) await new Promise((resolve) => setTimeout(resolve, 20))
+}
 await new Promise((resolve) => setTimeout(resolve, cfg.holdMs))
 releaseSuiteLock(lease)
 `
 
 interface Waiter { child: ReturnType<typeof spawn>, stdout: () => string, done: Promise<number | null> }
 
-function startWaiter(root: string, order: string, name: string, pollMs: number, holdMs: number, waitS = 30): Waiter {
-  const child = spawn(process.execPath, ['--input-type=module', '-e', WAITER_SCRIPT, JSON.stringify({ root, order, name, pollMs, holdMs, waitS })], {
+function startWaiter(root: string, order: string, name: string, pollMs: number, holdMs: number, waitS = 30, extra: Record<string, unknown> = {}): Waiter {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', WAITER_SCRIPT, JSON.stringify({ root, order, name, pollMs, holdMs, waitS, ...extra })], {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stdout = ''
@@ -265,6 +280,153 @@ function startWaiter(root: string, order: string, name: string, pollMs: number, 
 
 const readOrder = (order: string) => (existsSync(order) ? readFileSync(order, 'utf8').split('\n').filter(Boolean) : [])
 const queueRecords = (root: string) => (existsSync(join(root, 'queue.d')) ? readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')) : [])
+
+describe('suite lock no-progress budget', () => {
+  it('keeps an advancing exclusive ticket past its total wait budget', async () => {
+    const root = tempRoot('progress')
+    const order = join(root, 'order.log')
+    const release = join(root, 'release-holder')
+    const holder = startWaiter(root, order, 'H', 30, 0, 30, { releaseFile: release })
+    const peers: Waiter[] = []
+    try {
+      await waitFor(() => readOrder(order).includes('H') && existsSync(join(root, 'lock.d', 'holder.json')), 15_000)
+      for (let n = 1; n <= 3; n += 1) {
+        const peer = startWaiter(root, order, `W${n}`, 30, 1250)
+        peers.push(peer)
+        await waitFor(() => peer.stdout().includes(`position ${n} of ${n}`) && queueRecords(root).length === n, 15_000)
+      }
+      const target = startWaiter(root, order, 'T', 30, 0, 2.5)
+      peers.push(target)
+      await waitFor(() => target.stdout().includes('position 4 of 4') && queueRecords(root).length === 4, 15_000)
+      const releasedAt = Date.now()
+      writeFileSync(release, 'go')
+      expect(await Promise.all([holder, ...peers].map((waiter) => waiter.done))).toEqual([0, 0, 0, 0, 0])
+      expect(Date.now() - releasedAt, 'target waited more than a full budget while advancing').toBeGreaterThan(3500)
+      expect(readOrder(order)).toEqual(['H', 'W1', 'W2', 'W3', 'T'])
+      for (const position of [4, 3, 2, 1]) expect(target.stdout()).toContain(`position ${position} of`)
+    } finally {
+      writeFileSync(release, 'go')
+      for (const waiter of [holder, ...peers]) if (waiter.child.exitCode === null) waiter.child.kill('SIGKILL')
+    }
+  }, 25_000)
+
+  it('keeps the head ticket at position 1 past waitS until its holder releases', async () => {
+    const root = tempRoot('head-progress')
+    const order = join(root, 'order.log')
+    const release = join(root, 'release-holder')
+    const holder = startWaiter(root, order, 'H', 30, 0, 30, { releaseFile: release })
+    let target: Waiter | undefined
+    try {
+      await waitFor(() => readOrder(order).includes('H'), 15_000)
+      target = startWaiter(root, order, 'T', 30, 0, 1, { staleS: 3 })
+      await waitFor(() => target!.stdout().includes('position 1 of 1') && queueRecords(root).length === 1, 15_000)
+      await new Promise((resolve) => setTimeout(resolve, 1300))
+      expect(queueRecords(root), 'head ticket remains present after waitS').toHaveLength(1)
+      expect(target.child.exitCode, 'head still waits at position 1').toBeNull()
+      writeFileSync(release, 'go')
+      expect(await Promise.all([holder.done, target.done])).toEqual([0, 0])
+      expect(readOrder(order)).toEqual(['H', 'T'])
+    } finally {
+      writeFileSync(release, 'go')
+      for (const waiter of [holder, target]) if (waiter?.child.exitCode === null) waiter.child.kill('SIGKILL')
+    }
+  }, 12_000)
+
+  // A head that a light ticket passes after it has waited longer than waitS at the head keeps the head
+  // budget: being passed is not a reason to fall back to the shorter budget of a ticket behind another.
+  it('keeps the head budget when a light ticket passes the head after waitS', async () => {
+    const root = tempRoot('head-passed')
+    const holder = await acquireSuiteLock({ root, argv: ['H'] })
+    const pending = acquireSuiteLock({ root, waitS: 0.5, staleS: 6, pollMs: 30, argv: ['T'] }).then(
+      (lease: unknown) => { releaseSuiteLock(lease); return 'acquired' },
+      (error: { code?: string }) => error.code ?? 'error',
+    )
+    let light = ''
+    try {
+      await waitFor(() => queueRecords(root).length === 1)
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+      const queue = join(root, 'queue.d')
+      const next = Math.max(...readdirSync(queue).map((name) => Number.parseInt(name, 10)).filter(Number.isFinite)) + 1
+      light = join(queue, String(next).padStart(16, '0'))
+      writeFileSync(`${light}.ticket`, '')
+      writeFileSync(`${light}.json`, JSON.stringify({ pid: process.pid, argv: ['light'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null, light: true }))
+      await new Promise((resolve) => setTimeout(resolve, 700))
+      rmSync(`${light}.json`, { force: true })
+      rmSync(`${light}.ticket`, { force: true })
+      light = ''
+      releaseSuiteLock(holder)
+      expect(await pending).toBe('acquired')
+    } finally {
+      if (light) { rmSync(`${light}.json`, { force: true }); rmSync(`${light}.ticket`, { force: true }) }
+      releaseSuiteLock(holder)
+      await pending
+    }
+  }, 12_000)
+
+  // Reaching the head on a poll that ends in an immediate retry (here: the head reclaims a dead holder)
+  // is progress too. The reclaim is slowed past waitS, so a retry that dropped its place timed out.
+  it('counts reaching the head on an immediate retry as progress', async () => {
+    const root = tempRoot('head-on-retry')
+    mkdirSync(join(root, 'lock.d'))
+    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ pid: 2_147_483_647, argv: ['dead'], startedAt: new Date().toISOString(), pidNamespace: null }))
+    let slowed = false
+    const beforeReclaimRemoval = () => {
+      if (slowed) return
+      slowed = true
+      const until = Date.now() + 1200
+      while (Date.now() < until) { /* hold the reclaim past waitS */ }
+    }
+    const lease = await acquireSuiteLock({ root, waitS: 1, staleS: 5, pollMs: 30, insideSandbox: false, beforeReclaimRemoval })
+    expect(slowed).toBe(true)
+    expect(lease.holder.pid).toBe(process.pid)
+    releaseSuiteLock(lease)
+  }, 8000)
+
+  // An explicit zero wait is a fail-fast request, at the head as well as behind another ticket.
+  it('keeps --wait-s 0 fail-fast at the head of the queue', async () => {
+    const root = tempRoot('zero-wait-head')
+    const holder = await acquireSuiteLock({ root, argv: ['H'] })
+    try {
+      const start = Date.now()
+      const error = await acquireSuiteLock({ root, waitS: 0, pollMs: 30 }).catch((cause: Error & { code?: string }) => cause)
+      expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+      expect(Date.now() - start).toBeLessThan(1000)
+    } finally { releaseSuiteLock(holder) }
+  }, 5000)
+
+  it('times out a stuck non-head and a stuck head, naming the live holder', async () => {
+    const root = tempRoot('stuck')
+    const holder = await acquireSuiteLock({ root, argv: ['live-holder'] })
+    // POSIX_STALENESS: this test is about the queue budget; Windows judges a live holder stale by age and would reclaim it.
+    const pending = acquireSuiteLock({ root, waitS: 1, staleS: 2.4, pollMs: 30, argv: ['ahead'], ...POSIX_STALENESS }).catch((cause: Error) => cause)
+    try {
+      await waitFor(() => queueRecords(root).length === 1)
+      const start = Date.now()
+      const error = await acquireSuiteLock({ root, waitS: 1, staleS: 1.4, pollMs: 30, ...POSIX_STALENESS }).catch((cause: Error) => cause)
+      expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT', holder: { pid: process.pid } })
+      expect(error.message).toContain(`holder pid ${process.pid} (live-holder)`)
+      expect(error.message).toContain('no queue progress for')
+      expect(error.message).toContain('position 2 of 2')
+      expect(Date.now() - start).toBeLessThan(2500)
+      const headError = await pending
+      expect(headError.message).toContain(`holder pid ${process.pid} (live-holder)`)
+      expect(headError.message).toContain('no queue progress for')
+      expect(headError.message).toContain('position 1 of')
+    } finally { releaseSuiteLock(holder); await pending }
+  }, 7000)
+
+  it('times out naming a dead holder whose foreign PID cannot be judged inside a sandbox', async () => {
+    const root = tempRoot('foreign-stuck')
+    mkdirSync(join(root, 'lock.d'))
+    const holder = { pid: 2_147_483_647, argv: ['foreign-holder'], startedAt: new Date().toISOString(), pidNamespace: 'pid:[4026531836]' }
+    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify(holder))
+    const error = await acquireSuiteLock({ root, insideSandbox: true, pidNamespace: 'pid:[4026532999]', waitS: 0.4, staleS: 0.7, pollMs: 30 }).catch((cause: Error) => cause)
+    expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT', holder })
+    expect(error.message).toContain('holder pid 2147483647 (foreign-holder)')
+    expect(error.message).toContain('no queue progress for')
+    expect(existsSync(join(root, 'lock.d', 'holder.json'))).toBe(true)
+  }, 4000)
+})
 
 describe('suite lock FIFO queue (card 1873075570439357968)', () => {
   // Red on the "first poller wins" lock: the oldest waiter polls every second, the arrivals every
@@ -321,7 +483,7 @@ describe('suite lock queue tickets', () => {
     return `${base}.json`
   }
   const liveRecord = (extra: Record<string, unknown> = {}) => ({ pid: process.pid, argv: ['x'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null, ...extra })
-  const timesOut = (options: Record<string, unknown>) => acquireSuiteLock({ waitS: 0.2, pollMs: 10, insideSandbox: false, ...options }).then(
+  const timesOut = (options: Record<string, unknown>) => acquireSuiteLock({ waitS: 0.2, staleS: 0.2, pollMs: 10, insideSandbox: false, ...options }).then(
     (lease: { holder: unknown }) => { releaseSuiteLock(lease); return 'acquired' },
     (error: { code?: string }) => error.code,
   )
@@ -443,7 +605,7 @@ describe('wt-suite-lock CLI', () => {
     const script = 'import pty,sys;sys.exit(pty.spawn(sys.argv[1:]))'
     const command = 'require("fs").openSync("/dev/tty","r");process.stdout.write("TTY OK")'
     const result = spawnSync('python3', ['-c', script, process.execPath, CLI, 'run', '--', process.execPath, '-e', command], {
-      encoding: 'utf8', timeout: 5000, env: { ...process.env, HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+      encoding: 'utf8', timeout: 5000, env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
     })
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).toContain('TTY OK')
@@ -452,7 +614,7 @@ describe('wt-suite-lock CLI', () => {
   it('reuses an inherited ancestor in the direct library entrypoint without releasing its lease', () => {
     const root = tempRoot('direct-nesting')
     const script = `import {acquireSuiteLock,releaseSuiteLock} from ${JSON.stringify(LIB_URL)};const lease=await acquireSuiteLock({waitS:0.3});releaseSuiteLock(lease);process.stdout.write('direct ok')`
-    const result = spawnSync(process.execPath, [CLI, 'run', '--', process.execPath, '--input-type=module', '-e', script], { env: { ...process.env, XDG_STATE_HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }, encoding: 'utf8', timeout: 12_000 })
+    const result = spawnSync(process.execPath, [CLI, 'run', '--', process.execPath, '--input-type=module', '-e', script], { env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, XDG_STATE_HOME: root, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }, encoding: 'utf8', timeout: 12_000 })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toBe('direct ok')
   }, 6000)
@@ -467,15 +629,31 @@ describe('wt-suite-lock CLI', () => {
   it('times out with 75 and never runs the command', async () => {
     const root = tempRoot('timeout')
     const marker = join(root, 'ran')
-    const owner = runAsync(['run', '--', process.execPath, '-e', 'setInterval(()=>{},1000)'], root)
+    const holderPid = join(root, 'holder.pid')
+    const owner = runAsync(['run', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(holderPid)}, String(process.pid));setInterval(()=>{},1000)`], root)
     try {
       await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
-      const result = cli(['run', '--wait-s', '0.05', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
+       const result = cli(['run', ...competitorArgs({ waitS: 0.05, staleS: 0.05 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
       expect(result.status).toBe(75)
       expect(result.stderr).toContain('timed out waiting for suite lock: holder pid')
       expect(existsSync(marker)).toBe(false)
-    } finally { owner.child.kill('SIGKILL'); await owner.done }
-  })
+    } finally { stopHeld(owner.child); await owner.done }
+    // The runner dies by SIGKILL and cannot forward it: its keepalive child must still be gone.
+    await waitFor(() => existsSync(holderPid) && !processAlive(Number(readFileSync(holderPid, 'utf8'))), 15_000)
+  }, 30_000)
+
+  it('exits 75 behind a live holder with the no-progress detail and never runs the command', async () => {
+    const root = tempRoot('cli-no-progress')
+    const marker = join(root, 'ran')
+    const owner = await acquireSuiteLock({ root, argv: ['live-holder'] })
+    try {
+      const result = cli(['run', ...competitorArgs({ waitS: 1, staleS: 1 }), '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'yes')`], root)
+      expect(result.status).toBe(75)
+      expect(result.stderr).toContain(`holder pid ${process.pid} (live-holder)`)
+      expect(result.stderr).toContain('no queue progress for')
+      expect(existsSync(marker)).toBe(false)
+    } finally { releaseSuiteLock(owner) }
+  }, 7000)
 
   it('bypasses visibly and runs when WT_SUITE_LOCK=0', () => {
     const root = tempRoot('bypass')
@@ -525,7 +703,7 @@ describe('wt-suite-lock CLI', () => {
     for (const command of ['status', 'run']) {
       const result = spawnSync('zsh', ['-c', '"$WT_SUITE_LOCK_CMD" "$1"', 'zsh', command], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH}`, WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+        env: { ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, PATH: hermeticPath([root]), WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
       })
       expect(result.error, 'zsh spawn itself failed rather than the child exiting').toBeUndefined()
       expect(result.status).toBe(7)
@@ -575,7 +753,7 @@ describe('wt-suite-lock-run runner', () => {
   it('takes the suite lock itself while the child runs, and a second runner waits for it', async () => {
     const root = tempRoot('runner-takes-lock')
     const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {
-      env: { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
+      env: { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
@@ -678,7 +856,7 @@ describe('suite lock queue — round 2', () => {
     return file
   }
   const record = (extra: Record<string, unknown> = {}) => ({ pid: process.pid, argv: ['x'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null, ...extra })
-  const attempt = (options: Record<string, unknown>) => acquireSuiteLock({ waitS: 0.2, pollMs: 10, insideSandbox: false, ...options }).then(
+  const attempt = (options: Record<string, unknown>) => acquireSuiteLock({ waitS: 0.2, staleS: 0.2, pollMs: 10, insideSandbox: false, ...options }).then(
     (lease: { holder: unknown }) => { releaseSuiteLock(lease); return 'acquired' },
     (error: { code?: string }) => error.code,
   )
@@ -744,7 +922,10 @@ describe('suite lock queue — round 2', () => {
     expect(Date.now() - started).toBeLessThan(2000)
     const abandoned = tempRoot('r2-f8-abandoned')
     seedStaleHolder(abandoned, 120_000)
-    expect(await attempt({ root: abandoned })).toBe('acquired')
+    // The reclaim takes two waiter iterations by design, each with queue-file I/O. A 0.2 s wait left no
+    // margin on a loaded Windows runner (timed out after 430 and 743 ms, cross-OS run 36984414559), so
+    // this case gets a 2 s budget; the fresh case above keeps 0.2 s, since it is the on-schedule check.
+    expect(await attempt({ root: abandoned, waitS: 2 })).toBe('acquired')
   }, 10_000)
 })
 
@@ -795,7 +976,7 @@ releaseSuiteLock(lease)
     // HOST's own START event is written only after it has acquired the suite lock, so waiting for
     // it (rather than a fixed pause) already proves the holder is live before SANDBOX ever attempts.
     await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
-    const sandboxed = runExcl({ root, log, name: 'SANDBOX', waitS: 1, holdMs: 100, view: { insideSandbox: true, pidNamespace: 'pid:[4026532999]' } })
+    const sandboxed = runExcl({ root, log, name: 'SANDBOX', waitS: 1, holdMs: 100, view: { insideSandbox: true, pidNamespace: 'pid:[4026532999]', staleS: 1 } })
     expect(await sandboxed).toBe(75)
     expect(await holder).toBe(0)
     expect(overlaps(log)).toBeNull()
@@ -806,13 +987,13 @@ releaseSuiteLock(lease)
     const root = tempRoot('excl-bwrap')
     const log = join(root, 'events.log')
     const mark = (name: string, holdMs: number) => `const f=require('fs');f.appendFileSync(${JSON.stringify(log)},'${name} START '+Date.now()+'\\n');setTimeout(()=>f.appendFileSync(${JSON.stringify(log)},'${name} END '+Date.now()+'\\n'),${holdMs})`
-    const env = { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
+    const env = { ...process.env, PATH: hermeticPath([]), WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }
     const host = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', mark('HOST', 3000)], { env, stdio: 'ignore' })
     const hostDone = new Promise((resolve) => host.once('exit', resolve))
     // Same reasoning as the sibling non-bwrap test: HOST's own START event already proves the lock
     // is held, so there is nothing left to pad with a fixed pause.
     await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
-    const boxed = spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', process.execPath, CLI, 'run', '--wait-s', '1', '--', process.execPath, '-e', mark('SANDBOX', 100)], { env, encoding: 'utf8' })
+    const boxed = spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', process.execPath, CLI, 'run', '--wait-s', '1', '--stale-s', '1', '--', process.execPath, '-e', mark('SANDBOX', 100)], { env, encoding: 'utf8' })
     await hostDone
     expect(boxed.status, boxed.stderr).toBe(75)
     expect(overlaps(log)).toBeNull()
@@ -823,18 +1004,36 @@ releaseSuiteLock(lease)
     await acquireSuiteLock({ root })
     const hourAgo = new Date(Date.now() - 3_600_000)
     utimesSync(join(root, 'lock.d'), hourAgo, hourAgo)
-    const sandboxView = { root, pidNamespace: 'pid:[4026532999]', insideSandbox: true, waitS: 0.2, pollMs: 10 }
+    const sandboxView = { root, pidNamespace: 'pid:[4026532999]', insideSandbox: true, waitS: 0.2, staleS: 0.2, pollMs: 10 }
     await expect(acquireSuiteLock(sandboxView)).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-    const windowsView = { root, platform: 'win32', insideSandbox: false, waitS: 0.2, pollMs: 10 }
+    const windowsView = { root, platform: 'win32', pidNamespace: 'pid:[4026532999]', insideSandbox: true, waitS: 0.2, staleS: 0.2, pollMs: 10 }
     await expect(acquireSuiteLock(windowsView)).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-    await expect(acquireSuiteLock({ ...sandboxView, staleS: 1800 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    await expect(acquireSuiteLock({ ...sandboxView, staleS: 0.3 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     expect(readSuiteLock({ root }).holder?.pid).toBe(process.pid)
+  })
+
+  // The Windows contract the CLI tests above fail fast around (see helpers/suite-lock-platform.ts): through the injected
+  // platform, so it runs on every OS. A signalable PID proves nothing on win32, so age against --stale-s decides.
+  it('on win32 reclaims a live-PID holder older than --stale-s at the head, and keeps a younger one', async () => {
+    const view = { platform: 'win32', insideSandbox: false, pidNamespace: null, staleS: 60, pollMs: 10 }
+    const young = tempRoot('excl-win-young')
+    const youngHolder = await acquireSuiteLock({ root: young, argv: ['young'] })
+    await expect(acquireSuiteLock({ root: young, ...view, waitS: 0 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(readSuiteLock({ root: young }).holder?.leaseId).toBe(youngHolder.holder.leaseId)
+    const old = tempRoot('excl-win-old')
+    const oldHolder = await acquireSuiteLock({ root: old, argv: ['old'] })
+    const twoMinutesAgo = new Date(Date.now() - 120_000)
+    utimesSync(join(old, 'lock.d'), twoMinutesAgo, twoMinutesAgo)
+    const lease = await acquireSuiteLock({ root: old, ...view, waitS: 5 })
+    expect(lease.holder.pid).toBe(process.pid)
+    expect(lease.holder.leaseId).not.toBe(oldHolder.holder.leaseId)
+    releaseSuiteLock(lease)
   })
 
   it('reclaims a half-created lock.d (no valid holder.json) after its bound, and not before', async () => {
     const young = tempRoot('excl-half-young')
     mkdirSync(join(young, 'lock.d'))
-    await expect(acquireSuiteLock({ root: young, waitS: 0.2, pollMs: 10 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    await expect(acquireSuiteLock({ root: young, waitS: 0.2, staleS: 0.2, pollMs: 10 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     const old = tempRoot('excl-half-old')
     mkdirSync(join(old, 'lock.d'))
     writeFileSync(join(old, 'lock.d', 'holder.json'), '{"truncat')
