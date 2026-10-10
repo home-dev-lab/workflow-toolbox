@@ -49,6 +49,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The work-journal digest projection (work-journal-digest.mjs) adds one process-table-free module.
     // The orphan watch adds its process-table-only attribution module (lane-opencode-attribution.mjs).
     // The SDK pilot's phase-session opener (pilot-phase-session.mjs) adds one process-table-free module.
+    // The SessionStart source predicate (session-start-source.mjs) adds one process-table-free module.
     expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 271, violations: [] })
   })
 })

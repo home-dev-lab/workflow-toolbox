@@ -1410,6 +1410,9 @@ describe('wt-session-start-registry-hook.mjs — runs the scan at session start'
     expect(r.stdout).toContain('Agent-liveness coverage') // both blocks present, not just one
   })
 
+})
+
+describe('wt-session-start-registry-hook.mjs — session selection', () => {
   it('uses the hook payload session_id so a newer OTHER journal does not hijack the session-start scan', () => {
     const dir = mkRoot('sess-start-ambiguous-safe')
     const askedFile = join(dir, 'sess-current.jsonl')
@@ -1439,6 +1442,9 @@ describe('wt-session-start-registry-hook.mjs — runs the scan at session start'
     expect(r.stdout).toContain('Agent-liveness coverage')
   })
 
+})
+
+describe('wt-session-start-registry-hook.mjs — source and malformed input', () => {
   it('after a compaction drops the standing coverage line and keeps the unfinished-arc defect', () => {
     const clean = mkRoot('sess-compact-clean')
     const quiet = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'compact', session_id: 'sess-compact-clean' }, { ...process.env, WT_OUTBOUND_GUARD_DIR: clean })

@@ -383,25 +383,25 @@ describe('wt-observer-pairing-guard-hook — delegate to the shipped checker', (
 // --------------------------------------------------------------------------
 // SessionStart delegation-ladder hook (wt-delegation-ladder-hook.mjs) — items 4, 5
 // --------------------------------------------------------------------------
-describe('wt-delegation-ladder-hook — conditional injection + machine calibration', () => {
-  /** A project cwd carrying (or not) delegation markers; isolated HOME + config dir. */
-  function fixture(tag: string, opts: { marker?: boolean; adopted?: boolean } = {}) {
-    const root = mkRoot(tag)
-    const proj = join(root, 'proj')
-    mkdirSync(join(proj, '.claude'), { recursive: true })
-    if (opts.marker ?? true) writeFileSync(join(proj, '.claude', 'planka.json'), '{}')
-    if (opts.adopted) {
-      mkdirSync(join(proj, '.claude', 'rules'), { recursive: true })
-      writeFileSync(join(proj, '.claude', 'rules', 'wt-delegation-ladder.md'), 'x')
-    }
-    const home = join(root, 'home')
-    const cfg = join(root, 'cfg')
-    mkdirSync(home, { recursive: true })
-    mkdirSync(cfg, { recursive: true })
-    return { root, proj, env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: cfg } }
+/** A project cwd carrying (or not) delegation markers; isolated HOME + config dir. */
+function fixture(tag: string, opts: { marker?: boolean; adopted?: boolean } = {}) {
+  const root = mkRoot(tag)
+  const proj = join(root, 'proj')
+  mkdirSync(join(proj, '.claude'), { recursive: true })
+  if (opts.marker ?? true) writeFileSync(join(proj, '.claude', 'planka.json'), '{}')
+  if (opts.adopted) {
+    mkdirSync(join(proj, '.claude', 'rules'), { recursive: true })
+    writeFileSync(join(proj, '.claude', 'rules', 'wt-delegation-ladder.md'), 'x')
   }
-  const start = (cwd: string) => ({ hook_event_name: 'SessionStart', source: 'startup', cwd })
+  const home = join(root, 'home')
+  const cfg = join(root, 'cfg')
+  mkdirSync(home, { recursive: true })
+  mkdirSync(cfg, { recursive: true })
+  return { root, proj, env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: cfg } }
+}
+const start = (cwd: string) => ({ hook_event_name: 'SessionStart', source: 'startup', cwd })
 
+describe('wt-delegation-ladder-hook — conditional injection + machine calibration', () => {
   it('injects the ladder when a delegation marker is present', () => {
     const f = fixture('marker')
     const r = runHook(LADDER_HOOK, start(f.proj), f.env)
@@ -422,6 +422,9 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     expect(runHook(LADDER_HOOK, { hook_event_name: 'SessionStart', cwd: f.proj }, f.env).stdout).toBe(startup)
   })
 
+})
+
+describe('wt-delegation-ladder-hook — fail-safe and adoption', () => {
   it('is a SILENT no-op where no delegation marker exists', () => {
     const f = fixture('nomarker', { marker: false })
     const r = runHook(LADDER_HOOK, start(f.proj), f.env)
@@ -469,6 +472,9 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     expect(ctx).not.toContain('workflow-toolbox:adopt')
   })
 
+})
+
+describe('wt-delegation-ladder-hook — migrated adoption and bridges', () => {
   // Card 1835727457 (rules/wt/ subfolder migration): a project migrated to the new default
   // location must ALSO suppress the suggestion — checking only the old flat path would nag
   // a correctly-migrated project to re-adopt something it already has.

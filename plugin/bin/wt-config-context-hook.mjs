@@ -17,6 +17,11 @@ function jsonFile(file) {
   }
 }
 
+function shouldSkipConfigContext(input) {
+  // Configuration does not change across a compaction: the session start already said it.
+  return !input || typeof input !== 'object' || typeof input.agent_id === 'string' && input.agent_id || isCompactSource(input)
+}
+
 function main() {
   let input
   try {
@@ -24,9 +29,7 @@ function main() {
   } catch {
     return
   }
-  if (!input || typeof input !== 'object' || typeof input.agent_id === 'string' && input.agent_id) return
-  // Configuration does not change across a compaction: the session start already said it.
-  if (isCompactSource(input)) return
+  if (shouldSkipConfigContext(input)) return
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude')
   const manifest = jsonFile(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'))
   const settings = jsonFile(path.join(configDir, 'settings.json'))

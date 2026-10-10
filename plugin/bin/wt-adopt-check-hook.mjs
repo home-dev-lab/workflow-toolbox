@@ -333,16 +333,20 @@ function scriptDriftMessage(configDir, project, installCmd, rootState, skipped) 
     }
     if (!/^(?:STALE|EDITED|AHEAD|SYMLINK|TARGET-MISSING|PRESENT \(no toolbox banner)/.test(status)) continue
     const check = `${checkRemedy(installCmd, 'scripts', dir)} --fail-on-drift`
-    let remedy
-    if (status.startsWith('TARGET-MISSING')) remedy = 'Update or reinstall workflow-toolbox to restore the named canonical target'
-    else if (status.startsWith('SYMLINK')) remedy = `Preserve the symlink destination, then run \`${installRemedy(installCmd, 'scripts', dir)} --replace-symlinks --file ${shellQuote(file)}\``
-    else if (status.startsWith('PRESENT')) {
-      remedy = `Preserve and move the hand-authored file ${shellQuote(path.join(dir, file))} to a backup first, then run \`${installRemedy(installCmd, 'scripts', dir)}\``
-    } else if (status.startsWith('STALE')) remedy = `Run \`${installRemedy(installCmd, 'scripts', dir)}\``
-    else remedy = `Compare the rendered shim with \`${diffRemedy(installCmd, 'scripts', file, dir)}\`, then restore it with \`${forceRemedy(installCmd, 'scripts', file, dir)}\``
+    const remedy = scriptDriftRemedy(status, installCmd, dir, file)
     lines.push(`${file} (${dir}): ${status}. ${remedy}; re-check with \`${check}\`.`)
   }
   return lines.join('\n')
+}
+
+function scriptDriftRemedy(status, installCmd, dir, file) {
+  if (status.startsWith('TARGET-MISSING')) return 'Update or reinstall workflow-toolbox to restore the named canonical target'
+  if (status.startsWith('SYMLINK')) return `Preserve the symlink destination, then run \`${installRemedy(installCmd, 'scripts', dir)} --replace-symlinks --file ${shellQuote(file)}\``
+  if (status.startsWith('PRESENT')) {
+    return `Preserve and move the hand-authored file ${shellQuote(path.join(dir, file))} to a backup first, then run \`${installRemedy(installCmd, 'scripts', dir)}\``
+  }
+  if (status.startsWith('STALE')) return `Run \`${installRemedy(installCmd, 'scripts', dir)}\``
+  return `Compare the rendered shim with \`${diffRemedy(installCmd, 'scripts', file, dir)}\`, then restore it with \`${forceRemedy(installCmd, 'scripts', file, dir)}\``
 }
 
 function hasAdoptedScripts(dir) {

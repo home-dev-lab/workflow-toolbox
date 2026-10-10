@@ -101,6 +101,9 @@ describe('artifact server SessionStart context', () => {
     expect(context).not.toContain('${')
   })
 
+})
+
+describe('artifact server SessionStart context — source and availability', () => {
   it('is silent after a compaction, live server or not', async () => {
     const { stateHome } = await liveServerFixture()
     expect((await runHook(stateHome, 'compact')).stdout).toBe('')

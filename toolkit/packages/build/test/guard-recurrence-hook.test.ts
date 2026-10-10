@@ -231,17 +231,17 @@ describe('guard-recurrence-hook — the SessionStart count surface', () => {
   })
 })
 
-describe('guard-recurrence-hook — silent after a compaction (SessionStart source=compact)', () => {
-  function manyGroups(dir: string, n: number): void {
-    const lines: Array<Record<string, unknown>> = []
-    for (let g = 0; g < n; g++) {
-      // Distinct counts so the top-3 order is decidable: group g fires g+3 times.
-      for (let i = 0; i < g + 3; i++) lines.push(event(`wt-some-long-guard-name-number-${g}-hook.mjs`, { class: `class-${g}`, session: 's1' }))
-    }
-    writeWeek(dir, lines)
+function manyGroups(dir: string, n: number): void {
+  const lines: Array<Record<string, unknown>> = []
+  for (let g = 0; g < n; g++) {
+    // Distinct counts so the top-3 order is decidable: group g fires g+3 times.
+    for (let i = 0; i < g + 3; i++) lines.push(event(`wt-some-long-guard-name-number-${g}-hook.mjs`, { class: `class-${g}`, session: 's1' }))
   }
-  const ctx = (out: string): string => JSON.parse(out).hookSpecificOutput.additionalContext as string
+  writeWeek(dir, lines)
+}
+const ctx = (out: string): string => JSON.parse(out).hookSpecificOutput.additionalContext as string
 
+describe('guard-recurrence-hook — silent after a compaction (SessionStart source=compact)', () => {
   it('on compact prints nothing, however many groups crossed the threshold', () => {
     const dir = mkJournalDir()
     manyGroups(dir, 22)
@@ -251,6 +251,9 @@ describe('guard-recurrence-hook — silent after a compaction (SessionStart sour
     expect(run(dir, { source: 'compact' }).out).toBe('')
   })
 
+})
+
+describe('guard-recurrence-hook — non-compact and malformed payloads', () => {
   it('every non-compact source keeps the full list, with the long caveat', () => {
     const dir = mkJournalDir()
     manyGroups(dir, 22)

@@ -53,6 +53,9 @@ describe('wt-config', () => {
     expect(output.options.find((row: { option: string }) => row.option === 'pilot_model')).toMatchObject({ effective: 'haiku', source: 'env' })
   })
 
+})
+
+describe('wt-config — SessionStart context', () => {
   it('emits main-session context and stays silent for a subagent', () => {
     const f = fixture()
     const run = (payload: unknown) => spawnSync(process.execPath, [HOOK], { cwd: f.project, env: f.env, input: JSON.stringify(payload), encoding: 'utf8' })
