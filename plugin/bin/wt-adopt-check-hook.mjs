@@ -45,7 +45,8 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
-import { quoteRemedyWord, remedyJson } from './lib/remedy-quote.mjs'
+import { quoteRemedyWord } from './lib/remedy-quote.mjs'
+import { isCompactSource } from './lib/session-start-source.mjs'
 import { pluginRootState } from './lib/plugin-root-state.mjs'
 import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
@@ -316,13 +317,12 @@ function triggerLines(file, finding, installCmd, event) {
 }
 
 /** Scripts live only in the active config. Compare the rendered shim, never its canonical body. */
-function scriptDriftMessage(configDir, project, installCmd, rootState, skipped, digest = false) {
+function scriptDriftMessage(configDir, project, installCmd, rootState, skipped) {
   const dir = path.join(configDir, 'scripts')
   const lines = []
   let failed = false
   const findings = checkDir(dir, 'scripts', 'static', project, () => { failed = true })
   if ((failed || !findings.size) && hasAdoptedScripts(dir)) {
-    if (digest) return `workflow-toolbox scripts drift check could not run in ${dir}; restore the installed plugin and re-check with the workflow-toolbox:adopt skill.`
     return `workflow-toolbox scripts drift check could not run in ${dir}; restore the installed plugin and re-check with \`${checkRemedy(installCmd, 'scripts', dir)} --fail-on-drift\`.`
   }
   for (const [file, finding] of findings) {
@@ -332,22 +332,21 @@ function scriptDriftMessage(configDir, project, installCmd, rootState, skipped, 
       continue
     }
     if (!/^(?:STALE|EDITED|AHEAD|SYMLINK|TARGET-MISSING|PRESENT \(no toolbox banner)/.test(status)) continue
-    if (digest) {
-      // Installer status text may itself carry a full remedy (for example --force).
-      lines.push(`${file} (${dir}): ${status.split(' ')[0]}. Re-run the workflow-toolbox:adopt skill to inspect and reconcile script drift.`)
-      continue
-    }
     const check = `${checkRemedy(installCmd, 'scripts', dir)} --fail-on-drift`
-    let remedy
-    if (status.startsWith('TARGET-MISSING')) remedy = 'Update or reinstall workflow-toolbox to restore the named canonical target'
-    else if (status.startsWith('SYMLINK')) remedy = `Preserve the symlink destination, then run \`${installRemedy(installCmd, 'scripts', dir)} --replace-symlinks --file ${shellQuote(file)}\``
-    else if (status.startsWith('PRESENT')) {
-      remedy = `Preserve and move the hand-authored file ${shellQuote(path.join(dir, file))} to a backup first, then run \`${installRemedy(installCmd, 'scripts', dir)}\``
-    } else if (status.startsWith('STALE')) remedy = `Run \`${installRemedy(installCmd, 'scripts', dir)}\``
-    else remedy = `Compare the rendered shim with \`${diffRemedy(installCmd, 'scripts', file, dir)}\`, then restore it with \`${forceRemedy(installCmd, 'scripts', file, dir)}\``
+    const remedy = scriptDriftRemedy(status, installCmd, dir, file)
     lines.push(`${file} (${dir}): ${status}. ${remedy}; re-check with \`${check}\`.`)
   }
   return lines.join('\n')
+}
+
+function scriptDriftRemedy(status, installCmd, dir, file) {
+  if (status.startsWith('TARGET-MISSING')) return 'Update or reinstall workflow-toolbox to restore the named canonical target'
+  if (status.startsWith('SYMLINK')) return `Preserve the symlink destination, then run \`${installRemedy(installCmd, 'scripts', dir)} --replace-symlinks --file ${shellQuote(file)}\``
+  if (status.startsWith('PRESENT')) {
+    return `Preserve and move the hand-authored file ${shellQuote(path.join(dir, file))} to a backup first, then run \`${installRemedy(installCmd, 'scripts', dir)}\``
+  }
+  if (status.startsWith('STALE')) return `Run \`${installRemedy(installCmd, 'scripts', dir)}\``
+  return `Compare the rendered shim with \`${diffRemedy(installCmd, 'scripts', file, dir)}\`, then restore it with \`${forceRemedy(installCmd, 'scripts', file, dir)}\``
 }
 
 function hasAdoptedScripts(dir) {
@@ -371,56 +370,6 @@ function collectBuckets(perFile, set) {
 }
 
 const hasFindings = (buckets) => Object.values(buckets).some((items) => items.length)
-
-const DIGEST_LABELS = [
-  ['unverified', 'On-demand head unverified'],
-  ['misplaced', 'Misplaced static rule'],
-  ['duplicate', 'Loaded from two places (double-load)'],
-  ['absent', 'workflow-toolbox rules NOT installed here'],
-  ['stale', 'Stale (behind the shipped content)'],
-  ['edited', 'Locally modified (supported)'],
-  ['ahead', 'Ahead of the shipped content (fork)'],
-]
-
-/** Files grouped by where they live, so a shared directory is printed once: `a.md, b.md (dir); c.md (other)`. */
-function digestNames(items) {
-  const groups = new Map()
-  for (const { file, location, locations } of items) {
-    const where = locations?.length ? locations.join(' and ') : (location ?? '')
-    groups.set(where, [...(groups.get(where) ?? []), file])
-  }
-  return [...groups].sort(([a], [b]) => a.localeCompare(b))
-    .map(([where, files]) => files.sort().join(', ') + (where ? ' (' + where + ')' : '')).join('; ')
-}
-
-const hasTriggerMarker = (finding) => [finding, ...(finding.findings ?? [])]
-  .some((item) => item.status?.includes(TRIGGERS_STALE) || item.status?.includes(TRIGGERS_UNRESOLVED))
-
-/** The post-compaction form: one names-only line per non-empty bucket, no per-file command. */
-function buildDigest(buckets, set) {
-  const lines = []
-  for (const [key, label] of DIGEST_LABELS) {
-    if (buckets[key].length) lines.push(`${label} [${set}]: ${digestNames(buckets[key])}.`)
-  }
-  const triggers = Object.values(buckets).flat().filter(hasTriggerMarker)
-  if (triggers.length) lines.push(`On-demand triggers unresolved / behind [${set}]: ${digestNames(triggers)}.`)
-  return lines.length ? lines.join('\n') : null
-}
-
-/** The post-compaction message of one set, or null when it has nothing to report. */
-function buildDigestMessage(perFile, set) {
-  const buckets = collectBuckets(perFile, set)
-  return hasFindings(buckets) ? buildDigest(buckets, set) : null
-}
-
-/** The one closing line of a digest: how to print the per-file remedies again. */
-function digestClosing(root, noticeOnly) {
-  const payload = remedyJson({ source: 'startup', hook_event_name: 'SessionStart', cwd: root })
-  const rerun = `printf '%s' ${shellQuote(payload)} | node ${shellQuote(path.join(HERE, 'wt-adopt-check-hook.mjs'))}`
-  return 'This digest omits the per-file remedies; the command that prints the current full remedies is ' +
-    `\`${rerun}\`` +
-    (noticeOnly ? '; hand them to the session that owns the directory.' : '.')
-}
 
 function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false, roots = {}) {
   const buckets = collectBuckets(perFile, set)
@@ -538,6 +487,8 @@ export function main() {
   if (typeof input?.agent_id === 'string' && input.agent_id) return
   const event = resolveEvent(input)
   if (!event) return
+  // Adopted-copy drift does not change across a compaction: the session start already reported it.
+  if (isCompactSource(input)) return
 
   const root = typeof input.cwd === 'string' && input.cwd ? input.cwd : null
   if (!root) return // no cwd in payload → can't locate the project; stay silent
@@ -564,8 +515,6 @@ export function main() {
     { set: 'agents', subdirs: ['agents'] },
   ]
 
-  // Compaction re-fires SessionStart; the session already holds the per-file remedies from its start.
-  const digest = event === 'SessionStart' && input.source === 'compact'
   const sections = []
   const skipped = []
   for (const { set, subdirs } of SETS) {
@@ -589,15 +538,12 @@ export function main() {
     const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
     let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
     if (set === 'rules') remedyDir = isOnDemandDir(nestedRulesDir, roots) ? path.dirname(nestedRulesDir) : nestedRulesDir
-    const built = digest
-      ? buildDigestMessage(perFile, set)
-      : buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
+    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
     if (built) sections.push(built)
   }
 
-  const scriptsMessage = scriptDriftMessage(configDir, root, INSTALL_RULES, rootState, skipped, digest)
+  const scriptsMessage = scriptDriftMessage(configDir, root, INSTALL_RULES, rootState, skipped)
   if (scriptsMessage) sections.push(scriptsMessage)
-  if (digest && sections.length) sections.push(digestClosing(root, noticeOnly))
   if (skipped.length) sections.push(`Comparison skipped for ${skipped.sort().join(', ')}: this session runs v${rootState.runningVersion} from ${rootState.runningRoot} while v${rootState.installedVersion} is installed at ${rootState.installedRoot}; a comparison against the running version is not reliable until /reload-plugins or a restart loads the installed one.`)
   const message = sections.filter(Boolean).join('\n')
   if (!message) return // everything adopted & current somewhere → silent

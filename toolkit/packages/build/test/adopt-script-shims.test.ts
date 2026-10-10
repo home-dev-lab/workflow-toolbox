@@ -225,16 +225,10 @@ function hook(f: ReturnType<typeof fixture>, source = 'startup') {
   return result.stdout
 }
 describe('scripts adoption notice', () => {
-  it('uses the short script-drift remedy after compaction and retains the full startup remedy', () => {
+  it('prints no script drift after a compaction and retains the full startup remedy', () => {
     const f = fixture(); adopt(f)
     writeFileSync(join(f.scripts, FILES[0]!), readFileSync(join(f.scripts, FILES[0]!), 'utf8') + '// edit\n')
-    const compact = JSON.parse(hook(f, 'compact')).hookSpecificOutput.additionalContext as string
-    expect(compact).toContain(`${FILES[0]} (${f.scripts}): EDITED`)
-    expect(compact).toContain('Re-run the workflow-toolbox:adopt skill to inspect and reconcile script drift.')
-    expect(compact).toContain('This digest omits the per-file remedies')
-    expect(compact).not.toContain('--set scripts')
-    expect(compact).not.toContain('--force')
-    expect(compact).not.toContain('--fail-on-drift')
+    expect(hook(f, 'compact')).toBe('')
     const startup = JSON.parse(hook(f)).hookSpecificOutput.additionalContext as string
     expect(startup).toContain('--set scripts')
     expect(startup).toContain('--diff')

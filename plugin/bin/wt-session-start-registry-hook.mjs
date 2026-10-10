@@ -27,6 +27,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 import { pluginRootState } from './lib/plugin-root-state.mjs';
+import { isCompactSource } from './lib/session-start-source.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCAN = join(HERE, 'wt-spawn-registry-scan.mjs');
@@ -43,6 +44,19 @@ function main() {
   if (typeof payload?.agent_id === 'string' && payload.agent_id) return;
   const state = pluginRootState({ ownRoot: OWN_ROOT, projectDir: payload?.cwd, event: 'SessionStart',
     invokedEvent: payload?.hook_event_name, invokedScript: fileURLToPath(import.meta.url) });
+  writePluginRootNotice(state);
+  if (!existsSync(SCAN)) process.exit(0);
+
+  const { sessionId, scanArgs } = sessionScanArgs();
+  const res = spawnSync(process.execPath, scanArgs, {
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  writeUnfinishedArcs(res);
+  writeStandingCoverage(sessionId);
+}
+
+function writePluginRootNotice(state) {
   if (state.kind === 'stale') {
     process.stdout.write(`STALE PLUGIN VERSION: running ${state.name} v${state.runningVersion} from ${state.runningRoot}; `
       + `a different version is installed: v${state.installedVersion} at ${state.installedRoot}. `
@@ -53,18 +67,17 @@ function main() {
       + `with enabled installed plugin ${state.key} at ${state.installedRoot}: ${state.duplicates.join(', ')}. `
       + `Remove those settings registrations or run claude plugin disable ${state.key}.\n`);
   }
-  if (!existsSync(SCAN)) process.exit(0);
+}
 
+function sessionScanArgs() {
   const sessionId = typeof payload?.session_id === 'string' && payload.session_id ? payload.session_id : null;
   const scanArgs = [SCAN];
   if (sessionId) scanArgs.push('--session', sessionId);
   scanArgs.push('--quiet-min', '20');
+  return { sessionId, scanArgs };
+}
 
-  const res = spawnSync(process.execPath, scanArgs, {
-    encoding: 'utf8',
-    timeout: 10_000,
-  });
-
+function writeUnfinishedArcs(res) {
   // Exit 1 means the scan found open + silent agents. Anything else (0 = clean, 2 = no registry,
   // null = timeout/crash) is not worth spending a session's context on.
   if (res.status === 1 && res.stdout) {
@@ -78,8 +91,12 @@ function main() {
       + 'context. Close the loop either way.\n'
     );
   }
+}
 
-  // The standing gap, stated once, plainly. This hook sees only what happened BEFORE now.
+function writeStandingCoverage(sessionId) {
+  // The standing gap, stated once, plainly. This hook sees only what happened BEFORE now. Once is at
+  // the session start: after a compaction only the defects above are worth re-reading.
+  if (isCompactSource(payload)) return;
   process.stdout.write(
     'Agent-liveness coverage: the spawn registry is checked at session start (just done). '
     + 'Mid-session silence is NOT covered unless a periodic scan is running — arm one if agents '

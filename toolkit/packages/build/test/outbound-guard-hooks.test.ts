@@ -1410,6 +1410,9 @@ describe('wt-session-start-registry-hook.mjs — runs the scan at session start'
     expect(r.stdout).toContain('Agent-liveness coverage') // both blocks present, not just one
   })
 
+})
+
+describe('wt-session-start-registry-hook.mjs — session selection', () => {
   it('uses the hook payload session_id so a newer OTHER journal does not hijack the session-start scan', () => {
     const dir = mkRoot('sess-start-ambiguous-safe')
     const askedFile = join(dir, 'sess-current.jsonl')
@@ -1437,6 +1440,34 @@ describe('wt-session-start-registry-hook.mjs — runs the scan at session start'
     expect(r.stdout).not.toContain('other-worker')
     expect(r.stdout).not.toContain('UNFINISHED AGENT ARCS')
     expect(r.stdout).toContain('Agent-liveness coverage')
+  })
+
+})
+
+describe('wt-session-start-registry-hook.mjs — source and malformed input', () => {
+  it('after a compaction drops the standing coverage line and keeps the unfinished-arc defect', () => {
+    const clean = mkRoot('sess-compact-clean')
+    const quiet = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'compact', session_id: 'sess-compact-clean' }, { ...process.env, WT_OUTBOUND_GUARD_DIR: clean })
+    expect(quiet.code).toBe(0)
+    // The stale-root / duplicate-registration defects depend on the machine running the suite; only they may remain.
+    expect(quiet.stdout).not.toContain('Agent-liveness coverage')
+    expect(quiet.stdout).not.toContain('UNFINISHED AGENT ARCS')
+    const dir = mkRoot('sess-compact-open')
+    writeFileSync(
+      join(dir, 'sess.jsonl'),
+      JSON.stringify({ t: 'spawn', parentName: '(main-loop)', childName: 'frozen-worker', name: 'frozen-worker', at: new Date(Date.now() - 45 * 60_000).toISOString() }) + '\n'
+    )
+    const r = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'compact', session_id: 'sess' }, { ...process.env, WT_OUTBOUND_GUARD_DIR: dir })
+    expect(r.stdout).toContain('UNFINISHED AGENT ARCS')
+    expect(r.stdout).not.toContain('Agent-liveness coverage')
+  })
+
+  it('keeps its startup output unchanged: the same text as a payload with no source', () => {
+    const dir = mkRoot('sess-start-unchanged')
+    const env = { ...process.env, WT_OUTBOUND_GUARD_DIR: dir }
+    const startup = run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', source: 'startup', session_id: 'sess-u' }, env)
+    expect(startup.stdout).toContain('Agent-liveness coverage')
+    expect(run(SESSION_START_HOOK, { hook_event_name: 'SessionStart', session_id: 'sess-u' }, env).stdout).toBe(startup.stdout)
   })
 
   it('never fails a session start: malformed stdin exits 0 silently', () => {

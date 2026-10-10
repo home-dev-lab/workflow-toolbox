@@ -35,9 +35,22 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { quoteRemedyWord } from './lib/remedy-quote.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const PROBE = path.join(HERE, 'wt-memory-index-check.mjs')
+// One line per index entry ("fronts N fiche(s) behind it") is a measurement, never a defect: on a
+// store with a hundred entries it was 10.7 KB of the context a flagged run injected. The hook keeps
+// the lines that report the problem and names the command that prints the full listing.
+const PER_ENTRY_COUNT = /^index entry line \d+: .+ fronts \d+ fiche\(s\) behind it$/
+
+/** The probe's report without its per-entry counts, plus how to print them. */
+function defectLines(stdout, store) {
+  const kept = stdout.split('\n').filter((line) => !PER_ENTRY_COUNT.test(line))
+  const omitted = stdout.split('\n').length - kept.length
+  if (omitted > 0) kept.push(`(${omitted} per-entry count line(s) omitted; full report: node ${quoteRemedyWord(PROBE, true)} --store ${quoteRemedyWord(store, true)})`)
+  return kept.join('\n')
+}
 
 /** Read the hook's JSON payload from stdin; tolerate empty/malformed input. */
 function readInput() {
@@ -88,7 +101,7 @@ function main() {
           `KNOWLEDGE-BASE INDEX PROBLEM — facts in this project's store are unreachable from its ` +
           `index, or the index is past the size at which the harness silently truncates it. ` +
           `Either way some recorded facts do not exist for this session, with nothing else to ` +
-          `report it. Fix before relying on recall:\n${stdout}`,
+          `report it. Fix before relying on recall:\n${defectLines(stdout, store)}`,
       },
     }),
   )

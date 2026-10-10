@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { isCompactSource } from './lib/session-start-source.mjs'
 import { describeWorkflowToolboxOptions, findOrphanedPluginConfigs } from './lib/plugin-options.mjs'
 
 const PLUGIN_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -16,6 +17,11 @@ function jsonFile(file) {
   }
 }
 
+function shouldSkipConfigContext(input) {
+  // Configuration does not change across a compaction: the session start already said it.
+  return !input || typeof input !== 'object' || typeof input.agent_id === 'string' && input.agent_id || isCompactSource(input)
+}
+
 function main() {
   let input
   try {
@@ -23,7 +29,7 @@ function main() {
   } catch {
     return
   }
-  if (!input || typeof input !== 'object' || typeof input.agent_id === 'string' && input.agent_id) return
+  if (shouldSkipConfigContext(input)) return
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude')
   const manifest = jsonFile(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'))
   const settings = jsonFile(path.join(configDir, 'settings.json'))

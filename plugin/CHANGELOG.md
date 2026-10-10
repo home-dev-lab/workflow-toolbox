@@ -25,6 +25,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Removed
 - The `wt-chores` agent type. It only pinned a model and an effort; spawn `general-purpose` with `model: "sonnet"` and `effort: "low"` for the same board/card, CI-triage and summary work.
+- SessionStart hooks no longer re-inject start-of-session information after a compaction. When SessionStart fires with source `compact`, the delegation ladder, the configuration summary, the artifact-server line, the guard-recurrence notice and the adoption check print nothing (the compaction digests of the last two are removed), and the agent-liveness hook drops its standing coverage line while still reporting a stale plugin root, a duplicate registration or unfinished agent arcs. Startup, resume and clear output is unchanged.
+- The knowledge-base index notice no longer lists one "fronts N fiche(s)" line per index entry; it keeps the summary, the flags and the unreachable fiches, and names the command that prints the full report. A clean store still prints nothing.
 
 ## [0.192.0] - 2026-10-10
 
