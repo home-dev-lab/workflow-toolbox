@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
+- Added regression tests for the secret guard's streaming mask; no behaviour change.
 - Adopted script launchers now inline smaller resolver and execution helpers under the owner quality limits. The toolbox quality gate also checks changed code against its Git base at complexity 10, 40 lines per function, and no explicit TypeScript `any`, while preserving unchanged or shrinking legacy violations.
 ### Changed
 - The `pilot` and `pilot-orchestrator` agent templates now set `observeSubagents: false`. The pilot and the orchestrator keep their own watchdog, but the sub-agents they spawn (critics, reviewers, implementers) no longer each get a copy of it. Before, Claude Code paired every spawned sub-agent with its own watchdog by default, so one pilot run started one extra watchdog per sub-agent; a pilot that the orchestrator spawns should still get the pilot watchdog from its own definition (read from the Claude Code 2.1.296 source, where an agent's own `observer:` is paired before any inherited one; not exercised by a run). Measured on Claude Code 2.1.296 with a parent agent spawning one sub-agent: two watchdogs started without the key, one with it. Re-adopt the agent templates to pick it up.
