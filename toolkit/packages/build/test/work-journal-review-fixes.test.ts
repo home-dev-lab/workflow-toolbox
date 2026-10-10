@@ -1,5 +1,4 @@
 import fs from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { journalFixture } from './fixtures/work-journal.js'
@@ -8,95 +7,27 @@ import * as io from '../../../../plugin/bin/lib/host/work-journal-io.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import * as api from '../../../../plugin/bin/lib/work-journal.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { stopCheck } from '../../../../plugin/bin/lib/work-journal-lifecycle.mjs'
-// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { loadRecorders } from '../../../../plugin/bin/lib/work-journal-recorders.mjs'
-// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { captureGit, gitActs, pushActs } from '../../../../plugin/bin/lib/work-journal-git.mjs'
-// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { retireProgress } from '../../../../plugin/bin/lib/work-journal-commands.mjs'
-// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { postTool } from '../../../../plugin/bin/lib/work-journal-hook-core.mjs'
 
 const fixtures: ReturnType<typeof journalFixture>[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const f of fixtures.splice(0)) f.cleanup() })
 function fixture() { const f = journalFixture(); fixtures.push(f); return f }
 function context(f: ReturnType<typeof fixture>) { return api.resolveJournal({}, f.env) }
-function call(f: ReturnType<typeof fixture>, command: string, id = 'call') { return { cwd: f.project, tool_name: 'Bash', tool_use_id: id, tool_input: { command } } }
 const value = (extra = {}) => ({ kind: 'commit', subject: 'feature', text: 'Change', link: `repo@${'a'.repeat(40)}`, ...extra })
-const user = () => `${JSON.stringify({ type: 'user', message: { content: 'Current turn' } })}\n`
-const tool = (id: string, bytes = 0) => `${JSON.stringify({ type: 'assistant', message: { content: [...(bytes ? [{ type: 'text', text: 'x'.repeat(bytes) }] : []), { type: 'tool_use', id, name: 'Bash', input: { command: 'pnpm publish' } }] } })}\n`
-// These locks test ledger semantics, not the hook's production latency budget.
-function gitDeadline() { return performance.now() + 20_000 }
-function padding(file: string, megabytes: number) {
-  const line = `${JSON.stringify({ type: 'progress', data: 'x'.repeat(1024 * 1024) })}\n`
-  for (let i = 0; i < megabytes; i++) fs.appendFileSync(file, line)
-}
 function retirementFixture() {
   const f = fixture(); f.board()
   const file = join(f.project, '.claude', 'progress.md')
   fs.writeFileSync(file, '## 2026-05-01\nFirst\n## 2026-05-02\nSecond\n')
   return { f, file, ctx: context(f) }
 }
-function remoteFixture() {
-  const f = fixture(); f.init(); f.hook('SessionStart')
-  const remote = join(f.root, 'remote.git')
-  expect(spawnSync('git', ['init', '--bare', remote], { env: f.env }).status).toBe(0)
-  f.git('remote', 'add', 'origin', remote); f.git('commit', '--allow-empty', '-m', 'base')
-  f.git('push', '-u', 'origin', 'feature'); f.git('commit', '--allow-empty', '-m', 'next')
-  // A URL push updates the remote without updating origin's tracking ref.
-  f.git('push', remote, 'feature')
-  return f
-}
 
 describe('work journal review regression locks', () => {
-  it('R2-1 bounds transcript IO by the current turn and keeps chunk-spanning calls', () => {
-    const f = fixture(); const ctx = context(f)
-    fs.writeFileSync(f.transcript, user() + tool('old'))
-    padding(f.transcript, 20)
-    fs.appendFileSync(f.transcript, user())
-    padding(f.transcript, 4)
-    fs.appendFileSync(f.transcript, tool('current', 80 * 1024))
-    const read = vi.spyOn(fs, 'readFileSync')
-    const ranges = vi.spyOn(fs, 'readSync')
-    const warning = stopCheck(ctx, { transcript_path: f.transcript }, loadRecorders(f.project))
-    expect(warning).toContain('current/release: missing outcome')
-    expect(warning).not.toContain('old/release')
-    expect(read.mock.calls.some(([file]) => file === f.transcript)).toBe(false)
-    expect((ranges.mock.calls as unknown[][]).reduce((sum, args) => sum + Number(args[3]), 0)).toBeLessThan(6 * 1024 * 1024)
-  })
-  it('R2-1 reports the 16 MiB window and still checks complete calls inside it', () => {
-    const f = fixture()
-    fs.writeFileSync(f.transcript, user() + tool('outside'))
-    padding(f.transcript, 18)
-    fs.appendFileSync(f.transcript, tool('inside'))
-    const ranges = vi.spyOn(fs, 'readSync')
-    const warning = stopCheck(context(f), { transcript_path: f.transcript }, loadRecorders(f.project))
-    expect(warning).toContain('turn exceeded the 16 MiB transcript window')
-    expect(warning).toContain('inside/release: missing outcome')
-    expect(warning).not.toContain('outside/release')
-    expect((ranges.mock.calls as unknown[][]).reduce((sum, args) => sum + Number(args[3]), 0)).toBeLessThanOrEqual(16 * 1024 * 1024)
-  })
   it('R2-2 reads outcomes only for today and the previous calendar day', () => {
     const f = fixture(); const ctx = context(f); api.initializeJournal(ctx)
     for (const date of ['2026-05-01', '2026-06-01', '2026-06-02']) {
       fs.writeFileSync(join(ctx.store, 'outcomes', `${date}.ndjson`), `${JSON.stringify({ src: date })}\n`)
     }
     expect(api.readOutcomes(ctx).map((item: { src: string }) => item.src)).toEqual(['2026-06-01', '2026-06-02'])
-  })
-  it('R2-2 reads only the last two ledger days for git dedup and retains indexed older shas', () => {
-    const f = fixture(); f.init()
-    const ctx = context(f)
-    const snapshot = captureGit(call(f, 'git commit'), gitDeadline())
-    f.git('commit', '--allow-empty', '-m', 'base')
-    const sha = f.git('rev-parse', 'HEAD')
-    for (const [date, hash] of [['2026-05-01', sha], ['2026-06-01', 'b'.repeat(40)], ['2026-06-02', 'c'.repeat(40)]]) api.appendJournal(api.resolveJournal({}, { ...f.env, WT_WORK_JOURNAL_NOW: `${date}T12:00:00Z` }), value({ link: `repo@${hash}` }))
-    const old = join(ctx.store, 'days', '2026-05-01.ndjson')
-    const read = vi.spyOn(io, 'read')
-    const bytes = vi.spyOn(io, 'readBytes')
-    expect(gitActs(ctx, snapshot, gitDeadline())).toEqual([])
-    expect(read.mock.calls.some(([file]: unknown[]) => file === old)).toBe(false)
-    expect(bytes.mock.calls.some(([file]: unknown[]) => file === old)).toBe(false)
   })
   it('R2-2 rebuilds an old index crash gap in full recovery without rereading it on the next append', () => {
     const f = fixture(); const ctx = context(f)
@@ -229,60 +160,6 @@ describe('work journal review regression locks', () => {
       expect(fs.readFileSync(join(ctx.root, '.claude', moved), 'utf8')).toBe(`${original}Late descriptor append\n`)
       expect(fs.readFileSync(file, 'utf8')).toBe('')
     } finally { fs.closeSync(fd) }
-  })
-  it('R2-8 follows checkout reflog entries to attribute commits to the branch active at that act', () => {
-    const f = fixture(); f.init(); f.git('commit', '--allow-empty', '-m', 'base'); f.git('branch', 'card/B')
-    const ctx = context(f)
-    const snapshot = captureGit(call(f, 'git switch card/B && git commit --allow-empty -m change'), gitDeadline())
-    f.git('switch', 'card/B'); f.git('commit', '--allow-empty', '-m', 'change'); f.git('switch', 'feature'); f.git('commit', '--allow-empty', '-m', 'another')
-    expect(gitActs(ctx, snapshot, gitDeadline()).map((act: { subject: string }) => act.subject)).toEqual(['B', 'feature'])
-  })
-  it('R2-9 overlapping hooks deduplicate the same merge reflog act by sha', () => {
-    const f = fixture(); f.init(); f.hook('SessionStart')
-    f.git('commit', '--allow-empty', '-m', 'base'); f.git('checkout', '-b', 'topic'); f.git('commit', '--allow-empty', '-m', 'topic'); f.git('checkout', 'feature')
-    f.hook('PreToolUse', call(f, 'git merge topic', 'first')); f.hook('PreToolUse', call(f, 'git merge topic', 'second'))
-    f.git('merge', 'topic')
-    f.hook('PostToolUse', call(f, 'git merge topic', 'first')); f.hook('PostToolUse', call(f, 'git merge topic', 'second'))
-    expect(api.verifyJournal(context(f)).lines.filter((line: { kind: string }) => line.kind === 'merge')).toHaveLength(1)
-  })
-  it.each(['--dry-run', '-n'])('R2-10 never records a %s push whose tracking ref is moved by fetch', (flag) => {
-    const f = remoteFixture()
-    const command = `git push ${flag} origin feature; git fetch origin`
-    const snapshot = captureGit(call(f, command), gitDeadline())
-    f.hook('PreToolUse', call(f, command)); f.git('push', flag, 'origin', 'feature'); f.git('fetch', 'origin'); f.hook('PostToolUse', call(f, command))
-    expect(pushActs(context(f), snapshot, gitDeadline()).map((act: { outcome: string }) => act.outcome)).toEqual(['unknown'])
-    expect(api.verifyJournal(context(f)).lines.filter((line: { kind: string }) => line.kind === 'push')).toHaveLength(0)
-    expect(api.readOutcomes(context(f)).at(-1).outcome).toBe('unknown')
-  })
-  it.each(['fetch origin', 'pull --ff-only origin feature', 'remote update'])('R2-10 treats push plus %s as unknown despite matching tracking movement', (other) => {
-    const f = remoteFixture(); const command = `git push origin feature; git ${other}`
-    const snapshot = captureGit(call(f, command), gitDeadline())
-    f.hook('PreToolUse', call(f, command)); f.git('push', 'origin', 'feature'); f.hook('PostToolUse', call(f, command))
-    expect(pushActs(context(f), snapshot, gitDeadline()).map((act: { outcome: string }) => act.outcome)).toEqual(['unknown'])
-    expect(api.verifyJournal(context(f)).lines.filter((line: { kind: string }) => line.kind === 'push')).toHaveLength(0)
-    expect(api.readOutcomes(context(f)).at(-1).outcome).toBe('unknown')
-  })
-  it('R2-11 concurrent duplicate detections converge on the winner\'s ids and one line', () => {
-    const f = fixture(); const ctx = context(f); api.initializeJournal(ctx)
-    const recorder = { id: 'send', kind: 'tool', tag: 'message', actors: ['unknown'], subject: 'chat', sentence: 'Sent message', link: 'https://example.test/message' }
-    const input = { session_id: 'session', tool_use_id: 'send', tool_name: 'mcp__chat__send' }
-    const nonce = io.nonce
-    let entered = false
-    vi.spyOn(io, 'nonce').mockImplementation(() => {
-      if (!entered) { entered = true; postTool(ctx, input, [recorder]) }
-      return nonce()
-    })
-    postTool(ctx, input, [recorder])
-    const lines = api.verifyJournal(ctx).lines
-    expect(lines).toHaveLength(1)
-    const detectionDir = join(ctx.store, 'detections')
-    const detection = JSON.parse(fs.readFileSync(join(detectionDir, fs.readdirSync(detectionDir)[0]!), 'utf8'))
-    expect(detection.map((act: { id: string }) => act.id)).toEqual(lines.map((line: { id: string }) => line.id))
-  })
-  it.each(['(git commit --allow-empty -m subshell)', "bash -c 'git commit --allow-empty -m subshell'"])('R2-12 records a project-root commit hidden in %s', (command) => {
-    const f = fixture(); f.init(); f.hook('SessionStart')
-    f.hook('PreToolUse', call(f, command)); f.git('commit', '--allow-empty', '-m', 'subshell'); f.hook('PostToolUse', call(f, command))
-    expect(api.verifyJournal(context(f)).lines.map((line: { kind: string }) => line.kind)).toEqual(['commit'])
   })
   it.each(['darwin', 'win32'])('R2-13 keeps distinct on-disk profile case separate on %s', (platform) => {
     const f = fixture()

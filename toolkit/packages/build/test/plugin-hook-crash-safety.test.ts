@@ -115,11 +115,6 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
-    case 'wt-work-journal-hook.mjs':
-      return {
-        hook_event_name: 'SessionStart',
-        cwd: sandbox.projectDir,
-      }
     // No CLAUDE_ENV_FILE in this sandbox: the legible-no-op path (Windows, other harnesses).
     case 'wt-session-env-dedup-hook.mjs':
       return {

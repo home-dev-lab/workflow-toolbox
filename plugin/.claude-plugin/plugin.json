@@ -2,7 +2,7 @@
   "name": "workflow-toolbox",
   "displayName": "Workflow Toolbox",
   "version": "0.192.0",
-  "description": "Toolbox for Claude Code's Workflow tool — author deterministic multi-agent workflow scripts (workflow-composer, with the @workflow-toolbox compile-time pattern toolkit as its standard library), scaffold a build-clean workflow skeleton from a spec (toolkit-scaffold), diagnose a failed run from its journal and decide whether resumeFromRunId helps (workflow-debugger), re-verify the runtime surface after a Claude Code upgrade (upgrade-canary), run a bias-free multi-lens analysis of any subject when relevant (independent-analysis), ground checkable claims against real sources (deep-grounding), and adopt editable, versioned copies of the plugin's rules and agent definitions. Ships the independent-analysis workflow, finished-run audit notices, a tracker-agnostic actionability Stop gate with a Planka snapshot producer, the pilot agent suite (pilot / pilot-orchestrator / pilot-watchdog), pilot-wave composition, a conditional delegation ladder and delegation-chain reference. The planka-tracking skill onboards a project with lossless historical task migration. A daily work journal mechanically records acts, verifies its hash chain and archive at SessionStart, shows a bounded subject digest and warns about unrecorded outward acts at Stop.",
+  "description": "Toolbox for Claude Code's Workflow tool — author deterministic multi-agent workflow scripts (workflow-composer, with the @workflow-toolbox compile-time pattern toolkit as its standard library), scaffold a build-clean workflow skeleton from a spec (toolkit-scaffold), diagnose a failed run from its journal and decide whether resumeFromRunId helps (workflow-debugger), re-verify the runtime surface after a Claude Code upgrade (upgrade-canary), run a bias-free multi-lens analysis of any subject when relevant (independent-analysis), ground checkable claims against real sources (deep-grounding), and adopt editable, versioned copies of the plugin's rules and agent definitions. Ships the independent-analysis workflow, finished-run audit notices, a tracker-agnostic actionability Stop gate with a Planka snapshot producer, the pilot agent suite (pilot / pilot-orchestrator / pilot-watchdog), pilot-wave composition, a conditional delegation ladder and delegation-chain reference. The planka-tracking skill onboards a project with lossless historical task migration. The retired work-journal CLI still reads, verifies and exports an existing journal; no hook records to it any more.",
   "author": {
     "name": "Frederic Thomas",
     "email": "fthomas@apache.org"
@@ -331,10 +331,6 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-work-journal-hook.mjs\"", "timeout": 10 }]
-      },
-      {
         "matcher": "mcp__.*|Bash",
         "hooks": [
           {
@@ -659,10 +655,6 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|mcp__.*",
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-work-journal-hook.mjs\"", "timeout": 10 }]
-      },
-      {
         "matcher": "Agent|Task",
         "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-model-fallback-hook.mjs\"", "timeout": 15 }]
       },
@@ -827,15 +819,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-work-journal-hook.mjs\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-session-env-dedup-hook.mjs\"",
             "timeout": 5
           }
@@ -924,9 +907,6 @@
       }
     ],
     "Stop": [
-      {
-        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-work-journal-hook.mjs\"", "timeout": 5 }]
-      },
       {
         "hooks": [
           {

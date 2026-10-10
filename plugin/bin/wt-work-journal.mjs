@@ -5,7 +5,9 @@ import { dayOf, digestJournal, resolveJournal, restoreJournal, verifyJournal } f
 import { addUnsynced, exportClosed, openUnsynced, resolveUnsynced, retireProgress, setupBoard, unsyncedDetail } from './lib/work-journal-commands.mjs'
 import path from 'node:path'
 
-const HELP = `Work journal — mechanical, hash-linked index of project acts.
+const HELP = `Work journal (RETIRED) — mechanical, hash-linked index of project acts.
+Retired: no hook records new acts any more. Use show, digest, verify, restore,
+unlock and export-closed to read, check and export an existing journal.
 Usage: wt-work-journal.mjs <command>
   show [--date YYYY-MM-DD | --days N] [--subject TAG] [--grep TEXT]
   digest | verify | setup-board | unlock
@@ -62,7 +64,7 @@ const COMMANDS = new Map([
   ['show', (ctx, args, print) => { print(show(ctx, args)); return 0 }],
   ['digest', printDigest],
   ['setup-board', null],
-  ['unlock', (ctx, _args, print) => { io.unlockDead(path.join(ctx.store, 'lock')); print('Dead journal lock removed; start a session to recover pending acts.'); return 0 }],
+  ['unlock', (ctx, _args, print) => { io.unlockDead(path.join(ctx.store, 'lock')); print('Dead journal lock removed; the next journal write recovers pending acts.'); return 0 }],
   ['retire-progress', (ctx, args, print) => { print(JSON.stringify(retireProgress(ctx, { archiveOnly: args.includes('--archive-only') }))); return 0 }],
   ['export-closed', (ctx, args, print) => { print(exportClosed(ctx, option(args, '--to')).join('\n')); return 0 }],
   ['restore', (ctx, args, print) => { restoreJournal(ctx, args[1]); print(`Restored ${args[1]}.`); return 0 }],
