@@ -410,6 +410,18 @@ describe('wt-delegation-ladder-hook — conditional injection + machine calibrat
     expect(ctx).toContain('Delegation ladder')
   })
 
+  it('is SILENT after a compaction (source compact)', () => {
+    const f = fixture('compact')
+    expect(runHook(LADDER_HOOK, { ...start(f.proj), source: 'compact' }, f.env).stdout).toBe('')
+  })
+
+  it('keeps its startup output unchanged: the same text as a payload with no source', () => {
+    const f = fixture('startup-unchanged')
+    const startup = runHook(LADDER_HOOK, start(f.proj), f.env).stdout
+    expect(startup).toContain('Delegation ladder')
+    expect(runHook(LADDER_HOOK, { hook_event_name: 'SessionStart', cwd: f.proj }, f.env).stdout).toBe(startup)
+  })
+
   it('is a SILENT no-op where no delegation marker exists', () => {
     const f = fixture('nomarker', { marker: false })
     const r = runHook(LADDER_HOOK, start(f.proj), f.env)

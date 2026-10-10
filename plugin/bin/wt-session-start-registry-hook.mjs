@@ -27,6 +27,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runFailOpenHook } from './lib/fail-open-trace.mjs';
 import { pluginRootState } from './lib/plugin-root-state.mjs';
+import { isCompactSource } from './lib/session-start-source.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCAN = join(HERE, 'wt-spawn-registry-scan.mjs');
@@ -79,7 +80,9 @@ function main() {
     );
   }
 
-  // The standing gap, stated once, plainly. This hook sees only what happened BEFORE now.
+  // The standing gap, stated once, plainly. This hook sees only what happened BEFORE now. Once is at
+  // the session start: after a compaction only the defects above are worth re-reading.
+  if (isCompactSource(payload)) return;
   process.stdout.write(
     'Agent-liveness coverage: the spawn registry is checked at session start (just done). '
     + 'Mid-session silence is NOT covered unless a periodic scan is running — arm one if agents '

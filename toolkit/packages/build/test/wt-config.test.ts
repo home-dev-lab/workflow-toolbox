@@ -66,6 +66,15 @@ describe('wt-config', () => {
     expect(run({ hook_event_name: 'SessionStart', cwd: f.project, agent_id: 'child' }).stdout).toBe('')
   })
 
+  it('is silent after a compaction and keeps its startup output unchanged', () => {
+    const f = fixture()
+    const run = (payload: unknown) => spawnSync(process.execPath, [HOOK], { cwd: f.project, env: f.env, input: JSON.stringify(payload), encoding: 'utf8' })
+    expect(run({ hook_event_name: 'SessionStart', source: 'compact', cwd: f.project }).stdout).toBe('')
+    const startup = run({ hook_event_name: 'SessionStart', source: 'startup', cwd: f.project }).stdout
+    expect(startup).toContain('not auto-migrated')
+    expect(run({ hook_event_name: 'SessionStart', cwd: f.project }).stdout).toBe(startup)
+  })
+
   it('reports the fallback in SessionStart context when a model plugin option is empty', () => {
     const f = fixture()
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: {

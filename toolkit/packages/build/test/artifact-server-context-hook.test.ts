@@ -19,7 +19,7 @@ function fixture() {
   return dir
 }
 
-function runHook(stateHome: string) {
+function runHook(stateHome: string, source?: string) {
   return new Promise<{ status: number | null, stdout: string, stderr: string }>((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
       stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, XDG_STATE_HOME: stateHome },
@@ -29,7 +29,7 @@ function runHook(stateHome: string) {
     child.stdout.on('data', (chunk) => { stdout += String(chunk) })
     child.stderr.on('data', (chunk) => { stderr += String(chunk) })
     child.once('exit', (status) => resolve({ status, stdout, stderr }))
-    child.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'fresh-session' }))
+    child.stdin.end(JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'fresh-session', ...(source ? { source } : {}) }))
   })
 }
 
@@ -99,6 +99,19 @@ describe('artifact server SessionStart context', () => {
     expect(run.status).toBe(0)
     expect(run.stdout.trim()).toBe(`http://localhost:${port}/reports/report.md`)
     expect(context).not.toContain('${')
+  })
+
+  it('is silent after a compaction, live server or not', async () => {
+    const { stateHome } = await liveServerFixture()
+    expect((await runHook(stateHome, 'compact')).stdout).toBe('')
+    expect((await runHook(fixture(), 'compact')).stdout).toBe('')
+  })
+
+  it('keeps its startup output unchanged: the same text as a payload with no source', async () => {
+    const { stateHome } = await liveServerFixture()
+    const startup = (await runHook(stateHome, 'startup')).stdout
+    expect(startup).toContain('Artifact server is running')
+    expect((await runHook(stateHome)).stdout).toBe(startup)
   })
 
   it('reports unknown without link instructions when the server is stopped', async () => {
