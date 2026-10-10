@@ -33,8 +33,8 @@ function commit(root: string) {
 function copyWithImports(from: string, to: string, seen = new Set<string>()) {
   if (seen.has(from)) return
   seen.add(from); mkdirSync(dirname(to), { recursive: true }); cpSync(from, to)
-  for (const match of readFileSync(from, 'utf8').matchAll(/\bfrom\s+'(\.{1,2}\/[^']+)'/g)) {
-    copyWithImports(resolve(dirname(from), match[1]), resolve(dirname(to), match[1]), seen)
+  for (const [, rel = ''] of readFileSync(from, 'utf8').matchAll(/\bfrom\s+'(\.{1,2}\/[^']+)'/g)) {
+    copyWithImports(resolve(dirname(from), rel), resolve(dirname(to), rel), seen)
   }
 }
 function fixture(files: Record<string, string> = {}, prefix = 'wt-changed-quality-') {
