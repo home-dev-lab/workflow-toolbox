@@ -5,6 +5,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Add a warn-only PreToolUse `Skill` size guard for main sessions: above 8000 characters
+  (`WT_SKILL_SIZE_WARN_CHARS` override), name repeated compaction cost and recommend
+  reading the needed `SKILL.md` section or delegating. Sub-agent calls and resolution
+  failures pass silently; delegation-chain now carries the same guidance.
+
 - Adopted script launchers now inline smaller resolver and execution helpers under the owner quality limits. The toolbox quality gate also checks changed code against its Git base at complexity 10, 40 lines per function, and no explicit TypeScript `any`, while preserving unchanged or shrinking legacy violations.
 ### Changed
 - The `pilot` and `pilot-orchestrator` agent templates now set `observeSubagents: false`. The pilot and the orchestrator keep their own watchdog, but the sub-agents they spawn (critics, reviewers, implementers) no longer each get a copy of it. Before, Claude Code paired every spawned sub-agent with its own watchdog by default, so one pilot run started one extra watchdog per sub-agent; a pilot that the orchestrator spawns should still get the pilot watchdog from its own definition (read from the Claude Code 2.1.296 source, where an agent's own `observer:` is paired before any inherited one; not exercised by a run). Measured on Claude Code 2.1.296 with a parent agent spawning one sub-agent: two watchdogs started without the key, one with it. Re-adopt the agent templates to pick it up.

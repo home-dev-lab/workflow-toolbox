@@ -102,7 +102,7 @@ function warnSecretStoreUnavailable() {
   try { writeSync(2, 'wt-guard-journal: secret guard store unavailable; writing unmasked\n') } catch { /* stderr closed: nowhere left to report */ }
 }
 
-function secretGuardMasker() {
+function secretGuardMasker(quiet = false) {
   try {
     const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
     const storeDir = path.join(configDir, 'plugins', 'store')
@@ -151,7 +151,7 @@ function secretGuardMasker() {
       return masked
     }
   } catch {
-    warnSecretStoreUnavailable()
+    if (!quiet) warnSecretStoreUnavailable()
     return (text) => text
   }
 }
@@ -286,7 +286,8 @@ function shadowField(shadow, mask) {
  * @param {object} [event.evidence] - up to six bounded string/number fields chosen by the guard.
  * @param {string[]} [event.shadow] - names of the shadow rules that matched without changing the decision.
  */
-export function recordGuardEvent(event = {}) {
+// Strictly silent hooks opt out of the optional secret-store stderr diagnostic.
+export function recordGuardEvent(event = {}, { quiet = false } = {}) {
   try {
     const { guard, decision, class: cls, reason, cwd, session, agent, evidence, shadow } = event || {}
     if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
@@ -294,7 +295,7 @@ export function recordGuardEvent(event = {}) {
     // to this process's own directory when the call site omitted one — see effectiveCwd.
     const target = effectiveCwd(cwd)
     const origin = firingOrigin(target)
-    const mask = secretGuardMasker()
+    const mask = secretGuardMasker(quiet)
     const dir = baseDir()
     mkdirSync(dir, { recursive: true })
     const safeSession = typeof session === 'string' ? sanitiseValue(session, mask) : null

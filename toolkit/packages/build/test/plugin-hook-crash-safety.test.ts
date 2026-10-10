@@ -535,6 +535,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
           content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
         },
       }
+    case 'wt-skill-size-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Skill',
+        cwd: sandbox.projectDir,
+        tool_input: { skill: 'missing-selftest-skill' },
+      }
     default:
       throw new Error(`No synthetic payload defined for ${file}`)
   }

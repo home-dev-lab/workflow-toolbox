@@ -578,6 +578,21 @@ Measured against 163 distinct real Bash commands referencing `PIPESTATUS`, drawn
 
 It deliberately does not cover: the zsh-correct form `$pipestatus[1]` (lowercase) — deliberately silent, that is the fix; `PIPESTATUS` appearing only in prose; a shell environment where `PIPESTATUS` is genuinely bash and genuinely correct — the guard cannot see which shell interprets a given command, so it warns unconditionally regardless of the actual shell; or any command other than a Bash tool_use.
 
+### `wt-skill-size-guard-hook.mjs` — large main-session skill warning (PreToolUse on Skill)
+
+Warn-only probation: a main-session `Skill` invocation above **8000 Unicode characters**
+in its complete `SKILL.md` receives additional context naming the skill, size, path and
+re-injection cost after every compaction. Use `Read` on the needed section or delegate to
+a sub-agent. `WT_SKILL_SIZE_WARN_CHARS` overrides the threshold with a non-negative integer;
+invalid values fall back to 8000. A present `agent_id` suppresses the warning entirely.
+Project skills take precedence over personal skills in `CLAUDE_CONFIG_DIR` (default
+OS home + `.claude`). Namespaced plugin skills use the loaded plugin root or applicable
+`installed_plugins.json` installation. Ambiguous, unresolved and custom-layout skills
+pass silently; unresolved calls are journaled as `silent` / `skill-unresolved`.
+Internal errors emit nothing and exit 0. This measures Unicode code points, not tokens
+or supporting reference files. Review after 20 clean real-session firings; promotion
+is never automatic. Global `WT_GUARD_MODE=observe` records without emitting notices.
+
 ### `wt-find-newermt-format-guard-hook.mjs` — non-ISO-8601 `find -newermt` argument warner (PreToolUse on Bash)
 
 Warns (never blocks) when a `find … -newermt <arg>` argument is not ISO-8601. Some `find` builds (e.g. `bfs`) accept ONLY ISO-8601 timestamps for `-newermt` — a natural-language date ("5 minutes ago") is rejected on stderr, and with stderr swallowed or piped (`2>/dev/null`, `| wc -l`), the command looks like it ran clean and simply found nothing, which reads as "no recent files" instead of "the date format was rejected". Verified live on such a build: `find . -newermt "5 minutes ago" 2>/dev/null | wc -l` returns `0`, indistinguishable from a correct empty result. The safe form pipes a computed timestamp through: `find . -newermt "$(date -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S)"`.
