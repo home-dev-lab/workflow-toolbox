@@ -23,6 +23,10 @@ throw an error. They all look like success from one level up.
 Read the section you need; the four sections compose into one loop (spawn → work → report →
 wake), and the table at the end names which of the shipped watchers covers which part of it.
 
+In a main session, consult a large reference skill with `Read` on the needed section of its
+`SKILL.md`, or delegate the work to a sub-agent: the harness re-injects every invoked skill's
+body after each compaction.
+
 ## 1. The downward chain — how a delegate is spawned, and what each shape costs
 
 Open [references/downward-chain.md](references/downward-chain.md) before choosing a spawn shape or correlating a delegate identity.

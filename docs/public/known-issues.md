@@ -578,6 +578,26 @@ Measured against 163 distinct real Bash commands referencing `PIPESTATUS`, drawn
 
 It deliberately does not cover: the zsh-correct form `$pipestatus[1]` (lowercase) — deliberately silent, that is the fix; `PIPESTATUS` appearing only in prose; a shell environment where `PIPESTATUS` is genuinely bash and genuinely correct — the guard cannot see which shell interprets a given command, so it warns unconditionally regardless of the actual shell; or any command other than a Bash tool_use.
 
+### Skill body size — authoring-time report
+
+`pnpm quality` reports every shipped `plugin/skills/*/SKILL.md` above **8000 Unicode
+characters**, naming the directory and exact size. Move sections to `references/`
+and keep the body short: invoked skill bodies are re-injected after every compaction.
+In a main session, read the needed section or delegate large reference work.
+`WT_SKILL_SIZE_WARN_CHARS` accepts a non-negative safe integer (including zero);
+unparsable values fall back to the shared 8000-character default.
+
+This check is report-only because existing shipped bodies exceed the default. It counts
+the complete UTF-8-decoded file by Unicode code points, including frontmatter and line
+endings, rather than bytes, tokens, or supporting reference files. It scans only immediate
+real skill directories, skipping symlinked directories/junctions and linked/nonregular
+bodies. Filesystem read errors still fail the quality command; oversized bodies do not.
+The adopt installer has no user/project skill-directory scan, so it does not report their
+sizes. Nothing runs on a `Skill` call: measurement happens only in the authoring gate,
+avoiding invocation-time filesystem latency. Windows/macOS use native Node path handling;
+CRLF files count the extra carriage returns. Concurrent filesystem replacement is not
+guarded by this content check.
+
 ### `wt-find-newermt-format-guard-hook.mjs` — non-ISO-8601 `find -newermt` argument warner (PreToolUse on Bash)
 
 Warns (never blocks) when a `find … -newermt <arg>` argument is not ISO-8601. Some `find` builds (e.g. `bfs`) accept ONLY ISO-8601 timestamps for `-newermt` — a natural-language date ("5 minutes ago") is rejected on stderr, and with stderr swallowed or piped (`2>/dev/null`, `| wc -l`), the command looks like it ran clean and simply found nothing, which reads as "no recent files" instead of "the date format was rejected". Verified live on such a build: `find . -newermt "5 minutes ago" 2>/dev/null | wc -l` returns `0`, indistinguishable from a correct empty result. The safe form pipes a computed timestamp through: `find . -newermt "$(date -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S)"`.
