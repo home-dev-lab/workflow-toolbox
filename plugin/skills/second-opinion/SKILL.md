@@ -68,11 +68,14 @@ Run from the repository the question concerns. Use absolute paths for the
 request and output files.
 
 `WT_SECOND_OPINION_ADMISSION` optionally names an absolute ES module path whose
-default `admit({ repo, request, env })` receives the resolved absolute paths and
+default `admit({ repo, request, env })` receives the canonical absolute paths and
 launch environment, returning `null` to admit or a non-empty string to refuse.
-The trusted in-process check is awaited without a timeout before any model or
-sandbox starts; invalid configuration or module failures refuse with stderr and
-`REFUSED: ...` followed by `EXIT=3` in the output file.
+Import and admission are awaited before any model or sandbox starts with a
+10,000 ms deadline (`WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS` overrides it with a
+positive integer up to 2147483647); synchronous policy code must not block the
+event loop. Invalid configuration, module failures and timeouts refuse with
+stderr and `REFUSED: ...` followed by `EXIT=3` in the output file; an output
+naming the request itself is refused before admission without modifying it.
 
 ```bash
 setsid nohup node "${CLAUDE_PLUGIN_ROOT}/bin/wt-second-opinion.mjs" \

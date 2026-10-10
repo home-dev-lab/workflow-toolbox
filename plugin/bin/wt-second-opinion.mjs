@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 
-const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.\nWT_SECOND_OPINION_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env }) returns null to admit or a non-empty refusal string (exit 3); configuration or module failures refuse too. This trusted in-process check is awaited before launch, without a timeout.'
+const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.\nWT_SECOND_OPINION_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env }) returns null to admit or a non-empty refusal string (exit 3); configuration or module failures refuse too. Canonical repo/request paths are shared with launch; out must not name the request. Import and admission have a 10000 ms deadline, overridable with WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS (positive integer, maximum 2147483647); synchronous policy code must not block the event loop.'
 
 function parseArgs(argv) {
   const options = { effort: 'medium', route: 'auto', repo: process.cwd() }
@@ -30,6 +30,7 @@ function parseArgs(argv) {
 }
 
 let outputPath
+let admissionPending = false
 const abortController = new AbortController()
 const requestTermination = (signal) => {
   abortController.abort(signal)
@@ -53,14 +54,49 @@ async function admissionRefusal({ repo, request }, env) {
     if (typeof result === 'string' && result.trim()) return `${variable}: ${result}`
     return `${variable}: admit must return null or a non-empty string`
   } catch (error) {
-    return `${variable}: admission module failed: ${error instanceof Error ? error.message : String(error)}`
+    return `${variable}: admission module failed: ${formatError(error)}`
   }
+}
+
+function formatError(error) {
+  try { return String(error instanceof Error ? error.message : error) } catch { return 'unprintable thrown value' }
+}
+
+async function boundedAdmission(options, env) {
+  const variable = 'WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS'
+  const timeout = Number(env[variable] ?? 10_000)
+  if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 2_147_483_647) {
+    return `WT_SECOND_OPINION_ADMISSION: ${variable} must be a positive integer no greater than 2147483647`
+  }
+  let timer
+  try {
+    return await Promise.race([
+      admissionRefusal(options, env),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(`WT_SECOND_OPINION_ADMISSION: timed out after ${timeout} ms`), timeout) }),
+    ])
+  } finally { clearTimeout(timer) }
+}
+
+function sameRequestFile(options) {
+  if (!existsSync(options.out)) return false
+  const request = statSync(options.request)
+  const out = statSync(options.out)
+  return realpathSync(options.out) === options.request || (request.dev === out.dev && request.ino === out.ino)
+}
+
+function writeAdmissionRefusal(out, text) {
+  try { writeFileSync(out, text); return } catch {}
+  const temporary = `${out}.refusal-${process.pid}`
+  try {
+    writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 })
+    renameSync(temporary, out)
+  } finally { rmSync(temporary, { force: true }) }
 }
 
 function refuseAdmission(out, refusal) {
   const message = refusal.replace(/\r?\n/g, ' ')
   process.stderr.write(`wt-second-opinion: ${message}\n`)
-  writeFileSync(out, `REFUSED: ${message}\nEXIT=3\n`)
+  writeAdmissionRefusal(out, `REFUSED: ${message}\nEXIT=3\n`)
   return 3
 }
 
@@ -78,8 +114,16 @@ async function main() {
   outputPath = options.out
   const env = process.env
   if (env.WT_SECOND_OPINION_ADMISSION !== undefined) {
-    const refusal = await admissionRefusal(options, env)
+    admissionPending = true
+    options.repo = realpathSync(options.repo)
+    options.request = realpathSync(options.request)
+    if (sameRequestFile(options)) {
+      process.stderr.write('wt-second-opinion: WT_SECOND_OPINION_ADMISSION: --out and --request name the same file\n')
+      return 3
+    }
+    const refusal = await boundedAdmission(options, env)
     if (refusal !== null) return refuseAdmission(options.out, refusal)
+    admissionPending = false
   }
   return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter), env)
 }
@@ -87,9 +131,10 @@ async function main() {
 function finish(code) {
   removeSignalListeners()
   process.exitCode = code
+  if (code === 3 && admissionPending) process.exit(code)
 }
 
-main().then(finish).catch((error) => {
+function legacyFailure(error) {
   const message = error instanceof Error ? error.stack ?? error.message : String(error)
   if (outputPath) {
     try {
@@ -103,4 +148,13 @@ main().then(finish).catch((error) => {
   }
   process.stderr.write(`wt-second-opinion: ${message}\n`)
   finish(1)
+}
+
+main().then(finish).catch((error) => {
+  if (!admissionPending) return legacyFailure(error)
+  const refusal = `WT_SECOND_OPINION_ADMISSION: second-opinion failed: ${formatError(error)}`
+  try { if (outputPath) refuseAdmission(outputPath, refusal) } catch (writeError) {
+    process.stderr.write(`wt-second-opinion: cannot publish refusal to --out: ${formatError(writeError)}\n`)
+  }
+  finish(3)
 })
