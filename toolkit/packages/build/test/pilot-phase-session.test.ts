@@ -51,6 +51,9 @@ describe('phase manifest', () => {
     expect(manifest).not.toContain('STALE PLAN')
   })
 
+})
+
+describe('phase manifest: size and fix-round inputs', () => {
   it('lists an over-limit input as a path to read instead of inlining it', () => {
     const big = 'x'.repeat(PHASE_INLINE_LIMIT + 1)
     const lane = laneDir({ 'plan.md': big })

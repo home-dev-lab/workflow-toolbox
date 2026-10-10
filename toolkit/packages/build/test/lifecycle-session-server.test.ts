@@ -55,6 +55,9 @@ describe('lifecycle phase sessions', () => {
     expect(server.state().phase).toBe('discovery')
   })
 
+})
+
+describe('lifecycle phase session evidence', () => {
   it('builds every session\'s tools from one definition', () => {
     const { server } = lifecycle()
     const shape = (s: Server) => Object.fromEntries(Object.entries(s.instance._registeredTools as Record<string, { description?: string, inputSchema?: unknown }>).map(([name, entry]) => [name, JSON.stringify({ description: entry.description, schema: entry.inputSchema })]))

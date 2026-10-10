@@ -663,6 +663,76 @@ function createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline
 }
 
 
+function lifecycleTransitionDefinition(tool, z, queued, transition, session) {
+  return tool(
+    'transition',
+    'Advance the runner-owned lifecycle.',
+    {
+      phase: z.string(),
+      route: z.string().optional(),
+      record: z.string().optional(),
+      outcome: z.string().optional(),
+      findings: z.array(z.string()).optional(),
+      tool_use_id: z.string(),
+    },
+    async (args) => ({ content: [{ type: 'text', text: await queued(() => transition(session > 1 && typeof args.tool_use_id === 'string' && args.tool_use_id ? { ...args, tool_use_id: `s${session}:${args.tool_use_id}` } : args)) }] }),
+  )
+}
+
+function lifecycleArtifactDefinition(tool, z, queued, artifact) {
+  return tool(
+    'write_artifact',
+    'Write a phase-bound lifecycle artifact. For a gitignored pilot-report delivery, add the exact line "- Delivered artefact: `relative/path`" under `## Implemented`; the edge confines and reads each regular file, refuses files unchanged since lifecycle creation, and records path, size, SHA-256, mtime, and `modified_after_started` in the summary and manifest. File identity bounds recency, not authorship.',
+    { kind: z.string(), content: z.string() },
+    async (args) => ({ content: [{ type: 'text', text: await queued(() => artifact(args)) }] }),
+  )
+}
+
+function lifecycleFindingDefinition(tool, z, queued, routeFindingTool) {
+  return tool(
+    'route_finding',
+    'Route a genuinely L4 finding to a runner-created board card.',
+    {
+      title: z.string().min(1),
+      l4Reason: z.string().min(1),
+      risk: z.enum(['P0', 'P1', 'P2']),
+      effort: z.enum(['S', 'M', 'L']),
+      type: z.enum(['bug', 'chore', 'feature', 'research']).optional(),
+    },
+    async (args) => ({ content: [{ type: 'text', text: await queued(() => routeFindingTool(args)) }] }),
+  )
+}
+
+function lifecycleRunDefinition(tool, z, queued, run) {
+  return tool(
+    'run',
+    'Run a fixed lane, gate, or inspection command.',
+    {
+      kind: z.string(),
+      phase: z.string().optional(),
+      name: z.string().optional(),
+      what: z.string().optional(),
+      decision: z.string().optional(),
+      extendSeconds: z.number().int().positive().optional(),
+      timeout: z.number().int().positive().optional(),
+    },
+    async (args) => ({ content: [{ type: 'text', text: await queued(() => run(args)) }] }),
+  )
+}
+
+function createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition, artifact, routeFindingTool, run }, session) {
+  return createSdkMcpServer({
+    name: LIFECYCLE_SERVER_NAME,
+    version: '1.0.0',
+    tools: [
+      lifecycleTransitionDefinition(tool, z, queued, transition, session),
+      lifecycleArtifactDefinition(tool, z, queued, artifact),
+      lifecycleFindingDefinition(tool, z, queued, routeFindingTool),
+      lifecycleRunDefinition(tool, z, queued, run),
+    ],
+  })
+}
+
 export function createLifecycleStateMachine({
   worktree,
   archiveRoot,
@@ -1289,81 +1359,7 @@ export function createLifecycleStateMachine({
   // One MCP instance per SDK query (phase session) over this one state: the SDK connects an instance per query and an
   // instance still attached to an ending query cannot connect again. A later session's transition ids are namespaced,
   // because a fresh session numbers its ids itself and must never replay an earlier session's transition.
-  const sessionServer = (session = 1) => createSdkMcpServer({
-    name: LIFECYCLE_SERVER_NAME,
-    version: '1.0.0',
-    tools: [
-      tool(
-        'transition',
-        'Advance the runner-owned lifecycle.',
-        {
-          phase: z.string(),
-          route: z.string().optional(),
-          record: z.string().optional(),
-          outcome: z.string().optional(),
-          findings: z.array(z.string()).optional(),
-          tool_use_id: z.string(),
-        },
-        async (args) => ({
-          content: [
-            {
-              type: 'text',
-              text: await queued(() => transition(session > 1 && typeof args.tool_use_id === 'string' && args.tool_use_id ? { ...args, tool_use_id: `s${session}:${args.tool_use_id}` } : args)),
-            },
-          ],
-        }),
-      ),
-      tool(
-        'write_artifact',
-        'Write a phase-bound lifecycle artifact. For a gitignored pilot-report delivery, add the exact line "- Delivered artefact: `relative/path`" under `## Implemented`; the edge confines and reads each regular file, refuses files unchanged since lifecycle creation, and records path, size, SHA-256, mtime, and `modified_after_started` in the summary and manifest. File identity bounds recency, not authorship.',
-        {
-          kind: z.string(),
-          content: z.string(),
-        },
-        async (args) => ({
-          content: [
-            {
-              type: 'text',
-              text: await queued(() => artifact(args)),
-            },
-          ],
-        }),
-      ),
-      tool(
-        'route_finding',
-        'Route a genuinely L4 finding to a runner-created board card.',
-        {
-          title: z.string().min(1),
-          l4Reason: z.string().min(1),
-          risk: z.enum(['P0', 'P1', 'P2']),
-          effort: z.enum(['S', 'M', 'L']),
-          type: z.enum(['bug', 'chore', 'feature', 'research']).optional(),
-        },
-        async (args) => ({ content: [{ type: 'text', text: await queued(() => routeFindingTool(args)) }] }),
-      ),
-      tool(
-        'run',
-        'Run a fixed lane, gate, or inspection command.',
-        {
-          kind: z.string(),
-          phase: z.string().optional(),
-          name: z.string().optional(),
-          what: z.string().optional(),
-          decision: z.string().optional(),
-          extendSeconds: z.number().int().positive().optional(),
-          timeout: z.number().int().positive().optional(),
-        },
-        async (args) => ({
-          content: [
-            {
-              type: 'text',
-              text: await queued(() => run(args)),
-            },
-          ],
-        }),
-      ),
-    ],
-  })
+  const sessionServer = (session = 1) => createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition, artifact, routeFindingTool, run }, session)
   const server = sessionServer()
   defineSessionAccessors(server, { sessionServer, state, timeline, route: frozenRoute })
   Object.defineProperty(server, 'lifecycle', { value: lifecycle })

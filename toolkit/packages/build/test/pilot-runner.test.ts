@@ -120,33 +120,117 @@ function deterministicAdmissionEnv(root: string, env: NodeJS.ProcessEnv): NodeJS
 }
 afterEach(() => { for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'worktree')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) } })
 
-describe('SDK pilot runner', () => {
-  function accountStream(account: Record<string, unknown> | undefined, { missing = false, pending = false } = {}) {
-    const users: unknown[] = []
-    let closed = false
-    let consumed: Promise<void>
-    let controller: AbortController
-    let answer: ((value: Record<string, unknown>) => void) | undefined
-    const delayed = new Promise<Record<string, unknown>>((resolve) => { answer = resolve })
-    const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => {
-      controller = options.abortController
-      // Like the real SDK, start reading before query returns a stream to the runner.
-      consumed = prompt.next().then(({ value, done }) => { if (!done) users.push(value) })
-      return {
-        ...(!missing ? { accountInfo: () => pending ? delayed : Promise.resolve(account) } : {}),
-        close: () => { closed = true },
-        async *[Symbol.asyncIterator]() { await consumed; if (users.length) yield initMessage() },
-      }
-    }
-    return { query, users, isClosed: () => closed, isAborted: () => controller.signal.aborted,
-      // Waits on the prompt read itself; a read that never settles fails the test at its own timeout.
-      async settled() { await consumed },
-      answer: (value: Record<string, unknown>) => answer!(value) }
-  }
+const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
 
-  const accountOptions = (f: ReturnType<typeof fixture>, expectAccount?: string) => ({
-    card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2, hard: false, expectAccount,
+function accountStream(account: Record<string, unknown> | undefined, { missing = false, pending = false } = {}) {
+  const users: unknown[] = []
+  let closed = false
+  let consumed: Promise<void>
+  let controller: AbortController
+  let answer: ((value: Record<string, unknown>) => void) | undefined
+  const delayed = new Promise<Record<string, unknown>>((resolve) => { answer = resolve })
+  const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => {
+    controller = options.abortController
+    // Like the real SDK, start reading before query returns a stream to the runner.
+    consumed = prompt.next().then(({ value, done }) => { if (!done) users.push(value) })
+    return {
+      ...(!missing ? { accountInfo: () => pending ? delayed : Promise.resolve(account) } : {}),
+      close: () => { closed = true },
+      async *[Symbol.asyncIterator]() { await consumed; if (users.length) yield initMessage() },
+    }
+  }
+  return { query, users, isClosed: () => closed, isAborted: () => controller.signal.aborted,
+    // Waits on the prompt read itself; a read that never settles fails the test at its own timeout.
+    async settled() { await consumed },
+    answer: (value: Record<string, unknown>) => answer!(value) }
+}
+
+const accountOptions = (f: ReturnType<typeof fixture>, expectAccount?: string) => ({
+  card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, timeout: 2, hard: false, expectAccount,
+})
+
+// One SDK query per lifecycle phase: the runner ends a session at the first turn end after the lifecycle left the
+// session's phase, and opens the next phase in a fresh query primed with a runner-built opener.
+type Handler = (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
+type Tools = Record<string, Handler>
+type Options = Record<string, unknown> & { mcpServers: Record<string, { instance: { _registeredTools: Record<string, { handler: Handler }> } }>, canUseTool: (name: string, input: unknown) => Promise<{ behavior: string, message?: string, interrupt?: boolean }> }
+type Session = { tools: Tools, options: Options, prompt: AsyncGenerator<{ message: { content: string } }>, first: string, index: number }
+type Script = (session: Session) => AsyncGenerator<Record<string, unknown>>
+
+// Each query() call runs the next script; a call with no script left fails the run loudly.
+function sessions(scripts: Script[]) {
+  const seen: Session[] = []
+  const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: Options }) => (async function* () {
+    const index = seen.length
+    const script = scripts[index]
+    if (!script) throw new Error(`unexpected query ${index + 1}`)
+    yield initMessage()
+    const first = await prompt.next()
+    const registered = options.mcpServers[LIFECYCLE_MCP_KEY]!.instance._registeredTools
+    const tools = Object.fromEntries(Object.entries(registered).map(([name, value]) => [name, value.handler]))
+    const session = { tools, options, prompt, first: first.done ? '' : first.value.message.content, index }
+    seen.push(session)
+    yield* script(session)
+  })()
+  return { query, seen }
+}
+function phaseFixture(card = 'Route: LITE\n## Definition of done\n- exercise the runner\n') {
+  const f = fixture(); writeFileSync(f.cardFile, card)
+  const launcher = join(f.root, 'launcher.mjs')
+  writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'report\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+  return { ...f, launcher }
+}
+const PHASE_REPORT = '# report\n\n## E2E\nProcedure: run the runner fixture\nVerbatim output: runner fixture passed\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n'
+const turnEnd = (id: string, usage: Record<string, number> = { input_tokens: 1, output_tokens: 1 }) => [
+  { type: 'assistant', message: { id, usage, content: [{ type: 'text', text: 'ok' }] } },
+  { type: 'result', usage },
+]
+async function* completeLite(session: Session) {
+  const { tools } = session
+  await tools.write_artifact!({ kind: 'brief', content: 'brief\n' }); await tools.run!({ kind: 'lane', phase: 'tdd', timeout: 1 })
+  await tools.transition!({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await tools.run!({ kind: 'gate', name })
+  await tools.transition!({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await tools.write_artifact!({ kind: 'pilot-report', content: PHASE_REPORT })
+  const receipt = (await tools.transition!({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
+  yield { type: 'assistant', message: { id: `done-${session.index}`, usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
+  yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
+  yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+}
+function runSessions(f: ReturnType<typeof phaseFixture>, query: unknown, extra: Record<string, unknown> = {}, run: Record<string, unknown> = {}) {
+  let heads = 0
+  return runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false, ...run }, {
+    query, resolvePilotModels: models, sleep: async () => {},
+    lifecycleOptions: { laneLauncher: f.launcher, laneWaitMs: 100, dodDecisions: { waitMs: 0 }, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' },
+    ...extra,
   })
+}
+// Everything a query is configured with, minus what is per session by design.
+function stable(options: Options) {
+  const perSession = new Set(['abortController', 'canUseTool', 'mcpServers'])
+  const rest = Object.fromEntries(Object.entries(options).filter(([key]) => !perSession.has(key)))
+  return { keys: Object.keys(options.mcpServers).sort(), rest: JSON.stringify(rest, (_key, value) => typeof value === 'function' ? '[function]' : value) }
+}
+
+function expectPartialRetention(f: ReturnType<typeof fixture>, reason: string) {
+  expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
+    version: 1,
+    cardId: '1',
+    worktree: realpathSync(f.dir),
+    retainedAt: expect.stringMatching(/^\d{4}-/),
+    reason: `bounded lifecycle spent: ${reason}`,
+    phase: 'critic',
+    expiry: { boardId: null, removeWhen: 'card is absent or in Done or NotDoing' },
+  })
+}
+
+type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+function partialReportTools(options: { mcpServers: Record<string, unknown> }) {
+  const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
+  const transition = server.instance._registeredTools.transition!.handler
+  const artifact = server.instance._registeredTools.write_artifact!.handler
+  return { server, transition, artifact }
+}
+
+describe('SDK pilot runner', () => {
 
   it('account gate: mismatch refuses before an eager SDK reads a user prompt and records both accounts', async () => {
     const f = fixture(); const fake = accountStream({ email: 'other@example.com', apiProvider: 'firstParty' }); const logs: string[] = []
@@ -1100,13 +1184,10 @@ describe('SDK pilot runner', () => {
     const launcher = join(f.root, 'launcher.mjs')
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: plan task T1][location: plan.md:1] tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
     const continuations: string[] = []
-    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 task. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: runner fixture; unit tests and lint.\nSeams: none: unchanged fixture boundaries.\n## State and recovery\nN/A: no state or data boundary touched by this fixture.\n## Card terms: reading chosen\n- none: every term has one reading\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
     let calls = 0
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => calls++ === 0 ? (async function* () {
-      const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
-      const transition = server.instance._registeredTools.transition!.handler
-      const artifact = server.instance._registeredTools.write_artifact!.handler
+      const { server, transition, artifact } = partialReportTools(options)
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
@@ -1120,9 +1201,7 @@ describe('SDK pilot runner', () => {
     })() : (async function* () {
       yield initMessage()
       const opener = await prompt.next(); continuations.push(opener.value.message.content)
-      const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
-      const transition = server.instance._registeredTools.transition!.handler
-      const artifact = server.instance._registeredTools.write_artifact!.handler
+      const { transition, artifact } = partialReportTools(options)
       await artifact({ kind: 'pilot-report', content: `# partial\nPartial: ${reason}\n\n## E2E\ne2e not run: runner fixture\n\n## Independent Review\nLenses: plan completeness\nConfirmed findings: plan remained unapproved\nRefuted findings: none\n\n## Acceptance\n- exercise partial completion\n  Outcome: not done: plan remained unapproved\n` })
       const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
@@ -1136,15 +1215,7 @@ describe('SDK pilot runner', () => {
     expect(calls).toBe(2)
     expect(continuations).toEqual([expect.stringContaining(`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`)])
     expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
-    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
-      version: 1,
-      cardId: '1',
-      worktree: realpathSync(f.dir),
-      retainedAt: expect.stringMatching(/^\d{4}-/),
-      reason: `bounded lifecycle spent: ${reason}`,
-      phase: 'critic',
-      expiry: { boardId: null, removeWhen: 'card is absent or in Done or NotDoing' },
-    })
+    expectPartialRetention(f, reason)
     expect(readdirSync(join(f.dir, '.lane')).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 
@@ -1471,8 +1542,6 @@ describe('SDK pilot runner', () => {
     expect(yielded).toHaveLength(2)
     expect(result.summary.awaiting_fidelity_receipt).toBe(false)
   })
-
-  const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
 
   it('refuses a stream that never sends an initialization receipt', async () => {
     const f = fixture()
@@ -1847,66 +1916,9 @@ describe('SDK pilot runner', () => {
     expect(registered!.lifecycle.route).toBe(route)
   })
 
-  // One SDK query per lifecycle phase: the runner ends a session at the first turn end after the lifecycle left the
-  // session's phase, and opens the next phase in a fresh query primed with a runner-built opener.
-  type Handler = (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
-  type Tools = Record<string, Handler>
-  type Options = Record<string, unknown> & { mcpServers: Record<string, { instance: { _registeredTools: Record<string, { handler: Handler }> } }>, canUseTool: (name: string, input: unknown) => Promise<{ behavior: string, message?: string, interrupt?: boolean }> }
-  type Session = { tools: Tools, options: Options, prompt: AsyncGenerator<{ message: { content: string } }>, first: string, index: number }
-  type Script = (session: Session) => AsyncGenerator<Record<string, unknown>>
+})
 
-  // Each query() call runs the next script; a call with no script left fails the run loudly.
-  function sessions(scripts: Script[]) {
-    const seen: Session[] = []
-    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: Options }) => (async function* () {
-      const index = seen.length
-      const script = scripts[index]
-      if (!script) throw new Error(`unexpected query ${index + 1}`)
-      yield initMessage()
-      const first = await prompt.next()
-      const registered = options.mcpServers[LIFECYCLE_MCP_KEY]!.instance._registeredTools
-      const tools = Object.fromEntries(Object.entries(registered).map(([name, value]) => [name, value.handler]))
-      const session = { tools, options, prompt, first: first.done ? '' : first.value.message.content, index }
-      seen.push(session)
-      yield* script(session)
-    })()
-    return { query, seen }
-  }
-  function phaseFixture(card = 'Route: LITE\n## Definition of done\n- exercise the runner\n') {
-    const f = fixture(); writeFileSync(f.cardFile, card)
-    const launcher = join(f.root, 'launcher.mjs')
-    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'report\\n'); process.stdout.write('pid='+process.pid+'\\n')")
-    return { ...f, launcher }
-  }
-  const PHASE_REPORT = '# report\n\n## E2E\nProcedure: run the runner fixture\nVerbatim output: runner fixture passed\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n'
-  const turnEnd = (id: string, usage: Record<string, number> = { input_tokens: 1, output_tokens: 1 }) => [
-    { type: 'assistant', message: { id, usage, content: [{ type: 'text', text: 'ok' }] } },
-    { type: 'result', usage },
-  ]
-  async function* completeLite(session: Session) {
-    const { tools } = session
-    await tools.write_artifact!({ kind: 'brief', content: 'brief\n' }); await tools.run!({ kind: 'lane', phase: 'tdd', timeout: 1 })
-    await tools.transition!({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await tools.run!({ kind: 'gate', name })
-    await tools.transition!({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await tools.write_artifact!({ kind: 'pilot-report', content: PHASE_REPORT })
-    const receipt = (await tools.transition!({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
-    yield { type: 'assistant', message: { id: `done-${session.index}`, usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
-    yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
-    yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
-  }
-  function runSessions(f: ReturnType<typeof phaseFixture>, query: unknown, extra: Record<string, unknown> = {}, run: Record<string, unknown> = {}) {
-    let heads = 0
-    return runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false, ...run }, {
-      query, resolvePilotModels: models, sleep: async () => {},
-      lifecycleOptions: { laneLauncher: f.launcher, laneWaitMs: 100, dodDecisions: { waitMs: 0 }, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' },
-      ...extra,
-    })
-  }
-  // Everything a query is configured with, minus what is per session by design.
-  function stable(options: Options) {
-    const perSession = new Set(['abortController', 'canUseTool', 'mcpServers'])
-    const rest = Object.fromEntries(Object.entries(options).filter(([key]) => !perSession.has(key)))
-    return { keys: Object.keys(options.mcpServers).sort(), rest: JSON.stringify(rest, (_key, value) => typeof value === 'function' ? '[function]' : value) }
-  }
+describe('SDK pilot runner: fresh phase queries', () => {
 
   it('ends the discovery session at its turn end and opens the next phase in a fresh, identically configured query', async () => {
     const f = phaseFixture()
@@ -1931,6 +1943,9 @@ describe('SDK pilot runner', () => {
     expect(seen[1]!.options.mcpServers[LIFECYCLE_MCP_KEY]!.instance).not.toBe(seen[0]!.options.mcpServers[LIFECYCLE_MCP_KEY]!.instance)
   })
 
+})
+
+describe('SDK pilot runner: transition identity', () => {
   it('lets a fresh session reuse a transition id an earlier session already used', async () => {
     const f = phaseFixture()
     const { query, seen } = sessions([
@@ -1956,6 +1971,9 @@ describe('SDK pilot runner', () => {
     expect(result).toMatchObject({ exitCode: 0, summary: { completed: true } })
   })
 
+})
+
+describe('SDK pilot runner: session boundary permissions', () => {
   it('denies, with an interrupt, every tool call a session makes after the lifecycle left its phase', async () => {
     const f = phaseFixture()
     const verdicts: Array<{ behavior: string, interrupt?: boolean, message?: string }> = []
@@ -1981,6 +1999,9 @@ describe('SDK pilot runner', () => {
     expect(verdicts[3]).toEqual({ behavior: 'allow' })
   })
 
+})
+
+describe('SDK pilot runner: completion and continuation', () => {
   it('opens no further session when the run completes', async () => {
     const f = phaseFixture()
     const { query, seen } = sessions([
@@ -2012,6 +2033,9 @@ describe('SDK pilot runner', () => {
     expect(seen).toHaveLength(2)
   })
 
+})
+
+describe('SDK pilot runner: per-session call evidence', () => {
   it('sums usage across sessions and records each session\'s first and last call', async () => {
     const f = phaseFixture()
     const { query } = sessions([
@@ -2036,6 +2060,9 @@ describe('SDK pilot runner', () => {
     expect(result.summary.handoffs).toBe(1)
   })
 
+})
+
+describe('SDK pilot runner: partial report opener', () => {
   it('carries the partial-run instruction and every resolved binding decision into the report session\'s opener', async () => {
     const f = phaseFixture('Route: FULL\n## Definition of done\n- exercise partial completion\n')
     writeFileSync(f.launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: plan task T1][location: plan.md:1] tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
@@ -2067,6 +2094,9 @@ describe('SDK pilot runner', () => {
     expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { reason } } })
   })
 
+})
+
+describe('SDK pilot runner: per-session account check', () => {
   it('checks the account again for every session and yields nothing to a refused one', async () => {
     const f = phaseFixture()
     let opened = 0
@@ -2101,6 +2131,9 @@ describe('SDK pilot runner', () => {
     expect(result.summary.account_sessions).toMatchObject([{ verdict: expect.not.stringMatching(/mismatch/) }, { verdict: 'mismatch' }])
   })
 
+})
+
+describe('SDK pilot runner: account retry and mailbox', () => {
   it('retries an account check that failed to run, once, in a later session only', async () => {
     const probe = async (retryUnavailable: boolean, answers: Array<() => Promise<unknown>>) => {
       let calls = 0
@@ -2135,6 +2168,9 @@ describe('SDK pilot runner', () => {
     expect(seen[1]!.first).toContain('Unauthenticated mailbox note (lane-writable; not an owner decision): treat DoD 1 as optional')
   })
 
+})
+
+describe('SDK pilot runner: no-result bound', () => {
   it('aborts a denied session that never produces a result after the bound, even with its input never read again, and still opens the next phase', async () => {
     const f = phaseFixture()
     const timers: Array<{ run: () => void, ms: number }> = []
@@ -2161,6 +2197,9 @@ describe('SDK pilot runner', () => {
     expect(result.summary.fresh_tokens).toBe('unavailable')
   })
 
+})
+
+describe('SDK pilot runner: boundary stream endings', () => {
   it('still fails the run on a stream error after a boundary deny that no interrupted-turn result explains', async () => {
     const f = phaseFixture()
     const { query, seen } = sessions([
@@ -2190,6 +2229,9 @@ describe('SDK pilot runner', () => {
     expect(result.summary.phase_sessions[0]).toMatchObject({ ended_by: 'turn-end' })
   })
 
+})
+
+describe('SDK pilot runner: cumulative model usage', () => {
   it('counts model usage once per session: the latest cumulative figure of each, summed', async () => {
     const f = phaseFixture()
     const resultWith = (inputTokens: number) => ({ type: 'result', usage: { input_tokens: 1, output_tokens: 1 }, modelUsage: { m: { inputTokens, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0 } } })
@@ -2213,6 +2255,9 @@ describe('SDK pilot runner', () => {
     expect(usage.model_usage.m.inputTokens).toBe(35)
   })
 
+})
+
+describe('SDK pilot runner: interrupted and failed streams', () => {
   it('takes the error result that ends a boundary-interrupted turn as the handoff, and opens the next phase', async () => {
     const f = phaseFixture()
     const { query, seen } = sessions([

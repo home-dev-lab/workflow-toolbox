@@ -475,6 +475,256 @@ function budgetReceipt(started, ended, declared) {
   return { declared_seconds: declared, boundary_grace_seconds: TIMEOUT_BOUNDARY_GRACE_MS / 1000, actual_seconds: actual, delta_seconds: Math.round((actual - declared) * 1000) / 1000 }
 }
 
+function phasePromptActive(runtime, current) {
+  return !runtime.completed && !runtime.timeoutBoundary && !current.closed
+}
+
+function boundaryPromptEnd(runtime, current) {
+  const { handOff, boundaryEnd } = runtime
+  if (runtime.pendingTurnEnds > 0) {
+    runtime.pendingTurnEnds -= 1
+    handOff(current, boundaryEnd(current))
+    return true
+  }
+  return current.handedOff
+}
+
+function advanceContinuation(runtime) {
+  runtime.pendingTurnEnds -= 1
+  if (runtime.acceptedLifecycleResults > runtime.acceptedAtLastContinuation) runtime.consecutiveContinuations = 0
+  runtime.consecutiveContinuations += 1
+  runtime.acceptedAtLastContinuation = runtime.acceptedLifecycleResults
+}
+
+function continuationContent(runtime) {
+  const { lifecycleServer, injectedDecisions } = runtime
+  const lifecycleState = lifecycleServer.state()
+  const phase = lifecycleState.phase
+  const binding = lifecycleServer.dodDisputes().filter((dispute) => dispute.resolution && !injectedDecisions.has(`${dispute.requestId}:${dispute.criterion}`))
+  for (const dispute of binding) injectedDecisions.add(`${dispute.requestId}:${dispute.criterion}`)
+  return lifecycleState.partial && phase === 'report'
+    ? partialInstruction(lifecycleState.partial)
+    : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.${bindingNotice(binding)}`
+}
+
+function continuationMessage(runtime, content) {
+  const { log } = runtime
+  runtime.injectedTurns += 1
+  log(`injected: continuation ${content}`)
+  if (runtime.consecutiveContinuations === MAX_UNPRODUCTIVE_TURNS) {
+    runtime.incompleteReason = `pilot ended its turn ${MAX_UNPRODUCTIVE_TURNS} times without progress`
+  }
+  return { type: 'user', message: { role: 'user', content } }
+}
+
+function mailboxOrDecision(runtime) {
+  const { exists, options, readFile, deliveredNotes, log, lifecycleServer, injectedDecisions } = runtime
+  const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
+  if (lines.length > runtime.mailboxLines) {
+    deliveredNotes.push(lines[runtime.mailboxLines])
+    const content = `${MAILBOX_PREFIX}${lines[runtime.mailboxLines++]}`
+    runtime.injectedTurns += 1
+    log(`injected: mailbox message ${content}`)
+    return { type: 'user', message: { role: 'user', content } }
+  }
+  const disputes = lifecycleServer.dodDisputes()
+  const decision = disputes.filter((dispute) => dispute.resolution && !injectedDecisions.has(`${dispute.requestId}:${dispute.criterion}`))[0]
+  if (decision) {
+    injectedDecisions.add(`${decision.requestId}:${decision.criterion}`)
+    const content = `Binding decision on DoD ${decision.criterion} (runner-owned, trusted; ${decision.resolution.source}): ${decision.resolution.reading}. ${decision.resolution.criticRule ?? ''} Keep the plan to this reading; the next critic round is bound to it.`
+    runtime.injectedTurns += 1
+    log(`injected: parent decision ${content}`)
+    return { type: 'user', message: { role: 'user', content } }
+  }
+  return null
+}
+
+async function* phaseFollowUps(runtime, current) {
+  const { exists, report, pastBoundary, sleep, lifecycleServer } = runtime
+  while (phasePromptActive(runtime, current)) {
+    if (runtime.awaitingFidelityReceipt && exists(report)) { runtime.completed = true; return }
+    if (pastBoundary(current)) {
+      if (boundaryPromptEnd(runtime, current)) return
+      await sleep(POLL_MS)
+      continue
+    }
+    await waitForPlanBinding(lifecycleServer)
+    if (runtime.pendingTurnEnds > 0) {
+      advanceContinuation(runtime)
+      await waitForPlanBinding(lifecycleServer)
+      const content = continuationContent(runtime)
+      yield continuationMessage(runtime, content)
+      if (runtime.incompleteReason) return
+      continue
+    }
+    const message = mailboxOrDecision(runtime)
+    if (message) yield message
+    else await sleep(POLL_MS)
+  }
+}
+
+function recordSessionCall(current, record, messageId) {
+  const call = { input: record.input, cache_creation: record.cache_creation, cache_read: record.cache_read, output: record.output }
+  if (messageId !== current.last_message_id) { current.calls += 1; current.last_message_id = messageId }
+  if (current.calls === 1) current.first_call = call
+  current.last_call = call
+}
+
+function consumeInitialization(runtime, message) {
+  const { sdkRole } = runtime
+  if (!runtime.initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
+    throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
+  }
+  if (message.type === 'system' && message.subtype === 'init') {
+    runtime.initReceiptSeen = true
+    runtime.servedModel = message.model
+    assertPilotInitReceipt(message, sdkRole)
+  }
+}
+
+function consumeFirstAssistant(runtime, message) {
+  if (!runtime.firstAssistantSeen && message.type === 'assistant') {
+    runtime.firstAssistantSeen = true
+    runtime.servedModelFirstTurn = message.message?.model
+  }
+}
+
+function consumeAssistantUsage(runtime, message, current) {
+  const { messages, totals, model, now, persistUsage } = runtime
+  if (message.type === 'assistant' && message.message?.usage) {
+    const messageId = message.message.id
+    const record = { ...usageOf(message.message), model: message.message.model ?? runtime.servedModelFirstTurn ?? runtime.servedModel ?? model.value, arrived_at: new Date(now()).toISOString(), session: current.index, session_phase: current.phase }
+    if (recordAssistantUsage(messages, record, messageId, totals)) {
+      runtime.lastAssistantUsageIndex = runtime.streamIndex
+      current.uncovered = true
+    }
+    recordSessionCall(current, record, messageId)
+    persistUsage()
+  }
+}
+
+function consumeToolUse(runtime, item, current) {
+  const { tools, startedTools, lifecycleCalls, pastBoundary, now, lifecycleServer } = runtime
+  tools.push(item.name)
+  runtime.turnTools.push(item.name)
+  if (pastBoundary(current)) current.calls_after_boundary.push(item.name)
+  if (item.id) startedTools.set(item.id, toolCallStart(item, now(), () => lifecycleServer.state()))
+  if (item.id && ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).includes(item.name)) lifecycleCalls.set(item.id, item.name)
+}
+
+function consumeTimedToolResult(runtime, item) {
+  const { startedTools, now } = runtime
+  const receipt = toolCallReceipt(startedTools.get(item.tool_use_id), now())
+  runtime.longestToolCall = longerToolCall(runtime.longestToolCall, receipt)
+  startedTools.delete(item.tool_use_id)
+}
+
+function consumeLifecycleResult(runtime, item) {
+  const { log, lifecycleCalls } = runtime
+  const lifecycleResult = textFrom(item.content)
+  log(`lifecycle: ${lifecycleResult}`)
+  const lifecycleName = lifecycleCalls.get(item.tool_use_id)
+  if (/^(?:accepted phase=|wrote |lane \S+ EXIT=0$|gate \S+ EXIT=0$)/.test(lifecycleResult.trim())) runtime.acceptedLifecycleResults += 1
+  if (lifecycleName === lifecycleToolName('transition') && lifecycleResult.trim() === AWAITING_FIDELITY_RESULT) runtime.awaitingFidelityReceipt = true
+  lifecycleCalls.delete(item.tool_use_id)
+}
+
+function consumeContentItem(runtime, item, current) {
+  const { startedTools, lifecycleCalls } = runtime
+  if (item.type === 'tool_use') consumeToolUse(runtime, item, current)
+  if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) consumeTimedToolResult(runtime, item)
+  if (item.type === 'tool_result' && lifecycleCalls.has(item.tool_use_id)) consumeLifecycleResult(runtime, item)
+}
+
+function consumeResultBoundary(runtime, message, current) {
+  const { pastBoundary } = runtime
+  if (pastBoundary(current)) {
+    current.resultAfterBoundary = true
+    // The SDK delivers this error result before raising the boundary interruption.
+    if (current.deniedAt !== null && message.is_error === true && message.terminal_reason === 'aborted_tools') current.interruptedResult = true
+  }
+}
+
+function consumeModelUsage(runtime, message, current) {
+  const { modelUsage, phaseSessions } = runtime
+  // modelUsage is cumulative per query: keep each session's latest, then sum sessions.
+  if (message.modelUsage && typeof message.modelUsage === 'object') current.model_usage = message.modelUsage
+  for (const key of Object.keys(modelUsage)) delete modelUsage[key]
+  for (const item of phaseSessions) addModelUsage(modelUsage, item.model_usage)
+}
+
+function consumeTurnUsage(runtime, message, current, usage) {
+  const { turns, model, now, totals } = runtime
+  current.permission_denials += Array.isArray(message.permission_denials) ? message.permission_denials.length : 0
+  current.terminal_reason = message.terminal_reason ?? current.terminal_reason
+  turns.push({ ...usage, model: runtime.servedModelFirstTurn ?? runtime.servedModel ?? model.value, ended_at: new Date(now()).toISOString(), tool_names: [...new Set(runtime.turnTools)] })
+  runtime.turnTools = []
+  for (const key of Object.keys(totals)) totals[key] += usage[key]
+  if (!runtime.completed) {
+    if (current.handedOff) current.late_turn_ends += 1
+    else runtime.pendingTurnEnds += 1
+  }
+}
+
+function consumePhaseResult(runtime, message, current) {
+  runtime.lastResultIndex = runtime.streamIndex
+  current.uncovered = false
+  consumeResultBoundary(runtime, message, current)
+  const usage = usageOf(message)
+  consumeModelUsage(runtime, message, current)
+  consumeTurnUsage(runtime, message, current, usage)
+}
+
+function consumePhaseMessage(runtime, message, current) {
+  const { modelTracker, transcript } = runtime
+  runtime.streamIndex += 1
+  modelTracker.observe(message)
+  transcript.push(message)
+  // A pre-init account notice carries no model output and is not "another message first".
+  if (!runtime.initReceiptSeen && isPreInitNotice(message)) return
+  consumeInitialization(runtime, message)
+  consumeFirstAssistant(runtime, message)
+  consumeAssistantUsage(runtime, message, current)
+  const content = message.message?.content
+  if (Array.isArray(content)) for (const item of content) consumeContentItem(runtime, item, current)
+  if (message.type === 'result') consumePhaseResult(runtime, message, current)
+}
+
+function closeSessionError(runtime, current, sessionAbort, error) {
+  const { handOff, log } = runtime
+  // Only a runner-owned no-result abort or the SDK's boundary-interrupted result permits handoff.
+  const ownAbort = current.ended_by === 'no_result' && sessionAbort.signal.aborted
+  if (!ownAbort && !current.interruptedResult) throw error
+  if (!ownAbort) handOff(current, 'boundary-deny')
+  current.closing_error = error instanceof Error ? error.message : String(error)
+  log(`phase session ${current.index}: ${current.closing_error}`)
+}
+
+async function runPhaseSession(runtime, current, prompts, mcpServer) {
+  const { abortController, query, sessionQueryOptions, handOff, boundaryEnd, clearTimer, now, accountSessions } = runtime
+  const sessionAbort = new AbortController()
+  const forward = () => sessionAbort.abort()
+  if (abortController.signal.aborted) sessionAbort.abort()
+  else abortController.signal.addEventListener('abort', forward, { once: true })
+  current.abort = () => sessionAbort.abort()
+  runtime.initReceiptSeen = false
+  try {
+    const stream = await runtime.account.open(() => query({ prompt: runtime.account.gatePrompt(prompts), options: sessionQueryOptions(current, mcpServer, sessionAbort) }), abortController)
+    for await (const message of stream) consumePhaseMessage(runtime, message, current)
+    if (!runtime.initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
+    // A stream ending after a result past the boundary hands off even without another prompt poll.
+    if (!runtime.completed && current.resultAfterBoundary) handOff(current, boundaryEnd(current))
+  } catch (error) {
+    closeSessionError(runtime, current, sessionAbort, error)
+  } finally {
+    clearTimer(current.noResultTimer)
+    current.closed = true
+    current.ended_at = new Date(now()).toISOString()
+    abortController.signal.removeEventListener('abort', forward)
+    accountSessions.push(runtime.account.summary())
+  }
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
@@ -607,7 +857,7 @@ export async function runPilot(options, dependencies) {
     const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${GROUNDING_INITIAL_PROMPT} ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.${planShapeLine(routing.route)}`
     yield { type: 'user', message: { role: 'user', content: withRepositoryGuide(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
-    yield* followUps(session)
+    yield* phaseFollowUps(phaseRuntime, session)
   }
 
   // One SDK query per lifecycle phase (card: phase sessions). A session is bound to the phase it opened in; once the
@@ -636,60 +886,6 @@ export async function runPilot(options, dependencies) {
     return session
   }
 
-  async function* followUps(current) {
-    while (!completed && !timeoutBoundary && !current.closed) {
-      if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
-      if (pastBoundary(current)) {
-        if (pendingTurnEnds > 0) { pendingTurnEnds -= 1; handOff(current, boundaryEnd(current)); return }
-        if (current.handedOff) return
-        await sleep(POLL_MS)
-        continue
-      }
-      await waitForPlanBinding(lifecycleServer)
-      if (pendingTurnEnds > 0) {
-        pendingTurnEnds -= 1
-        if (acceptedLifecycleResults > acceptedAtLastContinuation) consecutiveContinuations = 0
-        consecutiveContinuations += 1
-        acceptedAtLastContinuation = acceptedLifecycleResults
-        await waitForPlanBinding(lifecycleServer)
-        const lifecycleState = lifecycleServer.state()
-        const phase = lifecycleState.phase
-        const binding = lifecycleServer.dodDisputes().filter((dispute) => dispute.resolution && !injectedDecisions.has(`${dispute.requestId}:${dispute.criterion}`))
-        for (const dispute of binding) injectedDecisions.add(`${dispute.requestId}:${dispute.criterion}`)
-        const content = lifecycleState.partial && phase === 'report'
-          ? partialInstruction(lifecycleState.partial)
-          : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.${bindingNotice(binding)}`
-        injectedTurns += 1
-        log(`injected: continuation ${content}`)
-        if (consecutiveContinuations === MAX_UNPRODUCTIVE_TURNS) {
-          incompleteReason = `pilot ended its turn ${MAX_UNPRODUCTIVE_TURNS} times without progress`
-        }
-        yield { type: 'user', message: { role: 'user', content } }
-        if (incompleteReason) return
-        continue
-      }
-      const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
-      if (lines.length > mailboxLines) {
-        deliveredNotes.push(lines[mailboxLines])
-        const content = `${MAILBOX_PREFIX}${lines[mailboxLines++]}`
-        injectedTurns += 1
-        log(`injected: mailbox message ${content}`)
-        yield { type: 'user', message: { role: 'user', content } }
-      }
-      else {
-        const disputes = lifecycleServer.dodDisputes()
-        const decision = disputes.filter((dispute) => dispute.resolution && !injectedDecisions.has(`${dispute.requestId}:${dispute.criterion}`))[0]
-        if (decision) {
-          injectedDecisions.add(`${decision.requestId}:${decision.criterion}`)
-          const content = `Binding decision on DoD ${decision.criterion} (runner-owned, trusted; ${decision.resolution.source}): ${decision.resolution.reading}. ${decision.resolution.criticRule ?? ''} Keep the plan to this reading; the next critic round is bound to it.`
-          injectedTurns += 1
-          log(`injected: parent decision ${content}`)
-          yield { type: 'user', message: { role: 'user', content } }
-        } else await sleep(POLL_MS)
-      }
-    }
-  }
-
   // The first message of a later phase session: what that phase needs, never the earlier conversation.
   function phaseOpening(current) {
     const lifecycleState = lifecycleServer.state()
@@ -709,7 +905,7 @@ export async function runPilot(options, dependencies) {
     // A plan session never opens on an unbound DoD dispute: the opener carries the binding.
     await waitForPlanBinding(lifecycleServer)
     yield phaseOpening(current)
-    yield* followUps(current)
+    yield* phaseFollowUps(phaseRuntime, current)
   }
 
   const sessionQueryOptions = (current, mcpServer, sessionAbort) => composeSdkRoleQueryOptions({
@@ -742,130 +938,41 @@ export async function runPilot(options, dependencies) {
     abortController: sessionAbort,
   }, sdkRole)
 
-  // Per-session call evidence: a streamed message repeats its id, so a repeat updates the call it belongs to.
-  function recordSessionCall(current, record, messageId) {
-    const call = { input: record.input, cache_creation: record.cache_creation, cache_read: record.cache_read, output: record.output }
-    if (messageId !== current.last_message_id) { current.calls += 1; current.last_message_id = messageId }
-    if (current.calls === 1) current.first_call = call
-    current.last_call = call
-  }
-
-  function consume(message, current) {
-    streamIndex += 1
-    modelTracker.observe(message)
-    transcript.push(message)
-    // An account-level rate-limit notice can precede init; it carries no model output and is not "another message first".
-    if (!initReceiptSeen && isPreInitNotice(message)) return
-    if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
-      throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
-    }
-    if (message.type === 'system' && message.subtype === 'init') {
-      initReceiptSeen = true
-      servedModel = message.model
-      assertPilotInitReceipt(message, sdkRole)
-    }
-    if (!firstAssistantSeen && message.type === 'assistant') {
-      firstAssistantSeen = true
-      servedModelFirstTurn = message.message?.model
-    }
-    if (message.type === 'assistant' && message.message?.usage) {
-      const messageId = message.message.id
-      const record = { ...usageOf(message.message), model: message.message.model ?? servedModelFirstTurn ?? servedModel ?? model.value, arrived_at: new Date(now()).toISOString(), session: current.index, session_phase: current.phase }
-      if (recordAssistantUsage(messages, record, messageId, totals)) {
-        lastAssistantUsageIndex = streamIndex
-        current.uncovered = true
-      }
-      recordSessionCall(current, record, messageId)
-      persistUsage()
-    }
-    const content = message.message?.content
-    if (Array.isArray(content)) for (const item of content) {
-      if (item.type === 'tool_use') {
-        tools.push(item.name)
-        turnTools.push(item.name)
-        if (pastBoundary(current)) current.calls_after_boundary.push(item.name)
-        if (item.id) startedTools.set(item.id, toolCallStart(item, now(), () => lifecycleServer.state()))
-        if (item.id && ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).includes(item.name)) lifecycleCalls.set(item.id, item.name)
-      }
-      if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) {
-        const receipt = toolCallReceipt(startedTools.get(item.tool_use_id), now())
-        longestToolCall = longerToolCall(longestToolCall, receipt)
-        startedTools.delete(item.tool_use_id)
-      }
-      if (item.type === 'tool_result' && lifecycleCalls.has(item.tool_use_id)) {
-        const lifecycleResult = textFrom(item.content)
-        log(`lifecycle: ${lifecycleResult}`)
-        const lifecycleName = lifecycleCalls.get(item.tool_use_id)
-        if (/^(?:accepted phase=|wrote |lane \S+ EXIT=0$|gate \S+ EXIT=0$)/.test(lifecycleResult.trim())) acceptedLifecycleResults += 1
-        if (lifecycleName === lifecycleToolName('transition') && lifecycleResult.trim() === AWAITING_FIDELITY_RESULT) awaitingFidelityReceipt = true
-        lifecycleCalls.delete(item.tool_use_id)
-      }
-    }
-    if (message.type === 'result') {
-      lastResultIndex = streamIndex
-      current.uncovered = false
-      if (pastBoundary(current)) {
-        current.resultAfterBoundary = true
-        // Measured on Agent SDK 0.3.280: the turn a boundary deny interrupts ends with this error result.
-        if (current.deniedAt !== null && message.is_error === true && message.terminal_reason === 'aborted_tools') current.interruptedResult = true
-      }
-      const usage = usageOf(message)
-      // modelUsage is cumulative per query (SDK): keep each session's latest, sum across sessions.
-      if (message.modelUsage && typeof message.modelUsage === 'object') current.model_usage = message.modelUsage
-      for (const key of Object.keys(modelUsage)) delete modelUsage[key]
-      for (const item of phaseSessions) addModelUsage(modelUsage, item.model_usage)
-      current.permission_denials += Array.isArray(message.permission_denials) ? message.permission_denials.length : 0
-      current.terminal_reason = message.terminal_reason ?? current.terminal_reason
-      turns.push({ ...usage, model: servedModelFirstTurn ?? servedModel ?? model.value, ended_at: new Date(now()).toISOString(), tool_names: [...new Set(turnTools)] })
-      turnTools = []
-      for (const key of Object.keys(totals)) totals[key] += usage[key]
-      if (!completed) {
-        if (current.handedOff) current.late_turn_ends += 1
-        else pendingTurnEnds += 1
-      }
-    }
-  }
-
-  async function runSession(current, prompts, mcpServer) {
-    const sessionAbort = new AbortController()
-    const forward = () => sessionAbort.abort()
-    if (abortController.signal.aborted) sessionAbort.abort()
-    else abortController.signal.addEventListener('abort', forward, { once: true })
-    current.abort = () => sessionAbort.abort()
-    initReceiptSeen = false
-    try {
-      const stream = await account.open(() => query({ prompt: account.gatePrompt(prompts), options: sessionQueryOptions(current, mcpServer, sessionAbort) }), abortController)
-      for await (const message of stream) consume(message, current)
-      if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
-      // A stream that ends on its own after a result past the boundary is a handoff too, whether or not the
-      // prompt generator was polled in between.
-      if (!completed && current.resultAfterBoundary) handOff(current, boundaryEnd(current))
-    } catch (error) {
-      // Only two errors end a session without ending the run: the SDK raising the error result of a turn the
-      // boundary deny interrupted (error_during_execution / aborted_tools, delivered first), and the abort this
-      // runner made after the no-result bound. Anything else, including an error after a deny, ends the run.
-      const ownAbort = current.ended_by === 'no_result' && sessionAbort.signal.aborted
-      if (!ownAbort && !current.interruptedResult) throw error
-      if (!ownAbort) handOff(current, 'boundary-deny')
-      current.closing_error = error instanceof Error ? error.message : String(error)
-      log(`phase session ${current.index}: ${current.closing_error}`)
-    } finally {
-      clearTimer(current.noResultTimer)
-      current.closed = true
-      current.ended_at = new Date(now()).toISOString()
-      abortController.signal.removeEventListener('abort', forward)
-      accountSessions.push(account.summary())
-    }
-  }
-
   const modelTracker = createModelTracker(model.value, effectiveEnv)
+  // Accessors share the runner's live state without changing callback receivers or async boundaries.
+  const phaseRuntime = {
+    query, now, sleep, exists, readFile, log, options, report, sdkRole, model, modelTracker,
+    lifecycleServer, injectedDecisions, deliveredNotes, pastBoundary, handOff, boundaryEnd,
+    messages, totals, modelUsage, phaseSessions, turns, tools, transcript, startedTools, lifecycleCalls, persistUsage,
+    sessionQueryOptions, abortController, clearTimer, accountSessions,
+    get account() { return account },
+    get timeoutBoundary() { return timeoutBoundary },
+    get completed() { return completed }, set completed(value) { completed = value },
+    get awaitingFidelityReceipt() { return awaitingFidelityReceipt }, set awaitingFidelityReceipt(value) { awaitingFidelityReceipt = value },
+    get pendingTurnEnds() { return pendingTurnEnds }, set pendingTurnEnds(value) { pendingTurnEnds = value },
+    get acceptedLifecycleResults() { return acceptedLifecycleResults }, set acceptedLifecycleResults(value) { acceptedLifecycleResults = value },
+    get acceptedAtLastContinuation() { return acceptedAtLastContinuation }, set acceptedAtLastContinuation(value) { acceptedAtLastContinuation = value },
+    get consecutiveContinuations() { return consecutiveContinuations }, set consecutiveContinuations(value) { consecutiveContinuations = value },
+    get injectedTurns() { return injectedTurns }, set injectedTurns(value) { injectedTurns = value },
+    get incompleteReason() { return incompleteReason }, set incompleteReason(value) { incompleteReason = value },
+    get mailboxLines() { return mailboxLines }, set mailboxLines(value) { mailboxLines = value },
+    get streamIndex() { return streamIndex }, set streamIndex(value) { streamIndex = value },
+    get initReceiptSeen() { return initReceiptSeen }, set initReceiptSeen(value) { initReceiptSeen = value },
+    get servedModel() { return servedModel }, set servedModel(value) { servedModel = value },
+    get firstAssistantSeen() { return firstAssistantSeen }, set firstAssistantSeen(value) { firstAssistantSeen = value },
+    get servedModelFirstTurn() { return servedModelFirstTurn }, set servedModelFirstTurn(value) { servedModelFirstTurn = value },
+    get lastAssistantUsageIndex() { return lastAssistantUsageIndex }, set lastAssistantUsageIndex(value) { lastAssistantUsageIndex = value },
+    get lastResultIndex() { return lastResultIndex }, set lastResultIndex(value) { lastResultIndex = value },
+    get turnTools() { return turnTools }, set turnTools(value) { turnTools = value },
+    get longestToolCall() { return longestToolCall }, set longestToolCall(value) { longestToolCall = value },
+  }
   try {
-    await runSession(openSession(), prompt(), lifecycleServer)
+    await runPhaseSession(phaseRuntime, openSession(), prompt(), lifecycleServer)
     while (session.handedOff && !completed && !timeoutBoundary && !incompleteReason) {
       account = accountGate(true)
       const next = openSession()
       log(`phase session ${next.index}: ${next.phase}`)
-      await runSession(next, phasePrompt(next), lifecycleServer.sessionServer(next.index))
+      await runPhaseSession(phaseRuntime, next, phasePrompt(next), lifecycleServer.sessionServer(next.index))
     }
   } catch (error) {
     const failure = classifyStreamFailure(error, { timeoutBoundary, graceAborted, initReceiptSeen, incompleteReason })
