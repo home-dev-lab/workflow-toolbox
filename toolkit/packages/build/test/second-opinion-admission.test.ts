@@ -37,15 +37,15 @@ function fixture(source = 'export default () => null') {
   return { root, repo, request, module, marker, out, loader }
 }
 
-function launch(f: ReturnType<typeof fixture>, admission: string | undefined, relative = false, omitRepo = false) {
+function launch(f: ReturnType<typeof fixture>, admission: string | undefined, relative = false, omitRepo = false, extra: string[] = [], timeout = 10_000) {
   const env = { ...process.env }
   env.WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS = '100'
   delete env.WT_SECOND_OPINION_ADMISSION
   if (admission !== undefined) env.WT_SECOND_OPINION_ADMISSION = admission
   const args = ['--request', relative ? './request.md' : f.request, '--out', f.out]
   if (!omitRepo) args.push('--repo', relative ? '.' : f.repo)
-  return spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, CLI, ...args], {
-    cwd: f.repo, env, encoding: 'utf8', timeout: 10_000,
+  return spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, CLI, ...args, ...extra], {
+    cwd: f.repo, env, encoding: 'utf8', timeout, killSignal: 'SIGKILL',
   })
 }
 
@@ -91,6 +91,95 @@ describe('second-opinion CLI admission', () => {
     expect(input.request).toBe(f.request)
   })
 
+})
+
+function forceTemporaryCollision(f: ReturnType<typeof fixture>) {
+  const wrapper = `\nfunction writeFileSync(file, text, options) {
+    if (file === ${JSON.stringify(f.out)}) throw new Error('forced direct write failure');
+    if (options?.flag === 'wx') {
+      nativeWriteFileSync(file, 'FOREIGN REQUEST');
+      nativeWriteFileSync(${JSON.stringify(join(f.root, 'collision-path'))}, file);
+      throw Object.assign(new Error('collision'), { code: 'EEXIST' });
+    }
+    return nativeWriteFileSync(file, text, options);
+  }`
+  writeFileSync(f.loader, readFileSync(f.loader, 'utf8') + `
+    import { readFileSync } from 'node:fs';
+    const originalLoad = load;
+    export { collisionLoad as load };
+    async function collisionLoad(url, context, next) {
+      if (url === ${JSON.stringify(pathToFileURL(CLI).href)}) {
+        const source = readFileSync(new URL(url), 'utf8').replace('writeFileSync }', 'writeFileSync as nativeWriteFileSync }');
+        return { format: 'module', shortCircuit: true, source: source + ${JSON.stringify(wrapper)} };
+      }
+      return originalLoad(url, context, next);
+    }
+  `)
+  writeFileSync(f.loader, readFileSync(f.loader, 'utf8').replace('export async function load', 'async function load'))
+}
+
+describe('second-opinion admission round 3 publication', () => {
+  it('never unlinks a colliding temporary file it did not create', () => {
+    const f = fixture('export default () => "policy refuses"')
+    forceTemporaryCollision(f)
+    expect(launch(f, f.module).status).toBe(3)
+    const collision = readFileSync(join(f.root, 'collision-path'), 'utf8')
+    expect(existsSync(collision)).toBe(true)
+    expect(readFileSync(collision, 'utf8')).toBe('FOREIGN REQUEST')
+    expect(existsSync(f.marker)).toBe(false)
+  })
+
+  it.each(['module import', 'policy call'])('publishes pending before a synchronous hang in %s', (kind) => {
+    const source = kind === 'module import' ? 'while (true) {} ; export default () => null' : 'export default () => { while (true) {} }'
+    const f = fixture(source)
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    const result = launch(f, f.module, false, false, [], 1000)
+    expect(result.signal).toBe('SIGKILL')
+    expect(readFileSync(f.out, 'utf8')).toContain('PENDING: WT_SECOND_OPINION_ADMISSION')
+    expect(readFileSync(f.out, 'utf8').includes('EXIT=')).toBe(false)
+    expect(existsSync(f.marker)).toBe(false)
+  })
+
+  it('refuses a synchronous null result after the deadline', () => {
+    const f = fixture('export default () => { const end = Date.now() + 300; while (Date.now() < end) {} return null }')
+    expectRefusal(f, f.module, 'timed out')
+  })
+})
+
+describe('second-opinion pending policy failures', () => {
+  it.each([
+    ['uncaught exception', 'setTimeout(() => { throw new Error("callback failed") }, 5)'],
+    ['unhandled rejection', 'setTimeout(() => { Promise.reject(new Error("callback failed")) }, 5)'],
+  ])('publishes refusal for a pending policy %s', (_kind, callback) => {
+    const f = fixture(`export default () => { ${callback}; return new Promise(() => {}) }`)
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    expectRefusal(f, f.module, 'callback failed')
+  })
+
+  it('refuses before importing when pending publication is impossible', () => {
+    const f = fixture(`process.stderr.write('POLICY IMPORTED'); export default () => null`)
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    chmodSync(f.out, 0o444)
+    chmodSync(f.root, 0o555)
+    try {
+      const result = launch(f, f.module)
+      expect(result.stderr.includes('POLICY IMPORTED')).toBe(false)
+      expect(result.status).toBe(3)
+      expect(existsSync(f.marker)).toBe(false)
+    } finally { chmodSync(f.root, 0o755) }
+  })
+})
+
+describe('second-opinion validation preserves request aliases', () => {
+  it.each(['same path', 'symlink', 'hard link'])('preserves %s on invalid route', (kind) => {
+    const f = fixture()
+    if (kind === 'same path') f.out = f.request
+    if (kind === 'symlink') symlinkSync(f.request, f.out)
+    if (kind === 'hard link') linkSync(f.request, f.out)
+    expect(launch(f, f.module, false, false, ['--route', 'invalid']).status).toBe(3)
+    expect(readFileSync(f.request, 'utf8')).toBe('Review this repository.')
+    expect(existsSync(f.marker)).toBe(false)
+  })
 })
 
 describe('second-opinion admission fail-closed module results', () => {

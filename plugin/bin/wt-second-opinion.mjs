@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+// Admission publishes PENDING (no EXIT line) before importing trusted policy code.
+// An in-process deadline cannot preempt a synchronous infinite loop; external
+// termination leaves PENDING. Completely unwritable/unreplaceable output is
+// unsupported for file-only completion; request aliases are preserved unchanged.
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -13,19 +18,23 @@ function parseArgs(argv) {
     const arg = argv[i]
     if (arg === '--help' || arg === '-h') return { help: true }
     if (['--request', '--out', '--effort', '--route', '--repo'].includes(arg)) {
-      if (!argv[i + 1]) return { error: `${arg} requires a value`, out: options.out }
+      if (!argv[i + 1]) return { ...options, error: `${arg} requires a value` }
       options[arg.slice(2)] = argv[++i]
-    } else return { error: `unknown argument: ${arg}`, out: options.out }
+    } else return { ...options, error: `unknown argument: ${arg}` }
   }
-  if (!options.request) return { error: '--request is required', out: options.out }
-  if (!options.out) return { error: '--out is required' }
-  if (!['low', 'medium', 'high'].includes(options.effort)) return { error: '--effort must be low, medium, or high', out: options.out }
-  if (!['auto', 'astra', 'opus'].includes(options.route)) return { error: '--route must be auto, astra, or opus', out: options.out }
+  return validateArgs(options)
+}
+
+function validateArgs(options) {
+  if (!options.request) return { ...options, error: '--request is required' }
+  if (!options.out) return { ...options, error: '--out is required' }
+  if (!['low', 'medium', 'high'].includes(options.effort)) return { ...options, error: '--effort must be low, medium, or high' }
+  if (!['auto', 'astra', 'opus'].includes(options.route)) return { ...options, error: '--route must be auto, astra, or opus' }
   options.request = path.resolve(options.request)
   options.out = path.resolve(options.out)
   options.repo = path.resolve(options.repo)
-  if (!existsSync(options.request) || !statSync(options.request).isFile()) return { error: `--request is not a file: ${options.request}`, out: options.out }
-  if (!existsSync(options.repo) || !statSync(options.repo).isDirectory()) return { error: `--repo is not a directory: ${options.repo}`, out: options.out }
+  if (!existsSync(options.request) || !statSync(options.request).isFile()) return { ...options, error: `--request is not a file: ${options.request}` }
+  if (!existsSync(options.repo) || !statSync(options.repo).isDirectory()) return { ...options, error: `--repo is not a directory: ${options.repo}` }
   return options
 }
 
@@ -69,28 +78,33 @@ async function boundedAdmission(options, env) {
     return `WT_SECOND_OPINION_ADMISSION: ${variable} must be a positive integer no greater than 2147483647`
   }
   let timer
+  const deadline = performance.now() + timeout
+  const expired = `WT_SECOND_OPINION_ADMISSION: timed out after ${timeout} ms`
   try {
-    return await Promise.race([
+    const refusal = await Promise.race([
       admissionRefusal(options, env),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(`WT_SECOND_OPINION_ADMISSION: timed out after ${timeout} ms`), timeout) }),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(expired), timeout) }),
     ])
+    return performance.now() >= deadline ? expired : refusal
   } finally { clearTimeout(timer) }
 }
 
 function sameRequestFile(options) {
-  if (!existsSync(options.out)) return false
+  if (!options.out || !options.request || !existsSync(options.out) || !existsSync(options.request)) return false
   const request = statSync(options.request)
   const out = statSync(options.out)
-  return realpathSync(options.out) === options.request || (request.dev === out.dev && request.ino === out.ino)
+  return realpathSync(options.out) === realpathSync(options.request) || (request.dev === out.dev && request.ino === out.ino)
 }
 
 function writeAdmissionRefusal(out, text) {
   try { writeFileSync(out, text); return } catch {}
-  const temporary = `${out}.refusal-${process.pid}`
+  const temporary = `${out}.refusal-${randomUUID()}`
+  let created = false
   try {
     writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 })
+    created = true
     renameSync(temporary, out)
-  } finally { rmSync(temporary, { force: true }) }
+  } finally { if (created) rmSync(temporary, { force: true }) }
 }
 
 function refuseAdmission(out, refusal) {
@@ -106,26 +120,37 @@ async function main() {
     process.stdout.write(`${usage}\n`)
     return 0
   }
+  const env = process.env
+  if (env.WT_SECOND_OPINION_ADMISSION !== undefined && sameRequestFile(options)) {
+    admissionPending = true
+    process.stderr.write('wt-second-opinion: WT_SECOND_OPINION_ADMISSION: --out and --request name the same file\n')
+    return 3
+  }
   if (options.error) {
     if (options.out) writeFileSync(options.out, `REFUSED: ${options.error}\nEXIT=2\n`)
     process.stderr.write(`wt-second-opinion: ${options.error}\n${usage}\n`)
     return 2
   }
   outputPath = options.out
-  const env = process.env
   if (env.WT_SECOND_OPINION_ADMISSION !== undefined) {
     admissionPending = true
     options.repo = realpathSync(options.repo)
     options.request = realpathSync(options.request)
-    if (sameRequestFile(options)) {
-      process.stderr.write('wt-second-opinion: WT_SECOND_OPINION_ADMISSION: --out and --request name the same file\n')
-      return 3
-    }
-    const refusal = await boundedAdmission(options, env)
+    const refusal = await pendingAdmission(options, env)
     if (refusal !== null) return refuseAdmission(options.out, refusal)
     admissionPending = false
   }
   return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter), env)
+}
+
+async function pendingAdmission(options, env) {
+  writeAdmissionRefusal(options.out, 'PENDING: WT_SECOND_OPINION_ADMISSION\n')
+  process.on('uncaughtException', admissionFailure)
+  process.on('unhandledRejection', admissionFailure)
+  try { return await boundedAdmission(options, env) } finally {
+    process.removeListener('uncaughtException', admissionFailure)
+    process.removeListener('unhandledRejection', admissionFailure)
+  }
 }
 
 function finish(code) {
@@ -150,11 +175,13 @@ function legacyFailure(error) {
   finish(1)
 }
 
-main().then(finish).catch((error) => {
+function admissionFailure(error) {
   if (!admissionPending) return legacyFailure(error)
   const refusal = `WT_SECOND_OPINION_ADMISSION: second-opinion failed: ${formatError(error)}`
   try { if (outputPath) refuseAdmission(outputPath, refusal) } catch (writeError) {
     process.stderr.write(`wt-second-opinion: cannot publish refusal to --out: ${formatError(writeError)}\n`)
   }
   finish(3)
-})
+}
+
+main().then(finish).catch(admissionFailure)
