@@ -5,6 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Added regression tests for the secret guard's streaming mask; no behaviour change.
 - Adopted script launchers now inline smaller resolver and execution helpers under the owner quality limits. The toolbox quality gate also checks changed code against its Git base at complexity 10, 40 lines per function, and no explicit TypeScript `any`, while preserving unchanged or shrinking legacy violations.
 
 ## [0.192.0] - 2026-10-10
