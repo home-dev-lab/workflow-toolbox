@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 
-const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.'
+const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.\nWT_SECOND_OPINION_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env }) returns null to admit or a non-empty refusal string (exit 3); configuration or module failures refuse too. This trusted in-process check is awaited before launch, without a timeout.'
 
 function parseArgs(argv) {
   const options = { effort: 'medium', route: 'auto', repo: process.cwd() }
@@ -40,6 +41,29 @@ function removeSignalListeners() {
   for (const [signal, listener] of signalListeners) process.removeListener(signal, listener)
 }
 
+async function admissionRefusal({ repo, request }, env) {
+  const variable = 'WT_SECOND_OPINION_ADMISSION'
+  const modulePath = env[variable]
+  if (!path.isAbsolute(modulePath)) return `${variable}: must name an absolute ES module path`
+  try {
+    const { default: admit } = await import(pathToFileURL(modulePath).href)
+    if (typeof admit !== 'function') return `${variable}: default export must be a function`
+    const result = await admit({ repo, request, env })
+    if (result === null) return null
+    if (typeof result === 'string' && result.trim()) return `${variable}: ${result}`
+    return `${variable}: admit must return null or a non-empty string`
+  } catch (error) {
+    return `${variable}: admission module failed: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+function refuseAdmission(out, refusal) {
+  const message = refusal.replace(/\r?\n/g, ' ')
+  process.stderr.write(`wt-second-opinion: ${message}\n`)
+  writeFileSync(out, `REFUSED: ${message}\nEXIT=3\n`)
+  return 3
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
@@ -52,7 +76,12 @@ async function main() {
     return 2
   }
   outputPath = options.out
-  return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter))
+  const env = process.env
+  if (env.WT_SECOND_OPINION_ADMISSION !== undefined) {
+    const refusal = await admissionRefusal(options, env)
+    if (refusal !== null) return refuseAdmission(options.out, refusal)
+  }
+  return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter), env)
 }
 
 function finish(code) {
