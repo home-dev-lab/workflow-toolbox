@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- The `pilot` and `pilot-orchestrator` agent templates now set `observeSubagents: false`. The pilot and the orchestrator keep their own watchdog, but the sub-agents they spawn (critics, reviewers, implementers) no longer each get a copy of it. Before, Claude Code paired every spawned sub-agent with its own watchdog by default, so one pilot run started one extra watchdog per sub-agent; a pilot that the orchestrator spawns still gets the pilot watchdog from its own definition. Measured on Claude Code 2.1.296 with a parent agent spawning one sub-agent: two watchdogs started without the key, one with it. Re-adopt the agent templates to pick it up.
+
 ## [0.192.0] - 2026-10-10
 
 ### Added

@@ -5,6 +5,7 @@ effort: medium
 memory: project
 observer: pilot-orchestrator-watchdog
 observerMessage: Judge drift only, against the orchestrator's own stated duties (brief, arbitrate, integrate, credit) — never a pilot's gate/TDD/diff duties. The expected steady state is silence.
+observeSubagents: false
 # ⚠ NO `disallowedTools` HERE — IT REMOVES THE TOOL, NOT THE INVOCATION.
 # A single `Bash(...)` entry in an agent's disallowedTools disables the ENTIRE Bash tool for
 # that agent: every command returns "Bash exists but is not enabled in this context". Proven
