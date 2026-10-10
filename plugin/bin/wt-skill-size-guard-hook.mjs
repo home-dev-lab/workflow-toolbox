@@ -7,12 +7,18 @@
 // Unresolved/custom skill layouts and internal failures pass silently, exit 0.
 // Character count means Unicode code points in the complete UTF-8 SKILL.md,
 // including frontmatter (not byte count, token count or supplementary references).
+// Above 4 × threshold bytes, report a no-read lower bound: floor(bytes / 4).
 // For other plugins the hook cannot see their loaded --plugin-dir: an installed
 // copy may win over that loaded copy. This limitation remains warning-only.
-import { readFileSync, statSync } from 'node:fs'
+// No managed skills directory is specified in the available documentation evidence;
+// enterprise skill resolution is unknown and is not guessed.
+// Stalled network filesystem calls rely on the harness's 5 s fail-open timeout.
+// Windows per-directory case sensitivity may cause a missed or extra warning.
+import { readFileSync } from 'node:fs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { resolveSkillPath } from './lib/skill-path.mjs'
 import { emitGuardNotice } from './lib/guard-journal.mjs'
+import { readBoundedText, withSkillFile } from './lib/skill-file.mjs'
 
 const DEFAULT_SKILL_SIZE_WARN_CHARS = 8000
 
@@ -25,23 +31,26 @@ function warningThreshold() {
 function eligible(input) {
   return input?.hook_event_name === 'PreToolUse' && input.tool_name === 'Skill' && !Object.hasOwn(input, 'agent_id')
 }
-function characterCount(file, threshold) {
-  const stat = statSync(file)
-  if (!stat.isFile() || stat.size <= threshold) return 0
+function characterCount(fd, stat, threshold) {
+  if (stat.size <= threshold) return null
+  if (stat.size > 4 * threshold) return { size: Math.floor(stat.size / 4), lowerBound: true }
   let size = 0
-  for (const _character of readFileSync(file, 'utf8')) size++
-  return size
+  for (const _character of readBoundedText(fd, stat.size)) size++
+  return size > threshold ? { size, lowerBound: false } : null
 }
 
 function main() {
   const input = JSON.parse(readFileSync(0, 'utf8'))
   if (!eligible(input)) return
   const skill = input.tool_input?.skill
-  const file = resolveSkillPath(skill, { cwd: input.cwd })
-  if (!file) return
   const threshold = warningThreshold()
-  const size = characterCount(file, threshold)
-  if (size <= threshold) return
+  const inspect = (fd, stat) => characterCount(fd, stat, threshold)
+  const source = resolveSkillPath(skill, { cwd: input.cwd, inspect })
+  if (!source) return
+  const count = Object.hasOwn(source, 'measurement') ? source.measurement : withSkillFile(source, inspect)
+  if (!count) return
+  const file = source.file
+  const size = `${count.lowerBound ? 'at least ' : ''}${count.size}`
   const additionalContext = `WARNING [workflow-toolbox skill-size]: "${skill}" has ${size} characters in ${file} ` +
     `(threshold: ${threshold}). The harness re-injects every invoked skill's body after each compaction. ` +
     `In the main session, use Read on the needed section of ${file}, or delegate the work to a sub-agent.`

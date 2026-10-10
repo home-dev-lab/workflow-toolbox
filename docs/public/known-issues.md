@@ -585,14 +585,24 @@ in its complete `SKILL.md` receives additional context naming the skill, size, p
 re-injection cost after every compaction. Use `Read` on the needed section or delegate to
 a sub-agent. `WT_SKILL_SIZE_WARN_CHARS` overrides the threshold with a non-negative integer;
 invalid values fall back to 8000. A present `agent_id` suppresses the warning entirely.
-Project skills take precedence over personal skills in `CLAUDE_CONFIG_DIR` (default
-OS home + `.claude`). Namespaced plugin skills use the loaded plugin root or applicable
+Personal skills in `CLAUDE_CONFIG_DIR` (default OS home + `.claude`) take precedence
+over project skills. Enterprise precedence is documented, but no managed skills directory
+is specified in the available documentation evidence; enterprise resolution is unknown.
+The project root wins for bare names; `apps/web:deploy` selects the nested directory's
+skill. Bare names fall back to nested ancestors only after personal and root lookup.
+Namespaced plugin skills use frontmatter `name` (directory name only if absent), the loaded plugin root or applicable
 `installed_plugins.json` installation. Ambiguous, unresolved and custom-layout skills
 pass silently. For another plugin, the hook cannot see its loaded `--plugin-dir`, so
 an installed copy may win over the loaded copy; this limitation remains warning-only.
-Only regular files are read, and a resolved `SKILL.md` must remain inside its root's
-real `skills/` directory. Files at or below the byte threshold are not read; larger
-files are counted by Unicode code points without allocating a character array.
+Only regular files are read through nonblocking-open descriptors, and a resolved
+`SKILL.md` must remain inside its root's real `skills/` directory with matching
+descriptor/path device and inode. Files at or below the byte threshold are not read;
+above four times the threshold, a no-read warning reports at least `floor(bytes / 4)`
+characters. Intermediate files are counted by Unicode code points without a character
+array. JSON above 1 MiB is unreadable; plugin frontmatter reads stop at 4 KiB per candidate.
+Stalled network filesystem calls rely on the harness's 5 s timeout, which abandons
+the warning hook and lets the Skill call proceed; synchronous Node calls cannot bound NFS stat.
+Windows per-directory case sensitivity may cause a missed or extra warning, never a block.
 Internal errors emit nothing and exit 0; stderr is always empty. The hook writes no
 guard journal: probation is counted from warning text in session transcripts.
 Review after 20 clean real-session firings; promotion is never automatic. This measures

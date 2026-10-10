@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO = fileURLToPath(new URL('../../../..', import.meta.url))
-const HOOK = join(REPO, 'plugin/bin/wt-skill-size-guard-hook.mjs')
+const HOOK = process.env.WT_SKILL_TEST_HOOK || join(REPO, 'plugin/bin/wt-skill-size-guard-hook.mjs')
 const roots: string[] = []
 function fixture() {
   mkdirSync(join(REPO, '.lane'), { recursive: true })
@@ -36,6 +36,28 @@ function silent(result: ReturnType<typeof run>) {
   expect(result.stdout).toBe('')
   expect(result.stderr).toBe('')
 }
+function probe(f: ReturnType<typeof fixture>, skill: string, code: string, extra = {}) {
+  const preload = join(f.root, 'probe.mjs')
+  put(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const opened = new Map(); const open = fs.openSync; const close = fs.closeSync;
+fs.openSync = function(path, flags, ...args) {
+  const fd = open.call(this, path, flags, ...args); opened.set(fd, String(path)); return fd;
+};
+fs.closeSync = function(fd) { opened.delete(fd); return close.call(this, fd); };
+${code}
+syncBuiltinESMExports();`)
+  return run(f, skill, extra, { NODE_OPTIONS: `--import=${JSON.stringify(preload)}` })
+}
+function noReadCode(file: string) {
+  return `const read = fs.readFileSync; const readPart = fs.readSync;
+const forbidden = path => String(path) === ${JSON.stringify(file)} || opened.get(path) === ${JSON.stringify(file)};
+fs.readFileSync = function(path, ...args) {
+  if (forbidden(path)) process.stdout.write('UNEXPECTED_READ'); return read.call(this, path, ...args);
+};
+fs.readSync = function(fd, ...args) {
+  if (forbidden(fd)) process.stdout.write('UNEXPECTED_READ'); return readPart.call(this, fd, ...args);
+};`
+}
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 describe('main-session Skill size warning', () => {
@@ -55,13 +77,18 @@ describe('main-session Skill size warning', () => {
   })
   it.each([10, 8000])('is silent at %i characters', size => {
     const f = fixture()
-    put(join(f.project, '.claude/skills/small/SKILL.md'), 'x'.repeat(size))
-    silent(run(f, 'small'))
+    const file = join(f.project, '.claude/skills/small/SKILL.md')
+    put(file, 'x'.repeat(size))
+    silent(probe(f, 'small', noReadCode(file)))
   })
   it.each(['child', '', null])('never warns when agent_id is present (%s)', agent_id => {
     const f = fixture()
-    put(join(f.project, '.claude/skills/large/SKILL.md'), 'x'.repeat(9000))
-    silent(run(f, 'large', { agent_id }))
+    const file = join(f.project, '.claude/skills/large/SKILL.md')
+    put(file, 'x'.repeat(9000))
+    silent(probe(f, 'large', `const stat = fs.statSync; const opening = fs.openSync;
+const check = path => { if (String(path) === ${JSON.stringify(file)}) process.stdout.write('INELIGIBLE_RESOLUTION'); };
+fs.statSync = function(path, ...args) { check(path); return stat.call(this, path, ...args); };
+fs.openSync = function(path, ...args) { check(path); return opening.call(this, path, ...args); };`, { agent_id }))
   })
 })
 
@@ -89,10 +116,10 @@ describe('Skill resolution and threshold overrides', () => {
     put(registry, JSON.stringify({ version: 2, plugins: { 'other@market': [{ scope: 'local', projectPath: join(f.root, 'foreign'), installPath: plugin }] } }))
     silent(run(f, 'other:reference'))
   })
-  it('project skill takes precedence over user skill', () => {
+  it('personal skill takes precedence over project skill with two candidates', () => {
     const f = fixture()
-    put(join(f.config, 'skills/shared/SKILL.md'), 'x'.repeat(9000))
-    put(join(f.project, '.claude/skills/shared/SKILL.md'), 'small')
+    put(join(f.config, 'skills/shared/SKILL.md'), 'small')
+    put(join(f.project, '.claude/skills/shared/SKILL.md'), 'x'.repeat(9000))
     silent(run(f, 'shared'))
   })
 })
@@ -183,14 +210,184 @@ describe('Skill ancestor, containment and byte-size checks', () => {
     const f = fixture()
     const file = join(f.project, '.claude/skills/small/SKILL.md')
     put(file, 'x'.repeat(8000))
-    const spy = join(f.root, 'read-spy.mjs')
-    put(spy, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
-const read = fs.readFileSync; fs.readFileSync = function(path, ...args) {
-  if (String(path) === ${JSON.stringify(file)}) process.stdout.write('UNEXPECTED_SKILL_READ');
-  return read.call(this, path, ...args);
-}; syncBuiltinESMExports();`)
-    silent(run(f, 'small', {}, { NODE_OPTIONS: `--import=${JSON.stringify(spy)}` }))
-    expect(readFileSync(HOOK, 'utf8').includes('Array.from(')).toBe(false)
+    silent(probe(f, 'small', noReadCode(file)))
+  })
+})
+
+describe('Round 3 bounded reads and harness naming', () => {
+  it('warns above four times threshold without reading SKILL.md', () => {
+    const f = fixture()
+    const file = join(f.project, '.claude/skills/huge/SKILL.md')
+    put(file, 'x'.repeat(32004))
+    const result = probe(f, 'huge', noReadCode(file))
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('at least 8001 characters')
+  })
+  it.each(['registry', 'manifest', 'settings', 'project-settings', 'local-settings'])('never reads JSON above 1 MiB (%s)', kind => {
+    const f = fixture()
+    const plugin = join(f.root, 'other')
+    put(join(plugin, 'skills/reference/SKILL.md'), 'x'.repeat(9000))
+    const registry = join(f.config, 'plugins/installed_plugins.json')
+    const manifest = join(plugin, '.claude-plugin/plugin.json')
+    put(registry, JSON.stringify({ plugins: { 'other@market': [{ scope: 'user', installPath: plugin }] } }))
+    put(manifest, JSON.stringify({ name: 'other' }))
+    const paths = { registry, manifest, settings: join(f.config, 'settings.json'),
+      'project-settings': join(f.project, '.claude/settings.json'), 'local-settings': join(f.project, '.claude/settings.local.json') }
+    const file = paths[kind as keyof typeof paths]
+    put(file, ' '.repeat(1024 * 1024) + '{}')
+    const result = probe(f, 'other:reference', noReadCode(file))
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout.includes('UNEXPECTED_READ')).toBe(false)
+    if (kind === 'registry') silent(result)
+    else expect(result.stdout).toContain('9000 characters')
+  })
+})
+
+describe('Descriptor-owned Skill reads', () => {
+  it('uses nonblocking descriptors for content and closes each opened file', () => {
+    const f = fixture()
+    put(join(f.config, 'skills/reference/SKILL.md'), 'x'.repeat(9000))
+    const code = `const opening = fs.openSync; const read = fs.readFileSync;
+fs.openSync = function(path, flags, ...args) {
+  if (/\\.(md|json)$/.test(String(path)) && ((flags & (fs.constants.O_NONBLOCK || 0)) !== (fs.constants.O_NONBLOCK || 0) || typeof flags !== 'number')) process.stdout.write('BAD_FLAGS');
+  return opening.call(this, path, flags, ...args);
+};
+fs.readFileSync = function(path, ...args) {
+  if (/\\.(md|json)$/.test(String(path)) && !opened.has(path)) process.stdout.write('PATH_REOPEN'); return read.call(this, path, ...args);
+};
+process.on('exit', () => { if (opened.size) process.stdout.write('UNCLOSED_DESCRIPTOR'); });`
+    const plugin = join(f.root, 'other')
+    put(join(plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'other' }))
+    put(join(plugin, 'skills/reference/SKILL.md'), 'x'.repeat(9000))
+    put(join(f.config, 'settings.json'), '{}')
+    put(join(f.config, 'plugins/installed_plugins.json'), JSON.stringify({ plugins: {
+      'other@market': [{ scope: 'user', installPath: plugin }],
+    } }))
+    for (const skill of ['reference', 'other:reference']) {
+      const result = probe(f, skill, code)
+      expect(result.status).toBe(0)
+      expect(result.stderr).toBe('')
+      expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('9000 characters')
+    }
+  })
+})
+
+describe('Skill identity and code-point counting', () => {
+  it('rejects a descriptor whose inode differs from the containment-checked path', () => {
+    const f = fixture()
+    const file = join(f.project, '.claude/skills/reference/SKILL.md')
+    put(file, 'x'.repeat(9000))
+    silent(probe(f, 'reference', `const stat = fs.fstatSync;
+fs.fstatSync = function(fd, ...args) {
+  const value = stat.call(this, fd, ...args);
+  if (opened.get(fd) === ${JSON.stringify(file)}) value.ino += 1;
+  return value;
+};`))
+  })
+  it('counts supplementary code points without calling Array.from on the skill text', () => {
+    const f = fixture()
+    put(join(f.project, '.claude/skills/reference/SKILL.md'), '😀'.repeat(8000))
+    silent(probe(f, 'reference', `const from = Array.from;
+Array.from = function(value, ...args) {
+  if (typeof value === 'string' && value.includes('😀')) process.stdout.write('CHARACTER_ARRAY');
+  return from.call(this, value, ...args);
+};`))
+  })
+})
+
+describe('Root and nested Skill naming', () => {
+  it('root skill wins over nested collision and qualified name reaches the nested skill', () => {
+    const f = fixture()
+    const nested = join(f.project, 'apps/web')
+    put(join(f.project, '.claude/skills/deploy/SKILL.md'), 'small')
+    const file = join(nested, '.claude/skills/deploy/SKILL.md')
+    put(file, 'x'.repeat(9000))
+    silent(run(f, 'deploy', { cwd: nested }))
+    expect(run(f, 'apps/web:deploy', { cwd: nested }).stdout).toContain(file)
+  })
+  it('bare name falls back to a nested ancestor when personal and root are absent', () => {
+    const f = fixture()
+    const nested = join(f.project, 'apps/web')
+    put(join(nested, '.claude/skills/deploy/SKILL.md'), 'x'.repeat(9000))
+    expect(run(f, 'deploy', { cwd: join(nested, 'src') }).stdout).toContain('9000 characters')
+  })
+})
+
+describe('Plugin frontmatter command names', () => {
+  it('uses the shared YAML parser for BOM and folded frontmatter names', () => {
+    const f = fixture()
+    const plugin = join(f.root, 'other')
+    const file = join(plugin, 'skills/actual/SKILL.md')
+    put(join(plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'other' }))
+    put(file, '\uFEFF---\r\nname: >-\r\n  reference\r\n---\r\n' + 'x'.repeat(9000))
+    put(join(f.config, 'plugins/installed_plugins.json'), JSON.stringify({ plugins: {
+      'other@market': [{ scope: 'user', installPath: plugin }],
+    } }))
+    expect(run(f, 'other:reference').stdout).toContain(file)
+    silent(run(f, 'other:actual'))
+  })
+  it('plugin frontmatter name replaces directory name and ambiguous names are silent', () => {
+    const f = fixture()
+    const plugin = join(f.root, 'other')
+    put(join(plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'other' }))
+    put(join(plugin, 'skills/reference/SKILL.md'), '---\nname: different\n---\n' + 'x'.repeat(9000))
+    put(join(plugin, 'skills/actual/SKILL.md'), '---\nname: reference\n---\nsmall')
+    put(join(f.config, 'plugins/installed_plugins.json'), JSON.stringify({ plugins: {
+      'other@market': [{ scope: 'user', installPath: plugin }],
+    } }))
+    silent(run(f, 'other:reference'))
+    expect(run(f, 'other:different').stdout).toContain(join(plugin, 'skills/reference/SKILL.md'))
+    put(join(plugin, 'skills/duplicate/SKILL.md'), '---\nname: reference\n---\n' + 'x'.repeat(9000))
+    silent(run(f, 'other:reference'))
+  })
+})
+
+describe('Plugin frontmatter read bound', () => {
+  it('reads at most 4 KiB per plugin frontmatter candidate from a descriptor', () => {
+    const f = fixture()
+    const plugin = join(f.root, 'other')
+    const file = join(plugin, 'skills/reference/SKILL.md')
+    put(join(plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'other' }))
+    put(file, '---\nname: reference\n---\n' + 'x'.repeat(40000))
+    put(join(f.config, 'plugins/installed_plugins.json'), JSON.stringify({ plugins: {
+      'other@market': [{ scope: 'user', installPath: plugin }],
+    } }))
+    const result = probe(f, 'other:reference', `const read = fs.readSync; const whole = fs.readFileSync;
+let bytes = 0;
+fs.readSync = function(fd, buffer, offset, length, position) {
+  if (opened.get(fd) === ${JSON.stringify(file)}) { bytes += length; if (bytes > 4096) process.stdout.write('UNBOUNDED_FRONTMATTER'); }
+  return read.call(this, fd, buffer, offset, length, position);
+};
+fs.readFileSync = function(path, ...args) {
+  if (opened.get(path) === ${JSON.stringify(file)} || String(path) === ${JSON.stringify(file)}) process.stdout.write('WHOLE_FRONTMATTER');
+  return whole.call(this, path, ...args);
+};`)
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('at least')
+  })
+})
+
+describe('Plugin candidate descriptor lifetime', () => {
+  it('keeps the plugin candidate descriptor for frontmatter and size measurement', () => {
+    const f = fixture()
+    const plugin = join(f.root, 'other')
+    const file = join(plugin, 'skills/reference/SKILL.md')
+    put(join(plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'other' }))
+    put(file, '---\nname: reference\n---\n' + 'x'.repeat(9000))
+    put(join(f.config, 'plugins/installed_plugins.json'), JSON.stringify({ plugins: {
+      'other@market': [{ scope: 'user', installPath: plugin }],
+    } }))
+    const result = probe(f, 'other:reference', `const opening = fs.openSync; let count = 0;
+fs.openSync = function(path, ...args) {
+  if (String(path) === ${JSON.stringify(file)} && ++count > 1) process.stdout.write('CANDIDATE_REOPENED');
+  return opening.call(this, path, ...args);
+};`)
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('9024 characters')
   })
 })
 

@@ -603,6 +603,10 @@ describe('plugin hook crash safety', () => {
 
         expect(result.error, `${basename(hookPath)} should not hang or fail to spawn`).toBeUndefined()
         expect(result.status, `${basename(hookPath)} exited via signal`).not.toBeNull()
+        if (basename(hookPath) === 'wt-skill-size-guard-hook.mjs') {
+          expect(result.status, 'skill-size warning hook must always fail open').toBe(0)
+          expect(result.stderr).toBe('')
+        }
         expect(
           hasUncaughtExceptionStack(result.stderr),
           `${basename(hookPath)} crashed with stderr:\n${result.stderr}`,
