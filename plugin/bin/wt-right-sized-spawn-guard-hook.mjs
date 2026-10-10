@@ -95,6 +95,24 @@ function warnIfUnpinned(input, toolInput) {
   } catch { /* Model-pin inspection is advisory; a failure must never block the spawn. */ }
 }
 
+function denyDefaultSpawn(input, type) {
+  recordGuardEvent({
+    guard: GUARD,
+    decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
+    class: type ? 'general-purpose' : 'subagent-type-absent',
+    reason: type ? 'general-purpose without reason' : 'subagent_type absent without reason',
+  })
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: refusal(),
+    },
+  }))
+}
+
 function main() {
   const input = readStdinJson()
   if (input.tool_name !== 'Agent') return
@@ -124,21 +142,7 @@ function main() {
     return
   }
 
-  recordGuardEvent({
-    guard: GUARD,
-    decision: 'blocked',
-    session: input.session_id,
-    agent: input.agent_id,
-    class: type ? 'general-purpose' : 'subagent-type-absent',
-    reason: type ? 'general-purpose without reason' : 'subagent_type absent without reason',
-  })
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: refusal(),
-    },
-  }))
+  denyDefaultSpawn(input, type)
 }
 
 runFailOpenHook(GUARD, main)

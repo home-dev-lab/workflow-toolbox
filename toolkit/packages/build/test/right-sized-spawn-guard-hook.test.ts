@@ -77,48 +77,51 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     expect(result.journal).toContain('"class":"general-purpose"')
   })
 
-  describe('a spawn that pins both model and effort needs no justification', () => {
-    const pinned = (input: Record<string, unknown>) => runToolInput({ prompt: 'Implement the requested change.', ...input })
+})
 
-    it.each([
-      ['general-purpose', { subagent_type: 'general-purpose', model: 'sonnet', effort: 'low' }],
-      ['an absent type', { model: 'opus', effort: 'xhigh' }],
-      ['an empty type', { subagent_type: '', model: 'haiku', effort: 'medium' }],
-      ['a full model id and max effort', { subagent_type: 'general-purpose', model: 'claude-opus-5-5', effort: 'max' }],
-      ['Explore', { subagent_type: 'Explore', model: 'sonnet', effort: 'high' }],
-    ])('passes %s silently, with no journal record', (_label, input) => {
-      const result = pinned(input)
-      expect(result.status).toBe(0)
-      expect(result.stdout).toBe('')
-      expect(result.journal).toBe('')
-    })
+describe('a spawn that pins both model and effort needs no justification', () => {
+  const pinned = (input: Record<string, unknown>) => runToolInput({ prompt: 'Implement the requested change.', ...input })
 
-    it.each([
-      ['model only', { model: 'sonnet' }],
-      ['effort only', { effort: 'low' }],
-      ['inherit as the model', { model: 'inherit', effort: 'low' }],
-      ['a blank model', { model: '  ', effort: 'low' }],
-      ['an unknown effort', { model: 'sonnet', effort: 'extreme' }],
-      ['a numeric effort', { model: 'sonnet', effort: 5 }],
-      ['neither', {}],
-    ])('still denies general-purpose with %s', (_label, input) => {
-      const result = pinned({ subagent_type: 'general-purpose', ...input })
-      expect(result.stdout).toContain('"permissionDecision":"deny"')
-      expect(result.journal).toContain('"decision":"blocked"')
-    })
-
-    it('still warns an Explore spawn that pins neither', () => {
-      expectModelWarning(pinned({ subagent_type: 'Explore' }))
-    })
-
-    it('is what the shipped routing rule tells a spawner to do', () => {
-      const rule = readFileSync(join(REPO_ROOT, 'plugin/rules/wt-delegation-routing-at-act.md'), 'utf8').replace(/\s+/g, ' ')
-      expect(rule).not.toMatch(/no per-spawn effort/i)
-      expect(rule).toContain('the Agent tool takes `model` and `effort` per call')
-      expect(rule).toContain('override an agent type\'s frontmatter')
-    })
+  it.each([
+    ['general-purpose', { subagent_type: 'general-purpose', model: 'sonnet', effort: 'low' }],
+    ['an absent type', { model: 'opus', effort: 'xhigh' }],
+    ['an empty type', { subagent_type: '', model: 'haiku', effort: 'medium' }],
+    ['a full model id and max effort', { subagent_type: 'general-purpose', model: 'claude-opus-5-5', effort: 'max' }],
+    ['Explore', { subagent_type: 'Explore', model: 'sonnet', effort: 'high' }],
+  ])('passes %s silently, with no journal record', (_label, input) => {
+    const result = pinned(input)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('')
+    expect(result.journal).toBe('')
   })
 
+  it.each([
+    ['model only', { model: 'sonnet' }],
+    ['effort only', { effort: 'low' }],
+    ['inherit as the model', { model: 'inherit', effort: 'low' }],
+    ['a blank model', { model: '  ', effort: 'low' }],
+    ['an unknown effort', { model: 'sonnet', effort: 'extreme' }],
+    ['a numeric effort', { model: 'sonnet', effort: 5 }],
+    ['neither', {}],
+  ])('still denies general-purpose with %s', (_label, input) => {
+    const result = pinned({ subagent_type: 'general-purpose', ...input })
+    expect(result.stdout).toContain('"permissionDecision":"deny"')
+    expect(result.journal).toContain('"decision":"blocked"')
+  })
+
+  it('still warns an Explore spawn that pins neither', () => {
+    expectModelWarning(pinned({ subagent_type: 'Explore' }))
+  })
+
+  it('is what the shipped routing rule tells a spawner to do', () => {
+    const rule = readFileSync(join(REPO_ROOT, 'plugin/rules/wt-delegation-routing-at-act.md'), 'utf8').replace(/\s+/g, ' ')
+    expect(rule).not.toMatch(/no per-spawn effort/i)
+    expect(rule).toContain('the Agent tool takes `model` and `effort` per call')
+    expect(rule).toContain('override an agent type\'s frontmatter')
+  })
+})
+
+describe('wt-right-sized-spawn-guard-hook', () => {
   it('denies an absent subagent type without a reason', () => {
     const result = run(undefined, 'Summarize this log.')
     expect(result.stdout).toContain('"permissionDecision":"deny"')
