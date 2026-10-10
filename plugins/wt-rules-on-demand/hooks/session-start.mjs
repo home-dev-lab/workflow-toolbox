@@ -8,6 +8,7 @@ import { linkedWorktree } from '../scripts/worktree-node.mjs';
 import { assertSafeDataDir, qualityDataDir } from '../scripts/rule-lifecycle-lib.mjs';
 import { atomicLatest } from '../scripts/quality-check.mjs';
 import { launchQuality } from '../scripts/launch-quality.mjs';
+import { retainArchives } from '../scripts/archive-retention.mjs';
 import { discoverFiles } from '../scripts/discover-files.mjs';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
 import { revertNotificationLine, dailyRollbackLines } from './revert-notifications.mjs';
@@ -15,6 +16,16 @@ import { revertNotificationLine, dailyRollbackLines } from './revert-notificatio
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
 const event = JSON.parse(input || '{}');
+// Archive retention runs for every session-start source (startup, resume, clear, compact): Function Hooks cannot delete,
+// so this is the only place the archive directory is bounded. Everything after it is startup-only.
+const archiveConfig = configDirectory(process.env);
+if (archiveConfig) {
+  try { await retainArchives(await assertSafeDataDir(qualityDataDir(archiveConfig, {}))); }
+  catch (error) {
+    const message = String(error?.message ?? error).replace(/[\r\n]+/g, ' ');
+    process.stdout.write(`wt-rules-on-demand: archive retention failed: ${message}\n`);
+  }
+}
 if (event.source && event.source !== 'startup') process.exit(0);
 const cwd = resolve(event.cwd || process.cwd());
 const config = configDirectory(process.env);

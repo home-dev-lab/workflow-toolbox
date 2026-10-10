@@ -63,8 +63,16 @@ async function assertProfile(dir, runningProfile, env, policies) {
   // The migrating process cannot prove which build or environment launches another profile.
   const primary = runningProfile !== null && await resolvedProfile(dir) === runningProfile;
   const inline = primary && effective.affirmative.includes('wt-rules-on-demand@inline') && await inlineEngine(env.CLAUDE_PLUGIN_ROOT);
+  assertEngineSource(listed, inline, installed, dir);
+  assertFunctionHooks(primary, env, effective, dir);
+}
+
+function assertEngineSource(listed, inline, installed, dir) {
   if (!listed.length && !inline) refuse(`profile ${dir}: plugin not enabled in settings.json or readable managed settings; inline source cannot be established`);
   if (!installed && !inline) refuse(`profile ${dir}: installed or inline engine source cannot be established`);
+}
+
+function assertFunctionHooks(primary, env, effective, dir) {
   const version = primary ? claudeVersion(env)?.version ?? null : null;
   if (modsOnByDefault(version)) return;
   const flag = effective.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS ?? (primary ? env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS : undefined);

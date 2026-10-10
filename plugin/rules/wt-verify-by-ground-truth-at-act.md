@@ -88,3 +88,17 @@ throw, degrade to named `unknown`, or silently return plausible value.
 Third case is the dangerous one. Monitor reporting reassuring number on platform where it cannot
 measure is WORSE than no monitor — broken state look healthy.
 Linux-only is legitimate conclusion. Letting reader assume portability is not.
+
+## Summary asserting a guarantee is verified against its body, SAME pass
+
+Docstring, header, comment claim a PROPERTY — "this path is literal", "cursor derive from
+acknowledgements", "return everything after X"? Read the body under it before moving on. Not
+later. Not as review step. Same pass — claim and code diverge at the moment code change and claim
+does not.
+
+Failure is not carelessness. Treating it as carelessness is why it repeat. Rewrite body, then
+adjust summary → you describe what you INTENDED, not what you WROTE. That summary is exactly what
+next reader trust when checking quickly. So it mislead exactly when it matter.
+
+This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
+needed: the sentence is reassuring.

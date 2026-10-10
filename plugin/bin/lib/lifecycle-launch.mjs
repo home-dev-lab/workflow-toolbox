@@ -25,7 +25,25 @@ function launcherFailureDetail(launch) {
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
 const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
+// Bounds receipt settling after a live worker's child exits, starting at the first observation.
+const LANE_FINISH_SETTLE_MS = 5_000
 const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
+
+function laneReceiptPollDeadline(record, verdict, workerPid, transitionDueAt, settle) {
+  if (record.workerPid !== workerPid || record.owner !== 'pilot') return null
+  if (verdict.status === 'running') return transitionDueAt
+  // A child being torn down can still list its start time with an empty cmdline, reading unknown, not gone.
+  const childExiting = verdict.child === 'gone'
+    ? verdict.reason === 'inconsistent-record'
+    : verdict.child === 'unknown' && /^identity-unreadable/.test(verdict.reason)
+  const finishing = verdict.status === 'unknown' && childExiting && verdict.worker === 'running'
+    && ['running', 'decision-needed'].includes(record.state)
+  // The worker publishes state 'exited' before it appends EXIT= (wt-lane.mjs onChildClose).
+  const publishing = verdict.status === 'terminal' && verdict.reason === 'exited' && verdict.worker === 'running'
+  if (!finishing && !publishing) return null
+  settle.dueAt ??= Date.now() + LANE_FINISH_SETTLE_MS
+  return Math.max(Number.isFinite(transitionDueAt) ? transitionDueAt : 0, settle.dueAt)
+}
 
 // The effort a lane is launched at; the pilot runner records the same resolution in its run summary.
 function launchVariant(phase, model, env) {
@@ -489,23 +507,26 @@ export function createLifecycleLaunch({
           try {
             parsed = JSON.parse(status)
             let verdict = classify(parsed)
-            if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'running') {
-              const transitionDueAt = Date.parse(parsed.decisionTransitionDueAt)
-              while (!logEntry && verdict.status === 'running' && parsed.workerPid === workerPid && Date.now() <= transitionDueAt) {
-                logEntry = await waitForLaneReceipt({
-                  log,
-                  nonce,
-                  timeoutMs: Math.min(25, Math.max(0, transitionDueAt - Date.now())),
-                  pollMs: lanePollMs,
-                  readAttestation,
-                  readRegularFile,
-                })
-                status = readRegularFile(supervisionFile)
-                parsed = JSON.parse(status)
-                verdict = classify(parsed)
-              }
+            const transitionDueAt = Date.parse(parsed.decisionTransitionDueAt)
+            const settle = { dueAt: null }
+            let pollDeadline = laneReceiptPollDeadline(parsed, verdict, workerPid, transitionDueAt, settle)
+            while (!logEntry && pollDeadline !== null && Date.now() <= pollDeadline) {
+              logEntry = await waitForLaneReceipt({
+                log,
+                nonce,
+                timeoutMs: Math.min(25, Math.max(0, pollDeadline - Date.now())),
+                pollMs: lanePollMs,
+                readAttestation,
+                readRegularFile,
+              })
+              status = readRegularFile(supervisionFile)
+              parsed = JSON.parse(status)
+              verdict = classify(parsed)
+              pollDeadline = laneReceiptPollDeadline(parsed, verdict, workerPid, transitionDueAt, settle)
             }
-            verdict = classify(parsed)
+            // Branch on the verdict the loop last judged, and read the receipt once more: it can land
+            // between the last receipt poll and the state read that ended the loop.
+            logEntry ??= await waitForLaneReceipt({ log, nonce, timeoutMs: 0, pollMs: lanePollMs, readAttestation, readRegularFile })
             if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'decision-needed') {
               const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
               snapshot = null

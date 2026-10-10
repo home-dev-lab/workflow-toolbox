@@ -74,7 +74,7 @@ specsTest('all shipped adjacent trigger specs compile', async (_t, url) => {
   const dir = fileURLToPath(url);
   const names = (await readdir(dir)).filter((name) => name.endsWith('.spec.json'));
   assert.ok(names.length > 0);
-  assert.equal(names.length, 12);
+  assert.equal(names.length, 13);
   for (const name of names) assert.ok(await readSpec(join(dir, name)), name);
 });
 test('foreign plugin data dir ignored, own plugin data dir honored', () => {

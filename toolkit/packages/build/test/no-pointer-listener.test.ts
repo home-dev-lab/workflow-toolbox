@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import path, { dirname, join, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -43,10 +43,16 @@ function codeFiles(dir: string, found: string[] = []): string[] {
   return found
 }
 
+// Report paths with forward slashes whatever the host separator, so a finding reads the
+// same on every platform and the expectations below hold on Windows too.
+function reportPath(root: string, file: string, paths: path.PlatformPath = path): string {
+  return paths.relative(root, file).split(paths.sep).join('/')
+}
+
 function pointerListenerViolations(root: string): string[] {
   return shippedRoots(root).flatMap((shipped) => codeFiles(shipped))
     .filter((file) => POINTER_TOKEN.test(readFileSync(file, 'utf8')))
-    .map((file) => relative(root, file))
+    .map((file) => reportPath(root, file))
 }
 
 const SPELLINGS: Array<[string, string]> = [
@@ -71,9 +77,13 @@ describe('no shipped plugin registers a pointer listener', () => {
   }
 
   it('scans plugin/ and every plugins/* directory of this repository', () => {
-    const roots = shippedRoots(repoRoot).map((dir) => relative(repoRoot, dir))
+    const roots = shippedRoots(repoRoot).map((dir) => reportPath(repoRoot, dir))
     expect(roots).toContain('plugin')
     expect(roots.length).toBeGreaterThan(1)
+  })
+
+  it('reports a Windows path with forward slashes', () => {
+    expect(reportPath('C:\\repo', 'C:\\repo\\plugins\\other\\hooks\\press.ts', win32)).toBe('plugins/other/hooks/press.ts')
   })
 
   it('finds no onPointer in any shipped code file', () => {

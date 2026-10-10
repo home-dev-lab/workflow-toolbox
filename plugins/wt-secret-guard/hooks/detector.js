@@ -1,3 +1,5 @@
+import { registrationRefusalReason } from './token-vault.js';
+
 const patterns = [
   ['github-classic', /\bghp_[A-Za-z0-9]{36}\b/g],
   ['github-fine-grained', /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g],
@@ -101,6 +103,49 @@ function sourceAssignment(text, match) {
   return /[({][^({]*$/.test(before) && /^\s*[,)}]/.test(after);
 }
 
+const FUNCTION_WORDS = new Set('a an the of from by to in on for with and or is are be if else when then this that which not into at as it its than via'.split(' '));
+// A path prefix (`/usr/local/bin/op`, `C:\Tools\op.exe`) or a quoted command word still names op.
+const OP_COMMAND = /(?:^|[\s;&|(`/\\"'])op(?:\.exe)?(?![A-Za-z0-9_.-])/i;
+// Any `$` (an empty `$1`/`$@`, `$"…"`), brace expansion or a glob can splice or spell op
+// (`o$@p`, `{op,}`, `/usr/bin/o?`), so each one refuses the exemption.
+const SHELL_EXPANSION = /[$`{}*?[\]]/;
+
+function normalizedShellWords(command) {
+  return command.replace(/\\\r?\n/g, '')
+    .replace(/\$'((?:\\.|[^'\\])*)'/g, (_match, word) => word.replace(/\\(?:([0-7]{1,3})|x([0-9a-f]{1,2}))/gi,
+      (_escape, octal, hex) => String.fromCharCode(parseInt(octal ?? hex, octal ? 8 : 16))))
+    .replace(/\\(.)/g, '$1').replace(/["']/g, '');
+}
+
+function uncertainOrOpCommand(command) {
+  if (SHELL_EXPANSION.test(command)) return true;
+  const normalized = normalizedShellWords(command);
+  // Keep the raw check too: Windows path separators are not POSIX shell escapes.
+  return OP_COMMAND.test(normalized) || OP_COMMAND.test(command);
+}
+
+function proseWords(value) {
+  return value.trim().split(/\s+/).map((word) => word.replace(/^[(["'`]+|[)"'.,;:!?`]+$/g, ''));
+}
+
+function completeLine(text, match, options) {
+  // Streaming callers cannot know that a final line is complete until a newline arrives.
+  return options.complete === true || text.indexOf('\n', match.index + match[0].length) !== -1;
+}
+
+function proseOutput(text, match, command, options) {
+  if (options.prose === false || !completeLine(text, match, options)) return false;
+  if (uncertainOrOpCommand(command)) return false;
+  const value = match[1].trim();
+  const words = proseWords(value);
+  if (words.length < 6) return false;
+  if (!words.every((word) => /^\p{L}+(?:[_'-]\p{L}+)*$/u.test(word))) return false;
+  const functionCount = words.filter((word) => FUNCTION_WORDS.has(word.toLowerCase())).length;
+  if (functionCount < 2 || functionCount * 4 < words.length) return false;
+  return words.every((word) => registrationRefusalReason(word, 'op-output'))
+    && Boolean(registrationRefusalReason(value, 'op-output'));
+}
+
 function jsonString(text, start) {
   let cursor = start + 1;
   while (cursor < text.length) {
@@ -192,22 +237,29 @@ function concealedJsonDetections(text) {
 /** The pattern kinds, in order. The V34 union property enumerates every one of them. */
 export const PATTERN_KINDS = patterns.map(([kind]) => kind);
 
+function keepPatternMatch(kind, match, value, { text, concealed, command, options, allowed }) {
+  const duplicatesConcealed = concealed.some((item) => item.value.includes(value) || value.includes(item.value));
+  const sourceSyntax = kind === 'assignment' && sourceAssignment(text, match);
+  if (kind === 'op-output' && proseOutput(text, match, command, options)) return false;
+  return !sourceSyntax && !duplicatesConcealed && !overlaps(match.index, match.index + match[0].length, allowed);
+}
+
 // `only` (optional) restricts the scan to those kinds - what one pattern ALONE would mask, which is
 // what the union property compares the full scrub against.
-export function detections(text, command = '', only) {
+// Final lines stay credential-bearing by default; complete tool results opt in explicitly.
+export function detections(text, command = '', only, options = {}) {
   if (typeof text !== 'string') return [];
   const selected = only ? new Set(only) : null;
   const allowed = allowedRanges(text, command);
   const concealed = !selected || selected.has('op-json-concealed') ? concealedJsonDetections(text) : [];
   const found = [...concealed, ...(!selected || selected.has('credential-uuid') ? credentialUuidDetections(text) : [])];
+  const context = { text, concealed, command, options, allowed };
   for (const [kind, expression] of patterns) {
     if (selected && !selected.has(kind)) continue;
     expression.lastIndex = 0;
     for (let match; (match = expression.exec(text));) {
       const value = capturedValue(match);
-      const duplicatesConcealed = concealed.some((item) => item.value.includes(value) || value.includes(item.value));
-      const sourceSyntax = kind === 'assignment' && sourceAssignment(text, match);
-      if (!sourceSyntax && !duplicatesConcealed && !overlaps(match.index, match.index + match[0].length, allowed)) found.push({ kind, value });
+      if (keepPatternMatch(kind, match, value, context)) found.push({ kind, value });
     }
   }
   return found;
@@ -238,4 +290,3 @@ export function optionalDetections(text, options = {}) {
   }
   return found;
 }
-

@@ -130,7 +130,12 @@ describe('raw host primitive quality ratchet', () => {
     // The duplicate pilot guard adds its hook and its card-id parser; their file access lives in bin/lib/host.
     // Five pure suite-lock policy/display modules add files without host primitives.
     // The rule-narrative guard adds its detector and split modules; their host access lives in bin/lib/host.
-    expect(result.perimeterFiles).toBe(270)
+    // The spawn-capability guard's brief-intent predicates add one module without host primitives.
+    // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one module without host primitives.
+    // The work journal's modules replace one reminder, and its digest projection adds one pure module;
+    // all journal host access is behind the adapter.
+    // The orphan watch adds its attribution module; it reads only the process table it is given.
+    expect(result.perimeterFiles).toBe(282)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

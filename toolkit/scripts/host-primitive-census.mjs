@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs'
-import { extname, join, relative, resolve } from 'node:path'
+import { extname, join, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
+import { listGitIgnoredPaths, pathsRegexSource } from './git-ignored-inputs.mjs'
 
 const DEFAULT_PLUGIN_ROOT = resolve(import.meta.dirname, '../../plugin')
 const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
@@ -27,9 +29,12 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/l
 // The adopt installer dropped its script import-rewrite transform (one readFileSync, one homedir) while
 // the adopt-check hook gained one lstatSync to report a symlinked script.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1883
+// The journal replaces the old reminder's raw filesystem reads with host-adapter operations.
+export const HOST_PRIMITIVE_CEILING = 1880
 
-function sourceFiles(root) {
+export function sourceFiles(root) {
+  const ignoredSource = pathsRegexSource(listGitIgnoredPaths(root).paths, root, root)
+  const ignored = ignoredSource ? new RegExp(ignoredSource) : null
   const hostRoot = join(root, 'bin', 'lib', 'host')
   // Generated third-party YAML grammar literals are not host access (same exemption
   // as the generated observatory launcher); their source is byte-identity checked.
@@ -37,6 +42,8 @@ function sourceFiles(root) {
   function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const path = join(directory, entry.name)
+      const input = relative(root, path).split(sep).join('/') + (entry.isDirectory() ? '/' : '')
+      if (ignored?.test(input)) return []
       if (entry.isDirectory()) return path === hostRoot ? [] : walk(path)
       return entry.isFile() && EXECUTABLE_EXTENSIONS.has(extname(path)) && !generated.has(path) ? [path] : []
     })
@@ -164,7 +171,7 @@ export function formatHostPrimitiveRefusal(result) {
   ].join('\n')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkHostPrimitives()
   process.stdout.write(`Raw host primitives: ${result.count}/${result.ceiling} across ${result.perimeterFiles} perimeter files.\n`)
   if (result.exceeded) {

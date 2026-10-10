@@ -151,5 +151,6 @@ export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: r
     },
     async listNames() { return (await lists()).map((item) => item.name) },
     async listNameOf(listId) { return (await lists()).find((item) => item.id === String(listId))?.name ?? null },
+    async listIdOf(listName) { return (await lists()).find((item) => item.name === listName)?.id ?? null },
   }
 }

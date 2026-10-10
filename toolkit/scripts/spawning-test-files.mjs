@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const TEST_ROOTS = ['packages', 'examples/test', 'scripts/test']
@@ -101,6 +102,7 @@ export const spawningTestFiles = [
   'packages/build/test/missing-package-script-guard-hook.test.ts',
   'packages/build/test/model-fallback.test.ts',
   'packages/build/test/no-committed-conflict-markers.test.ts',
+  'packages/build/test/no-progress-md-on-shipped-surfaces.test.ts',
   'packages/build/test/node-import-flag-url.test.ts',
   'packages/build/test/observer-pairing-check.test.ts',
   'packages/build/test/observer-pairing-guard-hook.test.ts',
@@ -143,6 +145,7 @@ export const spawningTestFiles = [
   'packages/build/test/queue-gate-marker-expiry.test.ts',
   'packages/build/test/queue-not-empty-gate.test.ts',
   'packages/build/test/quota-probe-token.test.ts',
+  'packages/build/test/quota-watch-account-cache.test.ts',
   'packages/build/test/quota-watch-no-subscription.test.ts',
   'packages/build/test/quota-watch-route.test.ts',
   'packages/build/test/quota-watch-single-instance.test.ts',
@@ -183,13 +186,16 @@ export const spawningTestFiles = [
   'packages/build/test/test-orphan-reaper.test.ts',
   'packages/build/test/ts-language-server-launcher.test.ts',
   'packages/build/test/unquoted-tool-glob-guard-hook.test.ts',
-  'packages/build/test/unsynced-buffer-hook.test.ts',
   'packages/build/test/var-colon-modifier-guard-hook.test.ts',
   'packages/build/test/verdict-cap-check.test.ts',
   'packages/build/test/verifier-cli-guard-envelope-phase.test.ts',
   'packages/build/test/wake-floor-in-flight.test.ts',
   'packages/build/test/wake-floor.test.ts',
   'packages/build/test/what-is-running.test.ts',
+  'packages/build/test/work-journal-cli.test.ts',
+  'packages/build/test/work-journal-hook.test.ts',
+  'packages/build/test/work-journal-review-fixes.test.ts',
+  'packages/build/test/work-journal-storage-unnamed.test.ts',
   'packages/build/test/worktree-remove-board-id.test.ts',
   'packages/build/test/wt-config.test.ts',
   'packages/build/test/wt-lane-helpers.test.ts',
@@ -205,10 +211,14 @@ export const spawningTestFiles = [
   'packages/patterns/test/provenance-gate.test.ts',
   'scripts/test/child-process-coverage.test.ts',
   'scripts/test/citation-marker-check.test.ts',
+  'scripts/test/git-ignored-inputs.test.ts',
   'scripts/test/host-entry-guard.test.ts',
   'scripts/test/label-intent-lens.test.ts',
+  'scripts/test/lint-scope-review.test.ts',
+  'scripts/test/lint-scope.test.ts',
   'scripts/test/plugin-bin-import-safety.test.ts',
   'scripts/test/process-enumeration-load.test.ts',
+  'scripts/test/report-contract-lens.test.ts',
   'scripts/test/suite-under-load.test.ts',
   'scripts/test/wt-observer.test.ts',
   'scripts/test/wt-wake-channel.test.ts',
@@ -303,7 +313,7 @@ export function checkSpawningTestFiles(root = ROOT) {
   return { found, missing, stale }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkSpawningTestFiles()
   if (process.argv.includes('--check')) {
     if (result.missing.length || result.stale.length) {

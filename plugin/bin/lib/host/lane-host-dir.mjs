@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto'
-import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -65,11 +65,60 @@ export function ensureLaneHostDir(worktree, options = {}) {
       throw new Error(`lane host state directory is not privately owned: ${candidate}`)
     }
   }
-  const marker = path.join(dir, 'worktree')
-  try { writeFileSync(marker, `${realpathSync.native(worktree)}\n`, { flag: 'wx', mode: 0o600 }) } catch (error) {
-    if (error?.code !== 'EEXIST') throw error
-  }
+  publishWorktreeMarker(path.join(dir, 'worktree'), realpathSync.native(worktree), { ...MARKER_FS, ...options.markerFs })
   return dir
+}
+
+// A marker is the worktree's absolute path followed by one newline. Anything else (an empty file,
+// a write cut short before its newline, a relative path) names no worktree and is ignored.
+function readWorktreeMarker(marker) {
+  if (!statSync(marker).isFile()) return null
+  const content = readFileSync(marker, 'utf8')
+  if (!content.endsWith('\n')) return null
+  const recorded = content.slice(0, -1)
+  return recorded && path.isAbsolute(recorded) ? recorded : null
+}
+
+function currentMarker(marker) {
+  try { return readWorktreeMarker(marker) } catch { return null }
+}
+
+// `fs` is a seam for the write, link and exclusive-open steps of marker publication.
+const MARKER_FS = { writeFileSync, linkSync, openSync, closeSync, unlinkSync }
+
+// Readers must never observe a marker that exists before its bytes, and an existing marker is never
+// replaced (the first writer wins, as the former exclusive create did): the path is written to a
+// private staging file and published without clobbering. An invalid marker already in place is left
+// alone; readers ignore it.
+function publishWorktreeMarker(marker, worktree, fs) {
+  if (existsSync(marker)) return
+  const staging = `${marker}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
+  try {
+    fs.writeFileSync(staging, `${worktree}\n`, { flag: 'wx', mode: 0o600 })
+    publishNoClobber(staging, marker, fs)
+  } catch (error) {
+    if (currentMarker(marker) === null) throw error
+  } finally {
+    try { rmSync(staging, { force: true }) } catch { /* a leftover staging file is never read as a marker */ }
+  }
+}
+
+// A hard link publishes the complete file or fails with EEXIST. Where the file system refuses hard
+// links (whatever error it reports), an exclusive create of the same bytes keeps the no-clobber
+// guarantee; a write that fails after that create removes the file it created.
+function publishNoClobber(source, marker, fs) {
+  try { fs.linkSync(source, marker); return } catch (error) {
+    if (error?.code === 'EEXIST') return
+  }
+  let fd
+  try { fd = fs.openSync(marker, 'wx', 0o600) } catch (error) {
+    if (error?.code === 'EEXIST') return
+    throw error
+  }
+  try { fs.writeFileSync(fd, readFileSync(source)) } catch (error) {
+    try { fs.unlinkSync(marker) } catch { /* readers ignore an unterminated marker */ }
+    throw error
+  } finally { fs.closeSync(fd) }
 }
 
 export function laneWritablePath(worktree, candidate) {
@@ -92,11 +141,9 @@ export function laneWritablePath(worktree, candidate) {
   for (const entry of entries) {
     if (!/^[0-9a-f]{32}$/.test(entry)) continue
     const marker = path.join(laneHostStateRoot(), entry, 'worktree')
-    try {
-      if (!statSync(marker).isFile()) continue
-      const other = readFileSync(marker, 'utf8').replace(/\n$/, '')
-      if (candidate === other || candidate.startsWith(`${other}${path.sep}`) || probe === other || probe.startsWith(`${other}${path.sep}`)) return true
-    } catch { continue }
+    const other = currentMarker(marker)
+    if (other === null) continue
+    if (candidate === other || candidate.startsWith(`${other}${path.sep}`) || probe === other || probe.startsWith(`${other}${path.sep}`)) return true
   }
   return false
 }
@@ -152,6 +199,37 @@ export function makeReadableLaneBrief(snapshot, worktree, { temporaryParent = os
 export function spawnWithLaneLogStderr(log, start) {
   const fd = openSync(log, 'a', 0o600)
   try { return start(['ignore', 'ignore', fd]) } finally { closeSync(fd) }
+}
+
+export function appendLaunchFailure(log, reason) {
+  if (!log) return
+  try {
+    let tail = ''
+    try { tail = readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? '' } catch {}
+    if (/^EXIT=\d+$/.test(tail)) return
+    appendFileSync(log, `wt-lane: launch-failed: ${reason}\nEXIT=1\n`)
+  } catch { /* best effort diagnostic */ }
+}
+
+export function awaitChildSpawn(child, { timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const settle = (complete, value) => {
+      clearTimeout(timer)
+      child.removeListener('spawn', onSpawn)
+      child.removeListener('error', onError)
+      complete(value)
+    }
+    const onSpawn = () => settle(resolve)
+    const onError = (error) => settle(reject, error)
+    // Ref'd deliberately: even a child with no live handle must reach the failure reporter.
+    const timer = setTimeout(() => {
+      const error = new Error(`opencode reported neither spawn nor error within ${timeoutMs / 1000} s`)
+      error.code = 'OPENCODE_SPAWN_TIMEOUT'
+      settle(reject, error)
+    }, timeoutMs)
+    child.once('spawn', onSpawn)
+    child.once('error', onError)
+  })
 }
 
 export function removeReadableLaneBrief(directory) {

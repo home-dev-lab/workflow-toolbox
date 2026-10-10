@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { readQuotaCache, writeQuotaCacheAtomic } from '../../../../plugin/bin/lib/quota-cache.mjs'
+import { readQuotaCache, writeQuotaCacheAtomic, quotaCachePathFor, defaultQuotaCachePath } from '../../../../plugin/bin/lib/quota-cache.mjs'
 
 const roots: string[] = []
 afterEach(() => {
@@ -31,6 +31,32 @@ function writeRawCache(cachePath: string, at: number, data: unknown) {
 
 const OWN_CONFIG_DIR = '/home/example/.claude'
 const FOREIGN_CONFIG_DIR = '/fake'
+
+describe('account-key cache provenance', () => {
+  it('names login and token files compatibly', () => {
+    expect(quotaCachePathFor(OWN_CONFIG_DIR, 'login')).toBe(defaultQuotaCachePath(OWN_CONFIG_DIR))
+    expect(quotaCachePathFor(OWN_CONFIG_DIR, 'token-abc123abc123')).toBe(join(OWN_CONFIG_DIR, '.quota-cache.token-abc123abc123.json'))
+  })
+  it.each(['../escape', '.', '..', 'bad:key', '', 'a'.repeat(65), null, 12])('refuses unsafe key %s', (key) => {
+    expect(() => quotaCachePathFor(OWN_CONFIG_DIR, key)).toThrow(/accountKey/)
+  })
+  it('rejects a foreign account on read', async () => {
+    const file = join(mkRoot(), '.quota-cache.json')
+    writeRawCache(file, Date.now(), { configDir: OWN_CONFIG_DIR, accountKey: 'token-abc123abc123' })
+    expect(await readQuotaCache(file, 300_000, OWN_CONFIG_DIR)).toBeNull()
+  })
+  it('rejects a foreign account on write', async () => {
+    const file = join(mkRoot(), '.quota-cache.json')
+    await expect(writeQuotaCacheAtomic(file, { configDir: OWN_CONFIG_DIR, accountKey: 'token-abc123abc123' }, OWN_CONFIG_DIR)).rejects.toThrow(/accountKey/)
+  })
+  it('accepts a matching token and refuses legacy login data for it', async () => {
+    const file = join(mkRoot(), '.quota-cache.token-abc123abc123.json')
+    await writeQuotaCacheAtomic(file, { configDir: OWN_CONFIG_DIR, accountKey: 'token-abc123abc123' }, OWN_CONFIG_DIR, 'token-abc123abc123')
+    expect(await readQuotaCache(file, 300_000, OWN_CONFIG_DIR, 'token-abc123abc123')).not.toBeNull()
+    writeRawCache(file, Date.now(), { configDir: OWN_CONFIG_DIR })
+    expect(await readQuotaCache(file, 300_000, OWN_CONFIG_DIR, 'token-abc123abc123')).toBeNull()
+  })
+})
 
 describe('readQuotaCache — provenance', () => {
   it('rejects an entry naming a DIFFERENT config dir — the exact poisoned-entry shape observed 2026-08-04', async () => {

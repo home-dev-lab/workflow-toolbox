@@ -348,13 +348,15 @@ test('one directory contract and home fallback', () => {
   assert.equal(configDirectory({}), null);
 });
 
-test('overflow rotates verdict files in quality data without growing store keys', async () => {
+test('overflow archives verdict files in quality data without growing store keys or deleting from the host', async () => {
   const f = fixture({ userNames: ['check.md'] });
   f.files.set('/sample-config/rules-on-demand/check.md', `---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: 'git push'\n  compliance:\n    kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'\n---\nCheck destination.\n`);
   f.stored.set('compliance-verdicts-jsonl', 'x'.repeat(3_500_000));
    const archives = new Map();
-   f.$.fs.write = async (path, text) => archives.set(path, text);
-   f.$.fs.remove = async (path) => archives.delete(path);
+    f.$.fs.write = async (path, text) => {
+      if (path.startsWith('/sample-config/plugins/data/wt-rules-on-demand/quality/')) archives.set(path, text);
+      else f.files.set(path, text);
+    };
    const list = f.$.fs.list;
    f.$.fs.list = async (path) => path.endsWith('/quality') ? [...archives.keys()].filter((item) => item.startsWith(`${path}/`)).map((item) => ({ name: item.slice(path.length + 1), kind: 'file' })) : list(path);
   // Use the fixture's registered call adapter by changing only its tool fields.
@@ -366,7 +368,7 @@ test('overflow rotates verdict files in quality data without growing store keys'
      f.stored.set('compliance-verdicts-jsonl', 'x'.repeat(3_500_000));
      await f.call({ tool: 'Bash', command: 'git push origin main', agentId: `agent-${index}` });
    }
-   assert.equal(archives.size, 14);
+    assert.equal(archives.size, 17, 'host writes retain all complete archives until the node startup sweep');
 });
 
 test('input-regex uses the flat host tool-call arguments and narrows a tool match', async () => {
@@ -478,8 +480,10 @@ test('journal answers a host size refusal by archiving older sessions, never dro
   f.files.set('/sample-config/rules-on-demand/sample.md', rule(false));
   f.stored.set('sessions', Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`old-${i}`, { last: '2020-01-01T00:00:00.000Z', contexts: {} }])));
   const archives = new Map();
-  f.$.fs.write = async (path, text) => archives.set(path, text);
-  f.$.fs.remove = async (path) => archives.delete(path);
+   f.$.fs.write = async (path, text) => {
+     if (path.startsWith('/sample-config/plugins/data/wt-rules-on-demand/quality/')) archives.set(path, text);
+     else f.files.set(path, text);
+   };
   const original = f.$.store.set;
   const originalGet = f.$.store.get;
   f.$.store.get = async (name) => name === 'sessions' ? structuredClone(await originalGet(name)) : originalGet(name);
@@ -487,8 +491,10 @@ test('journal answers a host size refusal by archiving older sessions, never dro
     if (name === 'sessions' && Object.keys(value).length > 30) throw new Error('the store would be 4194537 characters, over the 4194304 limit');
     return original(name, value);
   };
-  await f.call({});
-  assert.deepEqual(f.logs.filter((line) => /write failed/.test(line)), []);
+   await f.call({});
+   assert.deepEqual(f.logs.filter((line) => /write failed/.test(line)), []);
+   // Include a recorded cache-hit call so this instrument must distinguish breadcrumbs from archives.
+   await f.call({});
   assert.ok(f.stored.get('sessions')['sample-session']);
   const archived = [...archives.values()].flatMap((text) => { const { value } = JSON.parse(text); return Array.isArray(value) ? value.map((unit) => unit.sessionId) : Object.keys(value); });
   assert.deepEqual([...Object.keys(f.stored.get('sessions')), ...archived].sort(), [...Array.from({ length: 40 }, (_, i) => `old-${i}`), 'sample-session'].sort());

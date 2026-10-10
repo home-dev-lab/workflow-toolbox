@@ -36,13 +36,23 @@ async function readPolicy(file, io, optional = false) {
   return settings;
 }
 
-export async function managedPolicies(options = {}) {
+function policyLocation(options) {
   // Injection is an explicit function argument; production never reads an environment override.
   const platform = options.platform ?? process.platform;
   const file = options.managedFile ?? managedSettingsPath(platform);
   const io = options.fs ?? fs;
   const paths = !options.managedFile && platform === 'win32' ? win32 : { dirname, join };
   const directory = paths.join(paths.dirname(file), 'managed-settings.d');
+  return { platform, file, io, paths, directory };
+}
+
+function warnUnexamined(options, platform) {
+  const unexamined = UNEXAMINED_SOURCE.get(platform) ?? 'server-delivered policy';
+  (options.warn ?? console.error)(`rules: ${unexamined} is unexamined; file-based policy is not the complete effective policy. ${LAUNCH_LIMIT}`);
+}
+
+export async function managedPolicies(options = {}) {
+  const { platform, file, io, paths, directory } = policyLocation(options);
   const policies = [{ file, settings: await readPolicy(file, io, true) }];
   let names;
   try { names = await io.readdir(directory); }
@@ -54,7 +64,6 @@ export async function managedPolicies(options = {}) {
     const fragment = paths.join(directory, name);
     policies.push({ file: fragment, settings: await readPolicy(fragment, io) });
   }
-  const unexamined = UNEXAMINED_SOURCE.get(platform) ?? 'server-delivered policy';
-  (options.warn ?? console.error)(`rules: ${unexamined} is unexamined; file-based policy is not the complete effective policy. ${LAUNCH_LIMIT}`);
+  warnUnexamined(options, platform);
   return policies;
 }

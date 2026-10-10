@@ -3,11 +3,13 @@
 // makes every reader count one segment once whatever copies a crash, an ambiguous rejection or a second writer left (W1-W4).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, readArchives, archivedUnits, shrinkDeliveries } from './store-host-fake.mjs';
 import { STORE_BUDGETS, VERDICTS, VERDICT_ARCHIVE, STORE_ARCHIVE, legacyContextSeg, legacyServedSeg, shrink } from '../hooks/store-budget.js';
+import { retainArchives } from '../scripts/archive-retention.mjs';
+import { readStoreArchives } from '../scripts/store-archives.mjs';
 
 const failures = (logs) => logs.filter((line) => /write failed|sweep failed/.test(line));
 const minus = (after, before) => Object.fromEntries(Object.keys(after).map((key) => [key, after[key] - before[key]]));
@@ -139,8 +141,10 @@ test('R2: an archive write rejected half-way leaves no file a reader would parse
   assert.match(f.logs.join('\n'), /store sweep failed: disk full/);
   const names = (await readdir(f.quality)).filter((name) => name.startsWith(STORE_ARCHIVE.prefix));
   assert.ok(names.length >= 1);
+  assert.ok((await Promise.all(names.map((name) => readFile(join(f.quality, name), 'utf8')))).includes(''), 'the rejected partial was neutralised');
   for (const name of names) {
-    JSON.parse(await readFile(join(f.quality, name), 'utf8'));
+    const text = await readFile(join(f.quality, name), 'utf8');
+    if (text) JSON.parse(text);
     assert.ok(Number.isSafeInteger(Number(name.match(/-(\d+)\.json$/)[1])), name);
     assert.match(name, /^rod-store-archive-\d+-\d+\.json$/);
   }
@@ -172,13 +176,12 @@ async function crashedSweep(t, segs) {
     crash = false;
     return 'killed before the store write';
   } });
-  // The process that wrote the archive is gone: nothing it would have run after the store write runs, cleanup included.
-  const fs = { ...realFs, remove: async (path) => { if (!crash && path.includes(STORE_ARCHIVE.prefix)) throw new Error('process gone'); return realFs.remove(path); } };
-  const f = await hookFixture(root, store, { fs });
+  // Complete archives stay after a refused store write; the host has no deletion operation to simulate.
+  const f = await hookFixture(root, store);
   const before = await readerTotals(f, store.snapshot());
   await act(f);
   assert.equal(crash, false, 'the sweep archived, then its store write never happened');
-  assert.match(f.logs.join('\n'), /store sweep failed: (killed before the store write|.*process gone)/);
+  assert.match(f.logs.join('\n'), /store sweep failed: killed before the store write/);
   const left = await copies(f, store.snapshot());
   assert.ok(left.contexts.length > 0, 'the same segments were archived twice: the crash copy and the next write');
   assert.deepEqual(await readerTotals(f, store.snapshot()), plus(before, delta));
@@ -197,8 +200,7 @@ test('W1 (a), served: a served archive written by a sweep whose store write neve
     crash = false;
     return 'killed before the store write';
   } });
-  const fs = { ...realFs, remove: async (path) => { if (!crash && path.includes(STORE_ARCHIVE.prefix)) throw new Error('process gone'); return realFs.remove(path); } };
-  const f = await hookFixture(root, store, { fs });
+  const f = await hookFixture(root, store);
   const before = await readerTotals(f, store.snapshot());
   // The turn close writes sessions first, so its sweep archives the served key and then dies; the act archives it again.
   await closeTurn(f);
@@ -290,12 +292,30 @@ test('W4 (d): store-key archives are never removed by retention, past 49 MB on d
   for (const [i, name] of dummies.entries()) {
     await writeFile(join(f0.quality, name), JSON.stringify({ format: 1, key: 'served', archivedAt: '2026-01-01', value: { [`dummy-${i}.md`]: { count: 1, last: '2026-01-01', seg: `dummy-${i}` } } }));
   }
-  // The listing reports each archive at 3 MB: 20 of them are 60 MB, past the 49 MB verdict retention.
-  const fs = { ...realFs, list: async (path) => (await realFs.list(path)).map((entry) => ({ ...entry, size: entry.name.startsWith(STORE_ARCHIVE.prefix) ? 3_000_000 : entry.size })) };
-  const f = await hookFixture(root, store, { fs });
+  // Real sparse sizes, rather than a host listing mock: startup retention sees over 49 MB of store archives.
+  for (const name of dummies) await truncate(join(f0.quality, name), 3_000_000);
+  const f = await hookFixture(root, store);
   await act(f);
   assert.deepEqual(failures(f.logs), []);
+  await retainArchives(f.quality);
   const left = await readdir(f.quality);
   assert.deepEqual(dummies.filter((name) => !left.includes(name)), [], 'no store-key archive was removed');
   assert.ok(left.filter((name) => name.startsWith(STORE_ARCHIVE.prefix)).length > dummies.length, 'this act archived');
+});
+
+test('a failed neutralising write reports the partial and preserves the original failure', async (t) => {
+  const root = await sandbox(t, 'rod-neutralise-failure-');
+  const fs = { ...realFs, write: async (path, text) => {
+    if (!path.includes(STORE_ARCHIVE.prefix)) return realFs.write(path, text);
+    if (!text) throw new Error('empty overwrite denied');
+    await realFs.write(path, '{broken');
+    throw new Error('disk full');
+  } };
+  const store = hostStore(overSessions(await identityIn(root), true));
+  const f = await hookFixture(root, store, { fs });
+  await closeTurn(f);
+  assert.match(f.logs.join('\n'), /archive write failed \(disk full\).*could not be neutralised: empty overwrite denied/);
+  const result = await readStoreArchives(f.quality);
+  assert.equal(result.archives.length, 0, 'unreadable archives are skipped whole');
+  assert.ok(result.unreadable.length > 0, 'the failed neutralisation remains visible to readers');
 });

@@ -123,6 +123,8 @@
 // no blocking findings, 1 otherwise (gate-by-exit-code, per this project's own
 // ground-truth-verification rule: never trust piped/printed output alone).
 
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
+
 export type Requirement = 1 | 2 | 3 | 4 | 5 | 6
 
 export type Confidence = 'mechanical' | 'heuristic'
@@ -738,8 +740,10 @@ async function main(): Promise<void> {
   process.exit(result.ok ? 0 : 1)
 }
 
-// ESM entry-guard: compare real paths, not raw strings (a `.bin` symlink
-// shim would no-op a raw argv[1] compare — see fiche bin-symlink-entry-guard).
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Entry guard through the host adapter's isInvokedDirectly, which compares the
+// real paths of argv[1] and this module. Launched through a symlink, argv[1]
+// keeps the link while import.meta.url is the real path, so a raw string
+// comparison skipped main(): no output, exit 0.
+if (isInvokedDirectly(import.meta.url)) {
   main()
 }

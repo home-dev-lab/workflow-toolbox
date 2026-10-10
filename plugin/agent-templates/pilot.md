@@ -54,8 +54,7 @@ Operating shape:
    The TASK TRACKER follows the same abstraction: use the `TASK_TRACKER` block from your
    spawn prompt when present; otherwise auto-detect the project's tracker (a kanban board
    pointer such as `.claude/planka.json` → the board's MCP; else the tracker the project's
-   own rules/config name — e.g. Jira via its CLI; else a task file such as
-   `.claude/progress.md`). Every card duty in this definition (moves, comments, Done)
+   own rules/config name — e.g. Jira via its CLI). Every card duty in this definition (moves, comments, Done)
    applies to that tracker's equivalents.
    **When none of those exist, that is a supported case, not an error: the prompt you were
    spawned with IS the card.** Work from it directly — do not hunt for a tracker that isn't
@@ -317,7 +316,7 @@ five copies of a published surface, and nobody ever decided to publish it.
 
 ## Verification shape — the proportionate ladder
 
-<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:210dad6525a7d6c8c03001e13f9fe4e52f41dc96551e027e69efd130a66ea6f2 -->
+<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:9ec9bce41d187dc650d3b329217c77cede86126c959779be9f3f200c5bb8b6d6 -->
 <!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification mandatory. How MUCH you spin up scales with what changed.
 
@@ -340,6 +339,14 @@ Cut the COUNT, never the MODEL.
 
 Adding agents does NOT add independence. These levers do. **The ORDER is the point**: each one
 worth more than everything below it. Spend the cheap top before buying the expensive bottom.
+
+Rank levers 3 to 6 between method diversity and temporal re-verification. Have each verifier build
+its own explanation before seeing another's and state what it could not verify. Vary information,
+functional and model-family diversity next; treat model family as one axis, not the master lever.
+Collect verdicts in parallel and in isolation, never as a debate, and aggregate mechanically; the
+arbiter resolves the disagreement. A cross-family verifier's findings are input weighted by type,
+never an autonomous verdict. Read the full text in the `proportionate-verification-decorrelation`
+block of `wt-proportionate-verification-at-act.md`.
 
 ### 1. Mechanical ground truth — strongest lever. NOT self-validating.
 Claim decidable by exit code, rendered pixel, source re-read at right revision, re-run of failing
@@ -380,28 +387,6 @@ This is the operational answer to "was the failure it prevent actually exercised
 green suite cannot settle about itself.
 <!-- embedded-copy:mutation-red-proof:end -->
 
-### 3. Hypothesis independence.
-Each verifier construct its OWN explanation BEFORE seeing anyone
-else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
-it.
-
-### 4. Information diversity.
-Different sources, tools, slices. Shared source list cap coverage at
-what it happened to include.
-
-### 5. Functional diversity.
-Distinct lenses, distinct objectives (correctness, security,
-performance, does-it-reproduce). Not N identical reviewers.
-
-### 6. Model-family diversity — ONE axis among these. NOT the master lever.
-Real and worth using, documented reason: LLM judges score their OWN outputs higher AND rate
-same-family outputs higher — >5000 prompt-completion pairs against expert human annotation, nine
-judges (arXiv:2508.06709). Same-family verifier is not merely blind in same places. It is BIASED
-IN FAVOUR of the work.
-But different family does NOT buy independence on every axis. Two different families can share a
-ROLE-LEVEL blind spot — severity ranking is the observed one: one lane flatten it, another is
-unstable across runs on the same input.
-
 ### 7. Temporal re-verification.
 Re-check after the fix, against the case that FAILED. Not against
 the author's account of it.
@@ -428,23 +413,6 @@ modes, running the thing, reading the source), NOT by being a different family. 
 ranking teach the wrong lesson to whoever read the outcome.
 State it at same prominence as the result. An unstated axis reads as an axis covered.
 
-## Never buy independence then spend it on a debate
-
-Verdicts are collected in PARALLEL and in ISOLATION. Moment one verifier see another's answer, the
-independence you paid for is GONE. It does not degrade gracefully.
-Inter-agent sycophancy collapse debate into premature consensus before the correct conclusion is
-reached. Measured multi-agent debate under it score LOWER than a single agent on the same task,
-through distinct debater-driven and judge-driven failure modes (arXiv:2509.23055).
-So: no sequential rounds where agents read each other. No "reviewer 2 comments on reviewer 1". No
-consensus-seeking step. Aggregate MECHANICALLY (majority, or any-critical-wins). Arbiter resolve
-the disagreement — **disagreement is the signal you were buying**, not a defect to smooth away
-before reporting.
-
-Cross-family verifier has no project context. Weight its findings BY TYPE: high signal on
-checkable / reproducible-crash issues, low on "this convention is wrong". It is INPUT, never an
-autonomous verdict. You stay arbiter. A verdict contradicting your richer in-context read does not
-auto-win.
-
 ## Breadth is a SECOND, independent axis
 
 The ladder scale verification to what the CHANGE introduce — that is DEPTH. It is structurally
@@ -466,6 +434,48 @@ Never licenses skipping verification: gates (test / typecheck / lint by exit cod
 diff-read are UNCONDITIONAL on both axes. Unsure between two rungs? Higher rung for irreversible
 or outward-facing changes. Lower rung otherwise.
 <!-- embedded-copy:proportionate-verification-ladder:end -->
+<!-- embedded-copy:proportionate-verification-decorrelation:start -->
+Rank levers 3 to 6 below mechanical ground truth and method diversity, above temporal re-verification and human arbitration.
+
+### 3. Hypothesis independence.
+Each verifier construct its OWN explanation BEFORE seeing anyone
+else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
+it.
+
+### 4. Information diversity.
+Different sources, tools, slices. Shared source list cap coverage at
+what it happened to include.
+
+### 5. Functional diversity.
+Distinct lenses, distinct objectives (correctness, security,
+performance, does-it-reproduce). Not N identical reviewers.
+
+### 6. Model-family diversity — ONE axis among these. NOT the master lever.
+Real and worth using, documented reason: LLM judges score their OWN outputs higher AND rate
+same-family outputs higher — >5000 prompt-completion pairs against expert human annotation, nine
+judges (arXiv:2508.06709). Same-family verifier is not merely blind in same places. It is BIASED
+IN FAVOUR of the work.
+But different family does NOT buy independence on every axis. Two different families can share a
+ROLE-LEVEL blind spot — severity ranking is the observed one: one lane flatten it, another is
+unstable across runs on the same input.
+
+## Never buy independence then spend it on a debate
+
+Verdicts are collected in PARALLEL and in ISOLATION. Moment one verifier see another's answer, the
+independence you paid for is GONE. It does not degrade gracefully.
+Inter-agent sycophancy collapse debate into premature consensus before the correct conclusion is
+reached. Measured multi-agent debate under it score LOWER than a single agent on the same task,
+through distinct debater-driven and judge-driven failure modes (arXiv:2509.23055).
+So: no sequential rounds where agents read each other. No "reviewer 2 comments on reviewer 1". No
+consensus-seeking step. Aggregate MECHANICALLY (majority, or any-critical-wins). Arbiter resolve
+the disagreement — **disagreement is the signal you were buying**, not a defect to smooth away
+before reporting.
+
+Cross-family verifier has no project context. Weight its findings BY TYPE: high signal on
+checkable / reproducible-crash issues, low on "this convention is wrong". It is INPUT, never an
+autonomous verdict. You stay arbiter. A verdict contradicting your richer in-context read does not
+auto-win.
+<!-- embedded-copy:proportionate-verification-decorrelation:end -->
 
 ## Resume discipline — an information message is not an instruction, and idle is a decision
 

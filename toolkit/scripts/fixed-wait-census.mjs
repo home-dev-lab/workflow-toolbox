@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { relative, resolve } from 'node:path'
 import ts from 'typescript'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { fixedWaitAllowList } from './fixed-wait-allow-list.mjs'
 
 // Census of the waits a test makes on TIME rather than on an event.
@@ -436,7 +437,7 @@ function summary(findings, allowList) {
   return [...counts].sort(([left], [right]) => left.localeCompare(right)).map(([bucket, count]) => `${bucket}: ${count}`).join('\n')
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename)) {
+if (isInvokedDirectly(import.meta.url)) {
   const result = checkFixedWaits()
   if (process.argv.includes('--json')) process.stdout.write(`${JSON.stringify(result.findings, null, 2)}\n`)
   else process.stdout.write(`${result.findings.map((finding) => formatFinding(finding)).join('\n')}\n\n${summary(result.findings, fixedWaitAllowList)}\n`)

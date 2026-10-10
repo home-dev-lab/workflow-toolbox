@@ -53,7 +53,15 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/r
 node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md"
 ```
 
-`--remote` exits 3 when no tailnet URL is available. In a normal shell, replace
+`--remote` exits 3 when no tailnet URL is available. Read its stderr then: it names the reason the
+server recorded. Under WSL with Tailscale on Windows, only a Tailscale Serve route reaches the
+server, so a missing route means no tailnet URL, and the reason gives the command that creates it.
+Add `--check` to fetch the printed URL. Read stdout for the URL alone and stderr for
+`check: reachable`, `check: unreachable` or `check: unverified` with its reason; the exit code is 0,
+4 or 5. With `--remote` the fetch runs on the host where Tailscale runs (through PowerShell when
+that is Windows); without it, the fetch targets the local URL. Read `reachable` as checked from the
+host Tailscale runs on, not from a peer. Restart the server after creating a Serve route: detection
+runs at startup only. In a normal shell, replace
 `${CLAUDE_PLUGIN_ROOT}` with the installed plugin root.
 
 The deliverable is the single file's complete URL, not the root index. Index browsing is only a
@@ -104,7 +112,9 @@ weaker identity check and require `--force`. These controls are CLI-only and are
 The server always binds `127.0.0.1`. If `tailscale ip -4` detects a local Tailscale address, it also
 binds that address and accepts the machine's MagicDNS name from `tailscale status --json`. On WSL,
 if `tailscale` is unavailable, detection asks PowerShell to resolve `tailscale.exe` and converts that
-returned path with `wslpath`; no Windows install directory is assumed. Discovery distinguishes a
+returned path with `wslpath`; no Windows install directory is assumed. Any resolved command ending in
+`.exe` counts as Windows Tailscale outside Windows, including a configured binary; a wrapper script
+that delegates to Windows Tailscale cannot be recognised, so configure the `.exe` path itself. Discovery distinguishes a
 successful lookup with no tailnet IP from an unavailable lookup, while local serving remains usable.
 The server never configures Tailscale Serve.
 

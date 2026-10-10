@@ -2228,7 +2228,7 @@ ${request.renderClaim(request.claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-control.mjs", "plugin/bin/wt-lane-orphan-watch.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/bin/lib/lane-supervisor-core.mjs", "plugin/bin/lib/host/lane-sandbox.mjs", "plugin/bin/lib/host/hardened-git.mjs", "plugin/bin/lib/host/pid-namespace.mjs", "plugin/skills/external-lane/"],
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-control.mjs", "plugin/bin/wt-lane-orphan-watch.mjs", "plugin/bin/lib/lane-opencode-attribution.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/bin/lib/lane-supervisor-core.mjs", "plugin/bin/lib/host/lane-sandbox.mjs", "plugin/bin/lib/host/hardened-git.mjs", "plugin/bin/lib/host/pid-namespace.mjs", "plugin/skills/external-lane/"],
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
@@ -2592,6 +2592,12 @@ ${request.renderClaim(request.claim)}`;
     {
       // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
       // Monitors" section — none had a doc surface before.
+      sources: ["plugin/bin/wt-work-journal.mjs", "plugin/bin/wt-work-journal-hook.mjs", "plugin/bin/lib/work-journal.mjs", "plugin/bin/lib/work-journal-paths.mjs", "plugin/bin/lib/work-journal-recorders.mjs", "plugin/bin/lib/work-journal-git.mjs", "plugin/bin/lib/work-journal-hook-core.mjs", "plugin/bin/lib/work-journal-lifecycle.mjs", "plugin/bin/lib/work-journal-commands.mjs", "plugin/bin/lib/host/work-journal-io.mjs", "plugin/config/work-journal-recorders.json"],
+      docs: ["docs/public/work-journal.md", "docs/public/known-issues.md", "README.md", "plugin/hooks/README.md", "plugin/skills/deep-grounding/SKILL.md", "plugin/skills/planka-tracking/SKILL.md"]
+    },
+    {
+      // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
+      // Monitors" section — none had a doc surface before.
       sources: [
         "plugin/bin/wt-adopt-check-hook.mjs",
         "plugin/bin/wt-label-intent-producer-hook.mjs",
@@ -2600,7 +2606,6 @@ ${request.renderClaim(request.claim)}`;
         // and the shim one release after the rename.
         "plugin/bin/wt-adopt-rules-check-hook.mjs",
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
-        "plugin/bin/wt-unsynced-buffer-hook.mjs",
         "plugin/bin/wt-session-env-dedup-hook.mjs",
         "plugin/bin/wt-guard-recurrence-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",

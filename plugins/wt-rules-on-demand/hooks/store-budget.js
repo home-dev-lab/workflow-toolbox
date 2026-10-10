@@ -114,7 +114,9 @@ function shrinkServed(served, budget) {
   return { value, evicted };
 }
 
-// Health is bounded by construction (31 days of five numbers, 20 errors of 160 characters); past its budget it moves out whole.
+// Health is bounded by construction: 31 counter days, 20 short errors, 20 bounded
+// interrupted calls and today's 10 slowest calls fit the unchanged 50k budget.
+// Past its budget it moves out whole.
 function shrinkHealth(health, budget) {
   if (jsonLength(health) <= budget) return { value: health, evicted: null };
   return { value: { days: {}, lastErrors: [] }, evicted: health };
@@ -161,19 +163,20 @@ function mergeEvicted(name, previous, next) {
 // generator, drawn from the module's 52-bit random owner).
 let splitCounter = 0;
 const randomSplitId = () => `split-${ownerNumber(52, Math.random).toString(36)}-${(splitCounter++).toString(36)}`;
-export function archiveTexts(name, evicted, archivedAt = new Date().toISOString(), { splitId = randomSplitId } = {}) {
-  if (name === VERDICTS) {
-    const parts = [];
-    let part = [], bytes = 0;
-    for (const line of String(evicted).split('\n').filter(Boolean)) {
-      const size = byteLength(line) + 1;
-      if (part.length && bytes + size > ARCHIVE_PART_BYTES) { parts.push(`${part.join('\n')}\n`); part = []; bytes = 0; }
-      part.push(line);
-      bytes += size;
-    }
-    if (part.length) parts.push(`${part.join('\n')}\n`);
-    return parts;
+function verdictArchiveTexts(evicted) {
+  const parts = [];
+  let part = [], bytes = 0;
+  for (const line of String(evicted).split('\n').filter(Boolean)) {
+    const size = byteLength(line) + 1;
+    if (part.length && bytes + size > ARCHIVE_PART_BYTES) { parts.push(`${part.join('\n')}\n`); part = []; bytes = 0; }
+    part.push(line);
+    bytes += size;
   }
+  if (part.length) parts.push(`${part.join('\n')}\n`);
+  return parts;
+}
+export function archiveTexts(name, evicted, archivedAt = new Date().toISOString(), { splitId = randomSplitId } = {}) {
+  if (name === VERDICTS) return verdictArchiveTexts(evicted);
   // Sessions are format 2: `value` is the list of units. Served and health stay format 1: `value` is the key's value.
   // Every part, its envelope included, stays within ARCHIVE_PART_BYTES (the host rejects a file write over 4 MiB).
   if (name === 'sessions') {

@@ -1,0 +1,10 @@
+{
+  "recorders": [
+    { "id": "git", "kind": "git", "actors": ["main"] },
+    { "id": "push", "kind": "push", "actors": ["main"] },
+    { "id": "release", "kind": "release", "actors": ["main"] },
+    { "id": "pr", "kind": "pr", "actors": ["main"] },
+    { "id": "done", "kind": "done", "actors": ["main", "subagent", "unknown"] }
+  ],
+  "outward": []
+}

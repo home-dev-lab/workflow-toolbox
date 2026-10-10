@@ -40,10 +40,14 @@ describe('pid to parent-pid host perimeter', () => {
     // The suite-lock bypass guard (wt-suite-lock-bypass-guard-hook.mjs) adds one process-table-free hook;
     // its platform and path helpers live in bin/lib/host.
     // The cancelled-call relay guard hook adds one process-table-free module.
-    // The session-env dedup hook (wt-session-env-dedup-hook.mjs) adds one process-table-free module.
+    // Nine journal modules replace one reminder and the session-env dedup hook adds one; host operations remain in the adapter.
     // The duplicate pilot guard adds its hook and its card-id parser, both process-table-free.
     // Five pure suite-lock policy/display modules add entries without process-table access.
     // The rule-narrative guard adds its detector and split modules; process and file access live in bin/lib/host.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 258, violations: [] })
+    // The spawn-capability guard's brief-intent predicates add one process-table-free module.
+    // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one process-table-free module.
+    // The work-journal digest projection (work-journal-digest.mjs) adds one process-table-free module.
+    // The orphan watch adds its process-table-only attribution module (lane-opencode-attribution.mjs).
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 270, violations: [] })
   })
 })

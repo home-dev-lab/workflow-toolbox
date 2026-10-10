@@ -73,14 +73,16 @@ const REQUIRED_CLAUSES: Record<string, ClauseRequirement[]> = {
       pattern: /An unstated axis reads as an axis covered\./i,
     },
     {
-      id: 'parallel-isolation',
-      description: 'independence still cannot be spent on inter-agent debate',
-      pattern: /Verdicts are collected in PARALLEL and in ISOLATION\./i,
-    },
-    {
       id: 'breadth-axis',
       description: 'breadth still remains an independent verification axis',
       pattern: /Depth and breadth are independent: assess both, and neither substitutes for the other\./i,
+    },
+  ],
+  'proportionate-verification-decorrelation': [
+    {
+      id: 'parallel-isolation',
+      description: 'independence still cannot be spent on inter-agent debate',
+      pattern: /Verdicts are collected in PARALLEL and in ISOLATION\./i,
     },
   ],
   'mutation-red-proof': [

@@ -34,7 +34,7 @@ function readInput() {
 /** Does this project do tracked/delegated work worth carrying the ladder for? */
 function hasDelegationMarkers(root) {
   const claude = path.join(root, '.claude')
-  for (const marker of ['planka.json', 'progress.md']) {
+  for (const marker of ['planka.json']) {
     try {
       if (fs.existsSync(path.join(claude, marker))) return true
     } catch {
