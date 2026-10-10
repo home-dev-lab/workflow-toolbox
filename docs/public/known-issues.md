@@ -588,10 +588,16 @@ invalid values fall back to 8000. A present `agent_id` suppresses the warning en
 Project skills take precedence over personal skills in `CLAUDE_CONFIG_DIR` (default
 OS home + `.claude`). Namespaced plugin skills use the loaded plugin root or applicable
 `installed_plugins.json` installation. Ambiguous, unresolved and custom-layout skills
-pass silently; unresolved calls are journaled as `silent` / `skill-unresolved`.
-Internal errors emit nothing and exit 0. This measures Unicode code points, not tokens
-or supporting reference files. Review after 20 clean real-session firings; promotion
-is never automatic. Global `WT_GUARD_MODE=observe` records without emitting notices.
+pass silently. For another plugin, the hook cannot see its loaded `--plugin-dir`, so
+an installed copy may win over the loaded copy; this limitation remains warning-only.
+Only regular files are read, and a resolved `SKILL.md` must remain inside its root's
+real `skills/` directory. Files at or below the byte threshold are not read; larger
+files are counted by Unicode code points without allocating a character array.
+Internal errors emit nothing and exit 0; stderr is always empty. The hook writes no
+guard journal: probation is counted from warning text in session transcripts.
+Review after 20 clean real-session firings; promotion is never automatic. This measures
+Unicode code points, not tokens or supporting reference files. Global
+`WT_GUARD_MODE=observe` suppresses notices.
 
 ### `wt-find-newermt-format-guard-hook.mjs` — non-ISO-8601 `find -newermt` argument warner (PreToolUse on Bash)
 

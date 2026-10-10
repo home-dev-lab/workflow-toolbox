@@ -335,7 +335,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-skill-size-guard-hook.mjs\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-skill-size-guard-hook.mjs\"",
+            "timeout": 5
           }
         ]
       },

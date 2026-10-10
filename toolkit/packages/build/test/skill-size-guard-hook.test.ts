@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -24,7 +24,7 @@ function put(file: string, text: string) {
 }
 function run(f: ReturnType<typeof fixture>, skill: string, extra = {}, env: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [HOOK], {
-    cwd: f.project, encoding: 'utf8',
+    cwd: f.project, encoding: 'utf8', timeout: 1500,
     input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Skill', cwd: f.project, tool_input: { skill }, ...extra }),
     env: sealedPluginCliEnv(f.root, { CLAUDE_CONFIG_DIR: f.config, CLAUDE_PROJECT_DIR: f.project,
       CLAUDE_PLUGIN_ROOT: join(REPO, 'plugin'), WT_SKILL_SIZE_WARN_CHARS: undefined,
@@ -51,7 +51,7 @@ describe('main-session Skill size warning', () => {
     for (const text of ['WARNING', 'large', '8001 characters', 'every invoked skill', 'after each compaction', 'Read', file, 'delegate', 'sub-agent']) {
       expect(output.hookSpecificOutput.additionalContext).toContain(text)
     }
-    expect(readFileSync(join(f.root, 'journal/2026-W41.ndjson'), 'utf8')).toContain('"decision":"warned"')
+    expect(existsSync(join(f.root, 'journal'))).toBe(false)
   })
   it.each([10, 8000])('is silent at %i characters', size => {
     const f = fixture()
@@ -63,10 +63,13 @@ describe('main-session Skill size warning', () => {
     put(join(f.project, '.claude/skills/large/SKILL.md'), 'x'.repeat(9000))
     silent(run(f, 'large', { agent_id }))
   })
-  it('silently journals an unresolvable skill', () => {
+})
+
+describe('Skill resolution and threshold overrides', () => {
+  it('silently passes an unresolvable skill without journal writes', () => {
     const f = fixture()
     silent(run(f, 'missing'))
-    expect(readFileSync(join(f.root, 'journal/2026-W41.ndjson'), 'utf8')).toContain('"class":"skill-unresolved"')
+    expect(existsSync(join(f.root, 'journal'))).toBe(false)
   })
   it('honours an override and rejects an unparsable override', () => {
     const f = fixture()
@@ -92,6 +95,9 @@ describe('main-session Skill size warning', () => {
     put(join(f.project, '.claude/skills/shared/SKILL.md'), 'small')
     silent(run(f, 'shared'))
   })
+})
+
+describe('Skill hook fail-open handling and registration', () => {
   it('fails open on an internal read error', () => {
     const f = fixture()
     put(join(f.config, 'plugins/installed_plugins.json'), '{broken')
@@ -113,5 +119,92 @@ describe('main-session Skill size warning', () => {
     expect(manifest.hooks.PreToolUse.filter((entry: { matcher: string }) => entry.matcher === 'Skill')
       .flatMap((entry: { hooks: { command: string }[] }) => entry.hooks)
       .some((entry: { command: string }) => entry.command.includes('wt-skill-size-guard-hook.mjs'))).toBe(true)
+    expect(manifest.hooks.PreToolUse.find((entry: { matcher: string }) => entry.matcher === 'Skill').hooks[0].timeout).toBe(5)
+  })
+})
+
+describe('Skill hook stderr and nonblocking locks', () => {
+  it('never emits stderr or moves legacy journal state with the journal override unset', () => {
+    const f = fixture()
+    const legacy = join(f.root, 'home/.local/state/wt-guard-journal/legacy.ndjson')
+    put(legacy, 'legacy sentinel')
+    put(join(f.config, 'plugins/installed_plugins.json'), JSON.stringify({ plugins: {
+      'workflow-toolbox@market': [{ version: '999.0.0', installPath: join(REPO, 'plugin') }],
+    } }))
+    silent(run(f, 'missing', {}, { WT_GUARD_JOURNAL_DIR: undefined }))
+    expect(existsSync(legacy)).toBe(true)
+    expect(readFileSync(legacy, 'utf8')).toBe('legacy sentinel')
+    put(join(f.project, '.claude/skills/large/SKILL.md'), 'x'.repeat(9000))
+    const warned = run(f, 'large', {}, { WT_GUARD_JOURNAL_DIR: undefined })
+    expect(warned.status).toBe(0)
+    expect(warned.stderr).toBe('')
+    expect(JSON.parse(warned.stdout).hookSpecificOutput.additionalContext).toContain('9000 characters')
+    expect(existsSync(legacy)).toBe(true)
+  })
+  it.each(['secret', 'registry', 'manifest', 'settings', 'skill'])('skips a FIFO at the %s path within the timeout', (kind, context) => {
+    const f = fixture()
+    const paths = {
+      secret: join(f.config, 'plugins/store/wt-secret-guard.json'),
+      registry: join(f.config, 'plugins/installed_plugins.json'),
+      manifest: join(f.root, 'loaded/.claude-plugin/plugin.json'),
+      settings: join(f.config, 'settings.json'),
+      skill: join(f.project, '.claude/skills/reference/SKILL.md'),
+    }
+    const file = paths[kind as keyof typeof paths]
+    mkdirSync(dirname(file), { recursive: true })
+    const fifo = spawnSync('mkfifo', [file], { encoding: 'utf8' })
+    if (fifo.error || fifo.status !== 0) { context.skip('mkfifo is unavailable on this platform'); return }
+    const skill = kind === 'secret' ? 'missing' : kind === 'skill' ? 'reference' : 'other:reference'
+    silent(run(f, skill, {}, { CLAUDE_PLUGIN_ROOT: join(f.root, 'loaded') }))
+  })
+})
+
+describe('Skill ancestor, containment and byte-size checks', () => {
+  it('discovers the ancestor project skill when cwd is nested and no project env is provided', () => {
+    const f = fixture()
+    const nested = join(f.project, 'src/nested')
+    mkdirSync(nested, { recursive: true })
+    put(join(f.project, '.claude/skills/reference/SKILL.md'), 'x'.repeat(9000))
+    expect(run(f, 'reference', { cwd: nested }, { CLAUDE_PROJECT_DIR: undefined }).stdout).toContain('9000 characters')
+    expect(run(f, 'reference', { cwd: nested }).stdout).toContain('9000 characters')
+  })
+  it.each(['file', 'directory'])('rejects a symlinked skill %s escaping the real skills directory', (kind, context) => {
+    const f = fixture()
+    const outside = join(f.root, 'outside')
+    put(join(outside, 'SKILL.md'), 'x'.repeat(9000))
+    const inside = join(f.project, '.claude/skills/reference')
+    mkdirSync(kind === 'file' ? inside : dirname(inside), { recursive: true })
+    try { symlinkSync(kind === 'file' ? join(outside, 'SKILL.md') : outside,
+      kind === 'file' ? join(inside, 'SKILL.md') : inside, kind === 'file' ? 'file' : 'dir') }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'EPERM') { context.skip('symlink creation is not permitted'); return }; throw error }
+    silent(run(f, 'reference'))
+  })
+  it('does not read SKILL.md at or below the byte threshold', () => {
+    const f = fixture()
+    const file = join(f.project, '.claude/skills/small/SKILL.md')
+    put(file, 'x'.repeat(8000))
+    const spy = join(f.root, 'read-spy.mjs')
+    put(spy, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+const read = fs.readFileSync; fs.readFileSync = function(path, ...args) {
+  if (String(path) === ${JSON.stringify(file)}) process.stdout.write('UNEXPECTED_SKILL_READ');
+  return read.call(this, path, ...args);
+}; syncBuiltinESMExports();`)
+    silent(run(f, 'small', {}, { NODE_OPTIONS: `--import=${JSON.stringify(spy)}` }))
+    expect(readFileSync(HOOK, 'utf8').includes('Array.from(')).toBe(false)
+  })
+})
+
+describe('Installed Skill manifest identity', () => {
+  it('rejects an installed registry entry whose readable manifest names a different plugin', () => {
+    const f = fixture()
+    const plugin = join(f.root, 'wrong-plugin')
+    put(join(plugin, 'skills/reference/SKILL.md'), 'x'.repeat(9000))
+    put(join(plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'wrong' }))
+    put(join(f.config, 'plugins/installed_plugins.json'), JSON.stringify({ plugins: {
+      'other@market': [{ scope: 'user', installPath: plugin }],
+    } }))
+    silent(run(f, 'other:reference'))
+    put(join(plugin, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'other' }))
+    expect(run(f, 'other:reference').stdout).toContain('9000 characters')
   })
 })
