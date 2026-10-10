@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.192.0] - 2026-10-10
+
 ### Added
 - A daily work journal mechanically indexes project acts with a hash chain across daily files and a never-rotated mirror outside repositories, separated by configuration profile and project. SessionStart verifies integrity, recovers interrupted writes, details the last two worked days and condenses earlier worked days in a fourteen-day window, with on-demand day pointers and folded card subjects. The digest stays within 7,000 characters and follows loud notices inside a 9,500-character SessionStart total; CLI digest verifies first. SessionStart surfaces unsynced details; Stop warns about missing per-act outcomes. The journal CLI supports verified historical task-file retirement, explicit restore and unlock, board setup, unsynced reconciliation and closed-day export. Planka onboarding archives history before creating cards, and managed projects retire the Markdown task-file fallback.
 ### Fixed
@@ -25,6 +27,25 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Act-bound verification diversity, SDLC, summary-checking, delegation and task-board details now live in on-demand companions, with static anchors and SDK routing preserved; no directive was dropped. With an on-demand engine, the first file edit of a context is now refused once to serve the SDLC and verification companions. Re-adopt the rules and the pilot agent templates: both carry the new `proportionate-verification-decorrelation` block.
 
 - The artifact server no longer offers a remote URL that no peer can open when it runs in WSL and Tailscale runs on Windows. Without a Tailscale Serve route to the server, `url --remote` now prints no URL and names the reason with the command that creates the route (`tailscale serve --bg --set-path /artifacts http://127.0.0.1:<port>`); before, it printed `http://<tailnet address>:<port>`, which only WSL itself could reach. A Serve route's HTTPS URL is kept even when the server cannot listen on the tailnet address, since the route forwards to the loopback listener. Outside Windows, a resolved Tailscale command ending in `.exe` (configured or found) counts as Windows Tailscale. When `serve status` or `status --json` cannot be read there, no URL is offered and the reason says so instead of advising a route. `status` shows how Tailscale was reached (`tailnetVia: native`, `windows-interop`, or `unknown` for a server started by an older version). `url <path> --check` fetches the printed URL and reports `reachable`, `unreachable` or `unverified` on stderr (exit 0, 4 or 5); with `--remote` the request runs on the host where Tailscale runs (the side the server recorded), through PowerShell when that is Windows, so `reachable` is measured from that host, not from a peer.
+
+### Quality
+
+Minor release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; no baseline was recorded at 0.190.0, 0.191.0 or 0.191.1). No judge regressed. Against 0.191.1's figures: ESLint warnings 640 to 639, Knip issues 189 to 188, duplication 2.21 % to 2.16 %, line coverage 81.06 % to 81.62 %, branch coverage 72.81 % to 73.19 %; the complexity, depth and size judges are unchanged. Coverage comes from this release tree's own test run (12298 passed, 26 skipped).
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 124 | -2 |
+| Cognitive complexity | 268 -> 243 | -25 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 700 | 0 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 639 | -45 |
+| Duplication % | 2.4324 -> 2.1648 | -0.27 |
+| Knip issues | 196 -> 188 | -8 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 81.62 | +3.01 |
+| Coverage branches % | 69.76 -> 73.19 | +3.43 |
 
 ## [0.191.1] - 2026-10-08
 
