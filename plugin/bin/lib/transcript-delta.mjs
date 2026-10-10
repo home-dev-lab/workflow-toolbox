@@ -39,7 +39,7 @@ export function summarizeTranscriptRecords(records) {
   return { filteredLines: filtered, lastRealRecordType }
 }
 
-export function parseTranscriptText(transcriptText) {
+function parseTranscriptText(transcriptText) {
   const records = []
   for (const raw of String(transcriptText).split('\n')) {
     const trimmed = raw.trim()
