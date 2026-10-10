@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 // @ts-expect-error Node ESM quality module
@@ -28,16 +28,24 @@ function commit(root: string) {
   git(root, 'add', '.'); git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
   return git(root, 'rev-parse', 'HEAD')
 }
+// Copies a module and the transitive closure of its relative imports, mirroring the layout under `to`.
+// A missing import target throws, so a config that grows a new import fails loudly instead of in the tool.
+function copyWithImports(from: string, to: string, seen = new Set<string>()) {
+  if (seen.has(from)) return
+  seen.add(from); mkdirSync(dirname(to), { recursive: true }); cpSync(from, to)
+  for (const match of readFileSync(from, 'utf8').matchAll(/\bfrom\s+'(\.{1,2}\/[^']+)'/g)) {
+    copyWithImports(resolve(dirname(from), match[1]), resolve(dirname(to), match[1]), seen)
+  }
+}
 function fixture(files: Record<string, string> = {}, prefix = 'wt-changed-quality-') {
   const root = mkdtempSync(join(tmpdir(), prefix)); roots.push(root)
   git(root, 'init', '-q', '-b', 'develop')
   mkdirSync(join(root, 'toolkit/scripts'), { recursive: true })
   const source = process.env.WT_CHANGED_SCRIPTS ?? join(toolkit, 'scripts')
   for (const file of ['quality-changed.mjs', 'quality-changed-git.mjs', 'quality-changed-lint.mjs', 'quality-changed-measure.mjs']) {
-    cpSync(join(source, file), join(root, 'toolkit/scripts', file))
+    copyWithImports(join(source, file), join(root, 'toolkit/scripts', file))
   }
-  cpSync(join(toolkit, 'eslint.config.mjs'), join(root, 'toolkit/eslint.config.mjs'))
-  cpSync(join(toolkit, 'eslint-rules'), join(root, 'toolkit/eslint-rules'), { recursive: true })
+  copyWithImports(join(toolkit, 'eslint.config.mjs'), join(root, 'toolkit/eslint.config.mjs'))
   symlinkSync(join(toolkit, 'node_modules'), join(root, 'toolkit/node_modules'), 'junction')
   write(root, '.gitignore', 'node_modules/\n')
   write(root, 'toolkit/package.json', JSON.stringify({ scripts: { 'quality:changed': 'node scripts/quality-changed.mjs' } }))
@@ -197,7 +205,10 @@ if (cmd === 'show') console.log('export const value = 1');
   expect(result.status, result.stderr).toBe(0)
   const working = run(root, ['--base', 'HEAD'], { PATH: bin + delimiter + process.env.PATH })
   expect(working.status, working.stderr).toBe(0)
+  // eslint.config.mjs lists git-ignored paths through `git ls-files --others --ignored` (reads no objects, so it cannot
+  // lazy-fetch); that call belongs to the config, not to the tool whose Git wrapper this test pins.
   const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    .filter((call) => !call.args.includes('--ignored'))
   expect(calls.length).toBeGreaterThan(3)
   expect(calls.every((call) => call.noFetch === '1')).toBe(true)
 })
