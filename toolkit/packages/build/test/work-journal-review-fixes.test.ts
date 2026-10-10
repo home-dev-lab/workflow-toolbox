@@ -205,17 +205,26 @@ describe('work journal review regression locks', () => {
     expect(lines.filter((line: { kind: string }) => line.kind === 'retired-progress')).toHaveLength(1)
     expect(fs.readFileSync(file, 'utf8')).toBe('')
   })
-  it('R2-7 preserves the moved file when an old open descriptor appends after the first hash check', () => {
-    const { file, ctx } = retirementFixture()
+  it.each([false, true])('R2-7 preserves the moved file when an old open descriptor appends after the first hash check (alias: %s)', (alias) => {
+    const { f, file: source, ctx } = retirementFixture()
+    const projectAlias = join(f.root, 'project-alias')
+    if (alias) fs.symlinkSync(ctx.root, projectAlias, 'junction')
+    const file = alias ? join(projectAlias, '.claude', 'progress.md') : source
     const original = fs.readFileSync(file, 'utf8')
     const fd = fs.openSync(file, 'a')
     const exclusive = io.exclusiveWrite
+    let appended = false
     vi.spyOn(io, 'exclusiveWrite').mockImplementation((target: string, data: string) => {
       exclusive(target, data)
-      if (target === file) fs.writeSync(fd, 'Late descriptor append\n')
+      // The journal uses native realpaths; temporary paths may use an OS alias.
+      if (fs.realpathSync.native(target) === fs.realpathSync.native(file)) {
+        fs.writeSync(fd, 'Late descriptor append\n')
+        appended = true
+      }
     })
     try {
       expect(() => retireProgress(ctx)).toThrow(/preserved/)
+      expect(appended).toBe(true)
       const moved = fs.readdirSync(join(ctx.root, '.claude')).find((name) => name.includes('.retiring-'))!
       expect(fs.readFileSync(join(ctx.root, '.claude', moved), 'utf8')).toBe(`${original}Late descriptor append\n`)
       expect(fs.readFileSync(file, 'utf8')).toBe('')
