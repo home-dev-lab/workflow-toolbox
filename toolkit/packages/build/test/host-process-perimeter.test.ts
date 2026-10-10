@@ -48,6 +48,7 @@ describe('pid to parent-pid host perimeter', () => {
     // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one process-table-free module.
     // The work-journal digest projection (work-journal-digest.mjs) adds one process-table-free module.
     // The orphan watch adds its process-table-only attribution module (lane-opencode-attribution.mjs).
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 270, violations: [] })
+    // The SDK pilot's phase-session opener (pilot-phase-session.mjs) adds one process-table-free module.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 271, violations: [] })
   })
 })

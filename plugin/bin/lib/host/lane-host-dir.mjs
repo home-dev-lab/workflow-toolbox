@@ -240,3 +240,8 @@ export function readLifecycleRegular(file, root = null, options = {}) {
   // Lifecycle lanes on non-Linux hosts have kind 'none' and already hold the owner's access.
   return readWorktreeRegular(file, 'utf8', root, { unsandboxed: process.platform !== 'linux', ...options })
 }
+
+// The names in a lifecycle directory, or none when it cannot be read: a phase opener lists them as paths.
+export function laneDirEntries(directory) {
+  try { return readdirSync(directory) } catch { return [] }
+}

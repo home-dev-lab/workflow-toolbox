@@ -93,6 +93,7 @@ export const spawningTestFiles = [
   'packages/build/test/lesson-harvest-hook.test.ts',
   'packages/build/test/lesson-harvest.test.ts',
   'packages/build/test/lifecycle-phase-identity.test.ts',
+  'packages/build/test/lifecycle-session-server.test.ts',
   'packages/build/test/live-config-tree-guard-hook.test.ts',
   'packages/build/test/liveness.test.ts',
   'packages/build/test/main-guard-hook.test.ts',
