@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- A `general-purpose` (or untyped) Agent spawn that pins both `model` and `effort` now passes the right-sized-spawn guard without a `general-purpose because:` line. The Agent tool honours both parameters per spawn, and they override an agent type's own frontmatter, so naming them is no longer the expensive inherited default. A spawn that pins only one of the two, uses `model: inherit`, or names an effort outside `low`, `medium`, `high`, `xhigh`, `max` is still refused as before, and the `general-purpose because:` escape is unchanged. The refusal now names the model-and-effort pin first.
+
+### Removed
+- The `wt-chores` agent type. It only pinned a model and an effort; spawn `general-purpose` with `model: "sonnet"` and `effort: "low"` for the same board/card, CI-triage and summary work.
+
 ## [0.192.0] - 2026-10-10
 
 ### Added

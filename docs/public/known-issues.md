@@ -319,7 +319,7 @@ Warns, never blocks, when a read-only, do-not-modify, or investigate-only brief 
 
 ### `wt-right-sized-spawn-guard-hook.mjs` — expensive-default spawn blocker (PreToolUse on Agent)
 
-Refuses a new absent-type or `general-purpose` Agent spawn unless its prompt contains an unfenced `general-purpose because: <reason>` sentence. Resumes and named agent types pass untouched. The refusal names the plugin-scoped right-sized agents and explains that a newly created dedicated agent requires a new session for host discovery. Its manifest registration has a five-second timeout so an unclosed stdin cannot hold the host indefinitely; timeout and internal-error paths fail open.
+Refuses a new absent-type or `general-purpose` Agent spawn unless it pins both `model` (anything but `inherit`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`), or its prompt contains an unfenced `general-purpose because: <reason>` sentence. Resumes and named agent types pass untouched. The refusal names the plugin-scoped right-sized agents and explains that a newly created dedicated agent requires a new session for host discovery. Its manifest registration has a five-second timeout so an unclosed stdin cannot hold the host indefinitely; timeout and internal-error paths fail open.
 
 ### `wt-workflow-model-guard-hook.mjs` — inherited-model blocker (PreToolUse on Workflow)
 

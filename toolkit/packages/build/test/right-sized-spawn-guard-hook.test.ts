@@ -68,12 +68,55 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   it('denies general-purpose without a reason and names every cheaper alternative', () => {
     const result = run('general-purpose', 'Implement the requested change.')
     expect(result.stdout).toContain('"permissionDecision":"deny"')
+    expect(result.stdout).toContain('pin both `model` and `effort`')
     expect(result.stdout).toContain('wt-implementer-sonnet')
     expect(result.stdout).toContain('wt-implementer-opus')
     expect(result.stdout).toContain('wt-reviewer')
-    expect(result.stdout).toContain('wt-chores')
+    expect(result.stdout).not.toContain('wt-chores')
     expect(result.stdout).toContain('workflow-toolbox:wt-implementer-sonnet')
     expect(result.journal).toContain('"class":"general-purpose"')
+  })
+
+  describe('a spawn that pins both model and effort needs no justification', () => {
+    const pinned = (input: Record<string, unknown>) => runToolInput({ prompt: 'Implement the requested change.', ...input })
+
+    it.each([
+      ['general-purpose', { subagent_type: 'general-purpose', model: 'sonnet', effort: 'low' }],
+      ['an absent type', { model: 'opus', effort: 'xhigh' }],
+      ['an empty type', { subagent_type: '', model: 'haiku', effort: 'medium' }],
+      ['a full model id and max effort', { subagent_type: 'general-purpose', model: 'claude-opus-5-5', effort: 'max' }],
+      ['Explore', { subagent_type: 'Explore', model: 'sonnet', effort: 'high' }],
+    ])('passes %s silently, with no journal record', (_label, input) => {
+      const result = pinned(input)
+      expect(result.status).toBe(0)
+      expect(result.stdout).toBe('')
+      expect(result.journal).toBe('')
+    })
+
+    it.each([
+      ['model only', { model: 'sonnet' }],
+      ['effort only', { effort: 'low' }],
+      ['inherit as the model', { model: 'inherit', effort: 'low' }],
+      ['a blank model', { model: '  ', effort: 'low' }],
+      ['an unknown effort', { model: 'sonnet', effort: 'extreme' }],
+      ['a numeric effort', { model: 'sonnet', effort: 5 }],
+      ['neither', {}],
+    ])('still denies general-purpose with %s', (_label, input) => {
+      const result = pinned({ subagent_type: 'general-purpose', ...input })
+      expect(result.stdout).toContain('"permissionDecision":"deny"')
+      expect(result.journal).toContain('"decision":"blocked"')
+    })
+
+    it('still warns an Explore spawn that pins neither', () => {
+      expectModelWarning(pinned({ subagent_type: 'Explore' }))
+    })
+
+    it('is what the shipped routing rule tells a spawner to do', () => {
+      const rule = readFileSync(join(REPO_ROOT, 'plugin/rules/wt-delegation-routing-at-act.md'), 'utf8').replace(/\s+/g, ' ')
+      expect(rule).not.toMatch(/no per-spawn effort/i)
+      expect(rule).toContain('the Agent tool takes `model` and `effort` per call')
+      expect(rule).toContain('override an agent type\'s frontmatter')
+    })
   })
 
   it('denies an absent subagent type without a reason', () => {
@@ -102,7 +145,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   })
 
   it('accepts stringified tool input', () => {
-    expect(runToolInput(JSON.stringify({ subagent_type: 'workflow-toolbox:wt-chores', prompt: 'Read' })).stdout).toBe('')
+    expect(runToolInput(JSON.stringify({ subagent_type: 'workflow-toolbox:wt-reviewer', prompt: 'Read' })).stdout).toBe('')
   })
 
   it('accepts prompt arrays made of text parts', () => {
@@ -115,7 +158,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   })
 
   it('passes every non-general-purpose type untouched', () => {
-    const result = run('wt-chores', 'Summarize this log.')
+    const result = run('wt-reviewer', 'Summarize this log.')
     expect(result.stdout).toBe('')
     expect(result.journal).toBe('')
   })
@@ -129,7 +172,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   })
 
   it('treats an explicit inherit model as unpinned', () => {
-    expectModelWarning(runToolInput({ subagent_type: 'workflow-toolbox:wt-chores', model: 'inherit', prompt: 'Read' }))
+    expectModelWarning(runToolInput({ subagent_type: 'workflow-toolbox:wt-reviewer', model: 'inherit', prompt: 'Read' }))
   })
 
   it('does not warn when the spawn pins its model', () => {
