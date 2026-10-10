@@ -8,7 +8,7 @@ import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-life
 
 // A phase session is a fresh SDK query: it gets its own MCP server instance over the one lifecycle state.
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
-const PLAN = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 task. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- none: every term has one reading\n'
+const PLAN = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 task. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: runner fixture; unit tests and lint.\nSeams: none: unchanged fixture boundaries.\n## State and recovery\nN/A: no state or data boundary touched by this fixture.\n## Card terms: reading chosen\n- none: every term has one reading\n'
 type Handler = (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }>
 type Server = { instance: { _registeredTools: Record<string, { handler: Handler }> }, sessionServer: (session: number) => Server, state: () => { phase: string }, ledger: () => Record<string, unknown>, timeline: () => Record<string, unknown>, acceptedTransitions: () => Array<{ from: string, next: string, result: string }> }
 
