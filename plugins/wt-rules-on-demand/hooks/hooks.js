@@ -39,6 +39,10 @@ const newSeg = () => `${segOwner}-${Date.now().toString(36)}-${(segSequence++).t
 let sequence = 0;
 let token = newToken();
 const deliveryFields = ({ deliveryId, deliverySeq, servingSeq }) => ({ deliveryId, deliverySeq, servingSeq });
+const applicability = (value, noAct) => ['followed', 'not followed'].includes(value) ? 'applicable'
+  : value === 'not applicable' ? (noAct ? 'no act' : 'not applicable') : 'unknown';
+const measurementFields = (pending) => pending.later
+  ? { later: true, servedDeliveryId: pending.servedDeliveryId ?? null } : { later: false };
 const advancesClose = (previous, closeMark) => closeMark && !(previous?.token === token && previous.seq >= closeMark.seq);
 const logged = new Set();
 const emptyHealth = () => ({ days: {}, lastErrors: [], calls: 0 });
@@ -678,13 +682,15 @@ async function breathe($, slice, budget) {
   slice.start = Date.now();
 }
 function detectorAllowed(ctx, rule, trigger, prompt, errors, budget) {
-  if ((!eligible(ctx, rule) && !ctx.refusing.has(rule.name)) || prompt) return false;
+  if (!detectorNeeded(ctx, rule) || prompt) return false;
   if (budget.exhausted) {
     errors.push({ rule: rule.name, kind: 'tool', pattern: trigger.detector, error: 'shared regex call budget exhausted; detector unevaluated' });
     return false;
   }
   return true;
 }
+const detectorNeeded = (ctx, rule) => eligible(ctx, rule) || ctx.refusing.has(rule.name)
+  || Boolean(rule.compliance?.kind === 'model' && servedAs(ctx, rule));
 
 function detectorInput(trigger, item, report, budget, failure) {
   if (item.input === null) return false;
@@ -853,10 +859,11 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
 }
  async function verdict($, pending, loop, value, evidence, reason, act = {}) {
    const { rule } = pending;
-   const { seq: actSeq, discharged = [] } = act;
+   const { seq: actSeq, discharged = [], noAct } = act;
    const verdictId = `${token}-${++sequence}`;
    const record = { rule: rule.name, ruleIdentity: rule.identity, trigger: pending.trigger, verdict: value, evidence: String(evidence).slice(0, 160), sessionId: await sessionId($), agentId: loop === MAIN ? null : loop, injectedAt: pending.injectedAt, decidedAt: new Date().toISOString(), verdictId, actSeq,
-     ...(pending.deliveryId ? deliveryFields(pending) : {}), ...(discharged.length ? { discharged: discharged.map(deliveryFields) } : {}), ...(reason ? { reason } : {}) };
+      applicability: applicability(value, noAct), ...measurementFields(pending),
+      ...(pending.deliveryId ? deliveryFields(pending) : {}), ...(discharged.length ? { discharged: discharged.map(deliveryFields) } : {}), ...(reason ? { reason } : {}) };
    const turn = writeTurn();
    await turn.previous.catch(() => {});
    try {
@@ -888,6 +895,7 @@ function decideEvaluate(ctx, e, measured) {
 }
 function decideWindow(pending, e, measured, actions, remaining) {
   const c = pending.rule.compliance;
+  consumeInitialModelAct(pending, measured);
   pending.remaining--;
   pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
   if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
@@ -914,6 +922,11 @@ function decideWindow(pending, e, measured, actions, remaining) {
   else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) actions.push({ type: 'verdict', pending, value: pending.testSeen ? 'followed' : 'not followed', evidence: summary(e) });
   else if (pending.remaining <= 0) actions.push({ type: 'close', pending });
   else remaining.push(pending);
+}
+function consumeInitialModelAct(pending, measured) {
+  // A prompt/refusal window's first following call supplies its original act;
+  // opening a later window for that same call would count the retry twice.
+  if (pending.rule.compliance.kind === 'model' && !pending.later && !pending.calls.length) measured.add(pending.rule.name);
 }
 function dischargeMeasured(actions, pending) {
   const owner = actions.find((action) => action.type === 'verdict' && action.pending.rule.name === pending.rule.name);
@@ -947,11 +960,12 @@ function decideNext(ctx, e) {
         try { value = c.requireTool.test(bounded(e.tool)) ? 'followed' : 'not followed'; }
         catch (failure) { value = 'unknown'; error = failure; }
       }
-      records.push({ pending, value, evidence: summary(e), reason: error?.message ?? (matches ? undefined : 'window closed') });
+      records.push({ pending, value, evidence: summary(e), reason: error?.message ?? (matches ? undefined : 'window closed'), noAct: noNextAct(matches, error) });
     }
   }
   return records;
 }
+const noNextAct = (matches, error) => !matches && !error;
 function terminalNext(ctx, pending) {
   if (pending.terminal) return false;
   pending.terminal = true;
@@ -970,13 +984,18 @@ function detachNext(ctx) {
 }
  async function close($, pending, loop, reason = 'window closed', actSeq) {
   const c = pending.rule.compliance;
+  if (emptyModelWindow(c, pending)) {
+    await safeVerdict($, pending, loop, c.onClose, 'no following calls', reason, { seq: actSeq, noAct: true });
+    return;
+  }
   if (c.kind === 'model') {
     try {
        const v = await $.model.classify([pending.rule.content, c.prompt, ...pending.calls.map((call) => call.detail)].join('\n'), ['followed', 'not followed', 'not applicable'], { model: c.model });
          await safeVerdict($, pending, loop, v || 'unknown', pending.calls.map((call) => call.summary).join(' | ') || 'no following calls', v === 'not applicable' ? c.onClose : undefined, { seq: actSeq });
        } catch (error) { await safeVerdict($, pending, loop, 'unknown', '', error.message, { seq: actSeq }); }
-     } else await safeVerdict($, pending, loop, c.onClose, pending.calls.at(-1)?.summary ?? 'no governed act', reason, { seq: actSeq });
+      } else await safeVerdict($, pending, loop, c.onClose, pending.calls.at(-1)?.summary ?? 'no governed act', reason, { seq: actSeq, noAct: true });
 }
+const emptyModelWindow = (c, pending) => c.kind === 'model' && !pending.calls.length;
 // A served declarative rule judges every act it governs, like a named check does while served.
 function servedVerdict(c, e) {
   if (c?.kind === 'bash-command') return { verdict: isGovernedAct(c, e) ? bashCommandVerdict(c, bounded(e.command ?? '')) : null, matchError: null };
@@ -993,16 +1012,32 @@ function servedVerdict(c, e) {
          deliveryId: `${token}-${deliverySeq}`, deliverySeq, servingSeq: admission,
          calls: event && rule.compliance.kind === 'model' ? [{ detail: `${event.tool}: ${bounded(textOf(event) ?? '')}`, summary: summary(event) }] : [], testSeen: false };
        opened.push(pending);
+       rememberDelivery(ctx, rule, pending);
        if (rule.compliance.kind === 'next-call') { pending.terminal = false; ctx.nextWindows.add(pending); }
       else ctx.pending.push(pending);
     }
     return opened;
 }
+function rememberDelivery(ctx, rule, pending) {
+  const state = servedAs(ctx, rule);
+  if (state) state.deliveryId = pending.deliveryId;
+}
+function perActPending(ctx, rule, e, first = false) {
+  return { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString(),
+    later: !first, servedDeliveryId: servedAs(ctx, rule)?.deliveryId ?? null };
+}
+function openLaterModels(ctx, chosen, ride, e, measured) {
+  for (const rule of chosen) {
+    if (rule.compliance?.kind !== 'model' || ride.includes(rule) || measured.has(rule.name) || !servedAs(ctx, rule)) continue;
+    ctx.pending.push({ ...perActPending(ctx, rule, e), remaining: rule.compliance.window,
+      calls: [{ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) }], testSeen: false });
+  }
+}
  async function closeCorrelation($, ctx, loop, actSeq) {
   const events = [...ctx.correlation, { kind: 'turn' }];
   const slice = { start: Date.now() };
     for (const rule of ctx.rules ?? []) if (await breathe($, slice), rule.compliance?.kind === 'turn-correlation' && servedAs(ctx, rule)) {
-      try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail, { seq: actSeq }); }
+      try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, correlationPending(ctx, rule), loop, item.verdict, item.id, item.detail, { seq: actSeq }); }
      catch (error) { await notice($, `${rule.name}: correlation failed: ${error.message}`).catch(() => {}); }
    }
   ctx.correlation = [];
@@ -1224,6 +1259,7 @@ function* refusalSteps($, ctx, before, e, loop, admission) {
     yield* unregisteredSteps($, before, e, loop, admission);
     const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.', ...before.map(block)].join('\n\n') };
     claim(ctx, before);
+    for (const pending of injected) rememberDelivery(ctx, pending.rule, pending);
     return result;
   } finally { for (const rule of before) { const count = ctx.refusing.get(rule.name) - 1; if (count) ctx.refusing.set(rule.name, count); else ctx.refusing.delete(rule.name); } }
 }
@@ -1242,9 +1278,27 @@ const ridingRules = (chosen, ctx) => chosen.filter((rule) => !ctx.refusing.has(r
 function* checkSteps($, { ctx, e, loop, admission, slice, budget }, rules, classified) {
   for (const rule of rules) if (yield breathe($, slice, budget), rule.compliance?.kind === 'check' && servedAs(ctx, rule)) {
     for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
-      yield safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
+      yield safeVerdict($, perActPending(ctx, rule, e, firstRecord(ctx, rule)), loop,
         item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e), undefined, { seq: admission });
   }
+}
+
+const callFirst = (ctx, rule, admission) => servedAs(ctx, rule)?.servingSeq === admission;
+// Named checks and turn-correlation open no delivery window: their first record in a context is the
+// initial measurement whatever channel served the text (ride-along, refusal, prompt).
+function firstRecord(ctx, rule) {
+  const state = servedAs(ctx, rule);
+  const first = !state?.recorded;
+  if (state) state.recorded = true;
+  return first;
+}
+const correlationPending = (ctx, rule) => {
+  const first = firstRecord(ctx, rule);
+  return { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString(), later: !first,
+    servedDeliveryId: servedAs(ctx, rule)?.deliveryId ?? null };
+};
+function markServing(ctx, rules, admission) {
+  for (const rule of rules) servedAs(ctx, rule).servingSeq = admission;
 }
 
 function* servedSteps($, { ctx, e, loop, admission, slice, budget }, rules, measured) {
@@ -1254,7 +1308,7 @@ function* servedSteps($, { ctx, e, loop, admission, slice, budget }, rules, meas
     if (value === null) continue;
     const discharged = ctx.pending.filter((pending) => pending.rule === rule);
     ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
-    if (!measured.has(rule.name)) yield safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError, { seq: admission, discharged });
+    if (!measured.has(rule.name)) yield safeVerdict($, perActPending(ctx, rule, e, callFirst(ctx, rule, admission)), loop, value, summary(e), matchError, { seq: admission, discharged });
   }
 }
 
@@ -1267,7 +1321,9 @@ function* toolResultSteps($, call, next, rules, chosen, measured) {
   const acts = toolActs(rules, e, chosen);
   const ride = ridingRules(chosen, ctx);
   if (ride.length) claim(ctx, ride);
+  markServing(ctx, ride, admission);
   const injected = inject(ctx, ride, `tool.call:${e.tool}`, admission, e);
+  openLaterModels(ctx, chosen, ride, e, measured);
   yield journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
   const classified = classify(e.tool, e.input ?? e);
   yield* checkSteps($, call, rules, classified);
@@ -1289,7 +1345,7 @@ async function toolCallWork($, e, next) {
   const nextRecords = existing ? decideNext(existing, e) : [];
   const ctx = await context($, loop);
   const rules = await rulesFor($, ctx, e.cwd ?? '.');
-  for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission });
+  for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission, noAct: record.noAct });
   const measured = new Set();
   await evaluate($, ctx, e, loop, measured, admission);
   const triggerErrors = [];
