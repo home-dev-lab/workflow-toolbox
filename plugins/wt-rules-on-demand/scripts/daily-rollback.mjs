@@ -12,6 +12,12 @@ import { provisionalPass, provisionalProjectRoots, reportExcludedProjects, check
 import { rollbackOutcomeLines } from './rollback-output.mjs';
 import { serveWindowHours } from './serve-confirmation.mjs';
 
+async function recordStaticPrefix(target, result) {
+  await mkdir(target, { recursive: true });
+  await atomicLatest(join(target, 'static-prefix-latest.json'), { ...result.staticPrefix, finishedAt: result.finishedAt });
+  await appendPrefixHistory(join(target, 'static-prefix-history.jsonl'), historyRecord(result.staticPrefix, result.finishedAt));
+}
+
 export async function dailyRollback(options) {
   const startedAt = new Date().toISOString();
   const config = options.configDirs[0];
@@ -105,9 +111,7 @@ export async function dailyRollback(options) {
        if (missingConfigDirs.includes(dir)) continue;
        try {
          const target = await assertSafeDataDir(qualityDataDir(dir, {}));
-         await mkdir(target, { recursive: true });
-         await atomicLatest(join(target, 'static-prefix-latest.json'), { ...result.staticPrefix, finishedAt: result.finishedAt });
-         await appendPrefixHistory(join(target, 'static-prefix-history.jsonl'), historyRecord(result.staticPrefix, result.finishedAt));
+         await recordStaticPrefix(target, result);
        } catch (error) { result.staticPrefix.recordError = `${dir}: ${error.message}`; }
      }
      if (result.staticPrefix.status === 'over' && process.env.WT_ROD_DAILY !== '1') {
