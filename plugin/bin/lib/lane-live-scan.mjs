@@ -22,10 +22,20 @@ export function isLiveSandboxedLane(record, verdict) {
     && ['running', 'decision-needed'].includes(verdict?.status)
 }
 
+// A parent link is trusted only when the parent did not start after the child, where both rows carry a
+// numeric start time: Windows keeps a dead parent's id in ParentProcessId, and that id can be reused.
+export function isTrueParent(parent, child) {
+  if (!parent || !child || !Number.isSafeInteger(parent.pid) || child.ppid !== parent.pid) return false
+  const [p, c] = [parent.startTime, child.startTime]
+  return !(Number.isFinite(p) && Number.isFinite(c) && p > c)
+}
+
 export function laneDescendantPids(rootPids, processes) {
+  const byPid = new Map(processes.filter((row) => Number.isSafeInteger(row?.pid)).map((row) => [row.pid, row]))
   const children = new Map()
   for (const row of processes) {
     if (!Number.isSafeInteger(row?.ppid)) continue
+    if (byPid.has(row.ppid) && !isTrueParent(byPid.get(row.ppid), row)) continue
     if (!children.has(row.ppid)) children.set(row.ppid, [])
     children.get(row.ppid).push(row.pid)
   }
