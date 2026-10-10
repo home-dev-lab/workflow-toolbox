@@ -2,6 +2,7 @@
 name: lean
 description: "Minimal-ambient-context agentType for stateless PURE-REASONING fan-out roles (classify, vote/judge, score, dedup, synthesize) whose entire task content arrives inline in the prompt and that never need to read a file, run a command, or call any tool. Empty `tools` allowlist strips the ambient tool/skill/MCP injection every default subagent otherwise pays for as a cache-write on every spawn. @workflow-toolbox/patterns routes its lean-eligible roles here BY DEFAULT via withLeanRouting; a role that must inspect the repo, re-derive from an actual diff, or use any tool is NOT a fit — leave it on the standard subagent or workflow-toolbox:leaf. A workflow can opt a role back onto a capable type per-role (agentTypes.<role>) or blanket (a custom perAgent.agentType)."
 tools: []
+omitClaudeMd: true
 disallowedTools: SendMessage
 ---
 

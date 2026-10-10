@@ -3,6 +3,7 @@ name: wt-reviewer
 description: Use for an adversarial, read-only review of one plan or diff when correctness, missing cases, trust boundaries, and test strength need independent scrutiny before integration.
 model: opus
 effort: xhigh
+omitClaudeMd: true
 tools: Read, Grep, Glob
 ---
 

@@ -2,6 +2,7 @@
 name: leaf-readonly
 description: "Fenced agentType for toolkit-spawned worker roles that must READ the repository but must never change it (survey, ground, audit, locate, verify-by-reading). Declares an explicit `tools:` ALLOW-LIST rather than subtracting from the default surface — subtraction cannot cover a tool surface that grows, since every MCP server a user installs adds tools no definition mentions. Sits between `lean` (zero tools, pure reasoning on inline content) and `leaf` (every tool except messaging). Choose this one whenever the role's output is knowledge rather than a change."
 tools: Read, Grep, Glob
+omitClaudeMd: true
 disallowedTools: SendMessage
 ---
 

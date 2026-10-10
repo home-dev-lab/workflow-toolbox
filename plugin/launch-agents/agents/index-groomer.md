@@ -2,6 +2,7 @@
 name: index-groomer
 description: Knowledge-base index line compressor. Spawn when a length probe flags many over-150-char HISTORICAL index lines (lines the current checkpoint did not touch). Assumes a one-line-per-fact index convention with a ~150-char budget (e.g. an auto-memory `MEMORY.md`) — skip this agent if the project's index follows a different shape. Reads each flagged line's linked fiche BODY and proposes a <=150-char replacement hook that preserves recall value. PROPOSE-ONLY — it never edits; the spawning session reviews and applies.
 tools: Read, Grep, Glob
+omitClaudeMd: true
 effort: low
 ---
 
