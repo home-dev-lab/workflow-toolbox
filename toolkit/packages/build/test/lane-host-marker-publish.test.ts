@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 // @ts-expect-error ESM runtime module
@@ -73,7 +73,10 @@ it('keeps a first writer\'s marker where the file system refuses hard links, wha
 it('publishes the marker where the file system refuses hard links', () => {
   const f = fixture()
   ensureLaneHostDir(f.worktree, { markerFs: markerFs({ linkSync: () => { throw failure('EINVAL') } }) })
-  expect(readFileSync(f.marker(), 'utf8')).toBe(`${f.worktree}\n`)
+  const marker = readFileSync(f.marker(), 'utf8')
+  expect(marker.endsWith('\n')).toBe(true)
+  expect(isAbsolute(marker.slice(0, -1))).toBe(true)
+  expect(realpathSync.native(marker.slice(0, -1))).toBe(realpathSync.native(f.worktree))
   expect(f.staged()).toEqual([])
 })
 
