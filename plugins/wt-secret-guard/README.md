@@ -159,6 +159,38 @@ This assumes Atrium treats redaction tokens as literal message text; it does not
 
 Clean messages pass unchanged, including long numbers containing a short held PIN. Storage repair replaces individual secret spans with JSON-escaped tokens, pads by bytes, and validates the modified record before writing. A token too large for its stored span refuses repair and leaves the original record intact; the failure notice says a raw value may remain.
 
+## Redaction tokens in persisted writes (warn-only)
+
+A classic PreToolUse command hook counts redaction-token-shaped strings in Write content,
+Edit replacement text, MultiEdit replacements, NotebookEdit insert/replace source, git commit
+message values, stdin heredocs and bounded message files, and supported Atrium speak/amend/edit inputs (including
+the speak alias). It does not scan other Bash commands, where an issued token can intentionally
+be rehydrated. Notebook deletion persists no text. Unreadable, non-regular, oversized (over
+1 MiB), editor, template, dynamically expanded and piped message sources are classified as unscannable.
+Dry-run commits persist nothing and produce no finding. Shell input redirections use the shell working
+directory, including preceding literal `cd` commands; Git message files additionally apply `git -C`.
+
+Deliberate quotations are exempt only in the guard's own tests, fixtures and docs: paths
+resolved against the hook working directory below `/plugins/wt-secret-guard/` in a source tree or
+`/wt-secret-guard/<version>/` in an installed cache, where the version has three numeric components.
+Below that location they require a `test/`, `tests/`,
+`fixtures/` or `docs/` segment, a `*.test.*` or `*.selftest.*` basename, or `README.md` or
+`CHANGELOG.md`. Resolution is lexical; symlinks are not resolved. Findings are still counted for
+exempt files. Implementation files are not exempt.
+
+The hook **never blocks**. Its context arrives on the model's next request, after the write
+has run, and asks it to repair the file, commit message, card or chat message now. Replace each
+token with the plain word intended, or use a neutral paraphrase/removal if unknown; never guess
+a hidden value. The warning includes only counts and fixed labels, never a token or secret.
+Check a file with `grep -nE 'secret:[a-z-]+#[a-f0-9]{6}' <file>` and repair each hit.
+
+Promote an individual surface to denial only over the **same seven-day window after deployment**:
+at least 20 de-duplicated **executed** firings from at least five distinct sessions, found by replaying
+the session transcripts and each adjudicated from masked context, with zero false firings. A false
+firing is a deliberate quote, or matched text that was not a token the guard produced. Zero false
+firings out of 20 still permits a false-firing rate of about 14% (one-sided 95%). Atrium surfaces go
+first, file surfaces last. A future refusal must name the grep-and-repair command that satisfies it.
+
 ## Context limitation
 
 This marketplace plugin cannot mask secrets already present in `CLAUDE.md` or other first-message context blocks. Claude Code computes those blocks in `prompt.context`, but its prepend-tier security plugin bypasses the entire user-plugin tier for that event. Marketplace plugins are user-tier, so registering a handler appears valid but the handler does not run, including in `-p` sessions. The host still records and sends the original block.

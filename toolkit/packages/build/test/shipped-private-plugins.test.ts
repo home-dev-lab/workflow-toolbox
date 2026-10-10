@@ -33,6 +33,16 @@ describe('shipped private plugins', () => {
       expect(selftest.status, selftest.stderr || selftest.stdout).toBe(0)
     })
 
+    // The plugin's command-hook binaries carry their own node:test locks; run them where they live
+    // so the plugin stays dependency-free.
+    it(`${plugin} bin node tests pass`, () => {
+      const binDir = join(REPO_ROOT, 'plugins', plugin, 'bin')
+      const tests = readdirSync(binDir).filter((name) => name.endsWith('.test.mjs')).map((name) => join(binDir, name))
+      if (tests.length === 0) return
+      const run = spawnSync(process.execPath, ['--test', '--test-timeout=60000', ...tests], { cwd: REPO_ROOT, encoding: 'utf8' })
+      expect(run.status, `${run.stdout}\n${run.stderr}`.slice(-12_000)).toBe(0)
+    }, process.platform === 'win32' ? 90_000 : 45_000)
+
     for (const lock of [
       'F1 range writer parses modified record before any write',
       'F1 storage preserves JSON lines and masks values shorter than their token',

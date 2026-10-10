@@ -7,6 +7,18 @@
     "email": "fthomas@apache.org"
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|mcp__plugin_atrium_atrium__speak|mcp__plugin_atrium_atrium__amend_held_message|mcp__plugin_atrium_atrium__edit_message|mcp__atrium__speak",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/redaction-token-write-warn.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
