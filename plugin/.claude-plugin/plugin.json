@@ -331,16 +331,6 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Skill",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-skill-size-guard-hook.mjs\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-work-journal-hook.mjs\"", "timeout": 10 }]
       },

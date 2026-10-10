@@ -535,13 +535,6 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
           content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
         },
       }
-    case 'wt-skill-size-guard-hook.mjs':
-      return {
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Skill',
-        cwd: sandbox.projectDir,
-        tool_input: { skill: 'missing-selftest-skill' },
-      }
     default:
       throw new Error(`No synthetic payload defined for ${file}`)
   }
@@ -603,10 +596,6 @@ describe('plugin hook crash safety', () => {
 
         expect(result.error, `${basename(hookPath)} should not hang or fail to spawn`).toBeUndefined()
         expect(result.status, `${basename(hookPath)} exited via signal`).not.toBeNull()
-        if (basename(hookPath) === 'wt-skill-size-guard-hook.mjs') {
-          expect(result.status, 'skill-size warning hook must always fail open').toBe(0)
-          expect(result.stderr).toBe('')
-        }
         expect(
           hasUncaughtExceptionStack(result.stderr),
           `${basename(hookPath)} crashed with stderr:\n${result.stderr}`,

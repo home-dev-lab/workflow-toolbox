@@ -578,36 +578,25 @@ Measured against 163 distinct real Bash commands referencing `PIPESTATUS`, drawn
 
 It deliberately does not cover: the zsh-correct form `$pipestatus[1]` (lowercase) — deliberately silent, that is the fix; `PIPESTATUS` appearing only in prose; a shell environment where `PIPESTATUS` is genuinely bash and genuinely correct — the guard cannot see which shell interprets a given command, so it warns unconditionally regardless of the actual shell; or any command other than a Bash tool_use.
 
-### `wt-skill-size-guard-hook.mjs` — large main-session skill warning (PreToolUse on Skill)
+### Skill body size — authoring-time report
 
-Warn-only probation: a main-session `Skill` invocation above **8000 Unicode characters**
-in its complete `SKILL.md` receives additional context naming the skill, size, path and
-re-injection cost after every compaction. Use `Read` on the needed section or delegate to
-a sub-agent. `WT_SKILL_SIZE_WARN_CHARS` overrides the threshold with a non-negative integer;
-invalid values fall back to 8000. A present `agent_id` suppresses the warning entirely.
-Personal skills in `CLAUDE_CONFIG_DIR` (default OS home + `.claude`) take precedence
-over project skills. Enterprise precedence is documented, but no managed skills directory
-is specified in the available documentation evidence; enterprise resolution is unknown.
-The project root wins for bare names; `apps/web:deploy` selects the nested directory's
-skill. Bare names fall back to nested ancestors only after personal and root lookup.
-Namespaced plugin skills use frontmatter `name` (directory name only if absent), the loaded plugin root or applicable
-`installed_plugins.json` installation. Ambiguous, unresolved and custom-layout skills
-pass silently. For another plugin, the hook cannot see its loaded `--plugin-dir`, so
-an installed copy may win over the loaded copy; this limitation remains warning-only.
-Only regular files are read through nonblocking-open descriptors, and a resolved
-`SKILL.md` must remain inside its root's real `skills/` directory with matching
-descriptor/path device and inode. Files at or below the byte threshold are not read;
-above four times the threshold, a no-read warning reports at least `floor(bytes / 4)`
-characters. Intermediate files are counted by Unicode code points without a character
-array. JSON above 1 MiB is unreadable; plugin frontmatter reads stop at 4 KiB per candidate.
-Stalled network filesystem calls rely on the harness's 5 s timeout, which abandons
-the warning hook and lets the Skill call proceed; synchronous Node calls cannot bound NFS stat.
-Windows per-directory case sensitivity may cause a missed or extra warning, never a block.
-Internal errors emit nothing and exit 0; stderr is always empty. The hook writes no
-guard journal: probation is counted from warning text in session transcripts.
-Review after 20 clean real-session firings; promotion is never automatic. This measures
-Unicode code points, not tokens or supporting reference files. Global
-`WT_GUARD_MODE=observe` suppresses notices.
+`pnpm quality` reports every shipped `plugin/skills/*/SKILL.md` above **8000 Unicode
+characters**, naming the directory and exact size. Move sections to `references/`
+and keep the body short: invoked skill bodies are re-injected after every compaction.
+In a main session, read the needed section or delegate large reference work.
+`WT_SKILL_SIZE_WARN_CHARS` accepts a non-negative safe integer (including zero);
+unparsable values fall back to the shared 8000-character default.
+
+This check is report-only because existing shipped bodies exceed the default. It counts
+the complete UTF-8-decoded file by Unicode code points, including frontmatter and line
+endings, rather than bytes, tokens, or supporting reference files. It scans only immediate
+real skill directories, skipping symlinked directories/junctions and linked/nonregular
+bodies. Filesystem read errors still fail the quality command; oversized bodies do not.
+The adopt installer has no user/project skill-directory scan, so it does not report their
+sizes. Nothing runs on a `Skill` call: measurement happens only in the authoring gate,
+avoiding invocation-time filesystem latency. Windows/macOS use native Node path handling;
+CRLF files count the extra carriage returns. Concurrent filesystem replacement is not
+guarded by this content check.
 
 ### `wt-find-newermt-format-guard-hook.mjs` — non-ISO-8601 `find -newermt` argument warner (PreToolUse on Bash)
 

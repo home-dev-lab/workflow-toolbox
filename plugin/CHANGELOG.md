@@ -5,10 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-- Add a warn-only PreToolUse `Skill` size guard for main sessions: above 8000 characters
-  (`WT_SKILL_SIZE_WARN_CHARS` override), name repeated compaction cost and recommend
-  reading the needed `SKILL.md` section or delegating. Sub-agent calls and resolution
-  failures pass silently; delegation-chain now carries the same guidance.
+- Report shipped `SKILL.md` bodies above 8000 Unicode characters in `pnpm quality`
+  (`WT_SKILL_SIZE_WARN_CHARS` override), with sizes and guidance to move sections to
+  `references/` and keep the body short. This is informational while existing shipped
+  bodies exceed the default. The invocation-time `wt-skill-size-guard` hook was removed
+  before release to avoid adding latency to Skill calls. Adopt has no user/project
+  skill-directory scan; delegation-chain retains section-scoped reading/delegation guidance.
 
 - Adopted script launchers now inline smaller resolver and execution helpers under the owner quality limits. The toolbox quality gate also checks changed code against its Git base at complexity 10, 40 lines per function, and no explicit TypeScript `any`, while preserving unchanged or shrinking legacy violations.
 ### Changed

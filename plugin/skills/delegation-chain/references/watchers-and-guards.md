@@ -8,7 +8,6 @@ only informative within the scope it actually covers.
 
 | Tool | Watches | Does NOT cover |
 |---|---|---|
-| `wt-skill-size-guard-hook.mjs` (PreToolUse on `Skill`, warn-only probation) | main-session invocations whose resolved `SKILL.md` exceeds 8000 characters (`WT_SKILL_SIZE_WARN_CHARS` overrides); names repeated compaction cost and `Read`/delegate alternatives | sub-agent calls, unresolved or custom-layout skills, supplementary references, token counts; internal errors fail open |
 | the arc watcher (`--project`, `--reports`, `--stale`, `--poll`) | transcript/journal staleness against recorded spawns, correlating by identifier first and declared name as fallback | a spawn record with neither an identifier nor a name; an unrecognized flag now fails LOUD (non-zero exit, one line naming the flag, written to stdout — not stderr, so redirecting stderr away still shows it, but merging streams the other way loses it) rather than silently starting degraded |
 | the liveness file (three-tier `agentId` cascade — Section 1) | idle-mid-mission vs. genuinely finished, per delegate, via `waitingOn`/`complete` fields the delegate itself updates | it is OPTIONAL coverage a short ordinary run can skip entirely, and nothing forces a delegate to keep it current — a file left at `waitingOn:"spawner"` after the answer already arrived misleads a reader exactly as much as one genuinely stuck there |
 | the observer-pairing checker (`wt-check-observer-pairing.mjs`), fired automatically after every `Agent` spawn by a `PostToolUse` guard hook | whether a spawned agent's declared observer actually attached, keyed primarily on a harness-written ownership link between the two agents' own metadata, falling back to a declared `--name` | its fallback path requires a `--name` — an ANONYMOUS delegate (the exact shape a lane-delegating one must use, per Section 1) is unverifiable through the fallback; only the metadata-link path covers it |
@@ -29,3 +28,4 @@ project- and machine-specific by nature (which watchers exist, on what schedule,
 delegates) and does not belong in this document; consult whatever your environment brief names
 as its watcher registry, and if none is named, treat coverage as UNKNOWN rather than assuming
 either "watched" or "unwatched" from silence.
+
