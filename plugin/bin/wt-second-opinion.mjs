@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Admission publishes PENDING (no EXIT line) before importing trusted policy code.
-// Policy runs in a worker terminated at the deadline, including synchronous loops.
-// Completely unwritable/unreplaceable output is
-// unsupported for file-only completion; request aliases are preserved unchanged.
+// The admission policy is TRUSTED code with the CLI's own privileges; its worker bounds TIME and isolates accidental failure, not access (it is not a sandbox).
+// Deliberate interference, such as installing exception handlers, forging worker messages, spawning children that outlive the worker or blocking in native code, is outside what this check can catch.
+// Admission first publishes PENDING without EXIT; wholly unwritable/unreplaceable output cannot support file-only completion, and request aliases remain unchanged.
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from './lib/host/second-opinion-filesystem.mjs'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'

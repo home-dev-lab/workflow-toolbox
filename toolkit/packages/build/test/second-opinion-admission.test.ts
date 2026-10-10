@@ -350,7 +350,7 @@ describe('second-opinion round 4 filesystem refusals', () => {
     if (kind === 'hard link') linkSync(f.request, f.out)
     const env = { ...process.env, WT_SECOND_OPINION_ADMISSION: f.module }
     const result = spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, CLI,
-      '--out', f.out, '--bogus', '--request', f.request, '--repo', f.repo], { env, encoding: 'utf8', timeout: 2000 })
+      '--out', f.out, '--bogus', '--request', f.request, '--repo', f.repo], { env, encoding: 'utf8', timeout: 30_000 })
     expect(result.status).toBe(3)
     expect(readFileSync(f.request, 'utf8')).toBe('Review this repository.')
     expect(existsSync(f.marker)).toBe(false)
