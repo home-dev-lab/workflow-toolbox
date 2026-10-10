@@ -37,9 +37,9 @@ function fixture(source = 'export default () => null') {
   return { root, repo, request, module, marker, out, loader }
 }
 
-function launch(f: ReturnType<typeof fixture>, admission: string | undefined, relative = false, omitRepo = false, extra: string[] = [], timeout = 10_000) {
+function launch(f: ReturnType<typeof fixture>, admission: string | undefined, relative = false, omitRepo = false, extra: string[] = [], timeout = 10_000, admissionTimeout = 100) {
   const env = { ...process.env }
-  env.WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS = '100'
+  env.WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS = String(admissionTimeout)
   delete env.WT_SECOND_OPINION_ADMISSION
   if (admission !== undefined) env.WT_SECOND_OPINION_ADMISSION = admission
   const args = ['--request', relative ? './request.md' : f.request, '--out', f.out]
@@ -96,20 +96,25 @@ describe('second-opinion CLI admission', () => {
 function forceTemporaryCollision(f: ReturnType<typeof fixture>) {
   const wrapper = `\nfunction writeFileSync(file, text, options) {
     if (file === ${JSON.stringify(f.out)}) throw new Error('forced direct write failure');
-    if (options?.flag === 'wx') {
+    if (options?.flag === 'wx') return collide(file);
+    return nativeWriteFileSync(file, text, options);
+  }
+  function openSync(file, flags, mode) {
+    if (flags === 'wx') return collide(file);
+    return nativeOpenSync(file, flags, mode);
+  }
+  function collide(file) {
       nativeWriteFileSync(file, 'FOREIGN REQUEST');
       nativeWriteFileSync(${JSON.stringify(join(f.root, 'collision-path'))}, file);
       throw Object.assign(new Error('collision'), { code: 'EEXIST' });
-    }
-    return nativeWriteFileSync(file, text, options);
   }`
   writeFileSync(f.loader, readFileSync(f.loader, 'utf8') + `
-    import { readFileSync } from 'node:fs';
+    import { readFileSync, openSync as nativeOpenSync } from 'node:fs';
     const originalLoad = load;
     export { collisionLoad as load };
     async function collisionLoad(url, context, next) {
       if (url === ${JSON.stringify(pathToFileURL(CLI).href)}) {
-        const source = readFileSync(new URL(url), 'utf8').replace('writeFileSync }', 'writeFileSync as nativeWriteFileSync }');
+        const source = readFileSync(new URL(url), 'utf8').replace('writeFileSync }', 'writeFileSync as nativeWriteFileSync }').replace('openSync,', '');
         return { format: 'module', shortCircuit: true, source: source + ${JSON.stringify(wrapper)} };
       }
       return originalLoad(url, context, next);
@@ -133,7 +138,7 @@ describe('second-opinion admission round 3 publication', () => {
     const source = kind === 'module import' ? 'while (true) {} ; export default () => null' : 'export default () => { while (true) {} }'
     const f = fixture(source)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
-    const result = launch(f, f.module, false, false, [], 1000)
+    const result = launch(f, f.module, false, false, [], 1000, 5000)
     expect(result.signal).toBe('SIGKILL')
     expect(readFileSync(f.out, 'utf8')).toContain('PENDING: WT_SECOND_OPINION_ADMISSION')
     expect(readFileSync(f.out, 'utf8').includes('EXIT=')).toBe(false)
@@ -279,5 +284,75 @@ describe('second-opinion admission file identity', () => {
     expect(input).toEqual(JSON.parse(readFileSync(f.marker, 'utf8')))
     expect(input.repo).toBe(canonicalRepo)
     expect(input.request).toBe(canonicalRequest)
+  })
+})
+
+describe('second-opinion worker containment', () => {
+  it.each([
+    ['detached rejection plus null', 'export default () => { Promise.reject(new Error("detached failed")); return null }', 'detached failed'],
+    ['import detached rejection plus null', 'Promise.reject(new Error("import detached failed")); export default () => null', 'import detached failed'],
+    ['late callback exception plus null', 'export default () => { setTimeout(() => { throw new Error("late failed") }, 20); return null }', 'late failed'],
+    ['clean worker exit without verdict', 'export default () => { process.exit(0) }', 'without a verdict'],
+    ['worker crash', 'export default () => { process.exit(7) }', 'exited'],
+    ['synchronous infinite loop', 'export default () => { while (true) {} }', 'timed out'],
+  ])('contains %s before dispatch', (_kind, source, cause) => {
+    const f = fixture(source)
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    const started = performance.now()
+    expectRefusal(f, f.module, cause)
+    expect(performance.now() - started < 2000).toBe(true)
+  })
+})
+
+function forceCreatedWriteFailure(f: ReturnType<typeof fixture>) {
+  const wrapper = `
+    import { openSync as nativeOpenSync, appendFileSync as record } from 'node:fs';
+    function openSync(file, flags, mode) {
+      const fd = nativeOpenSync(file, flags, mode);
+      if (flags === 'wx') record(${JSON.stringify(join(f.root, 'created-paths'))}, file + '\\n');
+      return fd;
+    }
+    function writeFileSync(file, text, options) {
+      if (file === ${JSON.stringify(f.out)}) throw new Error('direct write failed');
+      if (options?.flag === 'wx') {
+        nativeWriteFileSync(file, '', options);
+        record(${JSON.stringify(join(f.root, 'created-paths'))}, file + '\\n');
+      }
+      throw new Error('created then write failed');
+    }`
+  const loader = readFileSync(f.loader, 'utf8').replace('export async function load', 'async function load')
+  writeFileSync(f.loader, loader + `
+    import { readFileSync } from 'node:fs';
+    export async function failureLoad(url, context, next) {
+      if (url !== ${JSON.stringify(pathToFileURL(CLI).href)}) return load(url, context, next);
+      const source = readFileSync(new URL(url), 'utf8').replace('writeFileSync }', 'writeFileSync as nativeWriteFileSync }').replace('openSync,', '');
+      return { format: 'module', shortCircuit: true, source: source + ${JSON.stringify(wrapper)} };
+    }
+    export { failureLoad as load };
+  `)
+}
+
+describe('second-opinion round 4 filesystem refusals', () => {
+  it('removes owned temporary files when writing after creation fails', () => {
+    const f = fixture()
+    forceCreatedWriteFailure(f)
+    expect(launch(f, f.module).status).toBe(3)
+    const created = readFileSync(join(f.root, 'created-paths'), 'utf8').trim().split('\n')
+    expect(created.length > 0).toBe(true)
+    for (const file of created) expect(existsSync(file)).toBe(false)
+    expect(existsSync(f.marker)).toBe(false)
+  })
+
+  it.each(['same path', 'symlink', 'hard link'])('preserves %s when parse error precedes request', (kind) => {
+    const f = fixture()
+    if (kind === 'same path') f.out = f.request
+    if (kind === 'symlink') symlinkSync(f.request, f.out)
+    if (kind === 'hard link') linkSync(f.request, f.out)
+    const env = { ...process.env, WT_SECOND_OPINION_ADMISSION: f.module }
+    const result = spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, CLI,
+      '--out', f.out, '--bogus', '--request', f.request, '--repo', f.repo], { env, encoding: 'utf8', timeout: 2000 })
+    expect(result.status).toBe(3)
+    expect(readFileSync(f.request, 'utf8')).toBe('Review this repository.')
+    expect(existsSync(f.marker)).toBe(false)
   })
 })

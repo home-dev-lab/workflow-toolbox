@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 // Admission publishes PENDING (no EXIT line) before importing trusted policy code.
-// An in-process deadline cannot preempt a synchronous infinite loop; external
-// termination leaves PENDING. Completely unwritable/unreplaceable output is
+// Policy runs in a worker terminated at the deadline, including synchronous loops.
+// Completely unwritable/unreplaceable output is
 // unsupported for file-only completion; request aliases are preserved unchanged.
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { Worker } from 'node:worker_threads'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 
-const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.\nWT_SECOND_OPINION_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env }) returns null to admit or a non-empty refusal string (exit 3); configuration or module failures refuse too. Canonical repo/request paths are shared with launch; out must not name the request. Import and admission have a 10000 ms deadline, overridable with WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS (positive integer, maximum 2147483647); synchronous policy code must not block the event loop.'
+const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.\nWT_SECOND_OPINION_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env }) returns null to admit or a non-empty refusal string (exit 3); configuration or module failures refuse too. Canonical repo/request paths are shared with launch; out must not name the request. Import, admission and clean worker exit have a 10000 ms deadline, overridable with WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS (positive integer, maximum 2147483647); expiry terminates the policy worker, including synchronous loops.'
 
 function parseArgs(argv) {
   const options = { effort: 'medium', route: 'auto', repo: process.cwd() }
@@ -51,22 +51,6 @@ function removeSignalListeners() {
   for (const [signal, listener] of signalListeners) process.removeListener(signal, listener)
 }
 
-async function admissionRefusal({ repo, request }, env) {
-  const variable = 'WT_SECOND_OPINION_ADMISSION'
-  const modulePath = env[variable]
-  if (!path.isAbsolute(modulePath)) return `${variable}: must name an absolute ES module path`
-  try {
-    const { default: admit } = await import(pathToFileURL(modulePath).href)
-    if (typeof admit !== 'function') return `${variable}: default export must be a function`
-    const result = await admit({ repo, request, env })
-    if (result === null) return null
-    if (typeof result === 'string' && result.trim()) return `${variable}: ${result}`
-    return `${variable}: admit must return null or a non-empty string`
-  } catch (error) {
-    return `${variable}: admission module failed: ${formatError(error)}`
-  }
-}
-
 function formatError(error) {
   try { return String(error instanceof Error ? error.message : error) } catch { return 'unprintable thrown value' }
 }
@@ -77,16 +61,42 @@ async function boundedAdmission(options, env) {
   if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 2_147_483_647) {
     return `WT_SECOND_OPINION_ADMISSION: ${variable} must be a positive integer no greater than 2147483647`
   }
-  let timer
+  if (!path.isAbsolute(env.WT_SECOND_OPINION_ADMISSION)) return 'WT_SECOND_OPINION_ADMISSION: must name an absolute ES module path'
+  return workerAdmission(options, env, timeout)
+}
+
+async function workerAdmission({ repo, request }, env, timeout) {
   const deadline = performance.now() + timeout
+  const worker = new Worker(new URL('./lib/second-opinion-admission-worker.mjs', import.meta.url), {
+    workerData: { repo, request, env }, env, execArgv: ['--unhandled-rejections=strict'],
+  })
+  let timer
   const expired = `WT_SECOND_OPINION_ADMISSION: timed out after ${timeout} ms`
   try {
     const refusal = await Promise.race([
-      admissionRefusal(options, env),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(expired), timeout) }),
+      workerVerdict(worker),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(expired), Math.max(0, deadline - performance.now())) }),
     ])
     return performance.now() >= deadline ? expired : refusal
-  } finally { clearTimeout(timer) }
+  } finally {
+    clearTimeout(timer)
+    await worker.terminate()
+  }
+}
+
+function workerVerdict(worker) {
+  return new Promise((resolve) => {
+    let verdict
+    let failure
+    worker.on('message', (message) => { verdict = message })
+    worker.on('error', (error) => { failure = `WT_SECOND_OPINION_ADMISSION: admission worker failed: ${formatError(error)}` })
+    worker.on('exit', (code) => {
+      if (failure) return resolve(failure)
+      if (code !== 0) return resolve(`WT_SECOND_OPINION_ADMISSION: admission worker exited with code ${code}`)
+      if (verdict === null || typeof verdict === 'string') return resolve(verdict)
+      resolve('WT_SECOND_OPINION_ADMISSION: admission worker exited without a verdict')
+    })
+  })
 }
 
 function sameRequestFile(options) {
@@ -96,15 +106,28 @@ function sameRequestFile(options) {
   return realpathSync(options.out) === realpathSync(options.request) || (request.dev === out.dev && request.ino === out.ino)
 }
 
+function outputNamesRequest(options, argv) {
+  if (sameRequestFile(options)) return true
+  return argv.some((arg, index) => arg === '--request' && sameRequestFile({ out: options.out, request: argv[index + 1] }))
+}
+
 function writeAdmissionRefusal(out, text) {
   try { writeFileSync(out, text); return } catch {}
   const temporary = `${out}.refusal-${randomUUID()}`
+  let descriptor
   let created = false
   try {
-    writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 })
+    descriptor = openSync(temporary, 'wx', 0o600)
     created = true
+    writeFileSync(descriptor, text)
+    closeSync(descriptor)
+    descriptor = undefined
     renameSync(temporary, out)
-  } finally { if (created) rmSync(temporary, { force: true }) }
+  } finally {
+    try { if (descriptor !== undefined) closeSync(descriptor) } finally {
+      if (created) rmSync(temporary, { force: true })
+    }
+  }
 }
 
 function refuseAdmission(out, refusal) {
@@ -121,7 +144,7 @@ async function main() {
     return 0
   }
   const env = process.env
-  if (env.WT_SECOND_OPINION_ADMISSION !== undefined && sameRequestFile(options)) {
+  if (env.WT_SECOND_OPINION_ADMISSION !== undefined && outputNamesRequest(options, process.argv.slice(2))) {
     admissionPending = true
     process.stderr.write('wt-second-opinion: WT_SECOND_OPINION_ADMISSION: --out and --request name the same file\n')
     return 3
@@ -145,12 +168,7 @@ async function main() {
 
 async function pendingAdmission(options, env) {
   writeAdmissionRefusal(options.out, 'PENDING: WT_SECOND_OPINION_ADMISSION\n')
-  process.on('uncaughtException', admissionFailure)
-  process.on('unhandledRejection', admissionFailure)
-  try { return await boundedAdmission(options, env) } finally {
-    process.removeListener('uncaughtException', admissionFailure)
-    process.removeListener('unhandledRejection', admissionFailure)
-  }
+  return boundedAdmission(options, env)
 }
 
 function finish(code) {
