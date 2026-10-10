@@ -1,0 +1,21 @@
+{
+  "fs import": 2,
+  "child_process import": 1,
+  "os import": 1,
+  "process.platform": 16,
+  "hard-coded path separator": 6,
+  "realpathSync": 1,
+  "statSync": 3,
+  "spawnSync": 3,
+  "writeFileSync": 8,
+  "appendFileSync": 7,
+  "mkdirSync": 8,
+  "readFileSync": 7,
+  "existsSync": 3,
+  "renameSync": 3,
+  "rmSync": 13,
+  "process.kill": 1,
+  "chmodSync": 1,
+  "spawn": 1,
+  "openSync": 1
+}

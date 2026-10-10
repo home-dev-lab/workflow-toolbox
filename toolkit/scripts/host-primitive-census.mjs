@@ -15,22 +15,42 @@ const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 // is skipped for them; their imports and host calls are counted like any other file's.
 const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/lib/remedy-quote.mjs'])
 
-// Lowered by independent reductions: the suite lock's reclaim moved its file operations into
-// host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
-// lane brief and lifecycle reads moved into the host lane directory helper; the launcher
-// also moved its host file-descriptor operations behind that helper. The clock-independent
-// gate-evidence check replaced its per-path stat calls with a git comparison. The plugin lint
-// pass removed an unused `homedir` import from wt-service-watch.mjs. The plugin-root classifier
-// that replaced the duplicate-hook notice reads the home directory through host/home-directory.mjs.
-// The board-pointer walk and the worktree remover's canonical path moved into host/board-pointer.mjs; the
-// retention helpers read the platform from host/platform.mjs.
-// The bounded walker now gets its default filesystem operations from host/walk-filesystem.mjs, and the
-// legacy state carry-over in plugin-data-dir.mjs gets its own from host/legacy-carry-filesystem.mjs.
-// The adopt installer dropped its script import-rewrite transform (one readFileSync, one homedir) while
-// the adopt-check hook gained one lstatSync to report a symlinked script.
-// It may only decrease as calls move behind the adapter.
-// The journal replaces the old reminder's raw filesystem reads with host-adapter operations.
-export const HOST_PRIMITIVE_CEILING = 1880
+// Legacy host access is declared per source file and primitive kind. A declaration for
+// plugin/<file> lives at host-primitive-allow-list/<file>.json and contains positive
+// occurrence counts keyed by primitive. Pure new modules need no declaration. Reductions
+// lower only that file's counts; unrelated files never share a budget or an edited list.
+const DEFAULT_ALLOW_LIST_ROOT = resolve(import.meta.dirname, 'host-primitive-allow-list')
+
+function declarationFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) return declarationFiles(path)
+    return entry.isFile() && entry.name.endsWith('.json') ? [path] : []
+  })
+}
+
+export function loadHostPrimitiveAllowList(root = DEFAULT_ALLOW_LIST_ROOT) {
+  const allowance = new Map()
+  for (const path of declarationFiles(root)) {
+    const file = relative(root, path).split(sep).join('/').slice(0, -'.json'.length)
+    const counts = JSON.parse(readFileSync(path, 'utf8'))
+    if (!counts || Array.isArray(counts) || typeof counts !== 'object') throw new Error(`Invalid host declaration: ${file}`)
+    for (const [primitive, count] of Object.entries(counts)) {
+      if (!Number.isSafeInteger(count) || count <= 0) throw new Error(`Invalid host allowance: ${file}:${primitive}`)
+      allowance.set(`${file}:${primitive}`, count)
+    }
+  }
+  return allowance
+}
+
+export function hostPrimitiveCounts(findings) {
+  const counts = new Map()
+  for (const { file, primitive } of findings) {
+    const key = `${file}:${primitive}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  return counts
+}
 
 export function sourceFiles(root) {
   const ignoredSource = pathsRegexSource(listGitIgnoredPaths(root).paths, root, root)
@@ -156,24 +176,29 @@ export function scanHostPrimitives(root = DEFAULT_PLUGIN_ROOT) {
   return { perimeterFiles: files.length, findings }
 }
 
-export function checkHostPrimitives(root = DEFAULT_PLUGIN_ROOT, ceiling = HOST_PRIMITIVE_CEILING) {
+export function checkHostPrimitives(root = DEFAULT_PLUGIN_ROOT, allowance = loadHostPrimitiveAllowList()) {
   const result = scanHostPrimitives(root)
-  return { ...result, count: result.findings.length, ceiling, exceeded: result.findings.length > ceiling }
+  const violations = [...hostPrimitiveCounts(result.findings)].flatMap(([key, count]) => {
+    const allowed = allowance.get(key) ?? 0
+    return count > allowed ? [{ key, count, allowed }] : []
+  })
+  const declaredCount = [...allowance.values()].reduce((total, count) => total + count, 0)
+  return { ...result, count: result.findings.length, declaredCount, violations, exceeded: violations.length > 0 }
 }
 
 export function formatHostPrimitiveRefusal(result) {
-  const files = [...new Set(result.findings.map((finding) => finding.file))]
   return [
-    `Raw host primitive ceiling exceeded: ${result.count} > ${result.ceiling}.`,
-    'Files containing counted primitives:',
-    ...files.map((file) => `  ${file}`),
-    'Remedy: Move host access behind plugin/bin/lib/host/, then lower HOST_PRIMITIVE_CEILING to the measured count.',
+    'Undeclared raw host primitives:',
+    ...result.violations.map(({ key, count, allowed }) => `  ${key}: ${count} > ${allowed}`),
+    'Remedy: Move host access behind plugin/bin/lib/host/, then lower the affected per-file declaration.',
+    'For approved legacy access, declare its primitive counts in toolkit/scripts/host-primitive-allow-list/<plugin-relative-file>.json.',
+    'Recheck with: pnpm --dir toolkit quality:host',
   ].join('\n')
 }
 
 if (isInvokedDirectly(import.meta.url)) {
   const result = checkHostPrimitives()
-  process.stdout.write(`Raw host primitives: ${result.count}/${result.ceiling} across ${result.perimeterFiles} perimeter files.\n`)
+  process.stdout.write(`Raw host primitives: ${result.count} (${result.declaredCount} declared) across ${result.perimeterFiles} perimeter files.\n`)
   if (result.exceeded) {
     process.stderr.write(`${formatHostPrimitiveRefusal(result)}\n`)
     process.exitCode = 1

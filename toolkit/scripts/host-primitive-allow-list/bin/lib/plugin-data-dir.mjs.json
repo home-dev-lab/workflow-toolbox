@@ -1,0 +1,8 @@
+{
+  "fs import": 2,
+  "os import": 1,
+  "readFileSync": 3,
+  "homedir": 2,
+  "process.platform": 1,
+  "existsSync": 1
+}

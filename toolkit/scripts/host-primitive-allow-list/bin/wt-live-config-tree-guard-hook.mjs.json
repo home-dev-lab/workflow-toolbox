@@ -1,0 +1,9 @@
+{
+  "fs import": 1,
+  "os import": 1,
+  "existsSync": 2,
+  "readFileSync": 1,
+  "homedir": 3,
+  "hard-coded path separator": 2,
+  "writeSync": 3
+}

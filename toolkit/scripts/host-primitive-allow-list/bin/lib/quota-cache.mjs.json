@@ -1,0 +1,9 @@
+{
+  "fs/promises import": 1,
+  "os import": 1,
+  "homedir": 1,
+  "process.platform": 2,
+  "readFile": 1,
+  "writeFile": 1,
+  "rename": 1
+}

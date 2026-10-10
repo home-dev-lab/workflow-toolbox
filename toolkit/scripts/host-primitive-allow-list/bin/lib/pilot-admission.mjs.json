@@ -1,0 +1,15 @@
+{
+  "fs import": 1,
+  "os import": 1,
+  "writeFileSync": 1,
+  "renameSync": 1,
+  "rmSync": 5,
+  "process.kill": 1,
+  "process.platform": 1,
+  "hard-coded path separator": 2,
+  "literal /proc": 2,
+  "homedir": 1,
+  "readFileSync": 1,
+  "readdirSync": 1,
+  "mkdirSync": 3
+}

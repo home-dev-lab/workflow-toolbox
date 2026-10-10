@@ -1,0 +1,13 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "os import": 1,
+  "hard-coded path separator": 1,
+  "mkdtempSync": 1,
+  "tmpdir": 1,
+  "mkdirSync": 1,
+  "writeFileSync": 1,
+  "execFileSync": 1,
+  "spawnSync": 1,
+  "rmSync": 1
+}

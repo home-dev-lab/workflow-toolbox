@@ -1,0 +1,19 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "fs/promises import": 1,
+  "hard-coded path separator": 7,
+  "readdir": 1,
+  "realpathSync": 4,
+  "appendFileSync": 1,
+  "statSync": 3,
+  "process.platform": 2,
+  "readFileSync": 2,
+  "readdirSync": 1,
+  "existsSync": 1,
+  "rmSync": 3,
+  "stat": 1,
+  "readFile": 1,
+  "process.kill": 1,
+  "spawn": 1
+}

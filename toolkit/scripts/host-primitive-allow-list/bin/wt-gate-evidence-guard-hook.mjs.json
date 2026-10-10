@@ -1,0 +1,7 @@
+{
+  "fs import": 1,
+  "child_process import": 1,
+  "execFileSync": 1,
+  "readFileSync": 2,
+  "existsSync": 1
+}
