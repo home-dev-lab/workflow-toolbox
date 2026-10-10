@@ -19,9 +19,8 @@ function bodyCharacters(file) {
     if (error.code === 'ENOENT') return null
     throw error
   }
-  let characters = 0
-  for (const _character of readFileSync(file, 'utf8')) characters++
-  return characters
+  // Count code points, not UTF-16 units: one emoji counts once.
+  return [...readFileSync(file, 'utf8')].length
 }
 
 export function oversizedSkills(skillsDir, env = process.env) {

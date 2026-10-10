@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url))
 const modulePath = process.env.WT_SKILL_SIZE_TEST_MODULE ?? join(root, 'toolkit/scripts/skill-size.mjs')
@@ -87,7 +88,9 @@ describe('skill scan scope', () => {
 describe('shipped skill quality report', () => {
   it('reports shipped skills through the CLI without failing the gate', () => {
     const result = spawnSync(process.execPath, [join(root, 'toolkit/scripts/skill-size-check.mjs')], {
-      encoding: 'utf8', env: { ...process.env, WT_SKILL_SIZE_WARN_CHARS: '8000' }, timeout: 5000,
+      encoding: 'utf8', env: sealedPluginCliEnv(fixture(), { WT_SKILL_SIZE_WARN_CHARS: '8000' }),
+      // Hang guard for process completion; allow slow hosts the census's generous event-wait bound.
+      timeout: 30_000,
     })
     expect(result.status).toBe(0)
     expect(result.stderr).toBe('')
