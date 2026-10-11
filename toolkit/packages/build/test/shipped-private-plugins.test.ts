@@ -9,6 +9,31 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGINS = ['wt-secret-guard']
 const PRIVATE_HOME_PATH = /\/home\/doublefx/
 const PRIVATE_ID = /(?<!\d)\d{19}(?!\d)/
+const NOTICE_LOCKS = [
+  'D13 subagent denial names the unmeasured storage gap without touching the main transcript',
+  'D14 read policy covers expansions, multiple paths, globs, envrc and backslashes',
+  'D15 dated measurement comments remain beside measured adapters',
+  'D17 history storage returns immediately after successful repair',
+  'N1 tool result scrub stays console silent',
+  'N2 Bash scrub stays console silent',
+  'N3 origin prompt scrub stays console silent',
+  'N4 inbound scrub stays console silent',
+  'N5 main owner forwarding stays console silent',
+  'N6 subagent owner forwarding stays console silent',
+  'N7 common word registration scrub stays console silent',
+  'N8 failure notices dedupe by session and fixed kind',
+  'N9 diagnostic journal events do not alter aggregates or promotion',
+  'N10 refused registration drain restores failed writes',
+]
+const RECOVERY_LOCKS = [
+  'N8 different text shares fixed notice identity',
+  'N8 concurrent delivery reserves notice identity',
+  'N8 failed delivery releases notice reservation',
+  'N11 sessionId failure preserves subagent denial',
+  'N11 uiLog failure preserves subagent denial',
+  'N12 registration refusal reasons are closed enums',
+  'N12 registration drain preserves refusal reasons',
+]
 
 function* files(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -208,20 +233,8 @@ describe('shipped private plugins', () => {
       'D10 Edit old_string can remove a leaked secret',
       'D11 refusal guidance is surface specific',
       'D12 declared turnId and index fields drive dedupe identities',
-      'D13 subagent denial names the unmeasured storage gap without touching the main transcript',
-      'D14 read policy covers expansions, multiple paths, globs, envrc and backslashes',
-      'D15 dated measurement comments remain beside measured adapters',
-      'D17 history storage returns immediately after successful repair',
-      'N1 tool result scrub stays console silent',
-      'N2 Bash scrub stays console silent',
-      'N3 origin prompt scrub stays console silent',
-      'N4 inbound scrub stays console silent',
-      'N5 main owner forwarding stays console silent',
-      'N6 subagent owner forwarding stays console silent',
-      'N7 common word registration scrub stays console silent',
-      'N8 failure notices dedupe by session and fixed kind',
-      'N9 diagnostic journal events do not alter aggregates or promotion',
-      'N10 refused registration drain restores failed writes',
+      ...NOTICE_LOCKS,
+      ...RECOVERY_LOCKS,
     ]) it(`${plugin}: ${lock}`, () => expect(selftest.stdout).toContain(`PASS ${lock}`))
   }
 

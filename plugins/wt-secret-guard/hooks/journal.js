@@ -9,6 +9,8 @@ const RULES = new Set(['guarded-path-read', 'guarded-path-mention', 'policy']);
 const PATH_CLASSES = new Set(['npm-config', 'env-file', 'cloud-secret', 'aws-credentials', 'ssh-key', 'gh-hosts', 'netrc', 'shell-history', 'docker-config', 'kube-config', 'pypi-config', 'git-credentials', 'other-guarded']);
 const COMMAND_CLASSES = new Set(['bash', 'read', 'notebook-read', 'metadata', 'prose', 'other']);
 const DISPOSITIONS = new Set(['true-positive', 'false-positive', 'unreviewed']);
+const REFUSAL_REASONS = new Set(['whitespace', 'short', 'common-word', 'ordinary-shape', 'low-distinctiveness', 'released']);
+let refusalRetryAt = 0;
 const journalText = new Map();
 const seen = new Set();
 const writeQueues = new Map();
@@ -47,6 +49,7 @@ export async function buildEvent($, fields) {
     ruleId: enumValue(RULES, fields.ruleId),
     pathClass: enumValue(PATH_CLASSES, fields.pathClass),
     commandClass: enumValue(COMMAND_CLASSES, fields.commandClass),
+    reason: enumValue(REFUSAL_REASONS, fields.reason),
   };
   if (!event.surface || !event.action) throw new Error('invalid journal event');
   return Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined));
@@ -121,16 +124,24 @@ export function promotionStatus(events, dispositions, now = Date.now()) {
 }
 
 export async function publishRefusals($) {
+  if (Date.now() < refusalRetryAt) return;
   const refused = takeRefusedRegistrations();
   for (let index = 0; index < refused.length; index += 1) {
-    const { kind, count } = refused[index];
+    const { kind, count, reason } = refused[index];
     try {
-      if (!await appendEvent($, { surface: 'registration', action: 'registration-refused', kinds: [kind], count })) {
-        restoreRefusedRegistrations(refused.slice(index)); return;
+      if (!await appendEvent($, { surface: 'registration', action: 'registration-refused', kinds: [kind], count, reason })) {
+        retryRefusals(refused.slice(index)); return;
       }
     }
-    catch { restoreRefusedRegistrations(refused.slice(index)); return; }
+    catch { retryRefusals(refused.slice(index)); return; }
   }
+  refusalRetryAt = 0;
+}
+
+function retryRefusals(refused) {
+  restoreRefusedRegistrations(refused);
+  // One failed drain per minute, shared across hosts in this module instance.
+  refusalRetryAt = Date.now() + 60_000;
 }
 
 export async function publish($) {

@@ -4399,16 +4399,92 @@ await test('N9 diagnostic journal events do not alter aggregates or promotion', 
   const now = Date.parse('2026-09-22T00:00:00.000Z');
   assert.deepEqual(promotionStatus([...events, ...diagnostics], [], now), promotionStatus(events, [], now));
 });
+await test('N8 different text shares fixed notice identity', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  const host = { sessionId: () => 'notice-text', uiLog: (text) => lines.push(text) };
+  await consoleNotice(host, 'fixed-id', 'first text');
+  await consoleNotice(host, 'fixed-id', 'different text');
+  assert.equal(lines.length, 1, 'different text duplicated a fixed notice id');
+});
+await test('N8 concurrent delivery reserves notice identity', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const host = { sessionId: () => 'notice-concurrent', uiLog: async (text) => { lines.push(text); await pending; } };
+  const first = consoleNotice(host, 'fixed-id', 'first');
+  const second = consoleNotice(host, 'fixed-id', 'second');
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  await Promise.all([first, second]);
+  assert.equal(lines.length, 1, 'concurrent delivery duplicated a notice');
+});
+await test('N8 failed delivery releases notice reservation', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  let attempts = 0;
+  const host = { sessionId: () => 'notice-recovery', uiLog: (text) => {
+    if (++attempts === 1) throw new Error('delivery unavailable');
+    lines.push(text);
+  } };
+  assert.equal(await consoleNotice(host, 'fixed-id', 'failure'), false, 'failed notice must return false without throwing');
+  assert.equal(await consoleNotice(host, 'fixed-id', 'recovery'), true);
+  assert.equal(lines.length, 1, 'failed delivery consumed the notice');
+});
+for (const boundary of ['sessionId', 'uiLog']) {
+  await test(`N11 ${boundary} failure preserves subagent denial`, async () => {
+    const event = { tool: 'Bash', command: github, agentId: `notice-failure-${boundary}` };
+    const working = { ...$, session: { ...$.session, id: () => `deny-${boundary}` }, ui: { log: () => {} } };
+    const expected = await bash(working, event, async () => assert.fail('raw outbound input executed'));
+    const failing = { ...working,
+      session: { ...working.session, id: () => { if (boundary === 'sessionId') throw new Error('session unavailable'); return `deny-failure-${boundary}`; } },
+      ui: { log: () => { if (boundary === 'uiLog') throw new Error('delivery unavailable'); } },
+    };
+    const actual = await bash(failing, event, async () => assert.fail('raw outbound input executed'));
+    assert.ok(actual.deny, 'notice failure lost subagent denial');
+    assert.deepEqual(actual, expected, 'notice failure changed the protection outcome');
+  });
+}
 await test('N10 refused registration drain restores failed writes', () => freshVault(async () => {
+  const { publish } = await import('./journal.js');
   const before = registrationEvents().length;
-  tokenize('op-output', 'report');
-  const failing = { ...$, session: { ...$.session, id: () => 'refusal-retry' }, process: { run: () => ({ exitCode: 1 }) } };
+  const originalNow = Date.now;
+  let now = originalNow();
+  let attempts = 0;
+  let outage = true;
+  const host = { ...journalHostFor($), processRun: (...args) => {
+    attempts += 1;
+    return outage && attempts > 1 ? { exitCode: 1 } : journalHostFor($).processRun(...args);
+  } };
+  Date.now = () => now;
+  try {
+    for (const value of ['\n', 'Q7', 'report']) tokenize('op-output', value);
+    await publish(host);
+    assert.equal(registrationEvents().length, before + 1, 'partial drain did not preserve successful prefix');
+    for (let index = 0; index < 100; index += 1) await publish(host);
+    assert.equal(attempts, 2, 'outage retried refused registrations inside one minute');
+    outage = false;
+    now += 60_000;
+    await publish(host);
+    await publish(host);
+    assert.equal(registrationEvents().length, before + 3, 'successful prefix was replayed or failed suffix lost');
+    assert.deepEqual(registrationEvents().slice(before).map(({ count }) => count), [1, 1, 1]);
+  } finally { Date.now = originalNow; }
+}));
+await test('N12 registration refusal reasons are closed enums', async () => {
+  const host = journalHostFor($);
+  for (const reason of ['whitespace', 'short', 'common-word', 'ordinary-shape', 'low-distinctiveness', 'released']) {
+    assert.equal((await buildEvent(host, { surface: 'registration', action: 'registration-refused', reason })).reason, reason, 'validated refusal reason was dropped');
+  }
+  const event = await buildEvent(host, { surface: 'registration', action: 'registration-refused', reason: github });
+  assert.equal(Object.hasOwn(event, 'reason'), false, 'unvalidated reason reached journal');
+});
+await test('N12 registration drain preserves refusal reasons', () => freshVault(async () => {
+  const before = registrationEvents().length;
+  for (const value of ['\n', 'Q7', 'report']) tokenize('op-output', value);
   const { publishRefusals } = await import('./journal.js');
-  await publishRefusals(journalHostFor(failing));
-  assert.equal(registrationEvents().length, before);
   await publishRefusals(journalHostFor($));
-  assert.equal(registrationEvents().length, before + 1);
-  await publishRefusals(journalHostFor($));
-  assert.equal(registrationEvents().length, before + 1, 'successful drain was published twice');
+  assert.deepEqual(registrationEvents().slice(before).map(({ reason }) => reason), ['whitespace', 'short', 'common-word'], 'registration journal lost refusal reasons');
 }));
 process.exit(failures ? 1 : 0);
