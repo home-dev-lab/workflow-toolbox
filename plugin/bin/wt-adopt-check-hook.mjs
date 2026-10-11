@@ -7,10 +7,11 @@
 // session that never adopted gets none of the shipped methodology and no signal that
 // anything is missing. This hook is the signal.
 //
-// It does NOT install anything, ever. It is read-only by design: for an unedited stale copy
-// it gives the session the exact install + re-check commands; for an edited copy it gives the
-// exact three-way-view command. WT_ADOPT_REFRESH=notice-only (or the matching plugin option)
-// hands either action to the session that owns that directory on single-writer machines.
+// At SessionStart it refreshes fingerprint-proven unedited stale rules and agents through
+// install.mjs --install --refresh-only, then re-checks the physical copies. It never writes
+// files itself, installs absent copies, touches edited copies or deletes orphans. Edited
+// copies keep the three-way-view action. WT_ADOPT_REFRESH=notice-only keeps the read-only
+// notices; PostToolUse keeps its existing action orders without refreshing.
 //
 // It REUSES install.mjs's own classification (absent / clean / stale / edited /
 // symlink / hand-authored) by spawning the real script in --check mode and parsing its
@@ -48,7 +49,7 @@ import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { quoteRemedyWord } from './lib/remedy-quote.mjs'
 import { isCompactSource } from './lib/session-start-source.mjs'
 import { pluginRootState } from './lib/plugin-root-state.mjs'
-import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -58,6 +59,9 @@ const VERSION_RE = /installed from workflow-toolbox v(\d+\.\d+\.\d+)/
 // These status markers are emitted by the standalone installer in its ONE line per file.
 const TRIGGERS_STALE = 'on-demand triggers behind the shipped spec'
 const TRIGGERS_UNRESOLVED = 'on-demand triggers unresolved'
+const REFRESH_BUDGET_MS = 8_000
+const RECHECK_RESERVE_MS = 2_000
+const spawnRefreshInstaller = adoptRefreshHost.spawnSync
 
 /** Read the hook's JSON payload from stdin; tolerate empty/malformed input. */
 function readInput() {
@@ -73,36 +77,129 @@ function readInput() {
  *  per-file status lines (`  <file>: <status>`) into a Map<file, {status, location}>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
-function checkDir(dir, set = 'rules', locationKind = 'static', project = null, onFailure = () => {}) {
+function checkDir(dir, set = 'rules', locationKind = 'static', project = null, onFailure = () => {}, timeout = 5_000) {
   const map = new Map()
-  let res
+  map.orphans = []
+  const checked = spawnCheck(dir, set, project, onFailure, timeout)
+  if (!checked) return map
+  const stdout = checkStdout(checked.response, onFailure)
+  for (const line of stdout.split('\n')) parseStatusLine(map, line, dir, locationKind)
+  return map
+}
+
+function spawnCheck(dir, set, project, onFailure, timeout) {
   try {
     // The installer takes its project on-demand root from its cwd: run it from the hook's project.
     // A project that no longer exists fails the spawn, which reads as nothing checked (silence).
-    res = spawnSync(process.execPath, [INSTALL_RULES, '--check', '--set', set, '--dir', dir], {
+    const response = spawnSync(process.execPath, [INSTALL_RULES, '--check', '--set', set, '--dir', dir], {
       encoding: 'utf8',
-      timeout: 5_000,
+      timeout,
       ...(project ? { cwd: project } : {}),
     })
+    return { response }
   } catch {
     onFailure()
-    return map
+    return null
   }
+}
+
+function checkStdout(res, onFailure) {
   if (res?.error || res?.status !== 0) onFailure()
-  const stdout = res && res.stdout ? res.stdout : ''
-  for (const line of stdout.split('\n')) {
-    const m = /^ {2}(\S+\.(?:md|mjs)): (.+)$/.exec(line)
-    if (m) {
-      let realLocation = path.resolve(dir)
-      try {
-        realLocation = fs.realpathSync(dir)
-      } catch {
-        // Missing candidate directories legitimately report ABSENT.
-      }
-      map.set(m[1], { status: m[2], location: dir, realLocation, locationKind })
-    }
+  return res && res.stdout ? res.stdout : ''
+}
+
+function parseStatusLine(map, line, dir, locationKind) {
+  const orphan = /^ {2}(.+\.md): (ORPHAN\b.*)$/i.exec(line)
+  if (orphan) {
+    map.orphans.push({ file: orphan[1], status: orphan[2], location: dir })
+    return
   }
-  return map
+  const m = /^ {2}(\S+\.(?:md|mjs)): (.+)$/.exec(line)
+  if (m) {
+    let realLocation = path.resolve(dir)
+    try {
+      realLocation = fs.realpathSync(dir)
+    } catch {
+      // Missing candidate directories legitimately report ABSENT.
+    }
+    map.set(m[1], { status: m[2], location: dir, realLocation, locationKind })
+  }
+}
+
+function mergedFiles(maps) {
+  const files = new Set(maps.flatMap((map) => [...map.keys()]))
+  return new Map([...files].map((file) => [file, mergeAll(maps, file)]))
+}
+
+function stalePhysicalCopies(map, merged) {
+  return [...map].filter(([file, finding]) => bucket(finding.status) === 'stale' &&
+    !['duplicate', 'misplaced', 'unverified'].includes(merged.get(file)?.bucket))
+}
+
+function refreshLocation(map, copies, set, project, started) {
+  const remaining = REFRESH_BUDGET_MS - RECHECK_RESERVE_MS - (Date.now() - started)
+  if (remaining <= 0) return { map, refreshed: [] }
+  const { location, locationKind } = copies[0][1]
+  try {
+    const selection = copies.flatMap(([file]) => ['--refresh-file', file])
+    spawnRefreshInstaller(process.execPath, [INSTALL_RULES, '--set', set, '--install', '--refresh-only', '--dir', location, ...selection], {
+      encoding: 'utf8', cwd: project, timeout: remaining,
+    })
+  } catch {
+    // A failed child still needs a check: publication may have preceded a journal failure.
+  }
+  const checked = checkDir(location, set, locationKind, project, () => {},
+    Math.max(1, REFRESH_BUDGET_MS - (Date.now() - started)))
+  if (!checked.size) return { map, refreshed: [] }
+  const refreshed = copies.filter(([file]) => /^UP-TO-DATE\b/.test(checked.get(file)?.status ?? ''))
+    .map(([file, finding]) => ({ file, ...finding, afterStatus: checked.get(file).status }))
+  return { map: checked, refreshed }
+}
+
+function refreshSet(maps, set, project, started, refreshed) {
+  const merged = mergedFiles(maps)
+  for (let index = 0; index < maps.length; index++) {
+    const copies = stalePhysicalCopies(maps[index], merged)
+    if (!copies.length) continue
+    const result = refreshLocation(maps[index], copies, set, project, started)
+    maps[index] = result.map
+    refreshed.push(...result.refreshed)
+  }
+}
+
+function appendRefreshSummary(refreshed, sections) {
+  if (!refreshed.length) return
+  const physical = uniquePhysicalRefreshes(refreshed)
+  const named = physical.map(({ file, location, status, afterStatus }) => {
+    const from = versionFromStatus(status) ?? /at v(\d+\.\d+\.\d+)/.exec(status)?.[1]
+    const current = /(?:^UP-TO-DATE \(v|content identical to v)(\d+\.\d+\.\d+)/.exec(afterStatus)?.[1]
+    return `${file} (${location})${from && current ? ` v${from} -> v${current}` : ''}`
+  }).join(', ')
+  sections.push(`workflow-toolbox adopt: refreshed ${physical.length} unedited stale ${physical.length === 1 ? 'copy' : 'copies'} at session start through the adopt install path: ${named}; locally edited copies were not touched.`)
+}
+
+function uniquePhysicalRefreshes(refreshed) {
+  const seen = new Set()
+  return refreshed.filter(({ file, realLocation }) => {
+    const identity = path.join(realLocation, file)
+    if (seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
+}
+
+function orphanMessages(maps) {
+  const seen = new Set()
+  const lines = []
+  for (const { file, location } of maps.flatMap((map) => map.orphans ?? [])) {
+    const target = path.join(location, file)
+    let identity = path.resolve(target)
+    try { identity = adoptRefreshHost.fs.realpathSync(target) } catch { /* Report the checked path. */ }
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    lines.push(`${file} (${location}): ORPHAN — carries the workflow-toolbox adopt banner but no file of this name is shipped any more (retired or renamed). If it is not a deliberate local variant, remove it: \`rm -- ${quoteRemedyWord(target)}\`. This hook deletes nothing.`)
+  }
+  return lines
 }
 
 /** Classify one install.mjs status string into the bucket this hook cares about.
@@ -482,7 +579,47 @@ function resolveEvent(input) {
   return looksLikePush(command) ? event : null
 }
 
+function addSetUpdates(maps, set, context) {
+  const { root, event, explicitSessionStart, noticeOnly, rootState, started, sections, refreshed } = context
+  if (event !== 'SessionStart' || rootState.kind === 'stale') return
+  if (explicitSessionStart && !noticeOnly) refreshSet(maps, set, root, started, refreshed)
+  sections.push(...orphanMessages(maps))
+}
+
+function versionFilteredFindings(maps, rootState, skipped) {
+  const files = new Set(maps.flatMap((map) => [...map.keys()]))
+  const perFile = new Map()
+  for (const file of files) {
+    const finding = mergeAll(maps, file)
+    if (rootState.kind === 'stale' && (finding.bucket === 'stale' || finding.bucket === 'ahead')) {
+      skipped.push(finding.location ? `${file} (${finding.location})` : file)
+    } else perFile.set(file, finding)
+  }
+  return perFile
+}
+
+function appendAdoptionSections(context) {
+  const { sets, root, configDir, roots, event, noticeOnly, rootState, sections, skipped } = context
+  for (const { set, subdirs } of sets) {
+    const maps = []
+    for (const subdir of subdirs) {
+      const locationKind = subdir === 'rules-on-demand' ? 'on-demand' : 'static'
+      maps.push(checkDir(path.join(root, '.claude', subdir), set, locationKind, root))
+      maps.push(checkDir(path.join(configDir, subdir), set, locationKind, root))
+    }
+    if (maps.every((m) => m.size === 0)) continue
+    addSetUpdates(maps, set, context)
+    const perFile = versionFilteredFindings(maps, rootState, skipped)
+    const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
+    let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
+    if (set === 'rules') remedyDir = isOnDemandDir(nestedRulesDir, roots) ? path.dirname(nestedRulesDir) : nestedRulesDir
+    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
+    if (built) sections.push(built)
+  }
+}
+
 export function main() {
+  const started = Date.now()
   const input = readInput()
   if (typeof input?.agent_id === 'string' && input.agent_id) return
   const event = resolveEvent(input)
@@ -517,30 +654,9 @@ export function main() {
 
   const sections = []
   const skipped = []
-  for (const { set, subdirs } of SETS) {
-    const maps = []
-    for (const subdir of subdirs) {
-      const locationKind = subdir === 'rules-on-demand' ? 'on-demand' : 'static'
-      maps.push(checkDir(path.join(root, '.claude', subdir), set, locationKind, root))
-      maps.push(checkDir(path.join(configDir, subdir), set, locationKind, root))
-    }
-    if (maps.every((m) => m.size === 0)) continue // couldn't check any location → skip this set
-
-    const files = new Set(maps.flatMap((m) => [...m.keys()]))
-    const perFile = new Map()
-    for (const file of files) {
-      const finding = mergeAll(maps, file)
-      if (rootState.kind === 'stale' && (finding.bucket === 'stale' || finding.bucket === 'ahead')) {
-        skipped.push(finding.location ? `${file} (${finding.location})` : file)
-      } else perFile.set(file, finding)
-    }
-
-    const nestedRulesDir = path.join(root, '.claude', 'rules', 'wt')
-    let remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
-    if (set === 'rules') remedyDir = isOnDemandDir(nestedRulesDir, roots) ? path.dirname(nestedRulesDir) : nestedRulesDir
-    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly, roots)
-    if (built) sections.push(built)
-  }
+  const refreshed = []
+  appendAdoptionSections({ sets: SETS, root, configDir, roots, event, explicitSessionStart: input.hook_event_name === 'SessionStart', noticeOnly, rootState, started, sections, skipped, refreshed })
+  appendRefreshSummary(refreshed, sections)
 
   const scriptsMessage = scriptDriftMessage(configDir, root, INSTALL_RULES, rootState, skipped)
   if (scriptsMessage) sections.push(scriptsMessage)

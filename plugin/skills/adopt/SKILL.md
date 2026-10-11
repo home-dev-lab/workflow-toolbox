@@ -8,14 +8,14 @@ description: >-
   "install the workflow-toolbox rules as editable files", "install project copies of the pilot
   agents", "adopt the pilot watchdog into this project", or "check my adopted
   workflow-toolbox rules/agents for updates". Write only on a direct request or when the
-  read-only adoption hook explicitly orders this session to refresh a named unedited stale copy.
+  adoption hook orders a skipped refresh.
   Not for authoring workflows or composing a pilot wave.
 ---
 
 # adopt — install editable copies of workflow-toolbox's guardrails and pilot agents
 
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
-user's project, on explicit request or an exact stale-copy action from the read-only adoption
+user's project, on explicit request or an exact stale-copy action from the adoption
 hook. It manages three sets — `rules`, `agents`,
 and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one pass:
 
@@ -47,7 +47,7 @@ and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one p
   nothing and `--set docs` exits with that explanation. A `<config-dir>/docs/wt/` copy adopted
   earlier is left untouched and may be deleted.
 
-A THIRD kind of agent exists and this skill does nothing for it, on purpose: the plugin's
+A third kind of agent needs no adoption: the plugin's
 `agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
 `wave-fidelity-checker` as of this writing) is **registered directly by the plugin** — each
 is already callable as `workflow-toolbox:<name>` the instant the plugin is installed, with no
@@ -58,8 +58,8 @@ states look like "the name is absent from `.claude/agents/`". So `--set agents -
 an agent added there later shows up with nobody editing this skill). Use that note, not a
 guess, to tell "already available, registered" apart from "genuinely absent, needs adopting".
 
-Both sets are stamped, fingerprinted, and yours to edit afterward. Use this skill ONLY when
-the user explicitly asks for such copies, or to check/refresh ones they adopted earlier.
+Both sets are stamped, fingerprinted, and editable. Use this skill only when requested,
+or to check/refresh previously adopted copies.
 Never run it as a side effect of other work — writing into a user's config is a deliberate,
 user-initiated act.
 
@@ -89,10 +89,12 @@ Safety contract for settings writes:
 
 ## The contract (do not violate)
 
-- **No hook writes.** The `SessionStart`/`PostToolUse` hook stays read-only. For an unedited
-  stale copy it orders the session to run an exact `--install --dir <found-directory>` command,
-  re-run `--check` there, and report one line. This is the only non-user-prompted refresh path;
-  first-time adoption still requires a direct user request.
+- **Bounded hook refresh.** `SessionStart` uses `--install --refresh-only`, re-checks, and names
+  refreshed rules/agents in one line. It skips absent copies, detected body/head or banner edits,
+  settings, and per-file duplicate/misplaced/unverified findings. An edit/removal after the final
+  byte check can still be overwritten/recreated by rename; no portable compare-and-swap exists.
+  Skips and `PostToolUse` keep their actions; first adoption needs a request. Orphan removal advice
+  is POSIX-shell (Bash; Git Bash on Windows); nothing is deleted.
 - **Single-writer opt-out.** Set `WT_ADOPT_REFRESH=notice-only` or plugin option
   `adopt_refresh: "notice-only"` in a non-writer session. The notice still names the directory
   and exact command, but hands it to the session that owns that directory.
@@ -107,11 +109,10 @@ Safety contract for settings writes:
   copy (its content no longer matches the stamped fingerprint) or a hand-authored file with
   no toolbox banner — it refreshes only ABSENT or UNEDITED copies. Overwriting an edited copy
   takes an explicit `--force`. A user's edits cannot be silently destroyed by a refresh.
-  **Known fingerprint blind spot:** the banner line is stripped in full before hashing, so an
-  edit glued directly onto the banner line itself (text appended after the closing marker,
-  no newline) is stripped along with it and reads as clean — a later refresh can overwrite
-  that narrow case without `--force`. Editing the file body (the normal case) is always
-  detected.
+  Normal install has a banner-line fingerprint blind spot; refresh-only refuses banner appendages
+  and edited/kept/unverified heads. See [refresh safety](references/detecting-and-refreshing-stale-copies.md).
+- **Atomic publication.** Unique same-directory temps and rename; see the refresh safety reference
+  for permissions, hard links and the remaining edit race.
 - **Never write THROUGH a symlink.** If a target `<dir>/<name>.md` is a symlink (e.g. a
   config dir whose rules are symlinked from another one), `--install` does NOT follow it —
   following it would clobber the link's real target. The symlink is reported and left
@@ -138,6 +139,8 @@ Script resolution uses the first present candidate: explicit `WT_PLUGIN_ROOT`, o
 - **Inspect an edited copy (read-only):** `node scripts/install.mjs --set <set> --diff <file> --dir <found-directory>`
   prints the journalled text as adopted, the local text, and the currently shipped text.
 - **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --install`
+- **Proven-clean copies only:** `--install --refresh-only` skips creation, settings and edits;
+  eligibility and incompatible flags are in the refresh safety reference.
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
   use set-wide `--force` when the three-way decision covered only one file.

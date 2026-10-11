@@ -365,7 +365,7 @@ what happened and whether resuming is safe.
 | `hooks` | **Inspect** current sessions, cards, lanes, services, and helper processes with explicit availability when a host probe cannot run. | `/wir` or the `what is running` prompt-hint button |
 | `bin/wt-work-journal-hook.mjs` | **Record** project acts in a durable, hash-linked daily index; verify and show a bounded subject digest at session start; warn about unrecorded outward acts at Stop. | Automatically; [journal commands and storage boundary](docs/public/work-journal.md) |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
-| `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config — on explicit request only, never automatically; each copy is fingerprinted so a later `--check` detects when the plugin has moved ahead. | Automatically when you ask, or `/workflow-toolbox:adopt` |
+| `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config on explicit request; existing proven-unedited stale copies refresh at SessionStart. Each copy is fingerprinted so a later `--check` detects drift. | Automatically when you ask, or `/workflow-toolbox:adopt` |
 
 ### Bundled rules & the delegation ladder
 
@@ -394,7 +394,8 @@ request only. It writes versioned, fingerprinted, editable copies. `--check`
 stale, edited, symlinked, or hand-authored; `--install` writes absent copies
 and refreshes unedited ones; `--force` explicitly overwrites a copy you have
 edited; and `--replace-symlinks` replaces a symlinked target in place. The
-skill never writes through a symlink or silently destroys your edits. It can
+skill never writes through a symlink and refuses fingerprint-detected body edits without
+`--force`; normal install does not fingerprint edits on the banner line. It can
 also install project copies of the pilot agent definitions, which are needed
 because current Claude Code does not honor `observer:` frontmatter for
 plugin-installed agents. It also checks the active config profile's
@@ -410,6 +411,18 @@ multi-profile setup must be rerun under each profile. See [plugin/rules/README.m
 and the [adopt skill](plugin/skills/adopt/SKILL.md) for the full
 contract — including how to **reconcile existing project rules** before adopting,
 so you don't end up with duplicate, drifting concerns.
+
+At SessionStart, the adoption hook refreshes existing fingerprint-proven unedited stale rule
+and agent copies through `--install --refresh-only`, publishes via a unique same-directory temp
+and rename, re-checks disk, and reports one line naming refreshed copies across both sets.
+This **experimental** refresh skips absent copies, detected body/head edits, noncanonical
+banner lines and settings. Duplicate, misplaced and unverified findings are excluded per file,
+even beside selected copies in the same directory. A final byte re-check narrows the race:
+an edit or removal between that check and rename can still be overwritten or recreated;
+there is no portable compare-and-swap. `WT_ADOPT_REFRESH=notice-only`
+keeps the existing read-only notices; PostToolUse performs no refresh. An adopted copy whose
+name is no longer shipped is reported with a quoted POSIX-shell removal command (Bash;
+Git Bash on Windows), never deleted automatically.
 
 The plugin also ships several OTHER agents (`fidelity-checker`, `index-groomer`,
 `leaf`, `lean`, `opencode-verifier`, `wave-fidelity-checker` as of this writing)

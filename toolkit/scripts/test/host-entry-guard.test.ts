@@ -166,7 +166,7 @@ describe('host entry guard', () => {
     const result = spawnSync(process.execPath, [join(cachedPluginRoot, 'bin', file), ...(invocation.args ?? [])], {
       encoding: 'utf8',
       input: invocation.input,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: join(cachedPluginRoot, '.test-claude') },
+      env: { ...process.env, HOME: join(cachedPluginRoot, '.test-home'), CLAUDE_CONFIG_DIR: join(cachedPluginRoot, '.test-claude') },
     })
 
     expect(result.status, result.stderr).toBe(0)
