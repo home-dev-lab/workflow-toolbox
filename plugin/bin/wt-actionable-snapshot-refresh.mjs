@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 import { projectStatePath, snapshotPath, stateRoot } from './lib/actionability-state-paths.mjs'
 import { createBoardClient } from './lib/board-http-client.mjs'
-import { readJsonOrNull } from './lib/host/actionability-files.mjs'
+import { pathExists, readJsonOrNull } from './lib/host/actionability-files.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { collectCompleteCards } from './lib/actionability-board-collect.mjs'
 import { DEFAULT_REFRESH_TIMEOUT_MS, RefreshTimeout, remainingMilliseconds } from './lib/actionability-refresh-deadline.mjs'
@@ -80,7 +80,7 @@ export async function refreshSnapshot({ cwd = process.cwd(), endpoint = process.
   timeoutMs = positiveMilliseconds(process.env.WT_ACTIONABLE_REFRESH_TIMEOUT_MS, DEFAULT_REFRESH_TIMEOUT_MS) } = {}) {
   const startedAt = Date.now()
   const deadlineAt = startedAt + timeoutMs
-  const projectDir = resolveBoardProjectDir(resolve(cwd), existsSync) || resolve(cwd)
+  const projectDir = resolveBoardProjectDir(resolve(cwd), pathExists) || resolve(cwd)
   let phase = 'board pointer'
   try {
     const boardId = pointerBoardId(projectDir)

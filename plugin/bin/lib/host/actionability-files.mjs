@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+
+export function pathExists(path) {
+  return existsSync(path)
+}
 
 export function readJsonOrNull(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
