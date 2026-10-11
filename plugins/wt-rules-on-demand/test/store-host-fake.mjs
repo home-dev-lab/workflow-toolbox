@@ -103,9 +103,9 @@ export async function settleHostOps(limitMs = SETTLE_LIMIT_MS) {
 }
 
 // Removes a sandbox once every host call has settled; a teardown that times out still removes it, then fails.
-export async function removeSandbox(root) {
-  try { await settleHostOps(); }
-  finally { await rm(root, { recursive: true, force: true }); }
+export async function removeSandbox(root, { limitMs = SETTLE_LIMIT_MS, beforeDrain, beforeRemove } = {}) {
+  try { beforeDrain?.(); await settleHostOps(limitMs); }
+  finally { beforeRemove?.(); await rm(root, { recursive: true, force: true }); }
 }
 
 // A fresh sandbox directory, removed after the test once the hook's background writes have settled.

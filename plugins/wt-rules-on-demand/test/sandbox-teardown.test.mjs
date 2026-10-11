@@ -1,8 +1,8 @@
 // A sandbox is removed only once the hook waits on nothing. The hook runs work in the background without awaiting it
 // (flight-recorder writes, the harvest of an older load's breadcrumbs), so a removal that does not wait for it races a
-// write: ENOTEMPTY on rmdir, or a tree recreated after the removal. Each lock holds the racing write at a gate that
-// opens as soon as the sandbox is gone, so without the drain the write lands after the removal on every run; with the
-// drain the removal waits for the write, and the gate's fallback timer only bounds that wait.
+// write: ENOTEMPTY on rmdir, or a tree recreated after the removal. Each lock holds the racing work until an explicit
+// teardown-entry signal, asserts it is pending at entry, and asserts it settled before filesystem removal. Deleting
+// the drain reaches the pre-removal assertion synchronously, before the released work can resume, on any machine.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -14,10 +14,25 @@ import { sessionKey } from '../session-key.mjs';
 const exists = (path) => lstat(path).then(() => true, () => false);
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 
-// Opens once `root` no longer exists, or after `fallbackMs` while the removal waits on the gated write.
-async function sandboxGone(root, fallbackMs = 1_000) {
-  const until = performance.now() + fallbackMs;
-  while (await exists(root) && performance.now() < until) await turn();
+function heldWork(t) {
+  let release;
+  const signal = new Promise((resolve) => { release = resolve; });
+  let pending = 0;
+  // Registered before scratch cleanup, so an early assertion failure cannot strand the host drain.
+  t.after(() => release());
+  return {
+    hold: (work = () => {}) => {
+      pending++;
+      return signal.then(work).finally(() => { pending--; });
+    },
+    remove: (root) => removeSandbox(root, {
+      beforeDrain: () => {
+        assert.ok(pending > 0, 'teardown started without pending host work');
+        release();
+      },
+      beforeRemove: () => assert.equal(pending, 0, 'sandbox removal started with held host work still pending'),
+    }),
+  };
 }
 
 async function scratch(t, prefix) {
@@ -35,20 +50,23 @@ async function waitUntil(predicate, what) {
 }
 
 test('a sandbox is removed only after a host write still running inside it has settled', async (t) => {
+  const gate = heldWork(t);
   const root = await scratch(t, 'rod-teardown-write-');
   const target = join(root, 'config', 'plugins', 'data', 'wt-rules-on-demand', 'inflight', 'late.json');
-  const write = trackHostOp(sandboxGone(root).then(() => realFs.write(target, '{}')));
-  await removeSandbox(root);
+  const write = trackHostOp(gate.hold(() => realFs.write(target, '{}')));
+  await gate.remove(root);
   await write;
   assert.equal(await exists(root), false, 'the write landed after the removal and recreated the sandbox');
 });
 
 test('a sandbox is removed only after the flight writes a hook call left running have settled', async (t) => {
+  const gate = heldWork(t);
   const root = await scratch(t, 'rod-teardown-hook-');
-  let held = [];
+  const held = [];
+  let armed = false;
   const gatedDisk = { ...realFs, write: (path, text) => {
-    if (!path.includes('/inflight/')) return realFs.write(path, text);
-    const write = sandboxGone(root).then(() => realFs.write(path, text));
+    if (!armed || !path.includes('/inflight/')) return realFs.write(path, text);
+    const write = gate.hold(() => realFs.write(path, text));
     held.push(write);
     return write;
   } };
@@ -57,16 +75,17 @@ test('a sandbox is removed only after the flight writes a hook call left running
   // its breadcrumbs into inflight/ and returns without waiting for them.
   await f.call({ command: 'git push origin main' });
   await settleHostOps();
-  held = [];
+  armed = true;
   await f.call({ command: 'git push origin main' });
   assert.ok(held.length > 0, 'the second call left no flight write running: the lock would pass without exercising the race');
-  await removeSandbox(root);
+  await gate.remove(root);
   // Whatever the drain did, every held write has landed before the sandbox is read.
   await Promise.allSettled(held);
   assert.equal(await exists(root), false, 'a flight-recorder write outlived the removal and recreated the sandbox');
 });
 
 test('a sandbox is removed only after a harvest waiting on its log line has written its mark', async (t) => {
+  const gate = heldWork(t);
   const root = await scratch(t, 'rod-teardown-harvest-');
   const inflight = join(root, 'config', 'plugins', 'data', 'wt-rules-on-demand', 'inflight');
   await mkdir(inflight, { recursive: true });
@@ -76,17 +95,31 @@ test('a sandbox is removed only after a harvest waiting on its log line has writ
   let announced = null;
   const log = (line) => {
     if (!line.includes('did not confirm completion')) return undefined;
-    announced = sandboxGone(root);
+    announced = gate.hold();
     return announced;
   };
   const f = await hookFixture(root, hostStore(), { log });
   await f.call({ command: 'git push origin main' });
   await waitUntil(() => announced !== null, 'the harvest announcing the earlier breadcrumb');
-  await removeSandbox(root);
+  await gate.remove(root);
   // Whatever the drain did, the log has returned and the mark it releases has been written before the sandbox is read.
   await announced;
   await settleHostOps();
   assert.equal(await exists(root), false, 'the harvest wrote its mark after the removal and recreated the sandbox');
+});
+
+test('removes the sandbox even when the host drain expires with a call still pending', { timeout: 5_000 }, async (t) => {
+  let release;
+  let pending = true;
+  const call = trackHostOp(new Promise((resolve) => { release = resolve; }).finally(() => { pending = false; }));
+  t.after(() => release());
+  const root = await scratch(t, 'rod-teardown-timeout-');
+  await writeFile(join(root, 'sentinel'), 'sandbox exists');
+  try {
+    await assert.rejects(removeSandbox(root, { limitMs: 50 }), /1 host call\(s\) still pending after 50 ms/);
+    assert.equal(pending, true, 'the host call must still be pending after the bound expires');
+    assert.equal(await exists(root), false, 'the sandbox survived the drain timeout');
+  } finally { release(); await call; }
 });
 
 test('a host call that never settles fails the teardown at its bound instead of hanging it', { timeout: 5_000 }, async () => {

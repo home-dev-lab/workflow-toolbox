@@ -318,8 +318,9 @@ describe('suite lock no-progress budget', () => {
     let target: Waiter | undefined
     try {
       await waitFor(() => readOrder(order).includes('H'), 15_000)
-      // POSIX_STALENESS: on win32 a head waiter reclaims a live holder older than its staleS, and H can pass 3 s here on a slow runner.
-      target = startWaiter(root, order, 'T', 30, 0, 1, { staleS: 3, ...POSIX_STALENESS })
+      // The head watchdog is well beyond this test's 12 s bound, so delayed parent scheduling cannot expire it.
+      // POSIX_STALENESS also keeps Windows from reclaiming the live holder by age.
+      target = startWaiter(root, order, 'T', 30, 0, 1, { staleS: 120, ...POSIX_STALENESS })
       await waitFor(() => target!.stdout().includes('position 1 of 1') && queueRecords(root).length === 1, 15_000)
       await new Promise((resolve) => setTimeout(resolve, 1300))
       expect(queueRecords(root), 'head ticket remains present after waitS').toHaveLength(1)
