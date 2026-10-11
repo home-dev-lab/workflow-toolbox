@@ -65,7 +65,7 @@ function absolute(p) {
 }
 
 function literalPath(word) {
-  if (typeof word !== 'string' || /[\\$`*?{}~\[\]]/.test(word)) throw Error('dynamic path')
+  if (typeof word !== 'string' || /[\\$`*?{}~[\]]/.test(word)) throw Error('dynamic path')
   return unquote(word)
 }
 
@@ -290,7 +290,7 @@ function assignmentWord(word) {
   const equal = word.indexOf('=')
   if (equal < 1) return false
   const name = word.slice(0, equal)
-  return /^[A-Za-z_]$/.test(name[0]) && !/[^A-Za-z0-9_]/.test(name)
+  return /^[A-Za-z_]$/.test(name[0]) && !/\W/.test(name)
 }
 
 function extraMatch(words, i, options, positions) {
@@ -318,16 +318,21 @@ function readCatFiles(findings, command, cwd, readFile) {
 
 function scanExtraBash(findings, command, words, cwd, options) {
   const positions = commandPositions(words)
-  for (let i = 0; i < words.length; i++) {
-    if (!extraMatch(words, i, options, positions)) continue
-    const start = words[i + 1]?.end || words[i].end
-    let end = i + 2
-    while (end < words.length && ![';', '&', '|', '\n'].includes(words[end].raw)) end++
-    const text = command.slice(start, words[end]?.start ?? command.length)
-    addText(findings, 'board', 'command', text)
-    readCatFiles(findings, text, cwd, options.readFile)
-    i = end
+  let i = 0
+  while (i < words.length) {
+    i = extraMatch(words, i, options, positions) ? scanBoardCommand(findings, command, words, i, cwd, options) : i + 1
   }
+}
+
+// Scans one matched board command up to its separator; returns the index after that separator.
+function scanBoardCommand(findings, command, words, i, cwd, options) {
+  const start = words[i + 1]?.end || words[i].end
+  let end = i + 2
+  while (end < words.length && !COMMAND_SEPARATORS.has(words[end].raw)) end++
+  const text = command.slice(start, words[end]?.start ?? command.length)
+  addText(findings, 'board', 'command', text)
+  readCatFiles(findings, text, cwd, options.readFile)
+  return end + 1
 }
 
 function scanBash(findings, command, cwd, options) {
