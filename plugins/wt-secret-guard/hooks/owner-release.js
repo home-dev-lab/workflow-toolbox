@@ -1,7 +1,9 @@
 // Authority is the engine's ingress stamp plus a guard-owned, UI-only confirmation.
 // Residual: the host stamps scripted keystrokes into the session's own terminal as
 // composer, so a session able to drive its own pane is not stopped by origin alone.
-import { isIssuedToken, knownTokens, randomId, releaseRefusalReason, releaseToken, reserveTokenId } from './token-vault.js';
+import { isIssuedToken, knownTokens, knownValueOccurrences, randomId, releaseRefusalReason, releaseToken, reserveTokenId } from './token-vault.js';
+import { OWNER_CHANNEL_ADAPTERS } from './owner-channel.js';
+import { base64Utf8 } from './outbound-tools.js';
 
 const confirmations = new Map();
 const privateCodes = new Set();
@@ -27,8 +29,47 @@ function expireConfirmations(now) {
 
 export function releaseGrammarRefusal(event) {
   if (confirmationKeyCollision(event)) return { deny: 'wt-secret-guard refused confirmation-code key collision.' };
-  return /wt-secret-guard\s+release/i.test(JSON.stringify(event))
+  const strings = [...eventStrings(event)];
+  const grammar = strings.filter(({ value }) => grammarCount(value));
+  return grammar.length && !releaseLineAllowance(event, strings, grammar)
     ? { deny: 'wt-secret-guard refused tool input carrying owner-release grammar.' } : null;
+}
+
+// Inspect decoded values AND keys; JSON escaping must not hide control separators.
+function* eventStrings(value, body = false, key = false, root = true) {
+  if (typeof value === 'string') { yield { value, body, key }; return; }
+  if (!value || typeof value !== 'object') return;
+  for (const [name, child] of Object.entries(value)) {
+    yield { value: name, body: false, key: true };
+    yield* eventStrings(child, root && name === 'text', false, false);
+  }
+}
+
+function grammarCount(text) {
+  // Compatibility normalization broadens refusal only, never the literal allowance.
+  return [...text.normalize('NFKC').matchAll(/wt-secret-guard[\s\p{Z}\p{Cf}]+release/giu)].length;
+}
+
+function privateMaterial(strings) {
+  return strings.some(({ value, key }) => redactConfirmationCodes(value) !== value
+    || (key && heldKey(value)));
+}
+
+function heldKey(value) {
+  if (knownValueOccurrences(value).length) return true;
+  return [...knownTokens().values()].some((entry) => !entry.ephemeral && entry.value
+    && value.includes(base64Utf8(entry.value)));
+}
+
+function releaseLineAllowance(event, strings, grammar) {
+  if (!OWNER_CHANNEL_ADAPTERS.has(event.tool) || typeof event.text !== 'string') return false;
+  if (grammar.length !== 1 || !grammar[0].body || grammarCount(event.text) !== 1) return false;
+  if (privateMaterial(strings)) return false;
+  const match = /(?:^|\n)(wt-secret-guard release (secret:[a-z-]+#[a-f0-9]{6}))(?=\r?\n|$)/.exec(event.text);
+  if (!match || !isIssuedToken(match[2])) return false;
+  // The owner supplies any confirmation separately, even when it is not active here.
+  const after = event.text.slice(match.index + match[0].length);
+  return !/^[\s\p{P}\p{S}]*(?:code[\s\p{P}\p{S}]*)?[a-f0-9]{6}\b/iu.test(after);
 }
 
 export function confirmationKeyCollision(value) {

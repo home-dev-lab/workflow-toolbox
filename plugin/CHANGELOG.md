@@ -5,7 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-- The secret guard (`wt-secret-guard` 0.1.5) no longer writes a console line for each scrub or forwarded redaction. Each kind of failure notice appears at most once per session, and a failed notice never interrupts a protection decision.
+- The secret guard (`wt-secret-guard` 0.1.5) no longer writes a console line for each scrub or forwarded redaction. Each kind of failure notice appears at most once per session, and a failed notice never interrupts a protection decision. Its two Atrium speak adapters can now carry one exact first-part release line for an issued token in `text`, while code-bearing events, other tools and fields, and decoded nonliteral grammar remain refused; owner-origin confirmation is still required.
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
 - Added regression tests for the secret guard's streaming mask; no behaviour change.
 - Report shipped `SKILL.md` bodies above 8000 Unicode characters in `pnpm quality`
