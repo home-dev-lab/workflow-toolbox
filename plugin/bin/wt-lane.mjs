@@ -578,7 +578,7 @@ async function main() {
       try { owner = JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) } catch {}
       let age
       try { age = Date.now() - statSync(lockPath).mtimeMs } catch (error) { if (error?.code === 'ENOENT') return { retry: true }; throw error }
-      if (!owner || !Number.isSafeInteger(owner.pid)) return age > LAUNCH_LOCK_MAX_AGE_MS
+      if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return age > LAUNCH_LOCK_MAX_AGE_MS
         ? { stale: true, owner, reason: `owner record is unreadable after ${LAUNCH_LOCK_MAX_AGE_MS}ms` }
         : { stale: false, owner, reason: 'owner record is not ready' }
       const liveness = hostAdapter.readProcessLiveness(owner.pid)

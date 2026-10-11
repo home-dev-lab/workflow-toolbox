@@ -34,8 +34,13 @@ const boundary = await import('../../../../plugin/bin/lib/host/process-signal-bo
     const readProcessGroupLiveness = vi.fn()
     const host = { platform: 'linux', forceEndProcessFamily, readProcessGroupLiveness }
     for (const [status, expected] of [['alive', 1], ['gone', 0], ['unknown', null]] as const) {
+      forceEndProcessFamily.mockClear()
+      readProcessGroupLiveness.mockClear()
       readProcessGroupLiveness.mockReturnValue({ status })
       expect(boundary!.reapProcessFamily(42, host)).toBe(expected)
+      expect(forceEndProcessFamily, `POSIX ${status}: the family is force-ended`).toHaveBeenCalledWith(42)
+      expect(forceEndProcessFamily.mock.invocationCallOrder[0], `POSIX ${status}: force-end precedes the survivor probe`)
+        .toBeLessThan(readProcessGroupLiveness.mock.invocationCallOrder[0]!)
     }
     readProcessGroupLiveness.mockClear()
     expect(boundary!.reapProcessFamily(42, { ...host, platform: 'win32' })).toBeNull()

@@ -33,6 +33,22 @@ it.each(['EIO', 'EINVAL'])('keeps an old launch lock when its owner liveness is 
   expect(kill).toHaveBeenCalledWith(42, 0)
 })
 
+it.each([0, -7])('recovers an old launch lock whose owner pid %i is not a process id', (pid) => {
+  const text = source('wt-lane')
+  const start = text.indexOf('const lockStatus = ') + 'const lockStatus = '.length
+  const end = text.indexOf('\n    const removeOwnedLock = ', start)
+  const { kill, host } = invocation(null)
+  const lockStatus = runInNewContext(`(${text.slice(start, end).trim()})`, {
+    process: { kill }, hostAdapter: host, consentModules: { hostAdapter: host },
+    path: { join: (...parts: string[]) => parts.join('/') },
+    readFileSync: () => JSON.stringify({ pid, argv: ['fixture'], startTime: 1 }),
+    statSync: () => ({ mtimeMs: 0 }), Date: { now: () => 240_001 },
+    LAUNCH_LOCK_MAX_AGE_MS: 120_000, launcherInspect: () => null,
+  }) as (path: string) => { stale: boolean }
+  expect(lockStatus('fixture-lock').stale, 'an invalid owner record ages out like an unreadable one').toBe(true)
+  expect(kill, 'no signal is sent for an invalid owner pid').not.toHaveBeenCalled()
+})
+
 it.each(['EPERM', 'EIO', 'EINVAL'])('retains quota watcher registration and duplicate ownership on %s', (code) => {
   const text = source('wt-quota-watch')
   const helper = /function isPidAlive\(pid\) \{[\s\S]*?\n\}/.exec(text)?.[0]
