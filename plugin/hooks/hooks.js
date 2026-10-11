@@ -107,6 +107,9 @@ async function pathsOf($, options, sessionCwd) {
     plankaBaseUrl: typeof options?.plankaBaseUrl === 'string' ? options.plankaBaseUrl : '',
     plankaConfigFile: configured('plankaConfigFile') || '',
     procRoot: typeof options?.procRoot === 'string' ? options.procRoot : undefined,
+    // The pane's own resolver asks for the default process root; a direct collector call that names
+    // neither keeps process discovery off, as before the procfs move.
+    processScan: true,
     now: typeof options?.now === 'string' ? options.now : undefined,
     activeWindowMin: Number(options?.activeWindowMin) > 0 ? Number(options.activeWindowMin) : 10,
   };

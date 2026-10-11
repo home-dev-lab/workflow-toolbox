@@ -151,7 +151,7 @@ const executableOf = value => {
 };
 const scriptIs = (value, key) => (Array.isArray(scripts[key]) ? scripts[key] : [scripts[key]]).filter(name => typeof name === 'string').includes(path.basename(String(value || '')));
 const procfs = createProcfs({ root: typeof config.procRoot === 'string' ? config.procRoot : undefined, platform: runtimePlatform, readFile: slice, readdir: listed });
-const processScanAvailable = procfs.available && (config.procRoot === undefined || typeof config.procRoot === 'string');
+const processScanAvailable = procfs.available && (typeof config.procRoot === 'string' || config.processScan === true);
 const configuredClockTicks = Number(config.clockTicks);
 let clockTicks = Number.isFinite(configuredClockTicks) && configuredClockTicks > 0 ? configuredClockTicks : null;
 if (processScanAvailable && clockTicks === null) {
