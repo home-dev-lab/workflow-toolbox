@@ -50,7 +50,7 @@ function* eventStrings(value, body = false, key = false, root = true, hostTool =
 
 function grammarCount(text) {
   // Compatibility normalization broadens refusal only, never the literal allowance.
-  return [...stripIgnorables(text.normalize('NFKC')).matchAll(/wt-secret-guard[\s\p{Z}\u0085]*release/giu)].length;
+  return [...stripIgnorables(text.normalize('NFKC')).matchAll(/wt-secret-guard(?:\s|\u0085)*release/giu)].length;
 }
 
 function privateMaterial(strings) {

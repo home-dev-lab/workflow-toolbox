@@ -38,7 +38,10 @@ async function denied(f, event, label) {
 }
 
 async function allowed(f, tool, order, body, kind = 'assignment', redaction = true) {
-  const token = f.tokenize(kind, kind === 'assignment' ? value : kind === 'fixture' ? 'fixture-trusted-Z8n4' : 'ordinary');
+  let held = 'ordinary';
+  if (kind === 'assignment') held = value;
+  else if (kind === 'fixture') held = 'fixture-trusted-Z8n4';
+  const token = f.tokenize(kind, held);
   const code = kind === 'assignment' ? pending(token) : null;
   const text = body(token);
   const before = f.testState();
@@ -64,7 +67,11 @@ async function allowedLocks(f) {
   for (const tool of adapters) for (const order of ['catch-first', 'mcp-first']) {
     for (const body of ['clean']) {
       await f.test(`release line allowed ${tool} ${order} ${body}`, () => f.freshVault(() =>
-        allowed(f, tool, order, (token) => `${line(token)}${body === 'clean' ? '' : `\nDetail: ${body === 'raw' ? value : base64Utf8(value)}`}`)));
+        allowed(f, tool, order, (token) => {
+          if (body === 'clean') return line(token);
+          const detail = body === 'raw' ? value : base64Utf8(value);
+          return `${line(token)}\nDetail: ${detail}`;
+        })));
     }
   }
   for (const kind of ['fixture', 'key-value']) await f.test(`release line issued ${kind} is not release authority`, () =>
@@ -146,7 +153,7 @@ function parsingCases(token) {
     ['later line suffix', `${text}\nPlease confirm\nabcdef`],
     ['preceding code', `abcdef\n${text}`],
     ...['\t', '\r\n', '\n', '\r', '\u00a0', '\u2028', '\u2029', '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff']
-      .map((separator, index) => [`separator ${index}`, text.replace(' release', `${separator}release`)]),
+      .map((separator, index) => [`separator ${index}`, text.replace(' release', () => `${separator}release`)]),
     ['fullwidth lookalike', text.replace('release', 'ｒｅｌｅａｓｅ')],
     ['NEL', text.replace(' release', '\u0085release')],
     ['format inside name', text.replace('guard', 'gu\u200bard')],
@@ -164,7 +171,7 @@ async function parsingLocks(f) {
   for (const separator of ['\t', '\n', '\u200b', '\u0085']) await f.test(`release grammar decoded routing ${JSON.stringify(separator)}`, () =>
     f.freshVault(async () => {
       const token = f.tokenize('assignment', value);
-      const grammar = line(token).replace(' release', `${separator}release`);
+      const grammar = line(token).replace(' release', () => `${separator}release`);
       await denied(f, { tool: adapters[0], text: line(token), extra: [{ [grammar]: grammar }] }, 'decoded routing');
       await denied(f, { tool: 'CustomTool', payload: grammar }, 'decoded unknown');
       await denied(f, { tool: adapters[0], text: 'ordinary message', extra: [{ [grammar]: 1 }] }, 'decoded key only');
@@ -172,7 +179,7 @@ async function parsingLocks(f) {
   for (const word of ['guard', 'release']) await f.test(`release grammar format inside ${word} on other tools`, () =>
     f.freshVault(async () => {
       const token = f.tokenize('assignment', value);
-      const grammar = line(token).replace(word, `${word.slice(0, 2)}\u200b${word.slice(2)}`);
+      const grammar = line(token).replace(word, () => `${word.slice(0, 2)}\u200b${word.slice(2)}`);
       await denied(f, { tool: 'CustomTool', payload: grammar }, `format inside ${word}`);
     }));
 }
@@ -231,9 +238,11 @@ async function activeCodeLocks(f) {
       const code = numericPending(token);
       try {
         assert.equal(code, '234567', 'synthetic active code fixture');
-        const fields = field === 'number' ? { text: 'ordinary message', extra: { code: Number(code) } }
-          : field === 'key' ? { extra: { [`x${code}y`]: false } }
-          : field === 'bigint' ? { extra: { code: BigInt(code) } } : { [field]: code };
+        let fields;
+        if (field === 'number') fields = { text: 'ordinary message', extra: { code: Number(code) } };
+        else if (field === 'key') fields = { extra: { [`x${code}y`]: false } };
+        else if (field === 'bigint') fields = { extra: { code: BigInt(code) } };
+        else fields = { [field]: code };
         await denied(f, { tool, ...fields }, `active code ${field}`);
       } finally { handleOwnerRelease({ origin: { kind: 'composer' }, text: `${line(token)} ${code}` }, () => {}); }
     }));
@@ -319,7 +328,7 @@ async function roundTwoLocks(f) {
   for (const char of ['\u034f', '\u115f', '\u17b4', '\ufe0f', '\u{e0100}']) {
     await f.test(`release grammar default ignorable ${char.codePointAt(0).toString(16)}`, () => f.freshVault(async () => {
       const token = f.tokenize('assignment', value);
-      await denied(f, { tool: 'CustomTool', payload: line(token).replace(' release', `${char}release`) }, 'default ignorable grammar');
+      await denied(f, { tool: 'CustomTool', payload: line(token).replace(' release', () => `${char}release`) }, 'default ignorable grammar');
     }));
     await f.test(`release hex default ignorable ${char.codePointAt(0).toString(16)}`, () => f.freshVault(async () => {
       const token = f.tokenize('assignment', value);
@@ -344,7 +353,9 @@ async function roundTwoLocks(f) {
 async function scalarLocks(f) {
   for (const type of ['number', 'bigint', 'boolean']) await f.test(`release line scalar held ${type}`, () =>
     f.freshVault(async () => {
-      const scalar = type === 'boolean' ? false : type === 'bigint' ? 123456789n : 123456789;
+      let scalar = 123456789;
+      if (type === 'boolean') scalar = false;
+      else if (type === 'bigint') scalar = 123456789n;
       const held = f.tokenize('fixture', String(scalar));
       if (type === 'boolean') {
         // Registration excludes common words; model a previously held scalar spelling.
