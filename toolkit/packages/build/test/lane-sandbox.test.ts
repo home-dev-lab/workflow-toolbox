@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { accessSync, chmodSync, closeSync, constants, cpSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { EventEmitter } from 'node:events'
@@ -30,6 +31,7 @@ interface SandboxModule {
   announceDroppedBinds: (plan: SandboxPlan, write?: NoticeDestination) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
+  trustedSystemExecutable: (name: string, searchPath: string) => string | null
   suiteLockCli: (fs?: { isFile: (f: string) => boolean, isExecutable?: (f: string) => boolean }) => string
   probeRequestPaths: (paths: string[], options: { wrap: (bin: string, args: string[]) => [string, string[]], execPath: string, env: Record<string, string | undefined> }) => Record<string, string | null>
 }
@@ -442,6 +444,19 @@ describe('lane sandbox caller argument and notice regressions', () => {
       expect(p.readable).not.toContain(`/work/tree/${String(option)}`)
       expect(p.readable).toContain('/outside/a.md')
     } finally { p.dispose() }
+  })
+})
+
+describe('trusted system executable provenance', () => {
+  it.skipIf(process.platform === 'win32')('refuses a uniquely named untrusted executable on a writable PATH and names its path', () => {
+    const root = tempRoot('untrusted-executable')
+    const name = `wt-untrusted-probe-${randomBytes(16).toString('hex')}`
+    const bin = join(root, name)
+    writeFileSync(bin, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    chmodSync(bin, 0o755)
+    const find = () => sandbox.trustedSystemExecutable(name, root)
+    expect(find).toThrow(sandbox.LaneSandboxRefusal)
+    expect(find).toThrow(`untrusted ${name} at ${bin};`)
   })
 })
 
