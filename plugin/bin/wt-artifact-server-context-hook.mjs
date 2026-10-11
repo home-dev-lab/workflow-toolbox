@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { probeArtifactServer, readArtifactDiscovery } from './lib/artifact-server.mjs'
+import { isCompactSource } from './lib/session-start-source.mjs'
 
 // The session's own shell does not carry CLAUDE_PLUGIN_ROOT, so the announced command names
 // the binary beside this hook by its resolved absolute path.
@@ -11,7 +12,8 @@ const SERVER_BIN = join(dirname(fileURLToPath(import.meta.url)), 'wt-artifact-se
 
 try {
   const input = JSON.parse(readFileSync(0, 'utf8') || '{}')
-  if (!input?.agent_id) {
+  // A compaction re-runs SessionStart; the artifact-server line is start-of-session information.
+  if (!input?.agent_id && !isCompactSource(input)) {
     const deadline = Date.now() + 1_000
     let state = null
     while (Date.now() < deadline && !state) {

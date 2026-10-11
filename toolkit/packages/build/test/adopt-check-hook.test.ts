@@ -940,8 +940,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
   })
 })
 
-// Compaction re-fires SessionStart with source "compact": the hook then prints a digest (names only) instead of
-// re-injecting every per-file remedy that the session already received at startup.
+// Compaction re-fires SessionStart with source "compact". Adopted-copy drift does not change across a compaction and
+// the session start already reported it, so the hook prints nothing there; every other source is unchanged.
 function runHookWithSource(cwd: string, env: NodeJS.ProcessEnv, source: string | undefined, hook = HOOK): string {
   const payload: Record<string, unknown> = { hook_event_name: 'SessionStart', cwd }
   if (source !== undefined) payload['source'] = source
@@ -949,7 +949,6 @@ function runHookWithSource(cwd: string, env: NodeJS.ProcessEnv, source: string |
   const stdout = (res.stdout ?? '').trim()
   return stdout ? ((JSON.parse(stdout).hookSpecificOutput?.additionalContext as string) ?? '') : ''
 }
-const mdNames = (text: string) => [...new Set(text.match(/[A-Za-z0-9._-]+\.md\b/g) ?? [])].sort()
 
 /** Many edited files and one stale copy in the project dir, plus an unresolved trigger head. */
 function busyFixture(tag: string, projectDirName?: string) {
@@ -967,18 +966,15 @@ function busyFixture(tag: string, projectDirName?: string) {
   return f
 }
 
-describe('wt-adopt-check-hook — compact digest', () => {
-  it('names every file the startup output names, in far fewer characters', () => {
-    const f = busyFixture('compact-digest')
-    const startup = runHookWithSource(f.proj, f.env, 'startup')
-    const compact = runHookWithSource(f.proj, f.env, 'compact')
-    expect(readdirSync(join(f.proj, '.claude', 'rules')).filter((n) => n.endsWith('.md')).length).toBeGreaterThanOrEqual(10)
-    expect(startup).toContain('SESSION ACTION')
-    expect(mdNames(startup).length).toBeGreaterThanOrEqual(10)
-    expect(mdNames(compact)).toEqual(mdNames(startup))
-    expect(compact.length).toBeLessThan(3000)
-    expect(compact).not.toContain('SESSION ACTION')
-    expect(compact).not.toContain('--force')
+describe('wt-adopt-check-hook — silent after a compaction', () => {
+  it('prints nothing on compact, even with drift, an unresolved trigger head, notice-only mode or a stale root', () => {
+    const f = busyFixture('compact-silent')
+    expect(runHookWithSource(f.proj, f.env, 'startup')).toContain('SESSION ACTION')
+    expect(runHookWithSource(f.proj, f.env, 'compact')).toBe('')
+    expect(runHookWithSource(f.proj, { ...f.env, WT_ADOPT_REFRESH: 'notice-only' }, 'compact')).toBe('')
+    const { f: stale, staleEnv } = staleRootFixture()
+    expect(runHookWithSource(stale.proj, staleEnv, 'startup')).toContain('Comparison skipped for ')
+    expect(runHookWithSource(stale.proj, staleEnv, 'compact')).toBe('')
   })
 
   it('keeps startup, resume, clear and absent-source output byte-for-byte', () => {
@@ -988,62 +984,6 @@ describe('wt-adopt-check-hook — compact digest', () => {
     for (const source of ['resume', 'clear', undefined, 'unknown']) {
       expect(runHookWithSource(f.proj, f.env, source)).toBe(startup)
     }
-  })
-
-  it('prints a re-run command that reproduces the full startup output', () => {
-    const f = busyFixture('compact-rerun')
-    const startup = runHookWithSource(f.proj, f.env, 'startup')
-    const compact = runHookWithSource(f.proj, f.env, 'compact')
-    const command = /`(printf [^`]+)`/.exec(compact)?.[1]
-    expect(command).toBeTruthy()
-    // F9: a drift first detected at compaction was never printed at session start, so the closing line must
-    // describe what the command does (prints the current full remedies), not claim an earlier print.
-    expect(compact).not.toContain('were printed at session start')
-    expect(compact).toContain('prints the current full remedies')
-    const res = spawnSync('bash', ['-c', command as string], { encoding: 'utf8', env: f.env })
-    const shell = spawnSync('bash', ['-c', 'command -v bash; uname -s; command -v node'], { encoding: 'utf8', env: f.env })
-    const evidence = `command: ${command}\nstderr: ${res.stderr}\nshell: ${shell.stdout}${shell.stderr}`
-    expect(res.status, evidence).toBe(0)
-    expect(res.stdout.trim(), `the re-run command printed nothing\n${evidence}`).not.toBe('')
-    expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toBe(startup)
-  })
-
-  // A Windows command line handed to Git Bash collapses every doubled backslash to one (measured on the Windows runner: a
-  // 130-byte payload arrived as 124 bytes). A JSON-escaped backslash is such a doubled pair, so the payload must carry none.
-  // Legal directory names with a backslash exist on POSIX only, which is where this case can run; the real `bash -c` test
-  // above is the Windows proof.
-  it.skipIf(process.platform === 'win32')('prints a re-run command whose payload survives the Windows command-line backslash collapse', () => {
-    const f = busyFixture('compact-rerun-backslash', 'back\\slash')
-    expect(f.proj.endsWith('back\\slash')).toBe(true)
-    const startup = runHookWithSource(f.proj, f.env, 'startup')
-    expect(startup).toContain('SESSION ACTION')
-    const command = /`(printf [^`]+)`/.exec(runHookWithSource(f.proj, f.env, 'compact'))?.[1] as string
-    expect(command).toBeTruthy()
-    const collapsed = command.replace(/\\\\/g, '\\')
-    const res = spawnSync('bash', ['-c', collapsed], { encoding: 'utf8', env: f.env })
-    const evidence = `command: ${command}\ncollapsed: ${collapsed}\nstderr: ${res.stderr}`
-    expect(res.stdout.trim(), `the collapsed re-run command printed nothing\n${evidence}`).not.toBe('')
-    expect(JSON.parse(res.stdout).hookSpecificOutput.additionalContext).toBe(startup)
-  })
-
-  it('digest in notice-only mode hands the remedies to the owning session and stays silent when clean', () => {
-    const f = busyFixture('compact-notice')
-    const env = { ...f.env, WT_ADOPT_REFRESH: 'notice-only' }
-    const compact = runHookWithSource(f.proj, env, 'compact')
-    expect(compact).toContain('session that owns')
-    expect(compact).toContain('printf ')
-    expect(compact.length).toBeLessThan(3000)
-    expect(compact).not.toContain('SESSION ACTION')
-    const clean = fixture('compact-clean')
-    installInto(join(clean.proj, '.claude', 'rules'))
-    expect(runHookWithSource(clean.proj, clean.env, 'compact')).toBe('')
-  })
-
-  it('keeps the stale-root comparison-skipped line in digest mode', () => {
-    const { f, staleEnv } = staleRootFixture()
-    const context = runHookWithSource(f.proj, staleEnv, 'compact')
-    expect(context).toContain('Comparison skipped for ')
-    expect(context).not.toContain('SESSION ACTION: run')
   })
 })
 

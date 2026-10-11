@@ -32,15 +32,17 @@ Choose BOTH axes by task, never by identity or what session happens to run:
   code mapping — a wrong map costs more than the quota saved.
 - Effort: low (mechanical/extraction) · medium (read-and-report, scoped audits) · high
   (implementation, code mapping, diff review, most verifiers) · xhigh (only genuinely-hard
-  judgment). Pin effort on stable agent definitions via frontmatter — interactive spawn tool
-  has no per-spawn effort knob.
+  judgment). Pin BOTH on the spawn itself: the Agent tool takes `model` and `effort` per call,
+  and they override an agent type's frontmatter, which only supplies the default when the call
+  omits them. A custom agent type is for what a call cannot set (a `tools` allow-list, a
+  system-prompt contract, an observer pairing), never for a model or effort pin alone.
 
-Never set a blanket subagent-model env var: downgrades hard tasks, can silently override an
-explicit per-spawn model:. Agent self-reports a different model than pinned → check settings
-`env` blocks for such a var.
+Never set a blanket subagent-model env var: it downgrades every hard task whose spawn forgot its
+pin, and its force switch overrides even an explicit per-spawn model:. Agent self-reports a
+different model than pinned → check settings `env` blocks for such a var.
 
-Effort is task-relative, never identity-/project-relative: pin via per-agent-type frontmatter,
-not blanket user/project default — un-pinned inheritance is the bug, not the pin. Session-level
+Effort is task-relative, never identity-/project-relative: pin it per spawn, never as a blanket
+user/project default — un-pinned inheritance is the bug, not the pin. Session-level
 effort dial governs arbiter's own reasoning only, never what it spawns.
 
 Complexity triage of a CODE task = code-reading judgment, not cheap-tier classification: gate

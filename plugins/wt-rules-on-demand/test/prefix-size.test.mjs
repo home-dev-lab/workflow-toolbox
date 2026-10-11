@@ -431,3 +431,33 @@ test('the nightly never reads a missing config dir as ok and never creates it', 
   const first = await dailyRollback({ configDirs: [typo], projectsDirs: [], project, checkQuality: cleanQuality, prefix: { home, top: home } }).catch((error) => ({ error }));
   assert.ok(first.error || first.result.staticPrefix.checks.every((check) => check.status === 'unknown'), 'the default data dir must not hide the missing profile');
 });
+
+const historyFile = (config) => join(qualityDataDir(config, {}), 'static-prefix-history.jsonl');
+
+test('each daily run appends one history line beside the latest file and leaves the latest shape unchanged', async (t) => {
+  const { home, config, project } = await machine(t);
+  const options = { configDirs: [config], projectsDirs: [], project, dataDir: join(home, 'quality'), checkQuality: cleanQuality, prefix: { home, top: home, totalLimit: 51 } };
+  await dailyRollback(options);
+  await dailyRollback(options);
+  const lines = (await readFile(historyFile(config), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  const latest = JSON.parse(await readFile(prefixFile(config), 'utf8'));
+  assert.equal(lines.length, 2);
+  assert.match(lines[0].at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?[+-]\d\d:\d\d$/);
+  assert.equal(lines[0].status, 'over');
+  assert.equal(lines[0].floorChars, Math.min(...latest.checks.map((check) => check.totalChars)));
+  assert.deepEqual(lines[0].totals, latest.checks.map(({ configDir, root, totalChars, loadedChars, fileCount, status }) => ({ configDir, root, totalChars, loadedChars, fileCount, status })));
+  assert.deepEqual(Object.keys(latest).sort(), ['checks', 'contextTokens', 'finishedAt', 'limit', 'status', 'unresolved', 'warnAt']);
+});
+
+test('the history keeps at most 400 lines and drops the oldest on write', async (t) => {
+  const { home, config, project } = await machine(t);
+  const file = historyFile(config);
+  await mkdir(join(file, '..'), { recursive: true });
+  await writeFile(file, Array.from({ length: 400 }, (_, i) => JSON.stringify({ seed: i })).join('\n') + '\n');
+  await dailyRollback({ configDirs: [config], projectsDirs: [], project, dataDir: join(home, 'quality'), checkQuality: cleanQuality, prefix: { home, top: home, totalLimit: 51 } });
+  const lines = (await readFile(file, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(lines.length, 400);
+  assert.equal(lines[0].seed, 1);
+  assert.equal(lines[398].seed, 399);
+  assert.equal(lines[399].status, 'over');
+});

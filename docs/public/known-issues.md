@@ -319,7 +319,7 @@ Warns, never blocks, when a read-only, do-not-modify, or investigate-only brief 
 
 ### `wt-right-sized-spawn-guard-hook.mjs` — expensive-default spawn blocker (PreToolUse on Agent)
 
-Refuses a new absent-type or `general-purpose` Agent spawn unless its prompt contains an unfenced `general-purpose because: <reason>` sentence. Resumes and named agent types pass untouched. The refusal names the plugin-scoped right-sized agents and explains that a newly created dedicated agent requires a new session for host discovery. Its manifest registration has a five-second timeout so an unclosed stdin cannot hold the host indefinitely; timeout and internal-error paths fail open.
+Refuses a new absent-type or `general-purpose` Agent spawn unless it pins both `model` (anything but `inherit`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`), or its prompt contains an unfenced `general-purpose because: <reason>` sentence. Resumes and named agent types pass untouched. The refusal names the plugin-scoped right-sized agents and explains that a newly created dedicated agent requires a new session for host discovery. Its manifest registration has a five-second timeout so an unclosed stdin cannot hold the host indefinitely; timeout and internal-error paths fail open.
 
 ### `wt-workflow-model-guard-hook.mjs` — inherited-model blocker (PreToolUse on Workflow)
 
@@ -577,6 +577,26 @@ Warns (never blocks) when a Bash command references the bare token `PIPESTATUS` 
 Measured against 163 distinct real Bash commands referencing `PIPESTATUS`, drawn from every session transcript across both this machine's config dirs and replayed against the guard's own executable as PreToolUse payloads: 163/163 fired. Reading a sample confirms the guard cannot distinguish a genuine bash-only reference from prose merely discussing the trap (a heredoc documenting the pattern, a script under test) — the same known false-positive family as the sibling guards in this directory — which is why it ships warn-only rather than blocking; a false positive there is a nag, never a lost command.
 
 It deliberately does not cover: the zsh-correct form `$pipestatus[1]` (lowercase) — deliberately silent, that is the fix; `PIPESTATUS` appearing only in prose; a shell environment where `PIPESTATUS` is genuinely bash and genuinely correct — the guard cannot see which shell interprets a given command, so it warns unconditionally regardless of the actual shell; or any command other than a Bash tool_use.
+
+### Skill body size — authoring-time report
+
+`pnpm quality` reports every shipped `plugin/skills/*/SKILL.md` above **8000 Unicode
+characters**, naming the directory and exact size. Move sections to `references/`
+and keep the body short: invoked skill bodies are re-injected after every compaction.
+In a main session, read the needed section or delegate large reference work.
+`WT_SKILL_SIZE_WARN_CHARS` accepts a non-negative safe integer (including zero);
+unparsable values fall back to the shared 8000-character default.
+
+This check is report-only because existing shipped bodies exceed the default. It counts
+the complete UTF-8-decoded file by Unicode code points, including frontmatter and line
+endings, rather than bytes, tokens, or supporting reference files. It scans only immediate
+real skill directories, skipping symlinked directories/junctions and linked/nonregular
+bodies. Filesystem read errors still fail the quality command; oversized bodies do not.
+The adopt installer has no user/project skill-directory scan, so it does not report their
+sizes. Nothing runs on a `Skill` call: measurement happens only in the authoring gate,
+avoiding invocation-time filesystem latency. Windows/macOS use native Node path handling;
+CRLF files count the extra carriage returns. Concurrent filesystem replacement is not
+guarded by this content check.
 
 ### `wt-find-newermt-format-guard-hook.mjs` — non-ISO-8601 `find -newermt` argument warner (PreToolUse on Bash)
 

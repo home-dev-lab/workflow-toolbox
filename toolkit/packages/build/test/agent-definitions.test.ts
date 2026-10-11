@@ -226,3 +226,21 @@ describe('agent definitions', () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 })
+
+describe('shipped read-only agents', () => {
+  it('every shipped agent whose tools allow-list has no Edit, Write or Bash sets omitClaudeMd: true', () => {
+    const dir = path.resolve(import.meta.dirname, '../../../../plugin/agents')
+    const data = (f: string) => {
+      const fm = parseFrontmatter(fs.readFileSync(path.join(dir, f), 'utf8'))
+      return fm.ok ? (fm.data as Record<string, unknown>) : {}
+    }
+    const isReadOnly = (tools: unknown) => {
+      if (tools === undefined) return false
+      const list = (Array.isArray(tools) ? tools : String(tools).split(',')).map((t) => String(t).trim())
+      return !list.some((t) => ['Edit', 'Write', 'Bash'].includes(t))
+    }
+    const readOnly = fs.readdirSync(dir).filter((f) => f.endsWith('.md') && isReadOnly(data(f).tools))
+    expect(readOnly).toContain('wt-reviewer.md')
+    expect(readOnly.filter((f) => String(data(f).omitClaudeMd) !== 'true')).toEqual([])
+  })
+})

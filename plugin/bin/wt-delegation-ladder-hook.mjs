@@ -20,6 +20,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { isCompactSource } from './lib/session-start-source.mjs'
 
 /** Read the hook's JSON payload from stdin (fd 0); tolerate an empty/absent one. */
 function readInput() {
@@ -131,6 +132,8 @@ function buildLadder() {
 function main() {
   const input = readInput()
   if (typeof input.agent_id === 'string' && input.agent_id) return
+  // After a compaction the auto-loaded delegation rules are re-read anyway: no second copy.
+  if (isCompactSource(input)) return
   // The session's project dir comes from the payload's `cwd` (a standard field on
   // every Claude Code hook event). If it is absent — empty/malformed stdin, or a
   // payload without cwd — we cannot know which project this is, so we FAIL SAFE and

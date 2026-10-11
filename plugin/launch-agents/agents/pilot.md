@@ -5,6 +5,7 @@ effort: medium
 memory: project
 observer: pilot-watchdog
 observerMessage: Judge drift only, against the pilot's own stated duties — report when it skips a gate, labels an anomaly without investigating, drifts from the card's scope, or claims done without fresh evidence. The expected steady state is silence.
+observeSubagents: false
 # ⚠ NO `disallowedTools` HERE — IT REMOVES THE TOOL, NOT THE INVOCATION.
 # A single `Bash(...)` entry in an agent's disallowedTools disables the ENTIRE Bash tool for
 # that agent: every command returns "Bash exists but is not enabled in this context". Proven

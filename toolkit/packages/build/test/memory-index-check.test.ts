@@ -17,7 +17,7 @@
 //   4. fiches on disk reachable by NO path           → FLAGGED, exit 1,
 //      even when the line count is low
 //   5. a store with no index at all                  → silent, exit 0
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -29,6 +29,7 @@ import { checkStore } from '../../../../plugin/bin/lib/memory-index-check-core.m
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(REPO_ROOT, 'plugin/bin/wt-memory-index-check.mjs')
+const HOOK = join(REPO_ROOT, 'plugin/bin/wt-memory-index-check-hook.mjs')
 
 let tmpDirs: string[] = []
 function makeStore() {
@@ -1269,5 +1270,51 @@ describe('a [[slug]] resolves by frontmatter name as well as by filename', () =>
     expect(report.danglingRefs).toEqual([])
     expect(report.unreachableFiches).toEqual([])
     expect(status).toBe(0)
+  })
+})
+
+// The SessionStart hook that wraps the probe: it speaks only on a flagged store, keeps the defect
+// lines after a compaction (the session must act on them), and never re-injects the per-entry
+// counts, which are a measurement, not a defect.
+describe('wt-memory-index-check-hook: what reaches the session', () => {
+  /** A project whose store (under an isolated config dir) has two indexed fiches, optionally one unreachable. */
+  function project(lost: boolean) {
+    const root = makeStore()
+    const cwd = join(root, 'proj')
+    const store = join(root, 'cfg', 'projects', cwd.replace(/[^A-Za-z0-9-]/g, '-'), 'memory')
+    mkdirSync(store, { recursive: true })
+    fiche(store, 'fact-a', 'A fact.\n')
+    fiche(store, 'fact-b', 'Another fact.\n')
+    if (lost) fiche(store, 'lost-fact', 'Nothing points here.\n')
+    writeFileSync(join(store, 'MEMORY.md'), '# Memory index\n- [Fact A](fact-a.md) — a fact\n- [Fact B](fact-b.md) — another\n')
+    return { cwd, env: { ...process.env, CLAUDE_CONFIG_DIR: join(root, 'cfg') } }
+  }
+  function context(p: ReturnType<typeof project>, source?: string): string {
+    const payload = { hook_event_name: 'SessionStart', cwd: p.cwd, ...(source ? { source } : {}) }
+    const res = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(payload), encoding: 'utf8', env: p.env })
+    expect(res.status).toBe(0)
+    const out = (res.stdout ?? '').trim()
+    return out ? (JSON.parse(out).hookSpecificOutput.additionalContext as string) : ''
+  }
+
+  it('prints nothing for a clean store, at startup and after a compaction', () => {
+    const p = project(false)
+    expect(context(p, 'startup')).toBe('')
+    expect(context(p, 'compact')).toBe('')
+  })
+
+  it('keeps a real defect after a compaction, the same text as at startup', () => {
+    const p = project(true)
+    const startup = context(p, 'startup')
+    expect(startup).toContain('KNOWLEDGE-BASE INDEX PROBLEM')
+    expect(startup).toContain('unreachable: lost-fact.md')
+    expect(context(p, 'compact')).toBe(startup)
+    expect(context(p)).toBe(startup)
+  })
+
+  it('drops the per-entry count lines and names the command that prints them', () => {
+    const startup = context(project(true), 'startup')
+    expect(startup).not.toMatch(/fronts \d+ fiche\(s\) behind it/)
+    expect(startup).toContain('2 per-entry count line(s) omitted; full report: node ')
   })
 })

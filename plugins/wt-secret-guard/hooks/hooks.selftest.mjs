@@ -4209,4 +4209,133 @@ await test('default detection treats the last line as unfinished until a newline
   const streamed = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${line}\n` }, { kind: 'stop' }]);
   assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join(''), `${line}\n`);
 }));
+await test('mid-line quoted real assignment stays masked and held for later bare streams', () => freshVault(async () => {
+  const key = 'TO' + 'KEN';
+  const value = ['fixture', '-Q7p9', '-V2m8'].join('');
+  const text = `environment follows: ${key}='${value}'`;
+  const split = text.indexOf(value) + 5;
+  const first = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: text.slice(0, split) },
+    { kind: 'text', index: 0, text: text.slice(split) },
+  ]);
+  const masked = first.chunks.map((chunk) => chunk.text ?? '').join('');
+  assert.equal(masked.includes(value), false, 'real assignment value escaped');
+  assert.match(masked, /secret:/);
+  assert.ok([...testState().values()].some((entry) => entry.value === value && !entry.ephemeral));
+  const later = await collectStream(turnStep, [{ kind: 'text', index: 0, text: value }]);
+  const bare = later.chunks.map((chunk) => chunk.text ?? '').join('');
+  assert.equal(bare.includes(value), false, 'later bare real value escaped');
+  assert.match(bare, /secret:/);
+}));
+const spacedCredential = ['violet7', 'maple9', 'comet2'].join(' ');
+const opaqueCredential = ['Q7p9', 'V2m8'].join('');
+const opaqueTail = ['R4t6', 'Y1u3'].join('');
+const protectionCases = [
+  ['HIGH same-response bare copy', spacedCredential, `password="${spacedCredential}"`, 'true'],
+  ['HIGH assignment spaces', spacedCredential, `password="${spacedCredential}"`, 'true'],
+  ['HIGH op-output spaces', spacedCredential, `password: ${spacedCredential}`, 'op item get example'],
+  ['HIGH key-value spaces', spacedCredential, `{"password":"${spacedCredential}"}`, 'true'],
+  ['HIGH environment-dump spaces', spacedCredential, `SERVICE_SECRET=${spacedCredential}`, 'true'],
+  ['HIGH grouped recovery password', ['8714', '6205', '9938'].join(' '), null, 'true'],
+  ...[
+    ['internal LF', `${opaqueCredential}\n${opaqueTail}`],
+    ['leading LF', `\n${opaqueCredential}`],
+    ['trailing LF', `${opaqueCredential}\n`],
+    ['internal tab', `${opaqueCredential}\t${opaqueTail}`],
+    ['leading U+2028', `\u2028${opaqueCredential}`],
+    ['trailing CR', `${opaqueCredential}\r`],
+    ['leading U+2029', `\u2029${opaqueCredential}`],
+    ['internal NBSP', `${opaqueCredential}\u00a0${opaqueTail}`],
+  ].map(([name, value]) => [`MED ${name}`, value, null, 'true']),
+  ['LOW api_key prefix', `api_key: ${opaqueCredential}`, null, 'true'],
+  ['LOW token prefix control', `token: ${opaqueCredential}`, null, 'true'],
+];
+async function assertProtectedCopies(value, input, command) {
+  // Refresh the stream's size-keyed fragment cache after the test-only vault reset.
+  await collectStream(turnStep, [{ kind: 'text', index: 0, text: '' }]);
+  const response = await bash($, { tool: 'Bash', command }, async () => ({
+    text: value, result: { stdout: input, stderr: value },
+  }));
+  assert.equal(response.text.includes(value), false, 'same-response earlier bare field escaped');
+  assert.equal(response.result.stdout.includes(value), false, 'first assignment escaped');
+  assert.equal(response.result.stderr.includes(value), false, 'same-response later bare field escaped');
+  assert.match(response.result.stdout, /secret:/);
+  assert.ok([...testState().values()].some((entry) => entry.value === value && !entry.ephemeral),
+    'exact credential bytes were not held');
+  const later = await call('true', value);
+  assert.equal(later.text.includes(value), false, 'later bare tool output escaped');
+  assert.match(later.text, /secret:/);
+  const stream = await collectStream(turnStep, [{ kind: 'text', index: 0, text: value }]);
+  const rendered = stream.chunks.map((chunk) => chunk.text ?? '').join('');
+  assert.equal(rendered.includes(value), false, 'later bare assistant stream escaped');
+  assert.match(rendered, /secret:/);
+}
+for (const [name, value, input, command] of protectionCases) {
+  await test(`Astra protection ${name}`, () => freshVault(async () => {
+    await assertProtectedCopies(value, input ?? `password="${value}"`, command);
+  }));
+}
+await test('closed multiline assignment keeps full capture across stream chunks', () => freshVault(async () => {
+  const value = `${opaqueCredential}\n${opaqueTail}`;
+  const first = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: `password="${opaqueCredential}\n` },
+    { kind: 'text', index: 0, text: `${opaqueTail}"` },
+  ]);
+  const rendered = first.chunks.map((chunk) => chunk.text ?? '').join('');
+  assert.equal(rendered.includes(opaqueCredential), false);
+  assert.equal(rendered.includes(opaqueTail), false);
+  assert.match(rendered, /secret:/);
+  assert.ok([...testState().values()].some((entry) => entry.value === value && !entry.ephemeral));
+  const later = await collectStream(turnStep, [{ kind: 'text', index: 0, text: value }]);
+  assert.equal(later.chunks.map((chunk) => chunk.text ?? '').join('').includes(value), false);
+}));
+const unclosedCredentialCases = [
+  ['ordinary password', `password="${opaqueCredential}${opaqueTail}`, '', 'assignment'],
+  ['spaced passphrase', `password='${spacedCredential}`, '', 'assignment'],
+  ['grouped recovery code', `password="${['8714', '6205', '9938'].join(' ')}`, '', 'assignment'],
+  ['hexadecimal token', `token="${['9f27c4a1', '8e63b052', 'd749ac80', '61be35f2'].join('')}`, '', 'assignment'],
+  ['base64 shared secret', `secret="${['m7Q2v9L4', 'x8N1p6R3', 't5Y0u2I7', 'o9P4a6S8', 'd1F3g5H7'].join('')}`, '', 'assignment'],
+  ['vendor prefix', `token="${'gl' + 'pat-'}${opaqueCredential}${opaqueTail}${'N5' + 'z0'}`, '', 'assignment'],
+  ['JSON password', `{"password":"${opaqueCredential}${opaqueTail}`, '{"', 'assignment'],
+  ['inline colon', `Use password: "${opaqueCredential}${opaqueTail}`, 'Use ', 'assignment'],
+  ['suffixed key', `client_secret="${opaqueCredential}${opaqueTail}`, 'client_', 'assignment'],
+  ['multiline password', `password="${opaqueCredential}\n${opaqueTail}`, '', 'assignment'],
+  ['truncated GitHub', `token="${'gh' + 'p_'}${'abcdefghijklmnopqrstuvwxyz' + '01234'}`, '', 'assignment'],
+  ['multiline environment', `SERVICE_SECRET="${opaqueCredential}\n${opaqueTail}`, 'SERVICE_', 'assignment'],
+  ['multiline colon', `password: "${opaqueCredential}\n${opaqueTail}`, '', 'assignment'],
+];
+async function normalizedStream(chunks) {
+  await collectStream(turnStep, [{ kind: 'text', index: 0, text: '' }]);
+  const result = await collectStream(turnStep, chunks);
+  const { REDACTION_NOTE } = await import('./constants.js');
+  return result.chunks.map((chunk) => chunk.text ?? '').join('')
+    .replaceAll(REDACTION_NOTE, '[NOTE]').replace(/secret:([\w-]+)#[a-f0-9]+/g, 'secret:$1#<id>');
+}
+for (const [name, input, prefix, kind] of unclosedCredentialCases) {
+  await test(`Astra R3 unfinished ${name} matches base masking`, () => freshVault(async () => {
+    const output = await normalizedStream([{ kind: 'text', index: 0, text: input }]);
+    assert.equal(output, `${prefix}secret:${kind}#<id>\n[NOTE]`, 'unfinished credential must match base masking exactly');
+  }));
+}
+for (const variant of ['non-text event', 'index change']) {
+  await test(`Astra R3 internal flush ${variant} matches base masking`, () => freshVault(async () => {
+    const chunks = [{ kind: 'text', index: 0, text: `password="${opaqueCredential}` }];
+    if (variant === 'non-text event') chunks.push({ kind: 'engine' });
+    chunks.push({ kind: 'text', index: variant === 'index change' ? 1 : 0, text: `${opaqueTail}"` });
+    const output = await normalizedStream(chunks);
+    assert.equal(output, `secret:assignment#<id>\n[NOTE]${opaqueTail}"`, 'internal flush must match base masking exactly');
+  }));
+}
+await test('R3 sentence-shaped tail stays masked at an internal flush', () => freshVault(async () => {
+  const output = await normalizedStream([
+    { kind: 'text', index: 0, text: "token='See the docs for the details here." },
+    { kind: 'engine' },
+  ]);
+  assert.equal(output, 'secret:assignment#<id>\n[NOTE]');
+}));
+await test('R3 opaque credential surrounded by sentence prose stays masked', () => freshVault(async () => {
+  const output = await normalizedStream([{ kind: 'text', index: 0,
+    text: `password="See the docs for ${opaqueCredential}${opaqueTail} and the details here.` }]);
+  assert.equal(output, 'secret:assignment#<id>\n[NOTE]');
+}));
 process.exit(failures ? 1 : 0);

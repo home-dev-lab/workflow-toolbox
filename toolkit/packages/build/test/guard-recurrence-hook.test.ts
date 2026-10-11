@@ -231,42 +231,29 @@ describe('guard-recurrence-hook — the SessionStart count surface', () => {
   })
 })
 
-describe('guard-recurrence-hook — compact digest (SessionStart source=compact)', () => {
-  function manyGroups(dir: string, n: number): void {
-    const lines: Array<Record<string, unknown>> = []
-    for (let g = 0; g < n; g++) {
-      // Distinct counts so the top-3 order is decidable: group g fires g+3 times.
-      for (let i = 0; i < g + 3; i++) lines.push(event(`wt-some-long-guard-name-number-${g}-hook.mjs`, { class: `class-${g}`, session: 's1' }))
-    }
-    writeWeek(dir, lines)
+function manyGroups(dir: string, n: number): void {
+  const lines: Array<Record<string, unknown>> = []
+  for (let g = 0; g < n; g++) {
+    // Distinct counts so the top-3 order is decidable: group g fires g+3 times.
+    for (let i = 0; i < g + 3; i++) lines.push(event(`wt-some-long-guard-name-number-${g}-hook.mjs`, { class: `class-${g}`, session: 's1' }))
   }
-  const ctx = (out: string): string => JSON.parse(out).hookSpecificOutput.additionalContext as string
+  writeWeek(dir, lines)
+}
+const ctx = (out: string): string => JSON.parse(out).hookSpecificOutput.additionalContext as string
 
-  it('on compact keeps header, the 3 highest groups, a "+ N more" line, a one-sentence caveat and the Full picture command, under 1,200 chars', () => {
+describe('guard-recurrence-hook — silent after a compaction (SessionStart source=compact)', () => {
+  it('on compact prints nothing, however many groups crossed the threshold', () => {
     const dir = mkJournalDir()
     manyGroups(dir, 22)
     const { out, code } = run(dir, { hook_event_name: 'SessionStart', source: 'compact' })
-    const text = ctx(out)
     expect(code).toBe(0)
-    expect(text.length).toBeLessThan(1200)
-    const groupLines = text.split('\n').filter((l) => l.startsWith('  wt-some-long-guard'))
-    expect(groupLines).toHaveLength(3)
-    expect(groupLines[0]).toContain('number-21-hook.mjs')
-    expect(groupLines[2]).toContain('number-19-hook.mjs')
-    expect(text).toContain('+ 19 more groups at or above the threshold')
-    expect(text).toMatch(/event count, not a confirmed-defect count/i)
-    expect(text).toContain('Full picture: ')
-    expect(text).toContain('wt-guard-journal-scan.mjs')
+    expect(out).toBe('')
+    expect(run(dir, { source: 'compact' }).out).toBe('')
   })
 
-  it('on compact with at most 3 groups prints no "+ N more" line', () => {
-    const dir = mkJournalDir()
-    manyGroups(dir, 2)
-    const text = ctx(run(dir, { source: 'compact' }).out)
-    expect(text).not.toContain('more groups')
-    expect(text).toContain('Full picture:')
-  })
+})
 
+describe('guard-recurrence-hook — non-compact and malformed payloads', () => {
   it('every non-compact source keeps the full list, with the long caveat', () => {
     const dir = mkJournalDir()
     manyGroups(dir, 22)
@@ -278,20 +265,6 @@ describe('guard-recurrence-hook — compact digest (SessionStart source=compact)
     }
   })
 
-  it('F3: the compact "Full picture" line is an executable command that pins the journal dir and lists the groups', () => {
-    const dir = mkJournalDir()
-    manyGroups(dir, 5)
-    const text = ctx(run(dir, { source: 'compact' }).out)
-    const line = text.split('\n').find((l) => l.startsWith('Full picture: ')) as string
-    expect(line).not.toContain('<plugin>')
-    // Run it through a shell with the journal env pointed ELSEWHERE: only the printed prefix can find the groups.
-    const elsewhere = join(mkdtempSync(join(tmpdir(), 'wt-gr-else-')), 'nope')
-    dirs.push(elsewhere)
-    const res = spawnSync('sh', ['-c', line.slice('Full picture: '.length)], { encoding: 'utf8', env: { ...process.env, HOME: elsewhere, WT_GUARD_JOURNAL_DIR: elsewhere } })
-    expect(res.status).toBe(0)
-    for (let g = 0; g < 5; g++) expect(res.stdout).toContain(`number-${g}-hook.mjs`)
-  })
-
   it('F6: stdin that parses to null/false/0 behaves as before (full list); only unparseable stdin is silent', () => {
     const dir = mkJournalDir()
     manyGroups(dir, 4)
@@ -301,10 +274,9 @@ describe('guard-recurrence-hook — compact digest (SessionStart source=compact)
     expect(run(dir, {}, '{not json').out).toBe('')
   })
 
-  it('F7: source=compact on a non-SessionStart event keeps the full output; an absent event name counts as SessionStart', () => {
+  it('F7: source=compact on a non-SessionStart event keeps the full output', () => {
     const dir = mkJournalDir()
     manyGroups(dir, 22)
     expect(ctx(run(dir, { hook_event_name: 'UserPromptSubmit', source: 'compact' }).out)).toContain('Records written before origin tracking remain unknown')
-    expect(ctx(run(dir, { source: 'compact' }).out)).toContain('+ 19 more groups')
   })
 })

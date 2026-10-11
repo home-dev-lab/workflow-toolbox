@@ -53,6 +53,9 @@ describe('wt-config', () => {
     expect(output.options.find((row: { option: string }) => row.option === 'pilot_model')).toMatchObject({ effective: 'haiku', source: 'env' })
   })
 
+})
+
+describe('wt-config — SessionStart context', () => {
   it('emits main-session context and stays silent for a subagent', () => {
     const f = fixture()
     const run = (payload: unknown) => spawnSync(process.execPath, [HOOK], { cwd: f.project, env: f.env, input: JSON.stringify(payload), encoding: 'utf8' })
@@ -64,6 +67,15 @@ describe('wt-config', () => {
     expect(context).toContain('wt-what-is-running@inline')
     expect(context).toContain('not auto-migrated')
     expect(run({ hook_event_name: 'SessionStart', cwd: f.project, agent_id: 'child' }).stdout).toBe('')
+  })
+
+  it('is silent after a compaction and keeps its startup output unchanged', () => {
+    const f = fixture()
+    const run = (payload: unknown) => spawnSync(process.execPath, [HOOK], { cwd: f.project, env: f.env, input: JSON.stringify(payload), encoding: 'utf8' })
+    expect(run({ hook_event_name: 'SessionStart', source: 'compact', cwd: f.project }).stdout).toBe('')
+    const startup = run({ hook_event_name: 'SessionStart', source: 'startup', cwd: f.project }).stdout
+    expect(startup).toContain('not auto-migrated')
+    expect(run({ hook_event_name: 'SessionStart', cwd: f.project }).stdout).toBe(startup)
   })
 
   it('reports the fallback in SessionStart context when a model plugin option is empty', () => {

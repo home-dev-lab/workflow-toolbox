@@ -855,7 +855,7 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
 describe('package scripts: which ones are light', () => {
   const scripts = (JSON.parse(readFileSync(join(ROOT, 'toolkit/package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts
   const light = (command: string) => /with-suite-lease\.mjs --light --/.test(command)
-  const LIGHT_SET = ['typecheck', 'lint', 'quality', 'quality:lint', 'quality:dup', 'quality:dead', 'quality:deps', 'test:spawning-files', 'test:ambient-state', 'test:fixed-waits', 'test:cross-repo']
+  const LIGHT_SET = ['typecheck', 'lint', 'quality', 'quality:lint', 'quality:changed', 'quality:dup', 'quality:dead', 'quality:deps', 'test:spawning-files', 'test:ambient-state', 'test:fixed-waits', 'test:cross-repo']
 
   it('C-L3 marks exactly the intended scripts light', () => {
     for (const name of LIGHT_SET) expect(light(scripts[name] ?? ''), name).toBe(true)
