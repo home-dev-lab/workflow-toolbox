@@ -59,20 +59,24 @@ export function detectOrphanWatchers({ procRoot = DEFAULT_PROC_ROOT, platform = 
     return { status: 'unavailable', reason: 'watcher orphan detection unavailable on this platform: /proc required', orphans, reports }
   }
   for (const entry of entries) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
-    const pid = Number(entry.name)
-    if (pid === selfPid) continue
-    const row = inspectWatcher(procRoot, pid)
-    if (!row) continue
-    if (row.reason) {
-      reports.push(row)
-      continue
-    }
-    if (!row.cwd.endsWith(DELETED_SUFFIX)) continue
-    if (row.ppid === 1) orphans.push(row)
-    else reports.push({ ...row, reason: `deleted cwd but ppid=${row.ppid}, not init; no signal sent` })
+    collectOrphanWatcher(entry, procRoot, selfPid, orphans, reports)
   }
   return { status: 'known', orphans, reports }
+}
+
+function collectOrphanWatcher(entry, procRoot, selfPid, orphans, reports) {
+  if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) return
+  const pid = Number(entry.name)
+  if (pid === selfPid) return
+  const row = inspectWatcher(procRoot, pid)
+  if (!row) return
+  if (row.reason) {
+    reports.push(row)
+    return
+  }
+  if (!row.cwd.endsWith(DELETED_SUFFIX)) return
+  if (row.ppid === 1) orphans.push(row)
+  else reports.push({ ...row, reason: `deleted cwd but ppid=${row.ppid}, not init; no signal sent` })
 }
 
 function signalVerifiedOrphan(candidate, current, kill, killed, detected) {

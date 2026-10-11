@@ -148,8 +148,7 @@ function processExists(pid, { platform = laneHostPlatform, procRoot = DEFAULT_PR
   if (platform === 'linux') return procfsProcessExists(pid, { root: procRoot, platform })
   if (platform === 'darwin') {
     const result = darwinProcessTable(execFile, Number(pid))
-    if (result.status === 'unavailable') return null
-    return result.status === 0 && result.value.has(Number(pid))
+    return darwinProcessExists(result, pid)
   }
   if (platform === 'win32') {
     const result = powershellProcess(pid, execFile, timeoutMs)
@@ -159,10 +158,19 @@ function processExists(pid, { platform = laneHostPlatform, procRoot = DEFAULT_PR
   return null
 }
 
+function darwinProcessExists(result, pid) {
+  if (result.status === 'unavailable') return null
+  return result.status === 0 && result.value.has(Number(pid))
+}
+
+function darwinProcessState(result, pid) {
+  return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
+}
+
 function processState(pid, { platform = process.platform, procRoot = DEFAULT_PROC_ROOT, spawnSync: execFile = spawnSync } = {}) {
   if (platform === 'darwin') {
     const result = darwinProcessTable(execFile, Number(pid))
-    return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
+    return darwinProcessState(result, pid)
   }
   if (platform !== 'linux') return null
   try {
@@ -186,31 +194,51 @@ function identityStatus(expected, { inspect, platform, procRoot, processExists: 
 }
 
 export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = DEFAULT_PROC_ROOT, processExists: exists = processExists, processState: state = processState } = {}) {
+  return classifyLaneRecord(record, { inspect, platform, procRoot, processExists: exists, processState: state })
+}
+
+function classifyLaneRecord(record, probes) {
   if (!record || typeof record !== 'object' || typeof record.runId !== 'string') {
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
   if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
-  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, startTimeApproximate: record.workerStartTimeApproximate, image: record.workerImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
+  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, startTimeApproximate: record.workerStartTimeApproximate, image: record.workerImage }, probes)
   const child = record.childPid === null && record.childArgv === null
     ? 'not-spawned'
-    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, startTimeApproximate: record.childStartTimeApproximate, image: record.childImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
-  if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
-  if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
-  if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
-  if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
+    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, startTimeApproximate: record.childStartTimeApproximate, image: record.childImage }, probes)
+  return classifyLaneIdentities(record, worker, child, probes.platform)
+}
+
+function classifyLaneIdentities(record, worker, child, platform) {
+  const early = classifyGoneOrLaunching(record, worker, child)
+  if (early) return early
   if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
-  if (worker === 'unknown' || child === 'unknown') {
-    const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
-      ? `worker identity ${record.workerIdentity}`
-      : child === 'unknown' && typeof record.childIdentity === 'string'
-        ? `child identity ${record.childIdentity}`
-        : null
-    return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
-  }
+  if (worker === 'unknown' || child === 'unknown') return classifyUnknownIdentity(record, worker, child, platform)
   if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
     return { status: record.state, reason: record.state, worker, child }
   }
   return { status: 'unknown', reason: 'inconsistent-record', worker, child }
+}
+
+function classifyGoneOrLaunching(record, worker, child) {
+  if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
+  if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
+  return classifyGoneWorker(worker, child)
+}
+
+function classifyGoneWorker(worker, child) {
+  if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
+  if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
+  return null
+}
+
+function classifyUnknownIdentity(record, worker, child, platform) {
+  const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
+    ? `worker identity ${record.workerIdentity}`
+    : child === 'unknown' && typeof record.childIdentity === 'string'
+      ? `child identity ${record.childIdentity}`
+      : null
+  return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
 }
 
 function terminationOptions(options) {
@@ -381,12 +409,28 @@ function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts,
   return { pid, argv: Array.isArray(recordedArgv) ? recordedArgv : [], startTime, image: { name, path: typeof result.value.Path === 'string' && result.value.Path ? result.value.Path : null }, groupId: null, cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = DEFAULT_PROC_ROOT, platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1, reportEvidence = null } = {}) {
+function defaultInspectionTimeout(platform) {
+  return platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined
+}
+
+function defaultInspectionAttempts(platform, recordedArgv) {
+  return platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1
+}
+
+export function inspectProcess(pid, { procRoot = DEFAULT_PROC_ROOT, platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = defaultInspectionTimeout(platform), recordedArgv = null, attempts = defaultInspectionAttempts(platform, recordedArgv), reportEvidence = null } = {}) {
+  return inspectProcessOnPlatform(pid, procRoot, platform, execFile, { captureCwd, timeoutMs, recordedArgv, attempts, reportEvidence })
+}
+
+function inspectProcessOnPlatform(pid, procRoot, platform, execFile, { captureCwd, timeoutMs, recordedArgv, attempts, reportEvidence }) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
   if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
   if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv, attempts, reportEvidence)
   if (platform !== 'linux') return null
   const procfs = createProcfs({ root: procRoot, platform })
+  return inspectLinuxProcess(pid, procfs)
+}
+
+function inspectLinuxProcess(pid, procfs) {
   try {
     const argv = procfs.readCommandLine(pid).toString().split('\0').filter(Boolean)
     const cwd = procfs.readWorkingDirectory(pid)

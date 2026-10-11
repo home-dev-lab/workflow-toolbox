@@ -58,6 +58,9 @@ describe('host procfs operations', () => {
     expect(procfs.readLoadAverage('utf8')).toBe('1.25 2.50 3.00 1/2 42\n')
   })
 
+})
+
+describe('host procfs injected readers', () => {
   it('passes bounded-reader arguments and resolved cwd through the injected seam', () => {
     const { root, pid } = fixture()
     const readFile = vi.fn(() => 'bounded')
@@ -87,6 +90,9 @@ describe('host procfs operations', () => {
     expect(host!.procfsProcessExists(pid, { root, platform: 'linux', stat: denied })).toBeNull()
   })
 
+})
+
+describe('host procfs presence', () => {
   it.each(['ENOENT', 'ENOTDIR', 'ESRCH'])('names %s as an absent pid', (code) => {
     const stat = () => { throw Object.assign(new Error('gone'), { code }) }
     expect(host!.procfsProcessPresence(42, { platform: 'linux', stat })).toEqual({ status: 'absent' })
@@ -119,6 +125,9 @@ describe('host procfs operations', () => {
     expect(realpath).not.toHaveBeenCalled()
   })
 
+})
+
+describe('host procfs roots and permissions', () => {
   it('keeps the injected listing root spelling and options intact', () => {
     const readdir = vi.fn(() => [])
     const procfs = host!.createProcfs({ root: 'fake-tree/', platform: 'linux', readdir })
