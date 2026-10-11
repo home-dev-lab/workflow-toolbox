@@ -75,7 +75,8 @@ export function trackHostOp(promise) {
   pendingHostOps.add(promise);
   const forget = () => { pendingHostOps.delete(promise); };
   promise.then(forget, forget);
-  return promise;
+  // Track the original, but leave the caller's rejection unhandled unless the caller handles it.
+  return promise.then((value) => value);
 }
 
 const tracked = (call) => (...args) => {
@@ -88,7 +89,18 @@ const trackedMembers = (surface) => Object.fromEntries(Object.entries(surface).m
 
 const SETTLE_LIMIT_MS = 10_000;
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
-const expiry = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref(); });
+const expiry = (ms) => {
+  let timer;
+  const promise = new Promise((resolve) => { timer = setTimeout(resolve, ms); });
+  return { promise, cancel: () => clearTimeout(timer) };
+};
+
+function abandonHostOps(limitMs) {
+  const abandoned = [...pendingHostOps];
+  // A forgotten call can still resume and touch its sandbox; abandoning it avoids poisoning later teardowns.
+  for (const promise of abandoned) pendingHostOps.delete(promise);
+  throw new Error(`${abandoned.length} host call(s) still pending after ${limitMs} ms`);
+}
 
 // Waits until a full event-loop turn passes with no host call pending: a call chained after another one starts in the
 // microtasks of the first one's settlement, so it is visible by the next turn. A call that never settles fails the
@@ -96,16 +108,23 @@ const expiry = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref(
 export async function settleHostOps(limitMs = SETTLE_LIMIT_MS) {
   const deadline = performance.now() + limitMs;
   for (await nextTurn(); pendingHostOps.size > 0; await nextTurn()) {
+    if (performance.now() >= deadline) abandonHostOps(limitMs);
     const remaining = deadline - performance.now();
-    const settled = await Promise.race([Promise.allSettled([...pendingHostOps]).then(() => true), expiry(Math.max(0, remaining)).then(() => false)]);
-    if (!settled) throw new Error(`${pendingHostOps.size} host call(s) still pending after ${limitMs} ms`);
+    const timeout = expiry(Math.max(0, remaining));
+    try {
+      const settled = await Promise.race([Promise.allSettled([...pendingHostOps]).then(() => true), timeout.promise.then(() => false)]);
+      if (!settled) abandonHostOps(limitMs);
+    } finally { timeout.cancel(); }
   }
 }
 
+// Same retry policy as plugin/bin/lib/suite-lock.mjs: Windows EPERM/EBUSY can outlive our own writers.
+export const SANDBOX_REMOVE_OPTIONS = { recursive: true, force: true, maxRetries: 10, retryDelay: 20 };
+
 // Removes a sandbox once every host call has settled; a teardown that times out still removes it, then fails.
-export async function removeSandbox(root, { limitMs = SETTLE_LIMIT_MS, beforeDrain, beforeRemove } = {}) {
+export async function removeSandbox(root, { limitMs = SETTLE_LIMIT_MS, beforeDrain, beforeRemove, remove = rm } = {}) {
   try { beforeDrain?.(); await settleHostOps(limitMs); }
-  finally { beforeRemove?.(); await rm(root, { recursive: true, force: true }); }
+  finally { beforeRemove?.(); await remove(root, SANDBOX_REMOVE_OPTIONS); }
 }
 
 // A fresh sandbox directory, removed after the test once the hook's background writes have settled.

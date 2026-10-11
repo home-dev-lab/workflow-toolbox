@@ -5,10 +5,12 @@
 // the drain reaches the pre-removal assertion synchronously, before the released work can resume, on any machine.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHook } from 'node:async_hooks';
+import { spawnSync } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hookFixture, hostStore, realFs, removeSandbox, settleHostOps, trackHostOp } from './store-host-fake.mjs';
+import { hookFixture, hostStore, realFs, removeSandbox, sandboxRoot, settleHostOps, trackHostOp } from './store-host-fake.mjs';
 import { sessionKey } from '../session-key.mjs';
 
 const exists = (path) => lstat(path).then(() => true, () => false);
@@ -128,4 +130,100 @@ test('a host call that never settles fails the teardown at its bound instead of 
   await assert.rejects(settleHostOps(50), /1 host call\(s\) still pending after 50 ms/);
   release();
   await settleHostOps();
+});
+
+async function hostChild(t, source) {
+  const root = await mkdtemp(join(tmpdir(), 'rod-teardown-child-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const script = join(root, 'proof.mjs');
+  const moduleUrl = new URL('./store-host-fake.mjs', import.meta.url).href;
+  await writeFile(script, `import { trackHostOp, settleHostOps } from ${JSON.stringify(moduleUrl)};\n${source}\n`);
+  return spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 5_000,
+    env: { ...process.env, TMPDIR: root, TMP: root, TEMP: root } });
+}
+
+// Release on actual disappearance OR on the drain's entry event. Disappearance alone would deadlock a correct drain.
+function sandboxGone(root) {
+  let release;
+  let released = false;
+  const signal = new Promise((resolve) => { release = () => { released = true; resolve(); }; });
+  const watch = (async () => {
+    while (!released && await exists(root)) await turn();
+    release();
+  })();
+  return { signal, release, watch };
+}
+
+test("sandboxRoot's after-callback drains before removing", async (t) => {
+  let captured;
+  const root = await sandboxRoot({ after: (fn) => { captured = fn; } }, 'rod-teardown-root-');
+  const gone = sandboxGone(root);
+  t.after(async () => { gone.release(); await gone.watch; await settleHostOps(); await rm(root, { recursive: true, force: true }); });
+  const target = join(root, 'late.json');
+  let landed = false;
+  const write = trackHostOp(gone.signal.then(async () => { await realFs.write(target, '{}'); landed = true; }));
+  assert.equal(landed, false, 'the gated write landed before teardown entry');
+  // Only observe resources created synchronously by the callback: the drain schedules its first full turn here.
+  const entry = createHook({ init: (_id, type) => { if (type === 'Immediate') gone.release(); } });
+  entry.enable();
+  let removal;
+  try { removal = captured(); } finally { entry.disable(); }
+  await removal;
+  await write;
+  await gone.watch;
+  assert.equal(await exists(root), false, 'the write landed after the removal and recreated the sandbox');
+});
+
+test('a host rejection nobody handles still surfaces as an unhandled rejection', async (t) => {
+  const child = await hostChild(t, `trackHostOp(Promise.reject(new Error('host-boom')));
+await new Promise((resolve) => setImmediate(resolve));
+await new Promise((resolve) => setImmediate(resolve));`);
+  assert.ifError(child.error);
+  assert.notEqual(child.status, 0, 'an unhandled host rejection let the child exit successfully');
+  assert.match(child.stderr, /host-boom/);
+});
+
+test('removeSandbox removes with retries so a transient Windows refusal is waited out', async () => {
+  const calls = [];
+  const root = 'recorded-sandbox';
+  await removeSandbox(root, { remove: async (...args) => { calls.push(args); } });
+  assert.equal(calls.length, 1);
+  const [received, options] = calls[0];
+  assert.equal(received, root);
+  assert.equal(options.recursive, true);
+  assert.equal(options.force, true);
+  assert.ok(options.maxRetries >= 1, 'sandbox removal must retry transient refusals');
+  assert.ok(options.retryDelay >= 1, 'sandbox removal must wait between retries');
+});
+
+test('a hung drain with nothing else alive fails with the bounded message', async (t) => {
+  const child = await hostChild(t, 'trackHostOp(new Promise(() => {}));\nawait settleHostOps(50);');
+  assert.ifError(child.error);
+  assert.notEqual(child.status, 0);
+  assert.match(child.stderr, /1 host call\(s\) still pending after 50 ms/);
+});
+
+test('settleHostOps leaves no timer behind once the calls have settled', async () => {
+  const timers = () => process.getActiveResourcesInfo().filter((name) => name === 'Timeout').length;
+  const before = timers();
+  trackHostOp(turn().then(turn));
+  await settleHostOps(10_000);
+  assert.equal(timers(), before, 'the settled drain left its expiry timer alive');
+});
+
+test('a continuous stream of host calls cannot hold the drain past its bound', { timeout: 5_000 }, async (t) => {
+  // Hold expiry races inactive: only the total-deadline check can bound a stream whose calls keep settling.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let running = true;
+  const produce = () => { if (running) trackHostOp(turn().then(produce)); };
+  t.after(() => { running = false; });
+  produce();
+  try { await assert.rejects(settleHostOps(100), /host call\(s\) still pending after 100 ms/); }
+  finally { running = false; await settleHostOps(); }
+});
+
+test('a drain that timed out does not fail the next teardown', { timeout: 5_000 }, async () => {
+  trackHostOp(new Promise(() => {}));
+  await assert.rejects(settleHostOps(50), /still pending after 50 ms/);
+  await settleHostOps(50);
 });
