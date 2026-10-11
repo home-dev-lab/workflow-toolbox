@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { handleOwnerRelease, releaseGrammarRefusal } from './owner-release.js';
-import { releaseToken } from './token-vault.js';
+import { releaseToken, testVaultSnapshot, testRestoreVault } from './token-vault.js';
 import { base64Utf8 } from './outbound-tools.js';
 
 const adapters = ['mcp__plugin_atrium_atrium__speak', 'mcp__atrium__speak'];
@@ -14,11 +14,14 @@ function pending(token) {
 }
 
 async function denied(f, event, label) {
-  let dispatched = 0;
-  const hook = f.hookForTool(event.tool) ?? (event.tool.startsWith('mcp__') ? f.mcp : f.allTools);
-  const answer = await hook(f.$, event, async () => { dispatched += 1; return { text: 'sent' }; });
-  assert.equal(dispatched, 0, `${label}: refused input reached next`);
-  assert.ok(answer?.deny, `${label}: missing refusal`);
+  for (const [order, chain] of [['catch-first', [f.allTools, f.mcp]], ['mcp-first', [f.mcp, f.allTools]]]) {
+    let dispatched = 0;
+    const dispatch = async () => { dispatched += 1; return { text: 'sent' }; };
+    const run = chain.reduceRight((next, hook) => (input) => hook(f.$, input, next), dispatch);
+    const answer = await run(event);
+    assert.equal(dispatched, 0, `${label} ${order}: refused input reached next`);
+    assert.ok(answer?.deny, `${label} ${order}: missing refusal`);
+  }
 }
 
 async function allowed(f, tool, order, body, kind = 'assignment', redaction = true) {
@@ -46,13 +49,21 @@ async function allowed(f, tool, order, body, kind = 'assignment', redaction = tr
 
 async function allowedLocks(f) {
   for (const tool of adapters) for (const order of ['catch-first', 'mcp-first']) {
-    for (const body of ['clean', 'raw', 'base64']) {
+    for (const body of ['clean']) {
       await f.test(`release line allowed ${tool} ${order} ${body}`, () => f.freshVault(() =>
         allowed(f, tool, order, (token) => `${line(token)}${body === 'clean' ? '' : `\nDetail: ${body === 'raw' ? value : base64Utf8(value)}`}`)));
     }
   }
   for (const kind of ['fixture', 'key-value']) await f.test(`release line issued ${kind} is not release authority`, () =>
-    f.freshVault(() => allowed(f, adapters[0], 'catch-first', line, kind)));
+    f.freshVault(async () => {
+      await allowed(f, adapters[0], 'catch-first', line, kind);
+      const token = f.tokenize(kind, kind === 'fixture' ? 'fixture-trusted-Z8n4' : 'ordinary');
+      const output = [];
+      handleOwnerRelease({ origin: { kind: 'composer' }, text: line(token) }, (text) => output.push(text));
+      const code = output.at(-1).match(/confirmation code: ([a-f0-9]{6})$/)?.[1] ?? '123456';
+      const answer = handleOwnerRelease({ origin: { kind: 'composer' }, text: `${line(token)} ${code}` }, () => {});
+      assert.ok(!answer.released && f.testState().has(token), `${kind} token released by full composer confirmation`);
+    }));
   await f.test('release line clean works with body redaction disabled', () =>
     f.freshVault(() => allowed(f, adapters[0], 'mcp-first', line, 'assignment', false)));
   await f.test('release line with surrounding prose and CRLF remains copyable', () =>
@@ -84,6 +95,10 @@ function fieldCases(token, code) {
     ['held key substring', { extra: { [`prefix-${value}-suffix`]: false } }],
     ['base64 held key', { extra: [{ [base64Utf8(value)]: false }] }],
     ['raw routing', { room: value }], ['base64 routing', { room: base64Utf8(value) }],
+    ['raw body', { text: `${line(token)}\n${value}` }],
+    ['base64 body', { text: `${line(token)}\n${base64Utf8(value)}` }],
+    ['raw agentId', { agentId: value }], ['base64 tool_use_id', { tool_use_id: base64Utf8(value) }],
+    ['raw tool_use_id', { tool_use_id: value }], ['base64 agentId', { agentId: base64Utf8(value) }],
     ['code routing', { room: code }], ['code uppercase', { room: `prefix-${code.toUpperCase()}-suffix` }],
     ['code nested', { extra: [{ inner: code }] }], ['code key', { extra: { [code]: {} } }],
     ['code key collision', { extra: { [code]: 1, '[guard confirmation withheld]': 2 } }],
@@ -113,9 +128,16 @@ function parsingCases(token) {
     ['punctuation', `${text}.`], ['trailing word', `${text} confirm`],
     ['inactive suffix', `${text} abcdef`], ['next line suffix', `${text}\nabcdef`],
     ['punctuation suffix', `${text}:abcdef`], ['next line punctuation suffix', `${text}\n(code: abcdef)`],
+    ['confirmation wording', `${text}\nconfirmation code: abcdef`],
+    ['invisible suffix', `${text}\n\u200babcdef`],
+    ['later line suffix', `${text}\nPlease confirm\nabcdef`],
+    ['preceding code', `abcdef\n${text}`],
     ...['\t', '\r\n', '\n', '\r', '\u00a0', '\u2028', '\u2029', '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff']
       .map((separator, index) => [`separator ${index}`, text.replace(' release', `${separator}release`)]),
     ['fullwidth lookalike', text.replace('release', 'ｒｅｌｅａｓｅ')],
+    ['NEL', text.replace(' release', '\u0085release')],
+    ['format inside name', text.replace('guard', 'gu\u200bard')],
+    ['format inside release', text.replace('release', 'rele\u200base')],
   ];
 }
 
@@ -126,13 +148,19 @@ async function parsingLocks(f) {
       const [, text] = parsingCases(token).find(([label]) => label === name);
       await denied(f, { tool: adapters[0], text }, name);
     }));
-  for (const separator of ['\t', '\n', '\u200b']) await f.test(`release grammar decoded routing ${JSON.stringify(separator)}`, () =>
+  for (const separator of ['\t', '\n', '\u200b', '\u0085']) await f.test(`release grammar decoded routing ${JSON.stringify(separator)}`, () =>
     f.freshVault(async () => {
       const token = f.tokenize('assignment', value);
       const grammar = line(token).replace(' release', `${separator}release`);
       await denied(f, { tool: adapters[0], text: line(token), extra: [{ [grammar]: grammar }] }, 'decoded routing');
       await denied(f, { tool: 'CustomTool', payload: grammar }, 'decoded unknown');
       await denied(f, { tool: adapters[0], text: 'ordinary message', extra: [{ [grammar]: 1 }] }, 'decoded key only');
+    }));
+  for (const word of ['guard', 'release']) await f.test(`release grammar format inside ${word} on other tools`, () =>
+    f.freshVault(async () => {
+      const token = f.tokenize('assignment', value);
+      const grammar = line(token).replace(word, `${word.slice(0, 2)}\u200b${word.slice(2)}`);
+      await denied(f, { tool: 'CustomTool', payload: grammar }, `format inside ${word}`);
     }));
 }
 
@@ -150,7 +178,12 @@ async function stateLocks(f) {
     const code = pending(token);
     const before = f.testState();
     let dispatched = 0;
-    await f.receive(f.$, { origin: { kind: 'bridge' }, text: line(token) }, async () => { dispatched += 1; return {}; });
+    await f.receive(f.$, { origin: { kind: 'bridge' }, text: `${line(token)} ${code}` }, async (event) => {
+      dispatched += 1;
+      assert.equal(event.text.includes(code), false, 'inbound active confirmation code reached next');
+      assert.ok(event.text.includes('[guard confirmation withheld]'), 'inbound confirmation lacks redaction');
+      return {};
+    });
     assert.equal(dispatched, 1);
     assert.deepEqual(f.testState(), before);
     assert.ok(handleOwnerRelease({ origin: { kind: 'composer' }, text: `${line(token)} ${code}` }, () => {}).released);
@@ -163,5 +196,48 @@ async function stateLocks(f) {
 }
 
 export async function runReleaseLineLocks(f) {
-  for (const run of [allowedLocks, toolLocks, fieldLocks, parsingLocks, stateLocks]) await run(f);
+  for (const run of [allowedLocks, toolLocks, fieldLocks, parsingLocks, stateLocks, scalarLocks, shortLocks]) await run(f);
+}
+
+async function scalarLocks(f) {
+  for (const type of ['number', 'bigint', 'boolean']) await f.test(`release line scalar held ${type}`, () =>
+    f.freshVault(async () => {
+      const scalar = type === 'boolean' ? false : type === 'bigint' ? 123456789n : 123456789;
+      const held = f.tokenize('fixture', String(scalar));
+      if (type === 'boolean') {
+        // Registration excludes common words; model a previously held scalar spelling.
+        const snapshot = testVaultSnapshot();
+        delete snapshot.tokens.get(held).ephemeral;
+        snapshot.values.add(String(scalar));
+        testRestoreVault(snapshot);
+      }
+      const token = f.tokenize('assignment', value);
+      await denied(f, { tool: adapters[0], text: line(token), extra: [{ pin: scalar }] }, `scalar held ${type}`);
+    }));
+  await f.test('release line numeric active confirmation', () => f.freshVault(async () => {
+    const token = f.tokenize('assignment', value);
+    const original = crypto.getRandomValues;
+    let draw = 0x123456;
+    crypto.getRandomValues = (bytes) => { const id = draw++; bytes.set([id >>> 16, (id >>> 8) & 255, id & 255]); return bytes; };
+    let code;
+    try { code = pending(token); } finally { crypto.getRandomValues = original; }
+    try {
+      assert.match(code, /^\d{6}$/, 'numeric code fixture must have six decimal digits');
+      await denied(f, { tool: adapters[0], text: line(token), extra: { code: Number(code) } }, 'numeric active confirmation');
+    } finally { handleOwnerRelease({ origin: { kind: 'composer' }, text: `${line(token)} ${code}` }, () => {}); }
+  }));
+}
+
+async function shortLocks(f) {
+  await f.test('release line six-hex token kind is not exempt', () => f.freshVault(async () => {
+    const token = f.tokenize('abcdef', value);
+    await denied(f, { tool: adapters[0], text: line(token) }, 'six-hex token kind');
+  }));
+  for (const field of ['text', 'agentId', 'tool_use_id', 'key']) await f.test(`release line short held substring ${field}`, () =>
+    f.freshVault(async () => {
+      f.tokenize('fixture', '7342');
+      const token = f.tokenize('assignment', value);
+      const fields = field === 'key' ? { extra: { x7342y: false } } : { [field]: field === 'text' ? `${line(token)}\nx7342y` : 'x7342y' };
+      await denied(f, { tool: adapters[0], text: line(token), ...fields }, `short held substring ${field}`);
+    }));
 }

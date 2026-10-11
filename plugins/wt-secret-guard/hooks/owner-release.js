@@ -1,7 +1,7 @@
 // Authority is the engine's ingress stamp plus a guard-owned, UI-only confirmation.
 // Residual: the host stamps scripted keystrokes into the session's own terminal as
 // composer, so a session able to drive its own pane is not stopped by origin alone.
-import { isIssuedToken, knownTokens, knownValueOccurrences, randomId, releaseRefusalReason, releaseToken, reserveTokenId } from './token-vault.js';
+import { isIssuedToken, knownTokens, randomId, releaseRefusalReason, releaseToken, reserveTokenId } from './token-vault.js';
 import { OWNER_CHANNEL_ADAPTERS } from './owner-channel.js';
 import { base64Utf8 } from './outbound-tools.js';
 
@@ -37,7 +37,7 @@ export function releaseGrammarRefusal(event) {
 
 // Inspect decoded values AND keys; JSON escaping must not hide control separators.
 function* eventStrings(value, body = false, key = false, root = true) {
-  if (typeof value === 'string') { yield { value, body, key }; return; }
+  if (['string', 'number', 'bigint', 'boolean'].includes(typeof value)) { yield { value: String(value), body, key }; return; }
   if (!value || typeof value !== 'object') return;
   for (const [name, child] of Object.entries(value)) {
     yield { value: name, body: false, key: true };
@@ -47,18 +47,16 @@ function* eventStrings(value, body = false, key = false, root = true) {
 
 function grammarCount(text) {
   // Compatibility normalization broadens refusal only, never the literal allowance.
-  return [...text.normalize('NFKC').matchAll(/wt-secret-guard[\s\p{Z}\p{Cf}]+release/giu)].length;
+  return [...text.normalize('NFKC').replace(/\p{Cf}/gu, '').matchAll(/wt-secret-guard[\s\p{Z}\u0085]*release/giu)].length;
 }
 
 function privateMaterial(strings) {
-  return strings.some(({ value, key }) => redactConfirmationCodes(value) !== value
-    || (key && heldKey(value)));
+  return strings.some(({ value }) => redactConfirmationCodes(value) !== value || heldMaterial(value));
 }
 
-function heldKey(value) {
-  if (knownValueOccurrences(value).length) return true;
+function heldMaterial(value) {
   return [...knownTokens().values()].some((entry) => !entry.ephemeral && entry.value
-    && value.includes(base64Utf8(entry.value)));
+    && (value.includes(entry.value) || value.includes(base64Utf8(entry.value))));
 }
 
 function releaseLineAllowance(event, strings, grammar) {
@@ -68,8 +66,9 @@ function releaseLineAllowance(event, strings, grammar) {
   const match = /(?:^|\n)(wt-secret-guard release (secret:[a-z-]+#[a-f0-9]{6}))(?=\r?\n|$)/.exec(event.text);
   if (!match || !isIssuedToken(match[2])) return false;
   // The owner supplies any confirmation separately, even when it is not active here.
-  const after = event.text.slice(match.index + match[0].length);
-  return !/^[\s\p{P}\p{S}]*(?:code[\s\p{P}\p{S}]*)?[a-f0-9]{6}\b/iu.test(after);
+  const idStart = match.index + match[0].length - 6;
+  const outsideId = event.text.slice(0, idStart) + '[issued token id]' + event.text.slice(idStart + 6);
+  return !/\b[a-f0-9]{6}\b/iu.test(outsideId.replace(/\p{Cf}/gu, ''));
 }
 
 export function confirmationKeyCollision(value) {
