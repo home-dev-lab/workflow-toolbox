@@ -63,6 +63,7 @@ function assertsSandboxIoniceRefusal(log: string): boolean {
     if (!(error instanceof LaneSandboxRefusal)) throw error
     expect(log).toContain('stage=priority nice=19 ionice=unavailable (')
     expect(log).toContain((error as Error).message)
+    noteInsideLaneSandbox('wt-lane-launcher.test.ts > runs the lane at niceness 19 by default, idles its I/O class where ionice exists, and logs the priority stage', 'ionice is refused as untrusted inside the user namespace, so the idle I/O class is not asserted; the refusal log is asserted instead', laneContext)
     return true
   }
 }
