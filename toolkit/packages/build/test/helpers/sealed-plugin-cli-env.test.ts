@@ -16,9 +16,9 @@ describe('sealedPluginCliEnv', () => {
     expect(env.USERPROFILE).toBeUndefined()
   })
 
-  it('uses USERPROFILE and removes HOME on Windows', () => {
+  it('isolates both USERPROFILE and HOME on Windows', () => {
     const env = sealedPluginCliEnv('C:\\fixture', {}, 'win32')
-    expect(env.HOME).toBeUndefined()
+    expect(env.HOME).toBe(join('C:\\fixture', 'home'))
     expect(env.USERPROFILE).toBe(join('C:\\fixture', 'home'))
     expect(env.CLAUDE_PLUGIN_DATA).toBeUndefined()
   })
