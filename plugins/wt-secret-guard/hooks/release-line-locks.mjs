@@ -21,6 +21,7 @@ async function denied(f, event, label) {
     const answer = await run(event);
     assert.equal(dispatched, 0, `${label} ${order}: refused input reached next`);
     assert.ok(answer?.deny, `${label} ${order}: missing refusal`);
+    if (label.startsWith('active code')) assert.equal(answer.deny.includes('234567'), false, 'refusal disclosed active code');
   }
 }
 
@@ -197,6 +198,90 @@ async function stateLocks(f) {
 
 export async function runReleaseLineLocks(f) {
   for (const run of [allowedLocks, toolLocks, fieldLocks, parsingLocks, stateLocks, scalarLocks, shortLocks]) await run(f);
+  await roundTwoLocks(f);
+}
+
+function numericPending(token) {
+  const original = crypto.getRandomValues;
+  let draw = 0x234567;
+  crypto.getRandomValues = (bytes) => { const id = draw++; bytes.set([id >>> 16, (id >>> 8) & 255, id & 255]); return bytes; };
+  try { return pending(token); } finally { crypto.getRandomValues = original; }
+}
+
+async function activeCodeLocks(f) {
+  const tools = [...adapters, 'CustomTool', 'Bash', 'Write', 'Edit', 'NotebookEdit', 'Read', 'NotebookRead',
+    'WebFetch', 'WebSearch', 'Agent', 'Task', 'Grep', 'Glob', 'mcp__other__speak'];
+  for (const tool of tools) for (const field of ['text', 'number', 'payload', 'key', 'bigint']) {
+    await f.test(`active code without grammar ${tool} ${field}`, () => f.freshVault(async () => {
+      const token = f.tokenize('assignment', value);
+      const code = numericPending(token);
+      try {
+        assert.equal(code, '234567', 'synthetic active code fixture');
+        const fields = field === 'number' ? { text: 'ordinary message', extra: { code: Number(code) } }
+          : field === 'key' ? { extra: { [`x${code}y`]: false } }
+          : field === 'bigint' ? { extra: { code: BigInt(code) } } : { [field]: code };
+        await denied(f, { tool, ...fields }, `active code ${field}`);
+      } finally { handleOwnerRelease({ origin: { kind: 'composer' }, text: `${line(token)} ${code}` }, () => {}); }
+    }));
+  }
+}
+
+async function unchangedAllowed(f, event, label) {
+  for (const chain of [[f.allTools, f.mcp], [f.mcp, f.allTools]]) {
+    let count = 0;
+    const run = chain.reduceRight((next, hook) => (input) => hook(f.$, input, next), async (input) => {
+      count += 1;
+      assert.deepEqual(input, event, `${label}: allowed event changed`);
+      return {};
+    });
+    const answer = await run(event);
+    assert.equal(count, 1, `${label}: clean event refused`);
+    assert.equal(answer.deny, undefined);
+  }
+}
+
+async function tokenSpanLocks(f) {
+  for (const held of ['7342', 'mcp__']) await f.test(`release line issued spelling exemption ${held}`, () =>
+    f.freshVault(async () => {
+      f.tokenize('fixture', held);
+      const original = crypto.getRandomValues;
+      crypto.getRandomValues = (bytes) => { bytes.set([0x73, 0x42, 0xab]); return bytes; };
+      let token;
+      try { token = f.tokenize('assignment', value); } finally { crypto.getRandomValues = original; }
+      assert.ok(token.endsWith('#7342ab'), 'synthetic issued token fixture');
+      for (const tool of adapters) {
+        await unchangedAllowed(f, { tool, text: line(token) }, `issued spelling ${held}`);
+        await denied(f, { tool, text: line(token), extra: { raw: `x${held}y` } }, `outside token ${held}`);
+      }
+    }));
+}
+
+async function roundTwoLocks(f) {
+  await activeCodeLocks(f);
+  await tokenSpanLocks(f);
+  for (const char of ['\u034f', '\u115f', '\u17b4', '\ufe0f', '\u{e0100}']) {
+    await f.test(`release grammar default ignorable ${char.codePointAt(0).toString(16)}`, () => f.freshVault(async () => {
+      const token = f.tokenize('assignment', value);
+      await denied(f, { tool: 'CustomTool', payload: line(token).replace(' release', `${char}release`) }, 'default ignorable grammar');
+    }));
+    await f.test(`release hex default ignorable ${char.codePointAt(0).toString(16)}`, () => f.freshVault(async () => {
+      const token = f.tokenize('assignment', value);
+      await denied(f, { tool: adapters[0], text: `${line(token)}\na${char}bcdef` }, 'default ignorable hex');
+    }));
+  }
+  await f.test('release line format inside six-hex word', () => f.freshVault(async () => {
+    const token = f.tokenize('assignment', value);
+    await denied(f, { tool: adapters[0], text: `${line(token)}\na\u200bbcdef` }, 'format inside hex');
+  }));
+  await f.test('release line ephemeral value beside clean line allowed', () => f.freshVault(async () => {
+    f.tokenize('key-value', 'ordinary');
+    const token = f.tokenize('assignment', value);
+    await unchangedAllowed(f, { tool: adapters[0], text: `${line(token)}\nordinary`, extra: { ordinary: true } }, 'ephemeral value');
+  }));
+  await f.test('release line nested envelope refused', () => f.freshVault(async () => {
+    const token = f.tokenize('assignment', value);
+    for (const tool of adapters) await denied(f, { tool, input: { text: line(token) } }, 'nested envelope');
+  }));
 }
 
 async function scalarLocks(f) {

@@ -30,33 +30,49 @@ function expireConfirmations(now) {
 export function releaseGrammarRefusal(event) {
   if (confirmationKeyCollision(event)) return { deny: 'wt-secret-guard refused confirmation-code key collision.' };
   const strings = [...eventStrings(event)];
+  if (strings.some(({ value }) => redactConfirmationCodes(value) !== value)) {
+    return { deny: 'wt-secret-guard refused tool input carrying an active confirmation code.' };
+  }
   const grammar = strings.filter(({ value }) => grammarCount(value));
   return grammar.length && !releaseLineAllowance(event, strings, grammar)
     ? { deny: 'wt-secret-guard refused tool input carrying owner-release grammar.' } : null;
 }
 
 // Inspect decoded values AND keys; JSON escaping must not hide control separators.
-function* eventStrings(value, body = false, key = false, root = true) {
-  if (['string', 'number', 'bigint', 'boolean'].includes(typeof value)) { yield { value: String(value), body, key }; return; }
+function* eventStrings(value, body = false, key = false, root = true, hostTool = false) {
+  if (['string', 'number', 'bigint', 'boolean'].includes(typeof value)) { yield { value: String(value), body, key, hostTool }; return; }
   if (!value || typeof value !== 'object') return;
   for (const [name, child] of Object.entries(value)) {
-    yield { value: name, body: false, key: true };
-    yield* eventStrings(child, root && name === 'text', false, false);
+    yield { value: name, body: false, key: true, hostTool: root && name === 'tool' };
+    yield* eventStrings(child, root && name === 'text', false, false, root && name === 'tool');
   }
 }
 
 function grammarCount(text) {
   // Compatibility normalization broadens refusal only, never the literal allowance.
-  return [...text.normalize('NFKC').replace(/\p{Cf}/gu, '').matchAll(/wt-secret-guard[\s\p{Z}\u0085]*release/giu)].length;
+  return [...stripIgnorables(text.normalize('NFKC')).matchAll(/wt-secret-guard[\s\p{Z}\u0085]*release/giu)].length;
 }
 
 function privateMaterial(strings) {
-  return strings.some(({ value }) => redactConfirmationCodes(value) !== value || heldMaterial(value));
+  return strings.some(({ value, hostTool }) => redactConfirmationCodes(value) !== value || (!hostTool && heldMaterial(value)));
 }
 
 function heldMaterial(value) {
+  const ranges = [...value.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)]
+    .filter((match) => isIssuedToken(match[0])).map((match) => [match.index, match.index + match[0].length]);
   return [...knownTokens().values()].some((entry) => !entry.ephemeral && entry.value
-    && (value.includes(entry.value) || value.includes(base64Utf8(entry.value))));
+    && [entry.value, base64Utf8(entry.value)].some((needle) => rawHeldOccurrence(value, needle, ranges)));
+}
+
+function rawHeldOccurrence(value, needle, ranges) {
+  for (let at = value.indexOf(needle); at >= 0; at = value.indexOf(needle, at + 1)) {
+    if (!ranges.some(([from, to]) => at >= from && at + needle.length <= to)) return true;
+  }
+  return false;
+}
+
+function stripIgnorables(value) {
+  return value.replace(/[\p{Default_Ignorable_Code_Point}\p{Cf}]/gu, '');
 }
 
 function releaseLineAllowance(event, strings, grammar) {
@@ -68,7 +84,7 @@ function releaseLineAllowance(event, strings, grammar) {
   // The owner supplies any confirmation separately, even when it is not active here.
   const idStart = match.index + match[0].length - 6;
   const outsideId = event.text.slice(0, idStart) + '[issued token id]' + event.text.slice(idStart + 6);
-  return !/\b[a-f0-9]{6}\b/iu.test(outsideId.replace(/\p{Cf}/gu, ''));
+  return !/\b[a-f0-9]{6}\b/iu.test(stripIgnorables(outsideId));
 }
 
 export function confirmationKeyCollision(value) {
