@@ -29,6 +29,20 @@ anything.
 Use it when the user wants tracked cards driven autonomously. For a one-off mechanical edit,
 skip this — a plain sub-agent (or doing it yourself) is simpler.
 
+## Which pilot
+
+Spawn the adopted harness `pilot` (or `pilot-orchestrator`) composed by this skill, by default,
+for every card.
+
+The SDK pilot (skill `sdk-pilot`, runner `bin/wt-pilot-runner.mjs`) is EXPERIMENTAL: its status
+note (`autonomy/PILOT-RUNNER.md`, top) records that no real FULL run has completed a whole cycle,
+and the CHANGELOG has kept that status in each release since. Launch it only when the spawner
+explicitly asks for an SDK trial on a named card; never pick it for ordinary delivery.
+
+This choice changes only when a complete real SDK run is measured and its results (delivery,
+time, cost) are published in that status note and the CHANGELOG. Until then the harness pilot
+stays the default.
+
 ## The delegation ladder (the principle this skill applies)
 
 Route work to the lowest rung that fits, and **pin model + effort at every spawn — never
