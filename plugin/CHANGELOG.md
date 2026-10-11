@@ -5,6 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Pilots now wait for toolbox-launched lanes through the bounded launcher-record waiter; lane-written `EXIT=0` log lines and report files cannot signal completion. Re-adopt the pilot template to pick up the guidance.
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
 - Adopted script launchers now inline smaller resolver and execution helpers under the owner quality limits. The toolbox quality gate also checks changed code against its Git base at complexity 10, 40 lines per function, and no explicit TypeScript `any`, while preserving unchanged or shrinking legacy violations.
 ### Changed

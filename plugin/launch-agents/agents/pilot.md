@@ -620,10 +620,13 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   wake you.** A lane process is not tracked as your child by the harness — backgrounding it
   and arming a Monitor/watcher on its output puts you to sleep on a signal that never fires
   (an external lane's completion alone supplies no harness wake event; main's inbound
-  SendMessage is needed after yielding). So either run the lane call in the FOREGROUND of one Bash invocation (it
-  blocks your turn until it returns, no watcher needed), or if you background it, poll it
-  yourself in a loop you stay awake for (`until [ -f "$REPORT" ]; do sleep 5; done`) bounded
-  by an explicit HARD CAP you name (e.g. 30 min) — never an unbounded wait. This trades a
+  SendMessage is needed after yielding). For a toolbox-launched lane, run its waiter in the
+  FOREGROUND: `node <configDir>/scripts/wt-lane-wait.mjs --dir <worktree> --pid <pid printed at launch> --timeout <cap in seconds>`.
+  It reads the launcher's host supervision record and returns one line: `LANE DONE exit=<n>`,
+  `LANE DIED exit=unknown`, or `LANE TIMEOUT exit=124`. Neither an `EXIT=` line in the lane's
+  run.log (which includes the lane's own output) nor an existing report file signals completion.
+  For a direct CLI call, keep the call in the FOREGROUND until it returns. Name an explicit
+  HARD CAP (e.g. 30 min) for either wait — never wait unboundedly. This trades a
   SILENT failure (dormant, unreachable) for a BLOCKING one (costs your turn, exposed to turn
   limits) — better, not free. **When the cap is hit**: journal it, SendMessage your arbiter
   one line ("lane wait capped at <N> min on <what>, still pending — arm a filet above my
