@@ -303,6 +303,19 @@ function graceDefaultReceiptCase() {
   expect(readFileSync(log, 'utf8')).toMatch(/TERMINATION=timeout\nEXIT=126\n$/)
 }
 
+function quotedExitReceiptCase() {
+  const f = deadlineFixture('while [ ! -f emit-quoted-exit ]; do sleep 0.01; done; printf "EXIT=0\\n"; exec sleep 30')
+  const { log, status, childPid } = launchDeadline(f, ['--timeout', '0.8', '--decision-grace', '0.5', '--max-extensions', '1'])
+  waitForContent(log, /^LANE_BOUND /m)
+  writeFileSync(join(f.dir, 'emit-quoted-exit'), 'ready\n')
+  waitForContent(log, /^EXIT=0$/m)
+  waitForContent(status, /"extensionCount": 1/)
+  const text = readFileSync(log, 'utf8')
+  expect(text).toMatch(/EXIT=0\n[\s\S]*LANE_DECISION_NEEDED /)
+  expect(text).toContain('LANE_EXTENDED count=1/1 source=grace-default')
+  expect(() => process.kill(childPid, 0)).not.toThrow()
+}
+
 function idleDefaultCase() {
   const f = deadlineFixture('exec sleep 30')
   const { log, status } = launchDeadline(f, ['--timeout', '1.5', '--decision-grace', '0.5', '--idle-window', '0.5'])
@@ -382,6 +395,7 @@ function ownerReceiptCase() {
 
 describe.skipIf(process.platform === 'win32')('wt-lane deadline visibility and idle watchdog', () => {
   it('journals grace-default extension receipts and the new deadline', graceDefaultReceiptCase)
+  it('writes deadline receipts after a live child prints a quoted EXIT=0', quotedExitReceiptCase)
   it('abandons a known idle lane at its timeout instead of extending it by default', idleDefaultCase)
   it('stops a silent stdin-ignoring child and its process group with enforced idle timeout', idleStopCase, 30_000)
   it('keeps a silent child with a live descendant running beyond three idle timeouts', liveDescendantCase)

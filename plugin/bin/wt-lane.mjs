@@ -24,6 +24,7 @@ import { appendLaunchFailure, awaitChildSpawn, spawnWithLaneLogStderr } from './
 import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
 import { laneBoundLine, unattendedMaxSeconds, validateLaneTiming } from './lib/lane-deadline-core.mjs'
 import { createLaneDeadline } from './lib/host/lane-deadline-worker.mjs'
+import { appendLaneReceipt } from './lib/host/lane-diagnostics.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
@@ -405,12 +406,6 @@ function workerLogIsTerminal(log) {
     const tail = readLaneLog(log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
     return /^EXIT=\d+$/.test(tail)
   } catch { return false }
-}
-
-function appendLaneReceipt(fd, log, line) {
-  if (workerLogIsTerminal(log)) return false
-  appendFileSync(fd, `${line}\n`)
-  return true
 }
 
 // The launcher's own identity when the provider cannot read it: on win32 the spawn-time estimate
@@ -866,7 +861,7 @@ async function main() {
   rmSync(decisionFile, { force: true })
   const firstTimeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
   writeState({ timeoutAt: firstTimeoutAt, decisionTransitionDueAt: new Date(Date.parse(firstTimeoutAt) + DECISION_TRANSITION_BOUND_MS).toISOString(), unattendedMaxSeconds: unattendedMaxSeconds(opts), idleWindowSeconds: opts.idleWindow, idleTimeoutSeconds: opts.idleTimeout, extensions: [] })
-  appendLaneReceipt(fd, opts.log, laneBoundLine(opts, currentState.unattendedMaxSeconds))
+  appendLaneReceipt(fd, laneBoundLine(opts, currentState.unattendedMaxSeconds))
   consentModules.writeJsonAtomic(statePaths.pointer, { version: 1, runId })
   journal({ event: 'launched', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner })
   let finished = false
@@ -901,7 +896,7 @@ async function main() {
     if (opts.briefCleanupDir && briefEvidence.path.startsWith(`${opts.briefCleanupDir}${path.sep}`)) rmSync(opts.briefCleanupDir, { recursive: true, force: true })
   }
   if (pendingTermination !== null) terminateWorker(pendingTermination)
-  else deadline = createLaneDeadline({ opts, runId, child, args, childPid: child.pid, launchedAtMs: Date.parse(baseState.launchedAt), firstTimeoutAt, transitionBoundMs: DECISION_TRANSITION_BOUND_MS, decisionFile, modules: consentModules, current: () => currentState, writeState, journal, cleanupBrief, endGroup, appendLine: (line) => !finished && appendLaneReceipt(fd, opts.log, line) })
+  else deadline = createLaneDeadline({ opts, runId, child, args, childPid: child.pid, launchedAtMs: Date.parse(baseState.launchedAt), firstTimeoutAt, transitionBoundMs: DECISION_TRANSITION_BOUND_MS, decisionFile, modules: consentModules, current: () => currentState, writeState, journal, cleanupBrief, endGroup, appendLine: (line) => !finished && appendLaneReceipt(fd, line) })
   child.on('error', () => { clearDeadline(); cleanupBrief(); finish(1) })
   let closeHandled = false
   const onChildClose = (code, signal) => {

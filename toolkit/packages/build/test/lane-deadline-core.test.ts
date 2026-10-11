@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error ESM worker module
 import { createIdleWatch } from '../../../../plugin/bin/lib/host/lane-idle-worker.mjs'
+// @ts-expect-error ESM worker module
+import { createLaneDeadline } from '../../../../plugin/bin/lib/host/lane-deadline-worker.mjs'
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -48,7 +50,7 @@ describe('lane deadline core', () => {
 })
 
 function idleHarness() {
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   vi.setSystemTime(0)
   const root = mkdtempSync(join(tmpdir(), 'lane-idle-core-'))
   const log = join(root, 'run.log')
@@ -57,9 +59,11 @@ function idleHarness() {
   const writeState = vi.fn()
   const readSnapshot = vi.fn((): unknown => ({ processes: [{ pid: 4, parentPid: 1 }] }))
   const latestWrite = vi.fn(() => ({ status: 'known', at: 0, bounded: false }))
-  const watch = createIdleWatch({ opts: { dir: root, log, idleWindow: 1, idleTimeout: 2 }, childPid: 4, launchedAtMs: 0, writeState, stop, readSnapshot, latestWrite, appendLine: (line: string) => { appendFileSync(log, `${line}\n`); return true } })
+  const monotonicNow = vi.fn(() => performance.now())
+  const appendLine = vi.fn((line: string) => { appendFileSync(log, `${line}\n`); return true })
+  const watch = createIdleWatch({ opts: { dir: root, log, idleWindow: 1, idleTimeout: 2 }, childPid: 4, launchedAtMs: 0, monotonicNow, writeState, stop, readSnapshot, latestWrite, appendLine })
   const cleanup = () => { watch.clear(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }) }
-  return { log, watch, stop, writeState, readSnapshot, latestWrite, cleanup }
+  return { log, watch, stop, writeState, readSnapshot, latestWrite, appendLine, monotonicNow, cleanup }
 }
 
 describe('idle activity sampling', () => {
@@ -111,13 +115,146 @@ describe('idle activity rearming', () => {
       expect(h.writeState).toHaveBeenCalledTimes(calls)
     } finally { h.cleanup() }
   })
-  it('keeps the newest source timestamp when a descendant sample is earlier', () => {
+  it('dates a future-mtime change by its observation tick rather than the file timestamp', () => {
     const h = idleHarness()
     try {
       h.latestWrite.mockReturnValue({ status: 'known', at: 1250, bounded: false })
       h.readSnapshot.mockReturnValue({ processes: [{ pid: 4, ppid: 1 }, { pid: 5, parentPid: 4 }] })
       vi.advanceTimersByTime(250)
-      expect(h.writeState.mock.lastCall?.[0].idle.lastActivityAt).toBe(new Date(1250).toISOString())
+      expect(h.writeState.mock.lastCall?.[0].idle.lastActivityAt).toBe(new Date(250).toISOString())
+    } finally { h.cleanup() }
+  })
+})
+
+describe('idle diagnostic failures', () => {
+  it.each(['state', 'receipt'])('keeps the idle timer enforcing when a %s write throws', (kind) => {
+    const h = idleHarness()
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      if (kind === 'state') h.writeState.mockImplementation(() => { throw new Error('idle state unavailable') })
+      else h.appendLine.mockImplementation(() => { throw new Error('idle receipt unavailable') })
+      expect(() => vi.advanceTimersByTime(2000)).not.toThrow()
+      expect(h.stop).toHaveBeenCalledTimes(1)
+      expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/^wt-lane: .*unavailable\n$/))
+    } finally { stderr.mockRestore(); h.cleanup() }
+  })
+})
+
+describe('monotonic idle silence', () => {
+  it('does not stop after a forward wall-clock jump of an hour', () => {
+    const h = idleHarness()
+    try {
+      vi.advanceTimersByTime(500)
+      vi.setSystemTime(Date.now() + 3600_000)
+      vi.advanceTimersByTime(250)
+      expect(h.watch.refresh()).toMatchObject({ silentSeconds: 0.75, warn: false, stop: false })
+      expect(h.stop).not.toHaveBeenCalled()
+      expect(h.monotonicNow).toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
+  it('waits a fresh silent window when evidence recovers after idleTimeout', () => {
+    const h = idleHarness()
+    try {
+      h.readSnapshot.mockReturnValue(null)
+      vi.advanceTimersByTime(4000)
+      h.readSnapshot.mockReturnValue({ processes: [{ pid: 4, ppid: 1 }] })
+      vi.advanceTimersByTime(250)
+      expect(h.watch.refresh()).toMatchObject({ silentSeconds: 0, warn: false, stop: false })
+      expect(h.stop).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(2000)
+      expect(h.stop).toHaveBeenCalledTimes(1)
+    } finally { h.cleanup() }
+  })
+
+  it.each([3600_000, -3600_000])('re-arms once for an mtime change to %s without using its absolute date', (at) => {
+    const h = idleHarness()
+    try {
+      vi.advanceTimersByTime(750)
+      h.latestWrite.mockReturnValue({ status: 'known', at, bounded: false })
+      vi.advanceTimersByTime(250)
+      expect(h.watch.refresh()).toMatchObject({ silentSeconds: 0, warn: false, stop: false })
+      expect(h.watch.lastActivityAt()).toBe(new Date(1000).toISOString())
+      vi.advanceTimersByTime(2000)
+      expect(h.stop).toHaveBeenCalledTimes(1)
+    } finally { h.cleanup() }
+  })
+})
+
+function deadlineHarness(active = true) {
+  vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+  vi.setSystemTime(0)
+  const root = mkdtempSync(join(tmpdir(), 'lane-deadline-worker-'))
+  const log = join(root, 'run.log')
+  const decisionFile = join(root, 'decision.json')
+  writeFileSync(log, '')
+  let state: Record<string, unknown> = { runId: 'test-run', state: 'running', extensions: [] }
+  const writeState = vi.fn((extra: Record<string, unknown>) => { state = { ...state, ...extra } })
+  const endGroup = vi.fn()
+  const appendLine = vi.fn((line: string) => { appendFileSync(log, `${line}\n`); return true })
+  const rows = [{ pid: 4, ppid: 1 }, ...(active ? [{ pid: 5, ppid: 4 }] : [])]
+  const readProcessSnapshot = vi.fn((): unknown => ({ processes: rows }))
+  const modules = { argvSummary: () => 'test child', latestWorktreeWrite: () => ({ status: 'known', at: 0 }), readLogTail: () => '', processEvidenceStatus: () => 'live', hostAdapter: { readProcessSnapshot } }
+  const deadline = createLaneDeadline({ opts: { dir: root, log, timeout: 2, decisionGrace: 5, maxExtensions: 3, idleWindow: 1, idleTimeout: 0 }, runId: 'test-run', child: { pid: 4 }, childPid: 4, args: [], launchedAtMs: 0, monotonicNow: () => performance.now(), transitionBoundMs: 0, decisionFile, modules, current: () => state, writeState, journal: vi.fn(), cleanupBrief: vi.fn(), endGroup, appendLine })
+  const cleanup = () => { deadline.clear(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }) }
+  return { log, decisionFile, current: () => state, writeState, endGroup, appendLine, readProcessSnapshot, cleanup }
+}
+
+describe('deadline diagnostic failures', () => {
+  it.each(['LANE_DECISION_NEEDED', 'LANE_EXTENDED'])('extends through a failing %s receipt without abandonment', (kind) => {
+    const h = deadlineHarness()
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      h.appendLine.mockImplementation((line) => { if (line.startsWith(kind)) throw new Error('receipt unavailable'); return true })
+      expect(() => vi.advanceTimersByTime(7000)).not.toThrow()
+      expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
+      expect(h.endGroup).not.toHaveBeenCalled()
+      expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/^wt-lane: .*receipt unavailable\n$/))
+    } finally { stderr.mockRestore(); h.cleanup() }
+  })
+
+  it('keeps an owner extension when its receipt throws from the poll callback', () => {
+    const h = deadlineHarness()
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      vi.advanceTimersByTime(2000)
+      writeFileSync(h.decisionFile, JSON.stringify({ runId: 'test-run', timeoutAt: h.current().timeoutAt, decision: 'extend', extendSeconds: 10 }))
+      h.appendLine.mockImplementation(() => { throw new Error('owner receipt unavailable') })
+      expect(() => vi.advanceTimersByTime(100)).not.toThrow()
+      expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'owner', extensions: [{ source: 'owner' }] })
+      expect(h.endGroup).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(5000)
+      expect(h.endGroup).not.toHaveBeenCalled()
+    } finally { stderr.mockRestore(); h.cleanup() }
+  })
+})
+
+describe('deadline grace activity refresh', () => {
+  it('extends instead of abandoning when a descendant appears during idle grace', () => {
+    const h = deadlineHarness(false)
+    try {
+      vi.advanceTimersByTime(2000)
+      expect(h.current()).toMatchObject({ state: 'decision-needed', defaultDecision: 'abandon' })
+      h.readProcessSnapshot.mockReturnValue({ processes: [{ pid: 4, parentPid: 1 }, { pid: 5, parentPid: 4 }] })
+      vi.advanceTimersByTime(5000)
+      expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
+      expect(readFileSync(h.log, 'utf8')).toContain('LANE_EXTENDED count=1/3 source=grace-default')
+      expect(h.endGroup).not.toHaveBeenCalled()
+    } finally { h.cleanup() }
+  })
+
+  it('does not abandon at the deadline after a forward wall-clock jump', () => {
+    const h = deadlineHarness(false)
+    try {
+      vi.advanceTimersByTime(1250)
+      appendFileSync(h.log, 'child progress\n')
+      vi.advanceTimersByTime(250)
+      vi.setSystemTime(Date.now() + 3600_000)
+      vi.advanceTimersByTime(500)
+      expect(h.current()).toMatchObject({ state: 'decision-needed', defaultDecision: 'extend' })
+      vi.advanceTimersByTime(5000)
+      expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1 })
+      expect(h.endGroup).not.toHaveBeenCalled()
     } finally { h.cleanup() }
   })
 })

@@ -31,10 +31,17 @@ function abandonLane(ctx, source, evidence, receiptLines = ['TERMINATION=timeout
   ctx.endGroup(126, { ...(receiptLines ? { receiptLines } : {}), terminal: { state: 'abandoned', decision: 'abandon', decisionSource: source, decidedAt: new Date().toISOString(), extensionCount: ctx.extensionCount, ...(evidence ? { evidence } : {}) } })
 }
 
+function refreshedGraceDefault(ctx, defaultDecision) {
+  if (defaultDecision !== 'abandon' || !ctx.idleDefault) return defaultDecision
+  const verdict = ctx.idle.refresh()
+  return !verdict.warn && ctx.extensionCount < ctx.opts.maxExtensions ? 'extend' : 'abandon'
+}
+
 function graceDecision(ctx, timeoutAt, defaultDecision, evidence) {
   try {
     const current = ctx.current()
     if (current.runId !== ctx.runId || current.state !== 'decision-needed' || current.timeoutAt !== timeoutAt) return
+    defaultDecision = refreshedGraceDefault(ctx, defaultDecision)
     if (defaultDecision === 'extend') {
       extendLane(ctx, 'grace-default', () => ctx.opts.timeout, { evidence }, () => ctx.journal({ event: 'decision', decision: 'extend', source: 'grace-default', ...laneEvent(ctx), reason: 'no owner decision within grace' }))
     } else {
@@ -58,11 +65,11 @@ function enterDecision(ctx, reason = 'timeout-bound', extra = {}) {
   const defaultDecision = !ctx.idleDefault && ctx.extensionCount < ctx.opts.maxExtensions ? 'extend' : 'abandon'
   const decisionDueAt = new Date(Date.now() + ctx.opts.decisionGrace * 1000).toISOString()
   ctx.writeState({ state: 'decision-needed', timeoutAt, decisionDueAt, extensionCount: ctx.extensionCount, defaultDecision, evidence, reason, ...extra })
+  ctx.graceTimer = setTimeout(() => graceDecision(ctx, timeoutAt, defaultDecision, evidence), ctx.opts.decisionGrace * 1000)
+  ctx.graceTimer.unref()
   ctx.idle.emit(deadlineLine('LANE_DECISION_NEEDED', { timeoutAt, decisionDueAt, defaultDecision }))
   if (ctx.idleDefault) ctx.idle.emit(deadlineLine('LANE_NOT_EXTENDED', { reason: 'idle', silentSeconds: Math.floor(verdict.silentSeconds) }))
   ctx.journal({ event: 'decision-needed', ...laneEvent(ctx), reason, evidence: { ...evidence, timeoutAt, extensionCount: ctx.extensionCount, defaultDecision } })
-  ctx.graceTimer = setTimeout(() => graceDecision(ctx, timeoutAt, defaultDecision, evidence), ctx.opts.decisionGrace * 1000)
-  ctx.graceTimer.unref()
 }
 
 function isCurrentDecision(ctx, decision, current) {
