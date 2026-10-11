@@ -55,4 +55,10 @@ describe('pilot lifecycle template', () => {
     expect(PILOT).toContain('targeted tests, typecheck, and lint')
     expect(PILOT).not.toContain('review → harden')
   })
+
+  it('reads a lane wait by its outcome word and treats DIED as unproven death', () => {
+    expect(PILOT).toMatch(/wt-lane-wait\.mjs --dir <worktree> --pid/)
+    expect(PILOT).toMatch(/outcome\s+word, never the exit status/)
+    expect(PILOT).toMatch(/LANE DIED[\s\S]{0,200}not proof that the lane\s+stopped/)
+  })
 })

@@ -623,8 +623,11 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   SendMessage is needed after yielding). For a toolbox-launched lane, run its waiter in the
   FOREGROUND: `node <configDir>/scripts/wt-lane-wait.mjs --dir <worktree> --pid <pid printed at launch> --timeout <cap in seconds>`.
   It reads the launcher's host supervision record and returns one line: `LANE DONE exit=<n>`,
-  `LANE DIED exit=unknown`, or `LANE TIMEOUT exit=124`. Neither an `EXIT=` line in the lane's
-  run.log (which includes the lane's own output) nor an existing report file signals completion.
+  `LANE DIED exit=unknown`, or `LANE TIMEOUT exit=124`. Read the line's outcome
+  word, never the exit status (`LANE DONE exit=124` and a timeout both exit 124). `LANE DIED` means
+  no terminal record was found, not proof that the lane stopped: probe the pid before acting. Neither
+  an `EXIT=` line in the lane's run.log (which includes the lane's own output) nor an existing report
+  file signals completion.
   For a direct CLI call, keep the call in the FOREGROUND until it returns. Name an explicit
   HARD CAP (e.g. 30 min) for either wait — never wait unboundedly. This trades a
   SILENT failure (dormant, unreachable) for a BLOCKING one (costs your turn, exposed to turn
