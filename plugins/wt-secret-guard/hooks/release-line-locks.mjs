@@ -13,8 +13,20 @@ function pending(token) {
   return output.at(-1).match(/confirmation code: ([a-f0-9]{6})$/)[1];
 }
 
+function matchedEntries(f, tool, order) {
+  const entries = f.hooks.filter((entry) => entry.event === 'tool.call' &&
+    (entry.matcher.tool instanceof RegExp ? entry.matcher.tool.test(tool) : entry.matcher.tool === tool));
+  if (order === 'catch-first') entries.reverse();
+  return entries;
+}
+
+function matchedHooks(f, tool, order) {
+  return matchedEntries(f, tool, order).map((entry) => entry.hook);
+}
+
 async function denied(f, event, label) {
-  for (const [order, chain] of [['catch-first', [f.allTools, f.mcp]], ['mcp-first', [f.mcp, f.allTools]]]) {
+  for (const order of ['catch-first', 'mcp-first']) {
+    const chain = matchedHooks(f, event.tool, order);
     let dispatched = 0;
     const dispatch = async () => { dispatched += 1; return { text: 'sent' }; };
     const run = chain.reduceRight((next, hook) => (input) => hook(f.$, input, next), dispatch);
@@ -31,7 +43,7 @@ async function allowed(f, tool, order, body, kind = 'assignment', redaction = tr
   const text = body(token);
   const before = f.testState();
   const dispatches = [];
-  const chain = order === 'catch-first' ? [f.allTools, f.mcp] : [f.mcp, f.allTools];
+  const chain = matchedHooks(f, tool, order);
   f.configure({ ownerChannelRedaction: redaction });
   try {
     const dispatch = async (event) => { dispatches.push(event); return { text: 'sent' }; };
@@ -199,6 +211,8 @@ async function stateLocks(f) {
 export async function runReleaseLineLocks(f) {
   for (const run of [allowedLocks, toolLocks, fieldLocks, parsingLocks, stateLocks, scalarLocks, shortLocks]) await run(f);
   await roundTwoLocks(f);
+  await matcherLocks(f);
+  await spanBoundaryLocks(f);
 }
 
 function numericPending(token) {
@@ -227,7 +241,8 @@ async function activeCodeLocks(f) {
 }
 
 async function unchangedAllowed(f, event, label) {
-  for (const chain of [[f.allTools, f.mcp], [f.mcp, f.allTools]]) {
+  for (const order of ['catch-first', 'mcp-first']) {
+    const chain = matchedHooks(f, event.tool, order);
     let count = 0;
     const run = chain.reduceRight((next, hook) => (input) => hook(f.$, input, next), async (input) => {
       count += 1;
@@ -252,6 +267,48 @@ async function tokenSpanLocks(f) {
       for (const tool of adapters) {
         await unchangedAllowed(f, { tool, text: line(token) }, `issued spelling ${held}`);
         await denied(f, { tool, text: line(token), extra: { raw: `x${held}y` } }, `outside token ${held}`);
+      }
+    }));
+}
+
+async function matcherLocks(f) {
+  await f.test('release line registered matcher selection and middleware orders', () => {
+    const mcpEntry = f.hooks.find((entry) => entry.event === 'tool.call' && entry.matcher.tool.source === '^mcp__');
+    assert.ok(mcpEntry, 'MCP registration missing');
+    const tools = f.hooks.filter((entry) => entry.event === 'tool.call' && typeof entry.matcher.tool === 'string')
+      .map((entry) => entry.matcher.tool);
+    for (const tool of [...tools, 'CustomTool', 'speak', 'prefix_mcp__atrium__speak', ...adapters]) {
+      const forward = matchedHooks(f, tool, 'mcp-first');
+      assert.ok(forward.includes(f.allTools), `${tool}: catch-all matcher omitted`);
+      assert.equal(matchedEntries(f, tool, 'mcp-first').includes(mcpEntry), tool.startsWith('mcp__'), `${tool}: MCP matcher selection`);
+      if (f.hookForTool(tool)) assert.ok(forward.includes(f.hookForTool(tool)), `${tool}: named matcher omitted`);
+      assert.deepEqual(matchedHooks(f, tool, 'catch-first'), [...forward].reverse(), `${tool}: middleware order`);
+    }
+  });
+}
+
+function issuedSpanToken(f) {
+  const original = crypto.getRandomValues;
+  crypto.getRandomValues = (bytes) => { bytes.set([0x73, 0x42, 0xab]); return bytes; };
+  try { return f.tokenize('assignment', value); } finally { crypto.getRandomValues = original; }
+}
+
+async function spanBoundaryLocks(f) {
+  const cases = [
+    ['second raw occurrence', '7342', (token) => ({ raw: `${token} x7342y` })],
+    ['right edge crossing', 'abQ9', (token) => ({ raw: `${token}Q9` })],
+    ['left edge crossing', 'Q9se', (token) => ({ raw: `Q9${token}` })],
+    ['unissued token span', '7342', () => ({ raw: 'secret:unissued#7342ab' })],
+    ['nested tool value', 'mcp__', () => ({ tool: adapters[1] })],
+  ];
+  for (const [name, held, extra] of cases) await f.test(`release line span boundary ${name}`, () =>
+    f.freshVault(async () => {
+      const heldToken = f.tokenize('fixture', held);
+      assert.equal(testVaultSnapshot().tokens.get(heldToken).ephemeral, undefined, 'boundary fixture must be held');
+      const token = issuedSpanToken(f);
+      assert.ok(token.endsWith('#7342ab'), 'synthetic boundary token fixture');
+      for (const tool of adapters) {
+        await denied(f, { tool, text: line(token), extra: extra(token) }, `span boundary ${name}`);
       }
     }));
 }
