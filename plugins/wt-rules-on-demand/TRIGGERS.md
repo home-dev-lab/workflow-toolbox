@@ -164,9 +164,28 @@ Bash triggers mask read-only mentions by default; `mentions: true` opts out.
 A rule is served once per main or subagent context, with independent counters;
 compaction resets that loop. `time_reserve` explicitly opts into re-serving.
 Pending compliance windows close with a compaction reason before the reset.
-Verdicts retain the injection time and the delivery channel; model classification
+Verdicts retain the measurement's opening time (`injectedAt`) and trigger channel; model classification
 uses bounded call arguments (including the triggering tool call for tool-delivered
 model rules), while persisted verdict evidence keeps only a command head or file
 basename. Served `bash-command` and `tool-input` rules judge each matching act
 once through compaction, even after their initial window expires; turn-correlation
 records only when its rule was served in that context.
+
+Later matching acts do not receive the rule text again. Model rules open a
+measurement window for each later matching act, with the same prompt and
+`window` budget as the original injection. Each nonempty window costs one more
+`$.model.classify` call at close; the judge never decides whether an act may run.
+An unchanged retry after the first-act refusal supplies evidence to the
+original window, rather than opening a second window for the same act.
+
+Every verdict includes `applicability`: `applicable` (followed or not followed),
+`not applicable` (a real act was exempted by the check or judge), `no act`
+(nothing for the check to judge), or `unknown` (other outcomes). Empty model
+windows close without a judge call. Initial records use `later: false`;
+later model, declarative, named-check and turn-correlation records use
+`later: true` plus `servedDeliveryId`, the original text-delivery ID. A named
+check or a turn-correlation rule has no delivery window: its first record in a
+context is the initial one, whatever channel served the text. The reference is
+`null` when the text was recovered from conversation history or delivered
+without a delivery id. It is a reference, not a claim that the text was
+delivered again.

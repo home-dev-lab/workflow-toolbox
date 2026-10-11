@@ -180,7 +180,29 @@ retrying passes. Ride-along rules accompany the result; declarative Bash-command
 and tool-input checks measure that call, and model classification includes it.
 The rule cannot guide that call's already-completed action. A model compliance
 classifier is measurement-only and often answers “not applicable”. The
-`agent-model` check counts a spawn without a `model` argument as not followed
+served text is not injected again for later matching acts in the same context,
+but those acts are still measured. Each later matching act of a model rule
+opens a window with that act and the same configured following-call budget;
+closing it costs one more `$.model.classify` call. The refused attempt is not
+an executed act: its retry supplies the initial window's evidence and does not
+open a duplicate later window.
+
+Every stored verdict has an `applicability` label: `applicable` for followed or
+not followed, `not applicable` for an observed act exempted by the check or
+judge, `no act` for an empty check window, and `unknown` for other outcomes.
+An empty model window records `no act` without calling the judge. Initial
+records have `later: false`; later-act records have `later: true` and
+`servedDeliveryId`, linking to the injection that delivered the text. This
+later window's `injectedAt` timestamps the start of its measurement.
+Named checks and
+turn-correlation open no delivery window, so their first record in a context
+is the initial one and each later record is `later: true`. The delivery
+reference is `null` for text recovered from conversation history or delivered
+without a delivery id. The compliance report shows
+the four applicability counts and the later-record count per rule. Legacy
+not-applicable rows have unknown applicability because their cause is ambiguous.
+
+The `agent-model` check counts a spawn without a `model` argument as not followed
 even when an agent definition pins it.
 `gate-background` recognises a fixed build-command vocabulary. A refusal on an
 Agent spawn inside a subagent was missed in one real session (under investigation).

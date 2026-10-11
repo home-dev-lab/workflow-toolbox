@@ -104,8 +104,12 @@ try {
 const declared = await declaredChecks();
 
 const report = {};
+const applicabilityCounts = () => ({ applicable: 0, 'not applicable': 0, 'no act': 0, unknown: 0 });
+// Old not-applicable rows cannot distinguish an exemption from an empty window.
+const applicabilityOf = (row) => Object.hasOwn(applicabilityCounts(), row.applicability) ? row.applicability
+  : ['followed', 'not followed'].includes(row.verdict) ? 'applicable' : 'unknown';
 const rowFor = (name) => {
-  report[name] ??= { served: 0, check: 'no check declared', injections: 0, followed: 0, 'not followed': 0, 'not applicable': 0, 'unregistered check': 0, unknown: 0, followRate: null, reasons: {}, unjudged: 0, duplicateRows: 0, discarded: 0, copies: 0 };
+  report[name] ??= { served: 0, check: 'no check declared', injections: 0, followed: 0, 'not followed': 0, 'not applicable': 0, 'unregistered check': 0, unknown: 0, followRate: null, reasons: {}, unjudged: 0, duplicateRows: 0, discarded: 0, copies: 0, applicability: applicabilityCounts(), later: 0 };
   return report[name];
 };
 const nameOfKey = new Map();
@@ -120,6 +124,8 @@ for (const row of joined.rows) {
   const counts = rowFor(row.rule);
   nameOfKey.set(keyOf(row.rule), row.rule);
   counts.injections += 1;
+  counts.applicability[applicabilityOf(row)]++;
+  if (row.later === true) counts.later++;
   if (Object.hasOwn(counts, row.verdict)) counts[row.verdict] += 1;
   if (row.reason) counts.reasons[row.reason] = (counts.reasons[row.reason] ?? 0) + 1;
 }
@@ -140,11 +146,11 @@ for (const [name, counts] of Object.entries(report)) {
 if (json) {
   console.log(JSON.stringify({ ...report, unreadableArchives }, null, 2));
 } else {
-   console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunregistered check\tunknown\tfollow rate\tnote\tunjudged\tduplicateRows\tdiscarded\tcopies');
+   console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunregistered check\tunknown\tfollow rate\tnote\tunjudged\tduplicateRows\tdiscarded\tcopies\tapplicability A/NA/none/?\tlater');
   for (const [rule, counts] of Object.entries(report).sort(([a], [b]) => a.localeCompare(b))) {
     const rate = counts.followRate === null ? 'n/a' : `${(counts.followRate * 100).toFixed(1)}%`;
     const reasons = Object.entries(counts.reasons).map(([reason, count]) => `${count}× ${reason}`).join('; ');
     const note = [counts.note, reasons].filter(Boolean).join(' | ');
-     console.log(`${rule}\t${counts.served}\t${counts.check}\t${counts.injections}\t${counts.followed}\t${counts['not followed']}\t${counts['not applicable']}\t${counts['unregistered check']}\t${counts.unknown}\t${rate}\t${note}\t${counts.unjudged}\t${counts.duplicateRows}\t${counts.discarded}\t${counts.copies}`);
+     console.log(`${rule}\t${counts.served}\t${counts.check}\t${counts.injections}\t${counts.followed}\t${counts['not followed']}\t${counts['not applicable']}\t${counts['unregistered check']}\t${counts.unknown}\t${rate}\t${note}\t${counts.unjudged}\t${counts.duplicateRows}\t${counts.discarded}\t${counts.copies}\t${Object.values(counts.applicability).join('/')}\t${counts.later}`);
   }
 }
