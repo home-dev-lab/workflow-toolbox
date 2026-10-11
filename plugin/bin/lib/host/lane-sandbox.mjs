@@ -178,7 +178,7 @@ function isForbiddenPath(candidate, env, fs) {
   refuseMalformedHome(env)
   if (!candidate || !path.isAbsolute(candidate)) return true
   const views = [(value) => fs.realpath(value) ?? path.resolve(value), (value) => canonicalPath(value, fs)]
-  return views.some((view, index) => { try { return forbiddenUnder(view, candidate, env, fs) } catch (error) { if (index === 0) throw error; return false } })
+  return views.some((view, index) => { try { return forbiddenUnder(view, candidate, env, fs) } catch (error) { if (index === 0) { throw error } return false } })
 }
 function forbiddenUnder(view, candidate, env, fs) {
   const target = view(candidate)
