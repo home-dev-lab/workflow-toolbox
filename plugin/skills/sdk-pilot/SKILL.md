@@ -15,7 +15,8 @@ may change and a full end-to-end run is not yet proven.
 
 For ordinary autonomous card delivery, use `pilot-wave` and the project's adopted `pilot` or
 `pilot-orchestrator`. That is the supported harness path and keeps main as arbiter. This skill does
-not alter `pilot-wave`, adoption, or its behavior.
+not alter `pilot-wave`, adoption, or its behavior. The choice between the two, and what would change
+it, is stated once in `pilot-wave`, section "Which pilot".
 
 ## Prepare
 

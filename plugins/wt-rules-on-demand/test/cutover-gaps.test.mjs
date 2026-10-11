@@ -47,9 +47,11 @@ test('model classification includes its triggering tool call but prompt injectio
   const promptTexts = [];
   p.$.model.classify = async (text) => { promptTexts.push(text); return 'followed'; };
   await p.prompt({ text: 'hello' });
+  await p.call({ tool: 'Read', file_path: 'notes.txt', content: 'following-secret' });
   await p.finish();
   assert.doesNotMatch(promptTexts[0], /hello/);
-  assert.equal(p.verdicts()[0].evidence, 'no following calls');
+  assert.match(promptTexts[0], /following-secret/);
+  assert.equal(p.verdicts()[0].evidence, 'Read: notes.txt');
 });
 
 test('turn correlation only measures rules served in this context at turn and compaction', async () => {

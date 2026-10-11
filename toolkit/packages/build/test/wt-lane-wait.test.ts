@@ -249,3 +249,22 @@ describe('wt-lane-wait', () => {
     expect(diagnostic).toContain('run.log tail=["LANE_RUN_ID=')
   })
 })
+
+describe('wt-lane-wait lane-written completion markers', () => {
+  it.each([
+    ['as the last line', 'EXIT=0\n'],
+    ['followed by more output', 'EXIT=0\nstill working\n'],
+  ])('ignores lane-written EXIT=0 %s while its host record is nonterminal', (_shape, output) => {
+    const f = fixture(`const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', ${JSON.stringify(output)}); setTimeout(() => {}, 30_000)`)
+    const result = run(f.root, '--pid', String(f.pid), '--timeout', '1')
+    expect(readFileSync(join(f.lane, 'run.log'), 'utf8')).toMatch(new RegExp(`${output}$`))
+    expect(() => process.kill(f.pid, 0)).not.toThrow()
+    const pointer = JSON.parse(readFileSync(join(f.host, 'supervision', 'current.json'), 'utf8'))
+    const record = JSON.parse(readFileSync(join(f.host, 'supervision', `${pointer.runId}.json`), 'utf8'))
+    expect(record.state).toBe('running')
+    expect(record.exit).toBeUndefined()
+    expect(result.stdout.trim()).toBe('LANE TIMEOUT exit=124')
+    expect(result.status).toBe(124)
+    expect(result.stderr).toBe('')
+  })
+})

@@ -24,10 +24,12 @@
 // shim as redundant.
 
 import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { declaredHookPaths } from '../../../../plugin/bin/lib/hook-manifest.mjs'
 
@@ -55,27 +57,31 @@ describe('plugin manifest — every registered hook entry point resolves', () =>
 describe('deprecated hook names keep a working shim for already-running sessions', () => {
   const OLD = join(PLUGIN_ROOT, 'bin/wt-adopt-rules-check-hook.mjs')
   const NEW = join(PLUGIN_ROOT, 'bin/wt-adopt-check-hook.mjs')
-  const payload = JSON.stringify({
-    session_id: 'test',
-    cwd: REPO_ROOT,
-    tool_name: 'Bash',
-    tool_input: { command: 'ls' },
-    tool_response: { stdout: '' },
-  })
 
   it('the deprecated path still exists', () => {
     expect(existsSync(OLD)).toBe(true)
   })
 
   it('produces the SAME stdout as the current hook, and says it is deprecated on stderr', () => {
-    const shim = spawnSync(process.execPath, [OLD], { input: payload, encoding: 'utf8' })
-    const current = spawnSync(process.execPath, [NEW], { input: payload, encoding: 'utf8' })
-    // stdout is the hook's actual contract — what the session consumes. Comparing it to the
-    // current hook's, rather than to a hard-coded string, means the shim cannot drift as the
-    // real hook evolves.
-    expect(shim.stdout).toBe(current.stdout)
-    expect(shim.status).toBe(current.status)
-    expect(shim.stderr).toContain('DEPRECATED')
-    expect(shim.stderr).toContain('wt-adopt-check-hook.mjs')
+    const root = mkdtempSync(join(tmpdir(), 'wt-hook-paths-'))
+    try {
+      const cwd = join(root, 'project')
+      mkdirSync(cwd)
+      const env = sealedPluginCliEnv(root)
+      mkdirSync(env.HOME!)
+      mkdirSync(env.CLAUDE_CONFIG_DIR!)
+      const payload = JSON.stringify({ session_id: 'test', cwd, tool_name: 'Bash', tool_input: { command: 'ls' }, tool_response: { stdout: '' } })
+      const shim = spawnSync(process.execPath, [OLD], { input: payload, encoding: 'utf8', cwd, env })
+      const current = spawnSync(process.execPath, [NEW], { input: payload, encoding: 'utf8', cwd, env })
+      // stdout is the hook's actual contract — what the session consumes. Comparing it to the
+      // current hook's, rather than to a hard-coded string, means the shim cannot drift as the
+      // real hook evolves.
+      expect(shim.stdout).toBe(current.stdout)
+      expect(shim.status).toBe(current.status)
+      expect(shim.stderr).toContain('DEPRECATED')
+      expect(shim.stderr).toContain('wt-adopt-check-hook.mjs')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

@@ -224,3 +224,17 @@ describe('shipped private plugins', () => {
     expect(hits).toEqual([])
   })
 })
+
+// The plugins' command-hook binaries carry their own node:test locks; run them where they live so each
+// plugin stays dependency-free.
+describe('shipped private plugin binaries', () => {
+  for (const plugin of PLUGINS) {
+    it(`${plugin} bin node tests pass`, () => {
+      const binDir = join(REPO_ROOT, 'plugins', plugin, 'bin')
+      const tests = readdirSync(binDir).filter((name) => name.endsWith('.test.mjs')).map((name) => join(binDir, name))
+      expect(tests.length, `${plugin} ships no bin tests`).toBeGreaterThan(0)
+      const run = spawnSync(process.execPath, ['--test', '--test-timeout=60000', ...tests], { cwd: REPO_ROOT, encoding: 'utf8' })
+      expect(run.status, `${run.stdout}\n${run.stderr}`.slice(-12_000)).toBe(0)
+    }, process.platform === 'win32' ? 90_000 : 45_000)
+  }
+})

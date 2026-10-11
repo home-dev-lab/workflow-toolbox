@@ -1,5 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+
+// Refresh publication and discovery share the installer's existing host seam. Keep the
+// native filesystem receiver intact, including injected failures used by publication locks.
+export const adoptRefreshHost = { fs, spawnSync }
 
 const ON_DEMAND_NAME = 'rules-on-demand'
 

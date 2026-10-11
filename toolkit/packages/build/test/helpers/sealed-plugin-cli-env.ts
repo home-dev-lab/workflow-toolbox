@@ -15,7 +15,7 @@ export function sealedPluginCliEnv(
     XDG_STATE_HOME: join(root, 'state'),
     CLAUDE_CONFIG_DIR: join(root, 'claude-config'),
     CLAUDE_PLUGIN_DATA: undefined,
-    HOME: platform === 'win32' ? undefined : home,
+    HOME: home,
     USERPROFILE: platform === 'win32' ? home : undefined,
     ...overrides,
   }
