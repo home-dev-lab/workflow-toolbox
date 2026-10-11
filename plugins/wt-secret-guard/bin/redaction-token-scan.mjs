@@ -8,15 +8,10 @@ const ATRIUM = new Set([
   'mcp__plugin_atrium_atrium__amend_held_message', 'mcp__plugin_atrium_atrium__edit_message',
 ])
 const FILE_FIELDS = { Write: 'content', Edit: 'new_string', NotebookEdit: 'new_source' }
-const SHELL_WORD = /(?:'[^']*'|"(?:\\.|[^"\\])*"|\$\((?:'[^']*'|"(?:\\.|[^"\\])*"|[^()])*\)|\\[^\n]|[^\s;&|<>()"'\\])+|&&|\|\||<<-?|[;&|<>()\n]/g
-const BOUNDARY = /^(?:&&|\|\||[;&|()\n])$/
-const PREFIXES = new Set(['env', 'command', 'exec', 'nice', 'time', 'sudo'])
-const PREFIX_VALUES = {
-  env: ['-u', '--unset', '-C', '--chdir'], exec: ['-a'], nice: ['-n', '--adjustment'],
-  time: ['-f', '--format', '-o', '--output'],
-  sudo: ['-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt', '-C', '--close-from', '-D', '--chdir', '-R', '--chroot', '-r', '--role', '-t', '--type', '-T', '--command-timeout', '-U', '--other-user'],
-}
-const COMMIT_VALUE_OPTIONS = ['--author', '--date', '--cleanup', '--pathspec-from-file', '-C', '--reuse-message', '-c', '--reedit-message', '-t', '--template']
+const EDIT_OPTIONS = new Set(['--edit', '-e', '-c', '--reedit-message', '-t', '--template'])
+const COMMAND_SEPARATORS = new Set([';', '&', '|', '\n'])
+const COMMAND_PREFIXES = new Set(['env', 'command', 'exec', 'nohup', 'time', 'nice', 'node'])
+const DIRECTORY_WORDS = new Set(['(', 'cd', 'pushd', 'popd'])
 
 export function countTokens(text) {
   return typeof text === 'string' ? [...text.matchAll(new RegExp(TOKEN_SOURCE, 'g'))].length : 0
@@ -61,99 +56,76 @@ function isExempt(input) {
     || /(?:^|\/)(?:README|CHANGELOG)\.md$/.test(below)
 }
 
-function shellValue(word) {
-  return word.replace(/'([^']*)'|"((?:\\.|[^"\\])*)"|\\(.)/g,
-    (_, single, double, escaped) => single ?? (double?.replace(/\\(["\\$`])/g, '$1')) ?? escaped)
+function unquote(word = '') {
+  return word.replaceAll("'", '').replaceAll('"', '')
+}
+
+function absolute(p) {
+  return path.posix.isAbsolute(p) || path.win32.isAbsolute(p)
 }
 
 function literalPath(word) {
-  if (!word || /[$`*?{}~]/.test(word)) throw Error('dynamic path')
-  return shellValue(word)
+  if (typeof word !== 'string' || /[\\$`*?{}~\[\]]/.test(word)) throw Error('dynamic path')
+  return unquote(word)
 }
 
-function appendWords(groups, words) {
-  let group = []
+// Detection reads plain words, including words inside quoted text or comments.
+// It deliberately does not decide whether the shell would execute this Git.
+function commitPosition(command) {
+  const words = command.matchAll(/[^\s;&|()<>]+/g)
+  let git = -1
+  let commit = -1
   for (const word of words) {
-    if (BOUNDARY.test(word)) { if (group.length) groups.push(group); group = [] }
-    else group.push(word)
+    const value = unquote(word[0])
+    if (git < 0 && (value === 'git' || value.endsWith('/git'))) git = word.index
+    if (git >= 0 && commit < 0 && value === 'commit') commit = word.index
   }
-  return group
+  return commit < 0 ? null : { git, commit }
 }
 
-function commandGroups(command) {
-  const groups = []
-  const lines = command.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    let line = lines[i]
-    while (line.endsWith('\\') && i + 1 < lines.length) line = line.slice(0, -1) + lines[++i]
-    const words = line.match(SHELL_WORD) || []
-    const current = []
-    const last = appendWords(current, words)
-    if (last.length) current.push(last)
-    for (const group of current) {
-      const entry = { words: group, heredocs: [] }
-      for (let j = 0; j < group.length; j++) {
-        if (!/^<<-?$/.test(group[j])) continue
-        const doc = readHeredoc(lines, i + 1, group[j], group[++j])
-        entry.heredocs.push(doc)
-        i = doc.end
-      }
-      groups.push(entry)
+function commitDryRun(words, position) {
+  for (const word of words) {
+    if (word.start <= position.commit) continue
+    if (COMMAND_SEPARATORS.has(word.raw)) return false
+    if (word.raw === '--dry-run') return true
+  }
+  return false
+}
+
+// A bounded, forward-only word reader keeps quoted literal file names together.
+// No substitutions, prefixes, command groups or directory state are interpreted.
+function literalWords(command) {
+  const words = []
+  let start = -1
+  let quote = ''
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (!quote && /[\s;&|()<>]/.test(char)) {
+      if (start >= 0) words.push({ raw: command.slice(start, i), start, end: i })
+      start = -1
+      if (!/[^\S\n]/.test(char)) words.push({ raw: char, start: i, end: i + 1 })
+      continue
     }
+    if (start < 0) start = i
+    if (char === '\\' && quote !== "'") { i++; continue }
+    quote = nextQuote(quote, char)
   }
-  return groups
+  if (start >= 0) words.push({ raw: command.slice(start), start, end: command.length })
+  return words
 }
 
-function readHeredoc(lines, start, marker, word = '') {
-  const delimiter = shellValue(word)
-  const quoted = /['"\\]/.test(word)
-  const body = []
-  let end = start
-  for (; end < lines.length; end++) {
-    const line = marker === '<<-' ? lines[end].replace(/^\t+/, '') : lines[end]
-    if (line === delimiter) break
-    body.push(line)
-  }
-  return { body: body.join('\n'), quoted, complete: end < lines.length, end }
-}
-
-function commandIndex(words) {
-  let i = 0
-  while (i < words.length) {
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) { i++; continue }
-    const name = shellValue(words[i]).split('/').pop()
-    if (!PREFIXES.has(name)) return i
-    i++
-    while (i < words.length && shellValue(words[i]).startsWith('-')) {
-      const option = shellValue(words[i++])
-      if (option === '--') break
-      if ((PREFIX_VALUES[name] || []).includes(option)) i++
-    }
-  }
-  return i
+function nextQuote(quote, char) {
+  if (char === quote) return ''
+  if (!quote && (char === '"' || char === "'")) return char
+  return quote
 }
 
 function gitDirectory(cwd, word) {
   try {
     const dir = literalPath(word)
-    if (cwd === null && !/^(?:\/|[A-Za-z]:[\\/])/.test(dir)) return null
+    if (cwd === null && !absolute(dir)) return null
     return resolved(cwd, dir)
   } catch { return null }
-}
-
-function gitCommit(words, cwd) {
-  const first = commandIndex(words)
-  if (!/(?:^|\/)git$/.test(shellValue(words[first] || ''))) return null
-  let base = cwd
-  for (let i = first + 1; i < words.length; i++) {
-    const word = shellValue(words[i])
-    if (word === 'commit') return { words: words.slice(i + 1), cwd: base }
-    if (word === '-C') { base = gitDirectory(base, words[++i]); continue }
-    if (/^-C.+/.test(word)) { base = gitDirectory(base, quotedWord(word.slice(2))); continue }
-    if (['-c', '--git-dir', '--work-tree', '--namespace', '--config-env'].includes(word)) { i++; continue }
-    if (!word.startsWith('-')) return null
-  }
-  return null
 }
 
 export function readBoundedFile(p) {
@@ -168,10 +140,9 @@ export function readBoundedFile(p) {
   } finally { fs.closeSync(fd) }
 }
 
-function readMessage(findings, surface, cwd, word, readFile) {
+function readMessage(findings, surface, cwd, word, readFile, uncertain = false) {
   try {
-    const p = gitDirectory(cwd, word)
-    if (p === null) throw Error('unknown working directory')
+    const p = messagePath(cwd, word, uncertain)
     const stat = fs.statSync(p)
     if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw Error('unsafe file')
     const text = readFile(p)
@@ -180,137 +151,189 @@ function readMessage(findings, surface, cwd, word, readFile) {
   } catch { findings.push({ surface, field: 'unscannable', count: 0 }) }
 }
 
-function fileArgument(words, index) {
-  const value = shellValue(words[index])
-  if (value === '-F' || value === '--file') return { word: words[index + 1], advance: 1 }
-  if (value.startsWith('--file=')) return { word: quotedWord(value.slice(7)), advance: 0 }
-  if (/^-F.+/.test(value)) return { word: quotedWord(value.slice(2)), advance: 0 }
+function messagePath(cwd, word, uncertain) {
+  const literal = literalPath(word)
+  if (!literal || (uncertain && !absolute(literal))) throw Error('unknown working directory')
+  const p = gitDirectory(cwd, word)
+  if (p === null) throw Error('unknown working directory')
+  return p
+}
+
+function argument(words, index, short, long) {
+  const value = unquote(words[index].raw)
+  if (value === short || value === long) return { word: words[index + 1]?.raw, advance: 1 }
+  if (value.startsWith(long + '=')) return { word: value.slice(long.length + 1), advance: 0 }
+  if (value.startsWith(short) && value.length > short.length) return { word: value.slice(short.length), advance: 0 }
   return null
 }
 
-function quotedWord(value) {
-  return "'" + value.replaceAll("'", "'\\''") + "'"
-}
-
-function stdinMessage(findings, commit, readFile) {
-  const index = commit.words.indexOf('<')
-  if (index >= 0) return readMessage(findings, 'git-commit', commit.shellCwd, commit.words[index + 1], readFile)
-  const doc = commit.heredocs.at(-1)
-  if (doc?.complete && (doc.quoted || !/[$`]/.test(doc.body))) {
-    return addText(findings, 'git-commit', 'command', doc.body)
+function commitDirectory(words, position, cwd) {
+  let base = cwd
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].start <= position.git || words[i].start >= position.commit) continue
+    const directory = argument(words, i, '-C', '-C')
+    if (!directory) continue
+    base = gitDirectory(base, directory.word)
+    i += directory.advance
   }
-  findings.push({ surface: 'git-commit', field: 'unscannable', count: 0 })
+  return base
 }
 
-function messageArgument(words, i) {
-  const value = shellValue(words[i])
-  if (value === '-m' || value === '--message') return { word: words[i + 1], advance: 1 }
-  if (value.startsWith('--message=')) return { word: words[i].replace(/^(['"]?)--message=/, '$1'), advance: 0 }
-  if (/^-m.+/.test(value)) return { word: words[i].replace(/^(['"]?)-m/, '$1'), advance: 0 }
-  return null
-}
-
-function addMessageText(findings, word) {
-  const dynamic = typeof word !== 'string' || /[$`]/.test(word.replace(/'[^']*'|\\./g, ''))
-  if (dynamic) findings.push({ surface: 'git-commit', field: 'unscannable', count: 0 })
-  else addText(findings, 'git-commit', 'command', shellValue(word))
-}
-
-function textSourceStep(findings, value) {
-  if (/^(?:-t|--template)(?:=|$)|^-t.+/.test(value)) {
-    findings.push({ surface: 'git-commit', field: 'unscannable', count: 0 })
-    return { source: true, advance: Number(value === '-t' || value === '--template') }
+function heredoc(command) {
+  const marker = command.indexOf('<<')
+  if (marker < 0) return null
+  const dash = command[marker + 2] === '-'
+  const start = marker + (dash ? 3 : 2)
+  const newline = command.indexOf('\n', start)
+  if (newline < 0) return { complete: false }
+  const word = command.slice(start, newline).trim().split(/\s+/)[0]
+  const delimiter = unquote(word).replaceAll('\\', '')
+  const lines = command.slice(newline + 1).split('\n')
+  const body = []
+  for (const raw of lines) {
+    const line = dash ? raw.replace(/^\t+/, '') : raw
+    if (line === delimiter) return { complete: true, quoted: /['"\\]/.test(word), body: body.join('\n') }
+    body.push(line)
   }
-  if (/^(?:-C|--reuse-message)(?:=|$)|^-C.+/.test(value)) {
-    return { reused: true, advance: Number(['-C', '--reuse-message'].includes(value)) }
-  }
-  return { advance: Number(COMMIT_VALUE_OPTIONS.includes(value)) }
+  return { complete: false }
 }
 
-function sourceStep(findings, commit, i, readFile) {
-  const value = shellValue(commit.words[i])
-  const message = messageArgument(commit.words, i)
-  if (message) {
-    addMessageText(findings, message.word)
-    return { source: true, advance: message.advance }
+function stdinMessage(findings, context) {
+  const { redirect, doc, cwd, readFile, uncertain } = context
+  if (redirect !== undefined) {
+    readMessage(findings, 'git-commit', cwd, redirect, readFile, uncertain)
+    return false
   }
-  const file = fileArgument(commit.words, i)
-  if (!file) return textSourceStep(findings, value)
-  if (shellValue(file.word || '') === '-') stdinMessage(findings, commit, readFile)
-  else readMessage(findings, 'git-commit', commit.cwd, file.word, readFile)
-  return { source: true, advance: file.advance }
+  return !doc?.complete || (!doc.quoted && /[$`]/.test(doc.body))
 }
 
-function messageSources(findings, commit, readFile) {
-  const values = controlArguments(commit.words)
-  if (values.includes('--dry-run')) return
-  if (values.some(v => /^(?:-e|--edit|-c|--reedit-message)(?:=|$)|^-c.+/.test(v))) {
-    findings.push({ surface: 'git-commit', field: 'unscannable', count: 0 })
-    return
-  }
+function editorOption(value) {
+  return EDIT_OPTIONS.has(value.split('=')[0])
+    || ['-c', '-t'].some(flag => value.startsWith(flag) && value.length > 2)
+}
+
+function sourceStep(findings, context, i) {
+  const { words } = context
+  const message = argument(words, i, '-m', '--message')
+  if (message) return { source: true, unknown: !message.word || /[$`]/.test(message.word), advance: message.advance }
+  const file = argument(words, i, '-F', '--file')
+  if (!file) return { advance: 0 }
+  let unknown = false
+  if (unquote(file.word) === '-') unknown = stdinMessage(findings, context)
+  else readMessage(findings, 'git-commit', context.base, file.word, context.readFile, context.uncertain)
+  return { source: true, unknown, advance: file.advance }
+}
+
+function messageSources(findings, context) {
   let source = false
-  let reused = false
-  for (let i = 0; i < commit.words.length; i++) {
-    if (shellValue(commit.words[i]) === '--') break
-    const step = sourceStep(findings, commit, i, readFile)
-    if (step.source) source = true
-    if (step.reused) reused = true
+  let unknown = dynamicHeredoc(context.doc)
+  const values = context.words.map(word => unquote(word.raw))
+  for (let i = 0; i < context.words.length; i++) {
+    const value = values[i]
+    const step = sourceStep(findings, context, i)
+    source ||= Boolean(step.source)
+    unknown ||= Boolean(step.unknown) || editorOption(value)
+    if (reusedSource(value)) source = true
     i += step.advance
   }
-  const noEdit = noEditCommit(commit)
-  if (!source && !reused && !noEdit) findings.push({ surface: 'git-commit', field: 'unscannable', count: 0 })
+  source ||= values.includes('--amend') && values.includes('--no-edit')
+  if (unknown || !source) findings.push({ surface: 'git-commit', field: 'unscannable', count: 0 })
 }
 
-function noEditCommit(commit) {
-  return commit.words.includes('--amend') && commit.words.includes('--no-edit')
+function dynamicHeredoc(doc) {
+  return Boolean(doc?.complete && !doc.quoted && /[$`]/.test(doc.body))
 }
 
-function controlArguments(words) {
-  const values = []
-  for (let i = 0; i < words.length; i++) {
-    const source = messageArgument(words, i) || fileArgument(words, i)
-    if (source) { i += source.advance; continue }
-    const value = shellValue(words[i])
-    if (value === '--') break
-    values.push(value)
-    if (COMMIT_VALUE_OPTIONS.includes(value)) i++
+function reusedSource(value) {
+  return value === '-C' || value.startsWith('-C') || value.startsWith('--reuse-message')
+}
+
+function scanGit(findings, command, cwd, words, readFile) {
+  const position = commitPosition(command)
+  if (!position || commitDryRun(words, position)) return
+  addText(findings, 'git-commit', 'command', command)
+  const context = {
+    words: words.filter(word => word.start > position.commit),
+    base: commitDirectory(words, position, cwd), cwd, readFile,
+    uncertain: words.some(word => word.start < position.commit && DIRECTORY_WORDS.has(word.raw)), doc: heredoc(command),
+    redirect: redirectWord(words),
   }
-  return values
+  messageSources(findings, context)
 }
 
-function scanGit(findings, group, cwd, readFile) {
-  try {
-    const commit = gitCommit(group.words, cwd)
-    if (commit) messageSources(findings, { ...commit, shellCwd: cwd, heredocs: group.heredocs }, readFile)
-  } catch { findings.push({ surface: 'git-commit', field: 'unscannable', count: 0 }) }
+function redirectWord(words) {
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].raw !== '<' || words[i + 1]?.raw === '<') continue
+    if (words[i - 1]?.raw === '<') continue
+    return words[i + 1]?.raw
+  }
+  return undefined
 }
 
-function scanExtraBash(findings, words, cwd, options) {
-  const first = commandIndex(words)
-  const offset = /(?:^|\/)node$/.test(shellValue(words[first] || '')) ? 1 : 0
-  const command = words.slice(first + offset).join(' ')
-  const name = shellValue(words[first + offset] || '').split('/').pop()
-  const matches = (options.bashTextCommands || []).some(pattern => {
-    pattern.lastIndex = 0
-    return pattern.exec(`${name} ${words.slice(first + offset + 1).join(' ')}`)?.index === 0
+// Propagate the prefix walk's result once per word, keeping long prefix runs linear.
+function commandPositions(words) {
+  let position = true
+  return words.map(word => {
+    const current = position
+    const value = unquote(word.raw)
+    if (COMMAND_SEPARATORS.has(value) || value === '(') position = true
+    else if (!commandPrefix(value)) position = false
+    return current
   })
-  if (!matches) return
-  addText(findings, 'board', 'command', words.slice(first + offset + 1).join(' '))
-  const cat = /\$\(\s*cat\s+((?:'[^']*'|"[^"$`]*"|[^\s()])+?)\s*\)/g
-  for (const match of command.matchAll(cat)) readMessage(findings, 'board', cwd, match[1], options.readFile)
+}
+
+function commandPrefix(word) {
+  return COMMAND_PREFIXES.has(word) || word.endsWith('/node') || assignmentWord(word)
+}
+
+function assignmentWord(word) {
+  const equal = word.indexOf('=')
+  if (equal < 1) return false
+  const name = word.slice(0, equal)
+  return /^[A-Za-z_]$/.test(name[0]) && !/[^A-Za-z0-9_]/.test(name)
+}
+
+function extraMatch(words, i, options, positions) {
+  if (!positions[i]) return false
+  const name = unquote(words[i].raw).split('/').pop()
+  const operation = unquote(words[i + 1]?.raw)
+  return (options.bashTextCommands || []).some(pattern => {
+    pattern.lastIndex = 0
+    return pattern.exec(`${name} ${operation}`)?.index === 0
+  })
+}
+
+function readCatFiles(findings, command, cwd, readFile) {
+  let offset = 0
+  while (offset < command.length) {
+    const start = command.indexOf('$(', offset)
+    if (start < 0) return
+    const end = command.indexOf(')', start + 2)
+    if (end < 0) return
+    const body = command.slice(start + 2, end).trim()
+    if (body.startsWith('cat ')) readMessage(findings, 'board', cwd, body.slice(4).trim(), readFile)
+    offset = end + 1
+  }
+}
+
+function scanExtraBash(findings, command, words, cwd, options) {
+  const positions = commandPositions(words)
+  for (let i = 0; i < words.length; i++) {
+    if (!extraMatch(words, i, options, positions)) continue
+    const start = words[i + 1]?.end || words[i].end
+    let end = i + 2
+    while (end < words.length && ![';', '&', '|', '\n'].includes(words[end].raw)) end++
+    const text = command.slice(start, words[end]?.start ?? command.length)
+    addText(findings, 'board', 'command', text)
+    readCatFiles(findings, text, cwd, options.readFile)
+    i = end
+  }
 }
 
 function scanBash(findings, command, cwd, options) {
-  let shellCwd = cwd || process.cwd()
-  for (const group of commandGroups(command)) {
-    const { words } = group
-    if (shellValue(words[0] || '') === 'cd') {
-      shellCwd = gitDirectory(shellCwd, words[1])
-      continue
-    }
-    scanGit(findings, group, shellCwd, options.readFile)
-    scanExtraBash(findings, words, shellCwd, options)
-  }
+  const words = literalWords(command)
+  scanGit(findings, command, cwd, words, options.readFile)
+  scanExtraBash(findings, command, words, cwd, options)
 }
 
 function scanFileFields(findings, tool, data) {
@@ -346,7 +369,7 @@ export function scanHookInput(input = {}, options = {}) {
 export function warningContext(tool, result) {
   const fields = result.findings.map(f => `${f.field}=${f.count}`).join(', ')
   // Only known names are displayed; caller-controlled keys and text never enter the warning.
-  const name = /^(?:Write|Edit|MultiEdit|NotebookEdit|Bash|mcp__[A-Za-z0-9_]{1,120})$/.test(tool) ? tool : 'MCP persisted write'
+  const name = /^(?:Write|Edit|MultiEdit|NotebookEdit|Bash|mcp__\w{1,120})$/.test(tool) ? tool : 'MCP persisted write'
   return `Redaction-token guard (warn-only): ${name} write went through carrying ${result.total} redaction tokens (${fields}). `
     + 'REPAIR it now: edit the file, amend the commit message, or edit the card/message. Replace each token with the plain word you meant; '
     + 'use a neutral paraphrase or removal when the meaning is unknown; never guess a hidden value. '

@@ -162,13 +162,15 @@ Clean messages pass unchanged, including long numbers containing a short held PI
 ## Redaction tokens in persisted writes (warn-only)
 
 A classic PreToolUse command hook counts redaction-token-shaped strings in Write content,
-Edit replacement text, MultiEdit replacements, NotebookEdit insert/replace source, git commit
-message values, stdin heredocs and bounded message files, and supported Atrium speak/amend/edit inputs (including
+Edit replacement text, MultiEdit replacements, NotebookEdit insert/replace source, Bash
+commands that may invoke a git commit (the entire command text), bounded message files, and supported Atrium speak/amend/edit inputs (including
 the speak alias). It does not scan other Bash commands, where an issued token can intentionally
 be rehydrated. Notebook deletion persists no text. Unreadable, non-regular, oversized (over
 1 MiB), editor, template, dynamically expanded and piped message sources are classified as unscannable.
-Dry-run commits persist nothing and produce no finding. Shell input redirections use the shell working
-directory, including preceding literal `cd` commands; Git message files additionally apply `git -C`.
+Any `--dry-run` word suppresses commit findings. Detection is a conservative linear word scan;
+mixed commands and quoted invocation text may warn. Message files use the hook working directory
+and literal global `git -C` options; stdin redirects use the hook working directory alone.
+Relative paths are unscannable when `cd ` or `(` precedes the commit word, because shell directory changes are not modeled.
 
 Deliberate quotations are exempt only in the guard's own tests, fixtures and docs: paths
 resolved against the hook working directory below `/plugins/wt-secret-guard/` in a source tree or
@@ -177,6 +179,7 @@ Below that location they require a `test/`, `tests/`,
 `fixtures/` or `docs/` segment, a `*.test.*` or `*.selftest.*` basename, or `README.md` or
 `CHANGELOG.md`. Resolution is lexical; symlinks are not resolved. Findings are still counted for
 exempt files. Implementation files are not exempt.
+The exemption is lexical by path name and cannot prove directory ownership; another directory with the same layout is exempt too.
 
 The hook **never blocks**. Its context arrives on the model's next request, after the write
 has run, and asks it to repair the file, commit message, card or chat message now. Replace each
