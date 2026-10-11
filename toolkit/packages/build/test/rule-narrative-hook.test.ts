@@ -15,6 +15,16 @@ const fileSeal = sealRuleNarrativeFile()
 afterAll(fileSeal.restore)
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
+// One read decides liveness: a stat file that vanished between check and read (ENOENT/ESRCH) is not alive.
+function aliveOnProc(stat: string): boolean {
+  try { return !readFileSync(stat, 'utf8').includes(') Z ') }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ESRCH') return false
+    throw error
+  }
+}
+
 function fixture(tag: string) {
   const root = mkdtempSync(join(tmpdir(), `wt-rule-narrative-${tag}-`))
   roots.push(root)
@@ -145,11 +155,11 @@ describe.skipIf(process.platform === 'win32')('rule narrative hook', () => {
       controller.abort()
       expect(await result).toEqual({ ok: false, reason: 'split deadline exceeded' })
       const goneUntil = Date.now() + 15000
-      while (Date.now() < goneUntil && existsSync(stat) && !readFileSync(stat, 'utf8').includes(') Z ')) {
+      while (Date.now() < goneUntil && aliveOnProc(stat)) {
         await new Promise(resolve => setTimeout(resolve, 10))
       }
       // A vanished pid is termination only after we witnessed it alive on /proc.
-      expect(existsSync(stat) && !readFileSync(stat, 'utf8').includes(') Z ')).toBe(false)
+      expect(aliveOnProc(stat)).toBe(false)
     } finally {
       controller.abort()
       await result
@@ -232,5 +242,11 @@ describe.skipIf(process.platform === 'win32')('rule narrative hook', () => {
     const hook = manifest.hooks.PreToolUse.flatMap((entry: { hooks: { command: string; timeout?: number }[] }) => entry.hooks)
       .find((entry: { command: string }) => entry.command.includes('wt-rule-convention-guard-hook.mjs'))
     expect(hook.timeout).toBe(30)
+  })
+})
+
+describe('aliveOnProc', () => {
+  it('reads a vanished /proc stat file as not alive instead of throwing', () => {
+    expect(aliveOnProc('/proc/999999999/stat')).toBe(false)
   })
 })
