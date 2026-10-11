@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { classifyLane } from './lane-supervisor-core.mjs'
 import { laneHostDir } from './host/lane-host-dir.mjs'
+import { createProcfs } from './host/procfs.mjs'
 
 const RECORD_NAME = /^\d+-\d+\.json$/
 const LIVE_STATUSES = new Set(['running', 'decision-needed', 'launching'])
@@ -81,9 +82,10 @@ export function sessionBackgroundTaskInFlight({
   if (names.length === 0) return { status: 'none' }
   if (names.length > maxTaskOutputs) return { status: 'unknown', reason: `task output scan capped at ${maxTaskOutputs}` }
   const outputs = new Set(names.map((name) => path.join(tasksDir, name)))
+  const procfs = createProcfs({ platform, readdir: readdirImpl, readFile: readFileImpl, readlink: readlinkImpl, stat: statImpl })
   let processes
   try {
-    processes = readdirImpl('/proc', { withFileTypes: true })
+    processes = procfs.listProcesses({ withFileTypes: true })
       .map((entry) => entry.name)
       .filter((name) => /^\d+$/.test(name))
   } catch {
@@ -92,9 +94,8 @@ export function sessionBackgroundTaskInFlight({
   if (processes.length > maxProcesses) return { status: 'unknown', reason: `process scan capped at ${maxProcesses}` }
   const unknowns = []
   for (const pid of processes) {
-    const procDir = path.join('/proc', pid)
     try {
-      if (statImpl(procDir).uid !== uid) continue
+      if (procfs.processDirectoryStat(pid).uid !== uid) continue
     } catch (error) {
       if (!missing(error)) unknowns.push('process identity unreadable')
       continue
@@ -102,8 +103,8 @@ export function sessionBackgroundTaskInFlight({
     let before
     let fds
     try {
-      before = processStartTime(String(readFileImpl(path.join(procDir, 'stat'), 'utf8')))
-      fds = readdirImpl(path.join(procDir, 'fd'), { withFileTypes: true })
+      before = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
+      fds = procfs.listDescriptors(pid, { withFileTypes: true })
     } catch {
       continue
     }
@@ -117,14 +118,14 @@ export function sessionBackgroundTaskInFlight({
     for (const fd of fds) {
       let target
       try {
-        target = readlinkImpl(path.join(procDir, 'fd', fd.name))
+        target = procfs.readDescriptorTarget(pid, fd.name)
       } catch {
         // An unreadable unrelated descriptor is not evidence about a task output.
         continue
       }
       if (outputs.has(target)) {
         try {
-          const writable = writableFd(String(readFileImpl(path.join(procDir, 'fdinfo', fd.name), 'utf8')))
+          const writable = writableFd(String(procfs.readDescriptorInfo(pid, fd.name, 'utf8')))
           if (writable === null) unknowns.push('process fd mode unreadable')
           if (writable) {
             heldOutput = target
@@ -138,9 +139,9 @@ export function sessionBackgroundTaskInFlight({
     }
     if (!heldOutput) continue
     try {
-      const environment = String(readFileImpl(path.join(procDir, 'environ'))).split('\0')
-      const argv = String(readFileImpl(path.join(procDir, 'cmdline')))
-      const after = processStartTime(String(readFileImpl(path.join(procDir, 'stat'), 'utf8')))
+      const environment = String(procfs.readEnvironment(pid)).split('\0')
+      const argv = String(procfs.readCommandLine(pid))
+      const after = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
       if (!after || after !== before) {
         unknowns.push('background task process identity changed')
         continue
@@ -151,13 +152,13 @@ export function sessionBackgroundTaskInFlight({
         continue
       }
       if (pluginMonitorArgv(argv)) continue
-      const finalTarget = readlinkImpl(path.join(procDir, 'fd', heldFd))
-      const finalWritable = writableFd(String(readFileImpl(path.join(procDir, 'fdinfo', heldFd), 'utf8')))
+      const finalTarget = procfs.readDescriptorTarget(pid, heldFd)
+      const finalWritable = writableFd(String(procfs.readDescriptorInfo(pid, heldFd, 'utf8')))
       if (finalTarget !== heldOutput || finalWritable !== true) {
         unknowns.push('background task fd identity changed')
         continue
       }
-      const finalStart = processStartTime(String(readFileImpl(path.join(procDir, 'stat'), 'utf8')))
+      const finalStart = processStartTime(String(procfs.readProcessStat(pid, 'utf8')))
       if (!finalStart || finalStart !== before) {
         unknowns.push('background task process identity changed')
         continue

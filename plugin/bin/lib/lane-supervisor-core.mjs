@@ -1,7 +1,8 @@
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { ensureLaneHostDir, laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
+import { createProcfs, DEFAULT_PROC_ROOT, procfsProcessExists } from './host/procfs.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
 import { signalProcess } from './host/process-signal-boundary.mjs'
 
@@ -143,8 +144,8 @@ function processStartSeconds(value) {
   return Math.floor(milliseconds / 1000)
 }
 
-function processExists(pid, { platform = laneHostPlatform, procRoot = '/proc', spawnSync: execFile = spawnSync, timeoutMs } = {}) {
-  if (platform === 'linux') return existsSync(path.join(procRoot, String(pid)))
+function processExists(pid, { platform = laneHostPlatform, procRoot = DEFAULT_PROC_ROOT, spawnSync: execFile = spawnSync, timeoutMs } = {}) {
+  if (platform === 'linux') return procfsProcessExists(pid, { root: procRoot, platform })
   if (platform === 'darwin') {
     const result = darwinProcessTable(execFile, Number(pid))
     if (result.status === 'unavailable') return null
@@ -158,14 +159,14 @@ function processExists(pid, { platform = laneHostPlatform, procRoot = '/proc', s
   return null
 }
 
-function processState(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
+function processState(pid, { platform = process.platform, procRoot = DEFAULT_PROC_ROOT, spawnSync: execFile = spawnSync } = {}) {
   if (platform === 'darwin') {
     const result = darwinProcessTable(execFile, Number(pid))
     return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
   }
   if (platform !== 'linux') return null
   try {
-    const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+    const stat = createProcfs({ root: procRoot, platform }).readProcessStat(pid, 'utf8')
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]
   } catch { return null }
 }
@@ -184,7 +185,7 @@ function identityStatus(expected, { inspect, platform, procRoot, processExists: 
   return 'unknown'
 }
 
-export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc', processExists: exists = processExists, processState: state = processState } = {}) {
+export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = DEFAULT_PROC_ROOT, processExists: exists = processExists, processState: state = processState } = {}) {
   if (!record || typeof record !== 'object' || typeof record.runId !== 'string') {
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
@@ -213,7 +214,7 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
 }
 
 function terminationOptions(options) {
-  const { inspect = inspectProcess, kill = signalProcess, graceMs = 1000, platform = process.platform, procRoot = '/proc' } = options
+  const { inspect = inspectProcess, kill = signalProcess, graceMs = 1000, platform = process.platform, procRoot = DEFAULT_PROC_ROOT } = options
   return { inspect, kill, graceMs, platform, procRoot, ...terminationControlOptions(options) }
 }
 
@@ -380,22 +381,23 @@ function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts,
   return { pid, argv: Array.isArray(recordedArgv) ? recordedArgv : [], startTime, image: { name, path: typeof result.value.Path === 'string' && result.value.Path ? result.value.Path : null }, groupId: null, cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1, reportEvidence = null } = {}) {
+export function inspectProcess(pid, { procRoot = DEFAULT_PROC_ROOT, platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1, reportEvidence = null } = {}) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
   if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
   if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv, attempts, reportEvidence)
   if (platform !== 'linux') return null
+  const procfs = createProcfs({ root: procRoot, platform })
   try {
-    const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
-    const cwd = readlinkSync(path.join(procRoot, String(pid), 'cwd'))
-    const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+    const argv = procfs.readCommandLine(pid).toString().split('\0').filter(Boolean)
+    const cwd = procfs.readWorkingDirectory(pid)
+    const stat = procfs.readProcessStat(pid, 'utf8')
     const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
     if (rest[0] === 'Z') return null
     return { pid: Number(pid), argv, cwd, groupId: Number(rest[2]), startTime: Number(rest[19]) }
   } catch {
     try {
-      const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
-      const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+      const argv = procfs.readCommandLine(pid).toString().split('\0').filter(Boolean)
+      const stat = procfs.readProcessStat(pid, 'utf8')
       const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
       if (rest[0] === 'Z') return null
       return { pid: Number(pid), argv, cwd: null, groupId: Number(rest[2]), startTime: Number(rest[19]) }
