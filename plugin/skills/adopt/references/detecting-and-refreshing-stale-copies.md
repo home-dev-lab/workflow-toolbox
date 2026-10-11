@@ -5,20 +5,28 @@ This reference belongs to the adopt skill. Its text moved here verbatim from tha
 `--check` parses each installed file's banner version and compares it to the running plugin's
 version — for both sets:
 
-At `SessionStart`, the read-only adopt check examines only the managed rule and agent paths in
+At `SessionStart`, the adopt check examines only the managed rule and agent paths in
 the project and active config profile. It stays silent when every adopted copy matches. For each
 differing managed copy it names `behind vX` or `ahead of vX` from the banner-version ordering;
 equal-version drift is classified from the stripped copy body when one side only adds content.
 If content changed in both directions, it says that direction is unknown rather than guessing.
-The hook never refreshes anything itself. For an unedited stale copy, the session runs the exact
-`--install --dir` command from the notice, re-checks that directory, and reports one line. For an
-edited copy, the session runs `--diff`, then either takes shipped text deliberately with
+The hook refreshes each fingerprint-proven unedited stale physical rule or agent copy through
+the installer's `--install --refresh-only` path, re-checks disk, and reports one line. It never
+creates absent copies or changes settings, edited bodies, edited/kept/unverified trigger heads,
+or banner-line appendages. Duplicate, misplaced and unverified findings are not selected for
+automatic refresh. A stale running plugin root suppresses refresh and orphan advice. A shared
+eight-second budget bounds refresh starts and child timeouts; skipped or failed refreshes retain
+the exact session action. `WT_ADOPT_REFRESH=notice-only` keeps the read-only notices, and
+`PostToolUse` performs no refresh. For an edited copy, the session runs `--diff`, then either takes shipped text deliberately with
 `--install --force --file <file>` or keeps the
 edit and opens a card against the shipped rule. Successful installer writes are journalled with
 file, directory, before/after versions, and the adopted shipped snapshot. A directory symlink and
 its real target are one target; a second real config directory is checked and refreshed separately.
 
 - **ABSENT** — not installed; `--install` writes it.
+- **ORPHAN** — a regular adopted Markdown copy whose name is absent from a successfully read,
+  non-empty shipped inventory (including registered agents, case-insensitively). The hook names
+  the quoted removal command, but never deletes it. Keep a deliberate local variant if intended.
 - **MIGRATED-ON-DEMAND** — a static rule absent here because it was moved into the on-demand
   directory beside this one, where it carries its own on-demand head (the status names where it was
   moved; it does not check that the engine is enabled in this profile). `--install` writes
@@ -55,3 +63,22 @@ its real target are one target; a second real config directory is checked and re
   re-run `--install`), or an older managed banner with no fingerprint (treated as
   possibly-edited: skipped unless `--force`).
 
+## Refresh-only safety and publication
+
+`--install --refresh-only` writes only a managed copy classified as clean at the writer's own
+decision, with no trigger state or a current/stale shipped trigger head. Absent, symlinked,
+hand-authored, edited and unverified copies are skipped, as are locally kept heads. Settings,
+settings backups and settings traces are skipped entirely. Do not combine it with `--force`,
+`--refresh-triggers`, `--keep-triggers` or `--replace-symlinks`.
+
+**Known fingerprint blind spot in normal install:** the banner line is stripped in full before
+hashing. Text appended after its closing marker reads as clean and a normal refresh can overwrite
+it without `--force`. Editing the body is detected. Refresh-only additionally refuses any text
+after the first banner terminator, including an appendage ending in another closing marker.
+
+Managed writes use an exclusive, unique temp in the target directory and rename it over the
+target, preserving permission bits best-effort. Refresh-only checks the classified bytes again
+immediately before rename. Concurrent refreshes publish complete files; a user edit in the
+remaining check-to-rename window is still a risk. Rename breaks hard links and does not preserve
+all extended metadata. A refused rename keeps the original copy; ordinary failure paths remove
+the owned temp. A hard kill can leave a non-Markdown dot-temp for manual cleanup.

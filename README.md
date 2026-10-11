@@ -365,7 +365,7 @@ what happened and whether resuming is safe.
 | `hooks` | **Inspect** current sessions, cards, lanes, services, and helper processes with explicit availability when a host probe cannot run. | `/wir` or the `what is running` prompt-hint button |
 | `bin/wt-work-journal-hook.mjs` | **Record** project acts in a durable, hash-linked daily index; verify and show a bounded subject digest at session start; warn about unrecorded outward acts at Stop. | Automatically; [journal commands and storage boundary](docs/public/work-journal.md) |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
-| `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config — on explicit request only, never automatically; each copy is fingerprinted so a later `--check` detects when the plugin has moved ahead. | Automatically when you ask, or `/workflow-toolbox:adopt` |
+| `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config on explicit request; existing proven-unedited stale copies refresh at SessionStart. Each copy is fingerprinted so a later `--check` detects drift. | Automatically when you ask, or `/workflow-toolbox:adopt` |
 
 ### Bundled rules & the delegation ladder
 
@@ -410,6 +410,13 @@ multi-profile setup must be rerun under each profile. See [plugin/rules/README.m
 and the [adopt skill](plugin/skills/adopt/SKILL.md) for the full
 contract — including how to **reconcile existing project rules** before adopting,
 so you don't end up with duplicate, drifting concerns.
+
+At SessionStart, the adoption hook refreshes existing fingerprint-proven unedited stale rule
+and agent copies through `--install --refresh-only`, publishes via a unique same-directory temp
+and rename, re-checks disk, and reports one line. This **experimental** refresh leaves absent
+copies, edited bodies and trigger heads, and settings untouched. `WT_ADOPT_REFRESH=notice-only`
+keeps the existing read-only notices; PostToolUse performs no refresh. An adopted copy whose
+name is no longer shipped is reported with a quoted removal command, never deleted automatically.
 
 The plugin also ships several OTHER agents (`fidelity-checker`, `index-groomer`,
 `leaf`, `lean`, `opencode-verifier`, `wave-fidelity-checker` as of this writing)

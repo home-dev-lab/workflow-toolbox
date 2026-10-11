@@ -8,7 +8,7 @@
 // assertions INTO the suite (child-process execution against throwaway dirs, the same
 // pattern as plugin-hooks.test.ts) so the contract is locked against future drift.
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   mkdtempSync,
@@ -23,6 +23,8 @@ import {
   mkdirSync,
   cpSync,
   renameSync,
+  chmodSync,
+  statSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -110,6 +112,16 @@ function runInCwdResult(args: string[], cwd: string, env: NodeJS.ProcessEnv = IN
 const rulePath = (dir: string) => join(dir, RULE)
 const autonomyPath = (dir: string) => join(dir, '.claude', AUTONOMY)
 
+function refreshChild(dir: string): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [SCRIPT, '--install', '--refresh-only', '--file', RULE, '--dir', dir], {
+      env: INSTALLER_ENV, stdio: 'ignore',
+    })
+    child.once('error', reject)
+    child.once('close', resolve)
+  })
+}
+
 // Age a managed RULE copy into "installed from an older release whose text has since
 // changed": an older banner version, a body that genuinely differs from what ships now, and
 // a fingerprint restamped over that body so the copy still classifies as UNEDITED ('clean')
@@ -130,6 +142,184 @@ function addOnDemandFrontmatter(dir: string): void {
 }
 
 describe('adopt installer — edit-safety contract (committed drift lock)', () => {
+  it('refresh-only refreshes clean stale bytes but never creates absent files or settings', () => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    ageRuleCopy(rulePath(dir))
+    rmSync(join(dir, ACT))
+    const cfg = join(mkDir(), 'config')
+    const res = spawnSync(process.execPath, [SCRIPT, '--install', '--refresh-only', '--dir', dir], {
+      encoding: 'utf8', env: { ...INSTALLER_ENV, CLAUDE_CONFIG_DIR: cfg },
+    })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain(`${ACT}: SKIPPED — refresh-only: absent`)
+    expect(existsSync(join(dir, ACT))).toBe(false)
+    expect(existsSync(cfg)).toBe(false)
+    expect(run(['--check'], dir)).toContain(`${RULE}: UP-TO-DATE`)
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+  it.each(['body', 'head', 'banner', 'banner-terminator'])('refresh-only preserves a locally edited %s even beside a stale copy', (edit) => {
+    const { dir, file } = actFixture()
+    run(['--install', '--file', ACT], dir)
+    ageRuleCopy(file)
+    let text = readFileSync(file, 'utf8')
+    if (edit === 'body') text += '\nLOCAL EDIT\n'
+    if (edit === 'head') text = specHead().replace('  triggers:', '  triggers: # LOCAL') + text
+    if (edit === 'banner') text = text.replace('-->', '--> LOCAL EDIT')
+    if (edit === 'banner-terminator') text = text.replace('-->', '--> LOCAL EDIT -->')
+    writeFileSync(file, text)
+    const res = runResult(['--install', '--refresh-only'], dir)
+    expect(res.out).toContain(`${ACT}: SKIPPED — refresh-only:`)
+    expect(readFileSync(file, 'utf8')).toBe(text)
+  })
+  it.each(['edited', 'kept', 'kept-spec-moved', 'edited-after-keep', 'unverified'])('refresh-only refuses a %s trigger provenance', (state) => {
+    const plugin = copiedPlugin()
+    const { dir, file } = actFixture()
+    runCopied(plugin.script, ['--install', '--file', ACT], dir)
+    writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    if (state.startsWith('kept') || state === 'edited-after-keep') runCopied(plugin.script, ['--install', '--keep-triggers', '--file', ACT], dir)
+    if (state === 'edited-after-keep') writeFileSync(file, readFileSync(file, 'utf8').replace('# LOCAL', '# SECOND LOCAL'))
+    if (state === 'unverified') writeFileSync(file, withoutHeadStamp(readFileSync(file, 'utf8')))
+    if (state === 'kept-spec-moved') {
+      const spec = JSON.parse(readFileSync(plugin.spec, 'utf8'))
+      spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
+      writeFileSync(plugin.spec, JSON.stringify(spec))
+    }
+    const source = join(plugin.spec, '..', ACT)
+    writeFileSync(source, readFileSync(source, 'utf8') + '\nUPSTREAM BODY FIX\n')
+    const before = readFileSync(file, 'utf8')
+    expect(runCopied(plugin.script, ['--install', '--refresh-only'], dir)).toContain(`refresh-only: trigger head ${state}`)
+    expect(readFileSync(file, 'utf8')).toBe(before)
+  })
+  it.each(['--force', '--refresh-triggers', '--keep-triggers', '--replace-symlinks'])('refresh-only refuses %s', (flag) => {
+    const res = runResult(['--install', '--refresh-only', flag], mkDir())
+    expect(res.status).toBe(1)
+    expect(res.out).toContain('--refresh-only cannot be combined with')
+  })
+  it('refresh-only never follows a symlink or overwrites a hand-authored copy', () => {
+    const dir = mkDir()
+    const external = join(mkDir(), RULE)
+    writeFileSync(external, 'EXTERNAL\n')
+    symlinkSync(external, rulePath(dir))
+    writeFileSync(join(dir, ACT), 'HAND AUTHORED\n')
+    const res = runResult(['--install', '--refresh-only'], dir)
+    expect(res.status, res.out).toBe(0)
+    expect(lstatSync(rulePath(dir)).isSymbolicLink()).toBe(true)
+    expect(readFileSync(external, 'utf8')).toBe('EXTERNAL\n')
+    expect(readFileSync(join(dir, ACT), 'utf8')).toBe('HAND AUTHORED\n')
+  })
+  it('atomic refresh preserves permissions and refuses a target edited during temp creation', () => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    ageRuleCopy(rulePath(dir))
+    if (process.platform !== 'win32') chmodSync(rulePath(dir), 0o640)
+    run(['--install', '--refresh-only'], dir)
+    if (process.platform !== 'win32') expect(statSync(rulePath(dir)).mode & 0o777).toBe(0o640)
+    ageRuleCopy(rulePath(dir))
+    const edited = readFileSync(rulePath(dir), 'utf8') + '\nEDIT WHILE RENDERING\n'
+    const source = `import fs from 'node:fs'; const original = fs.writeFileSync; fs.writeFileSync = function(file, ...args) { if (typeof file === 'number' || String(file).endsWith('.tmp')) original(${JSON.stringify(rulePath(dir))}, ${JSON.stringify(edited)}); return original.call(this, file, ...args) }; process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, '--install', '--refresh-only', '--file', ${JSON.stringify(RULE)}, '--dir', ${JSON.stringify(dir)}]; await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+    const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+  it('keeps the old target intact until a complete same-directory temp is renamed', () => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    const expected = readFileSync(rulePath(dir), 'utf8')
+    ageRuleCopy(rulePath(dir))
+    const before = readFileSync(rulePath(dir), 'utf8')
+    const saved = mkDir()
+    writeFileSync(join(saved, 'before.txt'), before)
+    writeFileSync(join(saved, 'expected.txt'), expected)
+    const source = `import fs from 'node:fs'; import assert from 'node:assert/strict'; import path from 'node:path'; const original = fs.renameSync; let publications = 0; fs.renameSync = function(from, to) { assert.equal(to, ${JSON.stringify(rulePath(dir))}); assert.equal(path.dirname(from), ${JSON.stringify(dir)}); assert.equal(fs.readFileSync(to, 'utf8'), fs.readFileSync(${JSON.stringify(join(saved, 'before.txt'))}, 'utf8')); assert.equal(fs.readFileSync(from, 'utf8'), fs.readFileSync(${JSON.stringify(join(saved, 'expected.txt'))}, 'utf8')); publications++; return original.call(this, from, to) }; process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, '--install', '--refresh-only', '--file', ${JSON.stringify(RULE)}, '--dir', ${JSON.stringify(dir)}]; await import(${JSON.stringify(pathToFileURL(SCRIPT).href)}); assert.equal(publications, 1, 'managed files publish through rename')`
+    const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(res.status, res.stdout + res.stderr).toBe(0)
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+  })
+  it('compares the publication snapshot as bytes even when an encoding edit decodes identically', () => {
+    const dir = mkDir()
+    const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\n\uFFFD\n'
+    const fp = createHash('sha256').update(body).digest('hex').slice(0, 12)
+    const before = `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`
+    writeFileSync(rulePath(dir), before)
+    const bytes = Buffer.from(before)
+    const index = bytes.indexOf(Buffer.from('\uFFFD'))
+    const edited = Buffer.concat([bytes.subarray(0, index), Buffer.from([0xff]), bytes.subarray(index + 3)])
+    expect(edited.toString('utf8')).toBe(before)
+    const saved = join(mkDir(), 'edited.bin')
+    writeFileSync(saved, edited)
+    const source = `import fs from 'node:fs'; const original = fs.writeFileSync; fs.writeFileSync = function(file, ...args) { if (typeof file === 'number') original(${JSON.stringify(rulePath(dir))}, fs.readFileSync(${JSON.stringify(saved)})); return original.call(this, file, ...args) }; process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, '--install', '--refresh-only', '--file', ${JSON.stringify(RULE)}, '--dir', ${JSON.stringify(dir)}]; await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+    const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    expect(readFileSync(rulePath(dir))).toEqual(edited)
+  })
+  it('concurrent refresh-only processes publish complete identical files without temp leftovers', async () => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    const expected = readFileSync(rulePath(dir), 'utf8')
+    for (let iteration = 0; iteration < 5; iteration++) {
+      ageRuleCopy(rulePath(dir))
+      const statuses = await Promise.all([refreshChild(dir), refreshChild(dir)])
+      expect(statuses).toEqual([0, 0])
+      expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
+      expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+    }
+  })
+  it('cleans its temp and preserves the original on rename failure', () => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    ageRuleCopy(rulePath(dir))
+    const before = readFileSync(rulePath(dir), 'utf8')
+    const source = `import fs from 'node:fs'; fs.renameSync = () => { throw new Error('simulated sharing violation') }; process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, '--install', '--refresh-only', '--file', ${JSON.stringify(RULE)}, '--dir', ${JSON.stringify(dir)}]; await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+    const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('simulated sharing violation')
+    expect(readFileSync(rulePath(dir), 'utf8')).toBe(before)
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+  it.each(['removed', 'symlink'])('atomic refresh refuses a target %s after its decision', (state) => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    ageRuleCopy(rulePath(dir))
+    const external = join(mkDir(), RULE)
+    writeFileSync(external, 'EXTERNAL\n')
+    const change = `fs.rmSync(${JSON.stringify(rulePath(dir))}); ${state === 'symlink' ? `fs.symlinkSync(${JSON.stringify(external)}, ${JSON.stringify(rulePath(dir))})` : ''}`
+    const source = `import fs from 'node:fs'; const original = fs.writeFileSync; fs.writeFileSync = function(file, ...args) { if (typeof file === 'number') { ${change} }; return original.call(this, file, ...args) }; process.argv = [process.execPath, ${JSON.stringify(SCRIPT)}, '--install', '--refresh-only', '--file', ${JSON.stringify(RULE)}, '--dir', ${JSON.stringify(dir)}]; await import(${JSON.stringify(pathToFileURL(SCRIPT).href)})`
+    const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain('SKIPPED — changed during this run')
+    if (state === 'removed') expect(existsSync(rulePath(dir))).toBe(false)
+    else expect(lstatSync(rulePath(dir)).isSymbolicLink()).toBe(true)
+    expect(readFileSync(external, 'utf8')).toBe('EXTERNAL\n')
+    expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+  it('reports only regular adopted orphan names, comparing the full inventory without case sensitivity', () => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    const adopted = readFileSync(rulePath(dir), 'utf8')
+    writeFileSync(join(dir, 'retired rule.md'), adopted)
+    writeFileSync(join(dir, 'README.md'), adopted)
+    writeFileSync(join(dir, 'handmade.md'), 'HANDMADE\n')
+    if (process.platform === 'linux') writeFileSync(join(dir, RULE.toUpperCase()), adopted)
+    symlinkSync(rulePath(dir), join(dir, 'retired-link.md'))
+    const out = run(['--check'], dir)
+    expect(out).toContain('retired rule.md: ORPHAN')
+    expect(out.match(/: ORPHAN/g)).toHaveLength(1)
+    expect(readFileSync(join(dir, 'retired rule.md'), 'utf8')).toBe(adopted)
+  })
+  it.each(['empty', 'unreadable'])('never reports orphans against an %s shipped inventory', (kind) => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    const plugin = copiedPlugin()
+    const rulesDir = join(plugin.script, '../../../..', 'rules')
+    rmSync(rulesDir, { recursive: true })
+    if (kind === 'empty') mkdirSync(rulesDir)
+    else writeFileSync(rulesDir, 'not a directory')
+    expect(runCopied(plugin.script, ['--check'], dir)).not.toContain('ORPHAN')
+  })
   it('installs and refreshes only spec-backed rules in an on-demand directory, preserving misplaced static copies', () => {
     const dir = join(mkDir(), 'rules-on-demand')
     const first = runResult(['--set', 'rules', '--install'], dir)

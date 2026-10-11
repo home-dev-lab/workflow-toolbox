@@ -5,6 +5,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- **EXPERIMENTAL:** The adoption SessionStart hook now refreshes proven-unedited stale rules
+  and agents itself through `adopt --install --refresh-only`, using unique same-directory temps
+  and atomic rename, then re-checks disk and reports the refreshed copies. Edited bodies and
+  trigger heads, absent copies and settings are left untouched; `notice-only` and PostToolUse
+  keep their existing behavior. Adopted orphan names are reported with an exact quoted removal
+  command and never deleted. Linux isolated-fixture and concurrent-process proofs cover this
+  increment; real-host E2E and macOS/Windows execution remain pending.
 - Pilots now wait for toolbox-launched lanes through the bounded launcher-record waiter; lane-written `EXIT=0` log lines and report files cannot signal completion. Re-adopt the pilot template to pick up the guidance.
 - `wt-secret-guard` now warns when a write is about to store a redaction token as literal text. A token is the placeholder the guard puts in place of a masked value; written into a file it stays a placeholder forever. When Write, Edit, MultiEdit or NotebookEdit content, a git commit message (including a `-F` message file of at most 1 MiB) or an Atrium message carries one, the model is told after the call how many tokens went in and asked to repair the text with the plain word it meant. The hook never blocks and never shows a token or a secret. The guard's own tests, fixtures and docs are exempt. Editor, template and piped commit messages are reported as unscannable rather than clean.
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.

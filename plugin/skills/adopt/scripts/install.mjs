@@ -373,12 +373,13 @@ const MANAGED_AUTONOMY = [
  *  .claude/agents/". Naming them is what tells the two apart (card: an adoptant asked
  *  why two already-available agents "hadn't been added" — they had, under their
  *  namespaced form, and nothing said so). */
-function discoverRegisteredAgents(root) {
+function discoverRegisteredAgents(root, requireReadable = false) {
   const dir = path.join(root, 'agents')
   let entries
   try {
     entries = fs.readdirSync(dir)
-  } catch {
+  } catch (error) {
+    if (requireReadable) throw error
     return [] // no bundle dir → nothing to report (graceful, mirrors discoverRuleItems)
   }
   return entries
@@ -1479,6 +1480,7 @@ const CLI_VALUE_OPTIONS = {
 
 const CLI_BOOLEAN_OPTIONS = {
   '--force': 'force',
+  '--refresh-only': 'refreshOnly',
   '--fail-on-drift': 'failOnDrift',
   '--refresh-triggers': 'refreshTriggers',
   '--keep-triggers': 'keepTriggers',
@@ -1502,6 +1504,7 @@ function defaultCliArgs() {
     dir: null,
     global: false,
     force: false,
+    refreshOnly: false,
     failOnDrift: false,
     refreshTriggers: false,
     keepTriggers: false,
@@ -1558,6 +1561,7 @@ const FLAG_EFFECTIVE_MODES = {
   dir: { cli: '--dir', modes: ['check', 'install', 'migrate', 'diff'] },
   global: { cli: '--global', modes: ['check', 'install', 'migrate', 'diff'] },
   force: { cli: '--force', modes: ['install'] },
+  refreshOnly: { cli: '--refresh-only', modes: ['install'] },
   failOnDrift: { cli: '--fail-on-drift', modes: ['check'], sets: ['scripts', 'all'] },
   refreshTriggers: { cli: '--refresh-triggers', modes: ['install'] },
   keepTriggers: { cli: '--keep-triggers', modes: ['install'] },
@@ -2194,21 +2198,53 @@ function managedWriteVerb(classification, force) {
   return 'REFRESHED'
 }
 
-function writeManagedFile(target, text, exclusive = false) {
+function publicationMatches(target, expected) {
+  if (expected === undefined) return true
+  try {
+    return fs.lstatSync(target).isFile() && fs.readFileSync(target).equals(Buffer.from(expected, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+function preserveManagedMode(target, fd) {
+  try {
+    const stat = fs.lstatSync(target)
+    if (stat.isFile()) fs.fchmodSync(fd, stat.mode & 0o7777)
+  } catch {
+    // Best effort: Windows honours only its read-only permission bit.
+  }
+}
+
+function writeManagedFile(target, text, expected = undefined) {
   assertPlacement(target)
-  fs.writeFileSync(target, text, exclusive ? { flag: 'wx' } : undefined)
+  const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}-${crypto.randomUUID()}.tmp`)
+  let fd
+  let ownsTemp = false
+  try {
+    fd = fs.openSync(temp, 'wx')
+    ownsTemp = true
+    fs.writeFileSync(fd, text)
+    preserveManagedMode(target, fd)
+    fs.closeSync(fd)
+    fd = undefined
+    if (!publicationMatches(target, expected)) return false
+    fs.renameSync(temp, target)
+    return true
+  } finally {
+    try { if (fd !== undefined) fs.closeSync(fd) } finally {
+      if (ownsTemp) fs.rmSync(temp, { force: true })
+    }
+  }
 }
 
 function replaceSymlinkAtomically(target, text) {
-  const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}.tmp`)
-  let ownsTemp = false
-  try {
-    writeManagedFile(temp, text, true)
-    ownsTemp = true
-    moveFileVerified(temp, target)
-  } finally {
-    if (ownsTemp) fs.rmSync(temp, { force: true })
-  }
+  return writeManagedFile(target, text)
+}
+
+function publishManagedItem(target, text, classification, args) {
+  if (classification.state === 'symlink') return replaceSymlinkAtomically(target, text)
+  return writeManagedFile(target, text, args.refreshOnly ? classification.raw : undefined)
 }
 
 function writeManagedItem(set, dir, item, args, version, root, planned) {
@@ -2224,8 +2260,10 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
     )
   }
-  if (classification.state === 'symlink') replaceSymlinkAtomically(target, finalText)
-  else writeManagedFile(target, finalText)
+  if (!publishManagedItem(target, finalText, classification, args)) {
+    process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
+    return
+  }
   const verb = managedWriteVerb(classification, args.force)
   appendAdoptionJournal(dir, {
     timestamp: new Date().toISOString(),
@@ -2274,7 +2312,10 @@ function writeTriggerHead(set, dir, item, planned, action) {
   const stamped = renderBanner(classification.installedVer, parsed.contentFp, stamp, item.file)
   const text = head + rest.replace(line, () => stamped)
   if (text === classification.raw) return
-  writeManagedFile(target, text)
+  if (!writeManagedFile(target, text, classification.raw)) {
+    process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
+    return
+  }
   let verb = 'TRIGGERS REFRESHED'
   if (action === 'keep') verb = 'TRIGGERS KEPT'
   else if (triggers.state === 'current') verb = 'TRIGGERS ENROLLED'
@@ -2287,13 +2328,36 @@ function writeTriggerHead(set, dir, item, planned, action) {
   process.stdout.write(`  ${item.file}: ${verb} (head only; body left at v${classification.installedVer}) -> ${target} (journal ${journalPath(dir)}) · on-demand triggers ${outcome}\n`)
 }
 
+function refreshRefusal(planned, set) {
+  if (planned.classification.state !== 'clean') return planned.classification.state
+  if (planned.migrationPending || planned.duplicate || planned.unverified) return planned.decision.status
+  if (planned.triggers && !['current', 'stale'].includes(planned.triggers.state)) return `trigger head ${planned.triggers.state}`
+  const line = bannerLine(set, planned.classification.raw).replace(/\r$/, '')
+  const terminator = set.kind === 'scripts' ? ' by the adopt skill -- editable copy.' : '-->'
+  if (!line.endsWith(terminator) || line.indexOf(terminator) !== line.length - terminator.length) return 'text after adoption banner'
+  return null
+}
+
+function skipRefreshOnly(args, planned, set, item) {
+  if (!args.refreshOnly) return false
+  const reason = refreshRefusal(planned, set)
+  if (!reason) return false
+  process.stdout.write(`  ${item.file}: SKIPPED — refresh-only: ${reason}\n`)
+  return true
+}
+
+function triggerHeadNeedsRefresh(triggers) {
+  return triggers && (triggers.state === 'stale' || (triggers.state === 'current' && (triggers.stamp?.kind !== 'head' || triggers.stamp.head !== triggers.current)))
+}
+
 function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const planned = decideManagedItem(set, dir, item, args, version, root, alternateDirs)
   const { classification, decision, triggers } = planned
   if (args.mode === 'install') {
-    if (args.refreshTriggers || args.keepTriggers) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
+    if (skipRefreshOnly(args, planned, set, item)) { /* The writer uses this exact classified snapshot. */ }
+    else if (args.refreshTriggers || args.keepTriggers) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
     else if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
-    else if (triggers && (triggers.state === 'stale' || (triggers.state === 'current' && (triggers.stamp?.kind !== 'head' || triggers.stamp.head !== triggers.current)))) {
+    else if (triggerHeadNeedsRefresh(triggers)) {
       writeTriggerHead(set, dir, item, planned, 'refresh')
     }
     else process.stdout.write(`  ${item.file}: SKIPPED — ${decision.status}\n`)
@@ -2303,6 +2367,10 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
       printChangelogSpan(root, classification.installedVer, version)
     }
   }
+  return managedItemState(set, classification, planned, decision, triggers)
+}
+
+function managedItemState(set, classification, planned, decision, triggers) {
   return {
     anyAbsent: classification.state === 'absent' && !planned.migrated && !planned.unverified,
     anyUnverified: planned.unverified,
@@ -2319,7 +2387,7 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
 
 /** Process one set into `dir`. Returns the aggregate flags for the check-mode hint. */
 function processSet(set, dir, args, version, root, selectedItems = null) {
-  if (args.mode === 'install') fs.mkdirSync(dir, { recursive: true })
+  if (args.mode === 'install' && !args.refreshOnly) fs.mkdirSync(dir, { recursive: true })
   process.stdout.write(`[${set.kind}] target=${dir}\n`)
   const nestedDir = explicitNestedTarget(set, dir, args)
   const onDemandDir = siblingOnDemandDir(set, dir, args)
@@ -2328,9 +2396,7 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   const demand = set.kind === 'rules' && inOnDemandStorage(dir)
   const items = demand ? allItems.filter((item) => isOnDemandRule(root, item)) : allItems
   // A group the implicit resolution did not assign this file to has nothing to say about it.
-  if (args.file && (!selectedItems || selectedItems.has(args.file)) && !items.some((item) => item.file === args.file)) {
-    fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
-  }
+  assertManagedSelection(args, selectedItems, items, set)
   const state = {
     anyAbsent: false,
     anyStale: false,
@@ -2347,28 +2413,75 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
     (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
     mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, alternateDirs))
   }
-  if (demand && args.mode === 'check' && !args.file) {
-    for (const item of allItems.filter((candidate) => !isOnDemandRule(root, candidate))) {
-      try {
-        const target = path.join(dir, item.file)
-        const status = classify(target, set).state
-        if (isMigratedStaticCopy(set, target)) {
-          process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
-          continue
-        }
-        const unverifiedReason = unverifiedOnDemandReason(set, target)
-        if (unverifiedReason) {
-          process.stdout.write(`  ${item.file}: ${unverifiedStatus(target, unverifiedReason)}\n`)
-          process.exitCode = 1
-        } else if (status !== 'absent') {
-          process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
-        }
-      } catch {
-        // An unreadable/non-file candidate cannot be diagnosed as a rule.
+  if (demand && args.mode === 'check' && !args.file) reportMigratedStaticItems(set, dir, root, allItems)
+  reportOrphans(set, dir, root, version, allItems, args)
+  return state
+}
+
+function assertManagedSelection(args, selectedItems, items, set) {
+  if (args.file && (!selectedItems || selectedItems.has(args.file)) && !items.some((item) => item.file === args.file)) {
+    fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
+  }
+}
+
+function reportMigratedStaticItems(set, dir, root, allItems) {
+  for (const item of allItems.filter((candidate) => !isOnDemandRule(root, candidate))) {
+    try {
+      const target = path.join(dir, item.file)
+      const status = classify(target, set).state
+      if (isMigratedStaticCopy(set, target)) {
+        process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
+        continue
       }
+      const unverifiedReason = unverifiedOnDemandReason(set, target)
+      if (unverifiedReason) {
+        process.stdout.write(`  ${item.file}: ${unverifiedStatus(target, unverifiedReason)}\n`)
+        process.exitCode = 1
+      } else if (status !== 'absent') {
+        process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
+      }
+    } catch {
+      // An unreadable/non-file candidate cannot be diagnosed as a rule.
     }
   }
-  return state
+}
+
+function orphanInventory(set, root, allItems) {
+  if (!['rules', 'agents'].includes(set.kind) || !allItems.length) return null
+  try {
+    const entries = fs.readdirSync(path.join(root, set.srcDir))
+    if (!entries.some((file) => file.endsWith('.md') && file.toLowerCase() !== 'readme.md')) return null
+    const shipped = allItems.map((item) => item.file)
+    if (set.kind === 'agents') {
+      shipped.push(...discoverRegisteredAgents(root, true).map((name) => `${name}.md`))
+    }
+    return new Set(shipped.map((file) => file.toLowerCase()))
+  } catch {
+    return null
+  }
+}
+
+function isOrphanCandidate(file, shipped) {
+  return file.toLowerCase().endsWith('.md') && file.toLowerCase() !== 'readme.md' && !shipped.has(file.toLowerCase())
+}
+
+function reportOrphans(set, dir, root, version, allItems, args) {
+  if (args.mode !== 'check' || args.file) return
+  const shipped = orphanInventory(set, root, allItems)
+  if (!shipped) return
+  let entries
+  try { entries = fs.readdirSync(dir).sort() } catch { return }
+  for (const file of entries) {
+    if (!isOrphanCandidate(file, shipped)) continue
+    const target = path.join(dir, file)
+    try {
+      if (!fs.lstatSync(target).isFile() || !hasAdoptionBanner(set, target)) continue
+      const installed = parseBanner(bannerLine(set, fs.readFileSync(target, 'utf8')), file).version
+      process.stdout.write(`  ${file}: ORPHAN (adopted copy v${installed}; no file of this name is shipped by workflow-toolbox v${version})\n`)
+    } catch {
+      // A vanished or unreadable target cannot be diagnosed as an orphan.
+    }
+  }
 }
 
 // --- --migrate --dry-run --------------------------------------------------------------------
@@ -2991,6 +3104,10 @@ function managedSetFallbackDir(set, args, globalRoot) {
   return path.resolve(args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)))
 }
 
+function managedSettings(args, globalRoot, chosen, version) {
+  return args.refreshOnly ? { anyAbsent: false, anyProblem: false } : processSettings(globalRoot, chosen, args, version)
+}
+
 function runManagedCommand(args, context) {
   const { root, version, chosen, globalRoot } = context
   const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
@@ -3031,7 +3148,7 @@ function runManagedCommand(args, context) {
   if (args.mode === 'install' && state.anyTargetMissing) process.exitCode = 1
   if (args.failOnDrift && state.anyScriptDrift) process.exitCode = 1
 
-  const settingsResult = processSettings(globalRoot, chosen, args, version)
+  const settingsResult = managedSettings(args, globalRoot, chosen, version)
   state.anyAbsent = state.anyAbsent || settingsResult.anyAbsent
   state.anySettingsProblem = state.anySettingsProblem || settingsResult.anyProblem
 
@@ -3042,9 +3159,16 @@ function runManagedCommand(args, context) {
   renderCheckHints(args, state)
 }
 
+function checkRefreshOnlyFlags(args) {
+  if (args.refreshOnly && (args.force || args.refreshTriggers || args.keepTriggers || args.replaceSymlinks)) {
+    fail('--refresh-only cannot be combined with --force, --refresh-triggers, --keep-triggers or --replace-symlinks')
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   checkFlagModeAsymmetry(args)
+  checkRefreshOnlyFlags(args)
   if (args.refreshTriggers || args.keepTriggers) {
     if (!args.file || args.set !== 'rules') fail('--refresh-triggers and --keep-triggers require --set rules --install --file <file>')
     if (args.refreshTriggers && args.keepTriggers) fail('--refresh-triggers and --keep-triggers are mutually exclusive')

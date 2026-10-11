@@ -8,14 +8,14 @@ description: >-
   "install the workflow-toolbox rules as editable files", "install project copies of the pilot
   agents", "adopt the pilot watchdog into this project", or "check my adopted
   workflow-toolbox rules/agents for updates". Write only on a direct request or when the
-  read-only adoption hook explicitly orders this session to refresh a named unedited stale copy.
+   adoption hook reports a skipped refresh and explicitly orders this session to refresh it.
   Not for authoring workflows or composing a pilot wave.
 ---
 
 # adopt — install editable copies of workflow-toolbox's guardrails and pilot agents
 
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
-user's project, on explicit request or an exact stale-copy action from the read-only adoption
+user's project, on explicit request or an exact stale-copy action from the adoption
 hook. It manages three sets — `rules`, `agents`,
 and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one pass:
 
@@ -89,10 +89,10 @@ Safety contract for settings writes:
 
 ## The contract (do not violate)
 
-- **No hook writes.** The `SessionStart`/`PostToolUse` hook stays read-only. For an unedited
-  stale copy it orders the session to run an exact `--install --dir <found-directory>` command,
-  re-run `--check` there, and report one line. This is the only non-user-prompted refresh path;
-  first-time adoption still requires a direct user request.
+- **Bounded hook refresh.** At `SessionStart`, the hook refreshes unedited stale rule and agent
+  copies through `--install --refresh-only`, then re-checks and reports. Absent copies, edited
+  bodies/heads and settings are untouched. Skipped refreshes and `PostToolUse` keep their actions;
+  first-time adoption needs a user request. Orphans get a quoted removal command, never deletion.
 - **Single-writer opt-out.** Set `WT_ADOPT_REFRESH=notice-only` or plugin option
   `adopt_refresh: "notice-only"` in a non-writer session. The notice still names the directory
   and exact command, but hands it to the session that owns that directory.
@@ -107,11 +107,10 @@ Safety contract for settings writes:
   copy (its content no longer matches the stamped fingerprint) or a hand-authored file with
   no toolbox banner — it refreshes only ABSENT or UNEDITED copies. Overwriting an edited copy
   takes an explicit `--force`. A user's edits cannot be silently destroyed by a refresh.
-  **Known fingerprint blind spot:** the banner line is stripped in full before hashing, so an
-  edit glued directly onto the banner line itself (text appended after the closing marker,
-  no newline) is stripped along with it and reads as clean — a later refresh can overwrite
-  that narrow case without `--force`. Editing the file body (the normal case) is always
-  detected.
+  Normal install has a banner-line fingerprint blind spot; refresh-only refuses banner appendages
+  and edited/kept/unverified heads. See [refresh safety](references/detecting-and-refreshing-stale-copies.md).
+- **Atomic publication.** Unique same-directory temps and rename; see the refresh safety reference
+  for permissions, hard links and the remaining edit race.
 - **Never write THROUGH a symlink.** If a target `<dir>/<name>.md` is a symlink (e.g. a
   config dir whose rules are symlinked from another one), `--install` does NOT follow it —
   following it would clobber the link's real target. The symlink is reported and left
@@ -138,6 +137,8 @@ Script resolution uses the first present candidate: explicit `WT_PLUGIN_ROOT`, o
 - **Inspect an edited copy (read-only):** `node scripts/install.mjs --set <set> --diff <file> --dir <found-directory>`
   prints the journalled text as adopted, the local text, and the currently shipped text.
 - **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --install`
+- **Proven-clean copies only:** `--install --refresh-only` skips creation, settings and edits;
+  eligibility and incompatible flags are in the refresh safety reference.
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
   use set-wide `--force` when the three-way decision covered only one file.
