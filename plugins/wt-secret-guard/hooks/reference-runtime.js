@@ -6,6 +6,7 @@ import { opReadArgv, opValueFrom } from './op-resolve.js';
 import { planReferences, renderReplacement } from './references.js';
 import { knownTokens, registrationRefusalReason, tokenize } from './token-vault.js';
 import { publishRefusals } from './journal.js';
+import { consoleNotice } from './console-notice.js';
 
 // A FAILED prefetch is remembered for a short window, keyed by account and reference.
 // Measured 2026-09-22 in a real session: ONE Bash command carrying ONE reference produced 42,716
@@ -61,11 +62,11 @@ async function resolveOnce($, key, ref, account) {
   // explicit reference is prefetched. process.run takes positional argv (run 8).
   try { result = await $.processRun(opReadArgv(ref, account, config().opBinary)); } catch {
     rememberFailure(key);
-    await $.uiLog('wt-secret-guard: op resolve failed to start (1 reference)');
+    await consoleNotice($, 'op-start-failed', 'wt-secret-guard: op resolve failed to start (1 reference)');
     return { token: null };
   }
   const value = opValueFrom(result);
-  if (result?.exitCode !== 0) { rememberFailure(key); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
+  if (result?.exitCode !== 0) { rememberFailure(key); await consoleNotice($, 'op-returned-nothing', `wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
   const resolved = await registerReference($, 'onepassword', value);
   if (!resolved.token) rememberFailure(key, resolved.reason);
   return resolved;
@@ -106,7 +107,7 @@ async function fileContent($, occurrence) {
     if (line === undefined) throw new Error('line missing');
     return line;
   } catch {
-    await $.uiLog('wt-secret-guard: file reference unavailable (1 reference)');
+    await consoleNotice($, 'file-unavailable', 'wt-secret-guard: file reference unavailable (1 reference)');
     return null;
   }
 }
