@@ -536,7 +536,11 @@ describe('release priority', () => {
       expect(formatSuiteLockHolder(lease.holder)).toContain('(release priority)')
     } finally { releaseSuiteLock(lease) }
     const holder = await acquireSuiteLock({ root }); const notices: string[] = []
-    const pending = acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', waitS: 0.1, staleS: 0.1, pollMs: 10, onWait: (line: string) => notices.push(line) })
+    // POSIX_STALENESS: this test is about the wait notice, not Windows staleness. On win32 a live holder older than the
+    // waiter's staleS is reclaimed, and with staleS 0.1 the holder's age raced the 0.1 s timeout on a slow runner. The
+    // pause makes the holder older than staleS before the waiter starts, so the timeout must hold whatever the holder's age.
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const pending = acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', waitS: 0.1, staleS: 0.1, pollMs: 10, onWait: (line: string) => notices.push(line), ...POSIX_STALENESS })
     await expect(pending).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
     releaseSuiteLock(holder)
     expect(notices.join(' ')).toContain('(release priority)')

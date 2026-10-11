@@ -4,12 +4,11 @@
 // names and segment ids stay distinct between module instances under one pid (J7).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, HOST_FILE_LIMIT } from './store-host-fake.mjs';
+import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, HOST_FILE_LIMIT, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_BUDGETS, STORE_ARCHIVE, ARCHIVE_PART_BYTES, archiveTexts, jsonLength } from '../hooks/store-budget.js';
 import { sumSessions, sumServed, mergeSessions, archivedSegments } from '../scripts/delivery-join.mjs';
 import { withArchivedSessions } from '../scripts/store-archives.mjs';
@@ -23,8 +22,7 @@ const at = (s) => `2026-10-01T10:00:${String(s).padStart(2, '0')}.000Z`;
 const permutations = (items) => (items.length <= 1 ? [items] : items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [item, ...rest])));
 
 async function sandbox(t, prefix) {
-  const root = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, prefix);
   return root;
 }
 let measuredDelta = null;

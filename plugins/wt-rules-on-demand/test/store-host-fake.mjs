@@ -1,8 +1,9 @@
 // A host-faithful plugin store and a real-filesystem `$` for hook tests that must see the store limit and the archives.
 // The host contract (`$.store.set`): "Rejects ... a store over 4 MiB of JSON text in all"; measured on the real store
 // as the length of the compact JSON text of the WHOLE store object, with the message shape below.
-import { mkdir, readFile, readdir, stat, lstat, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, lstat, realpath, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { register, resetForSelftest } from '../hooks/hooks.js';
@@ -63,10 +64,48 @@ const fsOperations = {
   },
 };
 
+// The hook dispatches its flight-recorder writes without awaiting them (hooks.js trackedEvent), so a call can return
+// while a write into the sandbox is still running. Every real fs operation is tracked here so a sandbox is removed only
+// once nothing still writes into it; otherwise the removal races the write (ENOTEMPTY, or a tree recreated after it).
+const pendingHostOps = new Set();
+export function trackHostOp(promise) {
+  pendingHostOps.add(promise);
+  const forget = () => { pendingHostOps.delete(promise); };
+  promise.then(forget, forget);
+  return promise;
+}
+
+const SETTLE_LIMIT_MS = 10_000;
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+// Waits until a full event-loop turn passes with no host fs operation pending: an operation chained after another one
+// starts in the microtasks of the first one's settlement, so it is visible by the next turn.
+export async function settleHostOps() {
+  const deadline = Date.now() + SETTLE_LIMIT_MS;
+  for (await nextTurn(); pendingHostOps.size > 0; await nextTurn()) {
+    if (Date.now() > deadline) throw new Error(`${pendingHostOps.size} host fs operation(s) still pending after ${SETTLE_LIMIT_MS} ms`);
+    await Promise.allSettled([...pendingHostOps]);
+  }
+}
+
+// Removes a sandbox once every host fs operation has settled.
+export async function removeSandbox(root) {
+  await settleHostOps();
+  await rm(root, { recursive: true, force: true });
+}
+
+// A fresh sandbox directory, removed after the test once the hook's background writes have settled.
+export async function sandboxRoot(t, prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => removeSandbox(root));
+  return root;
+}
+
 // Only the recorded members exist; any other member reads as undefined, as on the host, so calling it is a TypeError.
 export const realFs = Object.freeze(Object.fromEntries(hostFsSurface.map((name) => {
-  if (typeof fsOperations[name] !== 'function') throw new Error(`missing fake for host fs member ${name}`);
-  return [name, fsOperations[name]];
+  const operation = fsOperations[name];
+  if (typeof operation !== 'function') throw new Error(`missing fake for host fs member ${name}`);
+  return [name, (...args) => trackHostOp(operation(...args))];
 })));
 
 export const bashRule = `---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: 'git push'\n  compliance:\n    kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'\n---\nCheck destination.\n`;
