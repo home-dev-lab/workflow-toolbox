@@ -5,6 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Adopt now installs new at-act rules in on-demand directories with their trigger head and stamp, and repairs existing headless managed copies with a head-only write that preserves their bodies.
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
 - Added regression tests for the secret guard's streaming mask; no behaviour change.
 - Report shipped `SKILL.md` bodies above 8000 Unicode characters in `pnpm quality`

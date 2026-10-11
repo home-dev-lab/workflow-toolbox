@@ -565,6 +565,7 @@ const VERSION_RE = new RegExp(`installed from ${BANNER_TOOL} v(\\d+)\\.(\\d+)\\.
 const FP_RE = /content sha256:([0-9a-f]{12})/
 const STAMPED_BANNER_RE = /^(?:<!--|\/\/) installed from workflow-toolbox v(\d+\.\d+\.\d+)(?: · content sha256:([0-9a-f]{12}))? (?:(head) sha256:([0-9a-f]{12})|(kept) sha256:([0-9a-f]{12}) spec sha256:([0-9a-f]{12})) by the adopt skill/
 const TRIGGERS_STALE = 'on-demand triggers behind the shipped spec'
+const TRIGGERS_MISSING = 'on-demand trigger head missing'
 const TRIGGERS_UNRESOLVED = 'on-demand triggers unresolved'
 
 // A DRIFT line reports one divergent line of TEXT, and that line lives on exactly one
@@ -678,6 +679,32 @@ function triggerState(classification, spec) {
   return { state, current, installed, spec, stamp }
 }
 
+// No readable managed text at the target: a fresh write (absent) or a --replace-symlinks write (symlink).
+const contentless = (classification) => ['absent', 'symlink'].includes(classification.state)
+
+function managedTriggerState(set, dir, item, args, root, classification) {
+  if (set.kind !== 'rules') return null
+  const absent = contentless(classification)
+  if (absent && args.mode !== 'install') return null
+  if (!absent && !['clean', 'edited', 'edited-unknown'].includes(classification.state)) return null
+  // The shared spec loader also admits headless targets in on-demand storage.
+  const spec = shippedSpecHead(set, item, root, classification.frontmatter || inOnDemandStorage(dir))
+  if (!spec) return null
+  if (!classification.frontmatter) return { state: 'missing', current: headFp(spec.head), spec, stamp: null }
+  return triggerState(classification, spec)
+}
+
+function canWriteTriggerHead(triggers, legacyDecision, classification, args) {
+  return !!triggers && !legacyDecision && !contentless(classification) &&
+    (!args.keepTriggers || !!classification.frontmatter)
+}
+
+function triggerHeadOnly(args, planned) {
+  return args.refreshTriggers || args.keepTriggers ||
+    (planned.triggers?.state === 'missing' && !contentless(planned.classification) && !args.force &&
+      !planned.decision.write)
+}
+
 const shellQuote = (value) => quoteRemedyWord(value, true)
 
 function triggerRemedy(item, dir, flag) {
@@ -688,11 +715,15 @@ function triggerClause(triggers, item, dir) {
   if (!triggers || triggers.state === 'current') return ''
   if (triggers.state === 'kept') return ` · on-demand triggers kept locally (against ${triggers.spec.name})`
   if (triggers.state === 'stale') return ` · ${TRIGGERS_STALE} ${triggers.spec.name}`
+  if (triggers.state === 'missing') return ` · ${TRIGGERS_MISSING}; take shipped: ${triggerRemedy(item, dir, 'refresh')}`
   return ` · ${TRIGGERS_UNRESOLVED} (${triggers.state}); take shipped: ${triggerRemedy(item, dir, 'refresh')}; keep yours: ${triggerRemedy(item, dir, 'keep')}`
 }
 
 function triggerStatus(status, triggers, item, dir) {
   if (!triggers) return status
+  if (triggers.state === 'missing') {
+    return `STALE (${TRIGGERS_MISSING} ${triggers.spec.name}; ${status.startsWith('UP-TO-DATE') ? 'body current' : status})`
+  }
   const clause = triggerClause(triggers, item, dir)
   if (status.startsWith('UP-TO-DATE') && triggers.state === 'stale') {
     return `STALE (${TRIGGERS_STALE} ${triggers.spec.name}; body current)`
@@ -826,7 +857,7 @@ function renderItem(set, item, version, root, oldContent = null, triggers = null
   let writtenHead = onDemandHead
   let stamp = null
   if (triggers) {
-    writtenHead = force || ['current', 'stale'].includes(triggers.state) ? triggers.spec.head : onDemandHead
+    writtenHead = force || ['current', 'stale', 'missing'].includes(triggers.state) ? triggers.spec.head : onDemandHead
     stamp = writtenHead === triggers.spec.head
       ? { kind: 'head', head: triggers.current }
       : triggers.stamp
@@ -834,7 +865,7 @@ function renderItem(set, item, version, root, oldContent = null, triggers = null
   const b = renderBanner(version, fingerprint(content), stamp, item.file)
   let text
   if (set.kind === 'agents') text = insertAgentBanner(content, b)
-  else if (onDemandHead) text = `${writtenHead}${b}\n\n${content}`
+  else if (writtenHead) text = `${writtenHead}${b}\n\n${content}`
   else if (set.kind === 'scripts' && content.startsWith('#!')) {
     text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
   } else text = `${b}\n\n${content}`
@@ -2159,13 +2190,11 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
   }
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
-  const spec = ['clean', 'edited', 'edited-unknown'].includes(classification.state)
-    ? shippedSpecHead(set, item, root, classification.frontmatter) : null
-  const triggers = spec ? triggerState(classification, spec) : null
+  const triggers = managedTriggerState(set, dir, item, args, root, classification)
   if (args.refreshTriggers || args.keepTriggers) {
-    if (!triggers || legacyDecision) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
+    if (!canWriteTriggerHead(triggers, legacyDecision, classification, args)) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
   }
-  if (triggers && !legacyDecision) {
+  if (triggers && !legacyDecision && !contentless(classification)) {
     decision = { ...decision, status: triggerStatus(decision.status, triggers, item, dir) }
   }
   const stale =
@@ -2243,7 +2272,7 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
 }
 
 function decisionRendersHead(planned) {
-  return ['current', 'stale'].includes(planned.triggers?.state)
+  return ['current', 'stale', 'missing'].includes(planned.triggers?.state)
 }
 
 function targetUnchanged(target, classification, set) {
@@ -2268,7 +2297,7 @@ function writeTriggerHead(set, dir, item, planned, action) {
   const stamp = action === 'keep'
     ? { kind: 'kept', kept: headFp(head), spec: triggers.current }
     : { kind: 'head', head: triggers.current }
-  const rest = classification.raw.slice(classification.frontmatter.length)
+  const rest = classification.raw.slice((classification.frontmatter ?? '').length)
   const line = bannerLine(set, classification.raw)
   const parsed = parseBanner(line, item.file)
   const stamped = renderBanner(classification.installedVer, parsed.contentFp, stamp, item.file)
@@ -2291,7 +2320,7 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const planned = decideManagedItem(set, dir, item, args, version, root, alternateDirs)
   const { classification, decision, triggers } = planned
   if (args.mode === 'install') {
-    if (args.refreshTriggers || args.keepTriggers) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
+    if (triggerHeadOnly(args, planned)) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
     else if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
     else if (triggers && (triggers.state === 'stale' || (triggers.state === 'current' && (triggers.stamp?.kind !== 'head' || triggers.stamp.head !== triggers.current)))) {
       writeTriggerHead(set, dir, item, planned, 'refresh')
@@ -2306,7 +2335,7 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   return {
     anyAbsent: classification.state === 'absent' && !planned.migrated && !planned.unverified,
     anyUnverified: planned.unverified,
-    anyStale: planned.stale || triggers?.state === 'stale',
+    anyStale: planned.stale || (['stale', 'missing'].includes(triggers?.state) && !contentless(classification)),
     anyTriggersUnresolved: !!triggers && ['edited', 'unverified', 'kept-spec-moved', 'edited-after-keep'].includes(triggers.state),
     anyEdited: ['edited', 'edited-unknown'].includes(classification.state),
     anySymlink: classification.state === 'symlink',
