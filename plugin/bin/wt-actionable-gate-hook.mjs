@@ -6,9 +6,9 @@
 // degrade legibly to transcript and declared-bound evidence.
 // Card proposals are trusted for 15 minutes by default: this is shorter than the observed
 // 21-minute fresh-to-wrong interval while leaving routine nearby Stops useful. Override with
-// WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS; this affects wording only, never the blocking decision.
+// WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS; a newer failed refresh also discredits readings past this age.
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -18,8 +18,14 @@ import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { positiveMilliseconds, proposalAge } from './lib/proposal-age.mjs'
+import { resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
+import { isUnrefreshable, withAbandonedRefresh } from './lib/actionability-reading.mjs'
+import { atomicWriteJson, readJsonOrNull } from './lib/host/actionability-files.mjs'
+import { autoRefresh } from './lib/host/actionability-auto-refresh.mjs'
+import { recordBoardReadFailure } from './wt-actionable-snapshot-producer-hook.mjs'
 import {
   ACTIONABLE_REFRESH_COMMAND,
+  autoRefreshPath,
   stateRoot,
   projectStatePath,
   sessionStatePath as sharedSessionStatePath,
@@ -30,7 +36,7 @@ const STALE_AFTER_MS = Number(process.env.WT_ACTIONABLE_STALE_AFTER_MS || 2 * 60
 const PROPOSAL_MAX_AGE_MS = positiveMilliseconds(process.env.WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS, 15 * 60 * 1000)
 const BLOCK_MAX = Number(process.env.WT_ACTIONABLE_BLOCK_MAX || 3)
 const INFLIGHT_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_MS || 3 * 60 * 1000)
-// Caps a DECLARED inFlightUntil from the moment the snapshot was WRITTEN (snapshot.at), never
+// Caps a DECLARED inFlightUntil from the snapshot's measurement time (snapshot.at), never
 // from "now" — see actionability-core.mjs for why the asymmetry matters (a generous bound
 // silences the gate for its whole window; capping from `at` makes a stale claim expire).
 const INFLIGHT_CAP_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_CAP_MS || 10 * 60 * 1000)
@@ -76,8 +82,14 @@ function readJson(path) {
 }
 
 function writeJson(path, value) {
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(value), 'utf8')
+  atomicWriteJson(path, value)
+}
+
+function producerTiming(parsed) {
+  return {
+    deadlineAt: finiteNumber(parsed.deadlineAt) ? parsed.deadlineAt : null,
+    snapshotAt: finiteNumber(parsed.snapshotAt) ? parsed.snapshotAt : null,
+  }
 }
 
 function readProjectState(path) {
@@ -90,6 +102,7 @@ function readProjectState(path) {
       lastOutcome: typeof parsed.lastOutcome === 'string' ? parsed.lastOutcome : '',
       lastReason: typeof parsed.lastReason === 'string' ? parsed.lastReason : '',
       lastDetail: typeof parsed.lastDetail === 'string' ? parsed.lastDetail : '',
+      ...producerTiming(parsed),
     }
   } catch {
     return { optedIn: false }
@@ -103,9 +116,10 @@ function readSessionState(path) {
     return {
       consecutiveBlocks: finiteNumber(value) && value >= 0 ? value : 0,
       staleSnapshotAt: finiteNumber(parsed?.staleSnapshotAt) ? parsed.staleSnapshotAt : null,
+      reportedFailureHeartbeatAt: finiteNumber(parsed?.reportedFailureHeartbeatAt) ? parsed.reportedFailureHeartbeatAt : null,
     }
   } catch {
-    return { consecutiveBlocks: 0, staleSnapshotAt: null }
+    return { consecutiveBlocks: 0, staleSnapshotAt: null, reportedFailureHeartbeatAt: null }
   }
 }
 
@@ -153,6 +167,14 @@ function readSnapshot(root, cwd, now) {
   } catch {
     return { status: 'invalid' }
   }
+}
+
+function readingAtStop(root, cwd, now) {
+  const projectDir = resolveBoardProjectDir(cwd, existsSync) || cwd
+  const snapshot = withAbandonedRefresh(readSnapshot(root, projectDir, now), readJsonOrNull(autoRefreshPath(root, projectDir)), now)
+  const autoStatus = autoRefresh({ root, cwd: projectDir, snapshot, now,
+    failed: (error) => recordBoardReadFailure(projectDir, 'auto-refresh-launch-failed', error?.message ?? error) })
+  return { snapshot: autoStatus === 'failed' ? readSnapshot(root, projectDir, now) : snapshot, autoStatus }
 }
 
 function hasInFlightWork(transcriptPath, sessionId, now) {
@@ -355,6 +377,13 @@ function refreshRemedy() {
   return `To refresh the board snapshot, ${refreshSteps()}`
 }
 
+function genericProducerRemedy(reason) {
+  if (reason === 'board-pointer-unreadable') {
+    return { reason, text: `Fix .claude/planka.json so it contains a readable boardId, then refresh the board snapshot: ${refreshSteps()}` }
+  }
+  return { reason, text: refreshRemedy() }
+}
+
 function producerFailureRemedy(snapshot) {
   const producer = snapshot?.producer
   const reason = (producer?.lastReason || producer?.lastOutcome || 'unavailable').replace(/[\r\n]+/g, ' ')
@@ -370,21 +399,26 @@ function producerFailureRemedy(snapshot) {
     return { reason, text: `The board endpoint answered with an unreadable result (${detail}). Fix what the endpoint returns, then refresh the board snapshot: ${refreshSteps()}` }
   }
   if (reason === 'snapshot-write-failed') {
-    return { reason, text: `Make this snapshot file writable: ${snapshot?.file || 'unknown path'}` }
+    return { reason, text: `Make this snapshot file and its parent directory writable: ${snapshot?.file || 'unknown path'}` }
   }
-  return { reason, text: refreshRemedy() }
+  return genericProducerRemedy(reason)
 }
 
 // Why the board has no usable measurement, told from the producer's own last record. Only a
 // genuinely old heartbeat is called stale: no heartbeat is legacy evidence, a fresh heartbeat
 // still marked `reading` is a board read that never finished, and a fresh `snapshot-written`
 // heartbeat beside a missing file is a snapshot that disappeared after it was written.
+function isUnfinishedReading(producer, now) {
+  return producer.lastOutcome === 'reading' && (now - producer.heartbeatAt <= STALE_AFTER_MS ||
+    (finiteNumber(producer.deadlineAt) && now > producer.deadlineAt))
+}
+
 function unmeasuredText(failure, producer, now, snapshot) {
   if (failure) return `Actionability producer wrote no snapshot at its last board read (${failure.reason}). ${failure.text}`
   if (!finiteNumber(producer?.heartbeatAt)) {
     return `Actionability state cannot be distinguished from legacy snapshot evidence. ${refreshRemedy()}`
   }
-  if (producer.lastOutcome === 'reading' && now - producer.heartbeatAt <= STALE_AFTER_MS) {
+  if (isUnfinishedReading(producer, now)) {
     return `Producer heartbeat shows a board read started and did not finish (the producer may have timed out). ${refreshRemedy()}`
   }
   if (producer.lastOutcome === 'snapshot-written' && snapshot?.status === 'missing' && now - producer.heartbeatAt <= STALE_AFTER_MS) {
@@ -398,14 +432,18 @@ function unmeasuredText(failure, producer, now, snapshot) {
 function hasNewerProducerRecord(snapshot) {
   const producer = snapshot?.producer
   return snapshot?.status === 'present' && finiteNumber(producer?.heartbeatAt) && producer.heartbeatAt > snapshot.at &&
-    Boolean(producer.lastOutcome) && producer.lastOutcome !== 'snapshot-written'
+    Boolean(producer.lastOutcome) && !['snapshot-written', 'superseded'].includes(producer.lastOutcome)
+}
+
+function recentProducerFailure(producer, now) {
+  return finiteNumber(producer?.heartbeatAt) &&
+    now - producer.heartbeatAt <= STALE_AFTER_MS &&
+    !['reading', 'superseded'].includes(producer.lastOutcome) && producer.lastOutcome !== 'snapshot-written'
 }
 
 function actionableBlockLine(decision, snapshot, now) {
   const producer = snapshot?.producer
-  const recentFailure = finiteNumber(producer?.heartbeatAt) &&
-    now - producer.heartbeatAt <= STALE_AFTER_MS &&
-    producer.lastOutcome !== 'reading' && producer.lastOutcome !== 'snapshot-written'
+  const recentFailure = recentProducerFailure(producer, now)
   const failure = recentFailure ? producerFailureRemedy(snapshot) : null
   let text
   if (decision.reason === 'snapshot-stale') {
@@ -461,6 +499,44 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, ma
   return `[for Claude, not the user] Actionability gate:${mandateClause} ${actionableLine} ${ageLine} ${proposalLine}${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${effectiveBlockMax}.${laneClause}`
 }
 
+function producerReason(snapshot) {
+  return snapshot?.producer?.lastReason || snapshot?.producer?.lastOutcome || 'unknown'
+}
+
+function recordDecision({ input, cwd, decision, mandate, snapshot, autoStatus, now }) {
+  recordGuardEvent({
+    guard: 'wt-actionable-gate-hook.mjs',
+    decision: decision.block ? 'blocked' : 'warned',
+    class: decision.reason,
+    reason: decision.reason,
+    cwd,
+    session: input.session_id,
+    agent: input.agent_id,
+    evidence: {
+      holdReason: decision.reason,
+      mandateKind: mandate.kind,
+      blockIndex: decision.nextConsecutiveBlocks,
+      producerReason: producerReason(snapshot),
+      snapshotAgeMs: snapshot.status === 'present' ? now - snapshot.at : 'unknown',
+      autoRefresh: autoStatus,
+    },
+  })
+}
+
+function emitPassedDecision(context) {
+  const { decision, snapshot, now, sessionState } = context
+  if (decision.reason !== 'snapshot-unrefreshable' || sessionState.reportedFailureHeartbeatAt === snapshot.producer.heartbeatAt) return
+  const producer = snapshot.producer
+  const failure = producer.lastOutcome === 'reading' ? null : producerFailureRemedy(snapshot)
+  recordDecision(context)
+  process.stdout.write(JSON.stringify({ systemMessage:
+    `[for Claude, not the user] ${unmeasuredText(failure, producer, now, snapshot)} This unrefreshable reading does not block turn end.` }))
+}
+
+function reportedFailureHeartbeat(decision, snapshot, sessionState) {
+  return decision.reason === 'snapshot-unrefreshable' ? snapshot.producer.heartbeatAt : sessionState.reportedFailureHeartbeatAt
+}
+
 function main() {
   const input = readInput()
   if (input.hook_event_name && input.hook_event_name !== 'Stop') return
@@ -472,7 +548,7 @@ function main() {
 
   const now = Date.now()
   const root = stateRoot()
-  const snapshot = readSnapshot(root, cwd, now)
+  const { snapshot, autoStatus } = readingAtStop(root, cwd, now)
   if (snapshot.status === 'invalid') {
     process.stdout.write(JSON.stringify({
       systemMessage: '[for Claude, not the user] Actionability snapshot is unreadable; age is unknown, so no card is proposed.',
@@ -496,6 +572,7 @@ function main() {
     staleSnapshotAt: sessionState.staleSnapshotAt,
     blockMax: BLOCK_MAX,
     inFlightCapMs: INFLIGHT_CAP_MS,
+    unrefreshable: isUnrefreshable(snapshot, now, PROPOSAL_MAX_AGE_MS),
   })
 
   if (!decision.block) {
@@ -503,11 +580,12 @@ function main() {
       writeJson(sessionPath, {
         consecutiveBlocks: decision.nextConsecutiveBlocks,
         staleSnapshotAt: decision.staleSnapshotAt ?? null,
-        updatedAt: now,
+        reportedFailureHeartbeatAt: reportedFailureHeartbeat(decision, snapshot, sessionState), updatedAt: now,
       })
     } catch {
-      // Reset failure must not turn the hook into a blocker.
+      return // Stay fail-open and silent when diagnostic memory cannot be saved.
     }
+    emitPassedDecision({ input, cwd, decision, mandate, snapshot, autoStatus, now, sessionState })
     return
   }
 
@@ -515,25 +593,12 @@ function main() {
     writeJson(sessionPath, {
       consecutiveBlocks: decision.nextConsecutiveBlocks,
       staleSnapshotAt: decision.staleSnapshotAt ?? null,
-      updatedAt: now,
+      reportedFailureHeartbeatAt: sessionState.reportedFailureHeartbeatAt, updatedAt: now,
     })
   } catch {
     return
   }
-  recordGuardEvent({
-    guard: 'wt-actionable-gate-hook.mjs',
-    decision: 'blocked',
-    class: decision.reason,
-    reason: decision.reason,
-    cwd,
-    session: input.session_id,
-    agent: input.agent_id,
-    evidence: {
-      holdReason: decision.reason,
-      mandateKind: mandate.kind,
-      blockIndex: decision.nextConsecutiveBlocks,
-    },
-  })
+  recordDecision({ input, cwd, decision, mandate, snapshot, autoStatus, now })
   // Emission shape — three exist for a Stop hook, and this is a deliberate choice among them,
   // not the original one:
   //   1. stderr + exit 2            — blocks; renders to BOTH the model AND the user's
@@ -558,7 +623,7 @@ function main() {
       additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now, externalLane, mandate.kind),
     },
   }))
-  process.exit(0)
+  process.exitCode = 0
 }
 
 runFailOpenHook('wt-actionable-gate-hook.mjs', main)

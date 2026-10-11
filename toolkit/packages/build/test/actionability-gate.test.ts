@@ -647,8 +647,8 @@ describe('wt-actionable-gate-hook', () => {
     })
     const unreachable = runHook(boardUnreachable.payload, boardUnreachable.env)
     expect(unreachable.code).toBe(0)
-    expect(blockText(unreachable)).toContain('(unreachable)')
-    expect(blockText(unreachable)).toContain('refresh the board snapshot')
+    expect(systemMessage(unreachable)).toContain('(unreachable)')
+    expect(systemMessage(unreachable)).toContain('refresh the board snapshot')
   })
 
   it('names a fresh first-read producer failure with a refresh remedy, not an unwired producer', () => {
@@ -662,9 +662,9 @@ describe('wt-actionable-gate-hook', () => {
     const result = runHook(firstReadFailure.payload, firstReadFailure.env)
 
     expect(result.code).toBe(0)
-    expect(blockText(result)).toContain('(unreachable)')
-    expect(blockText(result)).toContain('refresh the board snapshot')
-    expect(blockText(result)).not.toContain('wire the producer')
+    expect(systemMessage(result)).toContain('(unreachable)')
+    expect(systemMessage(result)).toContain('refresh the board snapshot')
+    expect(systemMessage(result)).not.toContain('wire the producer')
   })
 
   it('names a fresh unavailable producer heartbeat with a refresh remedy, not stale lag', () => {
@@ -687,9 +687,9 @@ describe('wt-actionable-gate-hook', () => {
     const result = runHook(unavailable.payload, unavailable.env)
 
     expect(result.code).toBe(0)
-    expect(blockText(result)).toContain('(unavailable)')
-    expect(blockText(result)).toContain('refresh the board snapshot')
-    expect(blockText(result)).not.toContain('heartbeat is stale')
+    expect(systemMessage(result)).toContain('(unavailable)')
+    expect(systemMessage(result)).toContain('refresh the board snapshot')
+    expect(systemMessage(result)).not.toContain('heartbeat is stale')
   })
 
   it('does not guess when legacy snapshot evidence has no producer heartbeat', () => {
@@ -732,7 +732,7 @@ describe('wt-actionable-gate-hook', () => {
   it('F3: the refresh remedy names the portable unfiltered board read before the command, in one sentence', () => {
     const { env, payload, stateDir, cwd } = scaffold('portable-remedy')
     writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unreachable', lastReason: 'partial-payload' })
-    const text = blockText(runHook(payload, env))
+    const text = systemMessage(runHook(payload, env))
     const portable = text.indexOf('read the whole board once with an unfiltered get_board with cardsSummary off')
     const command = text.indexOf('wt-actionable-snapshot-refresh.mjs')
     expect(portable).toBeGreaterThan(-1)
@@ -767,7 +767,7 @@ describe('wt-actionable-gate-hook', () => {
   it('F7: a snapshot write failure names the snapshot file that could not be written', () => {
     const { env, payload, stateDir, cwd } = scaffold('write-failed')
     writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable', lastReason: 'snapshot-write-failed' })
-    const text = blockText(runHook(payload, env))
+    const text = systemMessage(runHook(payload, env))
     expect(text).toContain('snapshot-write-failed')
     expect(text).toContain(join(stateDir, `${slug(cwd)}.json`))
     expect(text).not.toContain('state directory is not writable')
@@ -778,7 +778,7 @@ describe('wt-actionable-gate-hook', () => {
   it('F7: an invalid computed snapshot names the project parser remedy', () => {
     const { env, payload, stateDir, cwd } = scaffold('snapshot-invalid')
     writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable', lastReason: 'snapshot-invalid' })
-    const text = blockText(runHook(payload, env))
+    const text = systemMessage(runHook(payload, env))
     expect(text).toContain('snapshot-invalid')
     expect(text).toContain(join('.claude', 'scripts', 'lib', 'depends-on-parser.mjs'))
     expect(text).not.toContain('wt-actionable-snapshot-refresh.mjs')
@@ -1128,7 +1128,7 @@ describe('wt-actionable-gate-hook', () => {
     writeSnapshot(stateDir, cwd, { at: Date.now() - 3 * 60 * 60_000, actionable: 0, next: '', workPossible: true,
       reason: '', blockedUntil: null, inFlightUntil: null })
     writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable', lastReason: 'snapshot-computation-failed' })
-    const text = blockText(runHook(payload, env))
+    const text = systemMessage(runHook(payload, env))
     expect(text).toContain('snapshot-computation-failed')
     expect(text).toContain(join('.claude', 'scripts', 'lib', 'depends-on-parser.mjs'))
     expect(text).not.toContain('wt-actionable-snapshot-refresh.mjs')
@@ -1138,7 +1138,7 @@ describe('wt-actionable-gate-hook', () => {
   it('T7: a legacy state without lastReason names its outcome and gives the refresh command once', () => {
     const { env, payload, stateDir, cwd } = scaffold('legacy-reason')
     writeProjectState(stateDir, cwd, { optedIn: true, heartbeatAt: Date.now(), lastOutcome: 'unavailable' })
-    const text = blockText(runHook(payload, env))
+    const text = systemMessage(runHook(payload, env))
     expect(text).toContain('(unavailable)')
     expect(text.split('wt-actionable-snapshot-refresh.mjs')).toHaveLength(2)
     expect(text).not.toContain('could not read the board')
