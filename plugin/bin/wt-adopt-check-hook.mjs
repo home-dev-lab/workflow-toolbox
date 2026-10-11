@@ -59,6 +59,8 @@ const VERSION_RE = /installed from workflow-toolbox v(\d+\.\d+\.\d+)/
 // These status markers are emitted by the standalone installer in its ONE line per file.
 const TRIGGERS_STALE = 'on-demand triggers behind the shipped spec'
 const TRIGGERS_UNRESOLVED = 'on-demand triggers unresolved'
+const REFRESH_BUDGET_MS = 8_000
+const RECHECK_RESERVE_MS = 2_000
 
 /** Read the hook's JSON payload from stdin; tolerate empty/malformed input. */
 function readInput() {
@@ -134,28 +136,27 @@ function stalePhysicalCopies(map, merged) {
 }
 
 function refreshLocation(map, copies, set, project, started) {
-  const remaining = 8_000 - (Date.now() - started)
+  const remaining = REFRESH_BUDGET_MS - RECHECK_RESERVE_MS - (Date.now() - started)
   if (remaining <= 0) return { map, refreshed: [] }
   const { location, locationKind } = copies[0][1]
   try {
-    spawnSync(process.execPath, [INSTALL_RULES, '--set', set, '--install', '--refresh-only', '--dir', location], {
+    const selection = copies.flatMap(([file]) => ['--refresh-file', file])
+    spawnSync(process.execPath, [INSTALL_RULES, '--set', set, '--install', '--refresh-only', '--dir', location, ...selection], {
       encoding: 'utf8', cwd: project, timeout: remaining,
     })
   } catch {
     // A failed child still needs a check: publication may have preceded a journal failure.
   }
-  let failed = false
-  const checked = checkDir(location, set, locationKind, project, () => { failed = true },
-    Math.max(1, 8_000 - (Date.now() - started)))
-  if (failed || !checked.size) return { map, refreshed: [] }
+  const checked = checkDir(location, set, locationKind, project, () => {},
+    Math.max(1, REFRESH_BUDGET_MS - (Date.now() - started)))
+  if (!checked.size) return { map, refreshed: [] }
   const refreshed = copies.filter(([file]) => /^UP-TO-DATE\b/.test(checked.get(file)?.status ?? ''))
     .map(([file, finding]) => ({ file, ...finding, afterStatus: checked.get(file).status }))
   return { map: checked, refreshed }
 }
 
-function refreshSet(maps, set, project, started, sections) {
+function refreshSet(maps, set, project, started, refreshed) {
   const merged = mergedFiles(maps)
-  const refreshed = []
   for (let index = 0; index < maps.length; index++) {
     const copies = stalePhysicalCopies(maps[index], merged)
     if (!copies.length) continue
@@ -163,6 +164,9 @@ function refreshSet(maps, set, project, started, sections) {
     maps[index] = result.map
     refreshed.push(...result.refreshed)
   }
+}
+
+function appendRefreshSummary(refreshed, sections) {
   if (!refreshed.length) return
   const physical = uniquePhysicalRefreshes(refreshed)
   const named = physical.map(({ file, location, status, afterStatus }) => {
@@ -575,9 +579,9 @@ function resolveEvent(input) {
 }
 
 function addSetUpdates(maps, set, context) {
-  const { root, event, noticeOnly, rootState, started, sections } = context
+  const { root, event, noticeOnly, rootState, started, sections, refreshed } = context
   if (event !== 'SessionStart' || rootState.kind === 'stale') return
-  if (!noticeOnly) refreshSet(maps, set, root, started, sections)
+  if (!noticeOnly) refreshSet(maps, set, root, started, refreshed)
   sections.push(...orphanMessages(maps))
 }
 
@@ -649,7 +653,9 @@ export function main() {
 
   const sections = []
   const skipped = []
-  appendAdoptionSections({ sets: SETS, root, configDir, roots, event, noticeOnly, rootState, started, sections, skipped })
+  const refreshed = []
+  appendAdoptionSections({ sets: SETS, root, configDir, roots, event, noticeOnly, rootState, started, sections, skipped, refreshed })
+  appendRefreshSummary(refreshed, sections)
 
   const scriptsMessage = scriptDriftMessage(configDir, root, INSTALL_RULES, rootState, skipped)
   if (scriptsMessage) sections.push(scriptsMessage)

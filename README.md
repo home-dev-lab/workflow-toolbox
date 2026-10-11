@@ -394,7 +394,8 @@ request only. It writes versioned, fingerprinted, editable copies. `--check`
 stale, edited, symlinked, or hand-authored; `--install` writes absent copies
 and refreshes unedited ones; `--force` explicitly overwrites a copy you have
 edited; and `--replace-symlinks` replaces a symlinked target in place. The
-skill never writes through a symlink or silently destroys your edits. It can
+skill never writes through a symlink and refuses fingerprint-detected body edits without
+`--force`; normal install does not fingerprint edits on the banner line. It can
 also install project copies of the pilot agent definitions, which are needed
 because current Claude Code does not honor `observer:` frontmatter for
 plugin-installed agents. It also checks the active config profile's
@@ -413,10 +414,15 @@ so you don't end up with duplicate, drifting concerns.
 
 At SessionStart, the adoption hook refreshes existing fingerprint-proven unedited stale rule
 and agent copies through `--install --refresh-only`, publishes via a unique same-directory temp
-and rename, re-checks disk, and reports one line. This **experimental** refresh leaves absent
-copies, edited bodies and trigger heads, and settings untouched. `WT_ADOPT_REFRESH=notice-only`
+and rename, re-checks disk, and reports one line naming refreshed copies across both sets.
+This **experimental** refresh skips absent copies, detected body/head edits, noncanonical
+banner lines and settings. Duplicate, misplaced and unverified findings are excluded per file,
+even beside selected copies in the same directory. A final byte re-check narrows the race:
+an edit or removal between that check and rename can still be overwritten or recreated;
+there is no portable compare-and-swap. `WT_ADOPT_REFRESH=notice-only`
 keeps the existing read-only notices; PostToolUse performs no refresh. An adopted copy whose
-name is no longer shipped is reported with a quoted removal command, never deleted automatically.
+name is no longer shipped is reported with a quoted POSIX-shell removal command (Bash;
+Git Bash on Windows), never deleted automatically.
 
 The plugin also ships several OTHER agents (`fidelity-checker`, `index-groomer`,
 `leaf`, `lean`, `opencode-verifier`, `wave-fidelity-checker` as of this writing)

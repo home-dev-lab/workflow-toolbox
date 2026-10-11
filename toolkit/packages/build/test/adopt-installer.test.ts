@@ -131,7 +131,9 @@ function refreshChild(dir: string): Promise<number | null> {
 function ageRuleCopy(file: string, version = '0.0.1'): void {
   const body = readFileSync(join(REPO_ROOT, 'plugin/rules', basename(file)), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
   const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
-  writeFileSync(file, `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt skill -->\n\n${body}`)
+  const banner = readFileSync(file, 'utf8').split('\n').find((line) => line.includes('installed from workflow-toolbox'))!
+    .replace(/v\d+\.\d+\.\d+/, `v${version}`).replace(/content sha256:[0-9a-f]{12}/, `content sha256:${fp}`)
+  writeFileSync(file, `${withoutHeadStamp(banner)}\n\n${body}`)
 }
 
 function addOnDemandFrontmatter(dir: string): void {
@@ -158,7 +160,7 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(run(['--check'], dir)).toContain(`${RULE}: UP-TO-DATE`)
     expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
-  it.each(['body', 'head', 'banner', 'banner-terminator'])('refresh-only preserves a locally edited %s even beside a stale copy', (edit) => {
+  it.each(['body', 'head', 'banner', 'banner-terminator', 'banner-prefix', 'banner-interior'])('refresh-only preserves a locally edited %s even beside a stale copy', (edit) => {
     const { dir, file } = actFixture()
     run(['--install', '--file', ACT], dir)
     ageRuleCopy(file)
@@ -167,9 +169,13 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     if (edit === 'head') text = specHead().replace('  triggers:', '  triggers: # LOCAL') + text
     if (edit === 'banner') text = text.replace('-->', '--> LOCAL EDIT')
     if (edit === 'banner-terminator') text = text.replace('-->', '--> LOCAL EDIT -->')
+    if (edit === 'banner-prefix') text = 'LOCAL INSTRUCTION ' + text
+    if (edit === 'banner-interior') text = text.replace('-->', 'LOCAL NOTE -->')
     writeFileSync(file, text)
     const res = runResult(['--install', '--refresh-only'], dir)
+    expect(res.status, res.out).toBe(0)
     expect(res.out).toContain(`${ACT}: SKIPPED — refresh-only:`)
+    if (edit.startsWith('banner')) expect(res.out).toContain('refresh-only: banner line edited')
     expect(readFileSync(file, 'utf8')).toBe(text)
   })
   it.each(['edited', 'kept', 'kept-spec-moved', 'edited-after-keep', 'unverified'])('refresh-only refuses a %s trigger provenance', (state) => {
@@ -195,6 +201,22 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     const res = runResult(['--install', '--refresh-only', flag], mkDir())
     expect(res.status).toBe(1)
     expect(res.out).toContain('--refresh-only cannot be combined with')
+  })
+  it('refresh-only honors a repeatable per-file selection without touching its stale neighbors', () => {
+    const dir = mkDir()
+    run(['--install'], dir)
+    for (const file of [RULE, ACT, 'wt-task-tracking.md']) ageRuleCopy(join(dir, file))
+    const before = readFileSync(join(dir, 'wt-task-tracking.md'), 'utf8')
+    const res = runResult(['--install', '--refresh-only', '--refresh-file', RULE, '--refresh-file', ACT], dir)
+    expect(res.status, res.out).toBe(0)
+    expect(res.out).toContain(`${RULE}: REFRESHED`)
+    expect(res.out).toContain(`${ACT}: REFRESHED`)
+    expect(readFileSync(join(dir, 'wt-task-tracking.md'), 'utf8')).toBe(before)
+  })
+  it.each(['--check', '--install', '--diff', '--migrate', '--audit-overlap'])('refuses --refresh-file outside refresh-only in %s mode', (mode) => {
+    const res = runResult([mode, ...(mode === '--diff' ? [RULE] : []), '--refresh-file', RULE], mkDir())
+    expect(res.status, res.out).toBe(1)
+    expect(res.out).toContain('--refresh-file requires --install --refresh-only')
   })
   it('refresh-only never follows a symlink or overwrites a hand-authored copy', () => {
     const dir = mkDir()
@@ -240,9 +262,12 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
   })
   it('compares the publication snapshot as bytes even when an encoding edit decodes identically', () => {
     const dir = mkDir()
+    run(['--install'], dir)
     const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\n\uFFFD\n'
     const fp = createHash('sha256').update(body).digest('hex').slice(0, 12)
-    const before = `<!-- installed from workflow-toolbox v0.0.1 · content sha256:${fp} by the adopt skill -->\n\n${body}`
+    const banner = readFileSync(rulePath(dir), 'utf8').split('\n')[0]!
+      .replace(/v\d+\.\d+\.\d+/, 'v0.0.1').replace(/content sha256:[0-9a-f]{12}/, `content sha256:${fp}`)
+    const before = `${banner}\n\n${body}`
     writeFileSync(rulePath(dir), before)
     const bytes = Buffer.from(before)
     const index = bytes.indexOf(Buffer.from('\uFFFD'))
@@ -318,7 +343,9 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     rmSync(rulesDir, { recursive: true })
     if (kind === 'empty') mkdirSync(rulesDir)
     else writeFileSync(rulesDir, 'not a directory')
-    expect(runCopied(plugin.script, ['--check'], dir)).not.toContain('ORPHAN')
+    const result = spawnSync(process.execPath, [plugin.script, '--set', 'rules', '--check', '--dir', dir], { encoding: 'utf8', env: INSTALLER_ENV })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).not.toContain('ORPHAN')
   })
   it('installs and refreshes only spec-backed rules in an on-demand directory, preserving misplaced static copies', () => {
     const dir = join(mkDir(), 'rules-on-demand')

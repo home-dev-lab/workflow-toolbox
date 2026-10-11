@@ -8,7 +8,7 @@ description: >-
   "install the workflow-toolbox rules as editable files", "install project copies of the pilot
   agents", "adopt the pilot watchdog into this project", or "check my adopted
   workflow-toolbox rules/agents for updates". Write only on a direct request or when the
-  adoption hook reports a skipped refresh and explicitly orders this session to refresh it.
+  adoption hook orders a skipped refresh.
   Not for authoring workflows or composing a pilot wave.
 ---
 
@@ -47,7 +47,7 @@ and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one p
   nothing and `--set docs` exits with that explanation. A `<config-dir>/docs/wt/` copy adopted
   earlier is left untouched and may be deleted.
 
-A THIRD kind of agent exists and this skill does nothing for it, on purpose: the plugin's
+A third kind of agent needs no adoption: the plugin's
 `agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
 `wave-fidelity-checker` as of this writing) is **registered directly by the plugin** — each
 is already callable as `workflow-toolbox:<name>` the instant the plugin is installed, with no
@@ -58,8 +58,8 @@ states look like "the name is absent from `.claude/agents/`". So `--set agents -
 an agent added there later shows up with nobody editing this skill). Use that note, not a
 guess, to tell "already available, registered" apart from "genuinely absent, needs adopting".
 
-Both sets are stamped, fingerprinted, and yours to edit afterward. Use this skill ONLY when
-the user explicitly asks for such copies, or to check/refresh ones they adopted earlier.
+Both sets are stamped, fingerprinted, and editable. Use this skill only when requested,
+or to check/refresh previously adopted copies.
 Never run it as a side effect of other work — writing into a user's config is a deliberate,
 user-initiated act.
 
@@ -89,10 +89,12 @@ Safety contract for settings writes:
 
 ## The contract (do not violate)
 
-- **Bounded hook refresh.** At `SessionStart`, the hook refreshes unedited stale rule and agent
-  copies through `--install --refresh-only`, then re-checks and reports. Absent copies, edited
-  bodies/heads and settings are untouched. Skipped refreshes and `PostToolUse` keep their actions;
-  first-time adoption needs a user request. Orphans get a quoted removal command, never deletion.
+- **Bounded hook refresh.** `SessionStart` uses `--install --refresh-only`, re-checks, and names
+  refreshed rules/agents in one line. It skips absent copies, detected body/head or banner edits,
+  settings, and per-file duplicate/misplaced/unverified findings. An edit/removal after the final
+  byte check can still be overwritten/recreated by rename; no portable compare-and-swap exists.
+  Skips and `PostToolUse` keep their actions; first adoption needs a request. Orphan removal advice
+  is POSIX-shell (Bash; Git Bash on Windows); nothing is deleted.
 - **Single-writer opt-out.** Set `WT_ADOPT_REFRESH=notice-only` or plugin option
   `adopt_refresh: "notice-only"` in a non-writer session. The notice still names the directory
   and exact command, but hands it to the session that owns that directory.

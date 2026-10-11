@@ -138,7 +138,10 @@ function writeManagedRule(file: string, body: string, version: string, fp?: stri
 
 function ageManagedRule(file: string): void {
   const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
-  writeManagedRule(file, body, '0.0.1')
+  const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
+  const banner = readFileSync(file, 'utf8').split('\n').find((line) => line.includes('installed from workflow-toolbox'))!
+    .replace(/v\d+\.\d+\.\d+/, 'v0.0.1').replace(/content sha256:[0-9a-f]{12}/, `content sha256:${fp}`)
+  writeFileSync(file, `${banner}\n\n${body}`)
 }
 
 function runPostToolUsePushHook(
@@ -246,6 +249,66 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     }
     expect(context).toContain('refreshed 2 unedited stale copies')
   })
+  it('refreshes only selected files beside a duplicate on-demand copy', () => {
+    const f = fixture('selected-files')
+    const shipped = makeHookCopy()
+    const project = join(f.proj, '.claude', 'rules-on-demand')
+    const global = join(f.cfg, 'rules-on-demand')
+    const ladder = 'wt-delegation-ladder-at-act.md'
+    installOnDemand(project, shipped.installer)
+    for (const file of [ACT, ladder]) {
+      const enrolled = spawnSync(process.execPath, [shipped.installer, '--install', '--file', file, '--dir', project], { env: f.env, encoding: 'utf8' })
+      expect(enrolled.status, enrolled.stderr).toBe(0)
+      writeFileSync(join(shipped.rulesDir, file), readFileSync(join(shipped.rulesDir, file), 'utf8') + '\nUPSTREAM FIX\n')
+    }
+    installOnDemand(global, shipped.installer)
+    for (const file of readdirSync(global).filter((name) => name.endsWith('.md') && name !== ladder)) rmSync(join(global, file))
+    const before = readFileSync(join(project, ladder), 'utf8')
+    const context = runHook(f.proj, f.env, shipped.hook).context
+    expect(readFileSync(join(project, ladder), 'utf8')).toBe(before)
+    expect(readFileSync(join(project, ACT), 'utf8')).toContain('UPSTREAM FIX')
+    expect(context).toContain('refreshed 1 unedited stale copy')
+    expect(context).toContain(`${ACT} (${project})`)
+    expect(context).toContain(`${ladder}: DOUBLE-LOAD`)
+  })
+  it('uses refreshed per-file output when an unrelated unverified finding makes recheck exit one', () => {
+    const f = fixture('recheck-nonzero')
+    const shipped = makeHookCopy()
+    const dir = join(f.cfg, 'rules', 'wt')
+    installInto(dir, shipped.installer)
+    const other = 'wt-task-tracking.md'
+    const demand = join(f.cfg, 'rules-on-demand')
+    mkdirSync(demand, { recursive: true })
+    writeFileSync(join(demand, other), REJECTED_ON_DEMAND_FRONTMATTER + readFileSync(join(dir, other), 'utf8'))
+    rmSync(join(dir, other))
+    writeFileSync(join(shipped.rulesDir, RULE), readFileSync(join(shipped.rulesDir, RULE), 'utf8') + '\nUPSTREAM FIX\n')
+    const checked = spawnSync(process.execPath, [shipped.installer, '--check', '--dir', dir], { env: f.env, encoding: 'utf8' })
+    expect(checked.status, checked.stderr).toBe(1)
+    expect(checked.stdout).toContain(`${other}: ON-DEMAND-UNVERIFIED`)
+    const context = runHook(f.proj, f.env, shipped.hook).context
+    expect(context).toContain('refreshed 1 unedited stale copy')
+    expect(context).not.toContain('SESSION ACTION: run')
+    expect(context).toContain('ON-DEMAND-UNVERIFIED')
+    expect(readFileSync(join(dir, RULE), 'utf8')).toContain('UPSTREAM FIX')
+  })
+  it('reports one refresh summary for rules and agents together', () => {
+    const f = fixture('summary-across-sets')
+    const shipped = makeHookCopy()
+    const rules = join(f.cfg, 'rules', 'wt')
+    const agents = join(f.cfg, 'agents')
+    installInto(rules, shipped.installer)
+    const seeded = spawnSync(process.execPath, [shipped.installer, '--install', '--set', 'agents', '--dir', agents], { env: f.env, encoding: 'utf8' })
+    expect(seeded.status, seeded.stderr).toBe(0)
+    for (const source of [join(shipped.rulesDir, RULE), join(shipped.rulesDir, '..', 'agent-templates', 'pilot.md')]) {
+      writeFileSync(source, readFileSync(source, 'utf8') + '\nUPSTREAM FIX\n')
+    }
+    const context = runHook(f.proj, f.env, shipped.hook).context
+    const lines = context.split('\n').filter((line) => line.startsWith('workflow-toolbox adopt: refreshed'))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('refreshed 2 unedited stale copies')
+    expect(lines[0]).toContain(`${RULE} (${rules})`)
+    expect(lines[0]).toContain(`pilot.md (${agents})`)
+  })
   it('counts a stale copy reached through directory aliases only once', () => {
     const f = fixture('auto-alias')
     const dir = join(f.cfg, 'rules', 'wt')
@@ -294,6 +357,28 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
       input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: f.proj }), encoding: 'utf8', env: f.env,
     })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain('SESSION ACTION: run')
+    expect(readFileSync(join(dir, RULE), 'utf8')).toBe(before)
+  })
+  it('reserves two seconds for recheck inside the shared eight-second refresh budget', () => {
+    const f = fixture('reserved-recheck')
+    const dir = join(f.cfg, 'rules', 'wt')
+    installInto(dir)
+    ageManagedRule(join(dir, RULE))
+    const source = `import cp from 'node:child_process'; import assert from 'node:assert/strict'; import { syncBuiltinESMExports } from 'node:module'; const original = cp.spawnSync; let now = 0; const timeouts = []; Date.now = () => now; cp.spawnSync = function(command, args, options) { if (args.includes('--refresh-only')) { timeouts.push(options.timeout); now = 6000; } else if (timeouts.length && args.includes('--check')) assert.ok(options.timeout >= 2000, 'recheck receives reserved two seconds'); return original.call(this, command, args, options) }; syncBuiltinESMExports(); const { main } = await import(${JSON.stringify(pathToFileURL(HOOK).href)}); main(); assert.deepEqual(timeouts, [6000], 'refresh timeout reserves two seconds for recheck')`
+    const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: f.proj }), encoding: 'utf8', env: f.env })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain('refreshed 1 unedited stale copy')
+  })
+  it('starts no refresh child when less than the reserved recheck budget remains', () => {
+    const f = fixture('reserved-start')
+    const dir = join(f.cfg, 'rules', 'wt')
+    installInto(dir)
+    ageManagedRule(join(dir, RULE))
+    const before = readFileSync(join(dir, RULE), 'utf8')
+    const source = `import cp from 'node:child_process'; import assert from 'node:assert/strict'; import { syncBuiltinESMExports } from 'node:module'; const original = cp.spawnSync; let ticks = 0; let refreshes = 0; Date.now = () => ticks++ === 0 ? 0 : 6001; cp.spawnSync = function(command, args, options) { if (args.includes('--refresh-only')) refreshes++; return original.call(this, command, args, options) }; syncBuiltinESMExports(); const { main } = await import(${JSON.stringify(pathToFileURL(HOOK).href)}); main(); assert.equal(refreshes, 0, 'no refresh starts without a two-second recheck reserve')`
+    const res = spawnSync(process.execPath, ['--input-type=module', '--eval', source], { input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: f.proj }), encoding: 'utf8', env: f.env })
     expect(res.status, res.stderr).toBe(0)
     expect(res.stdout).toContain('SESSION ACTION: run')
     expect(readFileSync(join(dir, RULE), 'utf8')).toBe(before)
@@ -348,6 +433,19 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     const registered = readdirSync(join(shipped.rulesDir, '..', 'agents')).find((name) => name.endsWith('.md') && name !== 'README.md')!
     writeFileSync(join(dir, registered), readFileSync(join(dir, 'pilot.md'), 'utf8'))
     expect(runHook(f.proj, f.env, shipped.hook).context).not.toContain('ORPHAN')
+  })
+  it('does not report a live agent template outside the managed agent list as orphan', () => {
+    const f = fixture('live-template')
+    const shipped = makeHookCopy()
+    const dir = join(f.cfg, 'agents')
+    const seeded = spawnSync(process.execPath, [shipped.installer, '--install', '--set', 'agents', '--dir', dir], { env: f.env, encoding: 'utf8' })
+    expect(seeded.status, seeded.stderr).toBe(0)
+    cpSync(join(shipped.rulesDir, '..', 'agent-templates', 'pilot.md'), join(shipped.rulesDir, '..', 'agent-templates', 'new-live-agent.md'))
+    cpSync(join(dir, 'pilot.md'), join(dir, 'new-live-agent.md'))
+    expect(runHook(f.proj, f.env, shipped.hook).context).not.toContain('ORPHAN')
+    const checked = spawnSync(process.execPath, [shipped.installer, '--check', '--set', 'agents', '--dir', dir], { env: f.env, encoding: 'utf8' })
+    expect(checked.status, checked.stderr).toBe(0)
+    expect(checked.stdout).not.toContain('new-live-agent.md: ORPHAN')
   })
   it('suppresses orphan advice from a stale running plugin root', () => {
     const { f, dir, staleEnv } = staleRootFixture()

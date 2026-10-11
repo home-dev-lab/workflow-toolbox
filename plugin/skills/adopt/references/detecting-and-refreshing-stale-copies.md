@@ -7,15 +7,19 @@ version — for both sets:
 
 At `SessionStart`, the adopt check examines only the managed rule and agent paths in
 the project and active config profile. It stays silent when every adopted copy matches. For each
-differing managed copy it names `behind vX` or `ahead of vX` from the banner-version ordering;
+reported differing copy it names `behind vX` or `ahead of vX` from the banner-version ordering;
 equal-version drift is classified from the stripped copy body when one side only adds content.
 If content changed in both directions, it says that direction is unknown rather than guessing.
-The hook refreshes each fingerprint-proven unedited stale physical rule or agent copy through
-the installer's `--install --refresh-only` path, re-checks disk, and reports one line. It never
-creates absent copies or changes settings, edited bodies, edited/kept/unverified trigger heads,
-or banner-line appendages. Duplicate, misplaced and unverified findings are not selected for
-automatic refresh. A stale running plugin root suppresses refresh and orphan advice. A shared
-eight-second budget bounds refresh starts and child timeouts; skipped or failed refreshes retain
+Within its checked locations and time budget, the hook refreshes eligible stale physical rule
+and agent copies through `--install --refresh-only`, re-checks disk, and reports one line naming
+all refreshed copies across both sets. It skips absent copies, settings, detected body edits,
+edited/kept/unverified trigger heads, and noncanonical banner lines. Duplicate, misplaced and
+unverified findings are excluded per file, even in a directory with selected copies; the hook
+passes that exact selection with repeatable `--refresh-file <filename>` flags (valid only with
+`--install --refresh-only`). A stale running plugin root suppresses refresh and orphan advice.
+A shared eight-second budget reserves two seconds for each started refresh's re-check; no new
+refresh starts once only that reserve remains. Parsable per-file re-check results are used even
+when an unrelated finding makes the check exit nonzero. Skipped or failed refreshes retain
 the exact session action. `WT_ADOPT_REFRESH=notice-only` keeps the read-only notices, and
 `PostToolUse` performs no refresh. For an edited copy, the session runs `--diff`, then either takes shipped text deliberately with
 `--install --force --file <file>` or keeps the
@@ -26,7 +30,8 @@ its real target are one target; a second real config directory is checked and re
 - **ABSENT** — not installed; `--install` writes it.
 - **ORPHAN** — a regular adopted Markdown copy whose name is absent from a successfully read,
   non-empty shipped inventory (including registered agents, case-insensitively). The hook names
-  the quoted removal command, but never deletes it. Keep a deliberate local variant if intended.
+  the quoted POSIX-shell removal command (Bash; Git Bash on Windows), but never deletes it.
+  Keep a deliberate local variant if intended.
 - **MIGRATED-ON-DEMAND** — a static rule absent here because it was moved into the on-demand
   directory beside this one, where it carries its own on-demand head (the status names where it was
   moved; it does not check that the engine is enabled in this profile). `--install` writes
@@ -66,19 +71,27 @@ its real target are one target; a second real config directory is checked and re
 ## Refresh-only safety and publication
 
 `--install --refresh-only` writes only a managed copy classified as clean at the writer's own
-decision, with no trigger state or a current/stale shipped trigger head. Absent, symlinked,
+decision, with a banner line byte-identical to the installer's rendering for its parsed version,
+fingerprint and head stamp, and no trigger state or a current/stale shipped trigger head. Absent, symlinked,
 hand-authored, edited and unverified copies are skipped, as are locally kept heads. Settings,
 settings backups and settings traces are skipped entirely. Do not combine it with `--force`,
 `--refresh-triggers`, `--keep-triggers` or `--replace-symlinks`.
 
 **Known fingerprint blind spot in normal install:** the banner line is stripped in full before
-hashing. Text appended after its closing marker reads as clean and a normal refresh can overwrite
-it without `--force`. Editing the body is detected. Refresh-only additionally refuses any text
-after the first banner terminator, including an appendage ending in another closing marker.
+hashing. Text before, inside or after the banner can read as clean and a normal refresh can
+overwrite it without `--force`. Editing the body is detected. Refresh-only additionally refuses
+any banner-line change, including prefixes, interior notes and suffixes.
 
 Managed writes use an exclusive, unique temp in the target directory and rename it over the
 target, preserving permission bits best-effort. Refresh-only checks the classified bytes again
-immediately before rename. Concurrent refreshes publish complete files; a user edit in the
-remaining check-to-rename window is still a risk. Rename breaks hard links and does not preserve
+immediately before rename. Concurrent refreshes publish complete files, but an edit or removal
+between the final byte re-check and rename can still be overwritten or recreated (a substituted
+symlink can be replaced too); there is no portable compare-and-swap. Rename breaks hard links and does not preserve
 all extended metadata. A refused rename keeps the original copy; ordinary failure paths remove
 the owned temp. A hard kill can leave a non-Markdown dot-temp for manual cleanup.
+
+Partially migrated flat directories refused by the placement guard keep their session action.
+Static rules already migrated on demand and reported as `ON-DEMAND` are not checked for
+staleness and do not enter automatic refresh. Orphan scanning covers direct regular Markdown
+files in the checked locations. Agent membership uses actual Markdown templates plus registered
+agents; unreadable or empty inventories cannot establish an orphan.

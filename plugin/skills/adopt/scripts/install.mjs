@@ -1505,6 +1505,7 @@ function defaultCliArgs() {
     global: false,
     force: false,
     refreshOnly: false,
+    refreshFiles: null,
     failOnDrift: false,
     refreshTriggers: false,
     keepTriggers: false,
@@ -1529,6 +1530,7 @@ function parseArgs(argv) {
     if (Object.hasOwn(CLI_MODE_OPTIONS, token)) args.mode = CLI_MODE_OPTIONS[token]
     else if (Object.hasOwn(CLI_BOOLEAN_OPTIONS, token)) args[CLI_BOOLEAN_OPTIONS[token]] = true
     else if (Object.hasOwn(CLI_VALUE_OPTIONS, token)) args[CLI_VALUE_OPTIONS[token]] = argv[++i]
+    else if (token === '--refresh-file') (args.refreshFiles ??= []).push(argv[++i])
     else if (token === '--diff') {
       args.mode = 'diff'
       args.diffFile = argv[++i]
@@ -1562,6 +1564,7 @@ const FLAG_EFFECTIVE_MODES = {
   global: { cli: '--global', modes: ['check', 'install', 'migrate', 'diff'] },
   force: { cli: '--force', modes: ['install'] },
   refreshOnly: { cli: '--refresh-only', modes: ['install'] },
+  refreshFiles: { cli: '--refresh-file', modes: ['install'] },
   failOnDrift: { cli: '--fail-on-drift', modes: ['check'], sets: ['scripts', 'all'] },
   refreshTriggers: { cli: '--refresh-triggers', modes: ['install'] },
   keepTriggers: { cli: '--keep-triggers', modes: ['install'] },
@@ -2328,19 +2331,19 @@ function writeTriggerHead(set, dir, item, planned, action) {
   process.stdout.write(`  ${item.file}: ${verb} (head only; body left at v${classification.installedVer}) -> ${target} (journal ${journalPath(dir)}) · on-demand triggers ${outcome}\n`)
 }
 
-function refreshRefusal(planned, set) {
+function refreshRefusal(planned, set, file) {
   if (planned.classification.state !== 'clean') return planned.classification.state
   if (planned.migrationPending || planned.duplicate || planned.unverified) return planned.decision.status
+  const line = bannerLine(set, planned.classification.raw)
+  const parsed = parseBanner(line, file)
+  if (line !== renderBanner(parsed.version, parsed.contentFp, parsed.stamp, file)) return 'banner line edited'
   if (planned.triggers && !['current', 'stale'].includes(planned.triggers.state)) return `trigger head ${planned.triggers.state}`
-  const line = bannerLine(set, planned.classification.raw).replace(/\r$/, '')
-  const terminator = set.kind === 'scripts' ? ' by the adopt skill -- editable copy.' : '-->'
-  if (!line.endsWith(terminator) || line.indexOf(terminator) !== line.length - terminator.length) return 'text after adoption banner'
   return null
 }
 
 function skipRefreshOnly(args, planned, set, item) {
   if (!args.refreshOnly) return false
-  const reason = refreshRefusal(planned, set)
+  const reason = refreshRefusal(planned, set, item.file)
   if (!reason) return false
   process.stdout.write(`  ${item.file}: SKIPPED — refresh-only: ${reason}\n`)
   return true
@@ -2410,12 +2413,17 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
     anyScriptDrift: false,
   }
   for (const item of items.filter((candidate) =>
-    (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
+    managedSelectionIncludes(args, selectedItems, candidate))) {
     mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, alternateDirs))
   }
   if (demand && args.mode === 'check' && !args.file) reportMigratedStaticItems(set, dir, root, allItems)
   reportOrphans(set, dir, root, version, allItems, args)
   return state
+}
+
+function managedSelectionIncludes(args, selectedItems, candidate) {
+  return (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)) &&
+    (!args.refreshFiles || args.refreshFiles.includes(candidate.file))
 }
 
 function assertManagedSelection(args, selectedItems, items, set) {
@@ -2449,9 +2457,11 @@ function reportMigratedStaticItems(set, dir, root, allItems) {
 function orphanInventory(set, root, allItems) {
   if (!['rules', 'agents'].includes(set.kind) || !allItems.length) return null
   try {
-    const entries = fs.readdirSync(path.join(root, set.srcDir))
-    if (!entries.some((file) => file.endsWith('.md') && file.toLowerCase() !== 'readme.md')) return null
-    const shipped = allItems.map((item) => item.file)
+    const entries = fs.readdirSync(path.join(root, set.srcDir), { withFileTypes: true })
+    const present = entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.md') &&
+      entry.name.toLowerCase() !== 'readme.md').map((entry) => entry.name)
+    if (!present.length) return null
+    const shipped = set.kind === 'agents' ? present : allItems.map((item) => item.file)
     if (set.kind === 'agents') {
       shipped.push(...discoverRegisteredAgents(root, true).map((name) => `${name}.md`))
     }
@@ -3159,6 +3169,16 @@ function runManagedCommand(args, context) {
   renderCheckHints(args, state)
 }
 
+function checkRefreshSelection(args) {
+  if (!args.refreshFiles) return
+  if (!args.refreshOnly || args.mode !== 'install') {
+    fail('--refresh-file requires --install --refresh-only; pass one --refresh-file <managed filename> per selected copy')
+  }
+  if (args.refreshFiles.some((file) => !file || file.startsWith('--'))) {
+    fail('--refresh-file requires a managed filename after every occurrence')
+  }
+}
+
 function checkRefreshOnlyFlags(args) {
   if (args.refreshOnly && (args.force || args.refreshTriggers || args.keepTriggers || args.replaceSymlinks)) {
     fail('--refresh-only cannot be combined with --force, --refresh-triggers, --keep-triggers or --replace-symlinks')
@@ -3167,6 +3187,7 @@ function checkRefreshOnlyFlags(args) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
+  checkRefreshSelection(args)
   checkFlagModeAsymmetry(args)
   checkRefreshOnlyFlags(args)
   if (args.refreshTriggers || args.keepTriggers) {
