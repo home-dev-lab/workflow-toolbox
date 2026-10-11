@@ -8,7 +8,7 @@ description: >-
   "install the workflow-toolbox rules as editable files", "install project copies of the pilot
   agents", "adopt the pilot watchdog into this project", or "check my adopted
   workflow-toolbox rules/agents for updates". Write only on a direct request or when the
-   adoption hook reports a skipped refresh and explicitly orders this session to refresh it.
+  adoption hook reports a skipped refresh and explicitly orders this session to refresh it.
   Not for authoring workflows or composing a pilot wave.
 ---
 
