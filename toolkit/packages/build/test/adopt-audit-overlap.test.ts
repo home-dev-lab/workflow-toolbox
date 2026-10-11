@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -12,7 +13,7 @@ const roots: string[] = []
 afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }) })
 function mkDir(): string { const r = mkdtempSync(join(tmpdir(), 'wt-audit-')); roots.push(r); return r }
 function run(userDir: string, extraArgs: string[] = [], script = SCRIPT) {
-  const res = spawnSync(process.execPath, [script, '--audit-overlap', '--user-dir', userDir, ...extraArgs], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [script, '--audit-overlap', '--user-dir', userDir, ...extraArgs], { encoding: 'utf8', env: sealedPluginCliEnv(userDir) })
   return { ...res, stdout: (res.stdout ?? '') + (res.stderr ?? ''), error: res.error }
 }
 
@@ -68,7 +69,7 @@ describe('adopt audit-overlap', () => {
     expect(res.stdout).toContain('audit-overlap: 0 duplicate')
   })
   it('fails clearly when --user-dir is missing', () => {
-    const res = spawnSync(process.execPath, [SCRIPT, '--audit-overlap'], { encoding: 'utf8' })
+    const res = spawnSync(process.execPath, [SCRIPT, '--audit-overlap'], { encoding: 'utf8', env: sealedPluginCliEnv(mkDir()) })
     expect(res.status).not.toBe(0); expect((res.stdout ?? '') + (res.stderr ?? '')).toContain('--user-dir is required')
   })
   // Both tests below build a self-contained fixture plugin root and go through the REAL
@@ -100,7 +101,7 @@ describe('adopt audit-overlap', () => {
     writeFileSync(script, readFileSync(SCRIPT, 'utf8'))
     writeFileSync(join(rulesDir, shippedFile), shippedContent)
     writeFileSync(pairsFile, JSON.stringify([pair]))
-    const installRes = spawnSync(process.execPath, [script, '--set', 'rules', '--install', '--dir', userDir], { encoding: 'utf8' })
+    const installRes = spawnSync(process.execPath, [script, '--set', 'rules', '--install', '--dir', userDir], { encoding: 'utf8', env: sealedPluginCliEnv(userDir) })
     if (installRes.status !== 0) throw new Error(`fixture --install failed: ${installRes.stdout}${installRes.stderr}`)
     return { script, userDir, pairsFile, installedPath: join(userDir, shippedFile) }
   }

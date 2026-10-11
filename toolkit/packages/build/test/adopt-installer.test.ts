@@ -143,7 +143,7 @@ function addOnDemandFrontmatter(dir: string): void {
   }
 }
 
-describe('adopt installer — edit-safety contract (committed drift lock)', () => {
+describe('adopt installer — refresh-only scope', () => {
   it('refresh-only refreshes clean stale bytes but never creates absent files or settings', () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -160,6 +160,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(run(['--check'], dir)).toContain(`${RULE}: UP-TO-DATE`)
     expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
+})
+describe('adopt installer — refresh-only edits', () => {
   it.each(['body', 'head', 'banner', 'banner-terminator', 'banner-prefix', 'banner-interior'])('refresh-only preserves a locally edited %s even beside a stale copy', (edit) => {
     const { dir, file } = actFixture()
     run(['--install', '--file', ACT], dir)
@@ -178,6 +180,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     if (edit.startsWith('banner')) expect(res.out).toContain('refresh-only: banner line edited')
     expect(readFileSync(file, 'utf8')).toBe(text)
   })
+})
+describe('adopt installer — refresh-only provenance', () => {
   it.each(['edited', 'kept', 'kept-spec-moved', 'edited-after-keep', 'unverified'])('refresh-only refuses a %s trigger provenance', (state) => {
     const plugin = copiedPlugin()
     const { dir, file } = actFixture()
@@ -197,11 +201,15 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(runCopied(plugin.script, ['--install', '--refresh-only'], dir)).toContain(`refresh-only: trigger head ${state}`)
     expect(readFileSync(file, 'utf8')).toBe(before)
   })
+})
+describe('adopt installer — refresh-only flags', () => {
   it.each(['--force', '--refresh-triggers', '--keep-triggers', '--replace-symlinks'])('refresh-only refuses %s', (flag) => {
     const res = runResult(['--install', '--refresh-only', flag], mkDir())
     expect(res.status).toBe(1)
     expect(res.out).toContain('--refresh-only cannot be combined with')
   })
+})
+describe('adopt installer — refresh-only selection', () => {
   it('refresh-only honors a repeatable per-file selection without touching its stale neighbors', () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -213,11 +221,15 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(res.out).toContain(`${ACT}: REFRESHED`)
     expect(readFileSync(join(dir, 'wt-task-tracking.md'), 'utf8')).toBe(before)
   })
+})
+describe('adopt installer — selection mode refusal', () => {
   it.each(['--check', '--install', '--diff', '--migrate', '--audit-overlap'])('refuses --refresh-file outside refresh-only in %s mode', (mode) => {
     const res = runResult([mode, ...(mode === '--diff' ? [RULE] : []), '--refresh-file', RULE], mkDir())
     expect(res.status, res.out).toBe(1)
     expect(res.out).toContain('--refresh-file requires --install --refresh-only')
   })
+})
+describe('adopt installer — unmanaged copies', () => {
   it('refresh-only never follows a symlink or overwrites a hand-authored copy', () => {
     const dir = mkDir()
     const external = join(mkDir(), RULE)
@@ -230,6 +242,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(readFileSync(external, 'utf8')).toBe('EXTERNAL\n')
     expect(readFileSync(join(dir, ACT), 'utf8')).toBe('HAND AUTHORED\n')
   })
+})
+describe('adopt installer — atomic mode and snapshot', () => {
   it('atomic refresh preserves permissions and refuses a target edited during temp creation', () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -246,6 +260,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(readFileSync(rulePath(dir), 'utf8')).toBe(edited)
     expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
+})
+describe('adopt installer — atomic publication', () => {
   it('keeps the old target intact until a complete same-directory temp is renamed', () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -260,6 +276,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(res.status, res.stdout + res.stderr).toBe(0)
     expect(readFileSync(rulePath(dir), 'utf8')).toBe(expected)
   })
+})
+describe('adopt installer — byte snapshot', () => {
   it('compares the publication snapshot as bytes even when an encoding edit decodes identically', () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -281,6 +299,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(res.stdout).toContain('SKIPPED — changed during this run')
     expect(readFileSync(rulePath(dir))).toEqual(edited)
   })
+})
+describe('adopt installer — concurrent publication', () => {
   it('concurrent refresh-only processes publish complete identical files without temp leftovers', async () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -293,6 +313,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
       expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
     }
   })
+})
+describe('adopt installer — publication errors', () => {
   it('cleans its temp and preserves the original on rename failure', () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -305,6 +327,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(readFileSync(rulePath(dir), 'utf8')).toBe(before)
     expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
+})
+describe('adopt installer — changed target', () => {
   it.each(['removed', 'symlink'])('atomic refresh refuses a target %s after its decision', (state) => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -321,6 +345,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(readFileSync(external, 'utf8')).toBe('EXTERNAL\n')
     expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
+})
+describe('adopt installer — orphan classification', () => {
   it('reports only regular adopted orphan names, comparing the full inventory without case sensitivity', () => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -335,6 +361,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(out.match(/: ORPHAN/g)).toHaveLength(1)
     expect(readFileSync(join(dir, 'retired rule.md'), 'utf8')).toBe(adopted)
   })
+})
+describe('adopt installer — unavailable inventory', () => {
   it.each(['empty', 'unreadable'])('never reports orphans against an %s shipped inventory', (kind) => {
     const dir = mkDir()
     run(['--install'], dir)
@@ -347,6 +375,8 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(result.status, result.stdout + result.stderr).toBe(0)
     expect(result.stdout).not.toContain('ORPHAN')
   })
+})
+describe('adopt installer — edit-safety contract (committed drift lock)', () => {
   it('installs and refreshes only spec-backed rules in an on-demand directory, preserving misplaced static copies', () => {
     const dir = join(mkDir(), 'rules-on-demand')
     const first = runResult(['--set', 'rules', '--install'], dir)
@@ -2206,7 +2236,7 @@ describe('adopt installer — symlink-aware install (never write through a symli
 // not a special case for `--user-dir` alone, so the sweep is what proves that.
 describe('adopt installer — a flag with no effect in the resolved mode is REFUSED, not ignored', () => {
   function runRaw(args: string[]) {
-    const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' })
+    const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: INSTALLER_ENV })
     return { ...res, out: (res.stdout ?? '') + (res.stderr ?? '') }
   }
 
@@ -2359,7 +2389,7 @@ function makePluginCopy(version = '0.0.1'): { pluginRoot: string; script: string
 }
 
 function runCopy(script: string, args: string[], dir: string): string {
-  const res = spawnSync(process.execPath, [script, ...args, '--dir', dir], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [script, ...args, '--dir', dir], { encoding: 'utf8', env: INSTALLER_ENV })
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
 

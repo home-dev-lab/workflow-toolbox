@@ -7,7 +7,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -144,6 +144,41 @@ function ageManagedRule(file: string): void {
   writeFileSync(file, `${banner}\n\n${body}`)
 }
 
+function staleProjectCopies() {
+  const f = fixture('explicit-event')
+  const shipped = makeHookCopy()
+  const dirs = [join(f.proj, '.claude', 'rules', 'wt'), join(f.proj, '.claude', 'agents')]
+  for (const [index, set] of ['rules', 'agents'].entries()) {
+    const dir = dirs[index]!
+    const result = spawnSync(process.execPath, [shipped.installer, '--install', '--set', set, '--dir', dir], { env: f.env, encoding: 'utf8' })
+    expect(result.status, result.stderr).toBe(0)
+    const file = set === 'rules' ? RULE : 'pilot.md'
+    const source = join(shipped.rulesDir, '..', set === 'rules' ? 'rules' : 'agent-templates', file)
+    writeFileSync(source, readFileSync(source, 'utf8') + '\nUPSTREAM FIX\n')
+  }
+  return { ...f, shipped, dirs }
+}
+
+function directorySnapshot(dirs: string[]) {
+  return dirs.flatMap((dir) => readdirSync(dir).sort().map((file) => {
+    const target = join(dir, file)
+    const stat = statSync(target)
+    return { target, bytes: stat.isFile() ? readFileSync(target).toString('base64') : 'dir', mtime: stat.mtimeMs }
+  }))
+}
+
+describe('wt-adopt-check-hook — explicit write event', () => {
+  it.each([undefined, 'PostToolUse', null, 7, 'Other'])('preserves every byte, mtime and directory entry for event %s', (event) => {
+    const f = staleProjectCopies()
+    const before = directorySnapshot(f.dirs)
+    const payload = { cwd: f.proj, tool_name: 'Bash', tool_input: { command: 'git push' }, ...(event === undefined ? {} : { hook_event_name: event }) }
+    const result = spawnSync(process.execPath, [f.shipped.hook], { input: JSON.stringify(payload), env: { ...f.env, WT_ADOPT_REFRESH: 'session' }, encoding: 'utf8' })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('SESSION ACTION: run')
+    expect(directorySnapshot(f.dirs), 'non-SessionStart preserves bytes, mtimes and all directory entries').toEqual(before)
+  })
+})
+
 function runPostToolUsePushHook(
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -201,7 +236,7 @@ function staleRootFixture() {
   return { f, dir, missing: missing!, ahead: ahead!, installedRoot, inlineEnv, staleEnv }
 }
 
-describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
+describe('wt-adopt-check-hook — unedited refresh', () => {
   it.each(['rules', 'agents'])('auto-refreshes an unedited stale %s copy without installing absent copies', (set) => {
     const f = fixture(`auto-${set}`)
     const shipped = makeHookCopy()
@@ -222,6 +257,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(readFileSync(join(dir, file), 'utf8')).toContain('UPSTREAM FIX')
     expect(readdirSync(dir)).not.toContain(other)
   })
+})
+describe('wt-adopt-check-hook — physical refresh', () => {
   it('auto-refreshes each physical stale copy even when a current or edited copy wins the merge', () => {
     const f = fixture('auto-physical')
     const project = join(f.proj, '.claude', 'rules', 'wt')
@@ -238,6 +275,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
       expect(readFileSync(join(project, RULE), 'utf8')).toBe(before)
     }
   })
+})
+describe('wt-adopt-check-hook — both static copies', () => {
   it('refreshes both stale static physical copies in one session', () => {
     const f = fixture('auto-both')
     const dirs = [join(f.proj, '.claude', 'rules', 'wt'), join(f.cfg, 'rules', 'wt')]
@@ -249,6 +288,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     }
     expect(context).toContain('refreshed 2 unedited stale copies')
   })
+})
+describe('wt-adopt-check-hook — selection', () => {
   it('refreshes only selected files beside a duplicate on-demand copy', () => {
     const f = fixture('selected-files')
     const shipped = makeHookCopy()
@@ -271,6 +312,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).toContain(`${ACT} (${project})`)
     expect(context).toContain(`${ladder}: DOUBLE-LOAD`)
   })
+})
+describe('wt-adopt-check-hook — nonzero recheck', () => {
   it('uses refreshed per-file output when an unrelated unverified finding makes recheck exit one', () => {
     const f = fixture('recheck-nonzero')
     const shipped = makeHookCopy()
@@ -291,6 +334,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).toContain('ON-DEMAND-UNVERIFIED')
     expect(readFileSync(join(dir, RULE), 'utf8')).toContain('UPSTREAM FIX')
   })
+})
+describe('wt-adopt-check-hook — combined summary', () => {
   it('reports one refresh summary for rules and agents together', () => {
     const f = fixture('summary-across-sets')
     const shipped = makeHookCopy()
@@ -309,6 +354,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(lines[0]).toContain(`${RULE} (${rules})`)
     expect(lines[0]).toContain(`pilot.md (${agents})`)
   })
+})
+describe('wt-adopt-check-hook — alias count', () => {
   it('counts a stale copy reached through directory aliases only once', () => {
     const f = fixture('auto-alias')
     const dir = join(f.cfg, 'rules', 'wt')
@@ -322,6 +369,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).not.toContain('refreshed 2')
     expect(readFileSync(join(dir, RULE), 'utf8')).not.toContain('A PARAGRAPH SINCE REWRITTEN UPSTREAM')
   })
+})
+describe('wt-adopt-check-hook — head refresh', () => {
   it('refreshes a provenance-stamped stale on-demand head through the same install path', () => {
     const f = fixture('auto-head')
     const shipped = makeHookCopy()
@@ -336,6 +385,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(readFileSync(join(dir, ACT), 'utf8')).toContain('^NewTool$')
     expect(context).not.toContain(TRIGGER_MARKER)
   })
+})
+describe('wt-adopt-check-hook — journal failure', () => {
   it('recognizes a publication followed by journal failure by re-checking disk', () => {
     const f = fixture('auto-journal-failure')
     const shipped = makeHookCopy()
@@ -347,6 +398,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(runHook(f.proj, f.env, shipped.hook).context).toContain('refreshed 1 unedited stale copy')
     expect(readFileSync(join(dir, RULE), 'utf8')).not.toContain('A PARAGRAPH SINCE REWRITTEN UPSTREAM')
   })
+})
+describe('wt-adopt-check-hook — elapsed budget', () => {
   it('starts no refresh child once the shared eight-second budget has elapsed', () => {
     const f = fixture('auto-budget')
     const dir = join(f.cfg, 'rules', 'wt')
@@ -361,6 +414,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(res.stdout).toContain('SESSION ACTION: run')
     expect(readFileSync(join(dir, RULE), 'utf8')).toBe(before)
   })
+})
+describe('wt-adopt-check-hook — recheck reserve', () => {
   it('reserves two seconds for recheck inside the shared eight-second refresh budget', () => {
     const f = fixture('reserved-recheck')
     const dir = join(f.cfg, 'rules', 'wt')
@@ -371,6 +426,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(res.status, res.stderr).toBe(0)
     expect(res.stdout).toContain('refreshed 1 unedited stale copy')
   })
+})
+describe('wt-adopt-check-hook — start reserve', () => {
   it('starts no refresh child when less than the reserved recheck budget remains', () => {
     const f = fixture('reserved-start')
     const dir = join(f.cfg, 'rules', 'wt')
@@ -383,6 +440,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(res.stdout).toContain('SESSION ACTION: run')
     expect(readFileSync(join(dir, RULE), 'utf8')).toBe(before)
   })
+})
+describe('wt-adopt-check-hook — orphan names', () => {
   it.each(['retired rule.md', 'retired rule.MD'])('reports orphan %s with a quoted removal command, leaving it untouched', (file) => {
     const f = fixture('orphan spaces')
     const dir = join(f.cfg, 'rules', 'wt')
@@ -400,6 +459,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(readFileSync(target, 'utf8')).toBe(before)
     expect(context).not.toContain('NOT installed')
   })
+})
+describe('wt-adopt-check-hook — failed refresh', () => {
   it('keeps SESSION ACTION after a failed refresh child and never writes in notice-only mode', () => {
     const f = fixture('auto-failed')
     const shipped = makeHookCopy()
@@ -415,6 +476,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(runHook(f.proj, { ...f.env, WT_ADOPT_REFRESH: 'session' }, shipped.hook).context).toContain('SESSION ACTION: run')
     expect(readFileSync(join(dir, RULE), 'utf8')).toBe(before)
   })
+})
+describe('wt-adopt-check-hook — internal error', () => {
   it('stays silent and exits zero on a missing project internal spawn error', () => {
     const f = fixture('internal-error')
     const res = spawnSync(process.execPath, [HOOK], {
@@ -424,6 +487,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(res.stdout).toBe('')
     expect(res.stderr).toBe('')
   })
+})
+describe('wt-adopt-check-hook — registered inventory', () => {
   it('does not report still-registered agent names as orphans', () => {
     const f = fixture('registered-orphan')
     const shipped = makeHookCopy()
@@ -434,6 +499,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(join(dir, registered), readFileSync(join(dir, 'pilot.md'), 'utf8'))
     expect(runHook(f.proj, f.env, shipped.hook).context).not.toContain('ORPHAN')
   })
+})
+describe('wt-adopt-check-hook — live templates', () => {
   it('does not report a live agent template outside the managed agent list as orphan', () => {
     const f = fixture('live-template')
     const shipped = makeHookCopy()
@@ -447,11 +514,15 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(checked.status, checked.stderr).toBe(0)
     expect(checked.stdout).not.toContain('new-live-agent.md: ORPHAN')
   })
+})
+describe('wt-adopt-check-hook — stale-root orphan suppression', () => {
   it('suppresses orphan advice from a stale running plugin root', () => {
     const { f, dir, staleEnv } = staleRootFixture()
     writeFileSync(join(dir, 'retired rule.md'), readFileSync(join(dir, RULE), 'utf8'))
     expect(runHook(f.proj, staleEnv).context).not.toContain('ORPHAN')
   })
+})
+describe('wt-adopt-check-hook — SessionStart version advice', () => {
   it('T5: a stale session skips version-dependent advice but retains missing and edited findings', () => {
     const { f, dir, missing, ahead, installedRoot, inlineEnv, staleEnv } = staleRootFixture()
     writeFileSync(join(dir, RULE), readFileSync(join(dir, RULE), 'utf8').replace('-->', '--> LOCAL BANNER NOTE'))
@@ -479,7 +550,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     // The adoption hook never prints the registry hook's message; the assertion that can fail is the single skip line.
     expect(context.match(/Comparison skipped for /g)).toHaveLength(1)
   })
-
+})
+describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
   it('T5 at PostToolUse: a stale root skips comparisons after a git push instead of recommending a downgrade', () => {
     const { f, dir, ahead, staleEnv, inlineEnv } = staleRootFixture()
     const control = runPostToolUsePushHook(f.proj, inlineEnv).context
@@ -1186,14 +1258,14 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
   it('fail-safe SILENT on a payload without cwd', () => {
     const res = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup' }),
-      encoding: 'utf8',
+      encoding: 'utf8', env: sealedPluginCliEnv(mkRoot('missing-cwd')),
     })
     expect((res.stdout ?? '').trim()).toBe('')
     expect(res.status).toBe(0)
   })
 
   it('fail-safe SILENT on empty stdin', () => {
-    const res = spawnSync(process.execPath, [HOOK], { input: '', encoding: 'utf8' })
+    const res = spawnSync(process.execPath, [HOOK], { input: '', encoding: 'utf8', env: sealedPluginCliEnv(mkRoot('empty-input')) })
     expect((res.stdout ?? '').trim()).toBe('')
     expect(res.status).toBe(0)
   })
@@ -1204,7 +1276,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
 function runHookWithSource(cwd: string, env: NodeJS.ProcessEnv, source: string | undefined, hook = HOOK): string {
   const payload: Record<string, unknown> = { hook_event_name: 'SessionStart', cwd }
   if (source !== undefined) payload['source'] = source
-  const res = spawnSync(process.execPath, [hook], { input: JSON.stringify(payload), encoding: 'utf8', env: { ...env, WT_ADOPT_REFRESH: 'notice-only' } })
+  const res = spawnSync(process.execPath, [hook], { input: JSON.stringify(payload), encoding: 'utf8', env })
   const stdout = (res.stdout ?? '').trim()
   return stdout ? ((JSON.parse(stdout).hookSpecificOutput?.additionalContext as string) ?? '') : ''
 }
@@ -1228,7 +1300,7 @@ function busyFixture(tag: string, projectDirName?: string) {
 describe('wt-adopt-check-hook — silent after a compaction', () => {
   it('prints nothing on compact, even with drift, an unresolved trigger head, notice-only mode or a stale root', () => {
     const f = busyFixture('compact-silent')
-    expect(runHookWithSource(f.proj, f.env, 'startup')).toContain('SESSION ACTION')
+    expect(runHookWithSource(f.proj, { ...f.env, WT_ADOPT_REFRESH: 'notice-only' }, 'startup')).toContain('NOTICE ONLY:')
     expect(runHookWithSource(f.proj, f.env, 'compact')).toBe('')
     expect(runHookWithSource(f.proj, { ...f.env, WT_ADOPT_REFRESH: 'notice-only' }, 'compact')).toBe('')
     const { f: stale, staleEnv } = staleRootFixture()
@@ -1238,11 +1310,14 @@ describe('wt-adopt-check-hook — silent after a compaction', () => {
 
   it('keeps startup, resume, clear and absent-source output byte-for-byte', () => {
     const f = busyFixture('compact-others')
-    const startup = runHookWithSource(f.proj, f.env, 'startup')
+    const env = { ...f.env, WT_ADOPT_REFRESH: 'notice-only' }
+    const before = directorySnapshot([join(f.proj, '.claude', 'rules')])
+    const startup = runHookWithSource(f.proj, env, 'startup')
     expect(startup.length).toBeGreaterThan(3000)
     for (const source of ['resume', 'clear', undefined, 'unknown']) {
-      expect(runHookWithSource(f.proj, f.env, source)).toBe(startup)
+      expect(runHookWithSource(f.proj, env, source)).toBe(startup)
     }
+    expect(directorySnapshot([join(f.proj, '.claude', 'rules')])).toEqual(before)
   })
 })
 

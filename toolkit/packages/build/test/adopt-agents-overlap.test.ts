@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SOURCE_SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -125,7 +126,7 @@ function withModel(source: string, model: string): string {
 }
 
 function run(script: string, userDir: string, extraArgs: string[] = []) {
-  const res = spawnSync(process.execPath, [script, '--audit-overlap', '--user-dir', userDir, ...extraArgs], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [script, '--audit-overlap', '--user-dir', userDir, ...extraArgs], { encoding: 'utf8', env: sealedPluginCliEnv(userDir) })
   return { ...res, stdout: (res.stdout ?? '') + (res.stderr ?? '') }
 }
 
@@ -134,7 +135,7 @@ function run(script: string, userDir: string, extraArgs: string[] = []) {
  *  correctly-adopted, unedited copy. `withModel` fixtures (used elsewhere in this file)
  *  never carry a banner, so they cannot exercise this path. */
 function install(script: string, userDir: string) {
-  const res = spawnSync(process.execPath, [script, '--set', 'agents', '--install', '--dir', userDir], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [script, '--set', 'agents', '--install', '--dir', userDir], { encoding: 'utf8', env: sealedPluginCliEnv(userDir) })
   if (res.status !== 0) throw new Error(`fixture --install failed: ${res.stdout}${res.stderr}`)
 }
 

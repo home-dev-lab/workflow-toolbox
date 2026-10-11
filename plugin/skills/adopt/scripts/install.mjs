@@ -71,7 +71,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
 import { renderScriptShim, resolveAdoptedScript } from '../../../bin/lib/host/adopted-script-shim.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
@@ -2204,7 +2204,7 @@ function managedWriteVerb(classification, force) {
 function publicationMatches(target, expected) {
   if (expected === undefined) return true
   try {
-    return fs.lstatSync(target).isFile() && fs.readFileSync(target).equals(Buffer.from(expected, 'utf8'))
+    return adoptRefreshHost.fs.lstatSync(target).isFile() && adoptRefreshHost.fs.readFileSync(target).equals(Buffer.from(expected, 'utf8'))
   } catch {
     return false
   }
@@ -2212,8 +2212,8 @@ function publicationMatches(target, expected) {
 
 function preserveManagedMode(target, fd) {
   try {
-    const stat = fs.lstatSync(target)
-    if (stat.isFile()) fs.fchmodSync(fd, stat.mode & 0o7777)
+    const stat = adoptRefreshHost.fs.lstatSync(target)
+    if (stat.isFile()) adoptRefreshHost.fs.fchmodSync(fd, stat.mode & 0o7777)
   } catch {
     // Best effort: Windows honours only its read-only permission bit.
   }
@@ -2225,17 +2225,17 @@ function writeManagedFile(target, text, expected = undefined) {
   let fd
   let ownsTemp = false
   try {
-    fd = fs.openSync(temp, 'wx')
+    fd = adoptRefreshHost.fs.openSync(temp, 'wx')
     ownsTemp = true
     fs.writeFileSync(fd, text)
     preserveManagedMode(target, fd)
-    fs.closeSync(fd)
+    adoptRefreshHost.fs.closeSync(fd)
     fd = undefined
     if (!publicationMatches(target, expected)) return false
-    fs.renameSync(temp, target)
+    adoptRefreshHost.fs.renameSync(temp, target)
     return true
   } finally {
-    try { if (fd !== undefined) fs.closeSync(fd) } finally {
+    try { if (fd !== undefined) adoptRefreshHost.fs.closeSync(fd) } finally {
       if (ownsTemp) fs.rmSync(temp, { force: true })
     }
   }
@@ -2457,7 +2457,7 @@ function reportMigratedStaticItems(set, dir, root, allItems) {
 function orphanInventory(set, root, allItems) {
   if (!['rules', 'agents'].includes(set.kind) || !allItems.length) return null
   try {
-    const entries = fs.readdirSync(path.join(root, set.srcDir), { withFileTypes: true })
+    const entries = adoptRefreshHost.fs.readdirSync(path.join(root, set.srcDir), { withFileTypes: true })
     const present = entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.md') &&
       entry.name.toLowerCase() !== 'readme.md').map((entry) => entry.name)
     if (!present.length) return null
@@ -2480,13 +2480,13 @@ function reportOrphans(set, dir, root, version, allItems, args) {
   const shipped = orphanInventory(set, root, allItems)
   if (!shipped) return
   let entries
-  try { entries = fs.readdirSync(dir).sort() } catch { return }
+  try { entries = adoptRefreshHost.fs.readdirSync(dir).sort() } catch { return }
   for (const file of entries) {
     if (!isOrphanCandidate(file, shipped)) continue
     const target = path.join(dir, file)
     try {
-      if (!fs.lstatSync(target).isFile() || !hasAdoptionBanner(set, target)) continue
-      const installed = parseBanner(bannerLine(set, fs.readFileSync(target, 'utf8')), file).version
+      if (!adoptRefreshHost.fs.lstatSync(target).isFile() || !hasAdoptionBanner(set, target)) continue
+      const installed = parseBanner(bannerLine(set, adoptRefreshHost.fs.readFileSync(target, 'utf8')), file).version
       process.stdout.write(`  ${file}: ORPHAN (adopted copy v${installed}; no file of this name is shipped by workflow-toolbox v${version})\n`)
     } catch {
       // A vanished or unreadable target cannot be diagnosed as an orphan.
@@ -3206,5 +3206,6 @@ async function main() {
 try {
   await main()
 } catch (err) {
-  fail(err && err.message ? err.message : String(err))
+  process.stderr.write(`adopt: ${err && err.message ? err.message : String(err)}\n`)
+  process.exitCode = 1
 }

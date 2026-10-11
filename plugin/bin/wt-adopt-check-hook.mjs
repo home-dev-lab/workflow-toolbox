@@ -49,7 +49,7 @@ import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { quoteRemedyWord } from './lib/remedy-quote.mjs'
 import { isCompactSource } from './lib/session-start-source.mjs'
 import { pluginRootState } from './lib/plugin-root-state.mjs'
-import { isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, isOnDemandDir, placementRoots } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -61,6 +61,7 @@ const TRIGGERS_STALE = 'on-demand triggers behind the shipped spec'
 const TRIGGERS_UNRESOLVED = 'on-demand triggers unresolved'
 const REFRESH_BUDGET_MS = 8_000
 const RECHECK_RESERVE_MS = 2_000
+const spawnRefreshInstaller = adoptRefreshHost.spawnSync
 
 /** Read the hook's JSON payload from stdin; tolerate empty/malformed input. */
 function readInput() {
@@ -141,7 +142,7 @@ function refreshLocation(map, copies, set, project, started) {
   const { location, locationKind } = copies[0][1]
   try {
     const selection = copies.flatMap(([file]) => ['--refresh-file', file])
-    spawnSync(process.execPath, [INSTALL_RULES, '--set', set, '--install', '--refresh-only', '--dir', location, ...selection], {
+    spawnRefreshInstaller(process.execPath, [INSTALL_RULES, '--set', set, '--install', '--refresh-only', '--dir', location, ...selection], {
       encoding: 'utf8', cwd: project, timeout: remaining,
     })
   } catch {
@@ -193,7 +194,7 @@ function orphanMessages(maps) {
   for (const { file, location } of maps.flatMap((map) => map.orphans ?? [])) {
     const target = path.join(location, file)
     let identity = path.resolve(target)
-    try { identity = fs.realpathSync(target) } catch { /* Report the checked path. */ }
+    try { identity = adoptRefreshHost.fs.realpathSync(target) } catch { /* Report the checked path. */ }
     if (seen.has(identity)) continue
     seen.add(identity)
     lines.push(`${file} (${location}): ORPHAN — carries the workflow-toolbox adopt banner but no file of this name is shipped any more (retired or renamed). If it is not a deliberate local variant, remove it: \`rm -- ${quoteRemedyWord(target)}\`. This hook deletes nothing.`)
@@ -579,9 +580,9 @@ function resolveEvent(input) {
 }
 
 function addSetUpdates(maps, set, context) {
-  const { root, event, noticeOnly, rootState, started, sections, refreshed } = context
+  const { root, event, explicitSessionStart, noticeOnly, rootState, started, sections, refreshed } = context
   if (event !== 'SessionStart' || rootState.kind === 'stale') return
-  if (!noticeOnly) refreshSet(maps, set, root, started, refreshed)
+  if (explicitSessionStart && !noticeOnly) refreshSet(maps, set, root, started, refreshed)
   sections.push(...orphanMessages(maps))
 }
 
@@ -654,7 +655,7 @@ export function main() {
   const sections = []
   const skipped = []
   const refreshed = []
-  appendAdoptionSections({ sets: SETS, root, configDir, roots, event, noticeOnly, rootState, started, sections, skipped, refreshed })
+  appendAdoptionSections({ sets: SETS, root, configDir, roots, event, explicitSessionStart: input.hook_event_name === 'SessionStart', noticeOnly, rootState, started, sections, skipped, refreshed })
   appendRefreshSummary(refreshed, sections)
 
   const scriptsMessage = scriptDriftMessage(configDir, root, INSTALL_RULES, rootState, skipped)
