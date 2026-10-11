@@ -55,4 +55,14 @@ describe('pid to parent-pid host perimeter', () => {
 
     expect(processTableViolations(root)).toEqual([])
   })
+
+  it.each([
+    'execFileSync("ps", ["-eo", "pid=,ppid="])',
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId',
+  ])('detects process-table operations in ordinary nested bin/lib modules: %s', (source) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'lib', 'ordinary.mjs'), source)
+
+    expect(processTableViolations(root)).toEqual(['bin/lib/ordinary.mjs'])
+  })
 })

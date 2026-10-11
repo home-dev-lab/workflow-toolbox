@@ -1,5 +1,5 @@
-import { readFileSync, readdirSync } from 'node:fs'
-import { extname, join, relative, resolve, sep } from 'node:path'
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, extname, join, relative, resolve, sep } from 'node:path'
 import ts from 'typescript'
 import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 import { listGitIgnoredPaths, pathsRegexSource } from './git-ignored-inputs.mjs'
@@ -20,6 +20,22 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/l
 // occurrence counts keyed by primitive. Pure new modules need no declaration. Reductions
 // lower only that file's counts; unrelated files never share a budget or an edited list.
 const DEFAULT_ALLOW_LIST_ROOT = resolve(import.meta.dirname, 'host-primitive-allow-list')
+const declarationSources = new WeakMap()
+const FIXED_PRIMITIVES = new Set([
+  'child_process import', 'child_process require', 'fs import', 'fs require',
+  'fs/promises import', 'fs/promises require', 'os import', 'os require',
+  'process.platform', 'process.kill', 'literal /proc', 'hard-coded path separator',
+])
+
+// Host call kinds are identifier names from import/require bindings or property access.
+// In particular, a colon can never be part of a call kind and cannot shift the file boundary.
+function isPrimitiveKind(primitive) {
+  return FIXED_PRIMITIVES.has(primitive) || /^[$_\p{ID_Start}][$_\u200c\u200d\p{ID_Continue}]*$/u.test(primitive)
+}
+
+export function hostDeclarationFile(path, root, pathApi = { relative, sep }) {
+  return pathApi.relative(root, path).split(pathApi.sep).join('/')
+}
 
 function declarationFiles(directory) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -31,15 +47,19 @@ function declarationFiles(directory) {
 
 export function loadHostPrimitiveAllowList(root = DEFAULT_ALLOW_LIST_ROOT) {
   const allowance = new Map()
+  const files = []
   for (const path of declarationFiles(root)) {
-    const file = relative(root, path).split(sep).join('/').slice(0, -'.json'.length)
+    const file = hostDeclarationFile(path, root).slice(0, -'.json'.length)
+    files.push(file)
     const counts = JSON.parse(readFileSync(path, 'utf8'))
     if (!counts || Array.isArray(counts) || typeof counts !== 'object') throw new Error(`Invalid host declaration: ${file}`)
     for (const [primitive, count] of Object.entries(counts)) {
+      if (!isPrimitiveKind(primitive)) throw new Error(`Invalid host primitive kind: ${file}:${primitive}`)
       if (!Number.isSafeInteger(count) || count <= 0) throw new Error(`Invalid host allowance: ${file}:${primitive}`)
       allowance.set(`${file}:${primitive}`, count)
     }
   }
+  declarationSources.set(allowance, files)
   return allowance
 }
 
@@ -129,7 +149,7 @@ function isHardCodedPathSeparator(node, value) {
 
 function scanFile(path, root) {
   const source = readFileSync(path, 'utf8')
-  const file = relative(root, path).replaceAll('\\', '/')
+  const file = hostDeclarationFile(path, root)
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   const bindings = hostBindings(sourceFile)
   const findings = []
@@ -178,29 +198,59 @@ export function scanHostPrimitives(root = DEFAULT_PLUGIN_ROOT) {
 
 export function checkHostPrimitives(root = DEFAULT_PLUGIN_ROOT, allowance = loadHostPrimitiveAllowList()) {
   const result = scanHostPrimitives(root)
-  const violations = [...hostPrimitiveCounts(result.findings)].flatMap(([key, count]) => {
+  const counts = hostPrimitiveCounts(result.findings)
+  const violations = [...new Set([...counts.keys(), ...allowance.keys()])].flatMap((key) => {
+    const count = counts.get(key) ?? 0
     const allowed = allowance.get(key) ?? 0
-    return count > allowed ? [{ key, count, allowed }] : []
+    return count !== allowed ? [{ key, count, allowed }] : []
   })
+  const sources = new Set(sourceFiles(root).map((path) => hostDeclarationFile(path, root)))
+  for (const file of declarationSources.get(allowance) ?? []) {
+    if (!sources.has(file)) violations.push({ key: file, count: 0, allowed: 0, missingSource: true })
+  }
   const declaredCount = [...allowance.values()].reduce((total, count) => total + count, 0)
   return { ...result, count: result.findings.length, declaredCount, violations, exceeded: violations.length > 0 }
 }
 
 export function formatHostPrimitiveRefusal(result) {
   return [
-    'Undeclared raw host primitives:',
-    ...result.violations.map(({ key, count, allowed }) => `  ${key}: ${count} > ${allowed}`),
+    'Raw host primitive declaration mismatch:',
+    ...result.violations.flatMap(({ key, count, allowed, missingSource }) => {
+      const file = missingSource ? key : key.slice(0, key.lastIndexOf(':'))
+      const quoted = `'${file.replaceAll("'", "'\\''")}'`
+      return [
+        missingSource ? `  ${file}: declaration has no source file` : `  ${key}: ${count} ${count > allowed ? '>' : '<'} ${allowed}`,
+        `  Regenerate/lower: pnpm --dir toolkit exec node scripts/host-primitive-census.mjs --update-declaration ${quoted}`,
+      ]
+    }),
     'Remedy: Move host access behind plugin/bin/lib/host/, then lower the affected per-file declaration.',
     'For approved legacy access, declare its primitive counts in toolkit/scripts/host-primitive-allow-list/<plugin-relative-file>.json.',
     'Recheck with: pnpm --dir toolkit quality:host',
   ].join('\n')
 }
 
+export function updateHostPrimitiveDeclaration(file, root = DEFAULT_PLUGIN_ROOT, declarations = DEFAULT_ALLOW_LIST_ROOT) {
+  const source = resolve(root, file)
+  if (hostDeclarationFile(source, root) !== file || file.startsWith('../')) throw new Error(`Invalid source file: ${file}`)
+  const findings = scanHostPrimitives(root).findings.filter((finding) => finding.file === file)
+  const counts = Object.fromEntries([...hostPrimitiveCounts(findings)].map(([key, count]) => [key.slice(file.length + 1), count]))
+  const target = resolve(declarations, `${file}.json`)
+  if (findings.length === 0) rmSync(target, { force: true })
+  else {
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, `${JSON.stringify(counts, null, 2)}\n`)
+  }
+}
+
 if (isInvokedDirectly(import.meta.url)) {
-  const result = checkHostPrimitives()
-  process.stdout.write(`Raw host primitives: ${result.count} (${result.declaredCount} declared) across ${result.perimeterFiles} perimeter files.\n`)
-  if (result.exceeded) {
-    process.stderr.write(`${formatHostPrimitiveRefusal(result)}\n`)
-    process.exitCode = 1
+  if (process.argv[2] === '--update-declaration' && process.argv.length === 4) {
+    updateHostPrimitiveDeclaration(process.argv[3])
+  } else {
+    const result = checkHostPrimitives()
+    process.stdout.write(`Raw host primitives: ${result.count} (${result.declaredCount} declared) across ${result.perimeterFiles} perimeter files.\n`)
+    if (result.exceeded) {
+      process.stderr.write(`${formatHostPrimitiveRefusal(result)}\n`)
+      process.exitCode = 1
+    }
   }
 }
