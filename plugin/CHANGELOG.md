@@ -5,28 +5,48 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-- The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
-- Added regression tests for the secret guard's streaming mask; no behaviour change.
+## [0.193.0] - 2026-10-11
+
+### Added
 - Report shipped `SKILL.md` bodies above 8000 Unicode characters in `pnpm quality`
   (`WT_SKILL_SIZE_WARN_CHARS` override), with sizes and guidance to move sections to
   `references/` and keep the body short. This is informational while existing shipped
   bodies exceed the default. The invocation-time `wt-skill-size-guard` hook was removed
   before release to avoid adding latency to Skill calls. Adopt has no user/project
   skill-directory scan; delegation-chain retains section-scoped reading/delegation guidance.
-
-- Adopted script launchers now inline smaller resolver and execution helpers under the owner quality limits. The toolbox quality gate also checks changed code against its Git base at complexity 10, 40 lines per function, and no explicit TypeScript `any`, while preserving unchanged or shrinking legacy violations.
 ### Changed
 - The `pilot` and `pilot-orchestrator` agent templates now set `observeSubagents: false`. The pilot and the orchestrator keep their own watchdog, but the sub-agents they spawn (critics, reviewers, implementers) no longer each get a copy of it. Before, Claude Code paired every spawned sub-agent with its own watchdog by default, so one pilot run started one extra watchdog per sub-agent; a pilot that the orchestrator spawns should still get the pilot watchdog from its own definition (read from the Claude Code 2.1.296 source, where an agent's own `observer:` is paired before any inherited one; not exercised by a run). Measured on Claude Code 2.1.296 with a parent agent spawning one sub-agent: two watchdogs started without the key, one with it. Re-adopt the agent templates to pick it up.
 - The `pilot-watchdog` and `pilot-orchestrator-watchdog` agent templates now set `omitClaudeMd: true`, so each watchdog starts without the user and project CLAUDE.md files and rules. Measured on Claude Code 2.1.296 with a real user and project prefix: a watchdog's first call went from about 48,600 input tokens to about 2,700. The watchdogs no longer watch boundary concerns (publish surface, permission scope, irreversibility) in general, because guards and permissions refuse those acts before they run; they keep one boundary tell, an act that was refused and then attempted again by another route. Two tells replace what the rules used to supply: production code integrated without a counterexample review from a different model family, and a bare deferral with no card created and named. A project copy may add its own tells numbered after the shipped ones; `adopt --audit-overlap` accepts those rows. Re-adopt the agent templates to pick it up.
-### Changed
 - The SDK pilot runs one Claude query per lifecycle phase instead of one conversation that carries every earlier phase. A later phase opens from a runner-built opener: the card, the findings and lane runs so far, the artifacts that phase needs inlined, the transition result that opened it, and every bound decision and delivered mailbox note. Context re-read by each call no longer grows with the whole run. `summary.json` gains `phase_sessions`, `handoffs` and `account_sessions`; `model_usage` no longer over-counts by adding every result's running total. See `autonomy/PILOT-RUNNER.md`, "One query per lifecycle phase".
-### Changed
 - A `general-purpose` (or untyped) Agent spawn that pins both `model` and `effort` now passes the right-sized-spawn guard without a `general-purpose because:` line. The Agent tool honours both parameters per spawn, and they override an agent type's own frontmatter, so naming them is no longer the expensive inherited default. A spawn that pins only one of the two, uses `model: inherit`, or names an effort outside `low`, `medium`, `high`, `xhigh`, `max` is still refused as before, and the `general-purpose because:` escape is unchanged. The refusal now names the model-and-effort pin first.
+- The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
+- Adopted script launchers now inline smaller resolver and execution helpers under the owner quality limits. The toolbox quality gate also checks changed code against its Git base at complexity 10, 40 lines per function, and no explicit TypeScript `any`, while preserving unchanged or shrinking legacy violations.
+- Added regression tests for the secret guard's streaming mask; no behaviour change.
+- `wt-rules-on-demand`: the daily static-prefix check now also appends one JSON line per run (time with offset, floor characters, status, per-root totals) to `static-prefix-history.jsonl` beside `static-prefix-latest.json`, keeping the newest 400 lines, so the prefix size can be read as a trend. The latest file's shape is unchanged.
 
 ### Removed
 - The `wt-chores` agent type. It only pinned a model and an effort; spawn `general-purpose` with `model: "sonnet"` and `effort: "low"` for the same board/card, CI-triage and summary work.
 - SessionStart hooks no longer re-inject start-of-session information after a compaction. When SessionStart fires with source `compact`, the delegation ladder, the configuration summary, the artifact-server line, the guard-recurrence notice and the adoption check print nothing (the compaction digests of the last two are removed), and the agent-liveness hook drops its standing coverage line while still reporting a stale plugin root, a duplicate registration or unfinished agent arcs. Startup, resume and clear output is unchanged.
 - The knowledge-base index notice no longer lists one "fronts N fiche(s)" line per index entry; it keeps the summary, the flags and the unreachable fiches, and names the command that prints the full report. A clean store still prints nothing.
+
+### Quality
+
+Minor release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; no baseline was recorded at 0.190.0, 0.191.0, 0.191.1 or 0.192.0). No judge regressed against that baseline. Against 0.192.0's figures: cyclomatic complexity 124 to 120, cognitive complexity 243 to 185, longest function 700 to 628 lines, line coverage 81.62 % to 81.67 %, branch coverage 73.19 % to 73.24 %, duplication 2.16 % unchanged, Knip issues 188 unchanged; ESLint warnings rose from 639 to 645, still below the ratchet ceiling. Coverage comes from this release tree's own test run (12408 passed, 26 skipped).
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 120 | -6 |
+| Cognitive complexity | 268 -> 185 | -83 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 628 | -72 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 645 | -39 |
+| Duplication % | 2.4324 -> 2.1574 | -0.28 |
+| Knip issues | 196 -> 188 | -8 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 81.67 | +3.06 |
+| Coverage branches % | 69.76 -> 73.24 | +3.48 |
 
 ## [0.192.0] - 2026-10-10
 
