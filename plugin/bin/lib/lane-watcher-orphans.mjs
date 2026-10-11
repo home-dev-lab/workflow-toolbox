@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync, readlinkSync } from 'node:fs'
 import path from 'node:path'
+import { signalProcess } from './host/process-signal-boundary.mjs'
 
 const WATCHER = 'wt-lane-orphan-watch.mjs'
 const DELETED_SUFFIX = ' (deleted)'
@@ -72,20 +73,24 @@ export function detectOrphanWatchers({ procRoot = '/proc', platform = process.pl
   return { status: 'known', orphans, reports }
 }
 
-export function terminateOrphanWatchers({ procRoot = '/proc', platform = process.platform, selfPid = process.pid, candidates = null, kill = process.kill } = {}) {
+function signalVerifiedOrphan(candidate, current, kill, killed, detected) {
+  if (!sameCandidate(candidate, current) || current.ppid !== 1 || !current.cwd.endsWith(DELETED_SUFFIX)) return
+  try {
+    kill(candidate.pid, 'SIGTERM')
+    killed.push(candidate.pid)
+  } catch (error) {
+    if (error?.code !== 'ESRCH') detected.reports.push({ ...candidate, reason: `exact-PID SIGTERM failed: ${error?.code ?? String(error)}` })
+  }
+}
+
+export function terminateOrphanWatchers({ procRoot = '/proc', platform = process.platform, selfPid = process.pid, candidates = null, kill = signalProcess } = {}) {
   const detected = detectOrphanWatchers({ procRoot, platform, selfPid })
   if (detected.status !== 'known') return { ...detected, killed: [] }
   const selected = candidates ?? detected.orphans
   const killed = []
   for (const candidate of selected) {
     const current = inspectWatcher(procRoot, candidate.pid)
-    if (!sameCandidate(candidate, current) || current.ppid !== 1 || !current.cwd.endsWith(DELETED_SUFFIX)) continue
-    try {
-      kill(candidate.pid, 'SIGTERM')
-      killed.push(candidate.pid)
-    } catch (error) {
-      if (error?.code !== 'ESRCH') detected.reports.push({ ...candidate, reason: `exact-PID SIGTERM failed: ${error?.code ?? String(error)}` })
-    }
+    signalVerifiedOrphan(candidate, current, kill, killed, detected)
   }
   return { ...detected, orphans: selected, killed }
 }

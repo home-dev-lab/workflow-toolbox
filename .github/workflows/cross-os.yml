@@ -71,29 +71,6 @@ jobs:
         timeout-minutes: 6
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
       # streaming log is captured with tee; an explicit `shell: bash` runs `bash -eo pipefail` (the unspecified default is `bash -e`, whose pipeline exit is tee's), pwsh re-raises $LASTEXITCODE.
-      # The host adapter's contract suite normally runs against the REPLAY of the captured evidence.
-      # Here it runs against the REAL adapter, which is the only place the invocation seam — executable
-      # lookup, argument transport, permissions, locale, timeouts, process.kill and taskkill — is
-      # exercised at all. A divergence between the replay and the real platform shows up here or nowhere.
-      #
-      # ⚠ Windows is continue-on-error ON PURPOSE and TEMPORARILY: the captured Windows process-table
-      # command was malformed (two PowerShell statements with no separator) and exited 1, so the real
-      # Windows run is expected to fail for a reason we already know and have carded. The lift is
-      # card 1868656707639445484 — when that capture is retaken and exits 0, DELETE the
-      # continue-on-error line. Until then a Windows red here is not news; an ubuntu or macOS red is.
-      - name: Host adapter contract against the REAL platform
-        shell: bash
-        continue-on-error: ${{ runner.os == 'Windows' }}
-        env:
-          WT_HOST_CONTRACT_REAL: '1'
-        run: |
-          mkdir -p ci-diagnostics
-          # `pnpm test:shard` is `vitest run` — going through the named script keeps the dead-code
-          # judge's binary list unchanged; a bare `pnpm vitest` here counts as an unlisted binary and
-          # crossed the ceiling by exactly one. Measured, not guessed: 222 issues against a max of 221.
-          pnpm test:shard packages/build/test/host-adapter.contract.test.ts 2>&1 \
-            | tee "ci-diagnostics/host-contract-${{ runner.os }}.log"
-        timeout-minutes: 8
       - name: Test (POSIX)
         shell: bash
         if: ${{ runner.os == 'Linux' }}
@@ -110,6 +87,17 @@ jobs:
       - name: Build for the sharded suites
         if: ${{ runner.os != 'Linux' }}
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
+        timeout-minutes: 8
+      # Replay checks the parsers; this contract also checks native invocation and process lifetime.
+      - name: Host adapter contract against the REAL platform
+        if: ${{ matrix.shard != 1 }}
+        shell: bash
+        env:
+          WT_HOST_CONTRACT_REAL: '1'
+        run: |
+          mkdir -p ci-diagnostics
+          pnpm test:shard packages/build/test/host-adapter.contract.test.ts 2>&1 \
+            | tee "ci-diagnostics/host-contract-${{ runner.os }}.log"
         timeout-minutes: 8
       - name: Test (macOS shard 1/2)
         shell: bash

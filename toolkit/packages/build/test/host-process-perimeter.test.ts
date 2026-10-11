@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { extname, join, relative, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { scanHostPrimitives } from '../../../scripts/host-primitive-census.mjs'
 
 const ROOT = resolve(import.meta.dirname, '../../../../plugin')
 const GENERATED = new Set([join(ROOT, 'bin', 'wt-observe.mjs'), join(ROOT, 'bin', 'lib', 'vendor', 'yaml.mjs')])
@@ -34,6 +35,10 @@ afterEach(() => {
 })
 
 describe('pid to parent-pid host perimeter', () => {
+  it('keeps every raw signal and liveness primitive inside the host adapter', () => {
+    expect(scanHostPrimitives().findings.filter((finding) => finding.primitive === 'process.kill')).toEqual([])
+  })
+
   it('keeps the raw process-table primitive inside the host adapter', () => {
     expect(processTableViolations(ROOT)).toEqual([])
   })

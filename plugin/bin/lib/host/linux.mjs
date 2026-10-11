@@ -1,7 +1,7 @@
 import * as posix from './posix.mjs'
 import { join } from 'node:path'
 
-export const { endProcessFamily, parseProcessRelationships, processRelationshipOperation, processSnapshotOperation, readProcessRelationships, resolveCanonicalPath } = posix
+export const { endProcessFamily, forceEndProcessFamily, parseProcessRelationships, processRelationshipOperation, processSnapshotOperation, readProcessRelationships, resolveCanonicalPath } = posix
 
 export function readProcessSnapshot(invoke) {
   const snapshot = invoke.listProcesses?.()

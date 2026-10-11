@@ -25,6 +25,7 @@ import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/ope
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
+import { reapProcessFamily } from './lib/host/process-signal-boundary.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-6-luna'
 const DEFAULT_AGENT = 'plan'
@@ -247,26 +248,7 @@ function isRateLimited(text) {
  * asks taskkill to terminate the pid and its descendants (`/T`); the result remains `null`
  * because taskkill does not report a survivor count. */
 function reapGroup(pid) {
-  if (typeof pid !== 'number') return null
-  if (process.platform === 'win32') {
-    const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
-    preflightSpawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
-    return null
-  }
-  // Count what is still alive in the group AFTER killing it, rather than before: the answer we
-  // want is "did anything outlive the call", and asking before the kill would count the child
-  // itself plus anything mid-exit.
-  try { process.kill(-pid, 'SIGKILL') } catch { /* group already gone — nothing to reap */ }
-  let survivors = 0
-  try {
-    // A group whose leader is dead keeps its id while members remain, so this cannot address a
-    // recycled group in the window between the kill and this check.
-    process.kill(-pid, 0)
-    survivors = 1 // at least one member outlived SIGKILL; exact count needs a process table read
-  } catch {
-    survivors = 0
-  }
-  return survivors
+  return reapProcessFamily(pid)
 }
 
 /** Runs `opencode run` ONCE, async, for a single task. Enforces the four non-negotiables

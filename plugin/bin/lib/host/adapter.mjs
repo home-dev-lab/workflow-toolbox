@@ -7,6 +7,7 @@ import * as darwin from './darwin.mjs'
 import * as linux from './linux.mjs'
 import * as posix from './posix.mjs'
 import * as win32 from './win32.mjs'
+import { readProcessGroupLiveness, readProcessLiveness, sendProcessSignal } from './process-signals.mjs'
 
 const implementations = { aix: posix, darwin, freebsd: posix, linux, sunos: posix, win32 }
 const evidenceLabels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows-latest' }
@@ -25,6 +26,9 @@ export function createHostAdapter({ platform = process.platform, invoke, evidenc
     resolveCanonicalPath: (input) => implementation.resolveCanonicalPath(invocation, input),
     endProcessFamily: (pid) => implementation.endProcessFamily(invocation, pid),
     forceEndProcessFamily: (pid) => implementation.forceEndProcessFamily(invocation, pid),
+    readProcessLiveness: (pid) => readProcessLiveness(invocation, pid),
+    sendProcessSignal: (pid, signal) => sendProcessSignal(invocation, pid, signal),
+    readProcessGroupLiveness: (pid) => readProcessGroupLiveness(platform, invocation, pid),
     createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env),
   }
   if (!captured) return adapter
@@ -52,6 +56,7 @@ function realInvocation() {
       return linux.readLinuxProcProcesses({ readFile: readFileSync, readDirectory: readdirSync, observedAt: Date.now() })
     },
     freeMemory: () => freemem(),
+    kill: (pid, signal) => process.kill(pid, signal),
     realpath(input) {
       try { return { status: 'resolved', path: realpathSync.native(input) } } catch (error) { return { status: 'unavailable', path: null, reason: error?.code ?? String(error) } }
     },
@@ -60,7 +65,8 @@ function realInvocation() {
     },
     killTree(pid, force = false) {
       const args = ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])]
-      const result = spawnSync('taskkill', args, { encoding: 'utf8', windowsHide: true })
+      const command = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
+      const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true })
       return result.status === 0 ? { status: 'ended', kind: 'process_tree' } : { status: 'unavailable', kind: 'process_tree', reason: `taskkill exited ${String(result.status)}` }
     },
   }
@@ -71,6 +77,8 @@ function realInvocation() {
 function unavailableAdapter(platform, reason) {
   const unavailable = () => { throw new Error(reason) }
   const adapter = { available: false, platform, reason, readAvailableMemory: () => ({ mib: null, source: `available memory on ${platform}`, reason: 'unsupported platform' }), readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }), forceEndProcessFamily: () => ({ status: 'unavailable', reason }) }
+  adapter.readProcessLiveness = adapter.readProcessGroupLiveness = () => ({ status: 'unknown', reason })
+  adapter.sendProcessSignal = () => ({ status: 'unknown', reason })
   return { ...adapter, createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env) }
 }
 

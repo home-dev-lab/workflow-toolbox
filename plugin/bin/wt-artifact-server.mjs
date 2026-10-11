@@ -33,6 +33,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
+import { signalProcess } from './lib/host/process-signal-boundary.mjs'
 
 const HELP = `wt-artifact-server - serve registered artifacts through local or tailnet URLs
 
@@ -532,7 +533,7 @@ async function stopRunning(action, force) {
     return { ok: false, message: 'artifact server: process identity check is weaker on this platform; use --force' }
   }
   atomicWriteJson(artifactIntentPath(), { pid: state.pid, action })
-  try { process.kill(state.pid, 'SIGTERM') } catch (error) {
+  try { signalProcess(state.pid, 'SIGTERM') } catch (error) {
     return { ok: false, message: `artifact server: failed to signal verified PID ${state.pid}: ${error.message}` }
   }
   const deadline = Date.now() + 3_000

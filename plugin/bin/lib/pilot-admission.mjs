@@ -3,6 +3,7 @@ import { availableParallelism, homedir, loadavg } from 'node:os'
 import { join } from 'node:path'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
 import { ensureLaneHostDir } from './host/lane-host-dir.mjs'
+import { retainProcessOwner } from './host/process-signal-boundary.mjs'
 
 const POLL_MS = 2_000
 let writeSerial = 0
@@ -21,12 +22,7 @@ function atomicWrite(file, value) {
 }
 
 function pidAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false
-  try { process.kill(pid, 0); return true } catch (error) {
-    if (error?.code === 'ESRCH') return false
-    if (error?.code === 'EPERM') return true
-    throw error
-  }
+  return retainProcessOwner(pid)
 }
 
 function coreCount(probe = availableParallelism) {
