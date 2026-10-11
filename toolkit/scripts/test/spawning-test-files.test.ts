@@ -9,12 +9,15 @@ const root = resolve(import.meta.dirname, '../..')
 function omittedExportEntries(stale: string[], testName: string): string[] {
   const context = laneSandboxContext()
   if (!context.inside) return []
+  const committed = spawnSync('git', ['show', 'HEAD:toolkit/scripts/spawning-test-files.mjs'], { cwd: resolve(root, '..'), encoding: 'utf8' })
+  if (committed.status !== 0) return []
   return stale.filter((file) => {
+    if (!committed.stdout.includes(`'${file}'`)) return false
     if (existsSync(resolve(root, file))) return false
     // Include HEAD as well as the index: deleting a tracked file must still fail this lock.
     const tracked = spawnSync('git', ['ls-files', '--with-tree=HEAD', '--error-unmatch', '--', `toolkit/${file}`], { cwd: resolve(root, '..'), encoding: 'utf8' })
     if (tracked.status !== 1) return false
-    noteInsideLaneSandbox(`spawning-test-files.test.ts > ${testName}`, `configured entry absent on disk and from git ls-files at HEAD: ${file}`, context)
+    noteInsideLaneSandbox(`spawning-test-files.test.ts > ${testName}`, `configured entry present in the committed scheduling list but absent on disk and from git ls-files at HEAD: ${file}`, context)
     return true
   })
 }
@@ -24,6 +27,12 @@ function omittedExportEntries(stale: string[], testName: string): string[] {
 const WHOLE_TREE_SCAN_TIMEOUT_MS = 120_000
 
 describe('process-spawning test scheduling', () => {
+  it('does not exempt a nonexistent entry absent from the committed scheduling list', (ctx) => {
+    const file = 'packages/build/test/nonexistent-scheduling-entry.test.ts'
+    expect(existsSync(resolve(root, file))).toBe(false)
+    expect(omittedExportEntries([file], ctx.task.name)).toEqual([])
+  })
+
   it('keeps every mechanically detected test in the scheduling policy', (ctx) => {
     const result = checkSpawningTestFiles()
     expect(result.missing, `Add these files to spawningTestFiles:\n${result.missing.join('\n')}`).toEqual([])

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
-import { laneSandboxContext, noteInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+import { laneSandboxContext, noteInsideLaneSandbox, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 // @ts-expect-error ESM runtime module
 import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -54,6 +54,8 @@ const RECURRENT_LAUNCH_TIMEOUT_SECONDS = RECURRENT_WORKER_SECONDS + 60
 const BWRAP_WORKS = process.platform === 'linux' && (() => { try { return statSync(realpathSync('/usr/bin/bwrap')).uid === 0 && statSync('/').uid === 0 } catch { return false } })() && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
 const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
 const laneContext = laneSandboxContext()
+const LOW_PRIORITY_RECORD = '# RECORD_LANE'
+const INHERITED_LOW_PRIORITY_NOTE = 'the lane itself runs at niceness 19; the low-priority assertion would be vacuous'
 if (!BWRAP_WORKS || !ZSH_WORKS) noteInsideLaneSandbox('wt-lane-launcher.test.ts > collection-time sandbox gate skipIf', 'usable root-owned bwrap or zsh is unavailable; real sandbox gate case omitted', laneContext)
 function assertsSandboxIoniceRefusal(log: string): boolean {
   if (!laneContext.inside) return false
@@ -1862,15 +1864,15 @@ describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose 
 })
 
 describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
-  const RECORD = '# RECORD_LANE'
   const ok = (result: ReturnType<typeof run>) => expect(result.status, result.stderr).toBe(0)
   const parentNice = () => String(getPriority())
   const hasIonice = process.platform === 'linux' && spawnSync('ionice', ['-p', String(process.pid)], { stdio: 'ignore' }).status === 0
   const readLog = (dir: string) => { const log = join(dir, '.lane', 'run.log'); waitFor(log); return readFileSync(log, 'utf8') }
 
-  it('runs the lane at niceness 19 by default, idles its I/O class where ionice exists, and logs the priority stage', () => {
+  it('runs the lane at niceness 19 by default, idles its I/O class where ionice exists, and logs the priority stage', (ctx) => {
+    if (laneContext.inside && getPriority() === 19) skipInsideLaneSandbox(ctx, INHERITED_LOW_PRIORITY_NOTE, laneContext)
     expect(parentNice(), 'the test process already runs at niceness 19; the low-priority assertion would pass vacuously').not.toBe('19')
-    const f = fixture(RECORD)
+    const f = fixture(LOW_PRIORITY_RECORD)
     ok(run(f))
     const log = readLog(f.dir)
     expect(readFileSync(join(f.dir, 'nice'), 'utf8').trim()).toBe('19')
@@ -1880,20 +1882,20 @@ describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
     } else expect(log).toMatch(/stage=priority nice=19 ionice=(unavailable \(.+\)|unsupported-platform)/)
   })
   it('leaves the niceness alone under --priority normal and says so', () => {
-    const f = fixture(RECORD)
+    const f = fixture(LOW_PRIORITY_RECORD)
     ok(run(f, ['--priority', 'normal']))
     const log = readLog(f.dir)
     expect(readFileSync(join(f.dir, 'nice'), 'utf8').trim()).toBe(parentNice())
     expect(log).toContain('stage=priority normal')
   })
   it('refuses an unknown --priority with exit 2 naming the flag', () => {
-    const f = fixture(RECORD)
+    const f = fixture(LOW_PRIORITY_RECORD)
     const result = run(f, ['--priority', 'urgent'])
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('--priority')
   })
   it('exits 2 on --attach (both forms) with the removal remedy and spawns nothing', () => {
-    const f = fixture(RECORD)
+    const f = fixture(LOW_PRIORITY_RECORD)
     for (const args of [['--attach', join(f.root, 'note.md')], [`--attach=${join(f.root, 'note.md')}`]]) {
       const result = run(f, args)
       expect(result.status).toBe(2)
@@ -1904,7 +1906,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
     expect(existsSync(join(f.dir, 'nice'))).toBe(false)
   })
   it('passes the brief message as the only argument after run, with no -f attachment', () => {
-    const f = fixture(RECORD)
+    const f = fixture(LOW_PRIORITY_RECORD)
     ok(run(f))
     readLog(f.dir); waitForFile(join(f.dir, 'argv'))
     const argv = readFileSync(join(f.dir, 'argv'), 'utf8').split('\n').slice(0, -1)

@@ -40,24 +40,25 @@ beforeEach((ctx) => {
 
 const ROOT = path.join(__dirname, '..', '..', '..', '..')
 const ENTRY = path.join(ROOT, 'plugin/bin/wt-opencode-verify.mjs')
-it('refuses the verifier before spawning its child when bwrap is untrusted inside a lane sandbox', async (ctx) => {
-  if (!laneContext.inside || !bwrapRefusal) ctx.skip('only meaningful inside a lane sandbox')
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-refusal-'))
-  const spawnFn = vi.fn(), providerAuthenticated = vi.fn(() => true)
-  try {
-    // Exercise real effective discovery and sandbox resolution, with only the independent fence preflight injected.
-    const result = await runVerifier({ dir, id: 'refusal', stdin: true, taskFile: null, model: 'primary', fallbackModel: null, variant: null }, {
-      binary: 'opencode', skillFenceVerifier: () => ({ ok: true }), providerAuthenticated,
-      readStdin: () => 'review', spawnFn,
-    })
-    expect(result.code).toBe(1)
-    expect(result.output).toContain('Refused:')
-    expect(result.output).toContain('untrusted bwrap')
-    expect(result.output).toContain(bwrapRefusal)
-    expect(spawnFn).not.toHaveBeenCalled()
-    expect(providerAuthenticated).not.toHaveBeenCalled()
-  } finally { rmSync(dir, { recursive: true, force: true }) }
-})
+if (laneContext.inside && bwrapRefusal) {
+  it('refuses the verifier before spawning its child when bwrap is untrusted inside a lane sandbox', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-refusal-'))
+    const spawnFn = vi.fn(), providerAuthenticated = vi.fn(() => true)
+    try {
+      // Exercise real effective discovery and sandbox resolution, with only the independent fence preflight injected.
+      const result = await runVerifier({ dir, id: 'refusal', stdin: true, taskFile: null, model: 'primary', fallbackModel: null, variant: null }, {
+        binary: 'opencode', skillFenceVerifier: () => ({ ok: true }), providerAuthenticated,
+        readStdin: () => 'review', spawnFn,
+      })
+      expect(result.code).toBe(1)
+      expect(result.output).toContain('Refused:')
+      expect(result.output).toContain('untrusted bwrap')
+      expect(result.output).toContain(bwrapRefusal)
+      expect(spawnFn).not.toHaveBeenCalled()
+      expect(providerAuthenticated).not.toHaveBeenCalled()
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+}
 
 function childResult({ stdout = '', stderr = '', code = 0, hangs = false }: { stdout?: string; stderr?: string; code?: number; hangs?: boolean }) {
   const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: ReturnType<typeof vi.fn> }
