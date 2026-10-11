@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { laneSandboxContext, noteInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+// @ts-expect-error ESM runtime module
+import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
@@ -50,6 +53,17 @@ const RECURRENT_WORKER_SECONDS = Math.ceil((RECURRENT_TEST_TIMEOUT_MS + 60_000) 
 const RECURRENT_LAUNCH_TIMEOUT_SECONDS = RECURRENT_WORKER_SECONDS + 60
 const BWRAP_WORKS = process.platform === 'linux' && (() => { try { return statSync(realpathSync('/usr/bin/bwrap')).uid === 0 && statSync('/').uid === 0 } catch { return false } })() && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
 const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
+const laneContext = laneSandboxContext()
+if (!BWRAP_WORKS || !ZSH_WORKS) noteInsideLaneSandbox('wt-lane-launcher.test.ts > collection-time sandbox gate skipIf', 'usable root-owned bwrap or zsh is unavailable; real sandbox gate case omitted', laneContext)
+function assertsSandboxIoniceRefusal(log: string): boolean {
+  if (!laneContext.inside) return false
+  try { trustedSystemExecutable('ionice', process.env.PATH); return false } catch (error) {
+    if (!(error instanceof LaneSandboxRefusal)) throw error
+    expect(log).toContain('stage=priority nice=19 ionice=unavailable (')
+    expect(log).toContain((error as Error).message)
+    return true
+  }
+}
 // The control and watcher cleanup paths refuse a child whose cwd the supervisor cannot read. Probe that
 // with the supervisor's own reader (/proc on Linux, lsof on macOS) under the host's environment, so a
 // host without it skips these tests and says why, while a fixture that hides the reader still fails.
@@ -1860,7 +1874,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
     ok(run(f))
     const log = readLog(f.dir)
     expect(readFileSync(join(f.dir, 'nice'), 'utf8').trim()).toBe('19')
-    if (hasIonice) {
+    if (!assertsSandboxIoniceRefusal(log) && hasIonice) {
       expect(log).toContain('stage=priority nice=19 ionice=idle')
       expect(readFileSync(join(f.dir, 'ionice'), 'utf8')).toMatch(/^idle/)
     } else expect(log).toMatch(/stage=priority nice=19 ionice=(unavailable \(.+\)|unsupported-platform)/)

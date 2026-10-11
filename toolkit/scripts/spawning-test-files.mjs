@@ -222,6 +222,7 @@ export const spawningTestFiles = [
   'scripts/test/plugin-bin-import-safety.test.ts',
   'scripts/test/process-enumeration-load.test.ts',
   'scripts/test/report-contract-lens.test.ts',
+  'scripts/test/spawning-test-files.test.ts',
   'scripts/test/suite-under-load.test.ts',
   'scripts/test/wt-observer.test.ts',
   'scripts/test/wt-wake-channel.test.ts',

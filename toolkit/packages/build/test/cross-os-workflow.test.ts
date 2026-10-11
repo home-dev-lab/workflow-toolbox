@@ -2,7 +2,8 @@ import { spawnSync } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { parse } from 'yaml'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 
 // Lock for the Windows sharding of .github/workflows/cross-os.yml. The hosted Windows step of the unsharded suite measured
 // 1217-1724 s against a 35-minute job, so Windows runs as parallel shard jobs. What must hold is an INVARIANT of the
@@ -13,6 +14,14 @@ const root = resolve(import.meta.dirname, '../../../..')
 const WORKFLOW = join(root, '.github/workflows/cross-os.yml')
 const DESCRIPTOR = 'toolkit/test-support/base-version-client.json'
 const baseClients = JSON.parse(readFileSync(join(root, DESCRIPTOR), 'utf8')) as { clients: Record<string, string> }
+const laneContext = laneSandboxContext()
+beforeEach((ctx) => {
+  if (!laneContext.inside || ctx.task.name !== 'resolves every descriptor client in this clone; only a local shallow clone may skip missing history') return
+  const missing = Object.entries(baseClients.clients).filter(([, commit]) =>
+    spawnSync('git', ['cat-file', '-e', `${commit}^{commit}`], { cwd: root }).status !== 0,
+  )
+  if (missing.length) skipInsideLaneSandbox(ctx, `${DESCRIPTOR}: historical clients unavailable: ${missing.map(([role, commit]) => `${role} (${commit})`).join(', ')}`, laneContext)
+})
 
 type Entry = { os: string; shard?: number }
 type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }

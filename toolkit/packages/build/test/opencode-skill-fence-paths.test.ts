@@ -2,10 +2,33 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { runObserverLane } from '../../../../plugin/bin/lib/observer-lane.mjs'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+// @ts-expect-error Standalone plugin helper has no declaration surface.
+import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+
+const laneContext = laneSandboxContext()
+function missingTrustedBwrap(): string | null {
+  if (!laneContext.inside) return null
+  try { trustedSystemExecutable('bwrap', process.env.PATH); return null } catch (error) {
+    if (error instanceof LaneSandboxRefusal) return (error as Error).message
+    throw error
+  }
+}
+const bwrapRefusal = missingTrustedBwrap()
+const sandboxResolverTests = new Set([
+  'uses one sanitized cwd/environment/config context for envelope probe and fan-out spawns',
+  'passes only Azure credentials through envelope fan-out spawns',
+  'uses one sanitized cwd/environment/config context for intercept probe and spawn',
+  'uses one sanitized cwd/environment/config context for observer probe and direct spawn [POSIX JSON-stream fixture]',
+  'passes only Azure credentials through the observer spawn [POSIX JSON-stream fixture]',
+])
+beforeEach((ctx) => {
+  if (sandboxResolverTests.has(ctx.task.name)) skipInsideLaneSandbox(ctx, bwrapRefusal, laneContext)
+})
 
 const ROOT = path.join(__dirname, '..', '..', '..', '..')
 const ENVELOPE = path.join(ROOT, 'plugin/bin/wt-opencode-envelope.mjs')
