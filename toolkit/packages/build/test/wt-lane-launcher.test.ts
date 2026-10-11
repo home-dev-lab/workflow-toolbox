@@ -269,6 +269,141 @@ function currentDecisionFile(dir: string) {
   return join(dir, '.lane', 'supervision', `${runId}.decision.json`)
 }
 
+function deadlineFixture(shell: string) {
+  const f = fixture('true')
+  writeFileSync(join(f.root, 'bin', 'opencode'), `#!/bin/sh\nif [ "$1" = run ]; then exec /bin/sh -c ${JSON.stringify(shell)} lane-shell "$@"; fi\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_OPENCODE)} opencode "$@"\n`)
+  return f
+}
+function launchDeadline(f: ReturnType<typeof fixture>, extra: string[]) {
+  const result = run(f, extra)
+  expect(result.status, result.stderr).toBe(0)
+  spawnedGroups.push(Number(/pid=(\d+)/.exec(result.stdout)?.[1]))
+  const status = currentStateFile(f.dir)
+  waitForContent(status, /"childPid": \d+/)
+  const state = JSON.parse(readFileSync(status, 'utf8'))
+  return { status, childPid: state.childPid as number, log: join(f.dir, '.lane', 'run.log') }
+}
+
+function waitForPidGone(pid: number) {
+  const until = Date.now() + 15_000
+  while (Date.now() < until) {
+    try { process.kill(pid, 0) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return }
+    spawnSync('sleep', ['0.05'])
+  }
+}
+
+function graceDefaultReceiptCase() {
+  const f = deadlineFixture('exec sleep 30')
+  const { log, status } = launchDeadline(f, ['--timeout', '0.5', '--decision-grace', '0', '--max-extensions', '1'])
+  waitFor(log)
+  expect(readFileSync(log, 'utf8')).toContain('LANE_EXTENDED count=1/1 source=grace-default')
+  const state = JSON.parse(readFileSync(status, 'utf8'))
+  expect(state.extensions).toEqual([{ at: expect.any(String), source: 'grace-default', timeoutAt: expect.any(String) }])
+  expect(readFileSync(log, 'utf8')).toMatch(/LANE_DECISION_NEEDED timeoutAt=\S+ decisionDueAt=\S+ defaultDecision=extend/)
+  expect(readFileSync(log, 'utf8')).toMatch(/TERMINATION=timeout\nEXIT=126\n$/)
+}
+
+function idleDefaultCase() {
+  const f = deadlineFixture('exec sleep 30')
+  const { log, status } = launchDeadline(f, ['--timeout', '1.5', '--decision-grace', '0.5', '--idle-window', '0.5'])
+  waitForContent(status, /"state": "(?:decision-needed|abandoned)"/)
+  expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ defaultDecision: 'abandon', extensionCount: 0 })
+  waitFor(log)
+  expect(readFileSync(log, 'utf8')).toContain('LANE_NOT_EXTENDED reason=idle')
+  expect(readFileSync(log, 'utf8')).not.toContain('LANE_EXTENDED')
+  expect(readFileSync(log, 'utf8')).toMatch(/TERMINATION=timeout\nEXIT=126\n$/)
+}
+
+function idleStopCase() {
+  const f = deadlineFixture(`exec ${JSON.stringify(process.execPath)} -e 'process.on("SIGTERM",()=>{});setInterval(()=>{},1e6)'`)
+  const { log, childPid, status } = launchDeadline(f, ['--timeout', '30', '--idle-window', '0.5', '--idle-timeout', '1.5'])
+  waitFor(log, 15_000)
+  expect(readFileSync(log, 'utf8')).toContain('LANE_IDLE_STOP')
+  expect(readFileSync(log, 'utf8')).toMatch(/TERMINATION=idle\nEXIT=126\n$/)
+  waitForContent(status, /"state": "abandoned"/)
+  waitForPidGone(childPid)
+  expect(() => process.kill(childPid, 0)).toThrow()
+  expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ state: 'abandoned', decisionSource: 'idle', exit: 126 })
+}
+
+function liveDescendantCase() {
+  const f = deadlineFixture('sleep 30; :')
+  const { log, childPid, status } = launchDeadline(f, ['--timeout', '30', '--idle-window', '0.5', '--idle-timeout', '0.6'])
+  spawnSync('sleep', ['1.8'])
+  expect(() => process.kill(childPid, 0)).not.toThrow()
+  expect(readFileSync(log, 'utf8')).not.toMatch(/LANE_IDLE_(STOP|WARN)|^EXIT=/m)
+  expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ idle: { status: 'known' } })
+}
+
+function observeIdleCase() {
+  const f = deadlineFixture('exec sleep 30')
+  const { log, childPid, status } = launchDeadline(f, ['--timeout', '30', '--idle-window', '0.5'])
+  spawnSync('sleep', ['1.8'])
+  const text = readFileSync(log, 'utf8')
+  expect(text.match(/^LANE_IDLE_WARN /gm) ?? []).toHaveLength(1)
+  expect(text).not.toMatch(/LANE_IDLE_STOP|^EXIT=/m)
+  expect(() => process.kill(childPid, 0)).not.toThrow()
+  expect(JSON.parse(readFileSync(status, 'utf8')).idle.maxSilentSeconds).toBeGreaterThan(1)
+}
+
+function idleOwnerExtensionCase() {
+  const f = deadlineFixture('exec sleep 30')
+  const { log, status } = launchDeadline(f, ['--timeout', '1.5', '--decision-grace', '5', '--idle-window', '0.5', '--owner', 'pilot', '--owner-token', 'pilot-token'])
+  waitForContent(status, /"state": "decision-needed"/)
+  expect(JSON.parse(readFileSync(status, 'utf8')).defaultDecision).toBe('abandon')
+  const decision = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'extend', '--extend', '10', '--owner-token', 'pilot-token'], { encoding: 'utf8', env: f.env })
+  expect(decision.status, decision.stderr).toBe(0)
+  waitForContent(log, /LANE_EXTENDED count=1\/3 source=owner/)
+  expect(JSON.parse(readFileSync(status, 'utf8')).extensions).toEqual([{ at: expect.any(String), source: 'owner', timeoutAt: expect.any(String) }])
+}
+
+function deadlineBoundCase() {
+  const help = spawnSync(process.execPath, [LAUNCHER, '--help'], { encoding: 'utf8' })
+  expect(help.stdout).toContain('(max-extensions + 1) x (timeout + decision-grace)')
+  expect(help.stdout).toContain('22800 s (6 h 20 min)')
+  const f = deadlineFixture('exec sleep 30')
+  const { log, status } = launchDeadline(f, ['--timeout', '30'])
+  waitForContent(log, /^LANE_BOUND /m)
+  expect(readFileSync(log, 'utf8')).toContain('LANE_BOUND timeout=30 decisionGrace=300 maxExtensions=3 unattendedMaxSeconds=1320 idleWindow=1200 idleTimeout=off')
+  expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ unattendedMaxSeconds: 1320, idleWindowSeconds: 1200, idleTimeoutSeconds: 0 })
+}
+
+function ownerReceiptCase() {
+  const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+  const { log, status } = launchDeadline(f, ['--timeout', '0.5', '--decision-grace', '5', '--owner', 'pilot', '--owner-token', 'pilot-token'])
+  waitForContent(status, /"state": "decision-needed"/)
+  const decision = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'extend', '--extend', '10', '--owner-token', 'pilot-token'], { encoding: 'utf8', env: f.env })
+  expect(decision.status, decision.stderr).toBe(0)
+  waitForContent(status, /"extensionCount": 1/)
+  waitForContent(log, /LANE_EXTENDED count=1\/3 source=owner/)
+  expect(readFileSync(log, 'utf8')).toContain('LANE_EXTENDED count=1/3 source=owner')
+  expect(JSON.parse(readFileSync(status, 'utf8')).extensions).toEqual([{ at: expect.any(String), source: 'owner', timeoutAt: expect.any(String) }])
+}
+
+describe.skipIf(process.platform === 'win32')('wt-lane deadline visibility and idle watchdog', () => {
+  it('journals grace-default extension receipts and the new deadline', graceDefaultReceiptCase)
+  it('abandons a known idle lane at its timeout instead of extending it by default', idleDefaultCase)
+  it('stops a silent stdin-ignoring child and its process group with enforced idle timeout', idleStopCase, 30_000)
+  it('keeps a silent child with a live descendant running beyond three idle timeouts', liveDescendantCase)
+  it('warns once per silent stretch in observe mode and measures silence without stopping', observeIdleCase)
+  it('keeps an explicit owner extension available after an idle default abandon', idleOwnerExtensionCase)
+  it('documents the unattended bound and writes the configured bound at launch', deadlineBoundCase)
+  it('records an owner extension receipt through the normal control path', ownerReceiptCase)
+})
+
+describe('wt-lane deadline visibility options', () => {
+  it('defaults to a twenty-minute idle window with enforcement off', () => {
+    expect(parse(['--dir', '.', '--model', 'test/model', '--brief', 'brief.md'])).toMatchObject({ idleWindow: 1200, idleTimeout: 0 })
+  })
+
+  it.each([
+    ['--idle-window', '0', 'positive'], ['--idle-window', '-1', 'positive'], ['--idle-window', 'NaN', 'positive'],
+    ['--idle-timeout', '-1', 'non-negative'], ['--idle-timeout', 'NaN', 'non-negative'],
+  ])('validates %s %s as a %s number of seconds', (flag, value, bound) => {
+    expect(parse(['--dir', '.', '--model', 'test/model', '--brief', 'brief.md', flag, value])).toEqual({ error: `${flag} must be a ${bound} number of seconds` })
+  })
+})
+
 describe('wt-lane memory and termination evidence seams', () => {
   it('treats a blank memory-floor environment value as the default', () => {
     const previous = process.env.WT_LANE_MIN_AVAILABLE_MIB

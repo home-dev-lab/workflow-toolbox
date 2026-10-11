@@ -5,6 +5,10 @@ description: Use when asked to delegate an implementation/review to an external 
 
 # External lane
 
+Timeout receipts are matchable in the host-owned run log: `LANE_BOUND` gives the limits, `LANE_DECISION_NEEDED` announces the decision deadline, and `LANE_EXTENDED` records the extension count, source, next deadline, and last activity. The unattended bound is `(max-extensions + 1) × (timeout + decision-grace)` seconds, or **22,800 seconds (6 h 20 min)** with the defaults, plus startup and termination overhead. `--idle-window <seconds>` defaults to 1200: a lane with known silence beyond that window gets default abandon at its timeout and a `LANE_NOT_EXTENDED reason=idle` receipt. Explicit owner extensions still work while extensions remain.
+
+The worker's idle watchdog remains observe-only until calibrated. `LANE_IDLE_WARN` appears once per silent stretch, based on log growth, worktree writes, and live descendants; resumed activity re-arms it. Opt into stopping with `--idle-timeout <positive seconds>` (default 0/off): it writes `LANE_IDLE_STOP`, `TERMINATION=idle`, and `EXIT=126`. Timeout abandonment writes `TERMINATION=timeout` and the same exit code. Unknown process evidence or a bounded/unknown write scan produces `LANE_IDLE_UNKNOWN` and a recorded reason, never an idle warning or stop. Read the supervision record's `idle.maxSilentSeconds` when collecting calibration evidence. After 30 lanes ending `EXIT=0` have supplied that measurement, set the future default idle timeout above the largest measured silence; until then enforcement requires the explicit flag.
+
 Use an external lane for a complete implementation or review, not a five-minute harness task.
 
 1. Create a dedicated Git worktree and a brief file at .lane/brief.md inside it. Paste the definition of done verbatim, list invariants and exact gates, require detached gates with `EXIT=` markers, require a lane report, and end with `## Lessons for the memory`.

@@ -153,7 +153,7 @@ it('runs through pnpm from toolkit cwd', () => {
 it('symlink invocation still judges code in the script repository', () => {
   const root = fixture(); write(root, 'plugin/new.mjs', violation(11))
   symlinkSync(join(root, 'toolkit/scripts'), join(root, 'alias'), 'junction')
-  const result = spawnSync(process.execPath, [join(root, 'alias/quality-changed.mjs')], { encoding: 'utf8', env: fixtureEnv(root) })
+  const result = spawnSync(process.execPath, [join(root, 'alias/quality-changed.mjs')], { encoding: 'utf8', env: { ...fixtureEnv(root), WT_QUALITY_BASE: undefined, WT_QUALITY_CHANGED: undefined } })
   expect(result.status).toBe(1)
 })
 it('subject parse errors are regressions', () => {

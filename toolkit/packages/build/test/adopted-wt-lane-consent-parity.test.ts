@@ -135,7 +135,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   chmodSync(join(bin, 'opencode'), 0o755)
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'workflow-toolbox', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'frontmatter.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'remedy-quote.mjs', 'resolved-binary.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'frontmatter.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-deadline-core.mjs', 'lane-integrate.mjs', 'remedy-quote.mjs', 'resolved-binary.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', 'vendor'), join(pluginRoot, 'bin', 'lib', 'vendor'), { recursive: true })
