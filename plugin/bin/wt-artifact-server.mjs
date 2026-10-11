@@ -32,6 +32,7 @@ import {
   registrationPidStatus,
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { hostProcfs } from './lib/host/procfs.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
 const HELP = `wt-artifact-server - serve registered artifacts through local or tailnet URLs
@@ -524,7 +525,7 @@ async function stopRunning(action, force) {
   }
   if (process.platform === 'linux') {
     let commandLine = ''
-    try { commandLine = readFileSync(`/proc/${state.pid}/cmdline`, 'utf8') } catch {}
+    try { commandLine = hostProcfs.readCommandLine(state.pid, 'utf8') } catch {}
     if (!commandLine.includes('wt-artifact-server.mjs')) {
       return { ok: false, message: 'artifact server: refusing because PID command identity does not match wt-artifact-server.mjs' }
     }

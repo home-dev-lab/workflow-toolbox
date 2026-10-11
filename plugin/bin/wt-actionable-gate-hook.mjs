@@ -8,7 +8,7 @@
 // 21-minute fresh-to-wrong interval while leaving routine nearby Stops useful. Override with
 // WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS; a newer failed refresh also discredits readings past this age.
 
-import { existsSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -23,6 +23,7 @@ import { isUnrefreshable, withAbandonedRefresh } from './lib/actionability-readi
 import { atomicWriteJson, readJsonOrNull } from './lib/host/actionability-files.mjs'
 import { autoRefresh } from './lib/host/actionability-auto-refresh.mjs'
 import { recordBoardReadFailure } from './wt-actionable-snapshot-producer-hook.mjs'
+import { hostProcfs } from './lib/host/procfs.mjs'
 import {
   ACTIONABLE_REFRESH_COMMAND,
   autoRefreshPath,
@@ -195,7 +196,7 @@ function nearAncestorsOf(pid, depth, fixture) {
   const out = new Set()
   let current = Number(pid)
   for (let i = 0; i < depth && current > 1; i += 1) {
-    const stat = fixture ? null : readFileSync(`/proc/${current}/stat`, 'utf8')
+    const stat = fixture ? null : hostProcfs.readProcessStat(current, 'utf8')
     const ppid = fixture ? fixture.processes.get(current)?.ppid : Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
     if (!Number.isInteger(ppid) || ppid <= 1) break
     out.add(ppid)
@@ -298,7 +299,7 @@ function detectExternalLane(cwd) {
       if (matches.kind !== 'ok') return matches
       for (const pid of matches.pids) {
         if (hookSelfAndAncestors.has(pid)) continue
-        const laneRoot = scanner ? scanner.processes.get(pid)?.cwd : readlinkSync(`/proc/${pid}/cwd`)
+        const laneRoot = scanner ? scanner.processes.get(pid)?.cwd : hostProcfs.readWorkingDirectory(pid)
         if (typeof laneRoot !== 'string') throw new Error(`missing cwd for lane pid ${pid}`)
         if (!isSameOrNestedPath(laneRoot, projectRoot)) continue
         if (intersects(hookNear, nearAncestorsOf(pid, LANE_ANCESTOR_DEPTH, scanner))) {

@@ -106,7 +106,7 @@ async function pathsOf($, options, sessionCwd) {
     linkBase: typeof options?.linkBase === 'string' ? options.linkBase : '',
     plankaBaseUrl: typeof options?.plankaBaseUrl === 'string' ? options.plankaBaseUrl : '',
     plankaConfigFile: configured('plankaConfigFile') || '',
-    procRoot: typeof options?.procRoot === 'string' ? options.procRoot : '/proc',
+    procRoot: typeof options?.procRoot === 'string' ? options.procRoot : undefined,
     now: typeof options?.now === 'string' ? options.now : undefined,
     activeWindowMin: Number(options?.activeWindowMin) > 0 ? Number(options.activeWindowMin) : 10,
   };
@@ -118,7 +118,7 @@ export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT, t
     let snapshotFile;
     try { snapshotFile = await $.env?.get?.('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch {}
     const collectorBootstrap = SNAPSHOT_PROGRAM.length > 0
-      ? "Promise.all([import(process.argv[1]), import(new URL('../bin/lib/host/lane-host-dir.mjs', process.argv[1]))]).then(([{ SNAPSHOT_PROGRAM }, { laneHostDir, ensureLaneHostDir }]) => Function('require', 'laneHostDir', 'ensureLaneHostDir', SNAPSHOT_PROGRAM)(require, laneHostDir, ensureLaneHostDir))"
+      ? "Promise.all([import(process.argv[1]), import(new URL('../bin/lib/host/lane-host-dir.mjs', process.argv[1])), import(new URL('../bin/lib/host/procfs.mjs', process.argv[1]))]).then(([{ SNAPSHOT_PROGRAM }, { laneHostDir, ensureLaneHostDir }, { createProcfs }]) => Function('require', 'laneHostDir', 'ensureLaneHostDir', 'createProcfs', SNAPSHOT_PROGRAM)(require, laneHostDir, ensureLaneHostDir, createProcfs))"
       : '';
     const result = await $.process.run(
       snapshotFile
