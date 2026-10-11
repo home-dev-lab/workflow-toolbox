@@ -5,6 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Pilots now wait for toolbox-launched lanes through the bounded launcher-record waiter; lane-written `EXIT=0` log lines and report files cannot signal completion. Re-adopt the pilot template to pick up the guidance.
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
 - Added regression tests for the secret guard's streaming mask; no behaviour change.
 - Report shipped `SKILL.md` bodies above 8000 Unicode characters in `pnpm quality`
