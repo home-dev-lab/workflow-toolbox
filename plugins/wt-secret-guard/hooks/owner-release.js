@@ -39,12 +39,24 @@ export function releaseGrammarRefusal(event) {
 }
 
 // Inspect decoded values AND keys; JSON escaping must not hide control separators.
-function* eventStrings(value, body = false, key = false, root = true, hostTool = false) {
-  if (['string', 'number', 'bigint', 'boolean'].includes(typeof value)) { yield { value: String(value), body, key, hostTool }; return; }
+const SCALAR_TYPES = new Set(['string', 'number', 'bigint', 'boolean']);
+
+function* eventStrings(event) {
+  yield* placedStrings(event, { body: false, hostTool: false }, true);
+}
+
+// A root `text` value is the body; a root `tool` value is the host's tool name.
+function rootPlace(root, name) {
+  return { body: root && name === 'text', hostTool: root && name === 'tool' };
+}
+
+function* placedStrings(value, place, root) {
+  if (SCALAR_TYPES.has(typeof value)) { yield { value: String(value), key: false, ...place }; return; }
   if (!value || typeof value !== 'object') return;
   for (const [name, child] of Object.entries(value)) {
-    yield { value: name, body: false, key: true, hostTool: root && name === 'tool' };
-    yield* eventStrings(child, root && name === 'text', false, false, root && name === 'tool');
+    const childPlace = rootPlace(root, name);
+    yield { value: name, body: false, key: true, hostTool: childPlace.hostTool };
+    yield* placedStrings(child, childPlace, false);
   }
 }
 
