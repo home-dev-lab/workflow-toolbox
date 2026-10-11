@@ -252,7 +252,7 @@ import { acquireSuiteLock, releaseSuiteLock } from ${JSON.stringify(LIB_URL)}
 const cfg = JSON.parse(process.argv[1])
 let lease
 try {
-   lease = await acquireSuiteLock({ root: cfg.root, pollMs: cfg.pollMs, noticeMs: 60000, waitS: cfg.waitS, staleS: cfg.staleS, argv: [cfg.name], onWait: (line) => process.stdout.write(line + '\\n') })
+   lease = await acquireSuiteLock({ root: cfg.root, pollMs: cfg.pollMs, noticeMs: 60000, waitS: cfg.waitS, staleS: cfg.staleS, platform: cfg.platform, argv: [cfg.name], onWait: (line) => process.stdout.write(line + '\\n') })
 } catch (error) {
   // An error that is not a timeout names its code, so a failure on another OS says what it met.
   appendFileSync(cfg.order, (error?.code === 'WT_SUITE_LOCK_TIMEOUT' ? 'TIMEOUT-' : 'ERROR-' + (error?.code ?? error?.message) + '-') + cfg.name + '\\n')
@@ -318,7 +318,8 @@ describe('suite lock no-progress budget', () => {
     let target: Waiter | undefined
     try {
       await waitFor(() => readOrder(order).includes('H'), 15_000)
-      target = startWaiter(root, order, 'T', 30, 0, 1, { staleS: 3 })
+      // POSIX_STALENESS: on win32 a head waiter reclaims a live holder older than its staleS, and H can pass 3 s here on a slow runner.
+      target = startWaiter(root, order, 'T', 30, 0, 1, { staleS: 3, ...POSIX_STALENESS })
       await waitFor(() => target!.stdout().includes('position 1 of 1') && queueRecords(root).length === 1, 15_000)
       await new Promise((resolve) => setTimeout(resolve, 1300))
       expect(queueRecords(root), 'head ticket remains present after waitS').toHaveLength(1)

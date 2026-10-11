@@ -64,9 +64,12 @@ const fsOperations = {
   },
 };
 
-// The hook dispatches its flight-recorder writes without awaiting them (hooks.js trackedEvent), so a call can return
-// while a write into the sandbox is still running. Every real fs operation is tracked here so a sandbox is removed only
-// once nothing still writes into it; otherwise the removal races the write (ENOTEMPTY, or a tree recreated after it).
+// The hook runs work in the background without awaiting it (hooks.js trackedEvent dispatches its flight-recorder writes,
+// scheduleFlights its harvest), so a call can return while a write into the sandbox is still running or still to come.
+// Every host call the fixture hands the hook ($.fs, $.store, $.ui, $.session, $.env, $.model) is tracked, so a sandbox
+// is removed only once the hook waits on nothing: the hooks set no timers, so a continuation is always chained on a
+// tracked host call or on a microtask. Outside this reach: a test that holds its own `next` open or aborts a call owns
+// that continuation and must settle it before the test ends.
 const pendingHostOps = new Set();
 export function trackHostOp(promise) {
   pendingHostOps.add(promise);
@@ -75,23 +78,34 @@ export function trackHostOp(promise) {
   return promise;
 }
 
+const tracked = (call) => (...args) => {
+  const result = call(...args);
+  return result && typeof result.then === 'function' ? trackHostOp(Promise.resolve(result)) : result;
+};
+// The same members, each call tracked; a non-function member is kept as it is.
+const trackedMembers = (surface) => Object.fromEntries(Object.entries(surface).map(([name, member]) =>
+  [name, typeof member === 'function' ? tracked(member) : member]));
+
 const SETTLE_LIMIT_MS = 10_000;
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+const expiry = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref(); });
 
-// Waits until a full event-loop turn passes with no host fs operation pending: an operation chained after another one
-// starts in the microtasks of the first one's settlement, so it is visible by the next turn.
-export async function settleHostOps() {
-  const deadline = Date.now() + SETTLE_LIMIT_MS;
+// Waits until a full event-loop turn passes with no host call pending: a call chained after another one starts in the
+// microtasks of the first one's settlement, so it is visible by the next turn. A call that never settles fails the
+// teardown after SETTLE_LIMIT_MS of the monotonic clock instead of hanging it.
+export async function settleHostOps(limitMs = SETTLE_LIMIT_MS) {
+  const deadline = performance.now() + limitMs;
   for (await nextTurn(); pendingHostOps.size > 0; await nextTurn()) {
-    if (Date.now() > deadline) throw new Error(`${pendingHostOps.size} host fs operation(s) still pending after ${SETTLE_LIMIT_MS} ms`);
-    await Promise.allSettled([...pendingHostOps]);
+    const remaining = deadline - performance.now();
+    const settled = await Promise.race([Promise.allSettled([...pendingHostOps]).then(() => true), expiry(Math.max(0, remaining)).then(() => false)]);
+    if (!settled) throw new Error(`${pendingHostOps.size} host call(s) still pending after ${limitMs} ms`);
   }
 }
 
-// Removes a sandbox once every host fs operation has settled.
+// Removes a sandbox once every host call has settled; a teardown that times out still removes it, then fails.
 export async function removeSandbox(root) {
-  await settleHostOps();
-  await rm(root, { recursive: true, force: true });
+  try { await settleHostOps(); }
+  finally { await rm(root, { recursive: true, force: true }); }
 }
 
 // A fresh sandbox directory, removed after the test once the hook's background writes have settled.
@@ -118,7 +132,7 @@ export const exhaustedBudgetClock = () => { let t = 0; return () => (t += 5000);
 // One registered hook over a real config dir and project, with the given store. `triggerClock` is passed to register as
 // the regex budget's clock (default: the real Date.now). `messages` is `$.session.messages`: called with `{ as: 'api' }` (and
 // `agentId` for a sub-agent) it answers the conversation the next request is built from.
-export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [] } = {}) {
+export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [], log } = {}) {
   const config = join(root, 'config'), project = join(root, 'project');
   await mkdir(join(config, 'rules-on-demand'), { recursive: true });
   await mkdir(project, { recursive: true });
@@ -128,14 +142,15 @@ export async function hookFixture(root, store, { sessionId = 'sample-session', f
   const handlers = new Map();
   hooks.register((event, handler) => handlers.set(event, handler), { enabled: true }, triggerClock);
   const logs = [];
-  const $ = {
+  // `log`, when given, also receives each $.ui.log line (a test can hold the log open to widen a window).
+  const $ = Object.fromEntries(Object.entries({
     env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: config, HOME: root })[name] },
     fs,
-    ui: { log: async (line) => { logs.push(line); } },
+    ui: { log: async (line) => { logs.push(line); await log?.(line); } },
     store: store.api,
     session: { id: async () => sessionId, messages, root: async () => project },
     model: { classify: async () => 'followed' },
-  };
+  }).map(([name, surface]) => [name, trackedMembers(surface)]));
   const call = (event, next = async () => ({})) => handlers.get('tool.call')($, { tool: 'Bash', cwd: project, ...event }, next);
   const identity = `user:${await realpath(join(config, 'rules-on-demand'))}:sample.md`;
   return { $, handlers, logs, call, config, project, identity, quality: join(config, 'plugins', 'data', 'wt-rules-on-demand', 'quality') };
