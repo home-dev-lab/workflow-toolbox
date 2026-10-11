@@ -812,6 +812,16 @@ describe('adopt installer — fresh trigger installation', () => {
     expect(refreshed.status, refreshed.out).toBe(0)
     expect(readFileSync(file, 'utf8')).toBe(text)
   })
+  it.each(['refresh', 'keep'])('absent trigger commands still refuse --%s-triggers', (action) => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    const result = runResult(['--set', 'rules', '--install', `--${action}-triggers`, '--file', FRESH_ACT], dir)
+    expect(result.status).toBe(1)
+    expect(result.out).toContain(`--${action}-triggers requires a spec-backed managed on-demand copy`)
+    expect(existsSync(join(dir, FRESH_ACT))).toBe(false)
+  })
+})
+
+describe('adopt installer — symlink replacement in on-demand storage', () => {
   it('--replace-symlinks in an on-demand directory writes the shipped head and stamp, and trigger commands still refuse the link', () => {
     const dir = join(mkDir(), 'rules-on-demand')
     mkdirSync(dir)
@@ -831,13 +841,6 @@ describe('adopt installer — fresh trigger installation', () => {
     expect(text.startsWith(head), 'a replaced symlink must get the shipped trigger head').toBe(true)
     expect(text).toContain(`head sha256:${headFp(head)} by the adopt skill`)
     expect(readFileSync(canonical, 'utf8')).toBe('CANONICAL ORIGINAL\n')
-  })
-  it.each(['refresh', 'keep'])('absent trigger commands still refuse --%s-triggers', (action) => {
-    const dir = join(mkDir(), 'rules-on-demand')
-    const result = runResult(['--set', 'rules', '--install', `--${action}-triggers`, '--file', FRESH_ACT], dir)
-    expect(result.status).toBe(1)
-    expect(result.out).toContain(`--${action}-triggers requires a spec-backed managed on-demand copy`)
-    expect(existsSync(join(dir, FRESH_ACT))).toBe(false)
   })
 })
 
