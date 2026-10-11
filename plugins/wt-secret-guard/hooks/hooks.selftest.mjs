@@ -4446,31 +4446,68 @@ for (const boundary of ['sessionId', 'uiLog']) {
     assert.deepEqual(actual, expected, 'notice failure changed the protection outcome');
   });
 }
-await test('N10 refused registration drain restores failed writes', () => freshVault(async () => {
-  const { publish } = await import('./journal.js');
-  const before = registrationEvents().length;
+await test('N10 overlapping refusal drains attempt each entry at most once', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-overlap');
+  const originalNow = Date.now;
+  let now = originalNow();
+  let attempts = 0;
+  const host = { ...journalHostFor($), sessionId: () => 'refusal-overlap', processRun: () => {
+    attempts += 1; return { exitCode: 1 };
+  } };
+  Date.now = () => now;
+  try {
+    await Promise.all(Array.from({ length: 100 }, () => {
+      tokenize('op-output', 'report');
+      return publish(host);
+    }));
+    assert.equal(attempts, 100, 'overlapping publications did not attempt all 100 drained entries');
+    now += 60_000;
+    await Promise.all(Array.from({ length: 100 }, () => publish(host)));
+    assert.ok(attempts <= 100, 'overlapping outage drains re-attempted entries: failed writes must not exceed 100 drained refusals');
+  } finally { Date.now = originalNow; }
+}));
+await test('N10 partial refusal drain drops failed suffix', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-partial');
+  const records = [];
   const originalNow = Date.now;
   let now = originalNow();
   let attempts = 0;
   let outage = true;
-  const host = { ...journalHostFor($), processRun: (...args) => {
-    attempts += 1;
-    return outage && attempts > 1 ? { exitCode: 1 } : journalHostFor($).processRun(...args);
+  const host = { ...journalHostFor($), sessionId: () => 'refusal-partial', processRun: (argv, init) => {
+    if (++attempts > 1 && outage) return { exitCode: 1 };
+    records.push(JSON.parse(init.stdin));
+    return { exitCode: 0, stdout: argv[2] };
   } };
   Date.now = () => now;
   try {
     for (const value of ['\n', 'Q7', 'report']) tokenize('op-output', value);
     await publish(host);
-    assert.equal(registrationEvents().length, before + 1, 'partial drain did not preserve successful prefix');
-    for (let index = 0; index < 100; index += 1) await publish(host);
-    assert.equal(attempts, 2, 'outage retried refused registrations inside one minute');
+    assert.deepEqual(records.map(({ reason, count }) => ({ reason, count })), [{ reason: 'whitespace', count: 1 }], 'partial drain did not preserve successful prefix exactly once');
+    assert.equal(attempts, 2, 'partial drain attempted entries after its first failure');
     outage = false;
     now += 60_000;
     await publish(host);
     await publish(host);
-    assert.equal(registrationEvents().length, before + 3, 'successful prefix was replayed or failed suffix lost');
-    assert.deepEqual(registrationEvents().slice(before).map(({ count }) => count), [1, 1, 1]);
+    assert.equal(attempts, 2, 'later publications re-attempted the dropped refusal suffix');
+    assert.equal(records.length, 1, 'partial drain replayed its successful prefix or dropped suffix');
   } finally { Date.now = originalNow; }
+}));
+await test('N10 session outage does not suppress healthy refusal writes', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-sessions');
+  const records = [];
+  const base = journalHostFor($);
+  const failing = { ...base, sessionId: () => 'refusal-outage', processRun: () => ({ exitCode: 1 }) };
+  const healthy = { ...base, sessionId: () => 'refusal-healthy', processRun: (argv, init) => {
+    records.push(JSON.parse(init.stdin)); return { exitCode: 0, stdout: argv[2] };
+  } };
+  tokenize('op-output', '\n');
+  await publish(failing);
+  tokenize('op-output', 'report');
+  await publish(healthy);
+  assert.equal(records.length, 1, 'session A outage suppressed session B refusal write on its next publication');
+  assert.deepEqual(records.map(({ sessionId, reason, count }) => ({ sessionId, reason, count })), [{ sessionId: 'refusal-healthy', reason: 'common-word', count: 1 }], 'healthy session received another drain\'s dropped refusal');
+  await publish(healthy);
+  assert.equal(records.length, 1, 'healthy session recorded the refusal more than once');
 }));
 await test('N12 registration refusal reasons are closed enums', async () => {
   const host = journalHostFor($);

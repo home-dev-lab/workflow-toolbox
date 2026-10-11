@@ -23,7 +23,9 @@ const NOTICE_LOCKS = [
   'N7 common word registration scrub stays console silent',
   'N8 failure notices dedupe by session and fixed kind',
   'N9 diagnostic journal events do not alter aggregates or promotion',
-  'N10 refused registration drain restores failed writes',
+  'N10 overlapping refusal drains attempt each entry at most once',
+  'N10 partial refusal drain drops failed suffix',
+  'N10 session outage does not suppress healthy refusal writes',
 ]
 const RECOVERY_LOCKS = [
   'N8 different text shares fixed notice identity',

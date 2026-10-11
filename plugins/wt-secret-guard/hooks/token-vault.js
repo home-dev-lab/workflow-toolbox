@@ -289,12 +289,6 @@ export function takeDirty() { const result = dirty; dirty = false; return result
 export function restoreDirty() { dirty = true; }
 export function restorePending(entries) { pending = [...entries, ...pending]; }
 export function takeRefusedRegistrations() { const result = [...refusedRegistrations.values()]; refusedRegistrations.clear(); return result; }
-export function restoreRefusedRegistrations(entries) {
-  for (const entry of entries) {
-    const key = `${entry.kind}:${entry.reason}`;
-    refusedRegistrations.set(key, { ...entry, count: entry.count + (refusedRegistrations.get(key)?.count ?? 0) });
-  }
-}
 export function testState() { return new Map(tokens); }
 export function testResetVaultWork() { for (const key of Object.keys(work)) work[key] = 0; }
 export function testVaultWork() { return { ...work, ...indexStats, prefixKeys: prefixIndex.size, maxIndexedValueLength: MAX_INDEXED_VALUE_LENGTH }; }

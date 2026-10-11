@@ -1,7 +1,7 @@
 // Audit without disclosure: persist only closed enums and identifiers while owning legacy publication.
 import { sha256 } from './sha256.js';
 import { consoleNotice } from './console-notice.js';
-import { knownTokens, restoreDirty, restorePending, restoreRefusedRegistrations, takeDirty, takePending, takeRefusedRegistrations } from './token-vault.js';
+import { knownTokens, restoreDirty, restorePending, takeDirty, takePending, takeRefusedRegistrations } from './token-vault.js';
 
 const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'web-fetch', 'web-search', 'agent', 'task', 'assistant', 'attachment', 'prompt', 'registration']);
 const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool', 'released', 'registration-refused', 'storage-unrepaired']);
@@ -10,7 +10,6 @@ const PATH_CLASSES = new Set(['npm-config', 'env-file', 'cloud-secret', 'aws-cre
 const COMMAND_CLASSES = new Set(['bash', 'read', 'notebook-read', 'metadata', 'prose', 'other']);
 const DISPOSITIONS = new Set(['true-positive', 'false-positive', 'unreviewed']);
 const REFUSAL_REASONS = new Set(['whitespace', 'short', 'common-word', 'ordinary-shape', 'low-distinctiveness', 'released']);
-let refusalRetryAt = 0;
 const journalText = new Map();
 const seen = new Set();
 const writeQueues = new Map();
@@ -124,24 +123,14 @@ export function promotionStatus(events, dispositions, now = Date.now()) {
 }
 
 export async function publishRefusals($) {
-  if (Date.now() < refusalRetryAt) return;
   const refused = takeRefusedRegistrations();
-  for (let index = 0; index < refused.length; index += 1) {
-    const { kind, count, reason } = refused[index];
+  // Diagnostics are best-effort: a failure drops this drain's remaining entries.
+  for (const { kind, count, reason } of refused) {
     try {
-      if (!await appendEvent($, { surface: 'registration', action: 'registration-refused', kinds: [kind], count, reason })) {
-        retryRefusals(refused.slice(index)); return;
-      }
+      if (!await appendEvent($, { surface: 'registration', action: 'registration-refused', kinds: [kind], count, reason })) return;
     }
-    catch { retryRefusals(refused.slice(index)); return; }
+    catch { return; }
   }
-  refusalRetryAt = 0;
-}
-
-function retryRefusals(refused) {
-  restoreRefusedRegistrations(refused);
-  // One failed drain per minute, shared across hosts in this module instance.
-  refusalRetryAt = Date.now() + 60_000;
 }
 
 export async function publish($) {
