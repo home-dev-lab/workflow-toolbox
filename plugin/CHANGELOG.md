@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.195.1] - 2026-10-12
+
+### Fixed
+
+- The secret guard (`wt-secret-guard` 0.1.6) no longer stalls on long inputs. Nine pattern checks whose run time grew faster than the input (word segmentation, JWT, private-key, email and prose-punctuation detection, trailing backslashes and newlines, heredoc context, template references) are replaced by linear scanners, and the op-output and environment-dump captures now run in linear time. A long credential, several long credentials, and a credential after a long non-matching prefix are still found and captured whole.
+
 ## [0.195.0] - 2026-10-12
 
 - `wt-second-opinion` now optionally checks `WT_SECOND_OPINION_ADMISSION`, an absolute ES module path whose default `admit({ repo, request, env })` returns `null` or a refusal string, before starting a model or sandbox. Admission and launch share canonical paths; output naming the request is refused without modifying it. Invalid configuration, module failures and timeouts refuse closed with stderr and a completed output file ending in `EXIT=3`, replacing stale success even on a read-only output file; the 10-second import/admission deadline is overridable through `WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS`.
