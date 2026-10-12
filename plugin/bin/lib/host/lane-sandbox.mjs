@@ -306,7 +306,7 @@ function opencodePrivateHome({ env, fs, runtimeDir, model, trustedRead, trustedA
   }
   const configDir = path.join(xdg(env, 'XDG_CONFIG_HOME', '.config'), 'opencode')
    const network = () => opencodeModelNetwork({ configDir, model, authFile: path.join(shareDir, 'auth.json'), configFile: absolute(env.OPENCODE_CONFIG)[0], trustedRead: (file) => file === path.join(shareDir, 'auth.json') ? trustedAuthRead(file) : trustedRead(file) })
-  return { writable, readOnlyOverlays, network, prepare }
+  return { writable, readOnlyOverlays, network, prepare, opencodeDataDir: privShare }
 }
 
 const PROFILES = {
@@ -319,6 +319,7 @@ const PROFILES = {
     return {
       readable: () => [configDir, ...opencodeConfigReferences(configDir, env, fs, trustedRead), ...configFile.filter((dir) => trustedRead(path.join(dir, path.basename(env.OPENCODE_CONFIG))) !== null), ...opencodeHome, ...argumentValues(args, ['-f', '--file'], base), ...(readonlyCwd ? dirArgs : [])],
       prepare: priv.prepare,
+      opencodeDataDir: priv.opencodeDataDir,
       writableRemap: priv.writable,
       writable: [...(readonlyCwd ? [] : dirArgs)],
       readOnlyOverlaysRemap: priv.readOnlyOverlays.filter((entry) => typeof entry === 'object'),
@@ -531,7 +532,7 @@ function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays,
 }
 
 function unsandboxed(reason) {
-  return { kind: 'none', reason, line: `lane sandbox: none (${reason}); running with the environment allow-list only`, wrap: (bin, args) => [bin, args], unreadable: () => [], dispose: () => {} }
+  return { kind: 'none', opencodeDataDir: null, reason, line: `lane sandbox: none (${reason}); running with the environment allow-list only`, wrap: (bin, args) => [bin, args], unreadable: () => [], dispose: () => {} }
 }
 
 const REQUEST_PATH_PROBE = `const fs=require('node:fs');let data='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>data+=s);process.stdin.on('end',()=>{const answer={};for(const p of JSON.parse(data)){try{const info=fs.statSync(p);fs.accessSync(p,fs.constants.R_OK|(info.isDirectory()?fs.constants.X_OK:0));answer[p]=info.dev+':'+info.ino}catch{answer[p]=null}}process.stdout.write(JSON.stringify(answer))})`
@@ -1110,7 +1111,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   }
 
     const unreadable = (candidates, { probe, env: probeEnv = env, exempt = [] } = {}) => unreadableRequestPaths(candidates, { fs, wrap, execPath, env: probeEnv, probe, exempt })
-    return { kind: 'bwrap', line, readable, writable, droppedBinds, relativeBinds, refusedExtras: extras.refused, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
+    return { kind: 'bwrap', opencodeDataDir: selected.opencodeDataDir, line, readable, writable, droppedBinds, relativeBinds, refusedExtras: extras.refused, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
   } catch (error) {
     bridgeState.disposed = true
     for (const relay of bridge?.relays ?? []) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }

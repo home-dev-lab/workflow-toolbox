@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,12 @@ const roots: string[] = []
 const root = () => { const value = mkdtempSync(join(tmpdir(), 'wt-run-cost-')); roots.push(value); return value }
 
 afterEach(() => { for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true }) })
+
+function mixedLaneCost(lane: string, claudeLane: { usage_file: string }, fixture: { claude: { usage: object } }, sessions: object[]) {
+  const worktree = root(); const host = root()
+  writeFileSync(join(host, claudeLane.usage_file), JSON.stringify({ ...fixture.claude.usage, receipt_for: claudeLane.usage_file, directory: realpathSync(worktree) }))
+  return computeRunCost({ laneDir: lane, worktree, laneHostDir: host, sessions: sessions.map((row: object) => ({ ...row, directory: worktree })) })
+}
 
 describe('run cost', () => {
   function catalogue(models: Record<string, unknown>) {
@@ -316,7 +322,7 @@ describe('run cost', () => {
     const priceTable = { models: { 'claude-opus-5': { family: 'anthropic', input: 1, output: 1 }, 'openai/gpt': { family: 'openai', input: 2, output: 1 } } }
     const cost = computeRunCost({ laneDir: lane, worktree, sessions, priceTable })
     // Two lane windows with no session row, plus the absent terminal SDK result (usage 'unavailable'): three missing sources.
-    expect(cost.coverage).toEqual({ status: 'incomplete', attributed_usd: 1, inferred_usd: 1, unmatched_usd: 4, missing_sources: 3, included_unattributed_sources: 3, price_unknown_models: 0 })
+    expect(cost.coverage).toMatchObject({ status: 'incomplete', attributed_usd: 1, inferred_usd: 1, unmatched_usd: 4, missing_sources: 3, included_unattributed_sources: 3, price_unknown_models: 0 })
     expect(cost.totals.usd).toBe(6)
     expect(cost.coverage.attributed_usd + cost.coverage.inferred_usd + cost.coverage.unmatched_usd).toBe(cost.totals.usd)
     expect(costReportSection(cost)).toContain('Run total: $6.000000')
@@ -336,7 +342,7 @@ describe('run cost', () => {
     const priceTable = { models: { 'openai/gpt': { family: 'openai', input: 2, output: 1 } } }
     const cost = computeRunCost({ laneDir: lane, worktree, sessions, priceTable })
     expect(cost.totals.usd).toBe(2)
-    expect(cost.coverage).toMatchObject({ status: 'complete', attributed_usd: 2, inferred_usd: 0, unmatched_usd: 0 })
+    expect(cost.coverage).toMatchObject({ status: 'incomplete', attributed_usd: 2, inferred_usd: 0, unmatched_usd: 0, lanes: { counted: 0, status: 'incomplete' } })
   })
 
   it('marks a failed cost computation as incomplete while retaining legacy report rendering', () => {
@@ -440,9 +446,7 @@ describe('run cost', () => {
       [claudeLane, gptLane],
       [fixture.gpt.session],
     )
-    writeFileSync(join(lane, claudeLane.usage_file), JSON.stringify(fixture.claude.usage))
-
-    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, sessions })
+    const cost = mixedLaneCost(lane, claudeLane, fixture, sessions)
 
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'tdd').models['claude-sonnet-5'])
       .toMatchObject({ family: 'anthropic', input: 266, output: 77146, fresh_tokens: 296546 })

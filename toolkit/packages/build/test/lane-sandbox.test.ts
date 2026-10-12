@@ -20,7 +20,7 @@ import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../.
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')
 
-interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
+interface SandboxPlan { kind: 'bwrap' | 'none', line: string, opencodeDataDir?: string | null, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
 type NoticeDestination = ((text: string) => void) | number | { write: (text: string) => unknown }
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
@@ -1286,6 +1286,20 @@ describe('lane sandbox plan — every --setenv path exists inside the sandbox', 
       expect(remapInside('/oc-state')).toEqual([`${'XDG_STATE_HOME' in env ? '/xdg/state' : `${HOME}/.local/state`}/opencode`])
     }
   })
+})
+
+it('exposes the host-side private OpenCode data directory for close-time capture', () => {
+  const p = plan()
+  try {
+    const [, args] = p.wrap('opencode', ['run'])
+    const outside = args.find((value) => value.startsWith('/run/lane/') && value.endsWith('/oc-share'))
+    expect(outside).toBeTypeOf('string')
+    expect(p.opencodeDataDir).toBe(outside)
+  } finally { p.dispose() }
+})
+
+it('exposes no private OpenCode data directory on an unsandboxed launch', () => {
+  expect(plan({ optionEnv: { WT_LANE_SANDBOX: 'off' } }).opencodeDataDir).toBeNull()
 })
 
 describe('lane sandbox plan — network endpoints (H4)', () => {

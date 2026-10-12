@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
 import { claudeExecutorEnv, executorSandboxCredentials } from './lib/claude-executor-env.mjs'
 import { ensureLaneHostDir } from './lib/host/lane-host-dir.mjs'
+import { usageDirectory } from './lib/host/opencode-session-store.mjs'
 import { resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { createModelTracker, modelWarnings } from './lib/model-fallback-core.mjs'
@@ -98,7 +99,7 @@ async function worker(options) {
     const text = `${warnings.join('\n')}\n`
     try { appendWarnings(options.log, launch.report, text) } catch { /* diagnostic writes must not lose usage or EXIT */ }
   }
-  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ model: servedModel, totals, served_models: observed.runs.map((run) => run.model), fallbacks: observed.fallbacks, safeguard_notices: observed.notices }, null, 2)}\n`)
+  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ receipt_for: path.basename(`${options.log}.usage.json`), directory: usageDirectory(options.dir), model: servedModel, totals, served_models: observed.runs.map((run) => run.model), fallbacks: observed.fallbacks, safeguard_notices: observed.notices }, null, 2)}\n`)
   if (terminalCode === null) finish(options.log, code)
   return terminalCode ?? code
 }

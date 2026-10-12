@@ -276,7 +276,7 @@ describe('Claude SDK executor', () => {
     expect(waitForExit(log, 3000)).toBe('EXIT=0')
     expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=medium origin=role base forced=false\n')
     waitFor(`${log}.usage.json`)
-    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 }, served_models: [], fallbacks: [], safeguard_notices: [] })
+    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ receipt_for: basename(`${log}.usage.json`), directory: canonicalPath(f.worktree), model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 }, served_models: [], fallbacks: [], safeguard_notices: [] })
     expect(existsSync(outside)).toBe(false)
     const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
     expect(sdkReceipt).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })

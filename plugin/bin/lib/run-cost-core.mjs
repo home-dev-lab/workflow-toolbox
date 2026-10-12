@@ -1,8 +1,7 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
-import { priceRunCost } from './model-prices.mjs'
+import { loadModelPrices, priceRunCost } from './model-prices.mjs'
+import { attachLaneCosts, collectLaneCosts } from './host/run-cost-lanes.mjs'
 
 const NOT_MEASURED = 'not measured'
 const TOKEN_FIELDS = ['input', 'cache_write', 'cache_read', 'output', 'reasoning', 'first_pass_input', 'fresh_tokens']
@@ -23,6 +22,7 @@ function tokenColumns(family, usage) {
 }
 
 function timestampOf(value) {
+  if (value == null) return null
   const timestamp = typeof value === 'string' ? Date.parse(value) : Number(value)
   return Number.isFinite(timestamp) ? timestamp : null
 }
@@ -60,20 +60,6 @@ function modelName(row) {
   } catch { return 'unknown' }
 }
 
-function queryOpenCodeSessions({ dbPath, sqlite = 'sqlite3', execFile = execFileSync, directory, startedAt, endedAt }) {
-  const quote = (value) => `'${String(value).replaceAll("'", "''")}'`
-  const query = `SELECT id,directory,model,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated FROM session WHERE directory=${quote(directory)} AND time_updated>=${Math.floor(startedAt)} AND time_created<=${Math.ceil(endedAt)} ORDER BY time_created`
-  const output = execFile(sqlite, ['-readonly', '-json', '--', dbPath, query], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
-  return output.trim() ? JSON.parse(output) : []
-}
-
-function defaultOpenCodeDb(options) {
-  if (options.dbPath) return options.dbPath
-  if (process.env.WT_OPENCODE_DB) return process.env.WT_OPENCODE_DB
-  if ((options.platform ?? process.platform) !== 'linux') return null
-  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode', 'opencode.db')
-}
-
 function laneFamily(lane) {
   let executorFamily = null
   if (lane.executor === 'claude-sdk') executorFamily = 'anthropic'
@@ -88,25 +74,6 @@ function laneFamily(lane) {
 
 function laneLabel(lane) {
   return `${lane.phase}${lane.round ? ` round ${lane.round}` : ''}`
-}
-
-function readClaudeLane(laneDir, lane) {
-  try {
-    const laneUsage = readJson(path.resolve(laneDir, lane.usage_file))
-    return [{ phase: lane.phase, round: lane.round ?? null, model: laneUsage.model ?? lane.model ?? 'unknown', tokens: tokenColumns('anthropic', laneUsage.totals ?? laneUsage), wall_time_ms: lane.ended_at - lane.started_at }]
-  } catch (error) {
-    return `Anthropic lane usage unavailable for ${laneLabel(lane)}: ${error instanceof Error ? error.message : String(error)}`
-  }
-}
-
-function readOpenAiLane(lane, sessions, assignedSessions, worktree) {
-  if (typeof sessions === 'string') return `OpenAI lane usage unavailable for ${laneLabel(lane)}: ${sessions}`
-  const matched = matchLaneSessions(sessions.filter((row) => !assignedSessions.has(row.id)), worktree, lane.started_at, lane.ended_at, { explain: true })
-  if (!Array.isArray(matched)) return `OpenAI lane usage unavailable for ${laneLabel(lane)}: ${matched.reason}`
-  return matched.map((row) => {
-    assignedSessions.add(row.id)
-    return { phase: lane.phase, round: lane.round ?? null, model: modelName(row), tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) }
-  })
 }
 
 function phaseKey(phase, round) {
@@ -291,53 +258,10 @@ export function computeRunCost(options) {
       }
     }
   }
-  const lanes = timeline.lanes ?? []
-  let allSessions = []
-  if (lanes.some((lane) => laneFamily(lane) === 'openai')) {
-    if (options.sessions) allSessions = options.sessions
-    else {
-      const dbPath = defaultOpenCodeDb(options)
-      if (dbPath === null) allSessions = `OpenCode session store location is unverified on ${options.platform ?? process.platform}; pass --db or set WT_OPENCODE_DB`
-      else try {
-        allSessions = queryOpenCodeSessions({ dbPath, sqlite: options.sqlite, execFile: options.execFile, directory: worktree, startedAt, endedAt })
-      } catch (error) {
-        allSessions = `OpenCode session store query failed: ${error instanceof Error ? error.message : String(error)}`
-      }
-    }
-  }
-  const assignedSessions = new Set()
-  const laneSources = new Set()
-
-  for (const lane of lanes) {
-    const family = laneFamily(lane)
-    if (family === null) {
-      const executor = String(lane.executor ?? '').toLowerCase()
-      const model = String(lane.model ?? '').toLowerCase()
-      const contradictory = ((executor === 'claude-sdk') && (model.startsWith('openai/') || model.startsWith('gpt-')))
-        || ((executor === 'gpt-lane' || executor === 'opencode') && (model.startsWith('anthropic/') || model.startsWith('claude-') || /^(?:opus|sonnet|haiku)$/.test(model)))
-      const reason = contradictory
-        ? `lane usage family unavailable for ${laneLabel(lane)}: contradictory executor/model family evidence`
-        : `lane usage family unavailable for ${laneLabel(lane)}: executor and model do not identify Anthropic or OpenAI`
-      entries.push({ phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason, wall_time_ms: lane.ended_at - lane.started_at })
-      unknown.push(reason)
-      continue
-    }
-    laneSources.add(family)
-    const result = family === 'anthropic'
-      ? readClaudeLane(laneDir, lane)
-      : readOpenAiLane(lane, allSessions, assignedSessions, worktree)
-    if (typeof result === 'string') {
-      entries.push({ phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason: result, wall_time_ms: lane.ended_at - lane.started_at })
-      unknown.push(result)
-    } else {
-      entries.push(...result)
-    }
-  }
-  for (const row of Array.isArray(allSessions) ? allSessions.filter((item) => item.directory === worktree && !assignedSessions.has(item.id)) : []) {
-    const reason = `OpenCode session ${row.id} matched the run but no lane window`
-    entries.push({ phase: 'unmatched', round: null, model: modelName(row), status: 'unknown', reason, tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) })
-    unknown.push(reason)
-  }
+  for (const entry of entries) entry.source = 'pilot'
+  const laneCosts = collectLaneCosts(options, timeline, worktree, window, { laneFamily, laneLabel, modelName, tokenColumns, matchLaneSessions })
+  entries.push(...laneCosts.entries)
+  unknown.push(...laneCosts.unknown)
   for (const turn of pilotTurns) if (turn.status === 'unknown') unknown.push(turn.reason)
 
   const phaseCosts = summariseEntries(entries, phases)
@@ -353,7 +277,7 @@ export function computeRunCost(options) {
       : summary.partial?.reason || !summary.completed
       ? { status: 'partial', reason: summary.partial?.reason ?? summary.reason ?? 'run incomplete' }
       : { status: 'complete' }
-  const priced = priceRunCost({
+  const cost = {
     version: 2,
     card_id: routeReceipt.cardId ?? routeReceipt.card_id ?? null,
     route: options.route ?? routeReceipt.route,
@@ -369,9 +293,15 @@ export function computeRunCost(options) {
       pilot_result: usageDifference(pilotMessages, resultTotals, outputAdjustments),
       model_usage: modelUsageDifference(usage.model_usage, primaryModel, resultTotals),
     },
-    sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: [...laneSources].map((family) => family === 'anthropic' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3').join(' and ') || 'unavailable', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
-  }, options.priceTable)
+    sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: [...laneCosts.sources].join(' and ') || 'unavailable', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
+  }
+  let priceTable = options.priceTable
+  if (priceTable === undefined) priceTable = loadModelPrices()
+  const priced = priceRunCost(cost, priceTable)
+  attachLaneCosts(priced, entries, laneCosts.calls, summariseEntries, priceTable)
   priced.coverage = costCoverage(priced, entries, unknown)
+  priced.coverage.lanes = laneCosts.coverage
+  if (laneCosts.coverage.status === 'incomplete') priced.coverage.status = 'incomplete'
   return priced
 }
 
