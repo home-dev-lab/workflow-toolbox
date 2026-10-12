@@ -7,7 +7,7 @@ This reference belongs to the delegation-chain skill. Its text moved here verbat
 | anonymous (no `name`) | no | yes | none (no dedicated worktree unless the delegate makes its own) | a delegate that hands its writes to an external executor lane |
 | `name` **+** `isolation` | yes | yes | none | any delegate that must be addressable by name AND does not delegate its writes elsewhere |
 | `name` alone (no `isolation`) | yes | **no — dropped silently** | n/a | avoid |
-| installed via a PLUGIN (a namespaced type) | — | **no — pairing skipped silently, no warning** | n/a | never, if the observer matters — adopt an editable project copy instead |
+| installed via a PLUGIN (a namespaced type) | — | **no — pairing skipped silently, no warning** | n/a | never, if the observer matters — adopt an editable copy (project or user config dir) instead |
 
 **A user-level local copy of the same bare name silently WINS over a plugin registration**,
 qualifying every row above: `<config-dir>/agents/<name>.md` shadows `plugin/agents/<name>.md`
@@ -29,7 +29,7 @@ the literal tool invocation) — everything else requiring `permissionMode`, a c
 entry, a scoped `mcpServers:` list, or a paired `observer` needs an editable, non-plugin-
 registered copy (a local `.claude/agents/` file) to actually take effect. This is exactly why
 a suite that ships an `observer:` watchdog distributes its definitions unregistered and
-requires project adoption — a plugin-registered copy would run with no watchdog and no error
+requires adoption (into a project's `.claude/agents/` or the user config dir's `agents/`) — a plugin-registered copy would run with no watchdog and no error
 telling you so.
 
 ⚠ **`disallowedTools` is not the safe fence it looks like either, for one specific shape: a

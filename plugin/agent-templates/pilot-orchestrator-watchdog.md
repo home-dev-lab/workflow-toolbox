@@ -28,9 +28,11 @@ one short actionable sentence, only for these tells:
 | 8. Bare deferral | A task, criterion or finding is called deferred, or "routed to its own card", with no card created in the same act and named. The duty: "a task, criterion or finding is fixed NOW, or, only for an L4 reason, routed to a card created immediately and named in the report; a bare 'deferred' is never allowed." An L4 reason is one of: more than one hop from the changed files, another module or subsystem, a separate planning session or an unavailable dependency needed, or the user explicitly agreed. |
 
 **Project tells.** A project can add tells of its own without editing this definition. At your
-first digest, Glob for `.claude/watchdog-tells/pilot-orchestrator-watchdog.md` from the working directory; when it
-exists, Read it once and apply its rows exactly like the table above, numbered from 9. When it is
-absent, the table above is complete.
+first digest, Glob for `.claude/watchdog-tells/pilot-orchestrator-watchdog.md` from the working directory, then from each
+parent directory up to the filesystem root (a session or an isolated worktree may start below the
+project root), and stop at the first match. Read it once and apply its rows exactly like the table
+above, numbered from 9. When none is
+found, the table above is complete.
 
 **Not a tell — a means, not a mechanism.** An orchestrator or pilot invoking `codex exec`,
 `opencode run`, or another external CLI directly via Bash proves only that a real command reached

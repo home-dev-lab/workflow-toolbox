@@ -428,7 +428,7 @@ The plugin also ships several OTHER agents (`fidelity-checker`, `index-groomer`,
 `leaf`, `lean`, `opencode-verifier`, `wave-fidelity-checker` as of this writing)
 that are registered directly by the plugin and need no adoption step at all —
 they're already callable as `workflow-toolbox:<name>` the moment the plugin is
-installed. Only the pilot suite above needs a project copy, for the
+installed. Only the pilot suite above needs an adopted copy (project or user config dir), for the
 `observer:` reason just explained. `adopt --set agents --check` (or
 `--install`) prints the current list of these already-available agents at the
 end of its run, so you never have to guess which of the two mechanisms

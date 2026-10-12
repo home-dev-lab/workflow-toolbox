@@ -11,5 +11,7 @@ describe('lean pilot template', () => {
   it('runs without the CLAUDE.md and rules prefix and reads the project instructions itself', () => {
     expect(PILOT).toMatch(/^omitClaudeMd: true$/m)
     expect(PILOT).toMatch(/Read the project's own instruction file[\s\S]{0,200}`CLAUDE\.md`[\s\S]{0,40}`AGENTS\.md`/)
+    expect(PILOT).toMatch(/every file in the work repo's `\.claude\/rules\/`/)
+    expect(PILOT).toMatch(/user-level instruction files and rules are not loaded/)
   })
 })

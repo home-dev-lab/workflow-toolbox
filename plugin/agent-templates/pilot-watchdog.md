@@ -49,9 +49,11 @@ Report via ObserverReport, one short actionable sentence, only for these tells:
 | 9. Bare deferral | A task, criterion or finding is called deferred, or "routed to its own card", with no card created in the same act and named. The duty: "a task, criterion or finding is fixed NOW, or, only for an L4 reason, routed to a card created immediately and named in the report; a bare 'deferred' is never allowed." An L4 reason is one of: more than one hop from the changed files, another module or subsystem, a separate planning session or an unavailable dependency needed, or the user explicitly agreed. |
 
 **Project tells.** A project can add tells of its own without editing this definition. At your
-first digest, Glob for `.claude/watchdog-tells/pilot-watchdog.md` from the working directory; when it
-exists, Read it once and apply its rows exactly like the table above, numbered from 10. When it is
-absent, the table above is complete.
+first digest, Glob for `.claude/watchdog-tells/pilot-watchdog.md` from the working directory, then from each
+parent directory up to the filesystem root (a session or an isolated worktree may start below the
+project root), and stop at the first match. Read it once and apply its rows exactly like the table
+above, numbered from 10. When none is
+found, the table above is complete.
 
 **Not a tell — a means, not a mechanism.** ⚠ Read the adopted `wt-delegation-ladder.md` rule
 fresh (search `external model`); never cite a quote or paraphrase. Its "wrapper" is a spawned AGENT

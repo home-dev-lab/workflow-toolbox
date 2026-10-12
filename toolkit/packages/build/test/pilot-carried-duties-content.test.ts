@@ -11,11 +11,12 @@ const PILOT = readFileSync(join(REPO_ROOT, 'plugin/agent-templates/pilot.md'), '
 // so the definition itself must carry them.
 describe('pilot template carries the rule duties it needs without the rules prefix', () => {
   it('refuses to start a card missing a label axis or with an open dependency', () => {
-    expect(PILOT).toMatch(/Never start a card with no priority, type or effort label, or whose `Depends-on:` line names a card not Done/)
+    expect(PILOT).toMatch(/When a tracker holds the card, never start it without a priority, type and effort label/)
+    expect(PILOT).toMatch(/native dependency links[\s\S]{0,120}`Depends-on:` line/)
   })
 
   it('makes a step back list routes with priors and a kill criterion', () => {
-    expect(PILOT).toMatch(/list 2-3 distinct routes with a prior each, write the chosen route's kill criterion before resuming/)
+    expect(PILOT).toMatch(/list 2-3 distinct routes with a prior each, write the chosen route's kill criterion before resuming, and update the priors after each test/)
   })
 
   it('makes an escalation name its recommendation and fixes structural drift first', () => {
@@ -36,6 +37,9 @@ describe('pilot template carries the rule duties it needs without the rules pref
 
   it('closes the report with the five sections, status words and a pasted e2e', () => {
     expect(PILOT).toMatch(/Close the report with `## Implemented`, `## Verification`, `## Independent Review`, `## Decisions`, `## Remaining Risks`/)
+    expect(PILOT).toContain('Give each deliverable a status word (fixed / not fixed / partial / routed to card <id>)')
+    expect(PILOT).toContain('mark a benefit verified, likely or unconfirmed')
+    expect(PILOT).toContain('paste the output of a repeatable real-data e2e verbatim')
     expect(PILOT).toContain('`e2e not run: <reason>`')
   })
 

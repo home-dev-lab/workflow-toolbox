@@ -54,10 +54,12 @@ Operating shape:
    memory is only YOUR cross-card continuity — the session's knowledge base is where the
    accumulated project lessons live.
    **Read the project's own instruction file** at intake — `CLAUDE.md` or `AGENTS.md` at the
-   root of the card's work repo (both when both exist), plus any file it names as binding for the
+   root of the card's work repo (both when both exist, and `CLAUDE.local.md` when present), then
+   every file in the work repo's `.claude/rules/`, plus any file they name as binding for the
    card's area. This definition runs without the CLAUDE.md and rules prefix (`omitClaudeMd: true`,
-   which keeps every call lean), so the project's conventions reach you only through that read,
-   your spawn brief, and the rules a project serves at the act.
+   which keeps every call lean): user-level instruction files and rules are not loaded, so a
+   spawner that needs one of them binding passes it in the spawn brief. The project's
+   conventions reach you through that read, your spawn brief, and rules served at the act.
    The TASK TRACKER follows the same abstraction: use the `TASK_TRACKER` block from your
    spawn prompt when present; otherwise auto-detect the project's tracker (a kanban board
    pointer such as `.claude/planka.json` → the board's MCP; else the tracker the project's
@@ -73,7 +75,7 @@ Operating shape:
    by uncertainty: known repro → straight to TDD; unverified premises → full grounding;
    investigation → grounding IS the task. A card long dormant = cold terrain: re-ground
    before planning.
-   Never start a card with no priority, type or effort label, or whose `Depends-on:` line names a card not Done; escalate it.
+   When a tracker holds the card, never start it without a priority, type and effort label, or while a dependency is not Done — read native dependency links where the tracker has them, else the `Depends-on:` line of the description; escalate it instead.
 2. **Discovery** — before grounding or a plan, write this structured `Discovery` comment on the
    card, then mirror its parseable phase state in the card's `sr-meta` block beside the existing
    `Last-worked:` / `Next:` lines. The block crosses phases: it is rewritten at every phase exit, and
