@@ -4527,4 +4527,391 @@ await test('N12 registration drain preserves refusal reasons', () => freshVault(
 const { runReleaseLineLocks } = await import('./release-line-locks.mjs');
 await runReleaseLineLocks({ test, freshVault, receive, $, testState, tokenize, mcp, hookForTool, configure, hooks,
   allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
+// Test-only instrumentation keeps private recognizers private in the shipped modules.
+const recognizerRoot = process.env.WT_SECRET_GUARD_TEST_ROOT
+  ? new URL(process.env.WT_SECRET_GUARD_TEST_ROOT) : new URL('./', import.meta.url);
+async function privateRecognizer(file, exports) {
+  const url = new URL(file, recognizerRoot);
+  const source = readFileSync(url, 'utf8').replace(/from '(\.\/[^']+)'/g,
+    (_match, path) => `from '${new URL(path, url).href}'`);
+  return import(`data:text/javascript;base64,${Buffer.from(`${source}\n${exports}`).toString('base64')}`);
+}
+const RECOGNIZER_CHILD = String.raw`
+    const root = new URL(process.argv[1]);
+    process.stdin.setEncoding('utf8');
+    const { operation, value } = JSON.parse(await new Promise(resolve => {
+      let data = ''; process.stdin.on('data', chunk => data += chunk);
+      process.stdin.on('end', () => resolve(data));
+    }));
+    let result;
+    if (operation === 'outbound' || operation === 'private-outbound') {
+      const { classifyOutbound } = await import(new URL('outbound-tools.js', root));
+      const verdict = await classifyOutbound({}, { tool: 'mcp__sink__send', payload: { note: value } });
+      result = { surface: verdict.surface, kinds: verdict.findings.map(item => item.kind) };
+    } else if (operation === 'refusal') {
+      const { registrationRefusalReason } = await import(new URL('token-vault.js', root));
+      result = registrationRefusalReason(value, 'op-output');
+    } else if (operation === 'punctuation') {
+      const { detections } = await import(new URL('detector.js', root));
+      result = value.map(text => detections(text).map(item => item.kind));
+    } else if (operation === 'detector') {
+      const { detections } = await import(new URL('detector.js', root));
+      result = detections(value).map(item => item.kind);
+    } else if (operation === 'emails') {
+      const { configure } = await import(new URL('config.js', root));
+      configure({ maskEmails: true });
+      const { classifyOutbound } = await import(new URL('outbound-tools.js', root));
+      const verdict = await classifyOutbound({}, { tool: 'mcp__sink__send', payload: { note: value } });
+      result = { surface: verdict.surface, kinds: verdict.findings.map(item => item.kind) };
+    } else if (operation === 'template') {
+      const { readFileSync } = await import('node:fs');
+      const url = new URL('references.js', root);
+      const source = readFileSync(url, 'utf8') + '\nexport { templateDestination };';
+      const { templateDestination } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+      result = templateDestination(value);
+    } else if (operation === 'template-plan') {
+      const { planReferences } = await import(new URL('references.js', root));
+      const plan = planReferences(value);
+      result = { ok: plan.ok, reason: plan.reason, occurrences: plan.occurrences.length };
+    } else if (operation === 'newline-reference') {
+      const { rewriteReferences } = await import(new URL('reference-runtime.js', root));
+      result = [];
+      for (let index = 0; index < 3; index += 1) {
+        const host = { fsRead: async () => 'copy' + index + value };
+        const reference = ['secret', 'file', '/fixture/newline'].join(':');
+        const plan = await rewriteReferences(host, 'printf %s ' + reference);
+        result.push({ count: plan.count, invalid: plan.invalidReference, reason: plan.reason, substituted: plan.substituted.length });
+      }
+    } else {
+      const { planReferences } = await import(new URL('references.js', root));
+      result = [];
+      for (const prefix of ["cat <<'EOF'\n", 'cat <<EOF\n', 'cat <<-EOF\n']) {
+        const plan = planReferences(prefix + value);
+        result.push({ ok: plan.ok, reason: plan.reason, occurrences: plan.occurrences.length });
+      }
+    }
+    console.log('RECOGNIZER_OK ' + JSON.stringify(result));`;
+function recognizerWatchdog(operation, value, expected) {
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', RECOGNIZER_CHILD, recognizerRoot.href], {
+    input: JSON.stringify({ operation, value }), encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL',
+  });
+  const failure = child.error?.code === 'ETIMEDOUT' ? 'watchdog timeout: ETIMEDOUT' : `child spawn failure: ${child.error?.code}`;
+  assert.equal(child.error, undefined, failure);
+  assert.equal(child.status, 0, `child import/assertion failure: ${child.stderr}`);
+  assert.ok(child.stdout.startsWith('RECOGNIZER_OK '), 'child success marker absent');
+  assert.deepEqual(JSON.parse(child.stdout.slice('RECOGNIZER_OK '.length)), expected);
+}
+const labelWord = ['pass', 'word'].join('');
+await test('linear L1 review repro outbound watchdog', () => {
+  const text = labelWord + ': of the ' + 'AaaAaaAaa' + 'a'.repeat(60) + 'A in on by\n';
+  assert.equal(text.length, 97);
+  recognizerWatchdog('outbound', text, { surface: 'mcp', kinds: ['op-output'] });
+});
+await test('linear L1b ordinary prose outbound watchdog', () => {
+  const text = labelWord + ': ask the platform team for the shared staging value in the Vault entry named Prod A\n';
+  recognizerWatchdog('outbound', text, { surface: 'mcp', kinds: ['op-output'] });
+});
+const refusalPumps = [
+  ['L2 lowercase then uppercase', 'AaaAaaAaa' + 'a'.repeat(64000) + 'A', ''],
+  ['lowercase then Ab', 'AaaAaaAaa' + 'a'.repeat(64000) + 'Ab', ''],
+  ['lowercase then A1', 'AaaAaaAaa' + 'a'.repeat(64000) + 'A1', ''],
+  ['lowercase then titlecase', 'AaaAaaAaa' + 'a'.repeat(64000) + 'ǅ', ''],
+  ['lowercase then aA and lowercase', 'AaaAaaAaa' + 'a'.repeat(64000) + 'aA' + 'a'.repeat(60), 'low-distinctiveness'],
+  ['uppercase then lowercase', 'AaaAaaAaa' + 'A'.repeat(64000) + 'a', ''],
+  ['accepted long input', 'AaaAaaAaa' + 'a'.repeat(64000) + 'aa', 'low-distinctiveness'],
+];
+for (const [name, value, reason] of refusalPumps) {
+  await test(`linear ${name} refusal watchdog`, () => recognizerWatchdog('refusal', value, reason));
+}
+await test('linear punctuation outbound detector watchdog', () => {
+  const texts = ['.', ',', '?'].map(edge => labelWord + ': ' + edge.repeat(100000) + 'a\n');
+  recognizerWatchdog('punctuation', texts, Array(3).fill(['op-output']));
+});
+await test('linear heredoc reference planner watchdog', () => {
+  recognizerWatchdog('references', '\\'.repeat(100000) + 'x\nEOF\n', Array(3).fill({ ok: true, reason: '', occurrences: 0 }));
+});
+for (const [name, value] of [['local starts', 'a.'.repeat(150000) + '!'], ['domain', 'a@' + 'a.'.repeat(150000) + '1!']]) {
+  await test(`linear email ${name} watchdog`, () => recognizerWatchdog('emails', value, { surface: 'mcp', kinds: [] }));
+}
+await test('linear template destination watchdog', () => recognizerWatchdog('template', '>'.repeat(100000) + 'x', false));
+await test('linear template reference planner watchdog', () => {
+  recognizerWatchdog('template-plan', 'echo op://a/b/c ' + '>'.repeat(100000) + 'x', {
+    ok: false, reason: 'a redirection without a target - beside a secret reference this guard accepts only simple commands with literal command names, joined by ; && || | & or a newline', occurrences: 1,
+  });
+});
+await test('linear private key watchdog', () => recognizerWatchdog('private-outbound', '-----BEGIN PRIVATE KEY-----'.repeat(100000), { surface: 'mcp', kinds: [] }));
+await test('linear JWT outbound watchdog', () => recognizerWatchdog('private-outbound', 'eyJ-'.repeat(150000) + '!', { surface: 'mcp', kinds: [] }));
+// Positive long inputs: a linear rewrite must still FIND a long credential, and one placed after a long
+// failing prefix. A scanner that gives up on long text passes every negative watchdog above.
+const longJwt = ['ey', 'J'].join('') + 'a'.repeat(100000) + '.b.c';
+const keyMarker = (edge) => ['-----', edge, ' PRIVATE KEY-----'].join('');
+const longKey = keyMarker('BEGIN') + '\n' + 'Q'.repeat(100000) + '\n' + keyMarker('END');
+const positiveLongCases = [
+  ['long JWT', 'private-outbound', longJwt, { surface: 'mcp', kinds: ['jwt'] }],
+  ['JWT after failing prefix', 'private-outbound', 'eyJ-'.repeat(150000) + '! ' + longJwt, { surface: 'mcp', kinds: ['jwt'] }],
+  ['long private key', 'private-outbound', longKey, { surface: 'mcp', kinds: ['private-key'] }],
+  ['private key after unterminated openings', 'private-outbound', keyMarker('BEGIN').repeat(100000) + '\n' + longKey, { surface: 'mcp', kinds: ['private-key'] }],
+  ['long email', 'emails', 'a'.repeat(100000) + '@example.test', { surface: 'mcp', kinds: ['email'] }],
+  ['email after failing local starts', 'emails', 'a.'.repeat(150000) + '! b@example.test', { surface: 'mcp', kinds: ['email'] }],
+  ['long template destination', 'template', '> ' + 'a'.repeat(100000) + '.tpl', true],
+  ['template after failing redirects', 'template', '>'.repeat(100000) + 'x ; cat > a.tpl', true],
+];
+for (const [name, operation, value, expected] of positiveLongCases) {
+  await test(`linear positive ${name} watchdog`, () => recognizerWatchdog(operation, value, expected));
+}
+// op-output and environment-dump captured `(\S.*?)[ \t]*$`: the lazy value and the trailing blanks retried
+// each other on a run of blanks, quadratic in the run length.
+const dumpName = ['X', '_TOK', 'EN'].join('');
+const blankRunCases = [
+  ['op-output blank run', labelWord + ': a' + ' '.repeat(100000) + 'b\n', ['op-output']],
+  ['environment-dump blank run', dumpName + '=a' + ' '.repeat(100000) + 'b\n', ['environment-dump']],
+  ['op-output tab run', labelWord + ': a' + ' \t'.repeat(50000) + 'b\n', ['op-output']],
+  ['positive long op-output value', labelWord + ': ' + 'v'.repeat(100000) + ' \t \n', ['op-output']],
+];
+for (const [name, value, expected] of blankRunCases) {
+  await test(`linear ${name} watchdog`, () => recognizerWatchdog('detector', value, expected));
+}
+async function trailingBlankPairs() {
+  const { opOutput, environmentDump } = await privateRecognizer('detector.js', String.raw`
+    export const opOutput = patterns.find(([kind]) => kind === 'op-output')[1];
+    export const environmentDump = patterns.find(([kind]) => kind === 'environment-dump')[1];`);
+  return [
+    [opOutput, /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim, labelWord + ':'],
+    [environmentDump, /^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*?)[ \t]*$/gm, dumpName + '='],
+  ];
+}
+function captureMatches(expression, value) {
+  expression.lastIndex = 0;
+  const result = [];
+  for (let match; (match = expression.exec(value));) result.push([match.index, match[0], match[1]]);
+  assert.equal(expression.lastIndex, 0, 'failed-exec lastIndex mismatch');
+  return result;
+}
+// The differential below stays short and lowercase; these cases lock what it cannot see: whole long captures
+// (a truncating trim), several long credentials in one text, and labels in any case (the op-output `i` flag).
+await test('linear trailing-blank capture long values and label case', async () => {
+  const [[opOutput, opOracle], [environmentDump, dumpOracle]] = await trailingBlankPairs();
+  const long = 'v'.repeat(100000);
+  const opTexts = [labelWord + ': ' + long + ' \t ', labelWord + ': ' + long + '\n  ' + labelWord + ':\t' + long + 'w \r\n',
+    'PASSWORD: abcdef', 'Token: abcdef\nsEcReT : ' + long + ' ', 'CREDENTIAL:abcdef\t'];
+  for (const text of opTexts) assert.deepEqual(captureMatches(opOutput, text), captureMatches(opOracle, text));
+  assert.equal(captureMatches(opOutput, opTexts[0])[0][2].length, 100000, 'long op-output capture truncated');
+  assert.equal(captureMatches(opOutput, opTexts[2]).length, 1, 'uppercase op-output label not matched');
+  const dumpTexts = [dumpName + '=' + long + ' \t', 'export ' + dumpName + '=' + long + '\n+ ' + dumpName + ' = ' + long + 'x \n'];
+  for (const text of dumpTexts) assert.deepEqual(captureMatches(environmentDump, text), captureMatches(dumpOracle, text));
+  assert.equal(captureMatches(environmentDump, dumpTexts[1]).length, 2, 'second long environment-dump value missed');
+});
+await test('linear trailing-blank capture differential', async () => {
+  const pairs = await trailingBlankPairs();
+  const matches = captureMatches;
+  let cases = 0;
+  const pieces = [' ', '\t', 'a', 'é', '\n', '\r', ' ', ' ', ':', '='];
+  for (const [candidate, oracle, prefix] of pairs) {
+    const compare = value => {
+      assert.deepEqual(matches(candidate, value), matches(oracle, value), `capture mismatch ${JSON.stringify(value)}`); cases += 1;
+    };
+    for (const lead of ['', ' ', 'x\n', '\t' + prefix + 'z\n']) {
+      exhaustiveStrings(pieces, 5, tail => compare(lead + prefix + tail));
+    }
+    const random = seededRecognizerRandom();
+    for (let trial = 0; trial < 20000; trial += 1) {
+      let value = '';
+      const length = 7 + random() % 34;
+      for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+      compare(prefix + value);
+      compare(value + '\n' + prefix + value);
+    }
+    for (const tail of [' a' + ' '.repeat(3000) + 'b', ' ' + 'v'.repeat(3000) + ' \t ', ' a \r\n', ' a\t ', '  a  ']) compare(prefix + tail);
+  }
+  console.log(`DIFFERENTIAL trailing-blank cases=${cases}`);
+});
+await test('linear newline file reference watchdog', () => {
+  recognizerWatchdog('newline-reference', 'fixture-key-' + '\n'.repeat(300000) + 'x',
+    Array(3).fill({ count: 1, invalid: false, reason: '', substituted: 1 }));
+});
+await test('linear trailing newline differential', async () => {
+  const { boundaryStrip } = await privateRecognizer('reference-runtime.js', String.raw`
+    export const boundaryStrip = typeof stripTrailingNewlines === 'function' ? stripTrailingNewlines
+      : value => value.replace(/\n+$/, '');`);
+  let cases = 0;
+  const compare = value => {
+    assert.equal(boundaryStrip(value), value.replace(/\n+$/, ''), `newline mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['\n', '\r', 'a', '𝒂', '\ud800', '\u2028'], 6, compare);
+  for (const value of ['\n'.repeat(10000), '\n'.repeat(10000) + 'x', 'x' + '\n'.repeat(10000), 'x\r\n', 'x\n\u2028']) compare(value);
+  console.log(`DIFFERENTIAL newline cases=${cases}`);
+});
+await test('linear JWT differential', async () => {
+  const { matcher } = await privateRecognizer('detector.js', String.raw`
+    export const matcher = typeof jwtMatcher === 'function' ? jwtMatcher()
+      : /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;`);
+  const oracle = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
+  let cases = 0;
+  const matches = (expression, value) => {
+    expression.lastIndex = 0;
+    const result = [];
+    for (let match; (match = expression.exec(value));) result.push([match.index, match[0]]);
+    assert.equal(expression.lastIndex, 0, 'JWT failed-exec lastIndex mismatch');
+    return result;
+  };
+  const compare = value => {
+    assert.deepEqual(matches(matcher, value), matches(oracle, value), `JWT mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  const pieces = ['eyJ', 'a', '-', '_', '.', ' ', '!', 'é', '\n'];
+  exhaustiveStrings(pieces, 5, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 30000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 34;
+    for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+    compare(value);
+  }
+  for (const value of ['eyJa.b.c', 'eyJ.b.c', '-eyJ-.b.c-', 'eyJa.b.---', 'eyJa.b.c.eyJd.e.f',
+    'eyJa.eyJb.c.d', 'eyJa.b.-c-', 'eyJa.b.c_', 'xeyJa.b.c', 'éeyJa.b.cé']) compare(value);
+  console.log(`DIFFERENTIAL JWT cases=${cases}`);
+});
+await test('linear template destination differential', async () => {
+  const { templateDestination } = await privateRecognizer('references.js', 'export { templateDestination };');
+  const oracle = /(?:>{1,2}|\btee(?:[ \t]+-\w+)*)[ \t]*(?:"[^"\n]*\.tpl"|'[^'\n]*\.tpl'|[^ \t\n;|&]+\.tpl)(?=[ \t\n]|$|[;|&])/m;
+  let cases = 0;
+  const compare = value => {
+    assert.equal(templateDestination(value), oracle.test(value), `template mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  const pieces = ['>', 'tee', ' ', '-a', 'x', '.tpl', '"', "'", '\n', ';', '\t', '|', '&', '\r', '\u2028', '\u2029'];
+  exhaustiveStrings(pieces, 4, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 40000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 34;
+    for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+    compare(value);
+  }
+  for (const value of ['>.tpl', '>>.tpl', '>>>.tpl', '>x.tpl', '>".tpl"', "tee -a -p 'x y.tpl'\n",
+    'atee x.tpl', 'étee x.tpl', 'tee -x.tpl', 'tee - x.tpl', 'tee x.tpl!', '>"x.tpl"suffix']) compare(value);
+  for (const boundary of ['\r', '\r\n', '\u2028', '\u2029', '\u00a0', '\u0085', '\v']) compare('>x.tpl' + boundary + 'tail');
+  console.log(`DIFFERENTIAL template cases=${cases}`);
+});
+await test('linear private key differential', async () => {
+  const { matcher } = await privateRecognizer('detector.js', String.raw`
+    export const matcher = typeof privateKeyMatcher === 'function' ? privateKeyMatcher()
+      : /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;`);
+  const oracle = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
+  let cases = 0;
+  const matches = (expression, value) => {
+    expression.lastIndex = 0;
+    const result = [];
+    for (let match; (match = expression.exec(value));) result.push([match.index, match[0]]);
+    assert.equal(expression.lastIndex, 0, 'private key failed-exec lastIndex mismatch');
+    return result;
+  };
+  const compare = value => {
+    assert.deepEqual(matches(matcher, value), matches(oracle, value), `key mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  const pieces = ['-----BEGIN PRIVATE KEY-----', '-----END PRIVATE KEY-----', '-----BEGIN RSA PRIVATE KEY-----',
+    '-----END EC PRIVATE KEY-----', '-----BEGIN Xprivate KEY-----', '\n', 'x', '-----'];
+  exhaustiveStrings(pieces, 4, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 20000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 34;
+    for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+    compare(value);
+  }
+  console.log(`DIFFERENTIAL privateKey cases=${cases}`);
+});
+await test('linear email differential', async () => {
+  const { optionalDetections } = await import(new URL('detector.js', recognizerRoot));
+  const oracle = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}\b/g;
+  let cases = 0;
+  const compare = value => {
+    const expected = [...value.matchAll(oracle)].map(match => ({ kind: 'email', value: match[0] }));
+    assert.deepEqual(optionalDetections(value, { emails: true }), expected, `email mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['a', '.', '-', '@', '_', '!'], 7, compare);
+  const random = seededRecognizerRandom();
+  const alphabet = 'aAz09._%+-@ !\né';
+  for (let trial = 0; trial < 40000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 74;
+    for (let at = 0; at < length; at += 1) value += alphabet[random() % alphabet.length];
+    compare(value);
+  }
+  const joins = ['', '-', '.', '%', '+', '_', 'é', '\ud800', ' ', '\n', ';', ']'];
+  for (let trial = 0; trial < 20000; trial += 1) {
+    const local = ['-', '..', '%+', 'x', '_', 'x-y'][random() % 6];
+    const tld = 'a'.repeat(1 + random() % 26);
+    compare(['a@b.co', joins[random() % joins.length], local, '@x.', tld,
+      joins[random() % joins.length], 'z@q.test'].join(''));
+  }
+  for (const value of ['a@b.co', 'a@b.co-foo.more', '.a@b.co', 'a@b-.co', 'a@b.c', 'a@b.' + 'a'.repeat(24),
+    'a@b.' + 'a'.repeat(25), 'a@b.co_ ', 'a@b.co9', 'a@b.co@x.yz', 'a@b.co\n', 'éa@b.coé',
+    ['a@b.co', '-@x.yz'].join('')]) compare(value);
+  console.log(`DIFFERENTIAL email cases=${cases}`);
+});
+const segmentAlphabet = ['A', 'a', 'B', 'y', 'I', 'd', 'é', 'É', 'ǅ', 'ª', '𝐀', '𝒂', 'ʰ', '\ud800', '\udc00', '1', ' ', '.', '\n', '\u0301'];
+function exhaustiveStrings(alphabet, depth, visit, prefix = '') {
+  visit(prefix);
+  if (!depth) return;
+  for (const letter of alphabet) exhaustiveStrings(alphabet, depth - 1, visit, prefix + letter);
+}
+function seededRecognizerRandom() {
+  let state = 0x6d2b79f5;
+  return () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return state >>> 0; };
+}
+await test('linear L3 word segment differential', async () => {
+  const { wordSegments } = await privateRecognizer('token-vault.js', 'export { wordSegments };');
+  const oracle = /^(?:\p{Lu}?\p{Ll}{2,}|\p{Lu}{2,}|By|Id)+$/u;
+  let cases = 0;
+  const compare = (value) => {
+    assert.equal(wordSegments(value), oracle.test(value), `segment mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(segmentAlphabet, 4, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 40000; trial += 1) {
+    const length = 7 + random() % 34;
+    let value = ''; let lowercase = 0;
+    for (let at = 0; at < length; at += 1) {
+      const letter = segmentAlphabet[random() % segmentAlphabet.length];
+      lowercase = /\p{Ll}/u.test(letter) ? lowercase + 1 : 0;
+      value += lowercase > 12 ? 'A' : letter;
+      if (lowercase > 12) lowercase = 0;
+    }
+    compare(value);
+  }
+  for (const [value, expected] of [
+    ['a'.repeat(31), true], ['a'.repeat(5000), true], ['Abc'.repeat(3000), true],
+    ['ABC'.repeat(3000), true], ['IdBy'.repeat(2000), true], ['aa\n', false], ['éé', false],
+  ]) { assert.equal(wordSegments(value), expected); cases += 1; }
+  console.log(`DIFFERENTIAL wordSegments cases=${cases}`);
+});
+await test('linear floor semantic locks', async () => {
+  const { registrationRefusalReason } = await import(new URL('token-vault.js', recognizerRoot));
+  for (const [value, reason] of [['GetUserById', 'low-distinctiveness'], ['AbCdEfGh', ''], ['IdBy', 'low-distinctiveness'], ['ByX', 'short']]) {
+    assert.equal(registrationRefusalReason(value, 'op-output'), reason);
+  }
+});
+await test('linear punctuation differential', async () => {
+  const { proseWords } = await privateRecognizer('detector.js', 'export { proseWords };');
+  let cases = 0;
+  const compare = (value) => {
+    const expected = value.trim().split(/\s+/).map(word => word.replace(/^[(["'`]+|[)"'.,;:!?`]+$/g, ''));
+    assert.deepEqual(proseWords(value), expected, `punctuation mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['(', '[', ')', '"', "'", '`', '.', ',', ';', ':', '!', '?', 'a', '\n'], 4, compare);
+  for (const value of ['""word""', '[[word..', '...a', 'a...\n', '(.)', '"', '', 'a b', 'a\r\nb']) compare(value);
+  console.log(`DIFFERENTIAL punctuation cases=${cases}`);
+});
+await test('linear trailing backslash differential', async () => {
+  const { boundaryCounter } = await privateRecognizer('references.js', String.raw`
+    export const boundaryCounter = typeof trailingBackslashes === 'function' ? trailingBackslashes
+      : physical => physical.length - physical.replace(/\\+$/, '').length;`);
+  let cases = 0;
+  const compare = (value) => {
+    assert.equal(boundaryCounter(value), value.length - value.replace(/\\+$/, '').length,
+      `backslash mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['\\', 'a', '\n', '\r', '𝐀'], 6, compare);
+  for (const value of ['\\'.repeat(10000), '\\'.repeat(10000) + 'x', 'x' + '\\'.repeat(10000), 'x\\\n', 'x\\\r\n']) compare(value);
+  console.log(`DIFFERENTIAL backslash cases=${cases}`);
+});
 process.exit(failures ? 1 : 0);

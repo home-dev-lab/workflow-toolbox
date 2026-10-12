@@ -154,9 +154,45 @@ function genericFloor(value) {
 }
 
 function wordSegments(value) {
-  // Conventional two-letter identifier words are explicit exceptions; arbitrary
-  // one-lowercase alternating runs remain distinctive.
-  return /^(?:\p{Lu}?\p{Ll}{2,}|\p{Lu}{2,}|By|Id)+$/u.test(value);
+  // Each transition consumes exactly one regex alternative: reach[i] holds iff
+  // the first i code points split into valid segments. Run ends are exclusive;
+  // every possible endpoint in a run is marked, including optional leading Lu.
+  // Fixed passes visit each code point once, with constant-time range updates:
+  // O(n) time/memory. Events accumulate even at unreachable positions and n.
+  const letters = Array.from(value);
+  const n = letters.length;
+  const lowerEnds = letterRunEnds(letters, /\p{Ll}/u);
+  const upperEnds = letterRunEnds(letters, /\p{Lu}/u);
+  const events = new Float64Array(n + 2);
+  let active = 0;
+  for (let at = 0; at <= n; at += 1) {
+    active += events[at];
+    const reachable = at === 0 || active > 0;
+    if (at === n) return n > 0 && reachable;
+    if (!reachable) continue;
+    const lowerStart = upperEnds[at] > at ? at + 1 : at;
+    markSegmentRange(events, lowerStart + 2, lowerEnds[lowerStart]);
+    markSegmentRange(events, at + 2, upperEnds[at]);
+    if (identifierPair(letters[at], letters[at + 1])) markSegmentRange(events, at + 2, at + 2);
+  }
+}
+
+function identifierPair(first, second) {
+  return (first === 'B' && second === 'y') || (first === 'I' && second === 'd');
+}
+
+function letterRunEnds(letters, expression) {
+  const ends = new Uint32Array(letters.length + 1);
+  for (let at = letters.length - 1; at >= 0; at -= 1) {
+    ends[at] = expression.test(letters[at]) ? Math.max(at + 1, ends[at + 1]) : at;
+  }
+  return ends;
+}
+
+function markSegmentRange(events, first, last) {
+  if (first > last) return;
+  events[first] += 1;
+  events[last + 1] -= 1;
 }
 
 function ordinaryPath(value) {

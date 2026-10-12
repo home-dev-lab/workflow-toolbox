@@ -14,6 +14,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 - Protect SDK pilot owner drafts across staging and review, honor repository quality gates, and carry decision rules into planning and reports.
 - SDK pilot reports are classified partial only from the draft the report edge judges: a refused draft (for example one that numbered its acceptance criteria) no longer forces `Partial:` onto the corrected report, and a criterion the parser cannot find is refused as a schema problem instead of counted as unmet.
+## [0.195.1] - 2026-10-12
+
+### Fixed
+
+- The secret guard (`wt-secret-guard` 0.1.6) no longer stalls on long inputs. Nine pattern checks whose run time grew faster than the input (word segmentation, JWT, private-key, email and prose-punctuation detection, trailing backslashes and newlines, heredoc context, template references) are replaced by linear scanners, and the op-output and environment-dump captures now run in linear time. A long credential, several long credentials, and a credential after a long non-matching prefix are still found and captured whole.
 
 ## [0.195.0] - 2026-10-12
 

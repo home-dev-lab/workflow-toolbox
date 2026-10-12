@@ -125,35 +125,57 @@ const quoteForSingleQuotes = (value) => value.replace(/'/g, "'\"'\"'");
 //   escaped backslashes and does not;
 // - a quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) joins nothing;
 // - `<<-` strips leading tabs from the LOGICAL line: `\tEO\` then `\tF` reads `EO\tF`, no end.
+function trailingBackslashes(physical) {
+  let start = physical.length;
+  while (start > 0 && physical[start - 1] === '\\') start -= 1;
+  return physical.length - start;
+}
+
+function heredocLogicalLine(command, doc, lineStart) {
+  let logical = ''; let cursor = lineStart; let lineEnd;
+  for (;;) {
+    lineEnd = command.indexOf('\n', cursor);
+    const physical = command.slice(cursor, lineEnd < 0 ? command.length : lineEnd);
+    const trailing = trailingBackslashes(physical);
+    if (!doc.quoted && lineEnd >= 0 && trailing % 2 === 1) { logical += physical.slice(0, -1); cursor = lineEnd + 1; continue; }
+    logical += physical;
+    break;
+  }
+  return { logical, lineEnd };
+}
+
+function heredocExpansionDepth(command, context, constructs, character, at, depth) {
+  if (character === '`') { constructs.add(BACKTICKS); context[at] = 'heredoc-unsupported'; return { depth, skip: 0 }; }
+  if (character === '$' && (command[at + 1] === '(' || command[at + 1] === '{')) {
+    context[at] = 'heredoc-unsupported'; context[at + 1] = 'heredoc-unsupported'; return { depth: depth + 1, skip: 1 };
+  }
+  if (depth > 0 && (character === ')' || character === '}')) { context[at] = 'heredoc-unsupported'; return { depth: depth - 1, skip: 0 }; }
+  context[at] = depth > 0 ? 'heredoc-unsupported' : 'heredoc';
+  return { depth, skip: 0 };
+}
+
+function markHeredocContext(command, context, escapes, constructs, doc, lineStart, end) {
+  let depth = 0;
+  for (let at = lineStart; at < end; at += 1) {
+    const character = command[at];
+    if (doc.quoted) { context[at] = 'heredoc-quoted'; continue; }
+    if (character === '\\') { context[at] = 'heredoc'; escapes.add(at); if (at + 1 < end) context[at + 1] = 'heredoc'; at += 1; continue; }
+    const next = heredocExpansionDepth(command, context, constructs, character, at, depth);
+    depth = next.depth; at += next.skip;
+  }
+}
+
 function consumeHeredoc(command, context, escapes, constructs, doc, start) {
   let lineStart = start;
   while (lineStart <= command.length) {
-    let logical = ''; let cursor = lineStart; let lineEnd;
-    for (;;) {
-      lineEnd = command.indexOf('\n', cursor);
-      const physical = command.slice(cursor, lineEnd < 0 ? command.length : lineEnd);
-      const trailing = physical.length - physical.replace(/\\+$/, '').length;
-      if (!doc.quoted && lineEnd >= 0 && trailing % 2 === 1) { logical += physical.slice(0, -1); cursor = lineEnd + 1; continue; }
-      logical += physical;
-      break;
-    }
+    const { logical, lineEnd } = heredocLogicalLine(command, doc, lineStart);
     const end = lineEnd < 0 ? command.length : lineEnd;
     if ((doc.strip ? logical.replace(/^\t+/, '') : logical) === doc.delimiter) {
       for (let at = lineStart; at < end; at += 1) context[at] = 'heredoc-end';
       if (lineEnd >= 0) context[lineEnd] = 'bare';
       return lineEnd < 0 ? command.length : lineEnd + 1;
     }
-    let depth = 0;
-    for (let at = lineStart; at < end; at += 1) {
-      const character = command[at];
-      if (doc.quoted) { context[at] = 'heredoc-quoted'; continue; }
-      if (character === '\\') { context[at] = 'heredoc'; escapes.add(at); if (at + 1 < end) context[at + 1] = 'heredoc'; at += 1; continue; }
-      // An unquoted heredoc body runs backticks as command substitutions.
-      if (character === '`') { constructs.add(BACKTICKS); context[at] = 'heredoc-unsupported'; continue; }
-      if (character === '$' && (command[at + 1] === '(' || command[at + 1] === '{')) { depth += 1; context[at] = 'heredoc-unsupported'; context[at + 1] = 'heredoc-unsupported'; at += 1; continue; }
-      if (depth > 0 && (character === ')' || character === '}')) { depth -= 1; context[at] = 'heredoc-unsupported'; continue; }
-      context[at] = depth > 0 ? 'heredoc-unsupported' : 'heredoc';
-    }
+    markHeredocContext(command, context, escapes, constructs, doc, lineStart, end);
     if (lineEnd < 0) return -1;
     context[lineEnd] = doc.quoted ? 'heredoc-quoted' : 'heredoc';
     lineStart = lineEnd + 1;
@@ -409,8 +431,56 @@ function validateOpRead(words) {
   return { valid: verb && Boolean(ref), account, ref, noNewline, reproducible, carried };
 }
 
+// Fixed NFA for the template-destination regex: each edge consumes one unit or
+// is epsilon. A set merges overlapping parses instead of retrying suffixes.
+// A single > suffices: any match beginning >> also starts at its second >.
+const TEMPLATE_EDGES = [
+  [['>', 1], ['tee', 2]], [['blank', 1]], [['e', 3]], [['e', 4]], [['blank', 6]],
+  [['bare', 9], ['"', 10], ["'", 11]], [['blank', 6], ['-', 7]], [['word', 8]], [['word', 8]],
+  [['bare', 9], ['.', 12]], [['double', 10], ['.', 16]], [['single', 11], ['.', 21]],
+  [['t', 13]], [['p', 14]], [['l', 15]], [],
+  [['t', 17]], [['p', 18]], [['l', 19]], [['"', 20]], [],
+  [['t', 22]], [['p', 23]], [['l', 24]], [["'", 25]], [],
+];
+const TEMPLATE_EPSILON = { 1: [5], 4: [5], 6: [5], 8: [4] };
+const TEMPLATE_CLASSES = {
+  blank: /[ \t]/, bare: /[^ \t\n;|&]/, word: /[A-Za-z0-9_]/,
+  double: /[^"\n]/, single: /[^'\n]/,
+};
+
+function templateClosure(states) {
+  const queue = [...states];
+  for (let at = 0; at < queue.length; at += 1) {
+    for (const next of TEMPLATE_EPSILON[queue[at]] ?? []) {
+      if (!states.has(next)) { states.add(next); queue.push(next); }
+    }
+  }
+  return states;
+}
+
+function templateEdgeMatches(kind, command, at) {
+  if (kind === 'tee') return command[at] === 't' && !/[A-Za-z0-9_]/.test(command[at - 1] ?? '');
+  return Object.hasOwn(TEMPLATE_CLASSES, kind) ? TEMPLATE_CLASSES[kind].test(command[at]) : kind === command[at];
+}
+
+function templateAdvance(states, command, at) {
+  const next = new Set([0]);
+  for (const state of states) {
+    for (const [kind, target] of TEMPLATE_EDGES[state]) {
+      if (templateEdgeMatches(kind, command, at)) next.add(target);
+    }
+  }
+  return templateClosure(next);
+}
+
 function templateDestination(command) {
-  return /(?:>{1,2}|\btee(?:[ \t]+-\w+)*)[ \t]*(?:"[^"\n]*\.tpl"|'[^'\n]*\.tpl'|[^ \t\n;|&]+\.tpl)(?=[ \t\n]|$|[;|&])/m.test(command);
+  let states = new Set([0]);
+  for (let at = 0; at < command.length; at += 1) {
+    states = templateAdvance(states, command, at);
+    const boundary = at + 1 === command.length || /[ \t\n\r\u2028\u2029;|&]/.test(command[at + 1]);
+    if (boundary && (states.has(15) || states.has(20) || states.has(25))) return true;
+  }
+  return false;
 }
 
 function shellTokens(command, context, escapes) {

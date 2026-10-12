@@ -133,11 +133,18 @@ function tokenReferenceReason(label, value) {
   return reason || (entry?.ephemeral ? 'unheld' : '');
 }
 
+function stripTrailingNewlines(value) {
+  // Exactly the terminal LF run, visited once; no retries at interior newlines.
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '\n') end -= 1;
+  return value.slice(0, end);
+}
+
 // The variants bash can produce from a bound value in a substitution: `"$(printf ...)"` and every
 // `$( )` remove ALL trailing newlines. Each variant is registered and masked with the value itself
 // (Astra H5 at f98cf712: a prefetch of `value\n\n` reached the output as `value`, unmasked).
 function substitutionVariants(kind, value) {
-  const stripped = value.replace(/\n+$/, '');
+  const stripped = stripTrailingNewlines(value);
   if (stripped === value) return [];
   const token = tokenize(kind, stripped);
   return knownTokens().get(token)?.ephemeral ? [] : [token];
