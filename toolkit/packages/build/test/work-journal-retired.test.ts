@@ -32,4 +32,17 @@ describe('retired work journal', () => {
   it('ships no recording hook script any more', () => {
     expect(existsSync(join(PLUGIN_ROOT, 'bin/wt-work-journal-hook.mjs'))).toBe(false)
   })
+
+  it('registers no journal entry point, including the retained reader CLI, in any event', () => {
+    const journal = SOURCES.flatMap(registrations).filter((entry) => entry.command.includes('work-journal'))
+    expect(journal).toEqual([])
+  })
+
+  it('ships no lifecycle scanner that can keep an autonomous Stop window open', () => {
+    expect(existsSync(join(PLUGIN_ROOT, 'bin/lib/work-journal-lifecycle.mjs'))).toBe(false)
+  })
+
+  it('retains the journal reader CLI for existing journals', () => {
+    expect(existsSync(join(PLUGIN_ROOT, 'bin/wt-work-journal.mjs'))).toBe(true)
+  })
 })
