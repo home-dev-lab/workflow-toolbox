@@ -5,7 +5,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-## [0.193.0] - 2026-10-11
+## [0.194.0] - 2026-10-12
 
 ### Added
 - **EXPERIMENTAL:** The adoption SessionStart hook now refreshes proven-unedited stale rules
@@ -18,10 +18,41 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   with a quoted POSIX-shell removal command (Bash; Git Bash on Windows) and never deleted.
   Linux isolated-fixture and concurrent-process proofs cover this
   increment; real-host E2E and macOS/Windows execution remain pending.
+- `wt-secret-guard` 0.1.5 now warns when a write is about to store a redaction token as literal text. A token is the placeholder the guard puts in place of a masked value; written into a file it stays a placeholder forever. When Write, Edit, MultiEdit or NotebookEdit content, a git commit message (including a `-F` message file of at most 1 MiB) or an Atrium message carries one, the model is told after the call how many tokens went in and asked to repair the text with the plain word it meant. The hook never blocks and never shows a token or a secret. The guard's own tests, fixtures and docs are exempt. Editor, template and piped commit messages are reported as unscannable rather than clean.
+- `wt-rules-on-demand`: every verdict record now carries an applicability label (applicable, not applicable, no act, or unknown). A model window that closes with no call records "no act" without calling the judge. A rule already served in a context is not injected again, but each later matching act still gets its own record, with `later: true` and `servedDeliveryId`; an unchanged retry of a refused call counts as one act. `compliance-report` shows the applicability counts and the later count per rule.
+### Changed
 - Pilots now wait for toolbox-launched lanes through the bounded launcher-record waiter; lane-written `EXIT=0` log lines and report files cannot signal completion. Re-adopt the pilot template to pick up the guidance.
-- `wt-secret-guard` now warns when a write is about to store a redaction token as literal text. A token is the placeholder the guard puts in place of a masked value; written into a file it stays a placeholder forever. When Write, Edit, MultiEdit or NotebookEdit content, a git commit message (including a `-F` message file of at most 1 MiB) or an Atrium message carries one, the model is told after the call how many tokens went in and asked to repair the text with the plain word it meant. The hook never blocks and never shows a token or a secret. The guard's own tests, fixtures and docs are exempt. Editor, template and piped commit messages are reported as unscannable rather than clean.
-- The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
-- Added regression tests for the secret guard's streaming mask; no behaviour change.
+- The `pilot-wave` skill gains a "Which pilot" section: the adopted harness pilot is the default, and the SDK pilot, still EXPERIMENTAL, is launched only on an explicit request for an SDK trial. The section names what would change that choice: a complete real SDK run, measured and published. `sdk-pilot` and `delegation-chain` point at it.
+### Fixed
+- The adoption SessionStart hook writes only when `hook_event_name` is exactly `SessionStart`; a missing or different event keeps the message and writes nothing. Before this fix, during development, a test that spawned the hook with the developer's real home directory and an event-less payload made it refresh four adopted agent copies in that home; they were restored from the tagged releases the same evening. Every test that spawns the adopt hook, its shim or a writing installer must now run with an isolated `HOME` and `CLAUDE_CONFIG_DIR`, and a structural test refuses one that does not.
+
+### Maturity and known limits
+
+- The adoption hook's automatic refresh is **EXPERIMENTAL**. Known residual, rated HIGH by the cross-family review: an edit or a removal made to an adopted copy after the hook's final byte re-check and before its atomic rename can still be overwritten or recreated. No portable compare-and-swap exists to close that window; it is documented in the adopt skill, not removed. The refresh was proven on Linux with isolated fixtures and concurrent processes; a real-host end-to-end run and macOS and Windows execution are not yet exercised.
+- The release eval gate fails one case, `external-lane-names-launcher`, as it already did on 0.193.0: the case still asks the model to state that the lane launcher writes an `EXIT=` marker after its timeout, which the launcher no longer does.
+
+### Quality
+
+Minor release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`; the baseline was not refreshed at 0.190.0 through 0.193.0). No judge regressed against that baseline. Against 0.193.0's figures: ESLint warnings rose from 645 to 647, still below the ratchet ceiling; line coverage 81.67 % to 81.75 %, branch coverage 73.24 % to 73.30 %, duplication 2.157 % to 2.153 %; the other judges are unchanged. Coverage comes from this release tree's own test run (12483 passed, 26 skipped).
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 120 | -6 |
+| Cognitive complexity | 268 -> 185 | -83 |
+| Biggest file (lines) | 2719 -> 2719 | 0 |
+| Longest function (lines) | 700 -> 628 | -72 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 684 -> 647 | -37 |
+| Duplication % | 2.4324 -> 2.1527 | -0.28 |
+| Knip issues | 196 -> 188 | -8 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 78.61 -> 81.75 | +3.14 |
+| Coverage branches % | 69.76 -> 73.30 | +3.54 |
+
+## [0.193.0] - 2026-10-11
+
+### Added
 - Report shipped `SKILL.md` bodies above 8000 Unicode characters in `pnpm quality`
   (`WT_SKILL_SIZE_WARN_CHARS` override), with sizes and guidance to move sections to
   `references/` and keep the body short. This is informational while existing shipped
