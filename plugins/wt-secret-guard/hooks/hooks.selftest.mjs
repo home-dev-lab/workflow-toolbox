@@ -4671,21 +4671,39 @@ const blankRunCases = [
 for (const [name, value, expected] of blankRunCases) {
   await test(`linear ${name} watchdog`, () => recognizerWatchdog('detector', value, expected));
 }
-await test('linear trailing-blank capture differential', async () => {
+async function trailingBlankPairs() {
   const { opOutput, environmentDump } = await privateRecognizer('detector.js', String.raw`
     export const opOutput = patterns.find(([kind]) => kind === 'op-output')[1];
     export const environmentDump = patterns.find(([kind]) => kind === 'environment-dump')[1];`);
-  const pairs = [
+  return [
     [opOutput, /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim, labelWord + ':'],
     [environmentDump, /^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*?)[ \t]*$/gm, dumpName + '='],
   ];
-  const matches = (expression, value) => {
-    expression.lastIndex = 0;
-    const result = [];
-    for (let match; (match = expression.exec(value));) result.push([match.index, match[0], match[1]]);
-    assert.equal(expression.lastIndex, 0, 'failed-exec lastIndex mismatch');
-    return result;
-  };
+}
+function captureMatches(expression, value) {
+  expression.lastIndex = 0;
+  const result = [];
+  for (let match; (match = expression.exec(value));) result.push([match.index, match[0], match[1]]);
+  assert.equal(expression.lastIndex, 0, 'failed-exec lastIndex mismatch');
+  return result;
+}
+// The differential below stays short and lowercase; these cases lock what it cannot see: whole long captures
+// (a truncating trim), several long credentials in one text, and labels in any case (the op-output `i` flag).
+await test('linear trailing-blank capture long values and label case', async () => {
+  const [[opOutput, opOracle], [environmentDump, dumpOracle]] = await trailingBlankPairs();
+  const long = 'v'.repeat(100000);
+  const opTexts = [labelWord + ': ' + long + ' \t ', labelWord + ': ' + long + '\n  ' + labelWord + ':\t' + long + 'w \r\n',
+    'PASSWORD: abcdef', 'Token: abcdef\nsEcReT : ' + long + ' ', 'CREDENTIAL:abcdef\t'];
+  for (const text of opTexts) assert.deepEqual(captureMatches(opOutput, text), captureMatches(opOracle, text));
+  assert.equal(captureMatches(opOutput, opTexts[0])[0][2].length, 100000, 'long op-output capture truncated');
+  assert.equal(captureMatches(opOutput, opTexts[2]).length, 1, 'uppercase op-output label not matched');
+  const dumpTexts = [dumpName + '=' + long + ' \t', 'export ' + dumpName + '=' + long + '\n+ ' + dumpName + ' = ' + long + 'x \n'];
+  for (const text of dumpTexts) assert.deepEqual(captureMatches(environmentDump, text), captureMatches(dumpOracle, text));
+  assert.equal(captureMatches(environmentDump, dumpTexts[1]).length, 2, 'second long environment-dump value missed');
+});
+await test('linear trailing-blank capture differential', async () => {
+  const pairs = await trailingBlankPairs();
+  const matches = captureMatches;
   let cases = 0;
   const pieces = [' ', '\t', 'a', 'é', '\n', '\r', ' ', ' ', ':', '='];
   for (const [candidate, oracle, prefix] of pairs) {
