@@ -164,6 +164,7 @@ export const spawningTestFiles = [
   'packages/build/test/run-gate.test.ts',
   'packages/build/test/sdk-pilot-lifecycle-full.test.ts',
   'packages/build/test/sdk-pilot-lifecycle-server.test.ts',
+  'packages/build/test/second-opinion-admission.test.ts',
   'packages/build/test/second-opinion.test.ts',
   'packages/build/test/secret-guard-native-helpers.test.ts',
   'packages/build/test/service-watch.test.ts',

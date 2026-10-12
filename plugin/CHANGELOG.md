@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- `wt-second-opinion` now optionally checks `WT_SECOND_OPINION_ADMISSION`, an absolute ES module path whose default `admit({ repo, request, env })` returns `null` or a refusal string, before starting a model or sandbox. Admission and launch share canonical paths; output naming the request is refused without modifying it. Invalid configuration, module failures and timeouts refuse closed with stderr and a completed output file ending in `EXIT=3`, replacing stale success even on a read-only output file; the 10-second import/admission deadline is overridable through `WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS`.
+
 ## [0.194.0] - 2026-10-12
 
 ### Added
