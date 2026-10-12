@@ -4524,4 +4524,7 @@ await test('N12 registration drain preserves refusal reasons', () => freshVault(
   await publishRefusals(journalHostFor($));
   assert.deepEqual(registrationEvents().slice(before).map(({ reason }) => reason), ['whitespace', 'short', 'common-word'], 'registration journal lost refusal reasons');
 }));
+const { runReleaseLineLocks } = await import('./release-line-locks.mjs');
+await runReleaseLineLocks({ test, freshVault, receive, $, testState, tokenize, mcp, hookForTool, configure, hooks,
+  allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
 process.exit(failures ? 1 : 0);
