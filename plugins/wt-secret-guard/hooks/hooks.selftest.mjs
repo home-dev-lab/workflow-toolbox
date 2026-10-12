@@ -4641,6 +4641,24 @@ await test('linear template reference planner watchdog', () => {
 });
 await test('linear private key watchdog', () => recognizerWatchdog('private-outbound', '-----BEGIN PRIVATE KEY-----'.repeat(100000), { surface: 'mcp', kinds: [] }));
 await test('linear JWT outbound watchdog', () => recognizerWatchdog('private-outbound', 'eyJ-'.repeat(150000) + '!', { surface: 'mcp', kinds: [] }));
+// Positive long inputs: a linear rewrite must still FIND a long credential, and one placed after a long
+// failing prefix. A scanner that gives up on long text passes every negative watchdog above.
+const longJwt = ['ey', 'J'].join('') + 'a'.repeat(100000) + '.b.c';
+const keyMarker = (edge) => ['-----', edge, ' PRIVATE KEY-----'].join('');
+const longKey = keyMarker('BEGIN') + '\n' + 'Q'.repeat(100000) + '\n' + keyMarker('END');
+const positiveLongCases = [
+  ['long JWT', 'private-outbound', longJwt, { surface: 'mcp', kinds: ['jwt'] }],
+  ['JWT after failing prefix', 'private-outbound', 'eyJ-'.repeat(150000) + '! ' + longJwt, { surface: 'mcp', kinds: ['jwt'] }],
+  ['long private key', 'private-outbound', longKey, { surface: 'mcp', kinds: ['private-key'] }],
+  ['private key after unterminated openings', 'private-outbound', keyMarker('BEGIN').repeat(100000) + '\n' + longKey, { surface: 'mcp', kinds: ['private-key'] }],
+  ['long email', 'emails', 'a'.repeat(100000) + '@example.test', { surface: 'mcp', kinds: ['email'] }],
+  ['email after failing local starts', 'emails', 'a.'.repeat(150000) + '! b@example.test', { surface: 'mcp', kinds: ['email'] }],
+  ['long template destination', 'template', '> ' + 'a'.repeat(100000) + '.tpl', true],
+  ['template after failing redirects', 'template', '>'.repeat(100000) + 'x ; cat > a.tpl', true],
+];
+for (const [name, operation, value, expected] of positiveLongCases) {
+  await test(`linear positive ${name} watchdog`, () => recognizerWatchdog(operation, value, expected));
+}
 await test('linear newline file reference watchdog', () => {
   recognizerWatchdog('newline-reference', 'fixture-key-' + '\n'.repeat(300000) + 'x',
     Array(3).fill({ count: 1, invalid: false, reason: '', substituted: 1 }));
