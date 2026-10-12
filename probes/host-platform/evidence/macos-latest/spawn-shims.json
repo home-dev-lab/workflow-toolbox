@@ -2,10 +2,10 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "spawn-shims",
-    "capturedAt": "2026-09-22T23:06:41.798Z",
+    "capturedAt": "2026-10-12T01:03:17.465Z",
     "command": "node spawn-shims.mjs /Users/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/macos-latest/spawn-shims.json",
-    "runId": "35795762873",
-    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "macos-latest",
       "os": "macos26",
@@ -32,7 +32,7 @@
   "measurements": {
     "missingCommand": {
       "name": "missing command, shell false",
-      "command": "wt-probe-command-that-does-not-exist-4753",
+      "command": "wt-probe-command-that-does-not-exist-17023",
       "options": {
         "shell": false
       },
@@ -43,10 +43,10 @@
         {
           "event": "error",
           "error": {
-            "message": "spawn wt-probe-command-that-does-not-exist-4753 ENOENT",
+            "message": "spawn wt-probe-command-that-does-not-exist-17023 ENOENT",
             "code": "ENOENT",
             "errno": -2,
-            "syscall": "spawn wt-probe-command-that-does-not-exist-4753"
+            "syscall": "spawn wt-probe-command-that-does-not-exist-17023"
           }
         },
         {
@@ -58,11 +58,11 @@
       "stdout": "",
       "stderr": "",
       "timedOut": false,
-      "durationMilliseconds": 5.661625
+      "durationMilliseconds": 5.020625
     },
     "existingNonExecutable": {
       "name": "existing non-executable file, shell false",
-      "command": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-9jegAH/not-executable",
+      "command": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-eXzbLG/not-executable",
       "options": {
         "shell": false
       },
@@ -73,10 +73,10 @@
         {
           "event": "error",
           "error": {
-            "message": "spawn /var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-9jegAH/not-executable EACCES",
+            "message": "spawn /var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-eXzbLG/not-executable EACCES",
             "code": "EACCES",
             "errno": -13,
-            "syscall": "spawn /var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-9jegAH/not-executable"
+            "syscall": "spawn /var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-eXzbLG/not-executable"
           }
         },
         {
@@ -88,7 +88,7 @@
       "stdout": "",
       "stderr": "",
       "timedOut": false,
-      "durationMilliseconds": 1.124292
+      "durationMilliseconds": 2.324459
     },
     "windowsCommandShim": {
       "status": "not_applicable",

@@ -8,12 +8,11 @@
   "appendFileSync": 1,
   "statSync": 3,
   "process.platform": 2,
-  "readFileSync": 2,
+  "readFileSync": 1,
   "readdirSync": 1,
   "existsSync": 1,
   "rmSync": 3,
   "stat": 1,
   "readFile": 1,
-  "process.kill": 1,
   "spawn": 1
 }

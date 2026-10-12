@@ -1,0 +1,53 @@
+name: host-contract
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 7 * * 1'
+  push:
+    paths:
+      - '.github/workflows/host-contract.yml'
+      - 'plugin/bin/lib/host/**'
+      - 'probes/host-platform/**'
+      - 'toolkit/packages/build/test/host-adapter.contract.test.ts'
+permissions:
+  contents: read
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: toolkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Runner image identity
+        shell: bash
+        run: |
+          echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+          node --version
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install
+        run: pnpm install
+      - name: Host adapter contract against the REAL platform
+        shell: bash
+        env:
+          WT_HOST_CONTRACT_REAL: '1'
+        run: |
+          mkdir -p ci-diagnostics
+          pnpm test:shard packages/build/test/host-adapter.contract.test.ts 2>&1 \
+            | tee "ci-diagnostics/host-contract-${{ runner.os }}.log"
+      - name: Upload host contract diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-contract-${{ matrix.os }}
+          path: toolkit/ci-diagnostics/
+          if-no-files-found: warn

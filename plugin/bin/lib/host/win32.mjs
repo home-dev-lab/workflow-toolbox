@@ -1,7 +1,7 @@
 import { processSnapshotFailure } from './process-snapshot-failure.mjs'
 
 const PROCESS_TABLE_SCRIPT = [
-  '$now = Get-Date',
+  '$now = Get-Date;',
   'Get-CimInstance Win32_Process | ForEach-Object {',
   '  [ordered]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId;',
   "    processGroup = [ordered]@{ status = 'unsupported'; nearestConcept = 'process tree rooted at a PID' };",
@@ -49,5 +49,7 @@ export function readProcessSnapshot(invoke) {
 }
 
 export const resolveCanonicalPath = (invoke, input) => invoke.realpath(input)
-export const endProcessFamily = (invoke, pid) => invoke.killTree(pid, false)
+// The captured native tree operation is forced: console processes have no
+// portable graceful tree termination equivalent on Windows.
+export const endProcessFamily = (invoke, pid) => invoke.killTree(pid, true)
 export const forceEndProcessFamily = (invoke, pid) => invoke.killTree(pid, true)

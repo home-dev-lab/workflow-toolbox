@@ -50,6 +50,13 @@ async function loadIntegrationModule() {
 
 const ATTACH_REMOVED = '--attach was removed: compose the extra text into the brief file, or expose a read-only path to the lane with WT_LANE_SANDBOX_READ'
 
+function launchRecoveryCondition(reason) {
+  if (reason === 'owner process liveness is unknown') return 'its liveness probe returns a known answer; unknown liveness never authorises recovery'
+  return reason === 'owner process is still running'
+    ? 'its recorded owner has exited or its PID start time has changed'
+    : `its owner identity is readable or its age exceeds ${LAUNCH_LOCK_MAX_AGE_MS / 1000}s`
+}
+
 function usage() {
   return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal]\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. Idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
@@ -571,12 +578,12 @@ async function main() {
       try { owner = JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) } catch {}
       let age
       try { age = Date.now() - statSync(lockPath).mtimeMs } catch (error) { if (error?.code === 'ENOENT') return { retry: true }; throw error }
-      if (!owner || !Number.isSafeInteger(owner.pid)) return age > LAUNCH_LOCK_MAX_AGE_MS
+      if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return age > LAUNCH_LOCK_MAX_AGE_MS
         ? { stale: true, owner, reason: `owner record is unreadable after ${LAUNCH_LOCK_MAX_AGE_MS}ms` }
         : { stale: false, owner, reason: 'owner record is not ready' }
-      try { process.kill(owner.pid, 0) } catch (error) {
-        if (error?.code === 'ESRCH') return { stale: true, owner, reason: 'owner process is gone' }
-      }
+      const liveness = hostAdapter.readProcessLiveness(owner.pid)
+      if (liveness.status === 'gone') return { stale: true, owner, reason: 'owner process is gone' }
+      if (liveness.status === 'unknown') return { stale: false, owner, reason: 'owner process liveness is unknown' }
       const actual = launcherInspect(owner.pid, { recordedArgv: owner.argv })
       if (actual && !consentModules.sameIdentity(owner, actual)) return { stale: true, owner, reason: 'owner pid was reused' }
       if (actual && consentModules.sameIdentity(owner, actual)) return { stale: false, owner, reason: 'owner process is still running' }
@@ -591,9 +598,7 @@ async function main() {
     }
     const refusal = (lockPath, status) => {
       const activity = lockPath === recoveryLock ? 'another lane launch is recovering an abandoned launch lock' : 'another lane launch is in progress'
-      const condition = status.reason === 'owner process is still running'
-        ? 'its recorded owner has exited or its PID start time has changed'
-        : `its owner identity is readable or its age exceeds ${LAUNCH_LOCK_MAX_AGE_MS / 1000}s`
+      const condition = launchRecoveryCondition(status.reason)
       process.stderr.write(`wt-lane: Refused: ${activity}: ${lockPath} (${status.reason}); the next launch recovers this path once ${condition}\n`)
     }
     const acquire = () => {

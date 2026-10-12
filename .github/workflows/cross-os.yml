@@ -8,7 +8,7 @@
 # merges are dispatched by plugin/bin/wt-crossos-dispatch.mjs on the public repo.
 # Run 1 (2026-07-08) immediately caught a real macOS-only test-fixture bug
 # (/var → /private/var symlink vs realpath'd resolveDir) — the matrix earns its keep.
-# ci-trigger: win-fixes iteration 1
+# ci-trigger: host adapter real contract, 2026-09-21
 name: cross-os
 on:
   workflow_dispatch:
@@ -87,6 +87,17 @@ jobs:
       - name: Build for the sharded suites
         if: ${{ runner.os != 'Linux' }}
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
+        timeout-minutes: 8
+      # Replay checks the parsers; this contract also checks native invocation and process lifetime.
+      - name: Host adapter contract against the REAL platform
+        if: ${{ matrix.shard != 1 }}
+        shell: bash
+        env:
+          WT_HOST_CONTRACT_REAL: '1'
+        run: |
+          mkdir -p ci-diagnostics
+          pnpm test:shard packages/build/test/host-adapter.contract.test.ts 2>&1 \
+            | tee "ci-diagnostics/host-contract-${{ runner.os }}.log"
         timeout-minutes: 8
       - name: Test (macOS shard 1/2)
         shell: bash

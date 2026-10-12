@@ -3,12 +3,6 @@
   "child_process import": 1,
   "process.platform": 7,
   "realpathSync": 5,
-  "hard-coded path separator": 5,
-  "literal /proc": 5,
-  "existsSync": 1,
-  "readFileSync": 8,
-  "process.kill": 1,
-  "readlinkSync": 1,
   "openSync": 1,
   "statSync": 4,
   "readSync": 1,
@@ -19,5 +13,6 @@
   "renameSync": 2,
   "appendFileSync": 1,
   "writeFileSync": 1,
+  "readFileSync": 3,
   "lstatSync": 1
 }

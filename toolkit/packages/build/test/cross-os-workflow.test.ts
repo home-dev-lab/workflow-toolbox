@@ -69,7 +69,7 @@ describe('omitted descriptor history evidence', () => {
 })
 
 type Entry = { os: string; shard?: number }
-type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
+type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; env?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
   jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number; steps: Step[] } }
 }
@@ -131,7 +131,8 @@ function timeoutOf(step: Step, entry: Entry): number {
 const SETUP_ALLOWANCE_MINUTES = 3
 const isDiagnostic = (step: Step) => (step.name ?? '').startsWith('Diagnose ')
 const stepsOnWindows = () => steps.filter((step) => windowsEntries().some((entry) => runsOn(step, entry)))
-const windowsTestSteps = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && !isDiagnostic(step) && /test:shard/.test(step.run ?? ''))
+const isSuiteStep = (step: Step) => /test:shard/.test(step.run ?? '') && step.env?.WT_HOST_CONTRACT_REAL !== '1'
+const windowsTestSteps = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && !isDiagnostic(step) && isSuiteStep(step))
 const runningOn = (step: Step) => windowsEntries().filter((entry) => runsOn(step, entry))
 
 describe('cross-os workflow: Windows is sharded and every gate still runs once', () => {

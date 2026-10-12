@@ -3,6 +3,8 @@ import { availableParallelism, homedir, loadavg } from 'node:os'
 import { join } from 'node:path'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
 import { ensureLaneHostDir } from './host/lane-host-dir.mjs'
+import { retainProcessOwner } from './host/process-signal-boundary.mjs'
+import { createProcfs, PROCFS_LOAD_SOURCE } from './host/procfs.mjs'
 
 const POLL_MS = 2_000
 let writeSerial = 0
@@ -21,12 +23,7 @@ function atomicWrite(file, value) {
 }
 
 function pidAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false
-  try { process.kill(pid, 0); return true } catch (error) {
-    if (error?.code === 'ESRCH') return false
-    if (error?.code === 'EPERM') return true
-    throw error
-  }
+  return retainProcessOwner(pid)
 }
 
 function coreCount(probe = availableParallelism) {
@@ -42,8 +39,8 @@ function measurePilotLoad(options = {}) {
   if (cores === null) return { available: false, load: null, cores: null, reason: 'available core count is unreadable; using concurrency cap only' }
   if (platform === 'linux') {
     try {
-      const value = Number((options.readFile ?? readFileSync)('/proc/loadavg', 'utf8').trim().split(/\s+/)[0])
-      if (Number.isFinite(value) && value >= 0) return { available: true, load: value, cores, source: '/proc/loadavg' }
+      const value = Number(createProcfs({ platform, readFile: options.readFile ?? readFileSync }).readLoadAverage('utf8').trim().split(/\s+/)[0])
+      if (Number.isFinite(value) && value >= 0) return { available: true, load: value, cores, source: PROCFS_LOAD_SOURCE }
     } catch { /* The named cap-only result below is the fail-safe. */ }
     return { available: false, load: null, cores, reason: 'Linux /proc/loadavg is unreadable; using concurrency cap only' }
   }

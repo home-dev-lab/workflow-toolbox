@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir, userInfo } from 'node:os'
 import path from 'node:path'
 import { processEvidenceStatus } from './lane-supervisor-core.mjs'
+import { retainProcessOwner, signalProcess } from './host/process-signal-boundary.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 
 export const ARTIFACT_SERVER_ID = 'workflow-toolbox-artifact-server'
@@ -153,19 +154,13 @@ export function configuredArtifactPort(env = process.env) {
 }
 
 export function pidAlive(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return error?.code === 'EPERM'
-  }
+  return retainProcessOwner(pid)
 }
 
 export function registrationPidStatus(pid, options = {}) {
   const platform = options.platform ?? process.platform
   if (platform === 'win32') {
-    const signal = options.signal ?? process.kill.bind(process)
+    const signal = options.signal ?? signalProcess
     let signalResult = 'returned'
     try { signal(pid, 0) } catch (error) {
       signalResult = `threw:${error?.code ?? 'unknown'}`
