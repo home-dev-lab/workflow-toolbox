@@ -22,11 +22,15 @@ import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, ma
 import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'
 import { appendLaunchFailure, awaitChildSpawn, spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
 import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
+import { laneBoundLine, unattendedMaxSeconds, validateLaneTiming } from './lib/lane-deadline-core.mjs'
+import { createLaneDeadline } from './lib/host/lane-deadline-worker.mjs'
+import { appendLaneReceipt } from './lib/host/lane-diagnostics.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 const DEFAULT_DECISION_GRACE = 300
 const DEFAULT_MAX_EXTENSIONS = 3
+const DEFAULT_IDLE_WINDOW = 1200
 const DEFAULT_MAX_BRIEF_AGE = 600
 const DEFAULT_MIN_AVAILABLE_MIB = 1024
 const DECISION_TRANSITION_BOUND_MS = 5_000
@@ -47,12 +51,12 @@ async function loadIntegrationModule() {
 const ATTACH_REMOVED = '--attach was removed: compose the extra text into the brief file, or expose a read-only path to the lane with WT_LANE_SANDBOX_READ'
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal]\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal]\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. Idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
 export function parse(argv) {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low' }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, idleWindow: DEFAULT_IDLE_WINDOW, idleTimeout: 0, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low' }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -64,6 +68,8 @@ export function parse(argv) {
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
     else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
+    else if (arg === '--idle-window') out.idleWindow = Number(argv[++i])
+    else if (arg === '--idle-timeout') out.idleTimeout = Number(argv[++i])
     else if (arg === '--min-available-mib') out.minAvailableMib = Number(argv[++i])
     else if (arg === '--owner') out.owner = argv[++i] ?? null
     else if (arg === '--owner-token') out.ownerToken = argv[++i] ?? null
@@ -81,10 +87,8 @@ export function parse(argv) {
     else return { error: `unknown argument: ${arg}` }
   }
   if (!out.dir || !out.model || !out.brief) return { error: 'missing required --dir, --model, or --brief' }
-  if (!Number.isFinite(out.maxBriefAge) || out.maxBriefAge <= 0) return { error: '--max-brief-age must be a positive number of seconds' }
-  if (!Number.isFinite(out.timeout) || out.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
-  if (!Number.isFinite(out.decisionGrace) || out.decisionGrace < 0) return { error: '--decision-grace must be a non-negative number of seconds' }
-  if (!Number.isSafeInteger(out.maxExtensions) || out.maxExtensions < 0) return { error: '--max-extensions must be a non-negative integer' }
+  const timingError = validateLaneTiming(out)
+  if (timingError) return { error: timingError }
   if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return { error: '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB' }
   if (!['session', 'pilot'].includes(out.owner)) return { error: '--owner must be session or pilot' }
   if (out.owner === 'pilot' && !out.ownerToken) return { error: OWNER_TOKEN_REQUIRED }
@@ -395,6 +399,13 @@ export function writeLaneStage(file, stage, { reset = false, runId = null, heade
     if (header.length) initial += `${header.join('\n')}\n`
     writeFileSync(file, `${initial}${line}`)
   } catch { /* best effort diagnostic */ }
+}
+
+function workerLogIsTerminal(log) {
+  try {
+    const tail = readLaneLog(log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
+    return /^EXIT=\d+$/.test(tail)
+  } catch { return false }
 }
 
 // The launcher's own identity when the provider cannot read it: on win32 the spawn-time estimate
@@ -725,7 +736,7 @@ async function main() {
       chmodSync(briefSnapshotDir, 0o700)
       writeFileSync(briefSnapshot, briefEvidence.bytes, { flag: 'wx', mode: 0o400 })
       const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256 }), 'utf8').toString('base64url')
-      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, '--priority', opts.priority, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--idle-window', String(opts.idleWindow), '--idle-timeout', String(opts.idleTimeout), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, '--priority', opts.priority, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       appendVariantLog(opts.log, variant)
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
@@ -805,10 +816,7 @@ async function main() {
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const journal = (event) => { try { consentModules.appendSupervisorJournal(dataDir, event) } catch { /* supervision must remain bounded when its audit sink is unavailable */ } }
   const appendWorkerStage = (stage) => {
-    try {
-      const tail = readLaneLog(opts.log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
-      if (/^EXIT=\d+$/.test(tail)) return
-    } catch { /* append the diagnostic below when the existing log is unreadable */ }
+    if (workerLogIsTerminal(opts.log)) return
     appendFileSync(fd, `${new Date().toISOString()} stage=${stage}\n`)
   }
   // Sandboxed or not is a launch fact: a reader of the log or the record can always tell which.
@@ -852,10 +860,13 @@ async function main() {
   }
   rmSync(decisionFile, { force: true })
   const firstTimeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
-  writeState({ timeoutAt: firstTimeoutAt, decisionTransitionDueAt: new Date(Date.parse(firstTimeoutAt) + DECISION_TRANSITION_BOUND_MS).toISOString() })
+  writeState({ timeoutAt: firstTimeoutAt, decisionTransitionDueAt: new Date(Date.parse(firstTimeoutAt) + DECISION_TRANSITION_BOUND_MS).toISOString(), unattendedMaxSeconds: unattendedMaxSeconds(opts), idleWindowSeconds: opts.idleWindow, idleTimeoutSeconds: opts.idleTimeout, extensions: [] })
+  appendLaneReceipt(fd, laneBoundLine(opts, currentState.unattendedMaxSeconds))
   consentModules.writeJsonAtomic(statePaths.pointer, { version: 1, runId })
   journal({ event: 'launched', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner })
   let finished = false
+  let deadline = null
+  const clearDeadline = () => deadline?.clear()
   const finish = (code, receiptLines = []) => {
     if (finished) return
     finished = true
@@ -867,13 +878,14 @@ async function main() {
   // the worker is the group leader (detached) and opencode lives in that group, so a signal sent to
   // the worker's pid alone used to kill the launcher and leave the lane running, invisible.
   const endGroup = (code, { writeReceipt = true, receiptLines = [], terminal = null } = {}) => {
+    clearDeadline()
     if (writeReceipt) finish(code, receiptLines)
     process.removeAllListeners('SIGTERM'); process.removeAllListeners('SIGINT')
     process.on('SIGTERM', () => {}); process.on('SIGINT', () => {})
     consentModules.terminateLane(currentState, { graceMs: GRACE_MS, journal, source: 'worker', ownedChild: child, ...(terminal ? { markTerminal: (stage) => writeState(stage === 'terminal' ? { ...terminal, exit: code } : { ...terminal, state: 'terminating' }) } : {}) })
   }
   terminateWorker = (code) => {
-    clearTimeout(timer); clearTimeout(graceTimer); cleanupBrief()
+    clearDeadline(); cleanupBrief()
     let ownerDecision = false
     ownerDecision = ['terminating', 'abandoned'].includes(currentState.state) && currentState.decisionSource === 'owner'
     endGroup(code, { terminal: ownerDecision ? null : { state: 'abandoned', decision: 'abandon', decisionSource: 'signal', decidedAt: new Date().toISOString() } })
@@ -883,81 +895,14 @@ async function main() {
     if (opts.briefReceipt) rmSync(opts.brief, { force: true })
     if (opts.briefCleanupDir && briefEvidence.path.startsWith(`${opts.briefCleanupDir}${path.sep}`)) rmSync(opts.briefCleanupDir, { recursive: true, force: true })
   }
-  let timer
-  let graceTimer
   if (pendingTermination !== null) terminateWorker(pendingTermination)
-  let extensionCount = 0
-  const enterDecision = (reason = 'timeout-bound', extra = {}) => {
-    clearTimeout(graceTimer)
-    const timeoutAt = scheduledTimeoutAt ?? new Date().toISOString()
-    const activity = consentModules.latestWorktreeWrite(opts.dir)
-    const evidence = { lastWriteAt: activity.status === 'known' && activity.at ? new Date(activity.at).toISOString() : 'unknown', activityStatus: activity.status, activityBounded: activity.bounded, logTail: consentModules.readLogTail(opts.log), process: consentModules.processEvidenceStatus(child.pid) }
-    const defaultDecision = extensionCount < opts.maxExtensions ? 'extend' : 'abandon'
-    writeState({ state: 'decision-needed', timeoutAt, decisionDueAt: new Date(Date.now() + opts.decisionGrace * 1000).toISOString(), extensionCount, defaultDecision, evidence, reason, ...extra })
-    journal({ event: 'decision-needed', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason, evidence: { ...evidence, timeoutAt, extensionCount, defaultDecision } })
-    graceTimer = setTimeout(() => {
-      try {
-        const current = currentState
-        if (current.runId !== runId || current.state !== 'decision-needed' || current.timeoutAt !== timeoutAt) return
-        if (defaultDecision === 'extend') {
-          extensionCount += 1
-          writeState({ state: 'running', decision: 'extend', decisionSource: 'grace-default', decidedAt: new Date().toISOString(), extensionCount, evidence })
-          journal({ event: 'decision', decision: 'extend', source: 'grace-default', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: 'no owner decision within grace' })
-          armTimeout(opts.timeout)
-        } else {
-          journal({ event: 'decision', decision: 'abandon', source: 'grace-default', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: 'extension ceiling reached' })
-          cleanupBrief()
-          endGroup(126, { receiptLines: ['TERMINATION=timeout'], terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'grace-default', decidedAt: new Date().toISOString(), extensionCount, evidence } })
-        }
-      } catch (error) {
-        process.stderr.write(`wt-lane: grace transition failed: ${error instanceof Error ? error.message : String(error)}\n`)
-        cleanupBrief()
-        endGroup(126, { terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'grace-error', exit: 126 } })
-      }
-    }, opts.decisionGrace * 1000)
-    graceTimer.unref()
-  }
-  const armTimeout = (seconds) => {
-    clearTimeout(timer)
-    clearTimeout(graceTimer)
-    scheduledTimeoutAt = new Date(Date.now() + seconds * 1000).toISOString()
-    writeState({ state: 'running', timeoutAt: scheduledTimeoutAt, decisionTransitionDueAt: new Date(Date.parse(scheduledTimeoutAt) + DECISION_TRANSITION_BOUND_MS).toISOString(), extensionCount })
-    timer = setTimeout(enterDecision, seconds * 1000)
-    timer.unref()
-  }
-  let scheduledTimeoutAt = firstTimeoutAt
-  armTimeout(opts.timeout)
-  const decisions = setInterval(() => {
-    let decision
-    try { decision = JSON.parse(readFileSync(decisionFile, 'utf8')) } catch { return }
-    let current
-    current = currentState
-    if (decision.runId !== runId || decision.timeoutAt !== current.timeoutAt || current.state !== 'decision-needed' || !['extend', 'abandon'].includes(decision.decision)) return
-    rmSync(decisionFile, { force: true })
-    clearTimeout(graceTimer)
-    if (decision.decision === 'extend') {
-      const effective = extensionCount < opts.maxExtensions ? 'extend' : 'abandon'
-      journal({ event: 'decision', decision: effective, source: effective === 'extend' ? 'owner' : 'extension-ceiling', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: decision.reason ?? null })
-      if (effective === 'extend') {
-        extensionCount += 1
-        writeState({ state: 'running', decision: 'extend', decisionSource: 'owner', decidedAt: new Date().toISOString(), extensionCount })
-        armTimeout(Number.isFinite(decision.extendSeconds) && decision.extendSeconds > 0 ? Math.min(decision.extendSeconds, 86400) : opts.timeout)
-      } else {
-        cleanupBrief(); endGroup(126, { receiptLines: ['TERMINATION=timeout'], terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'extension-ceiling', decidedAt: new Date().toISOString(), extensionCount } })
-      }
-    } else {
-      journal({ event: 'decision', decision: 'abandon', source: 'owner', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: decision.reason ?? null })
-      clearInterval(decisions)
-      cleanupBrief(); endGroup(126, { terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'owner', decidedAt: new Date().toISOString(), extensionCount } })
-    }
-  }, 100)
-  decisions.unref()
-  child.on('error', () => { clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions); cleanupBrief(); finish(1) })
+  else deadline = createLaneDeadline({ opts, runId, child, args, childPid: child.pid, launchedAtMs: Date.parse(baseState.launchedAt), firstTimeoutAt, transitionBoundMs: DECISION_TRANSITION_BOUND_MS, decisionFile, modules: consentModules, current: () => currentState, writeState, journal, cleanupBrief, endGroup, appendLine: (line) => !finished && appendLaneReceipt(fd, line) })
+  child.on('error', () => { clearDeadline(); cleanupBrief(); finish(1) })
   let closeHandled = false
   const onChildClose = (code, signal) => {
     if (closeHandled) return
     closeHandled = true
-    clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions)
+    clearDeadline()
     const killedBy = signal ? identifySignalCause(child.pid, signal, { startedAt: childSpawnedAt }) : null
     const exit = signal ? signalExit(signal) : (code ?? 1)
     appendVariantReport(opts, variant)
