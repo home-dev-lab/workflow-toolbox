@@ -198,8 +198,6 @@ export const spawningTestFiles = [
   'packages/build/test/wake-floor.test.ts',
   'packages/build/test/what-is-running.test.ts',
   'packages/build/test/work-journal-cli.test.ts',
-  'packages/build/test/work-journal-hook.test.ts',
-  'packages/build/test/work-journal-review-fixes.test.ts',
   'packages/build/test/work-journal-storage-unnamed.test.ts',
   'packages/build/test/worktree-remove-board-id.test.ts',
   'packages/build/test/wt-config.test.ts',

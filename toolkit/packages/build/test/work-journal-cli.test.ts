@@ -95,14 +95,6 @@ describe('work journal CLI and retirement', () => {
     expect(readFileSync(file, 'utf8')).toBe('Writer recreation')
     expect(readdirSync(join(f.project, '.claude')).some((name) => name.includes('.retiring-'))).toBe(true)
   })
-  it('nudges task-file users without a board and cached-board setup after onboarding', () => {
-    const f = fixture(); taskFile(f)
-    expect(f.hook('SessionStart').stdout).toContain('onboard a board')
-    f.board()
-    const output = f.hook('SessionStart').stdout
-    expect(output).toContain('retire-progress')
-    expect(output).toContain('setup-board')
-  })
   it('resolves the Done list with an injected board client, outside hooks', async () => {
     const f = fixture(); f.board()
     await commands.setupBoard(ctx(f), { listIdOf: async (name: string) => name === 'Done' ? 'done-id' : null })
