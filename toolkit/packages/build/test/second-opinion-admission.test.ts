@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -11,9 +12,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function fixture(source = 'export default () => null') {
-  mkdirSync(join(ROOT, '.lane'), { recursive: true })
-  const root = mkdtempSync(join(ROOT, '.lane/admission-test-'))
+function fixture(source = 'export default () => null', temporaryRoot = tmpdir()) {
+  const root = realpathSync(mkdtempSync(join(temporaryRoot, 'admission-test-')))
   roots.push(root)
   const repo = join(root, 'repo')
   mkdirSync(repo)
@@ -37,7 +37,9 @@ function fixture(source = 'export default () => null') {
   return { root, repo, request, module, marker, out, loader }
 }
 
-function launch(f: ReturnType<typeof fixture>, admission: string | undefined, relative = false, omitRepo = false, extra: string[] = [], timeout = 10_000, admissionTimeout = 100) {
+// Only deadline tests use 100 ms: normal admission includes worker startup,
+// module import and callback drain, which are slower on cold or busy CI hosts.
+function launch(f: ReturnType<typeof fixture>, admission: string | undefined, relative = false, omitRepo = false, extra: string[] = [], timeout = 10_000, admissionTimeout = 5000) {
   const env = { ...process.env }
   env.WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS = String(admissionTimeout)
   delete env.WT_SECOND_OPINION_ADMISSION
@@ -49,8 +51,8 @@ function launch(f: ReturnType<typeof fixture>, admission: string | undefined, re
   })
 }
 
-function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string) {
-  const result = launch(f, admission)
+function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string, admissionTimeout = 5000) {
+  const result = launch(f, admission, false, false, [], 10_000, admissionTimeout)
   expect(result.status).toBe(3)
   expect(existsSync(f.marker)).toBe(false)
   expect(result.stderr).toContain('WT_SECOND_OPINION_ADMISSION')
@@ -61,7 +63,33 @@ function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: 
   expect(output.endsWith('\nEXIT=3\n')).toBe(true)
 }
 
+describe('second-opinion fixture canonicalization', () => {
+  it('canonicalizes fixture paths beneath a symlinked temporary directory', () => {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'admission-parent-')))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    const alias = join(parent, 'alias')
+    mkdirSync(target)
+    symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    const f = fixture(undefined, alias)
+    expect(f.root).toBe(realpathSync(f.root))
+    expect(launch(f, undefined).status).toBe(0)
+    const baseline = JSON.parse(readFileSync(f.marker, 'utf8'))
+    expect(launch(f, f.module).status).toBe(0)
+    expect(JSON.parse(readFileSync(f.marker, 'utf8'))).toEqual({
+      ...baseline, env: { ...baseline.env, WT_SECOND_OPINION_ADMISSION: f.module },
+    })
+  })
+})
+
 describe('second-opinion CLI admission', () => {
+  it('admits a valid policy with delayed import rather than testing worker startup speed', () => {
+    const f = fixture('await new Promise(resolve => setTimeout(resolve, 250)); export default () => null')
+    const result = launch(f, f.module)
+    expect(result.status, result.stderr).toBe(0)
+    expect(existsSync(f.marker)).toBe(true)
+  })
+
   it('refuses before the unconditional model-launch stub can run', () => {
     const f = fixture('export default () => "policy refuses this repository"')
     expectRefusal(f, f.module, 'policy refuses this repository')
@@ -70,9 +98,11 @@ describe('second-opinion CLI admission', () => {
   it('admits with the same repo, request and environment as the unset path', () => {
     const f = fixture(`import { writeFileSync } from 'node:fs';
       export default () => { writeFileSync(new URL('./called', import.meta.url), 'called'); return null }`)
-    expect(launch(f, undefined).status).toBe(0)
+    const unsetResult = launch(f, undefined)
+    expect(unsetResult.status, unsetResult.stderr).toBe(0)
     const baseline = JSON.parse(readFileSync(f.marker, 'utf8'))
-    expect(launch(f, f.module).status).toBe(0)
+    const admittedResult = launch(f, f.module)
+    expect(admittedResult.status, admittedResult.stderr).toBe(0)
     expect(readFileSync(join(f.root, 'called'), 'utf8')).toBe('called')
     const admitted = JSON.parse(readFileSync(f.marker, 'utf8'))
     expect(admitted.repo).toBe(baseline.repo)
@@ -83,7 +113,8 @@ describe('second-opinion CLI admission', () => {
   it.each([false, true])('passes launch paths and env for relative args (omit repo=%s)', (omitRepo) => {
     const f = fixture(`import { writeFileSync } from 'node:fs';
       export default async (input) => { writeFileSync(new URL('./input.json', import.meta.url), JSON.stringify(input)); return null }`)
-    expect(launch(f, f.module, true, omitRepo).status).toBe(0)
+    const result = launch(f, f.module, true, omitRepo)
+    expect(result.status, result.stderr).toBe(0)
     const input = JSON.parse(readFileSync(join(f.root, 'input.json'), 'utf8'))
     const launched = JSON.parse(readFileSync(f.marker, 'utf8'))
     expect(input).toEqual(launched)
@@ -92,6 +123,114 @@ describe('second-opinion CLI admission', () => {
   })
 
 })
+
+function registerWindowsPublicationTests() {
+  it('replaces read-only stale success when Windows refuses the first rename', () => {
+    const f = fixture('export default () => "policy refuses"')
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    chmodSync(f.out, 0o444)
+    windowsOutputSeam(f)
+    expectRefusal(f, f.module, 'policy refuses')
+    expect(readdirSync(f.root).filter(name => name.includes('.refusal-'))).toEqual([])
+  })
+
+  it('restores read-only permissions and cleans its temporary when the Windows retry fails', () => {
+    const f = fixture()
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    chmodSync(f.out, 0o444)
+    const mode = statSync(f.out).mode
+    windowsOutputSeam(f, true)
+    const result = launch(f, f.module)
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('retry denied')
+    expect(statSync(f.out).mode).toBe(mode)
+    expect(readFileSync(f.out, 'utf8')).toBe('OLD\nEXIT=0\n')
+    expect(existsSync(f.marker)).toBe(false)
+    expect(readdirSync(f.root).filter(name => name.includes('.refusal-'))).toEqual([])
+  })
+
+  it('does not change writable output permissions on a Windows rename denial', () => {
+    const f = fixture()
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    const mode = statSync(f.out).mode
+    windowsOutputSeam(f, true, 'EPERM')
+    const result = launch(f, f.module)
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('retry denied')
+    expect(statSync(f.out).mode).toBe(mode)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(readdirSync(f.root).filter(name => name.includes('.refusal-'))).toEqual([])
+  })
+}
+
+function windowsOutputSeam(f: ReturnType<typeof fixture>, failRetry = false, denialCode = 'EACCES', failRollback = false) {
+  const source = `import * as fs from 'node:fs';
+    export * from 'node:fs';
+    export function chmodSync(file, mode) {
+      if (${failRollback} && !(mode & 0o200)) throw new Error('rollback denied');
+      return fs.chmodSync(file, mode);
+    }
+    export function writeFileSync(file, ...args) {
+      if (file === ${JSON.stringify(f.out)}) throw Object.assign(new Error('read-only output'), { code: 'EPERM' });
+      return fs.writeFileSync(file, ...args);
+    }
+    export function renameSync(from, to) {
+      if (to === ${JSON.stringify(f.out)}) {
+        if (!(fs.statSync(to).mode & 0o200)) throw Object.assign(new Error('read-only rename'), { code: 'EPERM' });
+        if (${failRetry}) throw Object.assign(new Error('retry denied'), { code: ${JSON.stringify(denialCode)} });
+      }
+      return fs.renameSync(from, to);
+    }`
+  filesystemSeam(f, source, 'win32')
+}
+
+describe('second-opinion Windows replacement inode safety', () => {
+  it.each(['hard link', 'symlink'])('preserves read-only inode permissions for a %s output', (kind) => {
+    const f = fixture()
+    const target = join(f.root, 'surviving-output')
+    writeFileSync(target, 'OLD\nEXIT=0\n')
+    if (kind === 'hard link') linkSync(target, f.out)
+    else symlinkSync(target, f.out, 'file')
+    chmodSync(target, 0o444)
+    const mode = statSync(target).mode
+    windowsOutputSeam(f)
+    const result = launch(f, f.module)
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('read-only rename')
+    expect(statSync(target).mode).toBe(mode)
+    expect(readFileSync(target, 'utf8')).toBe('OLD\nEXIT=0\n')
+    expect(readFileSync(f.out, 'utf8')).toBe('OLD\nEXIT=0\n')
+    expect(lstatSync(f.out).isSymbolicLink()).toBe(kind === 'symlink')
+    expect(existsSync(f.marker)).toBe(false)
+    expect(readdirSync(f.root).filter(name => name.includes('.refusal-'))).toEqual([])
+  })
+
+  it('preserves the retry error when restoring read-only permissions also fails', () => {
+    const f = fixture()
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    chmodSync(f.out, 0o444)
+    windowsOutputSeam(f, true, 'EACCES', true)
+    const result = launch(f, f.module)
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('retry denied')
+    expect(result.stderr).not.toContain('rollback denied')
+    expect(readFileSync(f.out, 'utf8')).toBe('OLD\nEXIT=0\n')
+    expect(existsSync(f.marker)).toBe(false)
+    expect(readdirSync(f.root).filter(name => name.includes('.refusal-'))).toEqual([])
+  })
+})
+
+function filesystemSeam(f: ReturnType<typeof fixture>, source: string, platform?: string) {
+  const loader = readFileSync(f.loader, 'utf8').replace('export async function load', 'async function load')
+  writeFileSync(f.loader, loader + `
+    export async function windowsLoad(url, context, next) {
+      if (url.endsWith('/lib/host/second-opinion-filesystem.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(source)} };
+      if (${Boolean(platform)} && url.endsWith('/lib/host/adapter.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(`export const hostAdapter = { platform: ${JSON.stringify(platform)} }`)} };
+      return load(url, context, next);
+    }
+    export { windowsLoad as load };
+  `)
+}
 
 function forceTemporaryCollision(f: ReturnType<typeof fixture>) {
   const wrapper = `\nfunction writeFileSync(file, text, options) {
@@ -147,7 +286,7 @@ describe('second-opinion admission round 3 publication', () => {
 
   it('refuses a synchronous null result after the deadline', () => {
     const f = fixture('export default () => { const end = Date.now() + 300; while (Date.now() < end) {} return null }')
-    expectRefusal(f, f.module, 'timed out')
+    expectRefusal(f, f.module, 'timed out', 100)
   })
 })
 
@@ -164,14 +303,16 @@ describe('second-opinion pending policy failures', () => {
   it('refuses before importing when pending publication is impossible', () => {
     const f = fixture(`process.stderr.write('POLICY IMPORTED'); export default () => null`)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
-    chmodSync(f.out, 0o444)
-    chmodSync(f.root, 0o555)
-    try {
-      const result = launch(f, f.module)
-      expect(result.stderr.includes('POLICY IMPORTED')).toBe(false)
-      expect(result.status).toBe(3)
-      expect(existsSync(f.marker)).toBe(false)
-    } finally { chmodSync(f.root, 0o755) }
+    // Directory chmod does not deny writes on Windows. Inject the actual
+    // publication failure while the read-only replacement test uses native fs.
+    filesystemSeam(f, `export * from 'node:fs';
+      export function writeFileSync() { throw new Error('publication denied') }
+      export function openSync() { throw new Error('publication denied') }`)
+    const result = launch(f, f.module)
+    expect(result.stderr.includes('POLICY IMPORTED')).toBe(false)
+    expect(result.stderr).toContain('publication denied')
+    expect(result.status).toBe(3)
+    expect(existsSync(f.marker)).toBe(false)
   })
 })
 
@@ -237,7 +378,7 @@ describe('second-opinion admission completion and identity', () => {
   ])('bounds a never-settling %s and replaces stale success', (_name, source) => {
     const f = fixture(source)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
-    expectRefusal(f, f.module, 'timed out')
+    expectRefusal(f, f.module, 'timed out', 100)
   })
 
   it('replaces read-only stale success on refusal', () => {
@@ -246,6 +387,8 @@ describe('second-opinion admission completion and identity', () => {
     chmodSync(f.out, 0o444)
     expectRefusal(f, f.module, 'policy refuses')
   })
+
+  registerWindowsPublicationTests()
 
   it('formats unprintable throws and replaces stale success', () => {
     const f = fixture('export default () => { throw Object.create(null) }')
@@ -299,7 +442,7 @@ describe('second-opinion worker containment', () => {
     const f = fixture(source)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
     const started = performance.now()
-    expectRefusal(f, f.module, cause)
+    expectRefusal(f, f.module, cause, cause === 'timed out' ? 100 : 5000)
     expect(performance.now() - started < 2000).toBe(true)
   })
 })
