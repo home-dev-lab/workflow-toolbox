@@ -62,15 +62,15 @@ function registerEvidenceContracts() {
   contract('reports evidence provenance for every question', platforms, (platform) => {
     const host = contractHost(platform)
     if (useRealHost) expect(host.platform).toBe(platform)
-    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '35501457364' })
+    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '38190362728' })
   })
 }
 
 function registerMemoryContracts() {
   it.each([
-    ['linux', { mib: 14609, source: 'MemAvailable from /proc/meminfo' }],
-    ['darwin', { mib: 3099, source: 'free, inactive, and speculative pages from vm_stat' }],
-    ['win32', { mib: 13699, source: 'free memory from os.freemem()' }],
+    ['linux', { mib: 14569, source: 'MemAvailable from /proc/meminfo' }],
+    ['darwin', { mib: 3011, source: 'free, inactive, and speculative pages from vm_stat' }],
+    ['win32', { mib: 13598, source: 'free memory from os.freemem()' }],
   ] as const)('reads recorded available memory on %s', (platform, expected) => {
     expect(evidenceHost(platform).readAvailableMemory()).toEqual(expected)
   })
@@ -109,13 +109,12 @@ function registerRelationshipContracts() {
     if (useRealHost) {
       expect(result.status).toBe('known')
       expect(result.processes.find((row: { pid: number }) => row.pid === process.pid)?.parentPid).toBe(process.ppid)
-    } else if (platform === 'win32') {
-      expect(result).toEqual({ status: 'unavailable', processes: [], reason: 'process table command exited 1' })
     } else {
       expect(result.status).toBe('known')
       expect(result.processes.length).toBeGreaterThan(1)
       expect(result.processes.every((row: { pid: number, parentPid: number }) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.parentPid))).toBe(true)
-      expect(result.processes.find((row: { pid: number }) => row.pid === 1)?.parentPid).toBe(0)
+      // The root of the captured tree: init on POSIX, the System process (pid 4) on Windows.
+      expect(result.processes.find((row: { pid: number }) => row.pid === (platform === 'win32' ? 4 : 1))?.parentPid).toBe(0)
     }
   })
 }

@@ -2,14 +2,14 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "spawn-shims",
-    "capturedAt": "2026-09-22T23:06:50.676Z",
+    "capturedAt": "2026-10-12T01:03:28.691Z",
     "command": "node spawn-shims.mjs D:\\a\\workflow-toolbox\\workflow-toolbox\\probes\\host-platform\\evidence\\windows-latest\\spawn-shims.json",
-    "runId": "35795762873",
-    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "windows-latest",
       "os": "win25-vs2026",
-      "version": "20260907.229.1"
+      "version": "20260925.250.1"
     },
     "osRelease": {
       "platform": "win32",
@@ -18,7 +18,7 @@
       "arch": "x64"
     },
     "tools": {
-      "node": "v24.20.0",
+      "node": "v24.21.0",
       "procps": {
         "status": "not_used",
         "reason": "procps is not the process-table provider on this OS"
@@ -28,14 +28,14 @@
         "exitCode": 0,
         "signal": null,
         "error": null,
-        "raw": "7.6.5\r\n"
+        "raw": "7.6.6\r\n"
       }
     }
   },
   "measurements": {
     "missingCommand": {
       "name": "missing command, shell false",
-      "command": "wt-probe-command-that-does-not-exist-4396",
+      "command": "wt-probe-command-that-does-not-exist-6156",
       "options": {
         "shell": false
       },
@@ -46,10 +46,10 @@
         {
           "event": "error",
           "error": {
-            "message": "spawn wt-probe-command-that-does-not-exist-4396 ENOENT",
+            "message": "spawn wt-probe-command-that-does-not-exist-6156 ENOENT",
             "code": "ENOENT",
             "errno": -4058,
-            "syscall": "spawn wt-probe-command-that-does-not-exist-4396"
+            "syscall": "spawn wt-probe-command-that-does-not-exist-6156"
           }
         },
         {
@@ -61,11 +61,11 @@
       "stdout": "",
       "stderr": "",
       "timedOut": false,
-      "durationMilliseconds": 10.2299
+      "durationMilliseconds": 6.8632
     },
     "existingNonExecutable": {
       "name": "existing non-executable file, shell false",
-      "command": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-spawn-probe-jbOvVZ\\not-executable.txt",
+      "command": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-spawn-probe-sj7oYT\\not-executable.txt",
       "options": {
         "shell": false
       },
@@ -81,7 +81,7 @@
       "stdout": "",
       "stderr": "",
       "timedOut": false,
-      "durationMilliseconds": 1.3807
+      "durationMilliseconds": 1.0694
     },
     "windowsCommandShim": {
       "bareShellFalse": {
@@ -112,7 +112,7 @@
         "stdout": "",
         "stderr": "",
         "timedOut": false,
-        "durationMilliseconds": 2.9444
+        "durationMilliseconds": 74.2463
       },
       "extensionShellFalse": {
         "name": "probe-shim.cmd, shell false",
@@ -132,7 +132,7 @@
         "stdout": "",
         "stderr": "",
         "timedOut": false,
-        "durationMilliseconds": 0.328
+        "durationMilliseconds": 0.3218
       },
       "bareShellTrue": {
         "name": "probe-shim, shell true",
@@ -141,7 +141,7 @@
           "shell": true
         },
         "spawnReturned": true,
-        "pid": 7092,
+        "pid": 8464,
         "synchronousError": null,
         "events": [
           {
@@ -158,7 +158,7 @@
         "stdout": "probe-shim-ran\r\n",
         "stderr": "",
         "timedOut": false,
-        "durationMilliseconds": 25.7517
+        "durationMilliseconds": 19.1934
       }
     }
   }

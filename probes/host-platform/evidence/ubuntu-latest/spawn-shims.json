@@ -2,14 +2,14 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "spawn-shims",
-    "capturedAt": "2026-09-22T23:06:31.071Z",
+    "capturedAt": "2026-10-12T01:03:07.085Z",
     "command": "node spawn-shims.mjs /home/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/ubuntu-latest/spawn-shims.json",
-    "runId": "35795762873",
-    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "ubuntu-latest",
       "os": "ubuntu24",
-      "version": "20260907.300.1"
+      "version": "20261004.327.1"
     },
     "osRelease": {
       "platform": "linux",
@@ -18,7 +18,7 @@
       "arch": "x64"
     },
     "tools": {
-      "node": "v24.20.0",
+      "node": "v24.21.0",
       "procps": {
         "command": "ps --version",
         "exitCode": 0,
@@ -35,7 +35,7 @@
   "measurements": {
     "missingCommand": {
       "name": "missing command, shell false",
-      "command": "wt-probe-command-that-does-not-exist-2107",
+      "command": "wt-probe-command-that-does-not-exist-2393",
       "options": {
         "shell": false
       },
@@ -46,10 +46,10 @@
         {
           "event": "error",
           "error": {
-            "message": "spawn wt-probe-command-that-does-not-exist-2107 ENOENT",
+            "message": "spawn wt-probe-command-that-does-not-exist-2393 ENOENT",
             "code": "ENOENT",
             "errno": -2,
-            "syscall": "spawn wt-probe-command-that-does-not-exist-2107"
+            "syscall": "spawn wt-probe-command-that-does-not-exist-2393"
           }
         },
         {
@@ -61,11 +61,11 @@
       "stdout": "",
       "stderr": "",
       "timedOut": false,
-      "durationMilliseconds": 3.794142
+      "durationMilliseconds": 5.966211
     },
     "existingNonExecutable": {
       "name": "existing non-executable file, shell false",
-      "command": "/tmp/wt-host-spawn-probe-JMkQVY/not-executable",
+      "command": "/tmp/wt-host-spawn-probe-h8U6YI/not-executable",
       "options": {
         "shell": false
       },
@@ -76,10 +76,10 @@
         {
           "event": "error",
           "error": {
-            "message": "spawn /tmp/wt-host-spawn-probe-JMkQVY/not-executable EACCES",
+            "message": "spawn /tmp/wt-host-spawn-probe-h8U6YI/not-executable EACCES",
             "code": "EACCES",
             "errno": -13,
-            "syscall": "spawn /tmp/wt-host-spawn-probe-JMkQVY/not-executable"
+            "syscall": "spawn /tmp/wt-host-spawn-probe-h8U6YI/not-executable"
           }
         },
         {
@@ -91,7 +91,7 @@
       "stdout": "",
       "stderr": "",
       "timedOut": false,
-      "durationMilliseconds": 1.638057
+      "durationMilliseconds": 2.146882
     },
     "windowsCommandShim": {
       "status": "not_applicable",

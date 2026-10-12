@@ -2,14 +2,14 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "path-resolve",
-    "capturedAt": "2026-09-20T09:08:06.640Z",
+    "capturedAt": "2026-10-12T01:03:06.962Z",
     "command": "node path-resolve.mjs /home/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/ubuntu-latest/path-resolve.json",
-    "runId": "35501457364",
-    "commitSha": "2ca53474daa3cf4368b62336ada74b15963023fd",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "ubuntu-latest",
       "os": "ubuntu24",
-      "version": "20260907.300.1"
+      "version": "20261004.327.1"
     },
     "osRelease": {
       "platform": "linux",
@@ -18,7 +18,7 @@
       "arch": "x64"
     },
     "tools": {
-      "node": "v24.20.0",
+      "node": "v24.21.0",
       "procps": {
         "command": "ps --version",
         "exitCode": 0,
@@ -34,19 +34,19 @@
   },
   "tempDirectory": {
     "reportedRoot": "/tmp",
-    "createdPath": "/tmp/wt-host-path-probe-eVrhCU",
+    "createdPath": "/tmp/wt-host-path-probe-qL4nN9",
     "machineEvidence": {
       "status": "measured",
-      "input": "/tmp/wt-host-path-probe-eVrhCU",
-      "realpath": "/tmp/wt-host-path-probe-eVrhCU"
+      "input": "/tmp/wt-host-path-probe-qL4nN9",
+      "realpath": "/tmp/wt-host-path-probe-qL4nN9"
     }
   },
   "symlinkedDirectory": {
     "creation": "measured",
     "status": "measured",
-    "input": "/tmp/wt-host-path-probe-eVrhCU/directory-link",
-    "realpath": "/tmp/wt-host-path-probe-eVrhCU/target",
-    "targetRealpath": "/tmp/wt-host-path-probe-eVrhCU/target"
+    "input": "/tmp/wt-host-path-probe-qL4nN9/directory-link",
+    "realpath": "/tmp/wt-host-path-probe-qL4nN9/target",
+    "targetRealpath": "/tmp/wt-host-path-probe-qL4nN9/target"
   },
   "windows83ShortForm": {
     "status": "not_applicable",
