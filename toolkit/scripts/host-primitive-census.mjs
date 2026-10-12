@@ -30,7 +30,8 @@ const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/l
 // the adopt-check hook gained one lstatSync to report a symlinked script.
 // It may only decrease as calls move behind the adapter.
 // The journal replaces the old reminder's raw filesystem reads with host-adapter operations.
-export const HOST_PRIMITIVE_CEILING = 1880
+// Retiring the work-journal hooks deletes work-journal-recorders.mjs and its one hard-coded path separator.
+export const HOST_PRIMITIVE_CEILING = 1879
 
 export function sourceFiles(root) {
   const ignoredSource = pathsRegexSource(listGitIgnoredPaths(root).paths, root, root)

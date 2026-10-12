@@ -137,7 +137,9 @@ describe('raw host primitive quality ratchet', () => {
     // The orphan watch adds its attribution module; it reads only the process table it is given.
     // The SDK pilot's phase-session opener adds one; its directory listing lives in bin/lib/host.
     // The SessionStart source predicate (session-start-source.mjs) adds one pure module with no host operation.
-    expect(result.perimeterFiles).toBe(284)
+    // Retiring the work-journal hooks deletes five perimeter files (the hook script, its core, recorders,
+    // Git-capture and lifecycle modules); their host access was already behind the adapter.
+    expect(result.perimeterFiles).toBe(279)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
