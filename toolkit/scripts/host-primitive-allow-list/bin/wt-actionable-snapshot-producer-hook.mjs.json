@@ -9,8 +9,8 @@
   "tmpdir": 1,
   "lstatSync": 1,
   "readFileSync": 3,
-  "mkdirSync": 4,
-  "writeFileSync": 4,
+  "mkdirSync": 2,
+  "writeFileSync": 2,
   "execFileSync": 1,
   "existsSync": 1
 }

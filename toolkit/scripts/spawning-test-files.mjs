@@ -20,6 +20,7 @@ const PROCESS_FUNCTIONS = new Set([
 // this complete, mechanically generated population is accepted in one pass.
 export const spawningTestFiles = [
   'examples/test/dev-implement-plugin-root-resolution.test.ts',
+  'packages/build/test/actionability-bounded-refresh.test.ts',
   'packages/build/test/actionability-gate.test.ts',
   'packages/build/test/actionability-planka-producer.test.ts',
   'packages/build/test/adopt-agents-overlap.test.ts',

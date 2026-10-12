@@ -50,13 +50,15 @@ import { checkDescriptionsPresent, extractCards, computeSnapshot, resolveBoardPr
 import { parseDependsOn } from './lib/depends-on-parser.mjs'
 import { stateRoot as priorArtStateRoot, cardIndexPath } from './lib/prior-art-state-paths.mjs'
 import { buildCardIndex } from './lib/prior-art-index-core.mjs'
+import { atomicWriteJson, readJsonOrNull } from './lib/host/actionability-files.mjs'
+import { DEFAULT_REFRESH_TIMEOUT_MS, RefreshTimeout, isRefreshTimeout, remainingMilliseconds } from './lib/actionability-refresh-deadline.mjs'
 
 const DEPENDS_ON_PARSER_RELATIVE = '.claude/scripts/lib/depends-on-parser.mjs'
 const BOARD_POINTER_RELATIVE = '.claude/planka.json'
 const DEPENDS_ON_TIMEOUT_MS = Number(process.env.WT_ACTIONABLE_DEPS_TIMEOUT_MS || 5000)
 const JOURNAL_MAX_ENTRIES = 100
 const JOURNAL_FIELD_MAX_CHARS = 500
-const MAX_SPILL_BYTES = Number(process.env.WT_ACTIONABLE_MAX_SPILL_BYTES || (8 * 1024 * 1024))
+const MAX_SPILL_BYTES = Number(process.env.WT_ACTIONABLE_MAX_SPILL_BYTES || (64 * 1024 * 1024))
 
 function boundedText(value) {
   return String(value ?? '').slice(0, JOURNAL_FIELD_MAX_CHARS)
@@ -151,14 +153,23 @@ function recordAttempt(cwd, ok, reason, detail) { writeJournalEntry(stateRoot(),
 // instead of throwing was a real defect (review finding): `{}` or
 // `{ids:"bad"}` would have silently read as "no dependency" — exactly the
 // wrong-answer-not-silence failure this producer exists to refuse.
-function makeDepsResolver(parserPath) {
-  return (description) => {
-    const out = execFileSync(process.execPath, [parserPath], {
-      input: description || '',
-      encoding: 'utf8',
-      timeout: DEPENDS_ON_TIMEOUT_MS,
+function runProjectParser(parserPath, description, deadlineAt) {
+  const remaining = remainingMilliseconds(deadlineAt, 'snapshot computation')
+  try {
+    return execFileSync(process.execPath, [parserPath], {
+      input: description || '', encoding: 'utf8',
+      timeout: Math.min(DEPENDS_ON_TIMEOUT_MS, remaining), killSignal: 'SIGKILL',
       stdio: ['pipe', 'pipe', 'ignore'],
     })
+  } catch (error) {
+    if (error.code === 'ETIMEDOUT' && remaining <= DEPENDS_ON_TIMEOUT_MS) throw new RefreshTimeout('snapshot computation')
+    throw error
+  }
+}
+
+function makeDepsResolver(parserPath, deadlineAt) {
+  return (description) => {
+    const out = runProjectParser(parserPath, description, deadlineAt)
     const parsed = JSON.parse(out)
     if (!Array.isArray(parsed?.ids) || !Array.isArray(parsed?.unparseable)) {
       throw new Error('depends-on-parser reply has non-array ids/unparseable')
@@ -192,18 +203,32 @@ function writeCardIndex(cwd, index) {
   writeFileSync(path, JSON.stringify(index), 'utf8')
 }
 
-function writeSnapshot(cwd, fields) {
-  const path = snapshotPath(stateRoot(), cwd)
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, JSON.stringify(fields), 'utf8')
+class SupersededSnapshot extends Error {
+  constructor(snapshotAt) {
+    super('newer board acquisition already published')
+    this.snapshotAt = snapshotAt
+  }
 }
 
-function writeProducerState(cwd, lastOutcome, lastReason = '', lastDetail = '') {
+function writeSnapshot(cwd, fields, deadlineAt) {
+  const path = snapshotPath(stateRoot(), cwd)
+  atomicWriteJson(path, fields, () => {
+    const existing = readJsonOrNull(path)
+    remainingMilliseconds(deadlineAt, 'snapshot publication')
+    if (Number.isFinite(existing?.at) && existing.at > fields.at) throw new SupersededSnapshot(existing.at)
+  })
+}
+
+function writeProducerState(cwd, lastOutcome, lastReason = '', lastDetail = '', extra = {}) {
   const path = projectStatePath(stateRoot(), cwd)
-  mkdirSync(dirname(path), { recursive: true })
   const state = { optedIn: true, heartbeatAt: Date.now(), lastOutcome, lastReason: boundedText(lastReason) }
   if (lastDetail) state.lastDetail = boundedText(lastDetail)
-  writeFileSync(path, JSON.stringify(state), 'utf8')
+  state.snapshotAt = readJsonOrNull(snapshotPath(stateRoot(), cwd))?.at ?? null
+  atomicWriteJson(path, { ...state, ...extra })
+}
+
+export function recordBoardReadStarted(cwd, deadlineAt) {
+  writeProducerState(cwd, 'reading', '', '', { deadlineAt })
 }
 
 // Records a refusal in the journal, then declares it in the producer state the Stop gate reads.
@@ -233,6 +258,41 @@ function recordExtractionFailure(cwd, extraction, spillRefused) {
   return spillRefused ? 'spill-payload-refused' : reason
 }
 
+function acquisitionTime(input) {
+  return Number.isFinite(input.acquisitionStartedAt) ? input.acquisitionStartedAt : Date.now()
+}
+
+function producerDeadline(input, acquiredAt) {
+  return Number.isFinite(input.deadlineAt) ? input.deadlineAt : acquiredAt + DEFAULT_REFRESH_TIMEOUT_MS
+}
+
+function computationFailure(cwd, error, deadlineAt) {
+  const reason = isRefreshTimeout(error, deadlineAt) ? 'refresh-timeout' : 'snapshot-computation-failed'
+  return refuseSnapshot(cwd, 'unavailable', reason, error?.message ?? error)
+}
+
+function recordSuperseded(cwd, error) {
+  recordAttempt(cwd, true, 'superseded', error.message)
+  try { writeProducerState(cwd, 'superseded', '', '', { snapshotAt: error.snapshotAt }) }
+  catch (stateError) { recordAttempt(cwd, false, 'producer-state-write-failed', stateError?.message ?? stateError) }
+}
+
+function publishSnapshot(cwd, fields, snapshot, deadlineAt) {
+  try {
+    writeSnapshot(cwd, fields, deadlineAt)
+  } catch (error) {
+    if (error instanceof SupersededSnapshot) return recordSuperseded(cwd, error)
+    const reason = isRefreshTimeout(error, deadlineAt) ? 'refresh-timeout' : 'snapshot-write-failed'
+    return refuseSnapshot(cwd, 'unavailable', reason, error?.message ?? error)
+  }
+  recordAttempt(cwd, true, 'snapshot-written', snapshot.countedScope)
+  try {
+    writeProducerState(cwd, 'snapshot-written')
+  } catch (error) {
+    recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
+  }
+}
+
 export function produceSnapshot(input) {
   if (input.hook_event_name && input.hook_event_name !== 'PostToolUse') return
   const toolName = input.tool_name
@@ -244,6 +304,8 @@ export function produceSnapshot(input) {
   // repository or worktree.
   const triggeringCwd = typeof input.cwd === 'string' && input.cwd ? resolve(input.cwd) : ''
   if (!triggeringCwd) return
+  const acquiredAt = acquisitionTime(input)
+  const deadlineAt = producerDeadline(input, acquiredAt)
   // The board pointer gates the ACTIONABILITY SNAPSHOT, never the read itself.
   // Resolving it here but deferring the refusal keeps the prior-art index below
   // reachable on a project that has no pointer at all — which is exactly what
@@ -258,7 +320,7 @@ export function produceSnapshot(input) {
     recordAttempt(triggeringCwd, false, 'no-board-pointer', `no ${BOARD_POINTER_RELATIVE} for this project or its ancestors`)
   } else {
     try {
-      writeProducerState(boardProjectDir, 'reading')
+      recordBoardReadStarted(boardProjectDir, deadlineAt)
     } catch (error) {
       recordAttempt(boardProjectDir, false, 'producer-state-write-failed', error?.message ?? error)
     }
@@ -312,7 +374,7 @@ export function produceSnapshot(input) {
 
   const parserPath = join(cwd, DEPENDS_ON_PARSER_RELATIVE)
   const projectParser = existsSync(parserPath)
-  const resolveDeps = projectParser ? makeDepsResolver(parserPath) : parseDependsOn
+  const resolveDeps = projectParser ? makeDepsResolver(parserPath, deadlineAt) : parseDependsOn
 
   const boardId =
     (input.tool_input && typeof input.tool_input === 'object' && typeof input.tool_input.boardId === 'string')
@@ -321,10 +383,11 @@ export function produceSnapshot(input) {
 
   let snapshot
   try {
-    snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: Date.now(), parserKind: projectParser ? 'project parser' : 'shipped parser' })
+    remainingMilliseconds(deadlineAt, 'snapshot computation')
+    snapshot = computeSnapshot({ cards: extraction.cards, resolveDeps, boardId, now: acquiredAt, parserKind: projectParser ? 'project parser' : 'shipped parser' })
   } catch (error) {
     // A card's dependency line could not be resolved (parser died mid-scan) — write nothing.
-    return refuseSnapshot(cwd, 'unavailable', 'snapshot-computation-failed', error?.message ?? error)
+    return computationFailure(cwd, error, deadlineAt)
   }
 
   const fields = {
@@ -345,17 +408,7 @@ export function produceSnapshot(input) {
   // Two writes, two failure reasons: the snapshot-file remedy is only true of the snapshot write.
   // Writing must never turn this hook into a blocker — the consumer's own fail-closed
   // missing/stale path is the safety net if either write fails.
-  try {
-    writeSnapshot(cwd, fields)
-  } catch (error) {
-    return refuseSnapshot(cwd, 'unavailable', 'snapshot-write-failed', error?.message ?? error)
-  }
-  recordAttempt(cwd, true, 'snapshot-written', snapshot.countedScope)
-  try {
-    writeProducerState(cwd, 'snapshot-written')
-  } catch (error) {
-    recordAttempt(cwd, false, 'producer-state-write-failed', error?.message ?? error)
-  }
+  publishSnapshot(cwd, fields, snapshot, deadlineAt)
 }
 
 function main() {

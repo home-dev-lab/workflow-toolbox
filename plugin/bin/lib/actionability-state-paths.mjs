@@ -43,6 +43,10 @@ export function projectStatePath(root, cwd) {
   return join(root, `${projectSlug(cwd)}.project-state.json`)
 }
 
+export function autoRefreshPath(root, cwd) {
+  return join(root, `${projectSlug(cwd)}.auto-refresh.json`)
+}
+
 export function sessionStatePath(root, cwd, sessionId) {
   const safeSessionId = String(sessionId || 'unknown').replace(/[^A-Za-z0-9._-]/g, '-')
   return join(root, `${projectSlug(cwd)}--${safeSessionId}.session-state.json`)
