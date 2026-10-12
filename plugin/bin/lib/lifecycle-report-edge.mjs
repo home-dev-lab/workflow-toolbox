@@ -7,6 +7,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { costReportSection } from './run-cost-core.mjs'
 import { readWorktreeRegular } from './host/lane-host-dir.mjs'
 import { hostPlatform } from './host/platform.mjs'
+import { acceptableReportStatus, inodeIdentity, literalGitEnvironment, pathIdentity, selectDeliveryPaths, stageDeliverySelection } from './lifecycle-selection.mjs'
 
 const WORKTREE_RETENTION_FILE = path.join('.lane', 'worktree-retention.json')
 const COST_BLOCK = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/g
@@ -35,6 +36,9 @@ function fileStat(file) {
 // Any other git failure throws before the lifecycle writes anything (fail closed, retryable).
 export function artefactIdentitiesAtStart(root, git = execFileSync) {
   const identities = new Set()
+  identities.paths = new Map()
+  identities.untracked = new Map()
+  let tracked = new Set()
   const visit = (name) => {
     const file = path.join(root, name)
     let stat
@@ -48,12 +52,17 @@ export function artefactIdentitiesAtStart(root, git = execFileSync) {
         if (error?.code === 'EACCES' || error?.code === 'ENOENT') return
         throw error
       }
-      for (const child of children) visit(path.join(name, child))
-    } else if (stat.isFile() && !stat.isSymbolicLink()) identities.add(fileIdentity(stat))
+      for (const child of children) visit(path.posix.join(name, child))
+    } else {
+      rememberBaselinePath(identities, tracked, name, file)
+      if (stat.isFile() && !stat.isSymbolicLink()) identities.add(fileIdentity(stat))
+    }
   }
   let names
   try {
-    names = git('git', ['ls-files', '--cached', '--others', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 })
+    names = git('git', ['ls-files', '--cached', '--others', '-z'], { cwd: root, encoding: 'utf8', env: literalGitEnvironment(), stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 })
+    tracked = new Set(git('git', ['ls-files', '--cached', '-z'], { cwd: root, encoding: 'utf8', env: literalGitEnvironment() }).split('\0').filter(Boolean))
+    identities.untracked.notIgnoredAtStart = new Set(git('git', ['ls-files', '--others', '--exclude-standard', '-z'], { cwd: root, encoding: 'utf8', env: literalGitEnvironment(), maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean))
   } catch (error) {
     if (!/not a git repository/.test(String(error?.stderr))) throw error
     // Without a repository there is no listing to trust: baseline the whole tree instead, so
@@ -63,6 +72,11 @@ export function artefactIdentitiesAtStart(root, git = execFileSync) {
   }
   for (const name of names.split('\0').filter(Boolean)) visit(name)
   return identities
+}
+
+function rememberBaselinePath(identities, tracked, name, file) {
+  identities.paths.set(name, pathIdentity(file))
+  if (!tracked.has(name)) identities.untracked.set(name, pathIdentity(file))
 }
 
 function readBackDeclaredArtefacts({ root, report, artefactsAtStart, sha256 }) {
@@ -90,7 +104,7 @@ function readBackDeclaredArtefacts({ root, report, artefactsAtStart, sha256 }) {
       throw new Error(`declared artefact path escapes the worktree: ${declaration}`)
     }
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`declared artefact is not a regular file: ${declaration}`)
-    if (artefactsAtStart.has(fileIdentity(stat))) {
+    if (artefactPredates(artefactsAtStart, relative, stat)) {
       throw new Error(`declared artefact predates this run: ${declaration}`)
     }
     const bytes = readWorktreeRegular(requested, null, canonicalRoot)
@@ -430,14 +444,13 @@ export function completeLifecycleReport({
       const artifacts = readBackDeclaredArtefacts({ root, report, artefactsAtStart, sha256 })
       const base = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
       state.report.base = base
-      git('git', ['add', '-A'], { cwd: root })
-      state.report.stage = 'staged'
+      stageReportSelection({ root, artefactsAtStart, state, laneDir, readRegularFile, writeRegularFile, git })
       if (treeSignature(root) !== state.verifySnapshot.tree) {
         git('git', ['reset'], { cwd: root })
         state.report.stage = 'idle'
         return refusal('report->awaiting_fidelity', 'tree signature unchanged after staging', root)
       }
-      try { state.report.tree = git('git', ['write-tree'], { cwd: root, encoding: 'utf8' }).trim() } catch { state.report.tree = null }
+      state.report.tree = git('git', ['write-tree'], { cwd: root, encoding: 'utf8' }).trim()
       if (artifacts.length > 0) {
         const baseTree = git('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim()
         if (state.report.tree === baseTree) {
@@ -468,6 +481,7 @@ export function completeLifecycleReport({
       } catch {
         try { head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() } catch {
           state.report.stage = 'commit-unknown'
+          git('git', ['reset'], { cwd: root })
           return refusal('report->awaiting_fidelity', 'commit unknown, retry', root)
         }
       }
@@ -476,7 +490,7 @@ export function completeLifecycleReport({
           head = base
         } else {
           git('git', ['reset'], { cwd: root })
-          state.report = { stage: 'idle', base: null, head: null, tree: null, delivery: null }
+          state.report = resetReportState(state.report)
           return refusal('report->awaiting_fidelity', 'changed HEAD; for a gitignored delivery add "- Delivered artefact: `relative/path`" under ## Implemented', root)
         }
       }
@@ -484,10 +498,8 @@ export function completeLifecycleReport({
       state.report.head = head
       state.report.delivery ??= { mode: 'commit', artifacts }
       if (commitError) throw commitError
-      if (git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) {
-        return refusal('report->awaiting_fidelity', 'clean tree', root)
-      }
     }
+    if (!acceptableReportStatus(root, artefactsAtStart.untracked, git)) return residualStatusRefusal(root, git, refusal)
     archiveLifecycle({
       root,
       archiveRoot,
@@ -510,10 +522,7 @@ export function completeLifecycleReport({
     })
     state.report.stage = 'archived'
   } catch (error) {
-    if (state.report.stage === 'staged') {
-      try { git('git', ['reset'], { cwd: root }) } catch {}
-      state.report = { stage: 'idle', base: null, head: null, tree: null, delivery: null }
-    }
+    resetFailedReport(state, root, git)
     return refusal(
       'report->awaiting_fidelity',
       `${state.report.stage === 'committed' ? 'archive' : 'commit'} (${error instanceof Error ? error.message : String(error)})`,
@@ -521,4 +530,42 @@ export function completeLifecycleReport({
     )
   }
   return null
+}
+
+function resetReportState(report) {
+  return { ...report, stage: 'idle', base: null, head: null, tree: null, delivery: null }
+}
+
+function resetFailedReport(state, root, git) {
+  if (!['staged', 'committed', 'commit-unknown'].includes(state.report.stage)) return
+  try { git('git', ['reset'], { cwd: root }) } catch {}
+  if (state.report.stage === 'staged') state.report = resetReportState(state.report)
+}
+
+function artefactPredates(baseline, relative, stat) {
+  return baseline.paths?.has(relative.split(path.sep).join('/')) || baseline.has(fileIdentity(stat)) ||
+    [...(baseline.untracked?.values() ?? [])].some((original) => inodeIdentity(original) === inodeIdentity(fileIdentity(stat)))
+}
+
+function stageReportSelection({ root, artefactsAtStart, state, laneDir, readRegularFile, writeRegularFile, git }) {
+  state.report.selection ??= selectDeliveryPaths(root, artefactsAtStart.untracked, git)
+  state.report.untrackedExcluded = state.report.selection.untrackedExcluded
+  recordReportSelection({ state, laneDir, readRegularFile, writeRegularFile })
+  state.report.stage = 'staged'
+  git('git', ['reset'], { cwd: root })
+  stageDeliverySelection(root, state.report.selection, git)
+}
+
+function residualStatusRefusal(root, git, refusal) {
+  git('git', ['reset'], { cwd: root })
+  return refusal('report->awaiting_fidelity', 'clean tree except excluded untracked paths', root)
+}
+
+function recordReportSelection({ state, laneDir, readRegularFile, writeRegularFile }) {
+  writeRegularFile(path.join(laneDir, 'staging-selection.json'), `${JSON.stringify(state.report, null, 2)}\n`)
+  const excluded = state.report.untrackedExcluded
+  if (excluded.length === 0) return
+  const log = path.join(laneDir, 'sdk-pilot.log')
+  const lines = excluded.map((entry) => `staging excluded ${JSON.stringify(entry.path)}: ${entry.reason}`).join('\n')
+  writeRegularFile(log, `${readRegularFile(log) ?? ''}${lines}\n`)
 }

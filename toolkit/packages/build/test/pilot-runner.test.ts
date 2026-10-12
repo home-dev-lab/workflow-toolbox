@@ -91,6 +91,7 @@ function freshFixture() {
   mkdirSync(join(f.dir, 'toolkit'))
   writeFileSync(join(f.dir, 'toolkit', 'package.json'), JSON.stringify({ devDependencies: { '@anthropic-ai/claude-agent-sdk': '*' } }))
   spawnSync('git', ['add', 'toolkit/package.json'], { cwd: f.dir })
+  expect(spawnSync('git', ['commit', '-qm', 'target package fixture'], { cwd: f.dir }).status).toBe(0)
   return f
 }
 function fakeSdk(root: string, marker: string, version = '0.3.280') {
@@ -230,8 +231,24 @@ function partialReportTools(options: { mcpServers: Record<string, unknown> }) {
   return { server, transition, artifact }
 }
 
-describe('SDK pilot runner', () => {
+  it.each(['tracked', 'staged'])('SDK runner dirty admission lock: refuses %s work before query starts', async (kind) => {
+    const f = phaseFixture(); let queried = false
+    writeFileSync(join(f.dir, 'tracked.txt'), 'owner edit\n')
+    if (kind === 'staged') expect(spawnSync('git', ['add', 'tracked.txt'], { cwd: f.dir }).status).toBe(0)
+    await expect(runSessions(f, () => { queried = true; throw new Error('unexpected query') })).rejects.toThrow(/tracked.txt.*commit them or move them aside, then relaunch/)
+    expect(queried).toBe(false)
+  })
 
+  it('SDK runner new-index admission lock: refuses a newly staged owner file before query starts', async () => {
+    const f = phaseFixture(); let queried = false
+    writeFileSync(join(f.dir, 'private.txt'), 'owner\n')
+    expect(spawnSync('git', ['add', 'private.txt'], { cwd: f.dir }).status).toBe(0)
+    await expect(runSessions(f, () => { queried = true; throw new Error('unexpected query') })).rejects.toThrow(/private.txt.*commit them or move them aside, then relaunch/)
+    expect(queried).toBe(false)
+    expect(spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: f.dir, encoding: 'utf8' }).stdout).toBe('private.txt\n')
+  })
+
+describe('SDK pilot runner', () => {
   it('account gate: mismatch refuses before an eager SDK reads a user prompt and records both accounts', async () => {
     const f = fixture(); const fake = accountStream({ email: 'other@example.com', apiProvider: 'firstParty' }); const logs: string[] = []
     const result = await runPilot(accountOptions(f, 'owner@example.com'), { query: fake.query, resolvePilotModels: models, log: (line: string) => logs.push(line) })

@@ -164,13 +164,23 @@ form and Node path APIs for resolution and real-path containment on each host.
 | plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, non-empty `## Gates`, `## Quality coverage` with non-empty `Changed artefacts:` and `Seams:` lines (`Seams: none: <reason>` is allowed), and `## State and recovery` with non-empty `Ownership:`, `Writers:`, `Terminal paths:` and `Published data:` lines (`Published data: N/A: <reason>` is allowed), or only `N/A: <reason>` when no state or data boundary is touched. When card Definition-of-done criteria are present, it also requires `## Card terms: reading chosen` (one `- <term>: <reading>` line per ambiguous card term, or the documented `none` line) and `## Acceptance` quoting every folded criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. Checked headings are exact, case-insensitive, with optional trailing colon/spaces; labels may be bulleted or bold. Missing or empty sections/labels, bare `N/A`, and missing/reworded criteria are refused with a named diagnostic and example. The critic checks the truth of each answer, including reasoned exemptions. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd -> verify | Attested lane receipt and non-empty report. The initial FULL `tdd-brief.md` has the plan `## Tasks` block byte-identically; later TDD fix briefs carry runner-owned review findings and focused-gate instructions. |
-| verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
+| verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test`, plus `quality` when the current `toolkit/package.json` declares a non-empty string `scripts.quality`, have receipts ending `EXIT=0`, newer than the latest lane receipt, matching the current tree signature, and become a digest snapshot. |
 | review -> refutation, tdd, or report | Attested lane receipt and report verdict. `clear` reaches refutation; blocking `changes-requested` writes `review-findings.md` and reaches a TDD fix. Mechanical non-convergence reaches a partial report. |
 | refutation -> report, tdd, or partial report | Attested lane receipt and report verdict. `clear` reaches report; blocking `changes-requested` reaches a TDD fix unless non-convergence fires. |
 | report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
+
+The runner preflight refuses staged changes or tracked modifications: commit them or move them
+aside, then relaunch. Pre-existing untracked files are allowed. At lifecycle creation the runner
+captures their paths and identities, including ignored files. The report commit and independent
+review use one literal, NUL-separated selection: tracked changes and newly created nonignored
+paths, excluding that start baseline. A baseline path stays excluded even if edited, deleted,
+staged by a lane, or made visible by a `.gitignore` edit. Exclusions and their reasons appear in
+`.lane/staging-selection.json` and the runner log. Declared artefacts cannot reuse a start path.
+Staging failures reset the index; retries reuse the computed selection. First completion and
+commit recovery both require that only excluded untracked paths remain in Git status.
 
 ### Disputed Definition-of-done terms
 
@@ -257,7 +267,9 @@ at `medium`, hard code `opus` at `medium`. Explicit effort overrides take preced
 Each executor role's selected model determines its launcher independently: a provider/model uses a GPT lane,
 while a harness alias uses the Claude SDK. GPT models require lane consent even when another role runs on Claude.
 Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
-toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
+toolkit's `pnpm typecheck`, `pnpm lint`, conditional `pnpm quality`, or `pnpm test`. The list is resolved
+at each use from the current package scripts. Gate processes disable pnpm dependency verification
+before scripts run; their receipts warn about paths changed during a gate without deleting or excluding them.
 The gate, like the orchestrator's host gates, runs without the runner's own `WT_*` configuration
 (`WT_AGENT_SDK_PATH`, `WT_EXECUTOR_*_MODEL`, `WT_PLANKA_MCP_URL`, ...), so how the runner was launched
 cannot change the delivery's verdict; only `WT_SUITE_LOCK*`, `WT_TEST_MODE` and `WT_VITEST_MAX_WORKERS`
@@ -465,7 +477,7 @@ receipt must name every one or the pilot run is refused. No plugin name or host 
 Main freezes and verifies evidence with `wt-pilot-fidelity.mjs`. Run `freeze` with the worktree,
 bundle directory, card, session, base, head, and lane files; then run `verify --require-same-tree
 --require-head`. The v2 manifest has typed entries, a snapshot id, and a length-prefixed signature;
-freeze and verify admit only `typecheck`, `lint`, and `test` gate logs, lifecycle-enum lane/report
+freeze and verify admit `typecheck`, `lint`, `quality`, and `test` gate log formats, lifecycle-enum lane/report
 phases, and integer `EXIT=` values; they also reject unknown kinds, malformed top-level scalars,
 extra fields, duplicate names, incoherent commit heads, unsafe containment, and malformed evidence.
 Every unmatched file, including another `.lane/*.log`, requires explicit `--other-file` input.

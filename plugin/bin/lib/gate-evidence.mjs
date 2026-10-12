@@ -194,5 +194,9 @@ export function gateEnvironment(env = process.env) {
     if (/^WT_/i.test(key) && !KEEP.has(key.toUpperCase())) continue
     result[key] = value
   }
+  for (const key of Object.keys(result)) {
+    if (key.toLowerCase() === 'pnpm_config_verify_deps_before_run') result[key] = 'false'
+  }
+  result.pnpm_config_verify_deps_before_run = 'false'
   return result
 }
