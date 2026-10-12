@@ -4659,6 +4659,54 @@ const positiveLongCases = [
 for (const [name, operation, value, expected] of positiveLongCases) {
   await test(`linear positive ${name} watchdog`, () => recognizerWatchdog(operation, value, expected));
 }
+// op-output and environment-dump captured `(\S.*?)[ \t]*$`: the lazy value and the trailing blanks retried
+// each other on a run of blanks, quadratic in the run length.
+const dumpName = ['X', '_TOK', 'EN'].join('');
+const blankRunCases = [
+  ['op-output blank run', labelWord + ': a' + ' '.repeat(100000) + 'b\n', ['op-output']],
+  ['environment-dump blank run', dumpName + '=a' + ' '.repeat(100000) + 'b\n', ['environment-dump']],
+  ['op-output tab run', labelWord + ': a' + ' \t'.repeat(50000) + 'b\n', ['op-output']],
+  ['positive long op-output value', labelWord + ': ' + 'v'.repeat(100000) + ' \t \n', ['op-output']],
+];
+for (const [name, value, expected] of blankRunCases) {
+  await test(`linear ${name} watchdog`, () => recognizerWatchdog('detector', value, expected));
+}
+await test('linear trailing-blank capture differential', async () => {
+  const { opOutput, environmentDump } = await privateRecognizer('detector.js', String.raw`
+    export const opOutput = patterns.find(([kind]) => kind === 'op-output')[1];
+    export const environmentDump = patterns.find(([kind]) => kind === 'environment-dump')[1];`);
+  const pairs = [
+    [opOutput, /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim, labelWord + ':'],
+    [environmentDump, /^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*?)[ \t]*$/gm, dumpName + '='],
+  ];
+  const matches = (expression, value) => {
+    expression.lastIndex = 0;
+    const result = [];
+    for (let match; (match = expression.exec(value));) result.push([match.index, match[0], match[1]]);
+    assert.equal(expression.lastIndex, 0, 'failed-exec lastIndex mismatch');
+    return result;
+  };
+  let cases = 0;
+  const pieces = [' ', '\t', 'a', 'é', '\n', '\r', ' ', ' ', ':', '='];
+  for (const [candidate, oracle, prefix] of pairs) {
+    const compare = value => {
+      assert.deepEqual(matches(candidate, value), matches(oracle, value), `capture mismatch ${JSON.stringify(value)}`); cases += 1;
+    };
+    for (const lead of ['', ' ', 'x\n', '\t' + prefix + 'z\n']) {
+      exhaustiveStrings(pieces, 5, tail => compare(lead + prefix + tail));
+    }
+    const random = seededRecognizerRandom();
+    for (let trial = 0; trial < 20000; trial += 1) {
+      let value = '';
+      const length = 7 + random() % 34;
+      for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+      compare(prefix + value);
+      compare(value + '\n' + prefix + value);
+    }
+    for (const tail of [' a' + ' '.repeat(3000) + 'b', ' ' + 'v'.repeat(3000) + ' \t ', ' a \r\n', ' a\t ', '  a  ']) compare(prefix + tail);
+  }
+  console.log(`DIFFERENTIAL trailing-blank cases=${cases}`);
+});
 await test('linear newline file reference watchdog', () => {
   recognizerWatchdog('newline-reference', 'fixture-key-' + '\n'.repeat(300000) + 'x',
     Array(3).fill({ count: 1, invalid: false, reason: '', substituted: 1 }));

@@ -67,6 +67,27 @@ function privateKeyMatcher() {
   };
 }
 
+// A lazy `(\S.*?)[ \t]*$` capture retries the trailing blanks at every extension: quadratic on a blank
+// run. The greedy `(\S.*)$` ends at the same line end in one pass; dropping the capture's trailing spaces
+// and tabs then gives the old capture exactly, and match[0] keeps its old span.
+function trailingBlankCapture(expression) {
+  return {
+    get lastIndex() { return expression.lastIndex; },
+    set lastIndex(value) { expression.lastIndex = value; },
+    exec(text) {
+      const match = expression.exec(text);
+      if (match) match[1] = withoutTrailingBlanks(match[1]);
+      return match;
+    },
+  };
+}
+
+function withoutTrailingBlanks(value) {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === ' ' || value[end - 1] === '\t')) end -= 1;
+  return value.slice(0, end);
+}
+
 const patterns = [
   ['github-classic', /\bghp_[A-Za-z0-9]{36}\b/g],
   ['github-fine-grained', /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g],
@@ -80,11 +101,11 @@ const patterns = [
   // detection is the value itself, never the key, the indentation or a following line (card
   // the over-wide capture case - "token:\n    type" became a held value and refused every text sharing it).
   ['assignment', /\b(?:password|token|secret)[ \t]*=[ \t]*(?![=])(?:"([^"]+)"|'([^']+)'|([^\s;,)}"']+))/gi],
-  ['op-output', /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim],
+  ['op-output', trailingBlankCapture(/^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*)$/gim)],
   // A QUOTED key with a quoted value: a JSON body or a Python dict - `{"password": "..."}`. No other
   // pattern matches it: `assignment` needs `=` and `op-output` needs an unquoted key at a line start.
   ['key-value', /(["'])(?:password|token|secret)\1[ \t]*:[ \t]*(?:"([^"\n]+)"|'([^'\n]+)')/gi],
-  ['environment-dump', /^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*?)[ \t]*$/gm],
+  ['environment-dump', trailingBlankCapture(/^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*)$/gm)],
 ];
 
 // Below this length a captured value is not distinctive: masking it would mask every "true" or "0" in
