@@ -67,6 +67,7 @@ Operating shape:
    by uncertainty: known repro → straight to TDD; unverified premises → full grounding;
    investigation → grounding IS the task. A card long dormant = cold terrain: re-ground
    before planning.
+   Never start a card with no priority, type or effort label, or whose `Depends-on:` line names a card not Done; escalate it.
 2. **Discovery** — before grounding or a plan, write this structured `Discovery` comment on the
    card, then mirror its parseable phase state in the card's `sr-meta` block beside the existing
    `Last-worked:` / `Next:` lines. The block crosses phases: it is rewritten at every phase exit, and
@@ -314,6 +315,7 @@ five copies of a published surface, and nobody ever decided to publish it.
   source — read the code, or fan a few read-only agents out for coverage. A confident
   architectural prior is cheap to check and often wrong; whole features have been built as
   workarounds for data that already existed.
+- On a step back, list 2-3 distinct routes with a prior each, write the chosen route's kill criterion before resuming, and update the priors after each test.
 
 ## Verification shape — the proportionate ladder
 
@@ -546,6 +548,8 @@ on a human, PARK (move the card to Blocked naming the trigger, keep the work rea
 continue what does not depend on them — never busy-wait. Everything else: decide, journal
 it, continue.
 
+An escalation names the option you recommend and why; a bare menu is not an escalation. Code that drifted from the ordinary architecture for its kind (duplicated definitions, a boundary crossed in several places) is fixed first and then reported, not asked about.
+
 ## Liveness file — the arc watcher's third input
 
 Select the first available correlation key:
@@ -587,7 +591,10 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   `isolation` becomes an in-process teammate: its observer is not attached and its own
   background tasks do not reliably wake it. Spawn any delegate that will background work
   anonymously (address it by its returned raw id), or named with `isolation: "worktree"`
-  where a repository exists. Permitted-shape delegates self-woke in the measured majority
+  where a repository exists — except a delegate that hands its writes to an external lane and
+  then idles on them: its auto-cleaned isolation tree looks unchanged at that moment and can be
+  removed under the running external lane, so create that worktree yourself and pass its path in
+  the brief. Permitted-shape delegates self-woke in the measured majority
   (606/628 and 168/173), not invariably. If you end a turn awaiting your own tracked
   background command, the arc watch announces an attributable unresolved completion to main
   with an exact SendMessage relay; main must send that call verbatim. The announcement retries
@@ -693,6 +700,7 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   read beside the code), rendered pixels for UI, reading the actual source at the actual
   revision for code claims; state every verdict at the reach its evidence actually has, and
   treat any surprise (favorable ones especially) as an anomaly to EXPLAIN before you label it.
+- Before writing 'the cause is X' into a commit, card or report, grep for what would make it false, with a control string known present in the same command; seed a multi-row check with a row whose answer you already know; a hosted platform's behaviour is read in its documentation, never inferred from your traces.
 - **Task board realtime**: transitions fire at the moment they happen, not batched to a
   checkpoint.
 - **Continuous durable writes**: commit and update the card after every meaningful
@@ -731,7 +739,11 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   escalation, never a silent skip. Pass `--new-branch` if the destination does not exist; an absent branch otherwise fails closed. The installed pre-push hook checks all refs in one invocation and consumes authorization for one approved attempt, including dry-run.
   Install it with `node plugin/bin/wt-push-guard-install.mjs --install --repo <checkout> --guard-remote <name> --guard-path <owner/repo>`; verify the pinned files and executable shim with `--check --repo <checkout>`.
 
+- State a cross-platform verdict for every shipped increment: per system dependency (file:line), does it throw, degrade to a named unknown, or silently return a plausible value. For a guard, money, security or data-loss mechanism say which of three you can answer: was the failure exercised, did it run on real conditions or only fixtures, what can go wrong in the mechanism itself.
+
 ## Final report contract — observer findings, then the memory harvest (both MANDATORY)
+
+Close the report with `## Implemented`, `## Verification`, `## Independent Review`, `## Decisions`, `## Remaining Risks`, then Findings and Lessons. Give each deliverable a status word (fixed / not fixed / partial / routed to card <id>), mark a benefit verified, likely or unconfirmed, and for every card where an end-to-end is possible paste the output of a repeatable real-data e2e verbatim, else write `e2e not run: <reason>`.
 
 ### Observer findings and what you did about them
 

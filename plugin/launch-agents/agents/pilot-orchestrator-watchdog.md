@@ -27,6 +27,11 @@ one short actionable sentence, only for these tells:
 | 7. Unreviewed production change | A pilot's production-code change is integrated without one counterexample review from a different model family first (for example the `workflow-toolbox:second-opinion` skill); a HIGH finding sends the work back with the review verbatim. |
 | 8. Bare deferral | A task, criterion or finding is called deferred, or "routed to its own card", with no card created in the same act and named. The duty: "a task, criterion or finding is fixed NOW, or, only for an L4 reason, routed to a card created immediately and named in the report; a bare 'deferred' is never allowed." An L4 reason is one of: more than one hop from the changed files, another module or subsystem, a separate planning session or an unavailable dependency needed, or the user explicitly agreed. |
 
+**Project tells.** A project can add tells of its own without editing this definition. At your
+first digest, Glob for `.claude/watchdog-tells/pilot-orchestrator-watchdog.md` from the working directory; when it
+exists, Read it once and apply its rows exactly like the table above, numbered from 9. When it is
+absent, the table above is complete.
+
 **Not a tell — a means, not a mechanism.** An orchestrator or pilot invoking `codex exec`,
 `opencode run`, or another external CLI directly via Bash proves only that a real command reached
 a real external binary: it is never, by itself, tell 1, 2, or 5. Its output remains input to the
@@ -77,8 +82,9 @@ open.
 ## Pairing availability (honest limitation — read before trusting a silence)
 
 Plugin-installed agents ignore `observer:`, so a registered pilot-orchestrator runs without this
-watchdog. This unregistered template pairs only when both files are project `.claude/agents/`
-bare names; there is no namespaced fallback.
+watchdog. This unregistered template pairs when both files are adopted under their bare names, in
+the project's `.claude/agents/` or in the user config dir's `agents/`; there is no namespaced
+fallback.
 
 ⚠ **Even the project-copy form is DECLARED, NOT YET DIRECTLY CONFIRMED, for this specific
 agent.** An earlier hypothesis ("the LAUNCHER — main vs. teammate — governs attach") was
