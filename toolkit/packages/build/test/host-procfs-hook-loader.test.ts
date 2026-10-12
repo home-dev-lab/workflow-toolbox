@@ -37,27 +37,40 @@ const snapshot = await module.namespace.readSnapshot({ process: {
 process.stdout.write(JSON.stringify({ snapshot, commands, globals: vm.runInContext('[typeof process, typeof require, typeof Buffer]', context) }));
 `
 
+// Builds a synthetic procfs tree, runs the hooks module through the loader model and returns its output.
+// The collector's executable lookup reads PATH; pinning it (as what-is-running.test.ts does) keeps the
+// scan result independent of the host's PATH, where a failed lookup degrades discovery to partial.
+function runLoader(platform: string) {
+  const root = mkdtempSync(join(tmpdir(), 'wt-procfs-hook-loader-'))
+  const config = { suiteRoot: join(root, 'suite'), configDir: join(root, 'config'), livenessDir: join(root, 'liveness'), procRoot: join(root, 'proc'), platform, executablePlatform: 'linux', processEnv: { PATH: '/missing' }, clockTicks: 100 }
+  try {
+    mkdirSync(join(config.suiteRoot, 'worktrees'), { recursive: true })
+    mkdirSync(join(config.configDir, 'plugins', 'store'), { recursive: true })
+    mkdirSync(join(config.configDir, 'plugins', 'data'), { recursive: true })
+    mkdirSync(config.livenessDir)
+    mkdirSync(join(config.procRoot, '42'), { recursive: true })
+    writeFileSync(join(config.procRoot, 'uptime'), '123.00 1.00\n')
+    writeFileSync(join(config.procRoot, '42', 'cmdline'), 'node\0worker\0')
+    writeFileSync(join(config.procRoot, '42', 'status'), 'Name:\tworker\nPPid:\t1\n')
+    const result = spawnSync(process.execPath, ['--experimental-vm-modules', '--input-type=module', '-e', LOADER,
+      new URL('../../../../plugin/hooks/hooks.js', import.meta.url).href, JSON.stringify(config)], { encoding: 'utf8', timeout: 30_000 })
+    expect(result.status, result.stderr).toBe(0)
+    return JSON.parse(result.stdout)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
 describe('procfs Function Hook runtime boundary', () => {
   it('loads without Node globals and imports procfs only in the collector subprocess', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-procfs-hook-loader-'))
-    const config = { suiteRoot: join(root, 'suite'), configDir: join(root, 'config'), livenessDir: join(root, 'liveness'), procRoot: join(root, 'proc'), platform: 'linux', clockTicks: 100 }
-    try {
-      mkdirSync(join(config.suiteRoot, 'worktrees'), { recursive: true })
-      mkdirSync(join(config.configDir, 'plugins', 'store'), { recursive: true })
-      mkdirSync(join(config.configDir, 'plugins', 'data'), { recursive: true })
-      mkdirSync(config.livenessDir)
-      mkdirSync(join(config.procRoot, '42'), { recursive: true })
-      writeFileSync(join(config.procRoot, 'uptime'), '123.00 1.00\n')
-      writeFileSync(join(config.procRoot, '42', 'cmdline'), 'node\0worker\0')
-      writeFileSync(join(config.procRoot, '42', 'status'), 'Name:\tworker\nPPid:\t1\n')
-      const result = spawnSync(process.execPath, ['--experimental-vm-modules', '--input-type=module', '-e', LOADER,
-        new URL('../../../../plugin/hooks/hooks.js', import.meta.url).href, JSON.stringify(config)], { encoding: 'utf8', timeout: 30_000 })
-      expect(result.status, result.stderr).toBe(0)
-      const output = JSON.parse(result.stdout)
-      expect(output.globals).toEqual(['undefined', 'undefined', 'undefined'])
-      expect(output.commands[0][2], 'collector subprocess imports the host procfs module').toContain('host/procfs.mjs')
-      expect(output.snapshot.collectors.processes.availability.status).toBe('available')
-      expect(output.snapshot.discovery).not.toBe('unknown')
-    } finally { rmSync(root, { recursive: true, force: true }) }
+    const output = runLoader('linux')
+    expect(output.globals).toEqual(['undefined', 'undefined', 'undefined'])
+    expect(output.commands[0][2], 'collector subprocess imports the host procfs module').toContain('host/procfs.mjs')
+    const availability = output.snapshot.collectors.processes.availability
+    expect(availability.status, JSON.stringify(availability)).toBe('available')
+    expect(output.snapshot.discovery).not.toBe('unknown')
+  })
+
+  it('reports process discovery as unavailable, never partial, when the collector runs on Windows', () => {
+    const output = runLoader('win32')
+    expect(output.snapshot.collectors.processes.availability).toEqual({ status: 'unknown', reason: 'unavailable on this platform' })
   })
 })

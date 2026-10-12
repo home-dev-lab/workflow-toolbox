@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { posix } from 'node:path'
 
 export const DEFAULT_PROC_ROOT = '/proc'
 export const PROCFS_LOAD_SOURCE = '/proc/loadavg'
@@ -20,7 +20,7 @@ export function createProcfs({
 } = {}) {
   const invoke = (reader, parts, args) => {
     requireProcfs(platform)
-    return reader(parts.length ? join(root, ...parts) : root, ...args)
+    return reader(parts.length ? posix.join(root, ...parts) : root, ...args)
   }
   return Object.freeze({
     available: platform === 'linux',
