@@ -43,7 +43,7 @@ the plan SHA-256. FULL tdd briefs copy plan's `## Tasks` block byte-identically.
 | Phase | Do this before transition |
 | --- | --- |
 | discovery | Inspect intake and relevant worktree sources, then transition with discovery `record` and runner's frozen route; LITE reaches tdd, FULL plan. |
-| plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote every folded card Definition-of-done criterion exactly and follow each with `Proof:` naming a task, test, e2e, test file, or gate; then transition. |
+| plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote each folded DoD criterion exactly as a `- ` bullet, then `Proof:` naming a task, test, e2e, test file, or gate; then transition. |
 | critic | Write/run the brief; round 1 runs critics A and B together and unions exact-deduplicated findings. Then transition: approved -> tdd; changes-requested -> plan. |
 | tdd | Write/run the brief, then verify. Fix rounds consume `.lane/review-findings.md` and run targeted tests, typecheck, and lint (zero touched-file warnings), never the full suite. |
 | verify | Run all gates. Green reaches report/review; a red full suite transitions `failed` with test names and returns to tdd. |
@@ -62,7 +62,7 @@ round. Do it (runner closes the card) or maintain cited L4; then report disagree
 
 Via `write_artifact`, write `pilot-report` with `## Implemented`, `## Verification`, `## E2E`,
 `## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Acceptance quotes
-each folded DoD criterion exactly, then `Outcome: proven`, `Outcome: not done: <reason>`,
+each folded DoD criterion exactly as a `- ` bullet, then `Outcome: proven`, `Outcome: not done: <reason>`,
 or `Outcome: deferred: card <id> — <L4 reason>` with an id in runner-owned `routed_cards`. The runner
 appends authoritative `## Routed cards`. E2E is owed for changes exercisable against real processes, files or
 hosts (CLI, hook, watcher, server, script). Use `e2e not run: <reason>`

@@ -148,8 +148,10 @@ function reportDeliveryClassification(content, dodBullets, routedCards) {
   const deferred = []
   for (const bullet of dodBullets ?? []) {
     const index = used.get(bullet) ?? 0
-    const lines = entries.get(bullet)?.[index] ?? []
+    const lines = entries.get(bullet)?.[index]
     used.set(bullet, index + 1)
+    // A criterion the parser could not find is a schema refusal, never an unmet delivery.
+    if (!lines) continue
     const outcomes = lines.filter((line) => /^Outcome:/i.test(line))
     const deferredCards = outcomes.flatMap((line) => {
       const match = /^Outcome:\s*deferred:\s*card\s+([^\s]+)/i.exec(line)
@@ -166,19 +168,57 @@ function reportDeliveryClassification(content, dodBullets, routedCards) {
   if (/^e2e not run: \S[^\r\n]*$/i.test(e2e)) unmet.push(`E2E: ${e2e}`)
   return { unmet, deferred }
 }
-function classifyReportDelivery(content, dodBullets, routedCards, state, reportProblem) {
-  if (reportProblem && !reportProblem.startsWith('pilot-report: missing expected')) return
+// The partial or deferred verdicts this classifier produced. They describe one report draft, so each
+// report edge drops them and re-derives them from the draft it is judging: a refused draft never
+// leaves a verdict the corrected draft has to carry.
+const deliveryVerdicts = new WeakSet()
+const deliveryVerdict = (verdict) => {
+  deliveryVerdicts.add(verdict)
+  return verdict
+}
+const isDeliveryVerdict = (verdict) => Boolean(verdict) && deliveryVerdicts.has(verdict)
+function dropDeliveryVerdicts(state) {
+  if (isDeliveryVerdict(state.partial)) state.partial = null
+  if (isDeliveryVerdict(state.deferred)) state.deferred = null
+}
+function classifyReportDelivery(content, dodBullets, routedCards, state, schemaProblem) {
+  // Once the report stage has staged or committed, the delivery verdict is the one that commit carries.
+  if (state.report.stage !== 'idle') return
+  dropDeliveryVerdicts(state)
+  if (schemaProblem && !schemaProblem.startsWith('pilot-report: missing expected')) return
   const { unmet, deferred } = reportDeliveryClassification(content, dodBullets, routedCards)
   if (unmet.length > 0 && !state.partial) {
-    state.partial = { phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet }
+    state.partial = deliveryVerdict({ phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet })
   } else if (deferred.length > 0 && !state.deferred) {
-    state.deferred = { phase: 'report', round: null, reason: `delivery deferred: ${deferred.length} ${deferred.length === 1 ? 'criterion' : 'criteria'}`, findings: deferred }
+    state.deferred = deliveryVerdict({ phase: 'report', round: null, reason: `delivery deferred: ${deferred.length} ${deferred.length === 1 ? 'criterion' : 'criteria'}`, findings: deferred })
   }
 }
 function deferredHeadlineProblem(content, deferred) {
   if (!deferred) return null
   const headline = `Deferred: ${deferred.findings.join('; ')}`
   return content.split(/\r?\n/)[0] === headline ? null : `pilot-report: deferred delivery, make "${headline}" the first line`
+}
+const NO_BOARD_CONTRACT_HEADLINE = 'Partial: route_finding refused: no board contract;'
+function boardContractHeadlineProblem(lines, partialLine) {
+  if (!partialLine?.startsWith(NO_BOARD_CONTRACT_HEADLINE) || lines[0] === partialLine) return null
+  return `pilot-report: partial run, make "${partialLine}" the first line`
+}
+function partialHeadlineProblem(lines, partialLine, required) {
+  if (partialLine && required && !lines.includes(partialLine)) return `pilot-report: partial run, add the line "${partialLine}"`
+  if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) return 'pilot-report: this run is not partial'
+  return null
+}
+const notDeferredProblem = (lines, deferred) => (!deferred && lines[0].startsWith('Deferred:') ? 'pilot-report: this run is not deferred' : null)
+// At write_artifact (atEdge false) a verdict classified on the previous draft is not required: the
+// written draft is re-classified right after it is written, and again at the report edge.
+function reportHeadlineProblem(content, state, atEdge) {
+  const lines = content.split(/\r?\n/)
+  const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
+  const requiredDeferred = atEdge || !isDeliveryVerdict(state.deferred) ? state.deferred : null
+  return deferredHeadlineProblem(content, requiredDeferred) ??
+    notDeferredProblem(lines, state.deferred) ??
+    boardContractHeadlineProblem(lines, partialLine) ??
+    partialHeadlineProblem(lines, partialLine, atEdge || !isDeliveryVerdict(state.partial))
 }
 const frozenDelivery = (delivery) => delivery ? Object.freeze({ ...delivery, findings: Object.freeze([...delivery.findings]) }) : null
 function uiOnlyE2eReason(reason) {
@@ -1146,11 +1186,11 @@ export function createLifecycleStateMachine({
       if (sha256(pilotReport) !== state.pilotReportDigest) {
         return refusal('report->awaiting_fidelity', 'pilot report unchanged since write_artifact', pilotReportPath)
       }
-      const reportProblem = pilotReportProblem(pilotReport, true)
-      classifyReportDelivery(pilotReport, dodBullets, timeline.routed_cards, state, reportProblem)
+      // Classify the draft before judging its headline, so the verdict always belongs to these bytes.
+      const schemaProblem = pilotReportProblem(pilotReport, true)
+      classifyReportDelivery(pilotReport, dodBullets, timeline.routed_cards, state, schemaProblem)
+      const reportProblem = schemaProblem ?? reportProblemWithHeadline(pilotReport, true)
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
-      const deliveryProblem = pilotReportProblem(pilotReport, true)
-      if (deliveryProblem) return refusal('report->awaiting_fidelity', deliveryProblem, pilotReportPath)
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
       const reportReceipt = completeLifecycleReport({
@@ -1225,7 +1265,7 @@ export function createLifecycleStateMachine({
       }
     }
     if (kind === 'pilot-report') {
-      const problem = pilotReportProblem(content)
+      const problem = reportProblemWithHeadline(content)
       if (problem) return problem
       if (typeof resolveRoutedFinding === 'function') {
         for (const card of timeline.routed_cards.filter((item) => item.contested && !new RegExp(`Outcome:\\s*deferred:\\s*card\\s+${item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(content))) {
@@ -1261,26 +1301,17 @@ export function createLifecycleStateMachine({
       artifactContent,
     )
     if (LANE_PHASES.has(briefPhase)) { invalidateLaneEvidence(briefPhase); laneBriefContexts.set(briefPhase, laneContext) }
-    if (kind === 'pilot-report') state.pilotReportDigest = sha256(artifactContent)
+    if (kind === 'pilot-report') { state.pilotReportDigest = sha256(artifactContent); classifyReportDelivery(artifactContent, dodBullets, timeline.routed_cards, state, pilotReportProblem(artifactContent, true)) }
     return `wrote ${kind}`
   }
   // The pilot report's partial/full contract, checked on the exact bytes given: at write_artifact
   // and again at the report edge on the file about to be committed (Sol round 14: a stale or
   // edited pilot-report.md used to satisfy the edge by merely existing).
+  function reportProblemWithHeadline(content, enforceSchema = false) {
+    return reportHeadlineProblem(content, state, enforceSchema) ?? pilotReportProblem(content, enforceSchema)
+  }
+  // Content and schema checks; the headline checks live in reportHeadlineProblem.
   function pilotReportProblem(content, enforceSchema = false) {
-    const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
-    const lines = content.split(/\r?\n/)
-    const headlineProblem = deferredHeadlineProblem(content, state.deferred)
-    if (headlineProblem) return headlineProblem
-    if (partialLine?.startsWith('Partial: route_finding refused: no board contract;') && lines[0] !== partialLine) {
-      return `pilot-report: partial run, make "${partialLine}" the first line`
-    }
-    if (partialLine && !lines.includes(partialLine)) {
-      return `pilot-report: partial run, add the line "${partialLine}"`
-    }
-    if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
-      return 'pilot-report: this run is not partial'
-    }
     const deferredProblem = deferredOutcomeProblem(content, timeline.routed_cards)
     if (deferredProblem) return `pilot-report: ${deferredProblem}`
     if (!enforceSchema) return null

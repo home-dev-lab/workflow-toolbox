@@ -2618,6 +2618,89 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
   })
 })
 
+// Delivery classification locks sit at file level so the main describe block does not keep growing.
+// Witness trial 2026-10-12: a first draft numbered its criteria, the edge refused the schema, and the
+// criteria it could not find were latched as unmet, so every corrected draft had to say "Partial:".
+const reportGit = () => {
+  let revisions = 0
+  return (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+}
+const twoCriteria = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
+const bulletedAcceptance = '## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n- Keep tests green.\n  Outcome: proven\n'
+const numberedAcceptance = '## Acceptance\n1. Ship exact bytes.\n   Outcome: proven\n2. Keep tests green.\n   Outcome: proven\n'
+const notDoneAcceptance = '## Acceptance\n- Ship exact bytes.\n  Outcome: not done: blocked upstream\n- Keep tests green.\n  Outcome: proven\n'
+
+it('never counts a criterion the parser could not find as unmet delivery', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${numberedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'numbered' }))).toContain('pilot-report: missing expected `- Ship exact bytes.`')
+  expect(lifecycle.state().partial).toBeNull()
+})
+
+it('classifies delivery from the accepted report, never from a refused numbered draft', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${numberedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'numbered' }))).toContain('pilot-report: missing expected')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'bulleted' }))).toBe('accepted phase=awaiting_fidelity')
+  expect(lifecycle.state().partial).toBeNull()
+  expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))).toMatchObject({ partial: null })
+})
+
+it('clears a partial classified on a refused draft once the corrected draft proves every criterion', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven' }))).toBe('accepted phase=awaiting_fidelity')
+  expect(lifecycle.state().partial).toBeNull()
+})
+
+it('re-classifies delivery when a corrected report is written, so a timeout never keeps the refused draft verdict', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(lifecycle.state().partial).toBeNull()
+})
+
+it('refuses a Deferred headline kept on a report that no longer defers anything', async () => {
+  const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+  const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }), git: reportGit() })
+  expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'deferred' }))).toContain('Deferred: Ship. (card 42)')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Deferred: Ship. (card 42)\n${liteReport}\n## Acceptance\n- Ship.\n  Outcome: proven\n` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'stale-headline' }))).toContain('pilot-report: this run is not deferred')
+  expect(lifecycle.state().deferred).toBeNull()
+})
+
+it('keeps the committed partial verdict when an archive retry follows a rewritten report', async () => {
+  let commits = 0; let copies = 0
+  const versions = reportGit()
+  const git = (program: string, call: string[]) => { if (call[0] === 'commit') commits += 1; return versions(program, call) }
+  const copy = (...args: Parameters<typeof cpSync>) => { copies += 1; if (copies === 1) throw new Error('temporary archive failure'); return cpSync(...args) }
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git, copy })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: delivered partially: 1 unmet criteria\n${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'archive-fails' }))).toContain('archive')
+  expect(commits).toBe(1)
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(lifecycle.state().partial).toMatchObject({ reason: 'delivered partially: 1 unmet criteria' })
+  expect(commits).toBe(1)
+})
+
+it('keeps a not-done criterion partial on the accepted report that carries its Partial line', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('Partial: delivered partially: 1 unmet criteria')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: delivered partially: 1 unmet criteria\n${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'partial' }))).toBe('accepted phase=awaiting_fidelity')
+  expect(lifecycle.state().partial).toMatchObject({ reason: 'delivered partially: 1 unmet criteria', findings: ['Ship exact bytes.'] })
+})
+
 const roots: string[] = []
 afterEach(() => {
   const created = roots.splice(0)
