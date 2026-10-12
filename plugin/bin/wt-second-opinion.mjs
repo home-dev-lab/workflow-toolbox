@@ -3,7 +3,7 @@
 // Deliberate interference, such as installing exception handlers, forging worker messages, spawning children that outlive the worker or blocking in native code, is outside what this check can catch.
 // Admission first publishes PENDING without EXIT; wholly unwritable/unreplaceable output cannot support file-only completion, and request aliases remain unchanged.
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, chmodSync, closeSync, existsSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from './lib/host/second-opinion-filesystem.mjs'
+import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from './lib/host/second-opinion-filesystem.mjs'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
@@ -113,13 +113,13 @@ function outputNamesRequest(options, argv) {
 function replaceAdmissionOutput(temporary, out) {
   try { renameSync(temporary, out); return } catch (error) {
     if (hostAdapter.platform !== 'win32' || error?.code !== 'EPERM') throw error
-    const output = statSync(out)
-    if (!output.isFile() || (output.mode & 0o200)) throw error
+    const output = lstatSync(out)
+    if (!output.isFile() || output.nlink > 1 || (output.mode & 0o200)) throw error
     // Windows denies replacement of a read-only destination, unlike POSIX.
-    // Clear that attribute only for this retry; never unlink stale output first.
+    // Clear that attribute only on an unshared regular inode; never follow links.
     chmodSync(out, output.mode | 0o200)
     try { renameSync(temporary, out) } catch (retryError) {
-      chmodSync(out, output.mode)
+      try { chmodSync(out, output.mode) } catch { /* Restoration is best-effort; preserve the retry error. */ }
       throw retryError
     }
   }

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -12,8 +12,8 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function fixture(source = 'export default () => null') {
-  const root = mkdtempSync(join(tmpdir(), 'admission-test-'))
+function fixture(source = 'export default () => null', temporaryRoot = tmpdir()) {
+  const root = realpathSync(mkdtempSync(join(temporaryRoot, 'admission-test-')))
   roots.push(root)
   const repo = join(root, 'repo')
   mkdirSync(repo)
@@ -62,6 +62,25 @@ function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: 
   expect(output).toContain(cause)
   expect(output.endsWith('\nEXIT=3\n')).toBe(true)
 }
+
+describe('second-opinion fixture canonicalization', () => {
+  it('canonicalizes fixture paths beneath a symlinked temporary directory', () => {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'admission-parent-')))
+    roots.push(parent)
+    const target = join(parent, 'target')
+    const alias = join(parent, 'alias')
+    mkdirSync(target)
+    symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    const f = fixture(undefined, alias)
+    expect(f.root).toBe(realpathSync(f.root))
+    expect(launch(f, undefined).status).toBe(0)
+    const baseline = JSON.parse(readFileSync(f.marker, 'utf8'))
+    expect(launch(f, f.module).status).toBe(0)
+    expect(JSON.parse(readFileSync(f.marker, 'utf8'))).toEqual({
+      ...baseline, env: { ...baseline.env, WT_SECOND_OPINION_ADMISSION: f.module },
+    })
+  })
+})
 
 describe('second-opinion CLI admission', () => {
   it('admits a valid policy with delayed import rather than testing worker startup speed', () => {
@@ -144,9 +163,13 @@ function registerWindowsPublicationTests() {
   })
 }
 
-function windowsOutputSeam(f: ReturnType<typeof fixture>, failRetry = false, denialCode = 'EACCES') {
+function windowsOutputSeam(f: ReturnType<typeof fixture>, failRetry = false, denialCode = 'EACCES', failRollback = false) {
   const source = `import * as fs from 'node:fs';
     export * from 'node:fs';
+    export function chmodSync(file, mode) {
+      if (${failRollback} && !(mode & 0o200)) throw new Error('rollback denied');
+      return fs.chmodSync(file, mode);
+    }
     export function writeFileSync(file, ...args) {
       if (file === ${JSON.stringify(f.out)}) throw Object.assign(new Error('read-only output'), { code: 'EPERM' });
       return fs.writeFileSync(file, ...args);
@@ -160,6 +183,42 @@ function windowsOutputSeam(f: ReturnType<typeof fixture>, failRetry = false, den
     }`
   filesystemSeam(f, source, 'win32')
 }
+
+describe('second-opinion Windows replacement inode safety', () => {
+  it.each(['hard link', 'symlink'])('preserves read-only inode permissions for a %s output', (kind) => {
+    const f = fixture()
+    const target = join(f.root, 'surviving-output')
+    writeFileSync(target, 'OLD\nEXIT=0\n')
+    if (kind === 'hard link') linkSync(target, f.out)
+    else symlinkSync(target, f.out, 'file')
+    chmodSync(target, 0o444)
+    const mode = statSync(target).mode
+    windowsOutputSeam(f)
+    const result = launch(f, f.module)
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('read-only rename')
+    expect(statSync(target).mode).toBe(mode)
+    expect(readFileSync(target, 'utf8')).toBe('OLD\nEXIT=0\n')
+    expect(readFileSync(f.out, 'utf8')).toBe('OLD\nEXIT=0\n')
+    expect(lstatSync(f.out).isSymbolicLink()).toBe(kind === 'symlink')
+    expect(existsSync(f.marker)).toBe(false)
+    expect(readdirSync(f.root).filter(name => name.includes('.refusal-'))).toEqual([])
+  })
+
+  it('preserves the retry error when restoring read-only permissions also fails', () => {
+    const f = fixture()
+    writeFileSync(f.out, 'OLD\nEXIT=0\n')
+    chmodSync(f.out, 0o444)
+    windowsOutputSeam(f, true, 'EACCES', true)
+    const result = launch(f, f.module)
+    expect(result.status).toBe(3)
+    expect(result.stderr).toContain('retry denied')
+    expect(result.stderr).not.toContain('rollback denied')
+    expect(readFileSync(f.out, 'utf8')).toBe('OLD\nEXIT=0\n')
+    expect(existsSync(f.marker)).toBe(false)
+    expect(readdirSync(f.root).filter(name => name.includes('.refusal-'))).toEqual([])
+  })
+})
 
 function filesystemSeam(f: ReturnType<typeof fixture>, source: string, platform?: string) {
   const loader = readFileSync(f.loader, 'utf8').replace('export async function load', 'async function load')
