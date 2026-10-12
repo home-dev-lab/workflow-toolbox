@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { noteInsideLaneSandbox } from '../../../../test-support/lane-sandbox-context.js'
 
 const ROOT = fileURLToPath(new URL('../../../../..', import.meta.url))
 const DESCRIPTOR = 'toolkit/test-support/base-version-client.json'
@@ -17,6 +18,7 @@ export async function baseSuiteLock(root: string, role: ClientRole, onCi = /^(1|
     const failed = unpack ?? archive
     const reason = `${DESCRIPTOR}: ${role} client ${commit} unavailable in this clone: ${String(failed.error?.message ?? failed.stderr).trim()}`
     if (onCi) throw new Error(`${reason}; the cross-OS workflow must fetch every descriptor client`)
+    noteInsideLaneSandbox(`base-version-client.ts > ${role}`, reason)
     return { unavailable: reason }
   }
   mkdirSync(join(root, 'plugin/.claude-plugin'))

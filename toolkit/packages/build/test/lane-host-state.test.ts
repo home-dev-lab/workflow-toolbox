@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { afterEach, expect, it, vi } from 'vitest'
+import { randomBytes } from 'node:crypto'
+import { afterEach, expect, it, vi, type TestContext } from 'vitest'
+import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error ESM runtime module
 import { parse, reportWorkerReturnedBeforeSpawn, spawnAndReportOpencode } from '../../../../plugin/bin/wt-lane.mjs'
@@ -426,38 +428,45 @@ function withStateRoot<T>(stateRoot: string, body: () => T): T {
   try { return body() } finally { if (previous === undefined) delete process.env.WT_LANE_HOST_STATE; else process.env.WT_LANE_HOST_STATE = previous }
 }
 
-// Each malformed marker gets its own host state root, so each reading rule is locked on its own.
-function withMarker(content: (dir: string) => string) {
+// Namespace fixtures use the effective root and their own entry, so every reading rule remains non-vacuous.
+function withMarker(ctx: TestContext, content: (dir: string) => string, check: (fixture: { dir: string; worktree: string; stateRoot: string }) => void) {
   const { dir, worktree } = fixture()
-  const stateRoot = join(dir, 'state')
-  mkdirSync(join(stateRoot, 'a'.repeat(32)), { recursive: true })
-  writeFileSync(join(stateRoot, 'a'.repeat(32), 'worktree'), content(realpathSync.native(dir)))
-  return { dir, worktree, stateRoot }
+  const context = laneSandboxContext()
+  const stateRoot = context.inside ? laneHostStateRoot() as string : join(dir, 'state')
+  const markerDir = join(stateRoot, context.inside ? randomBytes(16).toString('hex') : 'a'.repeat(32))
+  let markerCreated = false
+  try {
+    try {
+      mkdirSync(markerDir, { recursive: true })
+      markerCreated = true
+      writeFileSync(join(markerDir, 'worktree'), content(realpathSync.native(dir)))
+    } catch (error) {
+      skipInsideLaneSandbox(ctx, `effective host-state root is not writable: ${String(error)}`, context)
+      throw error
+    }
+    withStateRoot(stateRoot, () => check({ dir, worktree, stateRoot }))
+  } finally { if (context.inside && markerCreated) rmSync(markerDir, { recursive: true, force: true }) }
 }
 
-it('never reads an empty worktree marker as a path containing every other path', () => {
-  const { dir, worktree, stateRoot } = withMarker(() => '')
-  withStateRoot(stateRoot, () => {
+it('never reads an empty worktree marker as a path containing every other path', (ctx) => {
+  withMarker(ctx, () => '', ({ dir, worktree }) => {
     expect(() => ensureLaneHostDir(worktree)).not.toThrow()
     expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false)
   })
 })
 
-it('never reads a marker cut short before its newline as a worktree path', () => {
-  const { dir, worktree, stateRoot } = withMarker((real) => real)
-  const real = realpathSync.native(dir)
-  withStateRoot(stateRoot, () => {
+it('never reads a marker cut short before its newline as a worktree path', (ctx) => {
+  withMarker(ctx, (real) => real, ({ dir, worktree }) => {
+    const real = realpathSync.native(dir)
     expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(false)
     expect(laneWritablePath(worktree, real.slice(0, -1))).toBe(false)
   })
 })
 
-it('never reads a relative marker as a worktree path', () => {
-  const { worktree, stateRoot } = withMarker(() => `${join('relative', 'child')}\n`)
-  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join('relative', 'child', 'file.log'))).toBe(false))
+it('never reads a relative marker as a worktree path', (ctx) => {
+  withMarker(ctx, () => `${join('relative', 'child')}\n`, ({ worktree }) => expect(laneWritablePath(worktree, join('relative', 'child', 'file.log'))).toBe(false))
 })
 
-it('still reads a complete marker as a lane worktree', () => {
-  const { dir, worktree, stateRoot } = withMarker((real) => `${real}\n`)
-  withStateRoot(stateRoot, () => expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(true))
+it('still reads a complete marker as a lane worktree', (ctx) => {
+  withMarker(ctx, (real) => `${real}\n`, ({ dir, worktree }) => expect(laneWritablePath(worktree, join(dir, 'outside', 'file.log'))).toBe(true))
 })

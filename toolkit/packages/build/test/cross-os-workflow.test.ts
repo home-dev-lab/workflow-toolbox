@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parse } from 'yaml'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 
 // Lock for the Windows sharding of .github/workflows/cross-os.yml. The hosted Windows step of the unsharded suite measured
 // 1217-1724 s against a 35-minute job, so Windows runs as parallel shard jobs. What must hold is an INVARIANT of the
@@ -13,6 +15,58 @@ const root = resolve(import.meta.dirname, '../../../..')
 const WORKFLOW = join(root, '.github/workflows/cross-os.yml')
 const DESCRIPTOR = 'toolkit/test-support/base-version-client.json'
 const baseClients = JSON.parse(readFileSync(join(root, DESCRIPTOR), 'utf8')) as { clients: Record<string, string> }
+const laneContext = laneSandboxContext()
+function omittedHistoryReason(root: string, clients: Record<string, string>): string | null {
+  const history = spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: root, encoding: 'utf8' })
+  if (history.status !== 0 || history.stdout.trim() !== '1') return null
+  const missing = Object.entries(clients).filter(([, commit]) =>
+    spawnSync('git', ['cat-file', '-e', `${commit}^{commit}`], { cwd: root }).status !== 0,
+  )
+  return missing.length ? `${DESCRIPTOR}: historical clients unavailable: ${missing.map(([role, commit]) => `${role} (${commit})`).join(', ')}` : null
+}
+beforeEach((ctx) => {
+  if (!laneContext.inside || ctx.task.name !== 'resolves every descriptor client in this clone; only a local shallow clone may skip missing history') return
+  skipInsideLaneSandbox(ctx, omittedHistoryReason(root, baseClients.clients), laneContext)
+})
+
+const historyRoots: string[] = []
+function historyGit(root: string, args: string[]): string {
+  const result = spawnSync('git', ['-c', 'user.name=Workflow Test', '-c', 'user.email=workflow-test@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout.trim()
+}
+function historyFixture(count: number): { root: string; commits: string[] } {
+  const root = mkdtempSync(join(tmpdir(), 'workflow-history-'))
+  historyRoots.push(root)
+  historyGit(root, ['init', '--quiet'])
+  const commits: string[] = []
+  for (let index = 0; index < count; index++) {
+    historyGit(root, ['commit', '--quiet', '--allow-empty', '-m', `fixture ${index}`])
+    commits.push(historyGit(root, ['rev-parse', 'HEAD']))
+  }
+  return { root, commits }
+}
+afterEach(() => {
+  for (const root of historyRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+describe('omitted descriptor history evidence', () => {
+  it('names an absent client in a one-commit export', () => {
+    const { root } = historyFixture(1)
+    const absent = '0'.repeat(40)
+    expect(omittedHistoryReason(root, { absentClient: absent })).toContain(`absentClient (${absent})`)
+  })
+
+  it('does not excuse an absent client in a two-commit repository', () => {
+    const { root } = historyFixture(2)
+    expect(omittedHistoryReason(root, { absentClient: '0'.repeat(40) })).toBeNull()
+  })
+
+  it('needs no exemption when every client is present in a two-commit repository', () => {
+    const { root, commits } = historyFixture(2)
+    expect(omittedHistoryReason(root, { first: commits[0]!, second: commits[1]! })).toBeNull()
+  })
+})
 
 type Entry = { os: string; shard?: number }
 type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }

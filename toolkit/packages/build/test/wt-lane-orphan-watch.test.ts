@@ -3,7 +3,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { laneSandboxContext, noteInsideLaneSandbox, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+// @ts-expect-error ESM runtime module
+import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { detectOrphanWatchers, terminateOrphanWatchers } from '../../../../plugin/bin/lib/lane-watcher-orphans.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -18,6 +21,23 @@ const { isLiveSandboxedLane, laneDescendantPids } = await load<{ isLiveSandboxed
 const { inspectProcess } = await load<{ inspectProcess: (pid: number | undefined) => { argv: string[], startTime: number } }>('lane-supervisor-core.mjs')
 const sandbox = await load<{ resolveLaneSandbox: (request: Record<string, unknown>) => { kind: string, line: string, wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void } }>('host/lane-sandbox.mjs')
 const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0 && spawnSync('sh', ['-c', 'command -v socat'], { stdio: 'ignore' }).status === 0
+const laneContext = laneSandboxContext()
+if (!BWRAP_WORKS) noteInsideLaneSandbox('wt-lane-orphan-watch.test.ts > collection-time skipIf(!BWRAP_WORKS)', 'nested bwrap or socat is unavailable; two sandbox descendant cases omitted', laneContext)
+function missingTrustedBwrap(): string | null {
+  if (!laneContext.inside) return null
+  try { trustedSystemExecutable('bwrap', process.env.PATH); return null } catch (error) {
+    if (error instanceof LaneSandboxRefusal) return (error as Error).message
+    throw error
+  }
+}
+const bwrapRefusal = missingTrustedBwrap()
+const sandboxResolverTests = new Set([
+  'attributes a live sandboxed lane through its bwrap descendants and still warns on an unowned opencode',
+  'stays silent on every process of a record-less sandboxed call whose creator is alive',
+])
+beforeEach((ctx) => {
+  if (sandboxResolverTests.has(ctx.task.name)) skipInsideLaneSandbox(ctx, bwrapRefusal, laneContext)
+})
 
 function withTempDir(run: (root: string) => void) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lane-orphan-watch-'))

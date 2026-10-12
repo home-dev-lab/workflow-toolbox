@@ -3,14 +3,63 @@ import { EventEmitter } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error The plugin's standalone executable has no declaration surface.
 import { runVerifier } from '../../../../plugin/bin/wt-opencode-verify.mjs'
 import { hermeticPath } from './helpers/hermetic-path.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+// @ts-expect-error Standalone plugin helper has no declaration surface.
+import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+
+const laneContext = laneSandboxContext()
+function missingTrustedBwrap(): string | null {
+  if (!laneContext.inside) return null
+  try { trustedSystemExecutable('bwrap', process.env.PATH); return null } catch (error) {
+    if (error instanceof LaneSandboxRefusal) return (error as Error).message
+    throw error
+  }
+}
+const bwrapRefusal = missingTrustedBwrap()
+// Name only cases that reach the real sandbox resolver; new cases run unless explicitly classified.
+const sandboxResolverTests = new Set([
+  'parses stable command arguments and builds the exact read-only opencode argv',
+  'refuses a successful run that denied an external-directory read',
+  'owns copied stdin task cleanup and keeps the child stdin closed',
+  'passes an equivalently rebuilt sanitized environment and the same cwd to discovery and spawn',
+  'passes only the selected provider credential to an external-model run',
+  'passes the Google credential only for a selected Google model and fallback',
+  'passes only Azure credentials to an Azure verifier run',
+  'preserves the selected provider credential through effective discovery',
+  'terminates a timed-out child and cleans up its task copy',
+  'retries one 429 with the fallback model and preserves the variant',
+])
+beforeEach((ctx) => {
+  if (sandboxResolverTests.has(ctx.task.name)) skipInsideLaneSandbox(ctx, bwrapRefusal, laneContext)
+})
 
 const ROOT = path.join(__dirname, '..', '..', '..', '..')
 const ENTRY = path.join(ROOT, 'plugin/bin/wt-opencode-verify.mjs')
+if (laneContext.inside && bwrapRefusal) {
+  it('refuses the verifier before spawning its child when bwrap is untrusted inside a lane sandbox', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-refusal-'))
+    const spawnFn = vi.fn(), providerAuthenticated = vi.fn(() => true)
+    try {
+      // Exercise real effective discovery and sandbox resolution, with only the independent fence preflight injected.
+      const result = await runVerifier({ dir, id: 'refusal', stdin: true, taskFile: null, model: 'primary', fallbackModel: null, variant: null }, {
+        binary: 'opencode', skillFenceVerifier: () => ({ ok: true }), providerAuthenticated,
+        readStdin: () => 'review', spawnFn,
+      })
+      expect(result.code).toBe(1)
+      expect(result.output).toContain('Refused:')
+      expect(result.output).toContain('untrusted bwrap')
+      expect(result.output).toContain(bwrapRefusal)
+      expect(spawnFn).not.toHaveBeenCalled()
+      expect(providerAuthenticated).not.toHaveBeenCalled()
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+}
+
 function childResult({ stdout = '', stderr = '', code = 0, hangs = false }: { stdout?: string; stderr?: string; code?: number; hangs?: boolean }) {
   const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: ReturnType<typeof vi.fn> }
   child.stdout = new EventEmitter()
