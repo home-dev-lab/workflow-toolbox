@@ -1,0 +1,11 @@
+{
+  "fs/promises import": 1,
+  "fs import": 1,
+  "os import": 1,
+  "writeSync": 1,
+  "homedir": 3,
+  "readFileSync": 5,
+  "hard-coded path separator": 4,
+  "readdir": 6,
+  "lstat": 2
+}

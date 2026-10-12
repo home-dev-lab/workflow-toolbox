@@ -1,0 +1,5 @@
+{
+  "fs import": 1,
+  "readFileSync": 1,
+  "statSync": 1
+}

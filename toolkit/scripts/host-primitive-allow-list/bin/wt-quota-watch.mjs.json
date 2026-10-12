@@ -1,0 +1,13 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "os import": 1,
+  "homedir": 1,
+  "writeSync": 2,
+  "existsSync": 4,
+  "spawn": 1,
+  "readFileSync": 3,
+  "appendFileSync": 1,
+  "process.kill": 1,
+  "writeFileSync": 1
+}

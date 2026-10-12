@@ -1,12 +1,15 @@
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  HOST_PRIMITIVE_CEILING,
   checkHostPrimitives,
   formatHostPrimitiveRefusal,
+  hostPrimitiveCounts,
+  hostDeclarationFile,
+  loadHostPrimitiveAllowList,
   scanHostPrimitives,
+  updateHostPrimitiveDeclaration,
 } from '../host-primitive-census.mjs'
 
 const TOOLKIT_ROOT = resolve(import.meta.dirname, '../..')
@@ -34,25 +37,157 @@ describe('raw host primitive quality ratchet', () => {
     expect(binSources.filter(({ source }) => rawEntryGuard.test(source)).map(({ file }) => file)).toEqual([])
   })
 
-  it('refuses a fixture above the ceiling and names its file and remedy', () => {
+  it('refuses undeclared host access and names its file, primitive and remedy', () => {
     const root = fixturePlugin()
     writeFileSync(join(root, 'bin', 'outside.mjs'), 'if (process.platform === "linux") process.kill(1)\n')
 
-    const result = checkHostPrimitives(root, 0)
+    const result = checkHostPrimitives(root, new Map())
     const refusal = formatHostPrimitiveRefusal(result)
 
     expect(result.count).toBe(2)
+    expect(result.exceeded).toBe(true)
     expect(refusal).toContain('bin/outside.mjs')
+    expect(refusal).toContain('process.kill: 1 > 0')
     expect(refusal).toContain('Move host access behind plugin/bin/lib/host/')
+    expect(refusal).toContain('pnpm --dir toolkit quality:host')
   })
 
   it('exempts the declared adapter directory deliberately', () => {
     const root = fixturePlugin()
     writeFileSync(join(root, 'bin', 'lib', 'host', 'linux.mjs'), 'process.platform; process.kill(1)\n')
 
-    expect(checkHostPrimitives(root, 0)).toMatchObject({ count: 0, perimeterFiles: 0, exceeded: false })
+    expect(checkHostPrimitives(root, new Map())).toMatchObject({ count: 0, perimeterFiles: 0, exceeded: false })
   })
 
+})
+
+describe('host declaration path identity', () => {
+  it.skipIf(sep === '\\')('keeps a literal POSIX backslash distinct from a directory separator', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'lib', 'a.mjs'), 'export const pure = true\n')
+    writeFileSync(join(root, 'bin', 'lib\\a.mjs'), 'process.kill(1)\n')
+    const result = checkHostPrimitives(root, new Map([['bin/lib/a.mjs:process.kill', 1]]))
+
+    expect(result.exceeded).toBe(true)
+    expect(hostPrimitiveCounts(result.findings)).toEqual(new Map([['bin/lib\\a.mjs:process.kill', 1]]))
+    expect(formatHostPrimitiveRefusal(result)).toContain('bin/lib\\a.mjs')
+  })
+
+  it('normalizes native Windows separators in declaration keys', () => {
+    expect(hostDeclarationFile('C:\\plugin\\bin\\lib\\a.mjs', 'C:\\plugin', win32)).toBe('bin/lib/a.mjs')
+  })
+})
+
+describe('host declaration exactness', () => {
+  it.each([['process.kill(1)', 2, 1], ['export const pure = true', 1, 0]])(
+    'refuses oversized or stale counts for source %s', (source, allowed, count) => {
+      const root = fixturePlugin()
+      writeFileSync(join(root, 'bin', 'outside.mjs'), source)
+      const result = checkHostPrimitives(root, new Map([['bin/outside.mjs:process.kill', allowed]]))
+
+      expect(result.exceeded).toBe(true)
+      expect(formatHostPrimitiveRefusal(result)).toContain(`process.kill: ${count} < ${allowed}`)
+      expect(formatHostPrimitiveRefusal(result)).toContain("pnpm --dir toolkit exec node scripts/host-primitive-census.mjs --update-declaration 'bin/outside.mjs'")
+    },
+  )
+
+  it.each(['{"process.kill":1}', '{}'])('refuses an orphan declaration, including empty data: %s', (data) => {
+    const root = fixturePlugin()
+    const declarations = fixturePlugin()
+    writeFileSync(join(declarations, 'bin', 'removed.mjs.json'), data)
+    const result = checkHostPrimitives(root, loadHostPrimitiveAllowList(declarations))
+
+    expect(result.exceeded).toBe(true)
+    expect(formatHostPrimitiveRefusal(result)).toContain('bin/removed.mjs: declaration has no source file')
+    expect(formatHostPrimitiveRefusal(result)).toContain("--update-declaration 'bin/removed.mjs'")
+  })
+})
+
+describe('per-file host primitive rejection', () => {
+  it('refuses an undeclared primitive even when another file has unused allowance', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'outside.mjs'), 'process.kill(1)\n')
+    const allowance = new Map([['bin/removed.mjs:process.kill', 1]])
+
+    expect(checkHostPrimitives(root, allowance).exceeded).toBe(true)
+  })
+
+  it('refuses a new primitive kind within a declared file', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'outside.mjs'), 'process.kill(1)\n')
+    const allowance = new Map([['bin/outside.mjs:process.platform', 1]])
+
+    expect(checkHostPrimitives(root, allowance).exceeded).toBe(true)
+  })
+
+  it('refuses an extra occurrence of a declared primitive', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'outside.mjs'), 'process.kill(1); process.kill(2)\n')
+    const allowance = new Map([['bin/outside.mjs:process.kill', 1]])
+
+    expect(checkHostPrimitives(root, allowance).exceeded).toBe(true)
+  })
+
+})
+
+describe('host primitive kind validation', () => {
+  it('rejects a primitive name that could collide with a colon-containing source filename', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'a.mjs.json'), '{"b.mjs:process.kill":1}')
+
+    expect(() => loadHostPrimitiveAllowList(root)).toThrow('Invalid host primitive kind: bin/a.mjs:b.mjs:process.kill')
+  })
+})
+
+describe('host declaration regeneration', () => {
+  it('regenerates a reduced declaration and removes declarations with no remaining findings', () => {
+    const root = fixturePlugin()
+    const declarations = fixturePlugin()
+    const source = join(root, 'bin', 'outside.mjs')
+    writeFileSync(source, 'process.kill(1)')
+    writeFileSync(join(declarations, 'bin', 'outside.mjs.json'), '{"process.kill":2}')
+    updateHostPrimitiveDeclaration('bin/outside.mjs', root, declarations)
+    expect(loadHostPrimitiveAllowList(declarations)).toEqual(new Map([['bin/outside.mjs:process.kill', 1]]))
+    writeFileSync(source, 'export const pure = true')
+    updateHostPrimitiveDeclaration('bin/outside.mjs', root, declarations)
+    expect(loadHostPrimitiveAllowList(declarations)).toEqual(new Map())
+    writeFileSync(join(declarations, 'bin', 'removed.mjs.json'), '{}')
+    updateHostPrimitiveDeclaration('bin/removed.mjs', root, declarations)
+    expect(loadHostPrimitiveAllowList(declarations)).toEqual(new Map())
+  })
+})
+
+describe('host primitive declaration data', () => {
+  it('accepts declared occurrences after line shifts and discovers pure modules without declarations', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'outside.mjs'), '\n\nprocess.kill(1); process.kill(2)\n')
+    writeFileSync(join(root, 'bin', 'pure.mjs'), 'export const pure = true\n')
+    const allowance = new Map([['bin/outside.mjs:process.kill', 2]])
+
+    expect(checkHostPrimitives(root, allowance)).toMatchObject({ count: 2, perimeterFiles: 2, exceeded: false })
+  })
+
+  it('loads independent declarations by full plugin-relative filename', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'outside.mjs.json'), '{"process.kill": 1}')
+    writeFileSync(join(root, 'bin', 'lib', 'outside.mjs.json'), '{"process.platform": 2}')
+
+    expect(loadHostPrimitiveAllowList(root)).toEqual(new Map([
+      ['bin/outside.mjs:process.kill', 1],
+      ['bin/lib/outside.mjs:process.platform', 2],
+    ]))
+  })
+
+  it.each([0, -1, 1.5, '1'])('rejects an invalid declared occurrence count: %s', (count) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'outside.mjs.json'), JSON.stringify({ 'process.kill': count }))
+
+    expect(() => loadHostPrimitiveAllowList(root)).toThrow('Invalid host allowance: bin/outside.mjs:process.kill')
+  })
+
+})
+
+describe('host primitive shell grammar exemption', () => {
   it('reads separators in the declared shell-command parser as shell syntax, but still counts its host access', () => {
     const root = fixturePlugin()
     writeFileSync(join(root, 'bin', 'lib', 'rm-critical-path-core.mjs'), [
@@ -69,6 +204,9 @@ describe('raw host primitive quality ratchet', () => {
     ])
   })
 
+})
+
+describe('host primitive source discovery', () => {
   it('counts child-process, OS and filesystem calls in every executable source extension', () => {
     const root = fixturePlugin()
     writeFileSync(join(root, 'direct.js'), [
@@ -100,45 +238,15 @@ describe('raw host primitive quality ratchet', () => {
     ]))
   })
 
-  it('pins the measured ceiling to the tree that ships', () => {
-    const result = scanHostPrimitives(PLUGIN_ROOT)
+})
 
-    // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
-    // their host operations stay behind bin/lib/host, so the primitive ceiling is unchanged. The Java pack's
-    // wt-jdtls.mjs launcher adds one more; its JVM discovery and spawn live in bin/lib/host/jdtls-java.mjs.
-    // The pure executor defaults shared by routing and options, the suite-lock runner, the pure DoD
-    // dispute module, and the cross-OS CLI, dispatcher and verdict module add perimeter modules; their host operations
-    // stay behind bin/lib/host, so the primitive ceiling does not increase. The three shared frontmatter/definition
-    // helpers and the pure model-pin module add perimeter files too. The pure Claude-executor environment builder
-    // (claude-executor-env.mjs) adds one; it performs no host operation.
-    // The model-fallback CLI, tracker and hook add three files but no raw host primitives.
-    // The TypeScript pack adds a protocol-only entry; its host reads and spawn remain under bin/lib/host.
-    // The push-guard installer is another CLI; its host operations stay in bin/lib/host.
-    // The remedy-quote helper adds one; its POSIX-style quoting performs no host operation.
-    // The SDK account gate adds one; it reads the SDK's accountInfo() and performs no host operation.
-    // The rm critical-path guard adds its hook and its shell-command parser; the hook reads stdin
-    // and the home directory through bin/lib/host, and the parser's separators are shell syntax.
-    // The plugin-root classifier (plugin-root-state.mjs) adds one; its home-directory read goes
-    // through bin/lib/host. Completion attribution and its scanner add two more perimeter files;
-    // their filesystem primitives live in bin/lib/host, so the primitive ceiling stays unchanged.
-    // The shipped Depends-on parser (depends-on-parser.mjs) adds one pure module with no host operation.
-    // The shared find_cards page rule (find-cards-page.mjs) adds one pure module with no host operation.
-    // The suite-lock bypass guard adds its hook; its platform and temp-root reads live in bin/lib/host.
-    // The cancelled-call relay guard adds its hook; its file access lives in bin/lib/host.
-    // The session-env dedup hook adds one perimeter file; its filesystem primitives live in bin/lib/host.
-    // The What is running pane design helper (hooks/pane-design.js) adds one pure module with no host operation.
-    // The duplicate pilot guard adds its hook and its card-id parser; their file access lives in bin/lib/host.
-    // Five pure suite-lock policy/display modules add files without host primitives.
-    // The rule-narrative guard adds its detector and split modules; their host access lives in bin/lib/host.
-    // The spawn-capability guard's brief-intent predicates add one module without host primitives.
-    // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one module without host primitives.
-    // The work journal's modules replace one reminder, and its digest projection adds one pure module;
-    // all journal host access is behind the adapter.
-    // The orphan watch adds its attribution module; it reads only the process table it is given.
-    // The SDK pilot's phase-session opener adds one; its directory listing lives in bin/lib/host.
-    // The SessionStart source predicate (session-start-source.mjs) adds one pure module with no host operation.
-    expect(result.perimeterFiles).toBe(284)
-    expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
+describe('shipped host primitive declarations and quality gate', () => {
+  it('pins each declared file and primitive to the tree that ships', () => {
+    const allowance = loadHostPrimitiveAllowList()
+    const result = checkHostPrimitives(PLUGIN_ROOT, allowance)
+
+    expect(result.violations).toEqual([])
+    expect(hostPrimitiveCounts(result.findings)).toEqual(allowance)
   })
 
   it('is a distinct quality gate rather than part of ordinary lint', () => {

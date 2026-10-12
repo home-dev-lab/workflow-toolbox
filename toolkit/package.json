@@ -58,7 +58,7 @@
     "// ratchet 2026-09-26: ceiling=685 warnings across toolkit/packages/*/src and plugin": "quality:lint --max-warnings",
     "// ratchet 2026-09-16: worst=3% duplication (2.91% measured) across toolkit/packages/*/src and plugin": "quality:dup threshold",
     "// ratchet 2026-09-16: worst=221 issues across toolkit packages and plugin": "quality:dead --max-issues",
-    "// ratchet 2026-09-21: measured=429 raw host primitives across 212 non-generated plugin source files outside the host adapter": "quality:host HOST_PRIMITIVE_CEILING",
+    "// ratchet 2026-10-11: raw host primitives in non-generated plugin source files outside the host adapter are pinned per file and primitive kind": "quality:host fails when a file exceeds its count in toolkit/scripts/host-primitive-allow-list/<plugin-relative-file>.json (no declaration means zero allowed)",
     "// ratchet 2026-09-17: coverage percentages are pinned in vitest.config.mts and judged by pnpm test itself (one suite run; quality:coverage is an alias, never a second suite)": "coverage thresholds"
   },
   "devDependencies": {

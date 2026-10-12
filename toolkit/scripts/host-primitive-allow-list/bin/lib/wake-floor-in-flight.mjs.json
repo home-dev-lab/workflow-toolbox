@@ -1,0 +1,8 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "os import": 1,
+  "process.platform": 1,
+  "hard-coded path separator": 2,
+  "literal /proc": 2
+}

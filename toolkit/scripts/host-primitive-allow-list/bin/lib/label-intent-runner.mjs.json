@@ -1,0 +1,5 @@
+{
+  "fs import": 1,
+  "process.platform": 3,
+  "existsSync": 3
+}

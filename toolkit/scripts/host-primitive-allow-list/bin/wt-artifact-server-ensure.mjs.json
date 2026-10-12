@@ -1,0 +1,18 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "appendFileSync": 1,
+  "hard-coded path separator": 1,
+  "spawn": 1,
+  "readdirSync": 1,
+  "readFileSync": 1,
+  "statSync": 4,
+  "utimesSync": 1,
+  "unlinkSync": 2,
+  "rmdirSync": 2,
+  "mkdirSync": 1,
+  "renameSync": 1,
+  "rmSync": 2,
+  "existsSync": 2,
+  "process.platform": 1
+}

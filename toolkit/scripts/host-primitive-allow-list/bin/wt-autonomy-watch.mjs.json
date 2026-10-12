@@ -1,0 +1,18 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "os import": 1,
+  "writeSync": 1,
+  "homedir": 2,
+  "realpathSync": 1,
+  "readFileSync": 5,
+  "execFileSync": 1,
+  "process.platform": 1,
+  "readlinkSync": 1,
+  "existsSync": 4,
+  "readdirSync": 1,
+  "statSync": 2,
+  "writeFileSync": 2,
+  "rmSync": 1,
+  "mkdirSync": 1
+}

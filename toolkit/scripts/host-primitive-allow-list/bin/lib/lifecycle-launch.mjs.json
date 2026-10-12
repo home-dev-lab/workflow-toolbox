@@ -1,0 +1,17 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "os import": 1,
+  "existsSync": 4,
+  "lstatSync": 1,
+  "rmSync": 11,
+  "mkdtempSync": 1,
+  "tmpdir": 1,
+  "chmodSync": 1,
+  "writeFileSync": 3,
+  "copyFileSync": 2,
+  "openSync": 2,
+  "closeSync": 2,
+  "appendFileSync": 1,
+  "execFileSync": 2
+}

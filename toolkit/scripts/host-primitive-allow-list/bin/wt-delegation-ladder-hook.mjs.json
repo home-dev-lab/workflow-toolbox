@@ -1,0 +1,11 @@
+{
+  "fs import": 1,
+  "os import": 1,
+  "readFileSync": 1,
+  "existsSync": 4,
+  "readdirSync": 1,
+  "homedir": 3,
+  "hard-coded path separator": 2,
+  "process.platform": 2,
+  "accessSync": 1
+}

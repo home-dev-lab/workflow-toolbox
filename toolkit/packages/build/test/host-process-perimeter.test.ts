@@ -1,55 +1,68 @@
-import { readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { extname, join, relative, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 const ROOT = resolve(import.meta.dirname, '../../../../plugin')
-const HOST_ROOT = join(ROOT, 'bin', 'lib', 'host')
 const GENERATED = new Set([join(ROOT, 'bin', 'wt-observe.mjs'), join(ROOT, 'bin', 'lib', 'vendor', 'yaml.mjs')])
 const RAW_PARENT_TABLE = /(?:\[['"]-eo['"],\s*['"]pid=,ppid=['"]\]|Get-CimInstance\s+Win32_Process[^\n]*ParentProcessId)/
+const temporaryDirectories: string[] = []
 
-function sourceFiles(directory: string): string[] {
+function sourceFiles(directory: string, hostRoot: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name)
-    if (entry.isDirectory()) return path === HOST_ROOT ? [] : sourceFiles(path)
+    if (entry.isDirectory()) return path === hostRoot ? [] : sourceFiles(path, hostRoot)
     return entry.isFile() && extname(path) === '.mjs' && !GENERATED.has(path) ? [path] : []
   })
 }
 
+function processTableViolations(root: string): string[] {
+  return sourceFiles(root, join(root, 'bin', 'lib', 'host'))
+    .filter((path) => RAW_PARENT_TABLE.test(readFileSync(path, 'utf8')))
+    .map((path) => relative(root, path).replaceAll('\\', '/'))
+}
+
+function fixturePlugin(): string {
+  const root = mkdtempSync(join(tmpdir(), 'host-process-perimeter-'))
+  temporaryDirectories.push(root)
+  mkdirSync(join(root, 'bin', 'lib', 'host'), { recursive: true })
+  return root
+}
+
+afterEach(() => {
+  for (const root of temporaryDirectories.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
 describe('pid to parent-pid host perimeter', () => {
   it('keeps the raw process-table primitive inside the host adapter', () => {
-    const perimeter = sourceFiles(ROOT)
-    const violations = perimeter.filter((path) => RAW_PARENT_TABLE.test(readFileSync(path, 'utf8')))
-      .map((path) => relative(ROOT, path).replaceAll('\\', '/'))
-    // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
-    // their process access stays behind HOST_ROOT. The Java pack's `wt-jdtls.mjs` launcher adds one more
-    // (its JVM discovery and spawn live in host/jdtls-java.mjs).
-    // Shared executor defaults and the suite-lock runner add two modules, the pure DoD dispute module adds one,
-    // and the cross-OS CLI, dispatcher and verdict module add three, and the shared frontmatter/definition helpers add three more;
-    // the pure model-pin module adds one more, and the pure Claude-executor environment builder
-    // (claude-executor-env.mjs) one more; the transcript checker, shared tracker and warning hook add three
-    // process-table-free modules (their filesystem access is contained in bin/lib/host); the push-guard
-    // installer adds one process-table-free CLI. None adds a process-table primitive.
-    // The TypeScript pack's protocol-only wt-tsls.mjs adds one perimeter entry; resolution and spawn stay in host/ts-language-server.mjs.
-    // The remedy-quote helper adds one process-table-free module.
-    // The SDK account gate (sdk-account-check.mjs) adds one process-table-free module.
-    // The rm critical-path guard adds its hook and its shell-command parser, both process-table-free.
-    // The plugin-root classifier (plugin-root-state.mjs) adds one process-table-free module; the wake
-    // observer and its one-shot replay add two more.
-    // The shipped Depends-on parser (depends-on-parser.mjs) adds one process-table-free module.
-    // The shared whole-board find_cards page rule (find-cards-page.mjs) adds one process-table-free module.
-    // The suite-lock bypass guard (wt-suite-lock-bypass-guard-hook.mjs) adds one process-table-free hook;
-    // its platform and path helpers live in bin/lib/host.
-    // The cancelled-call relay guard hook adds one process-table-free module.
-    // Nine journal modules replace one reminder and the session-env dedup hook adds one; host operations remain in the adapter.
-    // The duplicate pilot guard adds its hook and its card-id parser, both process-table-free.
-    // Five pure suite-lock policy/display modules add entries without process-table access.
-    // The rule-narrative guard adds its detector and split modules; process and file access live in bin/lib/host.
-    // The spawn-capability guard's brief-intent predicates add one process-table-free module.
-    // The read-only spawn guard's brief-scope classifier (readonly-brief-scope.mjs) adds one process-table-free module.
-    // The work-journal digest projection (work-journal-digest.mjs) adds one process-table-free module.
-    // The orphan watch adds its process-table-only attribution module (lane-opencode-attribution.mjs).
-    // The SDK pilot's phase-session opener (pilot-phase-session.mjs) adds one process-table-free module.
-    // The SessionStart source predicate (session-start-source.mjs) adds one process-table-free module.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 272, violations: [] })
+    expect(processTableViolations(ROOT)).toEqual([])
+  })
+
+  it.each([
+    'execFileSync("ps", ["-eo", "pid=,ppid="])',
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId',
+  ])('catches a raw process table in a newly discovered module: %s', (source) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'new-module.mjs'), source)
+
+    expect(processTableViolations(root)).toEqual(['bin/new-module.mjs'])
+  })
+
+  it('accepts additional pure modules and process-table calls confined to the adapter', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'pure.mjs'), 'export const pure = true\n')
+    writeFileSync(join(root, 'bin', 'lib', 'host', 'process-table.mjs'), 'execFileSync("ps", ["-eo", "pid=,ppid="])')
+
+    expect(processTableViolations(root)).toEqual([])
+  })
+
+  it.each([
+    'execFileSync("ps", ["-eo", "pid=,ppid="])',
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId',
+  ])('detects process-table operations in ordinary nested bin/lib modules: %s', (source) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'lib', 'ordinary.mjs'), source)
+
+    expect(processTableViolations(root)).toEqual(['bin/lib/ordinary.mjs'])
   })
 })
