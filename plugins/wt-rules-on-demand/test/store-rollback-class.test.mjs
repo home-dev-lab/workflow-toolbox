@@ -6,10 +6,9 @@
 // exactly once in the join, and the readers count the same.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { copyFile, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { hostStore, hookFixture, readerTotals, exhaustedBudgetClock, HOST_STORE_LIMIT } from './store-host-fake.mjs';
+import { hostStore, hookFixture, readerTotals, exhaustedBudgetClock, HOST_STORE_LIMIT, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_ARCHIVE } from '../hooks/store-budget.js';
 import { readStoreArchives, withArchivedSessions } from '../scripts/store-archives.mjs';
 
@@ -104,8 +103,7 @@ async function runSequence(seed, root, frozen = false) {
 
 async function checkSequences(t, frozen = false) {
   for (let seed = 1; seed <= 8; seed++) {
-    const root = await mkdtemp(join(tmpdir(), `rod-l4-${seed}-`));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await sandboxRoot(t, `rod-l4-${seed}-`);
     const RealDate = Date;
     globalThis.Date = class extends RealDate {
       constructor(...args) { super(...(args.length ? args : [clock])); }

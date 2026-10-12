@@ -2,10 +2,9 @@
 // block; nothing on disk decides it. Context eviction is least-recently-used and a sub-agent's context ends with its turn.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { hostStore, hookFixture, bashRule } from './store-host-fake.mjs';
+import { hostStore, hookFixture, bashRule, sandboxRoot } from './store-host-fake.mjs';
 
 const PUSH = { command: 'git push origin main' };
 const LIST = { command: 'ls' };
@@ -15,8 +14,7 @@ const idle = async () => ({});
 const WIDE = bashRule.replace("window: '2'", "window: '500'").replace("act-regex: 'git push'", "act-regex: 'git push --force'");
 
 async function sandbox(t) {
-  const root = await mkdtemp(join(tmpdir(), 'rod-served-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, 'rod-served-');
   return root;
 }
 const rows = (store) => String(store.map.get('compliance-verdicts-jsonl') ?? '').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));

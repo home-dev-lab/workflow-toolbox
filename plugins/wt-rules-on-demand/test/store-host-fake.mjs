@@ -1,8 +1,9 @@
 // A host-faithful plugin store and a real-filesystem `$` for hook tests that must see the store limit and the archives.
 // The host contract (`$.store.set`): "Rejects ... a store over 4 MiB of JSON text in all"; measured on the real store
 // as the length of the compact JSON text of the WHOLE store object, with the message shape below.
-import { mkdir, readFile, readdir, stat, lstat, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, lstat, realpath, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { register, resetForSelftest } from '../hooks/hooks.js';
@@ -63,10 +64,81 @@ const fsOperations = {
   },
 };
 
+// The hook runs work in the background without awaiting it (hooks.js trackedEvent dispatches its flight-recorder writes,
+// scheduleFlights its harvest), so a call can return while a write into the sandbox is still running or still to come.
+// Every host call the fixture hands the hook ($.fs, $.store, $.ui, $.session, $.env, $.model) is tracked, so a sandbox
+// is removed only once the hook waits on nothing: the hooks set no timers, so a continuation is always chained on a
+// tracked host call or on a microtask. Outside this reach: a test that holds its own `next` open or aborts a call owns
+// that continuation and must settle it before the test ends.
+const pendingHostOps = new Set();
+export function trackHostOp(promise) {
+  pendingHostOps.add(promise);
+  const forget = () => { pendingHostOps.delete(promise); };
+  promise.then(forget, forget);
+  // Track the original, but leave the caller's rejection unhandled unless the caller handles it.
+  return promise.then((value) => value);
+}
+
+const tracked = (call) => (...args) => {
+  const result = call(...args);
+  return result && typeof result.then === 'function' ? trackHostOp(Promise.resolve(result)) : result;
+};
+// The same members, each call tracked; a non-function member is kept as it is.
+const trackedMembers = (surface) => Object.fromEntries(Object.entries(surface).map(([name, member]) =>
+  [name, typeof member === 'function' ? tracked(member) : member]));
+
+const SETTLE_LIMIT_MS = 10_000;
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+const expiry = (ms) => {
+  let timer;
+  const promise = new Promise((resolve) => { timer = setTimeout(resolve, ms); });
+  return { promise, cancel: () => clearTimeout(timer) };
+};
+
+function abandonHostOps(limitMs) {
+  const abandoned = [...pendingHostOps];
+  // A forgotten call can still resume and touch its sandbox; abandoning it avoids poisoning later teardowns.
+  for (const promise of abandoned) pendingHostOps.delete(promise);
+  throw new Error(`${abandoned.length} host call(s) still pending after ${limitMs} ms`);
+}
+
+// Waits until a full event-loop turn passes with no host call pending: a call chained after another one starts in the
+// microtasks of the first one's settlement, so it is visible by the next turn. A call that never settles fails the
+// teardown after SETTLE_LIMIT_MS of the monotonic clock instead of hanging it.
+export async function settleHostOps(limitMs = SETTLE_LIMIT_MS) {
+  const deadline = performance.now() + limitMs;
+  for (await nextTurn(); pendingHostOps.size > 0; await nextTurn()) {
+    if (performance.now() >= deadline) abandonHostOps(limitMs);
+    const remaining = deadline - performance.now();
+    const timeout = expiry(Math.max(0, remaining));
+    try {
+      const settled = await Promise.race([Promise.allSettled([...pendingHostOps]).then(() => true), timeout.promise.then(() => false)]);
+      if (!settled) abandonHostOps(limitMs);
+    } finally { timeout.cancel(); }
+  }
+}
+
+// Same retry policy as plugin/bin/lib/suite-lock.mjs: Windows EPERM/EBUSY can outlive our own writers.
+export const SANDBOX_REMOVE_OPTIONS = { recursive: true, force: true, maxRetries: 10, retryDelay: 20 };
+
+// Removes a sandbox once every host call has settled; a teardown that times out still removes it, then fails.
+export async function removeSandbox(root, { limitMs = SETTLE_LIMIT_MS, beforeDrain, beforeRemove, remove = rm } = {}) {
+  try { beforeDrain?.(); await settleHostOps(limitMs); }
+  finally { beforeRemove?.(); await remove(root, SANDBOX_REMOVE_OPTIONS); }
+}
+
+// A fresh sandbox directory, removed after the test once the hook's background writes have settled.
+export async function sandboxRoot(t, prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => removeSandbox(root));
+  return root;
+}
+
 // Only the recorded members exist; any other member reads as undefined, as on the host, so calling it is a TypeError.
 export const realFs = Object.freeze(Object.fromEntries(hostFsSurface.map((name) => {
-  if (typeof fsOperations[name] !== 'function') throw new Error(`missing fake for host fs member ${name}`);
-  return [name, fsOperations[name]];
+  const operation = fsOperations[name];
+  if (typeof operation !== 'function') throw new Error(`missing fake for host fs member ${name}`);
+  return [name, (...args) => trackHostOp(operation(...args))];
 })));
 
 export const bashRule = `---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: 'git push'\n  compliance:\n    kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'\n---\nCheck destination.\n`;
@@ -79,7 +151,7 @@ export const exhaustedBudgetClock = () => { let t = 0; return () => (t += 5000);
 // One registered hook over a real config dir and project, with the given store. `triggerClock` is passed to register as
 // the regex budget's clock (default: the real Date.now). `messages` is `$.session.messages`: called with `{ as: 'api' }` (and
 // `agentId` for a sub-agent) it answers the conversation the next request is built from.
-export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [] } = {}) {
+export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [], log } = {}) {
   const config = join(root, 'config'), project = join(root, 'project');
   await mkdir(join(config, 'rules-on-demand'), { recursive: true });
   await mkdir(project, { recursive: true });
@@ -89,14 +161,15 @@ export async function hookFixture(root, store, { sessionId = 'sample-session', f
   const handlers = new Map();
   hooks.register((event, handler) => handlers.set(event, handler), { enabled: true }, triggerClock);
   const logs = [];
-  const $ = {
+  // `log`, when given, also receives each $.ui.log line (a test can hold the log open to widen a window).
+  const $ = Object.fromEntries(Object.entries({
     env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: config, HOME: root })[name] },
     fs,
-    ui: { log: async (line) => { logs.push(line); } },
+    ui: { log: async (line) => { logs.push(line); await log?.(line); } },
     store: store.api,
     session: { id: async () => sessionId, messages, root: async () => project },
     model: { classify: async () => 'followed' },
-  };
+  }).map(([name, surface]) => [name, trackedMembers(surface)]));
   const call = (event, next = async () => ({})) => handlers.get('tool.call')($, { tool: 'Bash', cwd: project, ...event }, next);
   const identity = `user:${await realpath(join(config, 'rules-on-demand'))}:sample.md`;
   return { $, handlers, logs, call, config, project, identity, quality: join(config, 'plugins', 'data', 'wt-rules-on-demand', 'quality') };

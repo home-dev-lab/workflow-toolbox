@@ -3,10 +3,9 @@
 // makes every reader count one segment once whatever copies a crash, an ambiguous rejection or a second writer left (W1-W4).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, truncate } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readFile, readdir, writeFile, truncate } from 'node:fs/promises';
 import { join } from 'node:path';
-import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, readArchives, archivedUnits, shrinkDeliveries } from './store-host-fake.mjs';
+import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, readArchives, archivedUnits, shrinkDeliveries, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_BUDGETS, VERDICTS, VERDICT_ARCHIVE, STORE_ARCHIVE, legacyContextSeg, legacyServedSeg, shrink } from '../hooks/store-budget.js';
 import { retainArchives } from '../scripts/archive-retention.mjs';
 import { readStoreArchives } from '../scripts/store-archives.mjs';
@@ -19,8 +18,7 @@ const closeTurn = (f) => f.handlers.get('turn.complete')(f.$, { cwd: f.project }
 const overSessions = (identity, segs) => atLimitStore(identity, { verdictChars: 10, sessionChars: STORE_BUDGETS.sessions + 40_000, segs });
 
 async function sandbox(t, prefix) {
-  const root = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, prefix);
   return root;
 }
 async function identityIn(root) { return (await hookFixture(root, hostStore())).identity; }
