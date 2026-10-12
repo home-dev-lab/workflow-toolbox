@@ -1,8 +1,7 @@
 // Preserve-in-place adapter: host reads and byte-range writes never replace prompt files.
 import { locateReplacements } from './prompt-storage.js';
+import { consoleNotice } from './console-notice.js';
 
-let storageFailureNoticed = false;
-let toolStorageFailureNoticed = false;
 const joinPath = (parent, ...parts) => [parent.replace(/[\\/]+$/, ''), ...parts.map((part) => String(part).replace(/^[\\/]+|[\\/]+$/g, ''))].join('/');
 
 async function configDir($) {
@@ -141,17 +140,12 @@ export async function scrubPromptStorage($, replacements, signal) {
     }
     throw new Error('record not found');
   } catch {
-    if (!storageFailureNoticed) {
-      storageFailureNoticed = true;
-      await $.uiLog('wt-secret-guard: could not scrub Claude Code prompt storage; a raw secret may remain in history.');
-    }
+    await consoleNotice($, 'prompt-storage-failed', 'wt-secret-guard: could not scrub Claude Code prompt storage; a raw secret may remain in history.');
   }
   return false;
 }
 
 function toolStorageNotice(forwarded) {
-  if (!forwarded && toolStorageFailureNoticed) return null;
-  toolStorageFailureNoticed = true;
   return forwarded
     ? 'wt-secret-guard: forwarded with body redaction, but persisted input could not be repaired; a raw secret may remain in its transcript.'
     : 'wt-secret-guard: could not scrub a denied tool input from Claude Code storage; the call was refused but a raw secret may remain in its transcript.';
@@ -172,7 +166,7 @@ export async function scrubToolUseStorage($, replacements, toolUseId, signal, fo
     throw new Error('record not found');
   } catch {
     const notice = toolStorageNotice(forwarded);
-    if (notice) await $.uiLog(notice);
+    await consoleNotice($, forwarded ? 'forwarded-storage-failed' : 'denied-storage-failed', notice);
     return false;
   }
 }

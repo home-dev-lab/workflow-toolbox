@@ -212,11 +212,11 @@ await test('L5 routing disabled nonadapter and residual findings fail closed', (
 }
 async function noticeLocks(fixture) {
 const { test, freshVault, $, tokenize, mcp } = fixture;
-await test('L5 forwarded repair failure and subagent notices are truthful', () => freshVault(async () => {
+await test('L5 forwarded repair failures warn and subagent gaps journal', () => freshVault(async () => {
   const value = 'fixture-notice-X7p9';
   tokenize('file', value);
   const localLogs = [];
-  const runtime = { ...$, ui: { log(line) { localLogs.push(line); } }, fs: { ...$.fs, async read() { throw new Error('missing'); } } };
+   const runtime = { ...$, session: { ...$.session, id: () => 'forwarded-notice-fixture' }, ui: { log(line) { localLogs.push(line); } }, fs: { ...$.fs, async read() { throw new Error('missing'); } } };
   for (const agentId of [undefined, 'child-fixture']) {
     let forwarded = false;
     const answer = await mcp(runtime, { tool: 'mcp__atrium__speak', text: value, tool_use_id: 'missing-owner-fixture', agentId }, async () => { forwarded = true; return {}; });
@@ -224,12 +224,16 @@ await test('L5 forwarded repair failure and subagent notices are truthful', () =
     assert.equal(forwarded, true);
   }
    assert.ok(localLogs.some((line) => /forwarded with body redaction, but persisted input could not be repaired/.test(line)), 'no truthful repair-failure notice');
-  assert.ok(localLogs.some((line) => /subagent.*not.*repaired/i.test(line)), 'no subagent gap notice');
+   const { journalSnapshot } = await import('./journal.js');
+   assert.ok([...journalSnapshot().values()].some((text) => text.includes('"action":"storage-unrepaired"')), 'no journaled subagent storage gap');
   assert.equal(localLogs.some((line) => /refused|denied|fixture-notice-X7p9/.test(line)), false, 'forwarded notice claimed refusal or leaked');
-  const before = localLogs.length;
-  tokenize('file', 'secret:file#abcdef');
-  await mcp(runtime, { tool: 'mcp__atrium__speak', text: 'secret:file#abcdef' }, async () => ({}));
-  assert.ok(localLogs.slice(before).some((line) => /forwarded with 1 values replaced/.test(line)), 'held token-shaped replacement was not counted');
+   const token = tokenize('file', 'secret:file#abcdef');
+   const event = { tool: 'mcp__atrium__speak', text: 'secret:file#abcdef' };
+   const { planOwnerChannel } = await import('./owner-channel.js');
+   assert.equal((await planOwnerChannel(event)).count, 1, 'held token-shaped replacement was not counted');
+   let forwarded;
+   await mcp(runtime, event, async (received) => { forwarded = received; return {}; });
+   assert.equal(forwarded.text, token, 'held token-shaped replacement did not reach forwarded body');
 }));
 }
 async function reclassificationLocks(fixture) {

@@ -9,6 +9,33 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGINS = ['wt-secret-guard']
 const PRIVATE_HOME_PATH = /\/home\/doublefx/
 const PRIVATE_ID = /(?<!\d)\d{19}(?!\d)/
+const NOTICE_LOCKS = [
+  'D13 subagent denial names the unmeasured storage gap without touching the main transcript',
+  'D14 read policy covers expansions, multiple paths, globs, envrc and backslashes',
+  'D15 dated measurement comments remain beside measured adapters',
+  'D17 history storage returns immediately after successful repair',
+  'N1 tool result scrub stays console silent',
+  'N2 Bash scrub stays console silent',
+  'N3 origin prompt scrub stays console silent',
+  'N4 inbound scrub stays console silent',
+  'N5 main owner forwarding stays console silent',
+  'N6 subagent owner forwarding stays console silent',
+  'N7 common word registration scrub stays console silent',
+  'N8 failure notices dedupe by session and fixed kind',
+  'N9 diagnostic journal events do not alter aggregates or promotion',
+  'N10 overlapping refusal drains attempt each entry at most once',
+  'N10 partial refusal drain drops failed suffix',
+  'N10 session outage does not suppress healthy refusal writes',
+]
+const RECOVERY_LOCKS = [
+  'N8 different text shares fixed notice identity',
+  'N8 concurrent delivery reserves notice identity',
+  'N8 failed delivery releases notice reservation',
+  'N11 sessionId failure preserves subagent denial',
+  'N11 uiLog failure preserves subagent denial',
+  'N12 registration refusal reasons are closed enums',
+  'N12 registration drain preserves refusal reasons',
+]
 
 function* files(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -59,7 +86,7 @@ describe('shipped private plugins', () => {
       'L5 fixed Atrium body adapter masks repeats base64 and repairs storage',
       'L5 body scrub merges overlap and preserves issued token boundaries',
       'L5 routing disabled nonadapter and residual findings fail closed',
-      'L5 forwarded repair failure and subagent notices are truthful',
+      'L5 forwarded repair failures warn and subagent gaps journal',
       'L5 UI log failure does not block already clean body forwarding',
       'L5 owner channel reclassifies the actual rewritten event and refuses residual findings',
       'L6 trusted reference promotes an ephemeral value in place and holds before binding',
@@ -82,12 +109,12 @@ describe('shipped private plugins', () => {
       'F2 trimmed one to three character values are never held or masked',
       'F3 trimmed case insensitive common words are never held or masked',
       'F4 distinctive secrets retain inbound result stream and outbound protection',
-      'F5 refused registration logs aggregate kind reason and count without values or hashes',
+      'F5 refused registration journals kind and count without values or hashes',
       'F6 under floor op reads refuse execution with a reason and register nothing',
       'F7 clipped op output spans cannot register newline or common word slices',
       'F8 under floor file references fail closed and stripped variants are never held',
       'F8b an empty file reference still binds, executes, and holds nothing',
-      'F9 refused detections mask their first occurrence and log on every registering hook path',
+      'F9 refused detections mask their first occurrence and journal on every registering hook path',
       'F10 common word data is private alphabetic lowercase deduplicated and complete',
       'F11 errored answer assembly publishes every refused registration before returning',
       'H1 refused detections cannot suppress overlapping held or accepted scrub spans',
@@ -208,10 +235,8 @@ describe('shipped private plugins', () => {
       'D10 Edit old_string can remove a leaked secret',
       'D11 refusal guidance is surface specific',
       'D12 declared turnId and index fields drive dedupe identities',
-      'D13 subagent denial names the unmeasured storage gap without touching the main transcript',
-      'D14 read policy covers expansions, multiple paths, globs, envrc and backslashes',
-      'D15 dated measurement comments remain beside measured adapters',
-      'D17 history storage returns immediately after successful repair',
+      ...NOTICE_LOCKS,
+      ...RECOVERY_LOCKS,
     ]) it(`${plugin}: ${lock}`, () => expect(selftest.stdout).toContain(`PASS ${lock}`))
   }
 

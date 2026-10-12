@@ -168,6 +168,7 @@ const journalHostFor = (runtime) => ({
   sessionId: () => runtime.session.id(), sessionCwd: () => runtime.session.cwd(), uiLog: (text) => runtime.ui.log(text),
 });
 const referenceHostFor = (runtime) => ({
+  ...journalHostFor(runtime),
   envGet: (name) => runtime.env.get(name),
   processRun: (argv) => runtime.process.run(argv), fsRead: (path) => runtime.fs.read(path), uiLog: (text) => runtime.ui.log(text),
 });
@@ -208,7 +209,7 @@ await test('inbound known-vendor credential is withheld with a visible revocatio
   assert.match(received[0].text, /https:\/\/github\.com\/settings\/tokens/);
   assert.match(received[0].text, /cannot unsend/i);
   assert.equal(logs.slice(beforeLogs).some((line) => line.includes(github)), false);
-  assert(logs.slice(beforeLogs).some((line) => /credential.*revocation/i.test(line)));
+  assert.equal(logs.length, beforeLogs, 'inbound scrub reached ui.log');
 });
 await test('ordinary inbound message mentioning key is unchanged and answerable', async () => {
   assert(receive, 'session.receive hook was not registered');
@@ -3690,23 +3691,27 @@ await test('F4 distinctive secrets retain inbound result stream and outbound pro
   assert.ok(answer.deny, 'distinctive secret was not refused outbound');
   assert.equal(executed, false);
 }));
-await test('F5 refused registration logs aggregate kind reason and count without values or hashes', () => freshVault(async () => {
+function registrationEvents() {
+  return [...journalSnapshot().values()].flatMap((text) => text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).filter((event) => event.action === 'registration-refused');
+}
+await test('F5 refused registration journals kind and count without values or hashes', () => freshVault(async () => {
   const before = logs.length;
+  const beforeEvents = registrationEvents().length;
   const beforeCalls = calls.length;
   for (const value of ['\n', '\r\n', 'Q7', 'report']) tokenize('op-output', value);
   await prompt($, { text: 'ordinary prose' }, async (event) => event);
-  const refused = logs.slice(before).filter((line) => line.includes('registration refused'));
-  assert.equal(refused.length, 3, 'refused registrations were not logged by reason');
-  assert.ok(refused.includes('wt-secret-guard: registration refused (kind op-output, reason whitespace, count 2)'));
-  assert.ok(refused.includes('wt-secret-guard: registration refused (kind op-output, reason short, count 1)'));
-  assert.ok(refused.includes('wt-secret-guard: registration refused (kind op-output, reason common-word, count 1)'));
-  assert.equal(refused.some((line) => /report|Q7|[\r\n]|#[a-f0-9]{6}|sha256/.test(line)), false, 'refusal log disclosed value material');
+  const refused = registrationEvents().slice(beforeEvents);
+  assert.deepEqual(refused.map(({ kinds, count }) => ({ kinds, count })), [
+    { kinds: ['op-output'], count: 2 }, { kinds: ['op-output'], count: 1 }, { kinds: ['op-output'], count: 1 },
+  ]);
+  assert.equal(logs.length, before);
+  assert.equal(/report|Q7|#[a-f0-9]{6}|sha256/.test(JSON.stringify(refused)), false, 'refusal journal disclosed value material');
   const published = calls.slice(beforeCalls).filter((call) => call.key === 'detections').at(-1)?.value;
   assert.equal(published?.entries?.some((entry) => entry.kind === 'op-output') ?? false, false);
 }));
 await test('F6 under floor op reads refuse execution with a reason and register nothing', () => freshVault(async () => {
   for (const [index, value, reason] of [[0, '\n\n', 'whitespace'], [1, 'Q7', 'short'], [2, 'Report\r\n', 'common-word'], [3, '\r\n', 'whitespace'], [4, '', 'whitespace']]) {
-    const before = logs.length;
+    const before = registrationEvents().length;
     let reads = 0;
     const runtime = { ...$, process: { run: async (argv, init) => {
       if (/^op(?:\.exe)?$/.test(argv[0])) { reads += 1; return { exitCode: 0, stdout: value }; }
@@ -3720,7 +3725,7 @@ await test('F6 under floor op reads refuse execution with a reason and register 
       await assertNotHeld(value.replace(/\r?\n$/, ''));
     }
     assert.equal(reads, 1, 'under-floor op failure was not remembered');
-    assert.ok(logs.slice(before).some((line) => line.includes(`reason ${reason}`)), 'op floor refusal was silent');
+    assert.ok(registrationEvents().length > before, 'op floor refusal was not journaled');
   }
 }));
 await test('F7 clipped op output spans cannot register newline or common word slices', () => freshVault(async () => {
@@ -3728,12 +3733,12 @@ await test('F7 clipped op output spans cannot register newline or common word sl
   for (const tail of ['\n', 'report']) {
     const value = `${marker}${tail}`;
     tokenize('op-output', value);
-    const before = logs.length;
+    const before = registrationEvents().length;
     const answer = await call('op item get example', value);
     await assertNotHeld(tail);
     assert.equal(answer.text.includes(value), false, 'clipped slice released the full held op-output value');
     assert.ok(answer.text.startsWith(marker), 'clipping changed an already issued token');
-    assert.ok(logs.slice(before).some((line) => /registration refused.*kind op-output/.test(line)), 'clipped op-output refusal was silent');
+    assert.ok(registrationEvents().slice(before).some((event) => event.kinds.includes('op-output')), 'clipped op-output refusal was not journaled');
   }
   assert.equal((await call('echo one\necho two', 'one\ntwo')).deny, undefined);
 }));
@@ -3742,12 +3747,12 @@ await test('F8 under floor file references fail closed and stripped variants are
     const path = `/tmp/wt-floor-file-${index}`;
     setFile(path, value);
     let executed = false;
-    const before = logs.length;
+    const before = registrationEvents().length;
     const answer = await bash($, { tool: 'Bash', command: `printf %s secret:file:${path}` }, async () => { executed = true; });
     assert.equal(executed, false, 'under-floor file reference executed');
     assert.match(answer.deny ?? '', new RegExp(reason), 'file floor refusal did not state its reason');
     await assertNotHeld(value);
-    assert.ok(logs.slice(before).some((line) => line.includes(`reason ${reason}`)), 'file floor refusal was silent');
+    assert.ok(registrationEvents().length > before, 'file floor refusal was not journaled');
   }
   const value = 'FAKE-variant-q7X9m2R8\n\n';
   setFile('/tmp/wt-floor-variant', value);
@@ -3765,14 +3770,14 @@ await test('F8b an empty file reference still binds, executes, and holds nothing
   const { testVaultSnapshot } = await import('./token-vault.js');
   assert.equal(testVaultSnapshot().values.has(''), false, 'an empty value was held');
 }));
-await test('F9 refused detections mask their first occurrence and log on every registering hook path', () => freshVault(async () => {
+await test('F9 refused detections mask their first occurrence and journal on every registering hook path', () => freshVault(async () => {
   const text = 'password: report';
   const check = async (run) => {
-    const before = logs.length;
+    const before = registrationEvents().length;
     const result = await run();
     assert.equal(result.includes('report'), false, 'refused detection was not masked in its first text');
     await assertNotHeld('report');
-    assert.ok(logs.slice(before).some((line) => /registration refused.*reason common-word/.test(line)), 'hook registration refusal was silent');
+    assert.ok(registrationEvents().length > before, 'hook registration refusal was not journaled');
   };
   await check(() => receive($, { text }, async (event) => event.text));
   await check(() => prompt($, { text }, async (event) => event.text));
@@ -4337,5 +4342,186 @@ await test('R3 opaque credential surrounded by sentence prose stays masked', () 
   const output = await normalizedStream([{ kind: 'text', index: 0,
     text: `password="See the docs for ${opaqueCredential}${opaqueTail} and the details here.` }]);
   assert.equal(output, 'secret:assignment#<id>\n[NOTE]');
+}));
+async function quietScrub(name, run) {
+  await test(name, async () => {
+    const before = logs.length;
+    const result = JSON.stringify(await run());
+    assert.equal(result.includes(github), false, 'raw credential survived quiet scrub');
+    assert.match(result, /secret:github-classic#[a-f0-9]{6}/);
+    assert.equal(logs.length, before, `${name}: routine scrub reached ui.log`);
+  });
+}
+await quietScrub('N1 tool result scrub stays console silent', () => hookForTool('Grep')($, { tool: 'Grep' }, async () => ({ text: github })));
+await quietScrub('N2 Bash scrub stays console silent', () => call('echo fixture', github));
+await quietScrub('N3 origin prompt scrub stays console silent', () => {
+  setFile(historyPath, `${JSON.stringify({ display: github, pastedContents: {} })}\n`);
+  return prompt($, { text: github, origin: { kind: 'composer' } }, async (event) => event);
+});
+await quietScrub('N4 inbound scrub stays console silent', () => receive($, { text: github }, async (event) => event));
+await quietScrub('N5 main owner forwarding stays console silent', () => {
+  const event = { tool: 'mcp__atrium__speak', text: github, tool_use_id: 'quiet-owner' };
+  setFile(transcriptPath, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: event.tool_use_id, input: event }] } })}\n`);
+  return mcp($, event, async (forwarded) => forwarded);
+});
+await quietScrub('N6 subagent owner forwarding stays console silent', () => mcp($, { tool: 'mcp__atrium__speak', text: github, agentId: 'quiet-child' }, async (event) => event));
+await test('N7 common word registration scrub stays console silent', async () => {
+  const before = logs.length;
+  const result = await hookForTool('Grep')($, { tool: 'Grep' }, async () => ({ text: 'password: report' }));
+  assert.equal(result.text.includes('report'), false, 'common word detection was not replaced');
+  assert.match(result.text, /secret:[a-z-]+#[a-f0-9]{6}/);
+  assert.equal(logs.length, before, 'N7 common word registration scrub stays console silent: routine scrub reached ui.log');
+});
+await test('N8 failure notices dedupe by session and fixed kind', async () => {
+  const localLogs = [];
+  const runtime = (id) => ({ ...$, session: { ...$.session, id: () => id }, ui: { log: (line) => localLogs.push(line) } });
+  const first = runtime('notice-session-one');
+  for (let index = 0; index < 2; index += 1) {
+    await bash(first, { tool: 'Bash', command: github, agentId: `child-${index}` }, async () => assert.fail('raw outbound input executed'));
+  }
+  assert.equal(localLogs.length, 1, 'same failure kind reached ui.log twice in one session');
+  for (let index = 0; index < 2; index += 1) {
+    await attachment(first, { text: github, index, origin: { kind: 'hook', event: 'SessionStart' } }, async (event) => event);
+  }
+  assert.equal(localLogs.length, 2, 'different failure kind did not get exactly one notice');
+  await bash(runtime('notice-session-two'), { tool: 'Bash', command: github, agentId: 'child' }, async () => assert.fail('raw outbound input executed'));
+  assert.equal(localLogs.length, 3, 'new session did not get its own failure notice');
+});
+await test('N9 diagnostic journal events do not alter aggregates or promotion', async () => {
+  const host = journalHostFor($);
+  const events = [{ action: 'evaluated', surface: 'bash', project: 'measured', at: '2026-08-01T00:00:00.000Z' }];
+  const diagnostics = [];
+  for (const [surface, action] of [['registration', 'registration-refused'], ['mcp', 'storage-unrepaired']]) {
+    const event = await buildEvent(host, { surface, action, kinds: ['assignment'], count: 2 });
+    diagnostics.push({ ...event, project: 'diagnostic-only', at: '2020-01-01T00:00:00.000Z' });
+  }
+  assert.deepEqual(deriveAggregates([...events, ...diagnostics]), deriveAggregates(events));
+  const now = Date.parse('2026-09-22T00:00:00.000Z');
+  assert.deepEqual(promotionStatus([...events, ...diagnostics], [], now), promotionStatus(events, [], now));
+});
+await test('N8 different text shares fixed notice identity', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  const host = { sessionId: () => 'notice-text', uiLog: (text) => lines.push(text) };
+  await consoleNotice(host, 'fixed-id', 'first text');
+  await consoleNotice(host, 'fixed-id', 'different text');
+  assert.equal(lines.length, 1, 'different text duplicated a fixed notice id');
+});
+await test('N8 concurrent delivery reserves notice identity', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const host = { sessionId: () => 'notice-concurrent', uiLog: async (text) => { lines.push(text); await pending; } };
+  const first = consoleNotice(host, 'fixed-id', 'first');
+  const second = consoleNotice(host, 'fixed-id', 'second');
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  await Promise.all([first, second]);
+  assert.equal(lines.length, 1, 'concurrent delivery duplicated a notice');
+});
+await test('N8 failed delivery releases notice reservation', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  let attempts = 0;
+  const host = { sessionId: () => 'notice-recovery', uiLog: (text) => {
+    if (++attempts === 1) throw new Error('delivery unavailable');
+    lines.push(text);
+  } };
+  assert.equal(await consoleNotice(host, 'fixed-id', 'failure'), false, 'failed notice must return false without throwing');
+  assert.equal(await consoleNotice(host, 'fixed-id', 'recovery'), true);
+  assert.equal(lines.length, 1, 'failed delivery consumed the notice');
+});
+for (const boundary of ['sessionId', 'uiLog']) {
+  await test(`N11 ${boundary} failure preserves subagent denial`, async () => {
+    const event = { tool: 'Bash', command: github, agentId: `notice-failure-${boundary}` };
+    const working = { ...$, session: { ...$.session, id: () => `deny-${boundary}` }, ui: { log: () => {} } };
+    const expected = await bash(working, event, async () => assert.fail('raw outbound input executed'));
+    const failing = { ...working,
+      session: { ...working.session, id: () => { if (boundary === 'sessionId') throw new Error('session unavailable'); return `deny-failure-${boundary}`; } },
+      ui: { log: () => { if (boundary === 'uiLog') throw new Error('delivery unavailable'); } },
+    };
+    const actual = await bash(failing, event, async () => assert.fail('raw outbound input executed'));
+    assert.ok(actual.deny, 'notice failure lost subagent denial');
+    assert.deepEqual(actual, expected, 'notice failure changed the protection outcome');
+  });
+}
+await test('N10 overlapping refusal drains attempt each entry at most once', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-overlap');
+  const originalNow = Date.now;
+  let now = originalNow();
+  let attempts = 0;
+  const host = { ...journalHostFor($), sessionId: () => 'refusal-overlap', processRun: () => {
+    attempts += 1; return { exitCode: 1 };
+  } };
+  Date.now = () => now;
+  try {
+    await Promise.all(Array.from({ length: 100 }, () => {
+      tokenize('op-output', 'report');
+      return publish(host);
+    }));
+    assert.equal(attempts, 100, 'overlapping publications did not attempt all 100 drained entries');
+    now += 60_000;
+    await Promise.all(Array.from({ length: 100 }, () => publish(host)));
+    assert.ok(attempts <= 100, 'overlapping outage drains re-attempted entries: failed writes must not exceed 100 drained refusals');
+  } finally { Date.now = originalNow; }
+}));
+await test('N10 partial refusal drain drops failed suffix', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-partial');
+  const records = [];
+  const originalNow = Date.now;
+  let now = originalNow();
+  let attempts = 0;
+  let outage = true;
+  const host = { ...journalHostFor($), sessionId: () => 'refusal-partial', processRun: (argv, init) => {
+    if (++attempts > 1 && outage) return { exitCode: 1 };
+    records.push(JSON.parse(init.stdin));
+    return { exitCode: 0, stdout: argv[2] };
+  } };
+  Date.now = () => now;
+  try {
+    for (const value of ['\n', 'Q7', 'report']) tokenize('op-output', value);
+    await publish(host);
+    assert.deepEqual(records.map(({ reason, count }) => ({ reason, count })), [{ reason: 'whitespace', count: 1 }], 'partial drain did not preserve successful prefix exactly once');
+    assert.equal(attempts, 2, 'partial drain attempted entries after its first failure');
+    outage = false;
+    now += 60_000;
+    await publish(host);
+    await publish(host);
+    assert.equal(attempts, 2, 'later publications re-attempted the dropped refusal suffix');
+    assert.equal(records.length, 1, 'partial drain replayed its successful prefix or dropped suffix');
+  } finally { Date.now = originalNow; }
+}));
+await test('N10 session outage does not suppress healthy refusal writes', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-sessions');
+  const records = [];
+  const base = journalHostFor($);
+  const failing = { ...base, sessionId: () => 'refusal-outage', processRun: () => ({ exitCode: 1 }) };
+  const healthy = { ...base, sessionId: () => 'refusal-healthy', processRun: (argv, init) => {
+    records.push(JSON.parse(init.stdin)); return { exitCode: 0, stdout: argv[2] };
+  } };
+  tokenize('op-output', '\n');
+  await publish(failing);
+  tokenize('op-output', 'report');
+  await publish(healthy);
+  assert.equal(records.length, 1, 'session A outage suppressed session B refusal write on its next publication');
+  assert.deepEqual(records.map(({ sessionId, reason, count }) => ({ sessionId, reason, count })), [{ sessionId: 'refusal-healthy', reason: 'common-word', count: 1 }], 'healthy session received another drain\'s dropped refusal');
+  await publish(healthy);
+  assert.equal(records.length, 1, 'healthy session recorded the refusal more than once');
+}));
+await test('N12 registration refusal reasons are closed enums', async () => {
+  const host = journalHostFor($);
+  for (const reason of ['whitespace', 'short', 'common-word', 'ordinary-shape', 'low-distinctiveness', 'released']) {
+    assert.equal((await buildEvent(host, { surface: 'registration', action: 'registration-refused', reason })).reason, reason, 'validated refusal reason was dropped');
+  }
+  const event = await buildEvent(host, { surface: 'registration', action: 'registration-refused', reason: github });
+  assert.equal(Object.hasOwn(event, 'reason'), false, 'unvalidated reason reached journal');
+});
+await test('N12 registration drain preserves refusal reasons', () => freshVault(async () => {
+  const before = registrationEvents().length;
+  for (const value of ['\n', 'Q7', 'report']) tokenize('op-output', value);
+  const { publishRefusals } = await import('./journal.js');
+  await publishRefusals(journalHostFor($));
+  assert.deepEqual(registrationEvents().slice(before).map(({ reason }) => reason), ['whitespace', 'short', 'common-word'], 'registration journal lost refusal reasons');
 }));
 process.exit(failures ? 1 : 0);

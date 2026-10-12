@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - PostToolUse producer reads declare the same 90 s computation budget, and their hook host allows 95 s including cleanup. Large boards using a project parser no longer hit the former 10 s host cutoff; a killed read can be recognized once its recorded deadline expires.
 - Refreshes finishing past their bound after publication now preserve the snapshot while reporting the overrun on stderr and exiting 1. Stop also recognizes expired detached launches that never wrote a producer heartbeat. Unrefreshable diagnostics require a live or unknown mandate and appear once per failure heartbeat per session.
 - The work journal's hooks are removed: nothing records project acts any more at PreToolUse, PostToolUse, SessionStart or Stop, and a session start no longer prints the journal digest or its `retire-progress`, `setup-board` and "no acts recorded yet" notices. Commits already live in Git. The hook script, its recorder, Git-capture and lifecycle modules and the default recorder configuration are deleted. `wt-work-journal.mjs` stays, marked retired, so an existing journal can still be read, verified, restored and exported (`show`, `digest`, `verify`, `restore`, `unlock`, `export-closed`).
+- The secret guard (`wt-secret-guard` 0.1.5) no longer writes a console line for each scrub or forwarded redaction. Each kind of failure notice appears at most once per session, and a failed notice never interrupts a protection decision.
 
 ## [0.194.0] - 2026-10-12
 

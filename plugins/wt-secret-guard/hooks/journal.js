@@ -1,13 +1,15 @@
 // Audit without disclosure: persist only closed enums and identifiers while owning legacy publication.
 import { sha256 } from './sha256.js';
-import { knownTokens, restoreDirty, restorePending, restoreRefusedRegistrations, takeDirty, takePending, takeRefusedRegistrations } from './token-vault.js';
+import { consoleNotice } from './console-notice.js';
+import { knownTokens, restoreDirty, restorePending, takeDirty, takePending, takeRefusedRegistrations } from './token-vault.js';
 
-const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'web-fetch', 'web-search', 'agent', 'task', 'assistant', 'attachment', 'prompt']);
-const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool', 'released']);
+const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'web-fetch', 'web-search', 'agent', 'task', 'assistant', 'attachment', 'prompt', 'registration']);
+const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool', 'released', 'registration-refused', 'storage-unrepaired']);
 const RULES = new Set(['guarded-path-read', 'guarded-path-mention', 'policy']);
 const PATH_CLASSES = new Set(['npm-config', 'env-file', 'cloud-secret', 'aws-credentials', 'ssh-key', 'gh-hosts', 'netrc', 'shell-history', 'docker-config', 'kube-config', 'pypi-config', 'git-credentials', 'other-guarded']);
 const COMMAND_CLASSES = new Set(['bash', 'read', 'notebook-read', 'metadata', 'prose', 'other']);
 const DISPOSITIONS = new Set(['true-positive', 'false-positive', 'unreviewed']);
+const REFUSAL_REASONS = new Set(['whitespace', 'short', 'common-word', 'ordinary-shape', 'low-distinctiveness', 'released']);
 const journalText = new Map();
 const seen = new Set();
 const writeQueues = new Map();
@@ -46,6 +48,7 @@ export async function buildEvent($, fields) {
     ruleId: enumValue(RULES, fields.ruleId),
     pathClass: enumValue(PATH_CLASSES, fields.pathClass),
     commandClass: enumValue(COMMAND_CLASSES, fields.commandClass),
+    reason: enumValue(REFUSAL_REASONS, fields.reason),
   };
   if (!event.surface || !event.action) throw new Error('invalid journal event');
   return Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined));
@@ -83,7 +86,7 @@ export async function appendEvent($, fields) {
     const path = await journalPath($, event.sessionId);
     await enqueueWrite($, path, event);
     return true;
-  } catch { await $.uiLog('wt-secret-guard: journal write failed (1 event)'); return false; }
+  } catch { await consoleNotice($, 'journal-write-failed', 'wt-secret-guard: journal write failed (1 event)'); return false; }
 }
 
 export async function recordDisposition($, identifiers, disposition) {
@@ -95,6 +98,7 @@ export async function recordDisposition($, identifiers, disposition) {
 }
 
 export function deriveAggregates(events, dispositions = []) {
+  events = measurementEvents(events);
   const evaluations = events.filter((event) => event.action === 'evaluated').length;
   const hits = events.filter((event) => event.action === 'would-block').length;
   const reviewed = dispositions.filter((item) => item.disposition !== 'unreviewed').length;
@@ -103,6 +107,7 @@ export function deriveAggregates(events, dispositions = []) {
 }
 
 export function promotionStatus(events, dispositions, now = Date.now()) {
+  events = measurementEvents(events);
   const totals = deriveAggregates(events, dispositions);
   const times = events.map((event) => Date.parse(event.at)).filter(Number.isFinite);
   const days = times.length ? (now - Math.min(...times)) / 86400000 : 0;
@@ -119,10 +124,12 @@ export function promotionStatus(events, dispositions, now = Date.now()) {
 
 export async function publishRefusals($) {
   const refused = takeRefusedRegistrations();
-  for (let index = 0; index < refused.length; index += 1) {
-    const { kind, reason, count } = refused[index];
-    try { await $.uiLog(`wt-secret-guard: registration refused (kind ${kind}, reason ${reason}, count ${count})`); }
-    catch { restoreRefusedRegistrations(refused.slice(index)); return; }
+  // Diagnostics are best-effort: a failure drops this drain's remaining entries.
+  for (const { kind, count, reason } of refused) {
+    try {
+      if (!await appendEvent($, { surface: 'registration', action: 'registration-refused', kinds: [kind], count, reason })) return;
+    }
+    catch { return; }
   }
 }
 
@@ -143,3 +150,7 @@ export async function publish($) {
 }
 
 export function journalSnapshot() { return new Map(journalText); }
+
+function measurementEvents(events) {
+  return events.filter((event) => event.action !== 'registration-refused' && event.action !== 'storage-unrepaired');
+}
