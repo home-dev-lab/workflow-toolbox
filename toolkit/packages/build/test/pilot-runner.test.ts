@@ -2190,6 +2190,7 @@ describe('SDK pilot runner: account retry and mailbox', () => {
 describe('SDK pilot runner: no-result bound', () => {
   it('aborts a denied session that never produces a result after the bound, even with its input never read again, and still opens the next phase', async () => {
     const f = phaseFixture()
+    const logs: string[] = []
     const timers: Array<{ run: () => void, ms: number }> = []
     const { query, seen } = sessions([
       async function* (session) {
@@ -2206,12 +2207,14 @@ describe('SDK pilot runner: no-result bound', () => {
       },
       completeLite,
     ])
-    const result = await runSessions(f, query, { setTimer: (run: () => void, ms: number) => { timers.push({ run, ms }); return timers.length }, clearTimer: () => {} })
+    const result = await runSessions(f, query, { log: (line: string) => logs.push(line), setTimer: (run: () => void, ms: number) => { timers.push({ run, ms }); return timers.length }, clearTimer: () => {} })
     expect(seen).toHaveLength(2)
     expect(result).toMatchObject({ exitCode: 0, summary: { completed: true } })
     expect(result.summary.phase_sessions[0]).toMatchObject({ ended_by: 'no_result', calls_after_boundary: ['Read'], denied_after_boundary: ['Read'] })
     // The aborted session's assistant usage has no result: run usage is reported as a lower bound, not complete.
     expect(result.summary.fresh_tokens).toBe('unavailable')
+    expect(logs.filter((line) => line.startsWith('phase session 1'))).toEqual(['phase session 1 closed after phase discovery accepted'])
+    expect(result.summary.phase_sessions[0].closing_error).toBe('aborted by the runner')
   })
 
 })
@@ -2240,10 +2243,13 @@ describe('SDK pilot runner: boundary stream endings', () => {
       },
       completeLite,
     ])
-    const result = await runSessions(f, query)
+    const logs: string[] = []
+    const result = await runSessions(f, query, { log: (line: string) => logs.push(line) })
     expect(seen).toHaveLength(2)
     expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, handoffs: 1 } })
     expect(result.summary.phase_sessions[0]).toMatchObject({ ended_by: 'turn-end' })
+    // A session that ends by itself past its boundary is a designed close too, and says so once.
+    expect(logs.filter((line) => line.startsWith('phase session'))).toEqual(['phase session 1 closed after phase discovery accepted', 'phase session 2: tdd'])
   })
 
 })
@@ -2272,6 +2278,63 @@ describe('SDK pilot runner: cumulative model usage', () => {
     expect(usage.model_usage.m.inputTokens).toBe(35)
   })
 
+})
+
+const WITNESS_BOUNDARY_ERROR = 'Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use'
+
+function interruptedBoundarySession(message: string): Script {
+  return async function* (session) {
+    yield { type: 'assistant', message: { id: 'transition', content: [{ type: 'tool_use', id: 'discovery', name: lifecycleToolName('transition'), input: { phase: 'discovery' } }] } }
+    const receipt = await session.tools.transition!({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
+    expect(receipt.content[0]!.text).toMatch(/^accepted phase=tdd/)
+    yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'discovery', content: receipt.content[0]!.text }] } }
+    yield { type: 'assistant', message: { id: 'late', content: [{ type: 'tool_use', id: 'late', name: lifecycleToolName('write_artifact'), input: { kind: 'brief', content: 'x' } }] } }
+    expect(await session.options.canUseTool(lifecycleToolName('write_artifact'), { kind: 'brief', content: 'x' })).toMatchObject({ behavior: 'deny', interrupt: true })
+    yield { type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', permission_denials: [{ tool_name: 'write_artifact' }], usage: { input_tokens: 1, output_tokens: 1 } }
+    throw new Error(message)
+  }
+}
+
+describe('SDK pilot runner: phase-session close logging', () => {
+  it('logs a runner-denied interrupted result as an accepted phase close without an error line', async () => {
+    const f = phaseFixture()
+    const logs: string[] = []
+    const { query } = sessions([interruptedBoundarySession('SDK boundary interruption'), completeLite])
+    const result = await runSessions(f, query, { log: (line: string) => logs.push(line) })
+    expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, handoffs: 1 } })
+    expect(logs.filter((line) => line.startsWith('phase session 1'))).toEqual(['phase session 1 closed after phase discovery accepted'])
+    expect(result.summary.phase_sessions[0].closing_error).toBe('SDK boundary interruption')
+  })
+
+  it('logs and rethrows a diagnostic error result without runner denial even after phase acceptance', async () => {
+    const f = phaseFixture()
+    const logs: string[] = []
+    const error = new Error(WITNESS_BOUNDARY_ERROR)
+    const { query, seen } = sessions([
+      async function* (session) {
+        await session.tools.transition!({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
+        yield { type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_tools', usage: { input_tokens: 1, output_tokens: 1 } }
+        throw error
+      },
+    ])
+    await expect(runSessions(f, query, { log: (line: string) => logs.push(line) })).rejects.toBe(error)
+    expect(seen).toHaveLength(1)
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(summary).toMatchObject({ completed: false, reason: `sdk stream error: ${error.message}`, sdk_stream_error: null, handoffs: 0 })
+    expect(summary.phase_sessions[0]).toMatchObject({ denied_after_boundary: [], closing_error: null })
+    expect(logs.filter((line) => line.startsWith('phase session 1'))).toEqual([`phase session 1: SDK stream error: ${error.message}`])
+  })
+
+  it('replays the accepted-phase, runner-denial and diagnostic SDK error witness as a close', async () => {
+    const f = phaseFixture()
+    const logs: string[] = []
+    const { query, seen } = sessions([interruptedBoundarySession(WITNESS_BOUNDARY_ERROR), completeLite])
+    const result = await runSessions(f, query, { log: (line: string) => logs.push(line) })
+    expect(seen).toHaveLength(2)
+    expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, handoffs: 1 } })
+    expect(result.summary.phase_sessions[0]).toMatchObject({ phase: 'discovery', ended_by: 'boundary-deny', denied_after_boundary: [lifecycleToolName('write_artifact')], terminal_reason: 'aborted_tools', closing_error: WITNESS_BOUNDARY_ERROR })
+    expect(logs.filter((line) => line.startsWith('phase session'))).toEqual(['phase session 1 closed after phase discovery accepted', 'phase session 2: tdd'])
+  })
 })
 
 describe('SDK pilot runner: interrupted and failed streams', () => {

@@ -694,14 +694,29 @@ function consumePhaseMessage(runtime, message, current) {
   if (message.type === 'result') consumePhaseResult(runtime, message, current)
 }
 
+// Every way a session ends past its boundary goes through here, so the next phase opens exactly once
+// and the designed close is logged once, whichever path reaches it first.
+function phaseHandOff(log) {
+  return (current, endedBy) => {
+    current.ended_by ??= endedBy
+    if (!current.handedOff) log(`phase session ${current.index} closed after phase ${current.phase} accepted`)
+    current.handedOff = true
+  }
+}
+
 function closeSessionError(runtime, current, sessionAbort, error) {
   const { handOff, log } = runtime
+  const detail = error instanceof Error ? error.message : String(error)
   // Only a runner-owned no-result abort or the SDK's boundary-interrupted result permits handoff.
   const ownAbort = current.ended_by === 'no_result' && sessionAbort.signal.aborted
-  if (!ownAbort && !current.interruptedResult) throw error
+  if (current.deniedAt === null || (!ownAbort && !current.interruptedResult)) {
+    // Startup failures retain the account gate's sanitized logging.
+    if (runtime.initReceiptSeen) log(`phase session ${current.index}: SDK stream error: ${detail}`)
+    throw error
+  }
+  current.closing_error = detail
+  // handOff logs the designed close once, whichever path reaches it first.
   if (!ownAbort) handOff(current, 'boundary-deny')
-  current.closing_error = error instanceof Error ? error.message : String(error)
-  log(`phase session ${current.index}: ${current.closing_error}`)
 }
 
 async function runPhaseSession(runtime, current, prompts, mcpServer) {
@@ -874,11 +889,7 @@ export async function runPilot(options, dependencies) {
     const phase = lifecycleServer.state().phase
     return phase !== current.phase && phase !== 'awaiting_fidelity'
   }
-  // Every way a session ends past its boundary goes through here, so the next phase opens exactly once.
-  const handOff = (current, endedBy) => {
-    current.ended_by ??= endedBy
-    current.handedOff = true
-  }
+  const handOff = phaseHandOff(log)
   const boundaryEnd = (current) => (current.deniedAt === null ? 'turn-end' : 'boundary-deny')
   function openSession() {
     const timeline = lifecycleServer.timeline()
