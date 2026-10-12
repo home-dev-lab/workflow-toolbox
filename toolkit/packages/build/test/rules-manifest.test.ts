@@ -39,15 +39,26 @@ const section = (source: string, heading: string, recipients: string[], triggers
 
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
+  it.each(['phase:plan', 'phase:report'])('SDK decision rule lock: reaches pilot at %s', (trigger) => {
+    const composed = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'pilot', trigger })
+    expect(composed).toContain('# Decide technical matters yourself — escalate only the four triggers')
+    expect(composed).toContain('irreversible')
+  })
+
+  it('SDK decision contract lock: asks report to recover options and the recommendation from the plan', () => {
+    const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toMatch(/Both plan and report Decisions must list every option, mark each irreversible \(or state none is\), and name the recommended option with its reason/)
+    expect(contract).toContain('read `.lane/plan.md`')
+  })
 describe('SDK role rules manifest', () => {
   it('validates every shipped source and exact heading against the published schema enums', () => {
     const rules = loadRules({ shippedRoot: PLUGIN_ROOT })
     const schema = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'rules-manifest.schema.json'), 'utf8'))
     // Split Implement and verify / E2E sections each retain both delivery entries.
-    expect(rules).toHaveLength(25)
+    expect(rules).toHaveLength(26)
     expect(schema.properties.entries.items.properties.recipients.items.enum).toEqual(RULE_RECIPIENTS)
     expect(schema.properties.entries.items.properties.triggers.items.enum).toEqual(RULE_TRIGGERS)
-    const punctuated = rules.find((entry: { heading: string }) => entry.heading.includes('—'))!
+    const punctuated = rules.find((entry: { heading: string }) => entry.heading.includes('ground'))!
     expect(punctuated.section.startsWith(`${punctuated.heading}\n`)).toBe(true)
     expect(punctuated.section).toContain(`ground "it doesn't exist" before a workaround`)
   })
@@ -78,15 +89,15 @@ describe('SDK role rules manifest', () => {
     writeFileSync(join(root, '.claude', 'wt-rules-manifest.json'), JSON.stringify({ version: 1, entries: [{ source: 'rule.md', heading: '## Project rule', recipients: ['pilot'], triggers: ['standing'] }] }))
     const rules = loadRules({ projectRoot: root, shippedRoot: PLUGIN_ROOT })
     // Project additions never displace any of the 25 shipped entries.
-    expect(rules.filter((entry: { level: string }) => entry.level === 'shipped')).toHaveLength(25)
+    expect(rules.filter((entry: { level: string }) => entry.level === 'shipped')).toHaveLength(26)
     expect(rules.at(-1)).toMatchObject({ level: 'project', section: '## Project rule\r\nproject bytes\r\n' })
   })
 
   it('measures the composed standing system prompt before and after exact shipped sections', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
-    expect(Buffer.byteLength(contract)).toBe(6135)
-    expect(Buffer.byteLength(composed)).toBe(8593)
+    expect(Buffer.byteLength(contract)).toBe(6134)
+    expect(Buffer.byteLength(composed)).toBe(8592)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 
@@ -219,7 +230,8 @@ process.stdout.write('pid=' + process.pid + '\\n');`)
     const rules = loadRules({ shippedRoot: PLUGIN_ROOT })
     for (const [role, fixture] of Object.entries(PRE_SPLIT_ROLE_FIXTURE)) {
       const paragraphs = rules
-        .filter((entry: { recipients: string[] }) => entry.recipients.includes(role))
+        // The decision rule is an additive directive, locked at both new phase triggers above.
+        .filter((entry: { recipients: string[], source: string }) => entry.recipients.includes(role) && entry.source !== 'rules/wt-proactive-decision-making.md')
         .flatMap((entry: { section: string }) => entry.section.trim().split(/\n\s*\n/))
       // New static twin reminder augments the pre-split paragraph multiset in the TDD recipient.
       const historical = paragraphs.filter((paragraph: string) => !paragraph.startsWith('For ANYTHING distributed'))

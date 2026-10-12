@@ -34,6 +34,51 @@ afterEach(() => {
   delete process.env.WT_FULL_COUNTS
 })
 
+  it.each([true, false])('SDK quality plan proof lock: follows the current quality declaration %s', async (declared) => {
+    const lifecycle = fullLifecycle()
+    if (declared) { mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } })) }
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
+    await lifecycle.artifact({ kind: 'plan', content: plan.replace('Proof: e2e mechanical lifecycle test', 'Proof: quality') })
+    const result = await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    if (declared) expect(result).toMatch(/^accepted phase=critic/)
+    else expect(result).toContain('Proof:')
+  })
+
+  it('SDK four-gate review lock: sends quality and the selected delivery to independent review', async () => {
+    const lifecycle = fullLifecycle({}, (worktree) => writeFileSync(join(worktree, 'owner-notes.tmp'), 'private draft\n'))
+    mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await reachReview(lifecycle, plan.replace('Proof: e2e mechanical lifecycle test', 'Proof: quality'), ['typecheck', 'lint', 'quality', 'test'])
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' })
+    expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toBe('lane review EXIT=0')
+    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(calls.find((call) => call.phase === 'review').briefText).toContain('quality.log')
+    const patch = readFileSync(join(lifecycle.root, '.lane', 'review-input.diff'), 'utf8')
+    expect(patch).toContain('created.txt'); expect(patch).not.toContain('owner-notes.tmp'); expect(patch).not.toContain('private draft')
+    expect(spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout).not.toContain('owner-notes.tmp')
+  })
+
+  it.each(['typecheck', 'lint', 'quality'])('SDK four-gate remediation lock: red %s follows the existing non-test refusal and rerun route', async (redGate) => {
+    let failing = false
+    const gateRunner = async (args: { name: string, log: string, root: string }) => {
+      await writePassingGate(args)
+      if (failing && args.name === 'test') { appendFileSync(args.log, ' FAIL  tests/example.test.ts > suite > regression case\n'); return 1 }
+      return failing && args.name === redGate ? 1 : 0
+    }
+    const lifecycle = fullLifecycle({ gateRunner }); mkdirSync(join(lifecycle.root, 'toolkit'))
+    writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await reachReview(lifecycle, plan, ['typecheck', 'lint', 'quality', 'test'])
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix' })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain('targeted tests, typecheck, lint, and quality')
+    failing = true
+    for (const name of ['typecheck', 'lint', 'quality', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > regression case'], tool_use_id: 'red' })).toMatch(new RegExp(`gate receipt EXIT=1: .*${redGate}\\.log`))
+    failing = false; await lifecycle.run({ kind: 'gate', name: redGate })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > regression case'], tool_use_id: 'rerun' })).toBe('accepted phase=tdd')
+  })
 describe.sequential('plan task anchor lifecycle', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('returns a MEDIUM finding on a numbered plan task to tdd', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle, numberedAnchorPlan)
@@ -481,7 +526,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
       { reason: /ENOBUFS|maxBuffer|stdout/i, options: { git: realGit, prospectivePatchMaxBuffer: 1 } },
       ...['M  staged.txt', ' M unstaged.txt', '?? untracked.txt', ' D deleted.txt'].map((status) => ({
         reason: 'dirty tree produced no substantive patch',
-        options: { git: (_program: string, args: string[]) => args[0] === 'status' ? `${status}\0` : '' },
+        options: { git: (_program: string, args: string[]) => args[0] === 'status' ? `${status}\0` : args[0] === 'write-tree' ? 'fixture-tree' : '' },
       })),
     ]
     for (const [index, fixture] of cases.entries()) {
@@ -514,17 +559,17 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     const untrackedPatch = `diff --git a/file b/file\n${'+'.repeat(110)}\n`
     expect(Buffer.byteLength(untrackedPatch)).toBeLessThan(maxBuffer)
     expect(Buffer.byteLength(untrackedPatch) * 2).toBeGreaterThan(maxBuffer)
-    let untrackedCalls = 0
+    let patchCalls = 0
     const git = (_program: string, args: string[]) => {
       if (args[0] === 'ls-files') return 'first.txt\0second.txt\0'
-      if (args[0] === 'status') return '?? first.txt\0?? second.txt\0'
-      if (args.includes('--no-index')) { untrackedCalls += 1; return untrackedPatch }
+      if (args[0] === 'status') return '?? first.txt\0?? second.txt\0'; if (args[0] === 'write-tree') return 'fixture-tree'
+      if (args.includes('--binary')) { patchCalls += 1; return untrackedPatch.repeat(2) }
       return ''
     }
     const lifecycle = fullLifecycle({ git, prospectivePatchMaxBuffer: maxBuffer }); await reachReview(lifecycle)
     const result = await lifecycle.artifact({ kind: 'review-brief', content: 'review' })
     expect(result).toContain(`prospective patch exceeds ${maxBuffer}-byte limit`)
-    expect(untrackedCalls).toBe(2)
+    expect(patchCalls).toBe(1)
     expect(existsSync(join(lifecycle.root, '.lane', 'review-input.diff'))).toBe(false)
     expect(existsSync(join(lifecycle.root, '.lane', 'review-brief.md'))).toBe(false)
     expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toMatch(/brief not written through write_artifact/)
@@ -1045,11 +1090,12 @@ function laneLauncher() {
   writeFileSync(file, source)
   return file
 }
-function fullLifecycle(options: Record<string, unknown> = {}) {
+function fullLifecycle(options: Record<string, unknown> = {}, beforeStart: (worktree: string) => void = () => {}) {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
+  beforeStart(worktree)
   const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, testFramework: 'vitest', rules: [], ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state, requestStop: server.requestStop, finalizePartial: server.finalizePartial }
 }
@@ -1060,8 +1106,8 @@ function liteLifecycle() {
   const server = createLifecycleServer({ worktree, archiveRoot, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, rules: [] })
   return { ...handlers(server), root: worktree }
 }
-async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) {
-  for (const name of ['typecheck', 'lint', 'test']) expect(await lifecycle.run({ kind: 'gate', name })).toBe(`gate ${name} EXIT=0`)
+async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }, names = ['typecheck', 'lint', 'test']) {
+  for (const name of names) expect(await lifecycle.run({ kind: 'gate', name })).toBe(`gate ${name} EXIT=0`)
 }
 function findings(prefix: string, count: number) { return Array.from({ length: count }, (_, index) => `${prefix} finding ${index + 1}`) }
 async function runCriticRounds(rounds: Array<string[] | null>) {
@@ -1088,7 +1134,7 @@ async function writePassingGate({ log, root }: { log: string, root: string }) {
   throw new Error(`fixture gate mtime did not advance 20ms past lane receipt ${laneMtime}`)
 }
 function edgeConfig(lifecycle: { root: string }, config: Record<string, unknown>) { writeFileSync(join(lifecycle.root, '.lane', 'edge-config.json'), JSON.stringify(config)) }
-async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan) {
+async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan, gateNames = ['typecheck', 'lint', 'test']) {
   edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
   expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
   expect(await lifecycle.artifact({ kind: 'plan', content: planContent })).toBe('wrote plan')
@@ -1099,7 +1145,7 @@ async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planCont
   expect(await lifecycle.artifact({ kind: 'brief', content: planContent })).toBe('wrote brief')
   expect(await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })).toBe('lane tdd EXIT=0')
   expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })).toBe('accepted phase=verify')
-  await gates(lifecycle)
+  await gates(lifecycle, gateNames)
   expect(await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })).toBe('accepted phase=review')
 }
 async function reviewEdge(verdict: string, exit: number, outcome: string, findings?: string[], noVerdict = false) {

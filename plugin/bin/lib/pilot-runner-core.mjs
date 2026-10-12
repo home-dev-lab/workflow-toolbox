@@ -26,6 +26,8 @@ import { createAccountGate } from './sdk-account-check.mjs'
 import { phaseManifest, phaseOpener, phaseRules } from './pilot-phase-session.mjs'
 import { bindingDecisionsSection } from './lifecycle-dod-dispute.mjs'
 import { withRepositoryGuide as withGuidePointer } from './sdk-role-profile.mjs'
+import { assertCleanPilotStart } from './lifecycle-selection.mjs'
+import { resolveLifecycleGates } from './lifecycle-gates.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -46,13 +48,15 @@ const NEXT_BY_PHASE = {
   plan: `write the plan matching ${PLAN_SHAPE_DESCRIPTION}, then transition plan`,
   critic: `write the critic brief, run the critic lane, then transition critic; if critic round ${MAX_CRITIC_ROUNDS} requests blocking changes, transition with outcome changes-requested; the server routes a spent bound to report`,
   tdd: 'write the tdd brief, run the tdd lane, then transition tdd',
-  verify: 'run the three gates, then transition verify',
   review: 'write the review brief, run the review lane, then transition review; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
   refutation: 'write the refutation brief, run the refutation lane, then transition refutation; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
   report: 'write the pilot report, then transition report',
 }
 // The plan->critic edge refuses any other shape, so a route that plans learns it before its first plan, not from a refusal.
 const planShapeLine = (route) => (route === 'FULL' ? ` When you write the plan, it must match ${PLAN_SHAPE_DESCRIPTION}.` : '')
+const nextPhaseTask = (phase, root) => phase === 'verify'
+  ? `run the gates ${[...resolveLifecycleGates(root)].join('|')}, then transition verify`
+  : NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'
 const PLANKA_TOOLS = new Set([
   'mcp__planka__get_card',
   'mcp__planka__get_comments',
@@ -504,7 +508,7 @@ function continuationContent(runtime) {
   for (const dispute of binding) injectedDecisions.add(`${dispute.requestId}:${dispute.criterion}`)
   return lifecycleState.partial && phase === 'report'
     ? partialInstruction(lifecycleState.partial)
-    : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.${bindingNotice(binding)}`
+    : `The run is not complete: current phase ${phase}; next: ${nextPhaseTask(phase, runtime.options.dir)}. Continue.${bindingNotice(binding)}`
 }
 
 function continuationMessage(runtime, content) {
@@ -815,7 +819,7 @@ export async function runPilot(options, dependencies) {
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
   // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
-  if (exists(report)) throw new Error(`SDK pilot preflight failed: ${report} already exists; a stale report would satisfy completion`)
+  assertCleanPilotStart(options.dir); if (exists(report)) throw new Error(`SDK pilot preflight failed: ${report} already exists; a stale report would satisfy completion`)
   if (exists(oldLifecycleHook ?? join(pluginRoot, 'hooks-modules', 'sdk-pilot-lifecycle'))) throw new Error('SDK pilot preflight failed: old lifecycle hook is still present')
   // `.lane/` (a directory pattern) only matches an EXISTING directory: create it before asking git,
   // or a fresh worktree fails the preflight (real wave a2adf9e2).
@@ -894,7 +898,7 @@ export async function runPilot(options, dependencies) {
     const notes = deliveredNotes.length > 0 ? `## Mailbox notes delivered earlier in this run\n\n${deliveredNotes.map((note) => `${MAILBOX_PREFIX}${note}`).join('\n\n')}` : ''
     const notice = [lifecycleState.partial && current.phase === 'report' ? partialInstruction(lifecycleState.partial) : '', bindingDecisionsSection(ledger.dodDisputes).trim(), notes].filter(Boolean).join('\n\n')
     const content = phaseOpener({
-      cardId: options.card, dir: options.dir, cardText, phase: current.phase, task: NEXT_BY_PHASE[current.phase] ?? 'continue the lifecycle',
+      cardId: options.card, dir: options.dir, cardText, phase: current.phase, task: nextPhaseTask(current.phase, options.dir),
       lspLine: sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`, knowledgeBasePath: knowledgeBase.path,
       manifest: phaseManifest({ phase: current.phase, laneDir: join(options.dir, '.lane'), ledger, timeline: lifecycleServer.timeline() }),
       rules: phaseRules(lifecycleServer.acceptedTransitions(), current.phase), notice,

@@ -1,5 +1,5 @@
 import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
-import { spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
@@ -32,6 +32,10 @@ import { criticFindingAfterNoReblock } from '../../../../plugin/bin/lib/lifecycl
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error ESM runtime module
 import { insideChildUserNamespace } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+// @ts-expect-error ESM runtime module
+import { assertCleanPilotStart, selectDeliveryPaths, snapshotSelectedTree, stageDeliverySelection } from '../../../../plugin/bin/lib/lifecycle-selection.mjs'
+// @ts-expect-error ESM runtime module
+import { prospectivePatch } from '../../../../plugin/bin/lib/lifecycle-brief.mjs'
 
 function join(...parts: string[]): string {
   const index = parts.indexOf('.lane')
@@ -94,6 +98,338 @@ function linuxProcState(pid: number) {
   } catch { return null }
 }
 
+  it.each(['GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS'])('SDK literal staging lock: sanitizes inherited %s', (variable) => {
+    const lifecycle = realGitLifecycle()
+    mkdirSync(join(lifecycle.root, 'src'))
+    const name = process.platform === 'win32' ? 'src/[draft] final é.ts' : 'src/[draft]\nfinal *.ts'
+    writeFileSync(join(lifecycle.root, name), 'literal\n'); writeFileSync(join(lifecycle.root, 'src', 'unselected.ts'), 'other\n')
+    const previous = process.env[variable]
+    process.env[variable] = '1'
+    try { stageDeliverySelection(lifecycle.root, { paths: [name] }, execFileSync) } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+    expect(fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only', '-z').split('\0').filter(Boolean)).toEqual([name])
+  })
+  it.each(['tracked', 'staged'])('SDK dirty preflight lock: refuses %s changes with paths and a remedy', (kind) => {
+    const lifecycle = realGitLifecycle()
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'owner change\n')
+    if (kind === 'staged') fixtureGit(lifecycle.root, 'add', 'tracked.txt')
+    expect(() => assertCleanPilotStart(lifecycle.root)).toThrow(/tracked.txt.*commit them or move them aside, then relaunch/)
+  })
+
+  it('SDK dirty preflight lock: allows only untracked owner files', () => {
+    const lifecycle = realGitLifecycle('untracked')
+    expect(() => assertCleanPilotStart(lifecycle.root)).not.toThrow()
+  })
+
+  it.each(['reset', 'add', 'write-tree'])('SDK staging recovery lock: resets a partially mutated index and retries the same selection after %s fails', async (step) => {
+    let fail = true
+    const git = (program: string, args: string[], options: Parameters<typeof execFileSync>[2]) => {
+      const result = execFileSync(program, args, options)
+      if (args[0] === step && fail) { fail = false; throw new Error('after first index mutation') }
+      return result
+    }
+    const lifecycle = realGitLifecycle('untracked', () => {}, { git })
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run\n'); writeFileSync(join(lifecycle.root, 'new.txt'), 'run\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain('after first index mutation')
+    expect(fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only')).toBe('')
+    const selection = readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8')).toBe(selection)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('untracked-delivery.txt')
+  })
+
+  it.each(['committed', 'commit-unknown'])('SDK residual status lock: checks first completion and %s recovery', async (recovery) => {
+    let dirtyStatus = true; let committed = false; let failedHeads = 0
+    const git = (program: string, args: string[], options: Parameters<typeof execFileSync>[2]) => {
+      if (args[0] === 'status' && dirtyStatus) return ' M tracked.txt\0'
+      if (recovery === 'commit-unknown' && committed && args[0] === 'rev-parse' && args[1] === 'HEAD' && failedHeads++ < 2) throw new Error('unknown HEAD')
+      const result = execFileSync(program, args, options)
+      if (args[0] === 'commit') committed = true
+      return result
+    }
+    const lifecycle = realGitLifecycle('untracked', () => {}, { git })
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run\n'); await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain(recovery === 'committed' ? 'clean tree' : 'commit unknown')
+    const head = fixtureGit(lifecycle.root, 'rev-parse', 'HEAD')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'dirty-retry' }))).toContain('clean tree')
+    dirtyStatus = false
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'clean-retry' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('SDK exclusion identity lock: records modified/deleted drafts and an ignored file made visible', async () => {
+    const lifecycle = realGitLifecycle('untracked', (root) => {
+      mkdirSync(join(root, 'ign')); writeFileSync(join(root, 'ign', 'owner.txt'), 'ignored owner\n')
+      writeFileSync(join(root, 'deleted.tmp'), 'old\n')
+    })
+    writeFileSync(join(lifecycle.root, 'untracked-delivery.txt'), 'run overwrote owner\n'); unlinkSync(join(lifecycle.root, 'deleted.tmp'))
+    fixtureGit(lifecycle.root, 'add', 'untracked-delivery.txt')
+    writeFileSync(join(lifecycle.root, '.gitignore'), '.lane/\n.claude/reports/\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const selection = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8'))
+    expect(selection.untrackedExcluded).toEqual(expect.arrayContaining([
+      { path: 'untracked-delivery.txt', reason: 'modified-by-run' }, { path: 'deleted.tmp', reason: 'deleted-by-run' }, { path: 'ign/owner.txt', reason: 'pre-existing' },
+    ]))
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toMatch(/untracked-delivery|owner.txt|deleted.tmp/)
+  })
+
+  it('SDK ignored exclusion lock: changed ignored baseline files produce no exclusion record or log', async () => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, 'ign')); writeFileSync(join(root, 'ign', 'cache.txt'), 'old cache\n')
+    })
+    writeFileSync(join(lifecycle.root, 'ign', 'cache.txt'), 'new cache\n')
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'delivery\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const selection = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8'))
+    expect(selection.untrackedExcluded).toEqual([])
+    const log = join(lifecycle.root, '.lane', 'sdk-pilot.log')
+    expect(fs.existsSync(log) ? readFileSync(log, 'utf8') : '').not.toContain('ign/cache.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('ign/cache.txt')
+    expect(readFileSync(join(lifecycle.root, 'ign', 'cache.txt'), 'utf8')).toBe('new cache\n')
+  })
+
+  it('SDK artefact path lock: refuses a modified pre-existing declared delivery', async () => {
+    const lifecycle = realGitLifecycle('untracked')
+    writeFileSync(join(lifecycle.root, 'untracked-delivery.txt'), 'new identity\n'); await realReportReady(lifecycle)
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`untracked-delivery.txt\`\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toContain('declared artefact predates this run')
+  })
+
+  it.each(['unstaged', 'staged'])('SDK shared selection lock: neither the review index nor prospective patch contains %s owner drafts', (kind) => {
+    const lifecycle = realGitLifecycle('untracked')
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    if (kind === 'staged') fixtureGit(lifecycle.root, 'add', 'untracked-delivery.txt')
+    const originalIndex = fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only')
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run\n'); writeFileSync(join(lifecycle.root, 'new.txt'), 'new\n')
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'test.index'), baseline, execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain('untracked-delivery.txt')
+    const patch = prospectivePatch(lifecycle.root, 'HEAD', execFileSync, 1024 * 1024, baseline)
+    expect(patch).toContain('new.txt'); expect(patch).toContain('tracked.txt'); expect(patch).not.toContain('untracked-delivery.txt')
+    expect(fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only')).toBe(originalIndex)
+  })
+
+  it.each(['file', 'modified', 'staged', 'ignored', 'directory'])('SDK renamed draft lock: excludes an owner %s under its new name from every delivery', async (kind) => {
+    const original = ['file', 'modified', 'staged'].includes(kind) ? 'notes.tmp' : `${kind === 'ignored' ? 'ign' : 'drafts'}/owner.tmp`
+    const renamed = kind === 'directory' ? 'moved/owner.tmp' : 'renamed.tmp'
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, original, '..'), { recursive: true }); writeFileSync(join(root, original), 'owner\n')
+    })
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    fs.renameSync(join(lifecycle.root, kind === 'directory' ? 'drafts' : original), join(lifecycle.root, kind === 'directory' ? 'moved' : renamed))
+    if (kind === 'modified') fs.appendFileSync(join(lifecycle.root, renamed), 'edit\n')
+    if (kind === 'staged') fixtureGit(lifecycle.root, 'add', renamed)
+    writeFileSync(join(lifecycle.root, 'new.txt'), 'run\n')
+    const selection = selectDeliveryPaths(lifecycle.root, baseline, execFileSync)
+    expect(selection.paths).not.toContain(renamed)
+    expect(selection.untrackedExcluded).toContainEqual({ path: renamed, reason: `pre-existing-from ${JSON.stringify(original)}` })
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'moved.index'), baseline, execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain(renamed)
+    expect(prospectivePatch(lifecycle.root, 'HEAD', execFileSync, 1024 * 1024, baseline)).not.toContain(renamed)
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'renamed-report' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain(renamed)
+    expect(readFileSync(join(lifecycle.root, renamed), 'utf8')).toBe(kind === 'modified' ? 'owner\nedit\n' : 'owner\n')
+  })
+
+  it('SDK renamed declared draft lock: refuses owner delivery through ignored artefact read-back', async () => {
+    const lifecycle = realGitLifecycle('untracked')
+    mkdirSync(join(lifecycle.root, 'ign'))
+    fs.renameSync(join(lifecycle.root, 'untracked-delivery.txt'), join(lifecycle.root, 'ign', 'renamed.tmp'))
+    await realReportReady(lifecycle)
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`ign/renamed.tmp\`\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'renamed-artefact' }))).toContain('declared artefact predates this run')
+  })
+
+  it('SDK new inode lock: selects a renamed draft replaced through an atomic editor save', () => {
+    const lifecycle = realGitLifecycle('untracked')
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    fs.renameSync(join(lifecycle.root, 'untracked-delivery.txt'), join(lifecycle.root, 'renamed.tmp'))
+    writeFileSync(join(lifecycle.root, 'replacement.tmp'), 'editor replacement\n')
+    fs.renameSync(join(lifecycle.root, 'replacement.tmp'), join(lifecycle.root, 'renamed.tmp'))
+    expect(selectDeliveryPaths(lifecycle.root, baseline, execFileSync).paths).toContain('renamed.tmp')
+  })
+
+  it('SDK force-staged ignored lock: preserves new staged ignored delivery in review and report', async () => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, 'ign')); writeFileSync(join(root, 'ign', 'owner.tmp'), 'owner\n')
+    })
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    writeFileSync(join(lifecycle.root, 'ign', 'new-fixture.txt'), 'new\n')
+    fixtureGit(lifecycle.root, 'add', '-f', 'ign/new-fixture.txt', 'ign/owner.tmp')
+    expect(() => snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'ignored.index'), baseline, execFileSync)).not.toThrow()
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'ignored.index'), baseline, execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).toContain('ign/new-fixture.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain('ign/owner.tmp')
+    // The forced baseline is a review exclusion probe, not part of the gate-evidenced delivery tree.
+    fixtureGit(lifecycle.root, 'reset', '--', 'ign/owner.tmp')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'ignored-report' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).toContain('ign/new-fixture.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('ign/owner.tmp')
+  })
+
+  it.each(['ignored', 'symlink'])('SDK current gate set lock: report refuses a newly required quality receipt through %s declaration', async (kind) => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, 'toolkit')); mkdirSync(join(root, 'ign'))
+      writeFileSync(join(root, 'ign', 'package.json'), JSON.stringify({ scripts: {} }))
+      if (kind === 'symlink') symlinkSync('../ign/package.json', join(root, 'toolkit', 'package.json'))
+      else writeFileSync(join(root, 'toolkit', 'package.json'), JSON.stringify({ scripts: {} }))
+      if (kind === 'ignored') writeFileSync(join(root, '.gitignore'), `${readFileSync(join(root, '.gitignore'), 'utf8')}toolkit/package.json\n`)
+      fixtureGit(root, 'add', '-A'); fixtureGit(root, 'commit', '-qm', 'declaration fixture')
+    })
+    await realReportReady(lifecycle)
+    const before = treeSignature(lifecycle.root)
+    writeFileSync(join(lifecycle.root, kind === 'symlink' ? 'ign' : 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    expect(treeSignature(lifecycle.root)).toBe(before)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'current-gates' }))).toContain('quality.log')
+  })
+
+  it('SDK empty selection lock: preserves excluded paths without index mutation', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-empty-delivery-'))); roots.push(root)
+    fixtureGit(root, 'init', '-q'); fixtureGit(root, 'config', 'user.name', 'Fixture'); fixtureGit(root, 'config', 'user.email', 'fixture@example.invalid')
+    fixtureGit(root, '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'empty base')
+    writeFileSync(join(root, 'owner.tmp'), 'owner\n')
+    const baseline = artefactIdentitiesAtStart(root).untracked
+    const selection = selectDeliveryPaths(root, baseline, execFileSync)
+    expect(selection.paths).toEqual([])
+    const calls: unknown[] = []
+    stageDeliverySelection(root, selection, (...args: unknown[]) => { calls.push(args) })
+    expect(calls).toEqual([])
+    expect(readFileSync(join(root, 'owner.tmp'), 'utf8')).toBe('owner\n')
+  })
+
+  it('SDK staged rename lock: review and delivery both remove the original tracked name', async () => {
+    const lifecycle = realGitLifecycle()
+    fs.renameSync(join(lifecycle.root, 'tracked.txt'), join(lifecycle.root, 'renamed.txt'))
+    fixtureGit(lifecycle.root, 'add', '-A')
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'rename.index'), new Map(), execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain('tracked.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).toContain('renamed.txt')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('tracked.txt')
+  })
+
+  it.each(['typecheck', 'lint', 'quality', 'test'])('SDK four-gate receipt lock: refuses red %s', async (name) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, { [name]: { exit: '1' } })
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: name }))).toMatch(/gate receipt EXIT=1/)
+  })
+
+  it('SDK quality freshness lock: rejects quality from before the latest lane', async () => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000); enableQuality(lifecycle.root)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=0')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+    await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'stale' }))).toMatch(/gate newer than lane receipt.*quality.log/)
+  })
+
+  it.each(['receipt', 'tree'])('SDK quality tamper lock: refuses changed %s evidence', async (kind) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root); await writeQualityGates(lifecycle)
+    if (kind === 'receipt') writeFileSync(join(lifecycle.root, '.lane', 'quality.log'), 'tampered\nEXIT=0\n')
+    else writeFileSync(join(lifecycle.root, 'changed.txt'), 'changed\n')
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: kind }))).toContain(kind === 'receipt' ? 'unchanged gate receipt' : 'current tree signature')
+  })
+
+  it('SDK four-gate clock lock: accepts all four receipts after a backward clock step', async () => {
+    const lifecycle = await lifecycleAtVerify(equalMtimeLauncher()); enableQuality(lifecycle.root)
+    const nonceLog = readdirSync(laneHostDir(lifecycle.root)).find((name) => /^tdd-run\..+\.log$/.test(name))!
+    const steppedBack = fs.statSync(join(laneHostDir(lifecycle.root), nonceLog)).mtimeMs - 60_000
+    const append = fs.appendFileSync.bind(fs)
+    const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
+      append(file, data, options)
+      if (typeof file === 'string' && /[\\/](?:typecheck|lint|quality|test)\.log$/.test(file)) utimesSync(file, steppedBack / 1000, steppedBack / 1000)
+    }) as typeof fs.appendFileSync)
+    syncBuiltinESMExports()
+    try { await writeQualityGates(lifecycle) } finally { spy.mockRestore(); syncBuiltinESMExports() }
+    const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(['typecheck', 'lint', 'quality', 'test'].map((name) => evidence.entries[join(lifecycle.root, '.lane', `${name}.log`)].mtime)).toEqual(Array(4).fill(steppedBack))
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'clock-passed' }))).toBe('accepted phase=report')
+  })
+
+  it('SDK quality snapshot lock: refuses quality tampering at report', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root); await writeQualityGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'snapshot-passed' }))).toBe('accepted phase=report'); await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
+    writeFileSync(join(lifecycle.root, '.lane', 'quality.log'), 'tampered\nEXIT=0\n')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toMatch(/gate digest changed.*quality.log/)
+  })
+
+  it.each([undefined, '', '   ', 42])('SDK three-gate compatibility lock: refuses an undeclared quality script %s', async (quality) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root, quality)
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toContain('gate typecheck|lint|test')
+    expect(await text(lifecycle.run({ kind: 'inspect', what: 'log', name: 'quality.log' }))).not.toContain('regular inspect log')
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'compatibility-passed' }))).toBe('accepted phase=report')
+  })
+
+  it('SDK gate declaration drift lock: removal immediately restores three-gate admission', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=0')
+    enableQuality(lifecycle.root, '')
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toContain('gate typecheck|lint|test')
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'drift-passed' }))).toBe('accepted phase=report')
+  })
+  it('SDK selective staging lock: leaves owner drafts untracked while committing run changes literally', async () => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      writeFileSync(join(root, 'delete.txt'), 'delete\n'); writeFileSync(join(root, 'rename.txt'), 'rename\n')
+      fixtureGit(root, 'add', '-A'); fixtureGit(root, 'commit', '-qm', 'tracked fixture')
+      mkdirSync(join(root, 'scratch')); writeFileSync(join(root, 'notes.tmp'), 'owner notes\n')
+      writeFileSync(join(root, 'scratch', 'draft.txt'), 'owner draft\n')
+    })
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run change\n'); unlinkSync(join(lifecycle.root, 'delete.txt'))
+    fs.renameSync(join(lifecycle.root, 'rename.txt'), join(lifecycle.root, 'renamed.txt'))
+    mkdirSync(join(lifecycle.root, 'src'))
+    const names = process.platform === 'win32'
+      ? ['src/new.ts', 'src/[draft] final.ts', '-leading space', 'src/é.ts']
+      : ['src/new.ts', 'src/[draft]\nfinal.ts', '-leading space', 'src/quote\"*?é.ts']
+    for (const name of names) writeFileSync(join(lifecycle.root, name), 'run\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const files = fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', '-z', 'HEAD').split('\0')
+    expect(files).not.toContain('notes.tmp'); expect(files).not.toContain('scratch/draft.txt')
+    for (const name of [...names, 'tracked.txt', 'renamed.txt']) expect(files).toContain(name)
+    expect(files).not.toContain('delete.txt'); expect(files).not.toContain('rename.txt')
+    expect(readFileSync(join(lifecycle.root, 'notes.tmp'), 'utf8')).toBe('owner notes\n')
+    expect(fixtureGit(lifecycle.root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean).sort()).toEqual(['notes.tmp', 'scratch/draft.txt'])
+    const selection = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8'))
+    expect(selection.untrackedExcluded.map((entry: { path: string }) => entry.path).sort()).toEqual(['notes.tmp', 'scratch/draft.txt'])
+    expect(readFileSync(join(lifecycle.root, '.lane', 'sdk-pilot.log'), 'utf8')).toContain('notes.tmp')
+  })
+
+  it('SDK quality admission lock: requires quality when the run adds its script', async () => {
+    const lifecycle = await lifecycleAtVerify()
+    mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'missing-quality' }))).toContain('quality.log')
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=0')
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'quality-passed' }))).toBe('accepted phase=report')
+  })
+
+  it.each([false, true])('SDK gate warning lock: logs tracked and new path changes without hiding the gate output (spawn error %s)', async (fail) => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, {
+      gateRunner: async ({ root, log }: { root: string, log: string }) => {
+        writeFileSync(join(root, 'gate-output.txt'), 'generated\n'); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n# gate edit\n')
+        writeFileSync(log, 'gate\n'); if (fail) throw new Error('gate failed after mutation'); return 0
+      },
+    })
+    const result = await text(lifecycle.run({ kind: 'gate', name: 'typecheck' }))
+    if (fail) expect(result).toContain('gate spawn (gate failed after mutation)')
+    else expect(result).toBe('gate typecheck EXIT=0')
+    const log = readFileSync(join(lifecycle.root, '.lane', 'typecheck.log'), 'utf8')
+    expect(log).toContain('WARNING gate changed path "gate-output.txt"')
+    expect(log).toContain('WARNING gate changed path ".gitignore"')
+    expect(log.trimEnd().endsWith('EXIT=0')).toBe(!fail)
+    expect(readFileSync(join(lifecycle.root, 'gate-output.txt'), 'utf8')).toBe('generated\n')
+  })
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })
@@ -784,16 +1120,15 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(existsSync(join(root, '.lane', 'card.md'))).toBe(false)
   })
 
-  it('accepts a pre-existing declared artefact rewritten during the run despite its old mtime', async () => {
+  it('refuses a pre-existing declared artefact rewritten during the run despite its old mtime', async () => {
     const lifecycle = await realGitLifecycleReadyForReport(true)
     const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
     writeFileSync(artefact, 'rewritten this run\n')
     utimesSync(artefact, new Date(1), new Date(1))
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/pre-existing.txt\`\n` })
 
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'rewritten-artefact' }))).toBe('accepted phase=awaiting_fidelity')
-    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
-    expect(summary.delivery.artifacts[0]).toMatchObject({ path: '.lane/pre-existing.txt', modified_after_started: true })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'rewritten-artefact' }))).toContain('declared artefact predates this run: .lane/pre-existing.txt')
+    expect(existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
   it('still refuses a real-git delivery that changes nothing and declares no artefact', async () => {
@@ -2177,7 +2512,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain('missing changed HEAD')
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toContain('missing changed HEAD')
     expect(commits).toBe(2)
-    expect(resets).toBe(2)
+    expect(resets).toBe(4)
     expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports'))).toEqual([])
   })
 
@@ -2344,7 +2679,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
-function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false) {
+function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false, beforeStart: (root: string) => void = () => {}, options: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-'))); roots.push(root)
   const archiveRoot = archiveProject()
   mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\nign/\n'); writeFileSync(join(root, 'tracked.txt'), 'tracked\n')
@@ -2370,12 +2705,38 @@ function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked'
     writeFileSync(join(root, 'ign', 'vendor', 'old.txt'), 'pre-existing\n')
     expect(spawnSync('git', ['init', '-q'], { cwd: join(root, 'ign', 'vendor') }).status).toBe(0)
   }
+  beforeStart(root)
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
-  const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: async (args: { name: string, log: string, root: string }) => { await writePassingGate(args); return Number(gateResults[args.name]?.exit ?? '0') }, rules: [] })
+  const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: async (args: { name: string, log: string, root: string }) => { await writePassingGate(args); return Number(gateResults[args.name]?.exit ?? '0') }, rules: [], ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
+}
+function fixtureGit(root: string, ...args: string[]) {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout
+}
+function enableQuality(root: string, ...values: unknown[]) {
+  const quality = values.length ? values[0] : 'true'
+  mkdirSync(join(root, 'toolkit'), { recursive: true })
+  writeFileSync(join(root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality } }))
+}
+async function writeQualityGates(lifecycle: ReturnType<typeof testLifecycle>, overrides: Record<string, { exit?: string }> = {}) {
+  for (const name of ['typecheck', 'lint', 'quality', 'test']) {
+    lifecycle.gateResults[name] = overrides[name] ?? {}
+    expect(await text(lifecycle.run({ kind: 'gate', name }))).toBe(`gate ${name} EXIT=${overrides[name]?.exit ?? '0'}`)
+  }
+}
+async function realReportReady(lifecycle: ReturnType<typeof realGitLifecycle>) {
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+  expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+  await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })
+  await writeGates(lifecycle)
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }))).toBe('accepted phase=report')
+  await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
 }
 async function realGitLifecycleReadyForReport(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false) {
   const lifecycle = realGitLifecycle(preExistingArtefact)

@@ -19,6 +19,8 @@ import { detectFailedTestFramework } from './host/test-framework-detection.mjs'
 import { executorFamilyForModel } from './executor-defaults.mjs'
 import { bindingDecisionsSection, createDodEscalation, criticFindingAfterNoReblock, DOD_DECISION_REQUEST_FILE, normalizedTerm, planReadingOfTerm, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
 import { pathWithin } from './host/path-within.mjs'
+import { focusedLifecycleGateHint, resolveLifecycleGates } from './lifecycle-gates.mjs'
+import { snapshotSelectedTree } from './lifecycle-selection.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -42,7 +44,6 @@ export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review',
 export const phaseTransitionTriggers = (from, next) => (from === 'critic' && next === 'plan' ? ['critic->plan'] : [`phase:${next}`])
 export { PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation'])
-const GATES = new Set(['typecheck', 'lint', 'test'])
 const ARTIFACTS = {
   plan: ['plan', 'plan.md'],
   'critic-brief': ['critic', 'critic-brief.md'],
@@ -121,10 +122,15 @@ function acceptanceProblem(content, dodBullets, validDetail, expectedDetail, exa
   }
   return null
 }
-const planAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
+function planProof(line, root) {
+  if (!/^Proof:\s*\S/i.test(line)) return false
+  if (/\b(?:tasks?|tests?|e2e)\b|(?:^|[/\\])\S+\.(?:test|spec)\.[A-Za-z0-9]+/i.test(line)) return true
+  return [...resolveLifecycleGates(root)].some((name) => new RegExp(`\\b${name}\\b`, 'i').test(line))
+}
+const planAcceptanceProblem = (content, dodBullets, root) => acceptanceProblem(
   content,
   dodBullets,
-  (line) => /^Proof:\s*\S/i.test(line) && /\b(?:tasks?|tests?|e2e|typecheck|lint)\b|(?:^|[/\\])\S+\.(?:test|spec)\.[A-Za-z0-9]+/i.test(line),
+  (line) => planProof(line, root),
   '`Proof: <task, test, e2e, test file, or gate>`',
   '`Proof: tests/unit.test.ts`',
 )
@@ -471,7 +477,7 @@ function recordReviewWarnings(state, verdict, laneDir, writeRegularFile) {
 }
 
 function laneBriefIdentity(phase, content, artifactContent, laneDir, readRegularFile, sha256) {
-  let inputs = [`${phase}-input.diff`, 'typecheck.log', 'lint.log', 'test.log', 'review-findings.md']
+  let inputs = [`${phase}-input.diff`, ...[...resolveLifecycleGates(path.dirname(laneDir))].map((name) => `${name}.log`), 'review-findings.md']
   if (phase === 'critic') inputs = ['plan.md', 'card.md', 'discovery.md']
   if (phase === 'tdd') inputs = ['plan.md', 'review-findings.md']
   return sha256(JSON.stringify([content, artifactContent, ...inputs.map((name) => readRegularFile(path.join(laneDir, name)))]))
@@ -553,16 +559,10 @@ async function holdPlanForBoundDecision(state, dodEscalation) {
   return `plan revision held for bound DoD decision: ${bindingDecisionsSection(state.dodDisputes)}. Revise the plan to that binding before asking for the next critic.`
 }
 
-function snapshotWorkingTree(root, laneDir, git) {
+function snapshotWorkingTree(root, laneDir, git, baseline) {
   const index = path.join(laneDir, 'review-base.index')
-  const options = { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_INDEX_FILE: index } }
   try {
-    removeFile(index)
-    git('git', ['read-tree', 'HEAD'], options)
-    git('git', ['add', '-A', '--', '.'], options)
-    const tree = git('git', ['write-tree'], options).trim()
-    if (!tree) throw new Error('git write-tree returned an empty tree id')
-    return tree
+    return snapshotSelectedTree(root, index, baseline, git)
   } catch (error) {
     const detail = error?.stderr?.toString().trim() || (error instanceof Error ? error.message : String(error))
     throw new Error(`review snapshot failed: ${detail}`, { cause: error })
@@ -572,18 +572,18 @@ function snapshotWorkingTree(root, laneDir, git) {
   }
 }
 
-function reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructionBase, state, root, laneDir, git, maxBuffer }) {
+function reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructionBase, state, root, laneDir, git, maxBuffer, baseline }) {
   if (snapshotDir) {
     const saved = readRegularFile(inputPath)
     if (saved === null) throw new Error(`${path.basename(inputPath)} unavailable`)
     return saved
   }
   if (phase === 'review' && state.reviewBase) {
-    state.pendingReviewBase = snapshotWorkingTree(root, laneDir, git)
+    state.pendingReviewBase = snapshotWorkingTree(root, laneDir, git, baseline)
     return snapshotPatch(root, state.reviewBase, state.pendingReviewBase, git, maxBuffer)
   }
-  const diff = prospectivePatch(root, patchBase ?? constructionBase, git, maxBuffer)
-  if (phase === 'review') state.pendingReviewBase = snapshotWorkingTree(root, laneDir, git)
+  const diff = prospectivePatch(root, patchBase ?? constructionBase, git, maxBuffer, baseline)
+  if (phase === 'review') state.pendingReviewBase = snapshotWorkingTree(root, laneDir, git, baseline)
   return diff
 }
 
@@ -839,7 +839,7 @@ export function createLifecycleStateMachine({
     const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
       const changelogInstructions = phase === 'tdd' ? changelogSkillBody(changelogSkillPath) : ''
-      const fixInstructions = phase === 'tdd' && state.reviewRound > 0 ? `## Review fix round ${state.reviewRound} (authoritative)\n\nRead the exact runner-owned findings in \`.lane/review-findings.md\`. Fix every in-scope finding red-first; route only genuine L4 work. Run targeted tests, typecheck, and lint, and leave zero warnings in touched files. Do not run the full suite in this lane; the lifecycle runs it once in VERIFY after this fix round.\n\n` : ''
+      const fixInstructions = phase === 'tdd' && state.reviewRound > 0 ? `## Review fix round ${state.reviewRound} (authoritative)\n\nRead the exact runner-owned findings in \`.lane/review-findings.md\`. Fix every in-scope finding red-first; route only genuine L4 work. Run ${focusedLifecycleGateHint(root)}, and leave zero warnings in touched files. Do not run the full suite in this lane; the lifecycle runs it once in VERIFY after this fix round.\n\n` : ''
       const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${fixInstructions}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
       const content = `${authoritative}${authoritative ? '## Pilot instructions\n\n' : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir
@@ -869,11 +869,11 @@ export function createLifecycleStateMachine({
       const inputName = `.lane/${phase}-input.diff`
       const inputPath = path.join(root, inputName)
       const patchBase = phase === 'review' && state.reviewBase ? state.reviewBase : constructionBase
-      const diff = reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructionBase, state, root, laneDir, git, maxBuffer: prospectivePatchMaxBuffer })
+      const diff = reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructionBase, state, root, laneDir, git, maxBuffer: prospectivePatchMaxBuffer, baseline: artefactsAtStart.untracked })
       writeRegularFile(inputPath, diff)
       canonicalArtifacts.push(inputName)
       artifacts.push(snapshotDir ? snapshotFile(`${phase}-input.diff`, diff) : inputName)
-      for (const gate of GATES) {
+      for (const gate of resolveLifecycleGates(root)) {
         const gateName = `${gate}.log`
         const gateContent = readRegularFile(path.join(laneDir, gateName))
         if (snapshotDir && gateContent === null) throw new Error(`${gateName} unavailable`)
@@ -919,7 +919,7 @@ export function createLifecycleStateMachine({
     refusal,
     lanePhases: LANE_PHASES,
     phases: PHASES,
-    gates: GATES,
+    gates: () => resolveLifecycleGates(root),
     laneLauncher,
     lanePollMs,
     laneWaitMs,
@@ -989,7 +989,7 @@ export function createLifecycleStateMachine({
       const deferredProblem = deferredOutcomeProblem(planContent, timeline.routed_cards)
       if (deferredProblem) return refusal('plan->critic', deferredProblem, plan)
       if (dodBullets !== undefined) {
-        const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets)
+        const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets, root)
         if (acceptanceProblem) return refusal('plan->critic', acceptanceProblem, plan)
       }
       resultDetail = `\n\n${planCoverageCitationResult(planContent, root)}`

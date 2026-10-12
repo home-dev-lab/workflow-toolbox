@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gateEnvironment, treeSignature } from './gate-evidence.mjs'
+import { gatePathSnapshot, warnGatePathChanges } from './lifecycle-selection.mjs'
 import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { executorFamilyForModel } from './executor-defaults.mjs'
@@ -220,6 +221,24 @@ export function readAttestation(file) {
   }
 }
 
+function missingCurrentGatePath(snapshot, state, gates, laneDir) {
+  const required = state.partial && Object.keys(snapshot.gates).length === 0 ? [] : gates()
+  for (const name of required) {
+    if (!Object.hasOwn(snapshot.gates, name)) return path.join(laneDir, `${name}.log`)
+  }
+  return null
+}
+
+function snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal) {
+  for (const saved of Object.values(snapshot.gates)) {
+    const current = readAttestation(saved.path)
+    if (!current || current.sha256 !== saved.sha256) {
+      return refusal(edge, `gate digest changed (${saved.sha256} != ${current?.sha256 ?? 'missing'})`, saved.path)
+    }
+  }
+  return null
+}
+
 export function createLifecycleLaunch({
   root,
   laneDir,
@@ -311,7 +330,7 @@ export function createLifecycleLaunch({
   function gatesEvidence(edge, failedTest = false) {
     assertLaneDir()
     const currentTree = treeSignature(root)
-    for (const name of gates) {
+    for (const name of gates()) {
       const file = path.join(laneDir, `${name}.log`)
       const item = verified(file)
       if (!item) return refusal(edge, 'unchanged gate receipt', file)
@@ -329,7 +348,7 @@ export function createLifecycleLaunch({
     const receipt = gatesEvidence(edge)
     if (receipt) return receipt
     const gateSnapshot = {}
-    for (const name of gates) {
+    for (const name of gates()) {
       const item = attestations.get(path.join(laneDir, `${name}.log`))
       gateSnapshot[name] = { path: item.path, sha256: item.sha256 }
     }
@@ -348,7 +367,7 @@ export function createLifecycleLaunch({
     const missing = findings.filter((finding) => !failures.has(finding.trim()))
     if (missing.length > 0) return refusal(edge, `failing test names found in the red full-suite receipt as ${failedTestNameShape(testFramework)} (${missing.join('; ')})`, testLog)
     const gateSnapshot = {}
-    for (const name of gates) {
+    for (const name of gates()) {
       const item = attestations.get(path.join(laneDir, `${name}.log`))
       gateSnapshot[name] = { path: item.path, sha256: item.sha256 }
     }
@@ -362,13 +381,9 @@ export function createLifecycleLaunch({
     const snapshot = state.verifySnapshot
     if (!snapshot) return refusal(edge, 'verify digest snapshot', evidencePath)
     if (treeSignature(root) !== snapshot.tree) return refusal(edge, 'tree signature unchanged since verify', root)
-    for (const saved of Object.values(snapshot.gates)) {
-      const current = readAttestation(saved.path)
-      if (!current || current.sha256 !== saved.sha256) {
-        return refusal(edge, `gate digest changed (${saved.sha256} != ${current?.sha256 ?? 'missing'})`, saved.path)
-      }
-    }
-    return null
+    const missing = missingCurrentGatePath(snapshot, state, gates, laneDir)
+    if (missing) return refusal(edge, 'currently required gate in verify snapshot', missing)
+    return snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal)
   }
 
   async function runParallelCritics(args) {
@@ -608,8 +623,8 @@ export function createLifecycleLaunch({
       }
     }
     if (args.kind === 'gate') {
-      if (!gates.has(args.name)) {
-        return refusal(`${state.phase}->next`, 'gate typecheck|lint|test', path.join(laneDir, `${args.name ?? 'unknown'}.log`))
+      if (!gates().has(args.name)) {
+        return refusal(`${state.phase}->next`, `gate ${[...gates()].join('|')}`, path.join(laneDir, `${args.name ?? 'unknown'}.log`))
       }
       const log = path.join(laneDir, `${args.name}.log`)
       const gateProblem = gateReceiptProblem(args.name, state.phase, log, regularFile)
@@ -617,20 +632,19 @@ export function createLifecycleLaunch({
       fs.rmSync(log, { force: true })
       fs.writeFileSync(log, '', { flag: 'wx' })
       let code
+      const beforeGate = gatePathSnapshot(root)
       try {
         if (gateRunner) code = await gateRunner({ name: args.name, log, root })
         else {
-          const out = fs.openSync(log, 'a')
-          const err = fs.openSync(log, 'a')
+          const out = fs.openSync(log, 'a'); const err = fs.openSync(log, 'a')
           try {
             code = await launchProcess('pnpm', [args.name], { cwd: path.join(root, 'toolkit'), env: gateEnvironment(process.env), stdio: ['ignore', out, err] })
-          } finally {
-            fs.closeSync(out)
-            fs.closeSync(err)
-          }
+          } finally { fs.closeSync(out); fs.closeSync(err) }
         }
       } catch (error) {
         return refusal(`${state.phase}->next`, `gate spawn (${error instanceof Error ? error.message : String(error)})`, log)
+      } finally {
+        warnGatePathChanges(root, beforeGate, log)
       }
       fs.appendFileSync(log, `\nEXIT=${code}\n`)
       attest(log, { tree: treeSignature(root), laneReceiptSeq: state.laneReceiptSeq })
@@ -652,7 +666,7 @@ export function createLifecycleLaunch({
       }
     }
     if (args.kind === 'inspect') {
-      const allowed = [...gates]
+      const allowed = [...gates()]
         .map((name) => `${name}.log`)
         .concat(phases.filter((phase) => lanePhases.has(phase)).flatMap((phase) => [`${phase}-run.log`, `${phase}-report.md`]))
       if (!['diff', 'status', 'log'].includes(args.what)) return refusal(`${state.phase}->next`, 'inspect diff|status|log', laneDir)
