@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 const hostUrl = new URL('../../../../plugin/bin/lib/host/procfs.mjs', import.meta.url).href
 const host = await import(/* @vite-ignore */ hostUrl).catch(() => null)
@@ -67,9 +67,9 @@ describe('host procfs injected readers', () => {
     const realpath = vi.fn(() => 'resolved-cwd')
     const procfs = host!.createProcfs({ root, platform: 'linux', readFile, realpath })
     expect(procfs.readCommandLine(pid, 4096, false)).toBe('bounded')
-    expect(readFile).toHaveBeenCalledWith(join(root, pid, 'cmdline'), 4096, false)
+    expect(readFile).toHaveBeenCalledWith(posix.join(root, pid, 'cmdline'), 4096, false)
     expect(procfs.resolveWorkingDirectory(pid)).toBe('resolved-cwd')
-    expect(realpath).toHaveBeenCalledWith(join(root, pid, 'cwd'))
+    expect(realpath).toHaveBeenCalledWith(posix.join(root, pid, 'cwd'))
   })
 
   it('preserves a listing-to-read exit race and reports the vanished pid absent', () => {

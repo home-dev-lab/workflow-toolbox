@@ -13,8 +13,8 @@ const host = await import(/* @vite-ignore */ hostUrl)
 
 describe('procfs path construction under a Windows-native path module', () => {
   it('builds every procfs path with forward slashes whatever the host separator', () => {
-    const readFile = vi.fn((_file: string, ..._args: unknown[]) => 'value')
-    const readdir = vi.fn((_dir: string, ..._args: unknown[]): string[] => [])
+    const readFile = vi.fn<(file: string, ...args: unknown[]) => string>(() => 'value')
+    const readdir = vi.fn<(dir: string, ...args: unknown[]) => string[]>(() => [])
     const procfs = host.createProcfs({ platform: 'linux', readFile, readdir })
     procfs.readLoadAverage('utf8')
     procfs.readCommandLine(42)
