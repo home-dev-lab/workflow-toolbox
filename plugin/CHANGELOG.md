@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.195.0] - 2026-10-12
+
 - `wt-second-opinion` now optionally checks `WT_SECOND_OPINION_ADMISSION`, an absolute ES module path whose default `admit({ repo, request, env })` returns `null` or a refusal string, before starting a model or sandbox. Admission and launch share canonical paths; output naming the request is refused without modifying it. Invalid configuration, module failures and timeouts refuse closed with stderr and a completed output file ending in `EXIT=3`, replacing stale success even on a read-only output file; the 10-second import/admission deadline is overridable through `WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS`.
 - Lane timeout decisions and extensions now emit matchable run-log receipts and record the full unattended bound. Known idle lanes default to abandon at their timeout; an observe-only idle watchdog records silence and warnings, with explicit `--idle-timeout` enforcement using `EXIT=126` and `TERMINATION=idle`.
 - Actionability snapshots now accept spills up to 64 MiB and publish atomically, retaining a newer acquisition when an older writer finishes later. Refresh uses 5000-card pages, bounded stable re-scans and a 90 s default deadline (`--timeout-s` or `WT_ACTIONABLE_REFRESH_TIMEOUT_MS`), including HTTP aborts and forced parser termination. An unrefreshable reading passes Stop with a diagnostic. Projects may opt into throttled detached refresh with `"actionableAutoRefresh": true` in their board pointer; nested Stops use that ancestor project's state and refresh cwd, and guard journal evidence records snapshot age, producer reason and refresh status.
