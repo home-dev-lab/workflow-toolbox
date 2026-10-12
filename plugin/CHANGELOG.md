@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.194.1] - 2026-10-12
+
+### Removed
+
+- The work journal's hooks are removed: nothing records project acts any more at PreToolUse, PostToolUse, SessionStart or Stop, and a session start no longer prints the journal digest or its `retire-progress`, `setup-board` and "no acts recorded yet" notices. Commits already live in Git. The hook script, its recorder, Git-capture and lifecycle modules and the default recorder configuration are deleted. `wt-work-journal.mjs` stays, marked retired, so an existing journal can still be read, verified, restored and exported (`show`, `digest`, `verify`, `restore`, `unlock`, `export-closed`).
+
 ## [0.194.0] - 2026-10-12
 
 ### Added
@@ -73,9 +79,6 @@ Minor release: measured on the release tree against the 0.189.0 baseline (`node 
 - The `wt-chores` agent type. It only pinned a model and an effort; spawn `general-purpose` with `model: "sonnet"` and `effort: "low"` for the same board/card, CI-triage and summary work.
 - SessionStart hooks no longer re-inject start-of-session information after a compaction. When SessionStart fires with source `compact`, the delegation ladder, the configuration summary, the artifact-server line, the guard-recurrence notice and the adoption check print nothing (the compaction digests of the last two are removed), and the agent-liveness hook drops its standing coverage line while still reporting a stale plugin root, a duplicate registration or unfinished agent arcs. Startup, resume and clear output is unchanged.
 - The knowledge-base index notice no longer lists one "fronts N fiche(s)" line per index entry; it keeps the summary, the flags and the unreachable fiches, and names the command that prints the full report. A clean store still prints nothing.
-### Removed
-
-- The work journal's hooks are removed: nothing records project acts any more at PreToolUse, PostToolUse, SessionStart or Stop, and a session start no longer prints the journal digest or its `retire-progress`, `setup-board` and "no acts recorded yet" notices. Commits already live in Git. The hook script, its recorder, Git-capture and lifecycle modules and the default recorder configuration are deleted. `wt-work-journal.mjs` stays, marked retired, so an existing journal can still be read, verified, restored and exported (`show`, `digest`, `verify`, `restore`, `unlock`, `export-closed`).
 
 ### Quality
 
