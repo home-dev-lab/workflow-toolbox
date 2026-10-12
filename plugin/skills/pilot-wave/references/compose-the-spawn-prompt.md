@@ -66,16 +66,19 @@ One pairing fact behind why adoption is required at all: current Claude Code ver
 honor the `observer:` frontmatter for plugin-REGISTERED agents — a pilot spawned that way
 would run WITHOUT its `pilot-watchdog` observer attached, silently. That is why the pilot
 suite ships as templates rather than registered agents: there is no namespaced
-"workflow-toolbox:pilot" type to spawn as a fallback, only the adopted project copy.
+"workflow-toolbox:pilot" type to spawn as a fallback, only an adopted copy.
 **Resolution rule for every spawn this skill composes: check the project's `.claude/agents/`
-first — if it carries a `pilot.md` (and, for a wave, a `pilot-orchestrator.md`), spawn the
-BARE names (`pilot`, `pilot-orchestrator`).**
-**When no project copy exists, PROPOSE the adoption before spawning anything — don't tell the
+first, then the user config dir's `agents/` (`${CLAUDE_CONFIG_DIR:-~/.claude}/agents/`) — if
+either carries a `pilot.md` (and, for a wave, a `pilot-orchestrator.md`), spawn the BARE names
+(`pilot`, `pilot-orchestrator`). A project copy shadows a user copy of the same name, so keep
+ONE adopted copy per name: two copies drift apart silently.**
+**When no adopted copy exists in either place, PROPOSE the adoption before spawning anything — don't tell the
 user to go do it and don't invent a namespaced type to spawn instead**: explain that without
-project copies there is nothing to spawn (the templates are inert on their own), name exactly
+an adopted copy there is nothing to spawn (the templates are inert on their own), name exactly
 what would be installed where (`pilot.md` + `pilot-watchdog.md` — plus `pilot-orchestrator.md`
 and `pilot-orchestrator-watchdog.md` for a wave — from the plugin's `agent-templates/`
-directory into the project's `.claude/agents/`, bare names, trivially reversible). Make the
+directory into the project's `.claude/agents/` for one project, or with `--global` into the
+user config dir's `agents/` for every project of that profile; bare names, trivially reversible). Make the
 copy through the `workflow-toolbox:adopt` skill (`--set agents --install`), NOT a raw
 file copy: adopt stamps each copy with a version banner + content fingerprint, so a
 later `--check` DETECTS when the plugin has moved ahead of the copy (a hand copy has no

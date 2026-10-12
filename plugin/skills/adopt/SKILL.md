@@ -29,17 +29,15 @@ and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one p
   reporting, memory hygiene, checkpointing, task tracking, …) reaches a session ONLY as a
   copy this skill writes into a real config dir. Adopting is therefore what puts them in
   force — not merely what makes them editable.
-- **agents** — project copies of the pilot delegation suite's agent definitions, SOURCED from
-  the plugin's `agent-templates/` bundle (`pilot.md`, `pilot-watchdog.md`,
-  `pilot-orchestrator.md`, `pilot-orchestrator-watchdog.md`). These templates are
-  deliberately NOT plugin-registered agents — current Claude Code versions do NOT honor the
-  `observer:` frontmatter for a plugin-installed agent, so a registered pilot would run
-  WITHOUT its watchdog, silently. There is no namespaced "workflow-toolbox:pilot" type to
-  fall back to: a pilot only exists to spawn once adopted. The pairing works only when
-  `pilot.md` + `pilot-watchdog.md` live in the project's `.claude/agents/` under their bare
-  names. Copying by hand works too, but a hand copy has NO staleness detection: this set
-  closes that gap — every copy carries a version banner + content fingerprint, so a later
-  `--check` reports when the plugin has moved ahead.
+- **agents** — adopted copies (per project, or per user config dir with `--global`) of the
+  pilot suite's definitions from the plugin's `agent-templates/` (`pilot.md`,
+  `pilot-watchdog.md`, `pilot-orchestrator.md`, `pilot-orchestrator-watchdog.md`). They are
+  deliberately NOT plugin-registered: Claude Code ignores `observer:` on a plugin-installed
+  agent, so a registered pilot would run WITHOUT its watchdog, silently, and there is no
+  "workflow-toolbox:pilot" fallback. The pairing works for bare names in the project's
+  `.claude/agents/` or the user config dir's `agents/`; keep ONE copy per name, since a project
+  copy shadows the user copy. A hand copy works but has NO staleness detection; adopted copies
+  carry a version banner + content fingerprint, so `--check` reports when the plugin moves ahead.
 - **autonomy** — the session-autonomy mandate (`AUTONOMY.md`), standing-authorization format
   (`AUTHORIZATIONS.md`), and recommended permission classes (`PERMISSIONS.md`), SOURCED from the
   plugin's `autonomy/` bundle. Same banner/fingerprint shape as `rules`.

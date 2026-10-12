@@ -170,10 +170,10 @@ back silently.
    cost of skipping this is real: measured twice in one session, ~215k and ~185k tokens spent
    by a spawned pilot fully re-verifying delivered work on a card already Done. If the fresh
    read shows it closed, do not brief a pilot for it — reconcile your own scope instead.
-   ONE pilot per card. Spawn the project's own adopted `pilot` definition
-   from `.claude/agents/` (a project copy takes the watchdog observer pairing; there is no
+   ONE pilot per card. Spawn the adopted `pilot` definition, from the project's
+   `.claude/agents/` or the user config dir's `agents/` (an adopted copy takes the watchdog observer pairing; there is no
    plugin-registered `pilot` type to spawn instead — a registered agent's `observer:` is
-   silently ignored, so the def ships unregistered until adopted). If no project copy exists,
+   silently ignored, so the def ships unregistered until adopted). If no adopted copy exists,
    propose the adoption before spawning anything — there is nothing to spawn otherwise. Cards
    touching the same files run SEQUENTIALLY
    (one working tree per writer — worktree envelope mandatory); independent cards may run
@@ -296,9 +296,9 @@ This definition declares `observer: pilot-orchestrator-watchdog` — closing the
 zero" gap this suite had. Two limitations, stated here rather than assumed away:
 
 - **Plugin-installed agents never honor `observer:`** (silent, no warning — verified by
-  reading the CLI's own frontmatter schema, not inferred). Only a PROJECT copy of this file
-  (and of `pilot-orchestrator-watchdog.md`) in `.claude/agents/` makes the pairing operate
-  at all; the plugin source is coherence, never the effect.
+  reading the CLI's own frontmatter schema, not inferred). Only an ADOPTED copy of this file
+  (and of `pilot-orchestrator-watchdog.md`), in the project's `.claude/agents/` or the user
+  config dir's `agents/`, makes the pairing operate at all; the plugin source is coherence, never the effect.
 - **Even as a project copy, live attach for THIS role has not yet been directly observed.**
   An earlier working hypothesis ("the LAUNCHER — main vs. teammate — governs attach") was
   itself REFUTED by a later forensic pass that checked the right instrument: `observer-ref`

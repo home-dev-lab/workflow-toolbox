@@ -6,7 +6,7 @@ description: >-
   need to compose the environment brief, select the cards, and spawn the adopted `pilot` or
   `pilot-orchestrator`, or when the user says "run these cards", "pilot this wave", "spawn a
   pilot for this ticket", or "set up the orchestrator for these". Keep the main session as the
-  arbiter and wake-up relay, require adopted project copies first, and if they are missing,
+  arbiter and wake-up relay, require an adopted copy (project or user config dir) first, and if it is missing,
   propose `adopt` before spawning. Not for a single mechanical edit.
 ---
 
@@ -22,8 +22,8 @@ thin relay that owns wake-ups and hard escalations.
 templates (`plugin/agent-templates/`) precisely because Claude Code silently ignores the
 `observer:` field on a plugin-REGISTERED agent — there is no namespaced "workflow-toolbox:
 pilot" type to fall back to. A pilot only exists to spawn once its
-definition has been adopted into the project's `.claude/agents/` under its bare name (see
-Step 3). If the project has no adopted copy yet, propose the adoption before spawning
+definition has been adopted under its bare name, into the project's `.claude/agents/` or the
+user config dir's `agents/` (see Step 3). If neither holds an adopted copy yet, propose the adoption before spawning
 anything.
 
 Use it when the user wants tracked cards driven autonomously. For a one-off mechanical edit,
@@ -102,14 +102,17 @@ reliably call, falling back down the tiers if the top one is not available. Effo
 the definitions and is universal — leave it unless you have a reason.
 
 **Resolution rule for every spawn this skill composes: check the project's `.claude/agents/`
-first — if it carries a `pilot.md` (and, for a wave, a `pilot-orchestrator.md`), spawn the
-BARE names (`pilot`, `pilot-orchestrator`).**
-**When no project copy exists, PROPOSE the adoption before spawning anything — don't tell the
+first, then the user config dir's `agents/` (`${CLAUDE_CONFIG_DIR:-~/.claude}/agents/`) — if
+either carries a `pilot.md` (and, for a wave, a `pilot-orchestrator.md`), spawn the BARE names
+(`pilot`, `pilot-orchestrator`). A project copy shadows a user copy of the same name, so keep
+ONE adopted copy per name: two copies drift apart silently.**
+**When no adopted copy exists in either place, PROPOSE the adoption before spawning anything — don't tell the
 user to go do it and don't invent a namespaced type to spawn instead**: explain that without
-project copies there is nothing to spawn (the templates are inert on their own), name exactly
+an adopted copy there is nothing to spawn (the templates are inert on their own), name exactly
 what would be installed where (`pilot.md` + `pilot-watchdog.md` — plus `pilot-orchestrator.md`
 and `pilot-orchestrator-watchdog.md` for a wave — from the plugin's `agent-templates/`
-directory into the project's `.claude/agents/`, bare names, trivially reversible). Make the
+directory into the project's `.claude/agents/` for one project, or with `--global` into the
+user config dir's `agents/` for every project of that profile; bare names, trivially reversible). Make the
 copy through the `workflow-toolbox:adopt` skill (`--set agents --install`), NOT a raw
 file copy: adopt stamps each copy with a version banner + content fingerprint, so a
 later `--check` DETECTS when the plugin has moved ahead of the copy (a hand copy has no

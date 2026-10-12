@@ -14,14 +14,15 @@ This reference belongs to the adopt skill. Its text moved here verbatim from tha
   editable once written. The set is whatever the plugin bundles, so it grows as guardrails
   are added — no per-rule change to the installer.
 
-**agents → `.claude/agents/`:**
+**agents → `.claude/agents/` (or, with `--global`, the user config dir's `agents/`):**
 
 - **`pilot.md`**, **`pilot-watchdog.md`**, **`pilot-orchestrator.md`**,
   **`pilot-orchestrator-watchdog.md`** — copied VERBATIM from the plugin's
   `agent-templates/` directory (their single source), each under a banner. Installing all four
   is harmless: `pilot.md` + `pilot-watchdog.md` are what a single pilot needs for the
   watchdog pairing; `pilot-orchestrator.md` + `pilot-orchestrator-watchdog.md` are the wave
-  pair and sit idle otherwise. Once these project copies exist, spawn the BARE names
+  pair and sit idle otherwise. Once these copies exist, in one place only (a project copy shadows a user copy of the same
+  name), spawn the BARE names
   (`pilot`, `pilot-orchestrator`) so the watchdog pairing attaches.
 
 The rule set is the plugin's shipped, project-agnostic guardrails (pure directives — no
