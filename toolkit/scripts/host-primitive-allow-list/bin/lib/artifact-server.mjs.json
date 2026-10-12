@@ -12,7 +12,6 @@
   "chmodSync": 3,
   "writeFileSync": 1,
   "renameSync": 1,
-  "process.kill": 2,
   "realpathSync": 2,
   "spawnSync": 1,
   "existsSync": 1,

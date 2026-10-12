@@ -8,6 +8,5 @@
   "spawn": 1,
   "readFileSync": 3,
   "appendFileSync": 1,
-  "process.kill": 1,
   "writeFileSync": 1
 }

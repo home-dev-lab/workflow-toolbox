@@ -4,7 +4,6 @@
   "realpathSync": 2,
   "process.platform": 8,
   "execFileSync": 3,
-  "readlinkSync": 1,
   "mkdirSync": 1,
   "appendFileSync": 1
 }

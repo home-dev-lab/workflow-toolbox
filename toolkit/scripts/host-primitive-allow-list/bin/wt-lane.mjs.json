@@ -14,7 +14,6 @@
   "existsSync": 3,
   "renameSync": 3,
   "rmSync": 12,
-  "process.kill": 1,
   "chmodSync": 1,
   "spawn": 1,
   "openSync": 1

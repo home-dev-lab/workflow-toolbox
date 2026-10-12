@@ -2,13 +2,12 @@
   "fs import": 1,
   "child_process import": 1,
   "os import": 1,
-  "readFileSync": 4,
+  "readFileSync": 3,
   "homedir": 1,
   "existsSync": 1,
   "readdirSync": 1,
   "statSync": 2,
   "execFileSync": 1,
   "realpathSync": 1,
-  "process.platform": 2,
-  "readlinkSync": 1
+  "process.platform": 2
 }
