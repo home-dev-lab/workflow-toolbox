@@ -252,63 +252,83 @@ async function discoverRun(ctx, record) {
   save(ctx, record)
 }
 
-async function collect(ctx, record) {
-  if (!record.runId) throw failure(`no run id recorded for ${record.sha}`)
+// Polls GitHub until the run completes; returns the run, or null once the deadline passed (record marked timed_out).
+async function pollUntilCompleted(ctx, record) {
   const deadline = ctx.io.now() + Number(ctx.args.timeoutMin) * 60000
-  let run
   const seen = { jobs: new Set(), os: new Set(), failures: new Map() }
   for (;;) {
-    run = freshEvidence(ctx, record.runId)
+    const run = freshEvidence(ctx, record.runId)
     // Early lines are advisory: a failure here must never change the verdict nor strand the temporary branch.
     try { announceConcluded(ctx, record, run, seen) } catch (error) { ctx.print(`EARLY REPORT UNAVAILABLE: ${error.message}`) }
-    if (run.status === 'completed') break
+    if (run.status === 'completed') return run
     if (ctx.io.now() >= deadline) {
       record.status = 'timed_out'; save(ctx, record)
       ctx.print(`TIMEOUT: branch kept; collect with node plugin/bin/wt-crossos-dispatch.mjs collect --merge ${record.sha}`)
-      return 4
+      return null
     }
     await ctx.io.sleep(30000)
   }
+}
+
+// Prints the failed jobs and their extracted tests; returns the gating and diagnostic failures.
+function reportFailedJobs(ctx, record, failingJobs) {
+  const tests = []
+  const diagnostics = []
+  for (const job of failingJobs) {
+    const url = `${record.url}/job/${job.databaseId}`
+    ctx.print(`FAILED JOB ${job.name}: ${url}`)
+    let log = ''
+    try { log = checked(ctx.io, ctx.cwd, 'gh', ['run', 'view', '-R', ctx.slug, '--job', String(job.databaseId), '--log']) }
+    catch (error) { ctx.print(`JOB LOG UNAVAILABLE ${job.name}: ${error.message}`) }
+    const found = extractFailedTests(log)
+    const gating = found.filter((item) => item.gating)
+    if (!gating.length) ctx.print(`FAILED TEST (none extracted — read ${url})`)
+    for (const item of gating) { ctx.print(`FAILED TEST [gating step: ${item.step}] ${item.test}`); tests.push(item) }
+    const diagnostic = found.filter((item) => !item.gating)
+    if (diagnostic.length) ctx.print(`DIAGNOSTIC FAILURES (did not block): ${job.name}`)
+    for (const item of diagnostic) { ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`); diagnostics.push(item) }
+  }
+  return { tests, diagnostics }
+}
+
+function reportRedRun(ctx, record, failingJobs) {
+  const { tests, diagnostics } = reportFailedJobs(ctx, record, failingJobs)
+  const blockingNames = tests.map((item) => `${item.test} [${item.step}]`).join('; ') || '(none extracted)'
+  const blocker = `BLOCKER: host-layer merge ${record.sha} is red on cross-os run ${record.runId}; gating failed tests: ${blockingNames}; open a card and fix before release`
+  ctx.print(blocker)
+  const jobLines = failingJobs.map((job) => '- ' + job.name).join('\n')
+  const testLines = tests.map((item) => `- ${item.test} (gating step: ${item.step})`).join('\n')
+  const diagnosticLines = diagnostics.map((item) => `- ${item.test} (diagnostic step: ${item.step})`).join('\n')
+  const draft = `# Cross-OS failure on ${record.sha}\n\nRun: ${record.url}\n\n${jobLines}\n\nBlocking failed tests (gating steps):\n${testLines || '- None extracted; read the failed job logs.'}\n\nDiagnostic failures (did not block):\n${diagnosticLines || '- None.'}\n`
+  ctx.io.writeText(ctx.io.join(ctx.store, `${record.sha}.card.md`), draft)
+}
+
+function printRunSummary(ctx, run, incomplete, matrixIncomplete) {
+  for (const job of run.jobs ?? []) ctx.print(`JOB ${job.name}: ${job.conclusion}`)
+  if (incomplete) ctx.print(`${matrixIncomplete ? 'MATRIX INCOMPLETE' : 'MATRIX COMPLETE'}: ${incomplete}`)
+  else reportSuccessfulDiagnostics(ctx, run.jobs ?? [])
+}
+
+function concludeRun(ctx, record, run) {
+  record.status = run.status; record.conclusion = run.conclusion
+  save(ctx, record)
+  const { verdict, reason, incomplete: matrixIncomplete } = verdictFromEvidence(run, record.sha)
+  if (verdict === 'unchecked') throw failure(`run ${record.runId} ${reason}`, 3)
+  const incomplete = verdict === 'green' ? null : reason
+  printRunSummary(ctx, run, incomplete, matrixIncomplete)
+  if (incomplete) reportRedRun(ctx, record, (run.jobs ?? []).filter((job) => job.conclusion !== 'success'))
+  save(ctx, record)
+  return incomplete ? 1 : 0
+}
+
+async function collect(ctx, record) {
+  if (!record.runId) throw failure(`no run id recorded for ${record.sha}`)
+  const run = await pollUntilCompleted(ctx, record)
+  if (!run) return 4
   let originalError
   let result
   try {
-    record.status = run.status; record.conclusion = run.conclusion
-    save(ctx, record)
-    const { verdict, reason, incomplete: matrixIncomplete } = verdictFromEvidence(run, record.sha)
-    if (verdict === 'unchecked') throw failure(`run ${record.runId} ${reason}`, 3)
-    const incomplete = verdict === 'green' ? null : reason
-    const failingJobs = (run.jobs ?? []).filter((job) => job.conclusion !== 'success')
-    for (const job of run.jobs ?? []) ctx.print(`JOB ${job.name}: ${job.conclusion}`)
-    if (incomplete) ctx.print(`${matrixIncomplete ? 'MATRIX INCOMPLETE' : 'MATRIX COMPLETE'}: ${incomplete}`)
-    else reportSuccessfulDiagnostics(ctx, run.jobs ?? [])
-    if (incomplete) {
-      const tests = []
-      const diagnostics = []
-      for (const job of failingJobs) {
-        const url = `${record.url}/job/${job.databaseId}`
-        ctx.print(`FAILED JOB ${job.name}: ${url}`)
-        let log = ''
-        try { log = checked(ctx.io, ctx.cwd, 'gh', ['run', 'view', '-R', ctx.slug, '--job', String(job.databaseId), '--log']) }
-        catch (error) { ctx.print(`JOB LOG UNAVAILABLE ${job.name}: ${error.message}`) }
-        const found = extractFailedTests(log)
-        const gating = found.filter((item) => item.gating)
-        if (!gating.length) ctx.print(`FAILED TEST (none extracted — read ${url})`)
-        for (const item of gating) { ctx.print(`FAILED TEST [gating step: ${item.step}] ${item.test}`); tests.push(item) }
-        const diagnostic = found.filter((item) => !item.gating)
-        if (diagnostic.length) ctx.print(`DIAGNOSTIC FAILURES (did not block): ${job.name}`)
-        for (const item of diagnostic) { ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`); diagnostics.push(item) }
-      }
-      const blockingNames = tests.map((item) => `${item.test} [${item.step}]`).join('; ') || '(none extracted)'
-      const blocker = `BLOCKER: host-layer merge ${record.sha} is red on cross-os run ${record.runId}; gating failed tests: ${blockingNames}; open a card and fix before release`
-      ctx.print(blocker)
-      const jobLines = failingJobs.map((job) => '- ' + job.name).join('\n')
-      const testLines = tests.map((item) => `- ${item.test} (gating step: ${item.step})`).join('\n')
-      const diagnosticLines = diagnostics.map((item) => `- ${item.test} (diagnostic step: ${item.step})`).join('\n')
-      const draft = `# Cross-OS failure on ${record.sha}\n\nRun: ${record.url}\n\n${jobLines}\n\nBlocking failed tests (gating steps):\n${testLines || '- None extracted; read the failed job logs.'}\n\nDiagnostic failures (did not block):\n${diagnosticLines || '- None.'}\n`
-      ctx.io.writeText(ctx.io.join(ctx.store, `${record.sha}.card.md`), draft)
-    }
-    save(ctx, record)
-    result = incomplete ? 1 : 0
+    result = concludeRun(ctx, record, run)
   } catch (error) {
     originalError = error
   } finally {
