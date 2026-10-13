@@ -20,7 +20,7 @@ import { sealedClaudeEnv } from '../../../test-support/claude-config-isolation'
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLAUDE = process.env.WT_CLAUDE_BIN || 'claude'
 // The real binary runs on a throw-away config dir and home with no credential variable: started on the
-// developer's config dir it rewrote that dir's login file and dropped its tokens (card 1884998532654433637).
+// developer's config dir, that dir's login file lost its tokens in the same second (card 1884998532654433637).
 const sealed = sealedClaudeEnv()
 afterAll(() => sealed.cleanup())
 
