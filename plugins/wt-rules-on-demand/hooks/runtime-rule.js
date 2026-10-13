@@ -1,6 +1,19 @@
 import { CHECKS } from './act-checks.js';
 import { DETECTORS } from './lsp-symbol.js';
 import { RULE_CAP, safeRegex } from './evidence.js';
+import { SERVED_STAMP_RE } from '../adopt-banner.js';
+
+export function servedText(body) {
+  // A synthetic terminal break lets a stamp-only body match without changing
+  // the retained bytes. Only a banner at the very start of the body is served away.
+  const match = SERVED_STAMP_RE.exec(body + '\n');
+  return match ? body.slice(match[0].length) : body;
+}
+
+function ruleBody(text, offset) {
+  const fileContent = text.slice(offset);
+  return { content: servedText(fileContent), fileContent };
+}
 
 function scalar(value) {
   const trimmed = value.trim();
@@ -164,6 +177,6 @@ export function parseRuntimeRule(name, text, { rawTriggers = false } = {}) {
        commandHead: entry['command-head'] === 'true',
     };
   });
-  return { name, content: text.slice(match[0].length), triggers, compliance: parseCompliance(lines, complianceAt, name),
+  return { name, ...ruleBody(text, match[0].length), triggers, compliance: parseCompliance(lines, complianceAt, name),
     ...(rawTriggers ? { rawTriggers: records } : {}) };
 }
