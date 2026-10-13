@@ -381,3 +381,23 @@ FINDINGS:
     }
   })
 })
+
+describe('lifecycle gate-marker recurrence', () => {
+  it('exempts runner gate markers from identity recurrence while retaining the blocking-count bound', () => {
+    const round = {
+      blockingFindings: ['gate quality EXIT=1'],
+      findingDetails: [{ blocks: true, anchor: 'verify', location: 'quality', text: 'gate quality EXIT=1', extendsPrior: null, recurrenceExempt: true }],
+    }
+    expect(reviewConvergenceDecision([round, round])).toEqual({ continue: true, signal: null })
+    expect(reviewConvergenceDecision([round, round, round])).toEqual({
+      continue: false, signal: 'blocking count failed to set a new minimum for two consecutive rounds: best 1; 1 -> 1',
+    })
+  })
+
+  it.each(['critic', 'review', 'refutation'])('keeps marker-shaped %s findings subject to identity recurrence', (phase) => {
+    const severity = phase === 'critic' ? 'blocking' : 'HIGH'
+    const verdict = verdictFromReport(phase, `VERDICT: changes-requested\nFINDINGS:\n- [${severity}][anchor: DoD 1][location: quality] gate quality EXIT=1\n`, { validAnchors: ['DoD 1'] })
+    const round = { blockingFindings: verdict.findings, findingDetails: verdict.findingDetails }
+    expect(reviewConvergenceDecision([round, round])).toEqual({ continue: false, signal: 'same finding returned: DoD 1 — gate quality EXIT=1' })
+  })
+})

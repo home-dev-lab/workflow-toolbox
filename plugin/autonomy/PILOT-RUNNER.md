@@ -171,11 +171,14 @@ When exact failed-test names are available, the test gate marker remains receipt
 snapshot and TDD findings, while convergence counts the exact names. This avoids treating a common
 `gate test EXIT=1` summary as a recurring defect when distinct failed names shrink across fixes.
 Without extracted names the attested test marker is itself the blocking finding; non-test gate
-markers remain blocking. The pilot submits plain canonical markers. Runner-recorded blocking gate
-identities append a 12-hex SHA-256 fingerprint of the attested diagnostic lines, normalized to ignore
-timings, timestamps, PIDs, ANSI codes, and temporary-directory prefixes. Distinct diagnostics can
-return to TDD; identical diagnostics retain recurrence safeguards. If no diagnostic lines are
-selected, the plain marker remains the identity. Repeated named failures retain loop-stop safeguards.
+markers remain blocking. The pilot submits plain canonical markers, and the runner records those
+same markers without diagnostic fingerprints. Runner-derived blocking markers carry an explicit
+recurrence exemption: they count toward blocking-count convergence but do not trigger the "same
+finding returned" identity check. Two consecutive failed rounds can return to TDD; a third round
+with blocking count 1 stops for failing to set a new minimum. Extracted test names and critic,
+review, and refutation findings retain identity recurrence safeguards. A marker-shaped finding
+that does not identify an actual red gate is accepted only if it is an exact extracted name from
+the red test receipt; otherwise it is refused.
 | review -> refutation, tdd, or report | Attested lane receipt and report verdict. `clear` reaches refutation; blocking `changes-requested` writes `review-findings.md` and reaches a TDD fix. Mechanical non-convergence reaches a partial report. |
 | refutation -> report, tdd, or partial report | Attested lane receipt and report verdict. `clear` reaches report; blocking `changes-requested` reaches a TDD fix unless non-convergence fires. |
 | report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion as a `- ` bullet with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. That classification is re-derived from each draft this edge judges: a refused draft never leaves a partial the corrected draft must carry, and a criterion the parser cannot find is a schema refusal, never an unmet criterion. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |

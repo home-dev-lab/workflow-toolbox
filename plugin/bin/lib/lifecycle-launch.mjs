@@ -139,43 +139,9 @@ function failedTestNameShape(framework) {
 }
 
 const INTEGER_EXIT = /^(?:0|-?[1-9]\d*)$/
-const GATE_FINDING = /^gate (typecheck|lint|quality|test) EXIT=(0|-?[1-9]\d*)$/
-const DIAGNOSTIC_LINE = /\b(?:errors?|fail(?:ed|ure)?|regressions?)\b|✖|\bERR_[A-Z0-9_]+|\bvalues=\[/i
-const VOLATILE_LINE = /^(?:Start at|Duration|Time:|Timestamp:|pid\b|Test Files|Tests\s+\d|Working directory|WARNING gate changed path)/i
-const DIAGNOSTIC_FILE = /^(?:[A-Za-z]:)?[^\s]+\.[cm]?[jt]sx?$/
-
-function normalizedDiagnosticLine(raw) {
-  return withoutAnsi(raw).replaceAll(String.fromCharCode(92), '/')
-    .replace(/\/(?:private\/)?(?:var\/)?tmp\/[^/\s]+\//g, '<temp>/')
-    .replace(/\b[A-Za-z]:\/(?:[^/\s]+\/)*[Tt]emp\/[^/\s]+\//g, '<temp>/')
-    .replace(/\/var\/folders\/[^/\s]+\/[^/\s]+\/T\/[^/\s]+\//g, '<temp>/')
-    .replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g, '<timestamp>')
-    .replace(/\b\d{2}:\d{2}:\d{2}(?:\.\d+)?\b/g, '<time>')
-    .replace(/\bpid[=: ]+\d+\b/gi, 'pid=<pid>')
-    .replace(/\b\d+(?:\.\d+)?\s*(?:ms|s|seconds|milliseconds)\b/gi, '<duration>')
-    .replace(/\s+/g, ' ').trim()
-}
-
-function diagnosticsFingerprint(content) {
-  const diagnostics = []
-  let file = null
-  for (const raw of content.split(/\r?\n/)) {
-    const line = normalizedDiagnosticLine(raw)
-    if (!line || VOLATILE_LINE.test(line)) continue
-    if (DIAGNOSTIC_LINE.test(line)) {
-      diagnostics.push(file ? `${file}: ${line}` : line)
-      continue
-    }
-    file = DIAGNOSTIC_FILE.test(line) ? line : null
-  }
-  return diagnostics.length ? sha256([...new Set(diagnostics)].sort().join('\n')).slice(0, 12) : null
-}
-
 function failedGateFinding(item, failures) {
   const convergenceSummary = item.name === 'test' && Boolean(failures?.size)
-  const fingerprint = convergenceSummary ? null : item.diagnosticsFingerprint
-  // No selected diagnostics means the plain marker remains the recurrence identity, as before.
-  return { text: `gate ${item.name} EXIT=${item.exit}${fingerprint ? ` [diagnostics ${fingerprint}]` : ''}`, location: item.name, log: item.path, convergenceSummary }
+  return { text: `gate ${item.name} EXIT=${item.exit}`, location: item.name, log: item.path, convergenceSummary, recurrenceExempt: !convergenceSummary }
 }
 
 function gateExitAccepted(item, allowNonzero) {
@@ -187,10 +153,10 @@ function failedGateFindings(receipts, failures, findings) {
   const markers = new Map(red.map((item) => [`gate ${item.name} EXIT=${item.exit}`, item]))
   const invalid = findings.filter((finding) => {
     const text = finding.trim()
-    if (GATE_FINDING.test(text)) return !markers.has(text)
+    if (markers.has(text)) return false
     return !red.some((item) => item.name === 'test') || !failures?.has(text)
   })
-  const names = new Set([...findings.map((finding) => finding.trim()).filter((finding) => !GATE_FINDING.test(finding)), ...failures ?? []])
+  const names = new Set([...findings.map((finding) => finding.trim()).filter((finding) => !markers.has(finding)), ...failures ?? []])
   return {
     invalid,
     findings: [
@@ -291,8 +257,6 @@ export function readAttestation(file) {
     path: file,
     size: Buffer.byteLength(content),
     sha256: sha256(content),
-    // Compute identity from the very same bytes as the attested digest, never a later log read.
-    diagnosticsFingerprint: diagnosticsFingerprint(content),
     mtime: stat.mtimeMs,
     exit: terminalExit(content),
   }

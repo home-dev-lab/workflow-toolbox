@@ -350,65 +350,50 @@ function linuxProcState(pid: number) {
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2'], tool_use_id: 'green' }))).toMatch(/at least one nonzero gate receipt/)
   })
 
-const QUALITY_DIAGNOSTICS = [
-  'toolkit/packages/build/test/gate-evidence-guard.test.ts: max-lines-per-function ["Arrow function","describe(\'wt-release-push-evidence-guard-hook\', () => {"] values=[229] base=[181]',
-  'toolkit/packages/build/test/plugin-version-alignment.test.ts: max-lines-per-function ["Arrow function","describe(\'plugin version alignment guard\', () => {"] values=[79] base=[57]',
-  'quality:changed 5 files checked; 3 regressions',
-  '[ELIFECYCLE] Command failed with exit code 1.',
-].join('\n')
-
-function diagnosticReceipt(round: number, changed = false, temporary = false) {
-  const diagnostics = changed ? QUALITY_DIAGNOSTICS.replace('values=[229]', 'values=[230]') : QUALITY_DIAGNOSTICS
-  const located = temporary ? diagnostics.replaceAll('toolkit/packages/', `/tmp/gate-round-${round}/toolkit/packages/`) : diagnostics
-  return `Start at 12:00:0${round}\nDuration ${round}.23s\nWorking directory /tmp/run-${round}\npid=${round}\n\u001b[31m${located}\u001b[0m\n`
-}
-
 function recordedGateFinding(root: string, gate: string): string {
   const evidence = JSON.parse(readFileSync(join(root, '.lane', 'evidence.json'), 'utf8'))
   return evidence.verify_snapshot.findings.find((finding: { location: string }) => finding.location === gate).text
 }
 
-it.each(['typecheck', 'lint', 'quality', 'test'])('SDK diagnostic identity returns a different %s failure to TDD', async (gate) => {
+it.each(['typecheck', 'lint', 'quality', 'test'])('SDK gate markers return to TDD twice and stop at the blocking-count bound: %s', async (gate) => {
   let round = 1
   const gateRunner = async (args: { name: string, log: string, root: string }) => {
     await writePassingGate(args)
     if (args.name !== gate) return 0
-    fs.appendFileSync(args.log, diagnosticReceipt(round, round === 2))
+    fs.appendFileSync(args.log, `Error: validation failed\nExpected: valid ${round === 1 ? 'user' : 'order'}\nReceived: missing ${round === 1 ? 'name' : 'total'}\n`)
     return 1
   }
   const lifecycle = await lifecycleAtVerify(successLauncher(), { gateRunner, testFramework: 'vitest' }); enableQuality(lifecycle.root)
-  await writeQualityGates(lifecycle, { [gate]: { exit: '1' } })
-  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${gate} EXIT=1`], tool_use_id: 'first' }))).toBe('accepted phase=tdd')
-  const first = recordedGateFinding(lifecycle.root, gate)
-  await lifecycle.artifact({ kind: 'brief', content: 'fix first diagnostic' })
-  await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
-  await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fixed' })
-  round = 2; await writeQualityGates(lifecycle, { [gate]: { exit: '1' } })
-  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${gate} EXIT=1`], tool_use_id: 'second' }))).toBe('accepted phase=tdd')
-  expect(first).toMatch(/\[diagnostics [a-f0-9]{12}\]$/)
-  expect(recordedGateFinding(lifecycle.root, gate)).not.toBe(first)
+  for (round = 1; round <= 3; round += 1) {
+    await writeQualityGates(lifecycle, { [gate]: { exit: '1' } })
+    const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${gate} EXIT=1`], tool_use_id: `red-${round}` }))
+    expect(result).toBe(round < 3 ? 'accepted phase=tdd' : 'accepted phase=report (non-convergence: partial run, verify non-convergence: blocking count failed to set a new minimum for two consecutive rounds: best 1; 1 -> 1)')
+    if (round === 3) break
+    await lifecycle.artifact({ kind: 'brief', content: 'fix gate diagnostic' })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: `fixed-${round}` }))).toBe('accepted phase=verify')
+  }
+  expect(recordedGateFinding(lifecycle.root, gate)).toBe(`gate ${gate} EXIT=1`)
 })
 
-it.each([['typecheck', true], ['lint', true], ['quality', true], ['test', true], ['quality', false]] as const)('SDK diagnostic identity stops recurring %s despite timing drift (temporary paths: %s)', async (gate, temporary) => {
-  let round = 1
+it.each([false, true])('SDK marker-shaped test name requires extraction (extracted: %s)', async (extracted) => {
   const gateRunner = async (args: { name: string, log: string, root: string }) => {
     await writePassingGate(args)
-    if (args.name !== gate) return 0
-    fs.appendFileSync(args.log, diagnosticReceipt(round, false, temporary))
+    if (args.name !== 'test') return 0
+    if (extracted) fs.appendFileSync(args.log, ' FAIL test/gate.test.ts > gate quality EXIT=1\n')
     return 1
   }
   const lifecycle = await lifecycleAtVerify(successLauncher(), { gateRunner, testFramework: 'vitest' }); enableQuality(lifecycle.root)
-  await writeQualityGates(lifecycle, { [gate]: { exit: '1' } })
-  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${gate} EXIT=1`], tool_use_id: 'first' }))).toBe('accepted phase=tdd')
-  const first = recordedGateFinding(lifecycle.root, gate)
-  await lifecycle.artifact({ kind: 'brief', content: 'attempt diagnostic fix' })
+  await writeQualityGates(lifecycle, { test: { exit: '1' } })
+  const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'marker-name' }))
+  if (!extracted) { expect(result).toMatch(/^edge refused:/); expect(lifecycle.state().phase).toBe('verify'); return }
+  expect(result).toBe('accepted phase=tdd')
+  await lifecycle.artifact({ kind: 'brief', content: 'fix extracted marker-shaped test' })
   await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
-  await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fixed' })
-  round = 2; await writeQualityGates(lifecycle, { [gate]: { exit: '1' } })
-  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${gate} EXIT=1`], tool_use_id: 'second' })))
-    .toBe(`accepted phase=report (non-convergence: partial run, verify non-convergence: same finding returned: verify — ${first})`)
-  expect(first).toMatch(/\[diagnostics [a-f0-9]{12}\]$/)
-  expect(recordedGateFinding(lifecycle.root, gate)).toBe(first)
+  expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'fixed-name' }))).toBe('accepted phase=verify')
+  await writeQualityGates(lifecycle, { test: { exit: '1' } })
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'repeat-name' })))
+    .toBe('accepted phase=report (non-convergence: partial run, verify non-convergence: same finding returned: verify — gate quality EXIT=1)')
 })
 
 it('SDK failed VERIFY accepts an extracted test name beginning with gate and refuses an unextracted malformed marker', async () => {
@@ -425,16 +410,16 @@ it('SDK failed VERIFY accepts an extracted test name beginning with gate and ref
   expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain('gate rejects stale receipts')
 })
 
-  it('SDK failed VERIFY gate markers retain recurrence accounting across fresh fix receipts', async () => {
+   it('SDK failed VERIFY plain gate markers stop at the blocking-count bound across fresh fix receipts', async () => {
     const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
-    for (let round = 1; round <= 2; round += 1) {
+    for (let round = 1; round <= 3; round += 1) {
       await writeQualityGates(lifecycle, { quality: { exit: '2' } })
       const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2'], tool_use_id: `red-${round}` }))
-      expect(result).toBe(round === 1 ? 'accepted phase=tdd' : 'accepted phase=report (non-convergence: partial run, verify non-convergence: same finding returned: verify — gate quality EXIT=2)')
-      if (round === 1) {
+      expect(result).toBe(round < 3 ? 'accepted phase=tdd' : 'accepted phase=report (non-convergence: partial run, verify non-convergence: blocking count failed to set a new minimum for two consecutive rounds: best 1; 1 -> 1)')
+      if (round < 3) {
         await lifecycle.artifact({ kind: 'brief', content: 'fix quality' })
         await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
-        expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'fixed' }))).toBe('accepted phase=verify')
+        expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: `fixed-${round}` }))).toBe('accepted phase=verify')
       }
     }
   })
