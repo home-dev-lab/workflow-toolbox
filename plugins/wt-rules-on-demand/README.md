@@ -176,7 +176,10 @@ only `-at-act` halves belong here. A duplicate static/on-demand basename is
 reported as loaded twice and the on-demand copy is not served only when their normalised bodies match. Different bodies with the same basename are reported and served.
 
 `before-first-act: true` refuses the first matching call with the rule text;
-retrying passes. Ride-along rules accompany the result; declarative Bash-command
+retrying passes. Refusal, ride-along and prompt delivery omit only a recognized
+first-line adopt provenance stamp and its following one or two line breaks;
+all other body text, including HTML comments and named markers, is preserved.
+Ride-along rules accompany the result; declarative Bash-command
 and tool-input checks measure that call, and model classification includes it.
 The rule cannot guide that call's already-completed action. A model compliance
 classifier is measurement-only and often answers “not applicable”. The

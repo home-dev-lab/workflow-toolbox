@@ -294,7 +294,7 @@ function publish(ctx, root, rules) {
   holdServed(ctx, rules);
 }
 // The only record of what a context was served is the conversation its next request is built from: a rule counts as
-// served only when that conversation holds the rule's exact block. The text is read once, when the context is created,
+// served only when that conversation holds the rule's exact served or pre-upgrade file-body block. The text is read once, when the context is created,
 // and spent by the first load of its rules; unreadable (a throw, a refusal, no list) it holds nothing, so every rule is
 // served again, never withheld.
 async function conversationHeld($, loop) {
@@ -312,8 +312,12 @@ function holdServed(ctx, rules) {
   ctx.held = null;
   if (!held) return;
   for (const rule of rules) {
-    if (!servedAs(ctx, rule) && held.includes(JSON.stringify(block(rule)).slice(1, -1))) ctx.served.set(rule.name, { count: 1, at: Date.now(), identity: rule.identity });
+    if (!servedAs(ctx, rule) && holdsRule(held, rule)) ctx.served.set(rule.name, { count: 1, at: Date.now(), identity: rule.identity });
   }
+}
+function holdsRule(held, rule) {
+  return held.includes(JSON.stringify(block(rule)).slice(1, -1)) ||
+    held.includes(JSON.stringify(block({ ...rule, content: rule.fileContent })).slice(1, -1));
 }
 // A rule counts as served in a context only when its identity matches the LAST copy of that name served there: a
 // same-name rule from another root (another file) is a different rule. Only one copy per name is remembered, so a
