@@ -103,14 +103,22 @@ function matches(rule, record, channel, errors) {
   return matched;
 }
 
-function represented(record, index, selectedCalls, selectedResults, cut = () => {}) {
+function itemLimiter(cut) {
+  return (value) => { if (value.length <= ITEM_CHARS) return value; cut(); return `${value.slice(0, ITEM_CHARS)} … [item truncated]`; };
+}
+
+function representedParts(record, selectedCalls, selectedResults, limit) {
   const content = record.message?.content;
   const text = record.type === 'assistant' || record.type === 'user' ? textOf(content) : '';
-  if (record.type === 'system' && record.subtype === 'compact_boundary') return `line ${index + 1} [compaction boundary: rule may no longer be in context]`;
-  const limit = (value) => { if (value.length <= ITEM_CHARS) return value; cut(); return `${value.slice(0, ITEM_CHARS)} … [item truncated]`; };
   const parts = text ? [`[${record.type} text] ${limit(text)}`] : [];
   for (const use of selectedCalls ?? []) parts.push(`[tool call ${use.name} ${use.id}] ${limit(JSON.stringify(use.input))}`);
   for (const result of selectedResults ?? []) parts.push(`[tool result ${result.tool_use_id}] ${limit(textOf(result.content))}`);
+  return parts;
+}
+
+function represented(record, index, selectedCalls, selectedResults, cut = () => {}) {
+  if (record.type === 'system' && record.subtype === 'compact_boundary') return `line ${index + 1} [compaction boundary: rule may no longer be in context]`;
+  const parts = representedParts(record, selectedCalls, selectedResults, itemLimiter(cut));
   const description = parts.join(' ') || `[${record.type}]`;
   return `line ${index + 1} ${description}`;
 }
