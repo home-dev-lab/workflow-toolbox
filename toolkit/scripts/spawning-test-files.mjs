@@ -115,6 +115,7 @@ export const spawningTestFiles = [
   'packages/build/test/opencode-skill-fence-paths.test.ts',
   'packages/build/test/opencode-skill-fence.integration.test.ts',
   'packages/build/test/opencode-skill-fence.test.ts',
+  'packages/build/test/opencode-usage.test.ts',
   'packages/build/test/opencode-verifier-entry.test.ts',
   'packages/build/test/orchestrator-core.test.ts',
   'packages/build/test/outbound-guard-hooks.test.ts',

@@ -9,6 +9,7 @@ import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-al
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
 import { readFrontmatterFile } from './frontmatter.mjs'
 import { announceDroppedBinds, announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
+import { finishOpencodeUsage } from './host/opencode-session-store.mjs'
 
 // The launcher reaches the suite-lock CLI through this module, so an adopted launcher (which
 // loads it from the installed plugin root) resolves the CLI of that same plugin.
@@ -62,7 +63,7 @@ export function spawnCommand(spawnFn, bin, args, options, platform) {
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform, extraNames = []) {
   const modelIndex = args.indexOf('--model')
   const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
-  const { sandboxPaths, readonlyCwd, ...rest } = options
+  const { sandboxPaths, readonlyCwd, usageReceipt, usageReader, ...rest } = options
   const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
   // A bridge that dies mid-run reports on the same stream as the lane's own stderr (its run log).
   const diagnostics = Array.isArray(rest.stdio) ? rest.stdio[2] : undefined
@@ -70,6 +71,7 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
   announceUnsandboxedLane(sandbox, diagnostics)
   announceDroppedBinds(sandbox, diagnostics)
   const [command, commandArgs] = sandbox.wrap(bin, args)
+  const usageOptions = { usageReceipt, usageReader, cwd: childOptions.cwd, args, env: childOptions.env, platform, startedAt: Date.now() }
   let child
   // A synchronous spawn failure (ENOENT on bwrap, EAGAIN) must still tear the bridges down.
   try { child = spawnCommand(spawnFn, command, commandArgs, childOptions, platform) } catch (error) {
@@ -78,8 +80,8 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
   }
   // Tear the network bridge down: after a synchronous spawn it has already returned; after an
   // asynchronous spawn, when the child closes. A ChildProcess exposes `on`; a spawnSync result does not.
-  if (child && typeof child.on === 'function') child.once('close', () => sandbox.dispose())
-  else sandbox.dispose()
+  if (child && typeof child.on === 'function') child.once('close', () => finishOpencodeUsage(sandbox, usageOptions))
+  else finishOpencodeUsage(sandbox, usageOptions)
   // Non-enumerable: callers that serialise or compare a spawnSync result see it unchanged.
   if (child && typeof child === 'object') Object.defineProperty(child, 'laneSandbox', { value: { kind: sandbox.kind, line: sandbox.line }, enumerable: false })
   return child

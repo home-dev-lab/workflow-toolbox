@@ -808,7 +808,7 @@ async function main() {
   writeLaneStage(opts.log, applyLanePriority(opts.priority))
   const childSpawnedAt = Date.now()
   const child = await spawnAndReportOpencode({
-    spawnOpencode: () => consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames),
+    spawnOpencode: () => consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, usageReceipt: `${opts.log}.usage.json`, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames),
     onChild: (child) => child.once('close', (code, signal) => { earlyChildClose = [code, signal] }),
     onSpawn: () => { workerSpawnedChild = true },
     cleanup: () => removeReadableLaneBrief(transientBriefDir),

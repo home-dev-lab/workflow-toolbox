@@ -15,6 +15,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The SDK pilot runner log names a designed phase-session close as `phase session N closed after phase <x> accepted`, once per session, including a session that ends on its own after the phase is accepted. A real stream error after initialization still logs as `phase session N: SDK stream error: …` and fails the run as before; the distinction comes from the runner's own record of refusing a call past the accepted phase, never from the error text.
 - Protect SDK pilot owner drafts across staging and review, honor repository quality gates, and carry decision rules into planning and reports.
 - SDK pilot reports are classified partial only from the draft the report edge judges: a refused draft (for example one that numbered its acceptance criteria) no longer forces `Partial:` onto the corrected report, and a criterion the parser cannot find is refused as a schema problem instead of counted as unmet.
+- SDK pilot `cost.json` now counts the GPT lane. When a lane's OpenCode process closes, its usage rows are read from the lane's private session store before the sandbox deletes it, and written as a receipt beside the lane log in the host-owned lane directory. Each phase gains `lane` (the lane's own models and dollars) and `lane_share` (its share of the phase's billed tokens and dollars, or the reason a dollar share cannot be given). `coverage.lanes` lists expected, counted and missing lane calls; coverage reads `complete` only when every lane call was counted from its own receipt, so a missing, failed, shared-store or orphaned lane call reads `incomplete`.
+
 ## [0.195.1] - 2026-10-12
 
 ### Fixed
