@@ -14,14 +14,27 @@ export function defaultOpenCodeDb(options = {}) {
   if (options.dbPath) return options.dbPath
   const env = options.env ?? process.env
   if (env.WT_OPENCODE_DB) return env.WT_OPENCODE_DB
-  if ((options.platform ?? process.platform) !== 'linux') return null
-  return path.join(env.XDG_DATA_HOME || path.join(env.HOME || os.homedir(), '.local', 'share'), 'opencode', 'opencode.db')
+  const platform = options.platform ?? process.platform
+  const pathApi = platform === 'win32' ? path.win32 : path.posix
+  return pathApi.join(openCodeDataDir(env, platform, pathApi), 'opencode', 'opencode.db')
 }
 
-export function queryOpenCodeSessions({ dbPath, sqlite = 'sqlite3', execFile = execFileSync, directory, startedAt, endedAt = Date.now(), createdOnly = false, allSessions = false }) {
+function openCodeDataDir(env, platform, pathApi) {
+  const data = env.XDG_DATA_HOME
+  if (data && pathApi.isAbsolute(data)) return data
+  const home = platform === 'win32' ? env.USERPROFILE : env.HOME
+  return pathApi.join(home || os.homedir(), '.local', 'share')
+}
+
+function sessionDirectoryFilter(directory, directories) {
   const quote = (value) => `'${String(value).replaceAll("'", "''")}'`
+  const clauses = (directories ?? [directory]).map((value) => `directory=${quote(value)}`)
+  return clauses.length === 1 ? clauses[0] : `(${clauses.join(' OR ')})`
+}
+
+export function queryOpenCodeSessions({ dbPath, sqlite = 'sqlite3', execFile = execFileSync, directory, directories, startedAt, endedAt = Date.now(), createdOnly = false, allSessions = false }) {
   const lower = createdOnly ? 'time_created' : 'time_updated'
-  const filter = allSessions ? '' : ` WHERE directory=${quote(directory)} AND ${lower}>=${Math.floor(startedAt)} AND time_created<=${Math.ceil(endedAt)}`
+  const filter = allSessions ? '' : ` WHERE ${sessionDirectoryFilter(directory, directories)} AND ${lower}>=${Math.floor(startedAt)} AND time_created<=${Math.ceil(endedAt)}`
   const query = `SELECT id,directory,model,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated FROM session${filter} ORDER BY time_created`
   const output = executeSessionQuery(execFile, sqlite, dbPath, query)
   const rows = output.trim() ? JSON.parse(output) : []
@@ -54,7 +67,7 @@ function captureReceipt({ sandbox, cwd, args, startedAt, env, platform, usageRea
   const receipt = { version: 1, receipt_for: path.basename(usageReceipt), source: 'opencode session store', ...captureStore(sandbox, env, platform), sandbox: sandbox.kind, directory: null, captured_at: new Date().toISOString(), status: 'unavailable', sessions: [] }
   try {
     receipt.directory = requestedDirectory(cwd, args)
-    if (!receipt.store) throw new Error(`OpenCode store location unverified on ${platform}`)
+    if (!receipt.store) throw new Error('OpenCode session store path unavailable')
     receipt.sessions = queryOpenCodeSessions({ dbPath: receipt.store, directory: receipt.directory, startedAt, createdOnly: true, allSessions: receipt.store_kind === 'private', execFile: usageReader })
     receipt.status = 'ok'
   } catch (error) {

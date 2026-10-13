@@ -57,13 +57,13 @@ function claudeReason(receipt) {
   return missing ? `non-finite, negative or missing Claude total ${missing}` : null
 }
 
-function sharedSessions(options, worktree, window, needed) {
+function sharedSessions(options, directories, window, needed) {
   if (!needed) return []
   if (options.sessions) return options.sessions
   const dbPath = defaultOpenCodeDb(options)
-  if (dbPath === null) return `OpenCode session store location is unverified on ${options.platform ?? process.platform}; pass --db or set WT_OPENCODE_DB`
+  if (!dbPath) return 'OpenCode session store path unavailable'
   try {
-    return queryOpenCodeSessions({ dbPath, sqlite: options.sqlite, execFile: options.execFile, directory: worktree, ...window })
+    return queryOpenCodeSessions({ dbPath, sqlite: options.sqlite, execFile: options.execFile, directories: [...directories], ...window })
   } catch (error) { return `OpenCode session store query failed: ${error instanceof Error ? error.message : String(error)}` }
 }
 
@@ -143,12 +143,13 @@ function unavailableFamily(lane, helpers) {
   return `lane usage family unavailable for ${helpers.laneLabel(lane)}: ${contradictory ? 'contradictory executor/model family evidence' : 'executor and model do not identify Anthropic or OpenAI'}`
 }
 
-function fallbackEntries(record, sessions, assigned, reserved, worktree, helpers) {
+function fallbackEntries(record, context) {
   const { lane, family } = record
+  const { sessions, assigned, reserved, worktree, helpers, sameDirectory } = context
   if (family === null) return unavailableFamily(lane, helpers)
   if (family === 'anthropic') return `Anthropic lane usage unavailable for ${helpers.laneLabel(lane)}: ${record.reason}`
   if (typeof sessions === 'string') return `OpenAI lane usage unavailable for ${helpers.laneLabel(lane)}: ${sessions}`
-  const matched = helpers.matchLaneSessions(sessions.filter((row) => !assigned.has(row.id) && !reserved.has(row.id)), worktree, lane.started_at, lane.ended_at, { explain: true })
+  const matched = helpers.matchLaneSessions(sessions.filter((row) => !assigned.has(row.id) && !reserved.has(row.id)), worktree, lane.started_at, lane.ended_at, { explain: true, sameDirectory })
   if (!Array.isArray(matched)) return `OpenAI lane usage unavailable for ${helpers.laneLabel(lane)}: ${matched.reason}`
   return matched.flatMap((row) => {
     if (assigned.has(row.id)) return []
@@ -188,7 +189,7 @@ function laneSource(record) {
 }
 
 function recordEntries(record, context, sources) {
-  const { assigned, reserved, sessions, worktree, helpers } = context
+  const { assigned, helpers } = context
   const source = laneSource(record)
   if (source) sources.add(source)
   if (record.duplicateFile) return record.reason
@@ -197,7 +198,7 @@ function recordEntries(record, context, sources) {
     return !result.length && record.reason ? record.reason : result
   }
   if (record.absent || record.family === null) {
-    return fallbackEntries(record, sessions, assigned, reserved, worktree, helpers)
+    return fallbackEntries(record, context)
   }
   return record.reason
 }
@@ -218,9 +219,9 @@ function callStatus(record, result, reason) {
 }
 
 function collectUnmatched(context, output) {
-  const { sessions, worktree, assigned, reserved, helpers } = context
+  const { sessions, assigned, reserved, helpers, sameDirectory } = context
   for (const row of Array.isArray(sessions) ? sessions : []) {
-    if (row.directory !== worktree || assigned.has(row.id) || reserved.has(row.id)) continue
+    if (!sameDirectory(row.directory) || assigned.has(row.id) || reserved.has(row.id)) continue
     assigned.add(row.id)
     const reason = `OpenCode session ${row.id} matched the run but no lane window`
     output.entries.push({ ...sessionEntry(row, { phase: 'unmatched' }, helpers), status: 'unknown', reason })
@@ -229,17 +230,19 @@ function collectUnmatched(context, output) {
 }
 
 export function collectLaneCosts(options, timeline, worktree, window, helpers) {
-  worktree = usageDirectory(worktree)
-  const hostDir = options.laneHostDir ?? laneHostDir(worktree)
+  const canonical = usageDirectory(worktree)
+  const directories = new Set([worktree, canonical])
+  const sameDirectory = (directory) => directories.has(directory)
+  const hostDir = options.laneHostDir ?? laneHostDir(canonical)
   const lanes = timeline.lanes ?? []
   const duplicateFiles = duplicateUsageFiles(lanes)
-  const records = lanes.map((lane) => laneRecord(lane, hostDir, worktree, helpers, duplicateFiles))
+  const records = lanes.map((lane) => laneRecord(lane, hostDir, canonical, helpers, duplicateFiles))
   const duplicates = duplicateIds(records)
   const reserved = new Set(records.flatMap((record) => sessionRows(record).map((row) => row.id)))
-  const sessions = sharedSessions(options, worktree, window, records.some((record) => record.family === 'openai' && record.absent))
+  const sessions = sharedSessions(options, directories, window, records.some((record) => record.family === 'openai' && record.absent))
   const assigned = new Set()
   const output = { entries: [], unknown: [], sources: new Set(), missing: [], counted: 0, calls: [] }
-  const context = { assigned, reserved, sessions, worktree, helpers, duplicates }
+  const context = { assigned, reserved, sessions, worktree, helpers, duplicates, sameDirectory }
   for (const record of records) collectRecord(record, context, output)
   collectUnmatched(context, output)
   const orphans = orphanLogs(hostDir, lanes, window)
