@@ -18,6 +18,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Protect SDK pilot owner drafts across staging and review, honor repository quality gates, and carry decision rules into planning and reports.
 - SDK pilot reports are classified partial only from the draft the report edge judges: a refused draft (for example one that numbered its acceptance criteria) no longer forces `Partial:` onto the corrected report, and a criterion the parser cannot find is refused as a schema problem instead of counted as unmet.
 - SDK pilot `cost.json` now counts the GPT lane. When a lane's OpenCode process closes, its usage rows are read from the lane's private session store before the sandbox deletes it, and written as a receipt beside the lane log in the host-owned lane directory. Each phase gains `lane` (the lane's own models and dollars) and `lane_share` (its share of the phase's billed tokens and dollars, or the reason a dollar share cannot be given). `coverage.lanes` lists expected, counted and missing lane calls; coverage reads `complete` only when every lane call was counted from its own receipt, so a missing, failed, shared-store or orphaned lane call reads `incomplete`.
+- `wt-rules-on-demand` offline judge (EXPERIMENTAL, measurement-only): `judge` now defaults to the `sonnet` model. Measured against blind-labelled real transcripts, `haiku` was wrong on most of the cases it decided and called violations where none occurred. `score` adds a violation-detector line (violation precision and recall, no-violation precision, share of determinate cases decided), and extracted cases now say whether the excerpt hit its budget (`excerptBudgetHit`) or only had single items cut (`itemsCut`), next to the existing `truncated`.
 
 ## [0.195.1] - 2026-10-12
 
@@ -266,7 +267,6 @@ Minor release: measured on the release tree against the 0.189.0 baseline (`node 
 | Duplication % | 2.4324 -> 2.2063 | -0.23 |
 | Knip issues | 196 -> 189 | -7 |
 | Dependency cycles | 2 -> 2 | 0 |
-- `wt-rules-on-demand` offline judge (EXPERIMENTAL, measurement-only): `judge` now defaults to the `sonnet` model. Measured against blind-labelled real transcripts, `haiku` was wrong on most of the cases it decided and called violations where none occurred. `score` adds a violation-detector line (violation precision and recall, no-violation precision, share of determinate cases decided), and extracted cases now say whether the excerpt hit its budget (`excerptBudgetHit`) or only had single items cut (`itemsCut`), next to the existing `truncated`.
 
 ## [0.190.0] - 2026-10-02
 
