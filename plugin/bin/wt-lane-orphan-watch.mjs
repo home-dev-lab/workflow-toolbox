@@ -11,6 +11,7 @@ import { idleHelperEvents } from './lib/resolved-binary.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
+import { createLaneExitNotices } from './lib/lane-exit-notices.mjs'
 
 const CONTROL = fileURLToPath(new URL('./wt-lane-control.mjs', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./wt-lane.mjs', import.meta.url))
@@ -152,7 +153,7 @@ async function main() {
   if (!Number.isFinite(stallMinutes) || stallMinutes < 1) { process.stderr.write('wt-lane-orphan-watch: lane stall threshold must be at least one minute\n'); return 2 }
   if (!['observe', 'enforce'].includes(cleanupMode)) { process.stderr.write('wt-lane-orphan-watch: lane_orphan_cleanup must be observe or enforce\n'); return 2 }
   const dataDir = path.join(resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
-  const notified = new Set()
+  const notified = new Set(), exitNotices = createLaneExitNotices()
   const journaled = new Set()
   const episodeStarts = new Map()
   let tracePath = process.env.WT_LANE_WATCH_TRACE
@@ -327,7 +328,7 @@ async function main() {
   }
   let failureReported = false
   const safeSweep = () => {
-    try { sweep(); failureReported = false } catch (error) {
+    try { exitNotices(); sweep(); failureReported = false } catch (error) {
       if (!failureReported) process.stderr.write(`wt-lane-orphan-watch: sweep failed; will retry: ${error instanceof Error ? error.message : String(error)}\n`)
       failureReported = true
     } finally {

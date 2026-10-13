@@ -561,10 +561,18 @@ export function claimCurrentSupervision(paths, runId, { writePointer = writeJson
   return false
 }
 
-export function supervisionPaths(root, runId = null, requestedSlot = undefined) {
-  const slot = requestedSlot === undefined ? process.env.WT_LANE_SUPERVISION_SLOT ?? null : requestedSlot
+function supervisionSlotValue(requestedSlot) {
+  return requestedSlot === undefined ? process.env.WT_LANE_SUPERVISION_SLOT ?? null : requestedSlot
+}
+
+function supervisionDirectory(root, slot, hostDir) {
+  return path.join(hostDir ?? ensureLaneHostDir(root), slot ? 'supervision-' + slot : 'supervision')
+}
+
+export function supervisionPaths(root, runId = null, requestedSlot = undefined, { hostDir = null } = {}) {
+  const slot = supervisionSlotValue(requestedSlot)
   if (slot !== null && !/^[A-Za-z0-9._-]+$/.test(slot)) throw new Error(`invalid supervision slot: ${slot}`)
-  const dir = path.join(ensureLaneHostDir(root), slot ? 'supervision-' + slot : 'supervision')
+  const dir = supervisionDirectory(root, slot, hostDir)
   return {
     dir,
     pointer: path.join(dir, 'current.json'),
@@ -573,9 +581,9 @@ export function supervisionPaths(root, runId = null, requestedSlot = undefined) 
   }
 }
 
-export function supervisionSlots(root) {
+export function supervisionSlots(root, { hostDir = null } = {}) {
   let names
-  try { names = directoryEntries(laneHostDir(root)) } catch { return [] }
+  try { names = directoryEntries(hostDir ?? laneHostDir(root)) } catch { return [] }
   if (names === null) return []
   return names
     .filter((entry) => entry.isDirectory() && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))

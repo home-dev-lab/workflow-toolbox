@@ -82,7 +82,22 @@ Unattributed warnings are project-root scoped and never killed.
 The append-only version-1 JSONL journal is
 `<plugin-data-dir>/lane-supervisor/lane-supervisor.jsonl`; path resolution follows
 `plugin/bin/lib/plugin-data-dir.mjs`. Session-owned events are delivered on monitor stdout. A pilot
-receives its own lane event synchronously from the lifecycle result instead.
+also receives its lane result synchronously from the lifecycle result.
+
+Completion notices scan the machine-wide lane host state, independently of the project root.
+`LANE exited: owner=... worktree=... runId=... state=... exit=... at=... report=... present|absent`
+wakes the recorded owning session for both session- and pilot-owned lanes, including exits while
+the watcher was stopped. Terminal records and nonterminal records with both processes classified
+gone qualify; unknown process identity does not. Missing exit codes or exit times render as `unknown`.
+An unset or invalid `CLAUDE_CODE_SESSION_ID` disables completion notices with a stderr diagnostic.
+
+Announced run IDs persist in `wt-lane-exit-notices/<session-id>.json` beside the lane host state root,
+independently of the plugin/config directory. The archive retains 24 hours and at most 10,000 entries;
+an eviction watermark prevents capped entries from being announced again. Old supervision directories
+are skipped by modification time. On first use, or after a corrupt archive, existing completions are
+recorded silently and one `LANE exit-watch baseline: <n> finished lanes recorded, not announced` line
+is emitted. Later restarts deliver newly finished lanes once. Completion-scan failures are reported
+once on stderr and do not interrupt the existing owner/orphan sweep.
 
 The adopt `scripts` set also installs `wt-arc-watch.mjs` and `wt-quota-watch.mjs` as
 thin launchers in `<configDir>/scripts/`. They resolve the installed plugin on each start,
@@ -92,8 +107,10 @@ A missing plugin or executable is reported synchronously on monitor stdout and s
 with exit 2. Check these copies with `--set scripts --check --global --fail-on-drift`;
 SessionStart also reports stale, edited, hand-authored, and target-missing copies.
 
-Supervision uses one `.lane/supervision/<runId>.json` record per run and an atomic
-`.lane/supervision/current.json` pointer. Worker and child liveness is classified centrally from each
+Supervision uses one host-owned `<lane-host-state-root>/<hash>/supervision[-<slot>]/<runId>.json`
+record per run and an atomic `current.json` pointer in the same directory. The root is resolved by
+`laneHostStateRoot()` (with `WT_LANE_HOST_STATE` available outside the lane sandbox).
+Worker and child liveness is classified centrally from each
 recorded pid+argv identity; unavailable identity evidence is `unknown`, never dead. The launcher
 refuses another lane while the current answer is live, decision-needed, orphaned, or unknown. Only an
 unknown record beyond its recorded hard bound may be superseded. Control ownership is an accident guard, not authentication.
