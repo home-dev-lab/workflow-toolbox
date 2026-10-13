@@ -13,7 +13,7 @@ import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
-import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, parse } from '../../../../plugin/bin/wt-lane.mjs'
+import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, laneWorkerEnv, parse } from '../../../../plugin/bin/wt-lane.mjs'
 // @ts-expect-error ESM runtime module
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
@@ -1925,6 +1925,50 @@ describe('wt-lane --priority and the removed --attach', () => {
     expect(parse([...base, '--attached', 'x']).error).toBe('unknown argument: --attached')
     expect(parse([...base, '--bogus']).error).toBe('unknown argument: --bogus')
   })
+})
+
+describe('wt-lane --lock-priority carries the card suite-lock level to the lane host broker', () => {
+  const base = ['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']
+  it('accepts P0, P1 and P2 in any case, normalised to upper case; absent declares nothing', () => {
+    expect(parse(base).lockPriority, 'no flag: the ambient WT_SUITE_LOCK_PRIORITY (else P1) still applies').toBeNull()
+    expect([['P0'], ['p1'], ['p2']].map(([value]) => parse([...base, '--lock-priority', value!]).lockPriority)).toEqual(['P0', 'P1', 'P2'])
+  })
+  it.each([['release'], ['Release'], ['P3'], ['urgent'], [''], [null]])('refuses %j at parsing, naming --lock-priority', (value) => {
+    const error = parse(value === null ? [...base, '--lock-priority'] : [...base, '--lock-priority', value]).error
+    expect(error).toContain('--lock-priority must be P0, P1 or P2')
+    if (value?.toLowerCase() === 'release') expect(error).toContain('release is reserved to the main session')
+  })
+  it('the worker env carries the declared level over an ambient one, and is the ambient env without the flag', () => {
+    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
+    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P0' })
+    expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
+    expect(laneWorkerEnv(ambient, null)).toEqual(ambient)
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin' })
+  })
+  it.each([[['--lock-priority', 'p0'], undefined, 'P0'], [[], undefined, 'unset'], [[], 'P2', 'unset']] as const)('the opencode child env carries the declared level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
+    const f = fixture('lock-priority-env')
+    // Without the flag an ambient level stays filtered out of the child, as before this flag existed.
+    if (ambient) f.env.WT_SUITE_LOCK_PRIORITY = ambient
+    const res = run(f, ['--timeout', '1', ...extra]); expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'lock-priority-env'), 'utf8')).toBe(expected)
+  })
+  it.skipIf(process.platform !== 'linux')('a launched worker runs with the declared level, and without one when no flag is given [reads /proc/<pid>/environ]', () => {
+    for (const [extra, expected] of [[['--lock-priority', 'p0'], 'WT_SUITE_LOCK_PRIORITY=P0'], [[], undefined]] as const) {
+      const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+      expect(f.env.WT_SUITE_LOCK_PRIORITY, 'the fixture env declares no ambient level').toBeUndefined()
+      expect(run(f, ['--timeout', '60', ...extra]).status).toBe(0)
+      const status = currentStateFile(f.dir); waitForContent(status, /"state": "running"/)
+      const state = JSON.parse(readFileSync(status, 'utf8'))
+      try {
+        const declared = readFileSync(`/proc/${state.workerPid}/environ`, 'utf8').split('\0').find((entry) => entry.startsWith('WT_SUITE_LOCK_PRIORITY='))
+        expect(declared, `worker env for ${JSON.stringify(extra)}`).toBe(expected)
+      } finally {
+        const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
+        killIdentity(worker, 'SIGTERM'); waitForIdentityExit(worker)
+      }
+    }
+  }, 60_000)
 })
 
 describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose dependencies are not installed (a sandboxed lane cannot install them)', () => {

@@ -4,14 +4,14 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
-import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, readAdmissionCounter, readLightCounter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
+import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
 import { connectSuiteLockBroker, createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
-import { orderSuiteLockTickets } from './suite-lock-order.mjs'
+import { BOUNDED_P0_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
 import { brokerProgressPlace, isBrokerQueueEvent, suiteQueueAdvanced } from './suite-lock-progress.mjs'
 import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
-export { LIGHT_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
+export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -79,7 +79,7 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env)
+  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root))
   if (current.held) snapshot.stale = holderIsStale(current, options)
   return snapshot
 }
@@ -209,7 +209,7 @@ function queuePlace(queueDir, mine, mineRecord, counter, options) {
     }
     live.push({ number, record: ticket.holder })
   }
-  const ordered = orderSuiteLockTickets(live, counter, now).tickets
+  const ordered = orderSuiteLockTickets(live, counter, now, readP0Counter(path.dirname(queueDir))).tickets
   const preceding = ordered.slice(0, ordered.findIndex((ticket) => ticket.number === mine))
   const ahead = preceding.length
   return { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
@@ -304,7 +304,19 @@ function reclaimStaleHolder(root, lockDir, options) {
   return outcome === RECLAIM_BUSY ? false : outcome
 }
 
-function waiterRecord(options, counter, priority) {
+// The P0 counter a P1/P2 ticket records at queue time (see P0_BYPASS_MAX_GRANTS). Never a failure of the
+// acquisition: without a readable counter the ticket records nothing, is not P0-passable, and ages as before.
+function p0QueueFields(root, priority) {
+  if (priority !== 'P1' && priority !== 'P2') return {}
+  try {
+    const counter = ensureP0Counter(root)
+    return { p0GrantsAtQueue: counter.grants, p0GrantsGeneration: counter.generation }
+  } catch {
+    return {}
+  }
+}
+
+function waiterRecord(options, counter, priority, p0Fields) {
   return {
     pid: process.pid,
     argv: options.argv ?? process.argv,
@@ -313,6 +325,8 @@ function waiterRecord(options, counter, priority) {
     level: priority === 'release' ? 0 : Number(priority[1]),
     ...(priority === 'release' ? { priority: 'release' } : {}),
     ...(options.light === true ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }),
+    levelOrderVersion: BOUNDED_P0_ORDER_VERSION,
+    ...p0Fields,
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
     startTime: options.startTime ?? processStartTime(process.pid),
@@ -360,6 +374,8 @@ function confirmAdmission(state, holder, place, options) {
     }
     if (record.light === true) recordLightGrant(root)
     throwIfAborted(options.signal)
+    // A count that cannot be written resets the P0 counter; only a failed reset fails the admission (lease handed back).
+    if (record.level === 0 && record.priority !== 'release') recordP0Grant(root, options.p0GrantSeams)
     recordAdmissionGrant(root)
     return { lease }
   } catch (error) {
@@ -378,6 +394,8 @@ function pollQueue(state, options) {
     const holder = { ...record, leaseId: createSuiteLockLeaseId(), startedAt: options.startedAt ?? new Date().toISOString() }
     delete holder.lightGrantsAtQueue // queue-only: what a full suite records to bound how often light runs pass it
     delete holder.lightGrantsGeneration
+    delete holder.p0GrantsAtQueue // queue-only: what a P1/P2 ticket records to bound how often declared P0 passes it
+    delete holder.p0GrantsGeneration
     options.beforeAcquire?.() // test seam: runs between the placement and the attempt
     const taken = tryTakeLock(lockDir, holder, options.beforePublish)
     if (taken === true) return confirmAdmission(state, holder, place, options)
@@ -437,7 +455,7 @@ export async function acquireSuiteLock(options = {}) {
   let lastHolderId = null
   let holderPriority
   mkdirSync(root, { recursive: true, mode: 0o700 })
-  const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority)
+  const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority, p0QueueFields(root, priority))
   const ticket = await retryTransient(() => takeTicket(queueDir, record), HEAD_OF_QUEUE_POLL_MS)
   const state = { root, lockDir, queueDir, ticket, record }
 
@@ -529,8 +547,7 @@ export function lightRunCommand(argv) {
   if (!Array.isArray(argv)) return false
   const [tool, ...rest] = argv
   if (tool !== 'pnpm' && tool !== 'npm') return false
-  if (rest[0] === 'run') rest.shift()
-  else if (tool === 'pnpm' && rest[0] === '-r') rest.shift()
+  if (rest[0] === 'run' || (tool === 'pnpm' && rest[0] === '-r')) rest.shift()
   return rest.length === 1 && LIGHT_SCRIPTS.has(rest[0])
 }
 

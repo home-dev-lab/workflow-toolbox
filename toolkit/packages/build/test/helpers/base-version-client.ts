@@ -6,7 +6,7 @@ import { noteInsideLaneSandbox } from '../../../../test-support/lane-sandbox-con
 
 const ROOT = fileURLToPath(new URL('../../../../..', import.meta.url))
 const DESCRIPTOR = 'toolkit/test-support/base-version-client.json'
-type ClientRole = 'preLevels' | 'preRelease'
+type ClientRole = 'preLevels' | 'preRelease' | 'preBoundedP0'
 const BASE_CLIENT = JSON.parse(readFileSync(join(ROOT, DESCRIPTOR), 'utf8')) as { clients: Record<ClientRole, string>, paths: string[] }
 
 /** Unpack a descriptor role; CI requires its history, local tests must skip with the returned reason. */
