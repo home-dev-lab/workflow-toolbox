@@ -1,11 +1,10 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { lstatSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
-import { supervisionPaths, supervisionSlots } from '../lane-supervisor-core.mjs'
 
-function directoryEntries(directory) {
+function directoryEntries(directory, report) {
   try { return readdirSync(directory, { withFileTypes: true }) } catch (error) {
-    if (error?.code === 'ENOENT') return []
-    throw error
+    report(directory, error)
+    return []
   }
 }
 
@@ -29,28 +28,56 @@ function load(file, report) {
   }
 }
 
-function* recordsInDirectory(dir) {
-  for (const entry of directoryEntries(dir)) {
+function recentStat(file, cutoff, report) {
+  try {
+    const info = statSync(file)
+    return info.mtimeMs >= cutoff ? info : null
+  } catch (error) { report(file, error); return null }
+}
+
+function* recordsInDirectory(dir, cutoff, report) {
+  for (const entry of directoryEntries(dir, report)) {
     if (!entry.isFile() || !/^\d+-\d+\.json$/.test(entry.name)) continue
     const file = path.join(dir, entry.name)
+    const info = recentStat(file, cutoff, report)
+    if (!info) continue
     let parsed
     try { parsed = JSON.parse(readFileSync(file, 'utf8')) } catch (error) {
-      if (error instanceof SyntaxError || error?.code === 'ENOENT') continue
-      throw error
+      if (!(error instanceof SyntaxError)) report(file, error)
+      continue
     }
-    yield { record: parsed, modifiedAt: statSync(file).mtimeMs }
+    yield { record: parsed, modifiedAt: info.mtimeMs }
   }
 }
 
-function* records(root, cutoff) {
-  for (const entry of directoryEntries(root)) {
+function supervisionDirectories(hostDir, report) {
+  return directoryEntries(hostDir, report)
+    .filter((entry) => entry.isDirectory() && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((entry) => path.join(hostDir, entry.name))
+}
+
+function* records(root, cutoff, report) {
+  for (const entry of directoryEntries(root, report)) {
     if (!entry.isDirectory() || !/^[0-9a-f]{32}$/.test(entry.name)) continue
     const hostDir = path.join(root, entry.name)
-    for (const slot of supervisionSlots(null, { hostDir })) {
-      const { dir } = supervisionPaths(null, null, slot, { hostDir })
-      if (statSync(dir).mtimeMs < cutoff) continue
-      yield* recordsInDirectory(dir)
+    for (const dir of supervisionDirectories(hostDir, report)) {
+      if (!recentStat(dir, cutoff, report)) continue
+      yield* recordsInDirectory(dir, cutoff, report)
     }
+  }
+}
+
+function pruneArchives(ownFile, cutoff, report) {
+  const directory = path.dirname(ownFile)
+  for (const entry of directoryEntries(directory, report)) {
+    if (!entry.isFile() || !/^[A-Za-z0-9_-]+\.json$/.test(entry.name)) continue
+    const file = path.join(directory, entry.name)
+    if (file === ownFile) continue
+    try {
+      const info = lstatSync(file)
+      if (info.isFile() && info.mtimeMs < cutoff) unlinkSync(file)
+    } catch (error) { report(file, error) }
   }
 }
 
@@ -58,4 +85,4 @@ function reportPresent(file) {
   try { return statSync(file).isFile() } catch { return false }
 }
 
-export const exitNoticeStore = { load, records, reportPresent }
+export const exitNoticeStore = { load, records, reportPresent, pruneArchives }

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -182,8 +182,108 @@ describe('session lane completion notices', () => {
         if (attempts++ === 0) throw new Error('write refused')
         writeFileSync(file, JSON.stringify(value))
       } })
-    sweep(); expect(lines).toEqual([]); sweep(); sweep()
-    expect(exits(lines.join('\n'))).toHaveLength(1)
+    sweep(); expect(exits(lines.join('\n'))).toHaveLength(1); sweep(); sweep()
+    expect(exits(lines.join('\n'))).toHaveLength(2)
     expect(errors).toHaveLength(1)
   })
+})
+
+describe('completion notice interruption and retention locks', () => {
+  it('prints every completion before recording the batch as announced', async () => {
+    const f = fixture(); seed(f); record(f); record(f, '30-40')
+    const { createLaneExitNotices } = await moduleUnderTest(); const calls: string[] = []
+    createLaneExitNotices({ ...f, sessionId: 'test-session', stdout: () => calls.push('stdout'),
+      write: () => calls.push('write') })()
+    expect(calls, 'all completion output precedes the archive write').toEqual(['stdout', 'stdout', 'write'])
+  })
+  it('prints again after a writer throws following completion output', async () => {
+    const f = fixture(); seed(f); record(f)
+    const { createLaneExitNotices } = await moduleUnderTest(); const lines: string[] = []; const calls: string[] = []
+    const sweep = createLaneExitNotices({ ...f, sessionId: 'test-session', stdout: (line: string) => {
+      calls.push('stdout'); lines.push(line)
+    }, stderr: () => {}, write: () => { calls.push('write'); throw new Error('interrupted write') } })
+    sweep()
+    expect(calls, 'the failed writer is reached only after output').toEqual(['stdout', 'write'])
+    sweep()
+    expect(exits(lines.join('\n')), 'failed persistence leaves the printed run eligible').toHaveLength(2)
+    expect(entries(f)).toEqual([])
+  })
+  it('removes only expired regular other-session archives on a write', async () => {
+    const f = fixture(); seed(f); const now = Date.now(); const day = 24 * 60 * 60 * 1000
+    const files = ['old-session.json', 'recent-session.json', 'unrelated.txt', 'invalid.name.json']
+    for (const name of files) {
+      const file = join(f.dataDir, name); writeFileSync(file, '{}')
+      const at = new Date(now - (name === 'recent-session.json' ? 1 : 8) * day); utimesSync(file, at, at)
+    }
+    mkdirSync(join(f.dataDir, 'directory.json'))
+    symlinkSync(join(f.dataDir, 'unrelated.txt'), join(f.dataDir, 'link.json'))
+    const ownAt = new Date(now - 8 * day); utimesSync(f.file, ownAt, ownAt)
+    const { createLaneExitNotices } = await moduleUnderTest()
+    createLaneExitNotices({ ...f, sessionId: 'test-session', clock: () => now, stdout: () => {} })()
+    expect(existsSync(join(f.dataDir, 'old-session.json')), 'eight-day inactive session archive is removed').toBe(false)
+    for (const name of [...files.slice(1), 'directory.json', 'link.json', 'test-session.json']) {
+      expect(existsSync(join(f.dataDir, name)), `${name} is retained`).toBe(true)
+    }
+  })
+})
+
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('unreadable completion record locks', () => {
+  it('continues past an unlistable supervision directory and reports it once', async () => {
+    const f = fixture(); seed(f); const { dir } = record(f)
+    record(f, '30-40', {}, 'supervision-pilot'); chmodSync(dir, 0)
+    try {
+      const { createLaneExitNotices } = await moduleUnderTest(); const lines: string[] = []; const errors: string[] = []
+      const sweep = createLaneExitNotices({ ...f, sessionId: 'test-session', stdout: (line: string) => lines.push(line),
+        stderr: (line: string) => errors.push(line) })
+      sweep(); sweep()
+      expect(exits(lines.join('\n')), 'an unlistable directory cannot abort another directory').toHaveLength(1)
+      expect(errors).toHaveLength(1); expect(errors[0]).toContain(dir)
+      expect(entries(f).map((entry) => entry.runId)).toEqual(['30-40'])
+    } finally { chmodSync(dir, 0o700) }
+  })
+  it('never reads an expired record inside a recent supervision directory', () => {
+    const f = fixture(); seed(f); const { dir } = record(f, '10-20')
+    const file = join(dir, '10-20.json'); chmodSync(file, 0)
+    const old = new Date(Date.now() - EXPECTED_LOOKBACK_MS - 1000); utimesSync(file, old, old)
+    record(f, '30-40')
+    const result = watch(f)
+    expect(exits(result.stdout), 'recent exit survives the unreadable expired record').toHaveLength(1)
+    expect(result.stderr).toBe('')
+  })
+  it('skips an unreadable foreign record and reports its path only once', async () => {
+    const f = fixture(); seed(f); const { dir } = record(f, '10-20', { ownerSessionId: 'foreign' })
+    const file = join(dir, '10-20.json'); chmodSync(file, 0)
+    record(f, '30-40', {}, 'supervision-pilot')
+    const { createLaneExitNotices } = await moduleUnderTest(); const lines: string[] = []; const errors: string[] = []
+    const sweep = createLaneExitNotices({ ...f, sessionId: 'test-session', stdout: (line: string) => lines.push(line),
+      stderr: (line: string) => errors.push(line) })
+    sweep()
+    expect(exits(lines.join('\n')), 'unreadable foreign record cannot abort owned completion delivery').toHaveLength(1)
+    expect(errors).toHaveLength(1); expect(errors[0]).toContain(file)
+    expect(entries(f).map((entry) => entry.runId)).toEqual(['30-40'])
+    sweep(); expect(errors, 'the same unreadable path is reported once across sweeps').toHaveLength(1)
+  })
+})
+
+describe('completion record filesystem race locks', () => {
+  it.each([['statSync', 'ENOENT'], ['readFileSync', 'ENOENT'], ['readFileSync', 'EISDIR']])(
+    'isolates %s failures with %s and reports each path once', (operation, code) => {
+      const f = fixture(); seed(f); const { dir } = record(f, '10-20', { ownerSessionId: 'foreign' })
+      record(f, '30-40', {}, 'supervision-pilot'); const file = join(dir, '10-20.json')
+      const program = `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+        const original = fs[process.argv[3]];
+        fs[process.argv[3]] = (...args) => {
+          if (args[0] === process.argv[2]) throw Object.assign(new Error('injected record failure'), { code: process.argv[4] });
+          return original(...args);
+        }; syncBuiltinESMExports();
+        const { createLaneExitNotices } = await import(process.argv[1]);
+        const sweep = createLaneExitNotices({ stateRoot: process.env.WT_LANE_HOST_STATE }); sweep(); sweep();`
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', program,
+        pathToFileURL(MODULE).href, file, operation, code], { env: f.env, encoding: 'utf8', timeout: 30_000 })
+      expect(result.status, result.stderr).toBe(0)
+      expect(exits(result.stdout), 'a failed record cannot abort another directory').toHaveLength(1)
+      expect(result.stderr.trim().split('\n'), 'one diagnostic per failed record path').toHaveLength(1)
+      expect(result.stderr).toContain(file)
+      expect(entries(f).map((entry) => entry.runId)).toEqual(['30-40'])
+    })
 })

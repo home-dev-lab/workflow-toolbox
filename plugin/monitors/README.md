@@ -93,10 +93,16 @@ An unset or invalid `CLAUDE_CODE_SESSION_ID` disables completion notices with a 
 
 Announced run IDs persist in `wt-lane-exit-notices/<session-id>.json` beside the lane host state root,
 independently of the plugin/config directory. The archive retains 24 hours and at most 10,000 entries;
-an eviction watermark prevents capped entries from being announced again. Old supervision directories
-are skipped by modification time. On first use, or after a corrupt archive, existing completions are
+an eviction watermark prevents capped entries from being announced again. Each archive write removes
+other sessions' regular archive files untouched for more than seven days, preserving archives for
+sessions resumed within a week. Old supervision directories and individual records are skipped by
+modification time before records are read. Unreadable or vanished records and unlistable directories
+are skipped independently, with one stderr diagnostic per path during the watcher's lifetime.
+On first use, or after a corrupt archive, existing completions are
 recorded silently and one `LANE exit-watch baseline: <n> finished lanes recorded, not announced` line
-is emitted. Later restarts deliver newly finished lanes once. Completion-scan failures are reported
+is emitted. Later restarts deliver newly finished lanes once after successful persistence. Completion
+lines are printed before the archive write: an interruption or failed write can cause a retry duplicate,
+rather than marking an unprinted notice as announced. Completion-scan failures are reported
 once on stderr and do not interrupt the existing owner/orphan sweep.
 
 The adopt `scripts` set also installs `wt-arc-watch.mjs` and `wt-quota-watch.mjs` as

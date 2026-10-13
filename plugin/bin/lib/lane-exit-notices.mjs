@@ -7,6 +7,8 @@ import { classifyLane as defaultClassifyLane, writeJsonAtomic } from './lane-sup
 const EXIT_NOTICE_LOOKBACK_MS = 24 * 60 * 60 * 1000
 // Bound per-session archives even during unusually high launch volume.
 const EXIT_NOTICE_MAX_ENTRIES = 10_000
+// Exceed the 24-hour lookback so sessions resumed within a week retain their archives.
+const EXIT_NOTICE_ARCHIVE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const TERMINAL = new Set(['exited', 'abandoned', 'launch-failed'])
 const singleLine = (value) => String(value).replace(/[\r\n\u2028\u2029]/g, ' ')
 const order = (a, b) => a.at - b.at || a.runId.localeCompare(b.runId)
@@ -44,18 +46,19 @@ function boundedArchive(archive, now, settings) {
 function scanCompletions(settings, archive) {
   const now = settings.clock(); const lines = []; let found = 0
   const pending = { ...archive, entries: new Map(archive.entries) }
-  for (const { record, modifiedAt } of settings.store.records(settings.stateRoot, now - settings.lookbackMs)) {
+  for (const { record, modifiedAt } of settings.store.records(settings.stateRoot, now - settings.lookbackMs, settings.reportSkip)) {
     const entry = completedEntry(record, modifiedAt, settings, now)
     if (!entry || pending.entries.has(entry.runId) || (pending.through && order(entry, pending.through) <= 0)) continue
     pending.entries.set(entry.runId, entry); found += 1
     if (!archive.baseline) lines.push(completionLine(record, settings.store))
   }
   const persisted = boundedArchive(pending, now, settings)
+  for (const line of lines) settings.stdout(line)
   settings.write(settings.file, persisted)
   archive.entries = new Map(persisted.entries.map((entry) => [entry.runId, entry])); archive.through = persisted.through
   if (archive.baseline) settings.stdout(`LANE exit-watch baseline: ${found} finished lanes recorded, not announced`)
-  else for (const line of lines) settings.stdout(line)
   archive.baseline = false
+  settings.store.pruneArchives?.(settings.file, now - EXIT_NOTICE_ARCHIVE_RETENTION_MS, settings.reportSkip)
 }
 
 function noticeSettings(options) {
@@ -65,7 +68,7 @@ function noticeSettings(options) {
     clock: options.clock ?? Date.now, classifyLane: options.classifyLane ?? defaultClassifyLane,
     lookbackMs: options.lookbackMs ?? EXIT_NOTICE_LOOKBACK_MS, maxEntries: options.maxEntries ?? EXIT_NOTICE_MAX_ENTRIES,
     store: options.store ?? exitNoticeStore, write: options.write ?? writeJsonAtomic,
-    stdout: options.stdout ?? ((line) => process.stdout.write(`${line}\n`)) }
+    stdout: options.stdout ?? ((line) => process.stdout.write(`${line}\n`)), reportSkip: options.reportSkip }
 }
 
 export function createLaneExitNotices(options = {}) {
@@ -76,13 +79,19 @@ export function createLaneExitNotices(options = {}) {
     return () => {}
   }
   let reported = false; let settings; let archive
+  const skipped = new Set()
+  const reportSkip = (file, error) => {
+    if (skipped.has(file)) return
+    skipped.add(file)
+    stderr(singleLine(`wt-lane-orphan-watch: completion scan skipped ${file}: ${error instanceof Error ? error.message : String(error)}`))
+  }
   const report = (error) => {
     if (!reported) stderr(`wt-lane-orphan-watch: completion scan failed; will retry: ${error instanceof Error ? error.message : String(error)}`)
     reported = true
   }
   return () => {
     try {
-      settings ??= noticeSettings({ ...options, sessionId })
+      settings ??= noticeSettings({ ...options, sessionId, reportSkip })
       archive ??= settings.store.load(settings.file, report)
       scanCompletions(settings, archive)
     } catch (error) { report(error) }
