@@ -37,6 +37,29 @@ const RECOVERY_LOCKS = [
   'N12 registration drain preserves refusal reasons',
 ]
 
+// The selftest is one CPU-bound process whose wall time grows with every lock. Measured on the cross-os
+// workflow at 200 locks (2026-10-12): 13-27 s on macOS, 36-52 s on Ubuntu, 31-78 s on Windows, the slow end
+// under the concurrent process-spawning shard. The budget is about 2.3 times the slowest observation, on every
+// platform. The child is killed at the budget: spawnSync blocks the worker, so without a kill a hung selftest
+// would hold the suite until the CI job limit instead of failing here with its last output line.
+const SELFTEST_BUDGET_MS = 180_000
+const HOOK_MARGIN_MS = 15_000
+
+function runSelftest(plugin: string): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, [join(REPO_ROOT, 'plugins', plugin, 'hooks', 'hooks.selftest.mjs')], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: SELFTEST_BUDGET_MS,
+    killSignal: 'SIGKILL',
+  })
+}
+
+function selftestFailure(run: SpawnSyncReturns<string>): string {
+  const lastLine = (run.stdout ?? '').trimEnd().split('\n').at(-1) ?? ''
+  if (run.signal) return `selftest killed by ${run.signal} after the ${SELFTEST_BUDGET_MS} ms budget; last line: ${lastLine}`
+  return run.stderr || run.stdout
+}
+
 function* files(dir: string): Generator<string> {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name)
@@ -49,15 +72,10 @@ describe('shipped private plugins', () => {
   for (const plugin of PLUGINS) {
     let selftest: SpawnSyncReturns<string>
 
-    beforeAll(() => {
-      selftest = spawnSync(process.execPath, [join(REPO_ROOT, 'plugins', plugin, 'hooks', 'hooks.selftest.mjs')], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-      })
-    }, process.platform === 'win32' ? 90_000 : 45_000) // Windows CI exceeded 45s under the full process-spawning shard.
+    beforeAll(() => { selftest = runSelftest(plugin) }, SELFTEST_BUDGET_MS + HOOK_MARGIN_MS)
 
     it(`${plugin} selftest exits successfully`, () => {
-      expect(selftest.status, selftest.stderr || selftest.stdout).toBe(0)
+      expect(selftest.status, selftestFailure(selftest)).toBe(0)
     })
 
     for (const lock of [
