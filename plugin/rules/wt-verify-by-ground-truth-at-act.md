@@ -19,28 +19,29 @@ One instrument agree with itself = not corroboration.
 
 ## A gate must certify the intended tree
 
-**Exit code answer for the COMMAND, never the SUBJECT.** Gate can genuinely belong to gate, run
-un-piped, code read correctly — and still certify the WRONG TREE. A merge that aborts leaves
-subject unchanged; gate chained right after runs honestly on the stale tree, reports real
-success about a subject nobody intended to certify. Before trusting a green: establish WHICH
-TREE it ran on. Distinct question from "did the gate succeed".
+**Exit code: COMMAND, never SUBJECT.** Correctly-read own code, un-piped gate can certify WRONG
+TREE: aborted merge leaves subject unchanged; chained gate honestly certifies stale tree.
+Before trusting green, establish WHICH TREE ran, separately from "did gate succeed".
 
-**Branch adds tests → merged count must be STRICTLY GREATER, never merely not-lower.** Equal
-count after a merge is the tell the merge never landed, whatever the gate's own exit code says.
-State this one mechanically, not as a thing to remember — a threshold that EXECUTES beats a
-check that depends on recall.
+**Branch adds tests → merged count STRICTLY GREATER, never merely not-lower.** Equal → merge
+never landed, whatever gate code. Enforce mechanically: EXECUTING threshold beats recall.
 
-Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: journals when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate. It also warns through additional context, including to subagents, when a gate's failure cannot stop a later `git commit`; run the gate alone, read its exit code, then commit, or chain with `&&`).
+`wt-merge-chain-guard-hook.mjs` enforces (PreToolUse Bash): journals `git merge` chained to gate/
+unclassified command via `&&`, `;`, `|`, `||`, newline; diagnostic read silent but journaled.
+Deliberately ignores merge preceded by commands and `git merge --abort/--continue/--quit`:
+merge alone, read result, then gate. Additional-context warning, subagents included, if gate
+failure cannot stop later `git commit`: gate alone, read exit, then commit, or chain with `&&`.
 
-Enforced by `wt-piped-gate-exit-code-guard-hook.mjs` (PreToolUse Bash: warns, never blocks, when a control gate is piped and `$?` then reads the last pipeline element's code; capture instead with `command > file; echo EXIT=$? >> file`, or use `${pipestatus[1]}` on zsh).
+`wt-piped-gate-exit-code-guard-hook.mjs` enforces (PreToolUse Bash): warns, never blocks, on piped
+control gate whose `$?` reads last element's code. Capture: `command > file; echo EXIT=$? >> file`,
+or zsh `${pipestatus[1]}`.
 
 ## Parallel branches require a seam review
 
-**Merging parallel branches requires THREE reviews: each branch, then their seam.** Hold sibling
-branches and merge them together. Before merging, compare their contracts by hand; branch gates
-validate each branch alone, not their seam. Run the merged tree's gates after the merge: they are
-the first mechanical checks that can judge the seam. A conflict-free merge and green sibling gates
-do not certify it.
+**Merging parallel branches requires THREE reviews: each branch, then their seam.**
+Hold sibling branches and merge them together. Before merge, compare contracts by hand:
+branch gates judge branches alone, never seam. After merge, run merged-tree gates —
+the first mechanical checks that can judge the seam. No conflicts + green siblings ≠ seam certified.
 
 ## Before measuring fix, prove subject RUN that fix
 
@@ -83,11 +84,10 @@ peripheral.
 
 ## Shipping requires an explicit cross-platform verdict
 
-**Ship anything → explicit CROSS-PLATFORM verdict.** Name system dependencies. Per dependency say:
-throw, degrade to named `unknown`, or silently return plausible value.
-Third case is the dangerous one. Monitor reporting reassuring number on platform where it cannot
-measure is WORSE than no monitor — broken state look healthy.
-Linux-only is legitimate conclusion. Letting reader assume portability is not.
+**Ship anything → explicit CROSS-PLATFORM verdict.** Name system dependencies; per dependency SAY: throws,
+degrade to named `unknown`, or silently return plausible value. Third dangerous: reassuring
+number where unmeasurable = WORSE than no monitor; broken looks healthy. Linux-only legitimate;
+assumed portability isn't.
 
 ## Summary asserting a guarantee is verified against its body, SAME pass
 
