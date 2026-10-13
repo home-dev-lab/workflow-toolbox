@@ -48,7 +48,8 @@ export function attributePilotTurns(messages, phases) {
 }
 
 export function matchLaneSessions(sessions, directory, startedAt, endedAt, options = {}) {
-  const matches = sessions.filter((row) => row.directory === directory && Number(row.time_updated) >= startedAt && Number(row.time_created) <= endedAt)
+  const sameDirectory = options.sameDirectory ?? ((value) => value === directory)
+  const matches = sessions.filter((row) => sameDirectory(row.directory) && Number(row.time_updated) >= startedAt && Number(row.time_created) <= endedAt)
   if (matches.length > 0 || !options.explain) return matches
   return { status: 'unknown', reason: `no OpenCode session row for worktree ${directory} within ${startedAt}..${endedAt}` }
 }

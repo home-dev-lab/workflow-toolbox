@@ -14,6 +14,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Run cost on macOS and Windows: OpenCode lane usage is read from the documented session store (XDG_DATA_HOME when absolute, else the home directory's .local/share/opencode, USERPROFILE on Windows) instead of being reported unverified, and session rows recorded under the worktree path as passed or under its resolved real path are both attributed.
 - The SDK pilot runner log names a designed phase-session close as `phase session N closed after phase <x> accepted`, once per session, including a session that ends on its own after the phase is accepted. A real stream error after initialization still logs as `phase session N: SDK stream error: …` and fails the run as before; the distinction comes from the runner's own record of refusing a call past the accepted phase, never from the error text.
 - Protect SDK pilot owner drafts across staging and review, honor repository quality gates, and carry decision rules into planning and reports.
 - SDK pilot reports are classified partial only from the draft the report edge judges: a refused draft (for example one that numbered its acceptance criteria) no longer forces `Partial:` onto the corrected report, and a criterion the parser cannot find is refused as a schema problem instead of counted as unmet.

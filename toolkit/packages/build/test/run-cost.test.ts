@@ -26,8 +26,8 @@ const root = () => { const value = mkdtempSync(join(tmpdir(), 'wt-run-cost-')); 
 afterEach(() => { for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true }) })
 
 function mixedLaneCost(lane: string, claudeLane: { usage_file: string }, fixture: { claude: { usage: object } }, sessions: object[]) {
-  const worktree = root(); const host = root()
-  writeFileSync(join(host, claudeLane.usage_file), JSON.stringify({ ...fixture.claude.usage, receipt_for: claudeLane.usage_file, directory: realpathSync(worktree) }))
+  const worktree = realpathSync.native(root()); const host = root()
+  writeFileSync(join(host, claudeLane.usage_file), JSON.stringify({ ...fixture.claude.usage, receipt_for: claudeLane.usage_file, directory: worktree }))
   return computeRunCost({ laneDir: lane, worktree, laneHostDir: host, sessions: sessions.map((row: object) => ({ ...row, directory: worktree })) })
 }
 
@@ -524,12 +524,12 @@ describe('run cost', () => {
     expect(cost.families.openai).toBeNull()
   })
 
-  it('requires an injected OpenCode DB path on unverified operating systems', () => {
+  it('L1 queries the documented win32 path and degrades a missing store to unknown', () => {
     const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
-    const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane])
-    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, platform: 'win32' })
+    const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane]); let store: string | undefined
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, platform: 'win32', env: { USERPROFILE: 'C:\\Users\\u' }, execFile: (_bin: string, args: string[]) => { store = args[3]; throw new Error('unable to open database file') } })
 
-    expect(cost.phases[0].unknown[0]).toContain('OpenCode session store location is unverified on win32; pass --db or set WT_OPENCODE_DB')
+    expect(store).toBe('C:\\Users\\u\\.local\\share\\opencode\\opencode.db'); expect(cost.phases[0].unknown[0]).toContain('OpenCode session store query failed: unable to open database file')
     expect(cost.families.openai).toBeNull()
   })
 

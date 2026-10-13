@@ -1,11 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime launcher helper
 import { spawnOpencode } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
+// @ts-expect-error runtime host helper
+import { defaultOpenCodeDb } from '../../../../plugin/bin/lib/host/opencode-session-store.mjs'
 
 const fake = vi.hoisted(() => ({ sandbox: {} as Record<string, unknown> }))
 vi.mock('../../../../plugin/bin/lib/host/lane-sandbox.mjs', async importOriginal => ({
@@ -13,9 +15,9 @@ vi.mock('../../../../plugin/bin/lib/host/lane-sandbox.mjs', async importOriginal
 }))
 const roots: string[] = []
 type UsageReader = (bin: string, args: string[], options: { timeout: number, killSignal: string }) => string
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-opencode-usage-'))); roots.push(root)
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-opencode-usage-'))); roots.push(root)
   const data = join(root, 'private'); mkdirSync(data)
   const receipt = join(root, 'run.log.usage.json'); const child = new EventEmitter()
   const dispose = vi.fn(() => rmSync(data, { recursive: true, force: true }))
@@ -103,11 +105,13 @@ function fixture() {
     f.start(() => '[]'); f.child.emit('close')
     expect(f.read()?.store_kind).toBe('shared')
   })
-  it('names an unverified platform store rather than reporting zero usage', () => {
+  it('L4 names a missing sqlite3 on win32 instead of reporting zero usage', () => {
     const f = fixture(); fake.sandbox.kind = 'none'; fake.sandbox.opencodeDataDir = null
-    spawnOpencode(() => f.child, 'opencode', ['run'], { cwd: f.root, env: {}, usageReceipt: f.receipt }, 'win32')
+    const reader = vi.fn(() => { throw Object.assign(new Error('spawn sqlite3 ENOENT'), { code: 'ENOENT' }) })
+    spawnOpencode(() => f.child, 'opencode', ['run'], { cwd: f.root, env: { USERPROFILE: 'C:\\Users\\u' }, usageReceipt: f.receipt, usageReader: reader }, 'win32')
     f.child.emit('close')
-    expect(f.read()).toMatchObject({ status: 'unavailable', store: null, reason: 'OpenCode store location unverified on win32' })
+    expect(f.read()).toMatchObject({ status: 'unavailable', store: 'C:\\Users\\u\\.local\\share\\opencode\\opencode.db', reason: 'sqlite3 not found', sessions: [] })
+    expect(reader).toHaveBeenCalledOnce()
     expect(f.dispose).toHaveBeenCalledOnce()
   })
   it('captures a synchronous child too without leaking host options into spawn', () => {
@@ -131,20 +135,54 @@ it('A4 captures every private-store session including subdirectories and pre-sta
   db.exec('CREATE TABLE session(id TEXT,directory TEXT,model TEXT,tokens_input INTEGER,tokens_output INTEGER,tokens_reasoning INTEGER,tokens_cache_read INTEGER,tokens_cache_write INTEGER,time_created INTEGER,time_updated INTEGER)')
   const insert = db.prepare('INSERT INTO session VALUES(?,?,NULL,3,7,0,5,0,?,?)')
   insert.run('main', f.root, Date.now(), Date.now()); insert.run('sub', join(f.root, 'sub'), Date.now(), Date.now()); insert.run('early', f.root, 1, Date.now())
-  f.start((_bin, args) => JSON.stringify(db.prepare(args[4]!).all()))
-  try {
-    f.child.emit('close')
-    expect(f.read().sessions.map((row: { id: string }) => row.id).sort()).toEqual(['early', 'main', 'sub'])
-  } finally { db.close() }
+  db.close()
+  f.start((_bin, args) => {
+    const reader = new sqlite!.DatabaseSync(args[3]!, { readOnly: true })
+    try { return JSON.stringify(reader.prepare(args[4]!).all()) } finally { reader.close() }
+  })
+  f.child.emit('close')
+  expect(f.read()).toMatchObject({ status: 'ok' })
+  expect(f.read().sessions.map((row: { id: string }) => row.id).sort()).toEqual(['early', 'main', 'sub'])
 })
 
 it('A4 keeps directory and creation-time filtering for shared-store capture', () => {
   const f = fixture(); fake.sandbox.kind = 'none'; fake.sandbox.opencodeDataDir = null
-  const reader = vi.fn((_bin: string, args: string[]) => {
-    expect(args[4]).toContain(`WHERE directory='${f.root}' AND time_created>=`)
-    expect(args[4]).toContain('AND time_created<=')
-    return '[]'
-  })
+  const reader = vi.fn<(bin: string, args: string[]) => string>(() => '[]')
   f.start(reader); f.child.emit('close')
-  expect(f.read().store_kind).toBe('shared'); expect(reader).toHaveBeenCalledOnce()
+  expect(f.read()).toMatchObject({ store_kind: 'shared', status: 'ok' }); expect(reader).toHaveBeenCalledOnce()
+  expect(reader.mock.calls[0]?.[1][4]).toContain(`WHERE directory='${f.root}' AND time_created>=`)
+  expect(reader.mock.calls[0]?.[1][4]).toContain('AND time_created<=')
+})
+
+it.each([
+  { platform: 'linux', env: { HOME: '/h' }, expected: '/h/.local/share/opencode/opencode.db' },
+  { platform: 'darwin', env: { HOME: '/h' }, expected: '/h/.local/share/opencode/opencode.db' },
+  { platform: 'win32', env: { USERPROFILE: 'C:\\Users\\u', HOME: '/ignored' }, expected: 'C:\\Users\\u\\.local\\share\\opencode\\opencode.db' },
+  { platform: 'darwin', env: { HOME: '/h', XDG_DATA_HOME: 'relative' }, expected: '/h/.local/share/opencode/opencode.db' },
+  { platform: 'linux', env: { HOME: '/h', XDG_DATA_HOME: 'relative' }, expected: '/h/.local/share/opencode/opencode.db' },
+  { platform: 'win32', env: { USERPROFILE: 'C:\\Users\\u', XDG_DATA_HOME: 'relative' }, expected: 'C:\\Users\\u\\.local\\share\\opencode\\opencode.db' },
+  { platform: 'darwin', env: { HOME: '/h', XDG_DATA_HOME: '/data' }, expected: '/data/opencode/opencode.db' },
+  { platform: 'linux', env: { HOME: '/h', XDG_DATA_HOME: '/data' }, expected: '/data/opencode/opencode.db' },
+  { platform: 'win32', env: { USERPROFILE: 'C:\\Users\\u', XDG_DATA_HOME: 'D:\\data' }, expected: 'D:\\data\\opencode\\opencode.db' },
+  { platform: 'win32', env: { WT_OPENCODE_DB: 'override.db' }, expected: 'override.db' },
+])('L1 resolves the OpenCode data path for $platform with $env', ({ platform, env, expected }) => {
+  expect(defaultOpenCodeDb({ platform, env })).toBe(expected)
+  expect(defaultOpenCodeDb({ platform, env, dbPath: 'explicit.db' })).toBe('explicit.db')
+})
+
+it('L1 captures shared-store usage on darwin using the documented path', () => {
+  const f = fixture(); fake.sandbox.kind = 'none'; fake.sandbox.opencodeDataDir = null
+  const reader = vi.fn(() => '[]')
+  spawnOpencode(() => f.child, 'opencode', ['run'], { cwd: f.root, env: { HOME: '/h' }, usageReceipt: f.receipt, usageReader: reader }, 'darwin')
+  f.child.emit('close')
+  expect(reader).toHaveBeenCalledOnce()
+  expect(f.read()).toMatchObject({ status: 'ok', store_kind: 'shared', store: '/h/.local/share/opencode/opencode.db' })
+})
+
+it.each(['linux', 'darwin', 'win32'])('L1 falls back to os.homedir on %s when its home variable is absent', platform => {
+  const home = platform === 'win32' ? 'C:\\Users\\fallback' : '/fallback'
+  const lookup = vi.spyOn(os, 'homedir').mockReturnValue(home)
+  const expected = platform === 'win32' ? `${home}\\.local\\share\\opencode\\opencode.db` : `${home}/.local/share/opencode/opencode.db`
+  expect(defaultOpenCodeDb({ platform, env: {} })).toBe(expected)
+  expect(lookup).toHaveBeenCalledOnce()
 })

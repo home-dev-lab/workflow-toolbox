@@ -1,6 +1,6 @@
 import fs, { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime host helper
 import { computeRunCost } from '../../../../plugin/bin/lib/run-cost-core.mjs'
@@ -9,7 +9,7 @@ const roots: string[] = []
 const originalLstat = fs.lstatSync.bind(fs)
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-cost-lanes-'))); roots.push(root)
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-cost-lanes-'))); roots.push(root)
   const worktree = join(root, 'worktree'); mkdirSync(worktree)
   const laneDir = join(worktree, '.lane'); const hostDir = join(root, 'host')
   mkdirSync(laneDir); mkdirSync(hostDir)
@@ -319,4 +319,115 @@ it('A14 names independently priced lane dollars above a decreasing-tier phase', 
   expect(phase.lane.usd).toBeGreaterThan(phase.usd)
   expect(phase.lane_share.usd).toBe('lane priced above phase')
   expect(phase.lane_share.tokens).toBe(15 / 64)
+})
+
+function sessionStore(sqlite: typeof import('node:sqlite'), file: string, rows: ReturnType<ReturnType<typeof fixture>['row']>[]) {
+  const db = new sqlite.DatabaseSync(file)
+  try {
+    db.exec('CREATE TABLE session(id TEXT,directory TEXT,model TEXT,tokens_input INTEGER,tokens_output INTEGER,tokens_reasoning INTEGER,tokens_cache_read INTEGER,tokens_cache_write INTEGER,time_created INTEGER,time_updated INTEGER)')
+    const insert = db.prepare('INSERT INTO session VALUES(?,?,?,3,7,11,5,0,?,?)')
+    for (const row of rows) insert.run(row.id, row.directory, JSON.stringify(row.model), row.time_created, row.time_updated)
+  } finally { db.close() }
+  return vi.fn((_bin: string, args: string[]) => {
+    const reader = new sqlite.DatabaseSync(args[3]!, { readOnly: true })
+    try { return JSON.stringify(reader.prepare(args[4]!).all()) } finally { reader.close() }
+  })
+}
+
+it('L3 selects both worktree spellings with quoted SQL and keeps the window scoped', async ctx => {
+  let sqlite: typeof import('node:sqlite') | undefined
+  try { sqlite = await import('node:sqlite') } catch { ctx.skip('node:sqlite unavailable for shared-store SQL regression') }
+  const f = fixture(); f.save(2)
+  const alias = join(f.hostDir, "alias's worktree"); symlinkSync(f.worktree, alias, 'junction')
+  const rows = [alias, f.worktree].flatMap((directory, index) => [
+    { ...f.row(`inside-${index}`), directory },
+    { ...f.row(`before-${index}`), directory, time_created: 800, time_updated: 900 },
+    { ...f.row(`after-${index}`), directory, time_created: 2100, time_updated: 2200 },
+  ])
+  rows.push({ ...f.row('foreign'), directory: f.hostDir })
+  const dbPath = join(f.hostDir, 'shared.db'); const query = sessionStore(sqlite!, dbPath, rows)
+  const cost = f.compute({ worktree: alias, dbPath, sessions: undefined, execFile: query })
+  expect(cost.phases[0].lane.models['openai/gpt'].input).toBe(6)
+  expect(cost.families.openai.input).toBe(9)
+  expect(query).toHaveBeenCalledOnce()
+  expect(cost.phases.some((phase: { phase: string }) => phase.phase === 'unmatched')).toBe(false)
+})
+
+it('L2 attributes alias-spelled rows through a symlink worktree on every OS', () => {
+  const f = fixture(); f.save(2)
+  const alias = join(f.hostDir, 'alias'); symlinkSync(f.worktree, alias, 'junction')
+  const cost = f.compute({ worktree: alias, sessions: [{ ...f.row('alias'), directory: alias }] })
+  expect(cost.phases[0].lane.models['openai/gpt']).toMatchObject({ family: 'openai', input: 3, output: 7 })
+  expect(cost.families.openai.input).toBe(6)
+  expect(cost.worktree).toBe(alias)
+  expect(cost.unknown).toEqual([])
+})
+
+it('L2 retains unmatched alias rows and names misses with the worktree as passed', () => {
+  const f = fixture(); f.save(2)
+  const alias = join(f.hostDir, 'alias'); symlinkSync(f.worktree, alias, 'junction')
+  const row = { ...f.row('unmatched'), directory: alias, time_created: 2100, time_updated: 2200 }
+  const cost = f.compute({ worktree: alias, sessions: [row] })
+  expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unmatched')?.models['openai/gpt'].input).toBe(3)
+  expect(cost.phases[0].unknown[0]).toContain(`no OpenCode session row for worktree ${alias} within`)
+})
+
+it('L2 retains unmatched canonical rows when the worktree is passed as an alias', () => {
+  const f = fixture(); f.save(2)
+  const alias = join(f.hostDir, 'alias'); symlinkSync(f.worktree, alias, 'junction')
+  const row = { ...f.row('unmatched'), directory: f.worktree, time_created: 2100, time_updated: 2200 }
+  const cost = f.compute({ worktree: alias, sessions: [row] })
+  expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unmatched')?.models['openai/gpt'].input).toBe(3)
+})
+
+it('L5 keeps host receipt directory validation canonical even for an accepted row alias', () => {
+  const f = fixture(); f.save(2)
+  const alias = join(f.hostDir, 'alias'); symlinkSync(f.worktree, alias, 'junction')
+  f.save(1, { directory: alias })
+  const cost = f.compute({ worktree: alias })
+  expect(cost.coverage.lanes.counted).toBe(1)
+  expect(cost.coverage.lanes.missing[0].reason).toBe('host receipt directory differs from run worktree realpath')
+})
+
+it('L5 validates receipts against the initial canonical snapshot if an alias changes', () => {
+  const f = fixture(); f.save(2)
+  const alias = join(f.hostDir, 'alias'), foreign = join(f.hostDir, 'foreign'); mkdirSync(foreign)
+  symlinkSync(f.worktree, alias, 'junction'); f.save(1, { directory: foreign })
+  const native = fs.realpathSync.native
+  vi.spyOn(fs.realpathSync, 'native').mockImplementation(((file: fs.PathLike) => {
+    const result = native(file)
+    if (String(file) === alias) { rmSync(alias); symlinkSync(foreign, alias, 'junction') }
+    return result
+  }) as typeof fs.realpathSync.native)
+  const cost = f.compute({ worktree: alias })
+  expect(cost.phases[0].lane.calls[0].status).toBe('missing')
+  expect(cost.phases[1].lane.calls[0].status).toBe('counted')
+})
+
+it('L5 never resolves recorded row directories through the filesystem', () => {
+  const f = fixture(); f.save(2)
+  const recorded = join(f.hostDir, 'recorded-alias'); symlinkSync(f.worktree, recorded, 'junction')
+  const cost = f.compute({ sessions: [{ ...f.row('foreign'), directory: recorded }] })
+  expect(cost.families.openai.input).toBe(3)
+  expect(cost.phases[0].unknown[0]).toContain('no OpenCode session row')
+  expect(cost.phases.some((phase: { phase: string }) => phase.phase === 'unmatched')).toBe(false)
+})
+
+function expectLexicalInput(cost: { families: { openai: { input: number } | null } }, canonicalIsLexical: boolean) {
+  expect(cost.families.openai?.input ?? null).toBe(canonicalIsLexical ? 3 : null)
+}
+
+it('L5 never adds an extra lexical parent of a symlink to matching or SQL', async ctx => {
+  let sqlite: typeof import('node:sqlite') | undefined
+  try { sqlite = await import('node:sqlite') } catch { ctx.skip('node:sqlite unavailable for shared-store SQL regression') }
+  const f = fixture(); const link = join(f.hostDir, 'link'); symlinkSync(f.worktree, link, 'junction')
+  const worktree = `${link}${sep}..`; const rows = [{ ...f.row('foreign'), directory: f.hostDir }]
+  const canonicalIsLexical = realpathSync.native(worktree) === f.hostDir
+  const matched = f.compute({ worktree, sessions: rows })
+  expectLexicalInput(matched, canonicalIsLexical)
+  expect(matched.phases[0].unknown).toEqual(canonicalIsLexical ? [] : [expect.stringContaining('no OpenCode session row')])
+  const dbPath = join(f.hostDir, 'shared.db'); const query = sessionStore(sqlite!, dbPath, rows)
+  const queried = f.compute({ worktree, dbPath, sessions: undefined, execFile: query })
+  expectLexicalInput(queried, canonicalIsLexical)
+  expect(query.mock.calls[0]?.[1][4]?.includes(`directory='${f.hostDir.replaceAll("'", "''")}'`)).toBe(canonicalIsLexical)
 })
