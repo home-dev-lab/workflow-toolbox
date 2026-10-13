@@ -64,26 +64,28 @@ function declaredGateFile(entries, blob, regular, notes) {
   })
 }
 
-// `commit` pins the tree that is read: the sha is resolved once and every later read uses that sha, so a
-// rewritten `.git` that points HEAD elsewhere cannot change what a run injects once the caller holds the sha.
-export function collectRepositoryInstructions(worktree, { git = defaultGit, limits = {}, commit = 'HEAD' } = {}) {
-  const bounds = { ...DEFAULT_LIMITS, ...limits }
-  const run = (args, maxBuffer = bounds.blobBytes) => git(worktree, args, { maxBuffer, timeout: bounds.timeoutMs })
-  let sha
-  let entries
-  try {
-    sha = run(['rev-parse', '--verify', '--end-of-options', `${commit}^{commit}`], 4096).toString('utf8').trim()
-    if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`${commit} is not a commit`)
-    // Paths below are joined to `worktree`, so it must BE the repository's top level, not a folder inside one.
-    const topLevel = run(['rev-parse', '--show-toplevel'], 64 * 1024).toString('utf8').trim()
-    if (!sameDirectory(topLevel, worktree)) throw Object.assign(new Error('not the top level'), { code: `${worktree} is not the top level of its repository (${topLevel})` })
-    entries = parseTree(run(['ls-tree', '-r', '-z', '--full-tree', sha], 64 * 1024 * 1024))
-  } catch (error) {
-    return { available: false, reason: `git could not read ${clipValue(commit)} of ${worktree} (${clipValue(String(error?.code ?? error?.message ?? error).split('\n')[0])})` }
-  }
-  const blob = (name) => run(['cat-file', 'blob', entries.get(name).object]).toString('utf8')
-  const safeBlob = (name) => { try { return blob(name) } catch { return null } }
-  const notes = []
+function readCommittedTree(run, commit, worktree) {
+  const sha = run(['rev-parse', '--verify', '--end-of-options', `${commit}^{commit}`], 4096).toString('utf8').trim()
+  if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`${commit} is not a commit`)
+  // Paths below are joined to `worktree`, so it must BE the repository's top level, not a folder inside one.
+  const topLevel = run(['rev-parse', '--show-toplevel'], 64 * 1024).toString('utf8').trim()
+  if (!sameDirectory(topLevel, worktree)) throw Object.assign(new Error('not the top level'), { code: `${worktree} is not the top level of its repository (${topLevel})` })
+  return { sha, entries: parseTree(run(['ls-tree', '-r', '-z', '--full-tree', sha], 64 * 1024 * 1024)) }
+}
+
+function readRootGuide(name, entries, safeBlob, addGuide, notes) {
+  const entry = entries.get(name)
+  if (!entry) return
+  if (entry.type === 'blob' && entry.mode === '120000') {
+    const linkTarget = safeBlob(name)?.trim() ?? ''
+    const target = linkTarget ? resolveLinkTarget(name, linkTarget, entries) : null
+    if (target) addGuide(name, target)
+    else notes.push(`${name}: symlink to ${clipValue(linkTarget)} not followed (outside the repository or not a regular file)`)
+  } else if (entry.type === 'blob' && REGULAR_MODES.has(entry.mode)) addGuide(name, name)
+  else notes.push(`${name}: not a regular file in the committed tree (mode ${clipValue(entry.mode)}), not read`)
+}
+
+function collectRootGuides(entries, safeBlob, notes) {
   const guides = []
   const seen = new Set()
   const addGuide = (name, source) => {
@@ -93,26 +95,23 @@ export function collectRepositoryInstructions(worktree, { git = defaultGit, limi
     seen.add(source)
     guides.push({ path: source, content })
   }
-  for (const name of GUIDE_NAMES) {
-    const entry = entries.get(name)
-    if (!entry) continue
-    if (entry.type === 'blob' && entry.mode === '120000') {
-      const linkTarget = safeBlob(name)?.trim() ?? ''
-      const target = linkTarget ? resolveLinkTarget(name, linkTarget, entries) : null
-      if (target) addGuide(name, target)
-      else notes.push(`${name}: symlink to ${clipValue(linkTarget)} not followed (outside the repository or not a regular file)`)
-    } else if (entry.type === 'blob' && REGULAR_MODES.has(entry.mode)) addGuide(name, name)
-    else notes.push(`${name}: not a regular file in the committed tree (mode ${clipValue(entry.mode)}), not read`)
-  }
-  const regular = (name) => { const entry = entries.get(name); return entry?.type === 'blob' && REGULAR_MODES.has(entry.mode) }
-  const nestedGuides = [...entries.keys()].filter((name) => name.includes('/') && GUIDE_NAMES.includes(path.posix.basename(name)) && regular(name)).sort()
-  const gates = declaredGateFile(entries, blob, regular, notes)
+  for (const name of GUIDE_NAMES) readRootGuide(name, entries, safeBlob, addGuide, notes)
+  return guides
+}
+
+function readPackageManifest(name, blob, notes) {
+  let manifest
+  try { manifest = JSON.parse(blob(name)) } catch { manifest = null }
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) { notes.push(`${clipValue(name)}: not valid JSON, scripts not read`); return null }
+  return manifest
+}
+
+function appendPackageGates(entries, blob, regular, notes, bounds, gates) {
   for (const name of [...entries.keys()].filter((candidate) => /^([^/]+\/)?package\.json$/.test(candidate)).sort()) {
     if (!regular(name)) continue
     const dir = name.includes('/') ? name.slice(0, name.indexOf('/')) : '.'
-    let manifest
-    try { manifest = JSON.parse(blob(name)) } catch { manifest = null }
-    if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) { notes.push(`${clipValue(name)}: not valid JSON, scripts not read`); continue }
+    const manifest = readPackageManifest(name, blob, notes)
+    if (manifest === null) continue
     const scripts = manifest && typeof manifest.scripts === 'object' && manifest.scripts ? manifest.scripts : {}
     const manager = packageManagerOf(dir, manifest, entries)
     for (const script of GATE_SCRIPT_NAMES) {
@@ -120,13 +119,39 @@ export function collectRepositoryInstructions(worktree, { git = defaultGit, limi
       gates.push(`- ${clipValue(dir)}: \`${manager} run ${script}\` → \`${clipValue(scripts[script], bounds.command)}\` (source: ${clipValue(name)})`)
     }
   }
+}
+
+function repositoryPluginChecks(entries) {
   const pluginDirs = new Map()
   for (const name of [...entries.keys()].sort()) {
     const match = /^(?:(.*)\/)?\.claude-plugin\/([^/]+)$/.exec(name)
     if (!match || !PLUGIN_MANIFESTS.includes(match[2]) || pluginDirs.has(match[1] ?? '.')) continue
     pluginDirs.set(match[1] ?? '.', name)
   }
-  const plugins = [...pluginDirs].map(([dir, manifest]) => `- \`claude plugin validate ${clipValue(dir)} --strict\` (derived from ${clipValue(manifest)})`)
+  return [...pluginDirs].map(([dir, manifest]) => `- \`claude plugin validate ${clipValue(dir)} --strict\` (derived from ${clipValue(manifest)})`)
+}
+
+// `commit` pins the tree that is read: the sha is resolved once and every later read uses that sha, so a
+// rewritten `.git` that points HEAD elsewhere cannot change what a run injects once the caller holds the sha.
+export function collectRepositoryInstructions(worktree, { git = defaultGit, limits = {}, commit = 'HEAD' } = {}) {
+  const bounds = { ...DEFAULT_LIMITS, ...limits }
+  const run = (args, maxBuffer = bounds.blobBytes) => git(worktree, args, { maxBuffer, timeout: bounds.timeoutMs })
+  let sha
+  let entries
+  try {
+    ({ sha, entries } = readCommittedTree(run, commit, worktree))
+  } catch (error) {
+    return { available: false, reason: `git could not read ${clipValue(commit)} of ${worktree} (${clipValue(String(error?.code ?? error?.message ?? error).split('\n')[0])})` }
+  }
+  const blob = (name) => run(['cat-file', 'blob', entries.get(name).object]).toString('utf8')
+  const safeBlob = (name) => { try { return blob(name) } catch { return null } }
+  const notes = []
+  const guides = collectRootGuides(entries, safeBlob, notes)
+  const regular = (name) => { const entry = entries.get(name); return entry?.type === 'blob' && REGULAR_MODES.has(entry.mode) }
+  const nestedGuides = [...entries.keys()].filter((name) => name.includes('/') && GUIDE_NAMES.includes(path.posix.basename(name)) && regular(name)).sort()
+  const gates = declaredGateFile(entries, blob, regular, notes)
+  appendPackageGates(entries, blob, regular, notes, bounds, gates)
+  const plugins = repositoryPluginChecks(entries)
   return { available: true, head: sha.slice(0, 12), commit: sha, guides, notes, nestedGuides, gates, plugins, bounds }
 }
 

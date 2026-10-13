@@ -57,6 +57,15 @@ export function executorCanUseTool(root, report, readOnly, toolName, input, { kn
   return { behavior: 'deny', message: `tool refused: ${toolName}` }
 }
 
+function repoCommitValue(argv, index) {
+  return argv[index] ?? ''
+}
+
+function executorCommitAndVariantError(options) {
+  if (options.repoCommit !== null && !/^[0-9a-f]{7,64}$/.test(options.repoCommit)) return '--repo-commit must be a hexadecimal commit sha (7 to 64 characters)'
+  if (options.variantOrigin && !['role base', 'model cap', 'override'].includes(options.variantOrigin)) return '--variant-origin is invalid'
+}
+
 export function parseExecutorArgs(argv) {
   const options = { dir: null, model: null, variant: null, variantOrigin: null, brief: null, log: null, timeout: 5400, role: null, knowledgeBaseIndex: null, repoCommit: null, sdkPath: null }
   for (let i = 0; i < argv.length; i += 1) {
@@ -70,7 +79,7 @@ export function parseExecutorArgs(argv) {
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
     else if (arg === '--role') options.role = argv[++i] ?? null
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
-    else if (arg === '--repo-commit') options.repoCommit = argv[++i] ?? ''
+    else if (arg === '--repo-commit') options.repoCommit = repoCommitValue(argv, ++i)
     else if (arg === '--sdk-path') options.sdkPath = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
@@ -78,8 +87,8 @@ export function parseExecutorArgs(argv) {
   if (!options.dir || !options.model || !options.brief) return { error: 'missing required --dir, --model, or --brief' }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
   if (!['tdd', 'critic', 'review', 'refutation'].includes(options.role)) return { error: '--role must be tdd, critic, review, or refutation' }
-  if (options.repoCommit !== null && !/^[0-9a-f]{7,64}$/.test(options.repoCommit)) return { error: '--repo-commit must be a hexadecimal commit sha (7 to 64 characters)' }
-  if (options.variantOrigin && !['role base', 'model cap', 'override'].includes(options.variantOrigin)) return { error: '--variant-origin is invalid' }
+  const error = executorCommitAndVariantError(options)
+  if (error) return { error }
   options.dir = path.resolve(options.dir); options.brief = path.resolve(options.brief)
   if (options.log && laneWritablePath(options.dir, options.log)) throw new Error('executor log must be outside the worktree')
   options.log = path.resolve(options.log ?? path.join(laneHostDir(options.dir), 'run.log'))

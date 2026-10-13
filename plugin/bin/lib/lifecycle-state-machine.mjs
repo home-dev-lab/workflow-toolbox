@@ -795,6 +795,33 @@ function createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, tra
   })
 }
 
+function constructionCommit(root) {
+  let constructionBase = 'HEAD'
+  try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
+  return constructionBase
+}
+
+// The piece-test stop: leaving the named phase requests the same boundary stop a timeout does.
+function createPhaseStopRequest(stopAfterPhase, requestStop, state) {
+  return (phase) => {
+    if (stopAfterPhase === phase) requestStop(`stop-after ${phase}`)
+    return Boolean(state.pendingStop)
+  }
+}
+
+function phaseTransitionRules(activeRules, state, next) {
+  return next === 'awaiting_fidelity'
+    ? ''
+    : composeRules(activeRules, {
+        recipient: 'pilot',
+        triggers: phaseTransitionTriggers(state.phase, next),
+      })
+}
+
+function transitionRepositoryChecks(next, root, constructionBase) {
+  return withLeadingBreak(declaredChecksForPhase(next, root, { commit: constructionBase, gateNames: next === 'plan' ? [...resolveLifecycleGates(root)] : [] }))
+}
+
 export function createLifecycleStateMachine({
   worktree,
   archiveRoot,
@@ -839,8 +866,7 @@ export function createLifecycleStateMachine({
   const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
   const rawDodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText, { raw: true }) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
-  let constructionBase = 'HEAD'
-  try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
+  const constructionBase = constructionCommit(root)
   const laneDir = path.join(root, '.lane')
   if (fs.existsSync(laneDir)) {
     const laneStat = fs.lstatSync(laneDir)
@@ -1008,11 +1034,7 @@ export function createLifecycleStateMachine({
   const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
   const run = guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun)
   const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
-  // The piece-test stop: leaving the named phase requests the same boundary stop a timeout does.
-  const stopRequestedAt = (phase) => {
-    if (stopAfterPhase === phase) requestStop(`stop-after ${phase}`)
-    return Boolean(state.pendingStop)
-  }
+  const stopRequestedAt = createPhaseStopRequest(stopAfterPhase, requestStop, state)
   function transition(event) {
     if (state.stopped) return stoppedRefusal()
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
@@ -1248,15 +1270,10 @@ export function createLifecycleStateMachine({
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
     if (stopRequestedAt(state.phase)) return stopAtBoundary(event)
-    const phaseRules = next === 'awaiting_fidelity'
-      ? ''
-      : composeRules(activeRules, {
-          recipient: 'pilot',
-          triggers: phaseTransitionTriggers(state.phase, next),
-        })
+    const phaseRules = phaseTransitionRules(activeRules, state, next)
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT
-      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}${withLeadingBreak(declaredChecksForPhase(next, root, { commit: constructionBase, gateNames: next === 'plan' ? [...resolveLifecycleGates(root)] : [] }))}`
+      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}${transitionRepositoryChecks(next, root, constructionBase)}`
     const transitionedAt = now()
     state.phase = next
     state.handled.set(event.tool_use_id, { shape, result })

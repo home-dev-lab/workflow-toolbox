@@ -24,6 +24,10 @@ function finish(log, code) {
   appendFileSync(log, `EXIT=${code}\n`)
 }
 
+function executorRepositoryPrompt(options, launch) {
+  return withRepositoryInstructions(options.dir, launch.prompt, { commit: options.repoCommit ?? undefined })
+}
+
 async function worker(options) {
   mkdirSync(path.dirname(options.log), { recursive: true })
   const launch = executorBrief(options)
@@ -64,7 +68,7 @@ async function worker(options) {
       abortController,
       env: claudeExecutorEnv(process.env),
     }, sdkRole)
-    const stream = query({ prompt: withRepositoryInstructions(options.dir, launch.prompt, { commit: options.repoCommit ?? undefined }), options: queryOptions })
+    const stream = query({ prompt: executorRepositoryPrompt(options, launch), options: queryOptions })
     for await (const message of stream) {
       modelTracker.observe(message)
       if (!initReceiptSeen && isPreInitNotice(message)) continue

@@ -2379,38 +2379,6 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{ id: '42', title: 'L4 item', l4Reason: 'different subsystem', dependencyVerified: true, contested: true }])
   })
 
-  it('names the repository-declared checks, as authoritative plan rules, on entering plan only', async () => {
-    const lifecycle = testLifecycle('FULL', [], dualCriticLauncher([['approved', []], ['approved', []]]))
-    mkdirSync(join(lifecycle.root, '.claude-plugin')); writeFileSync(join(lifecycle.root, '.claude-plugin', 'plugin.json'), '{}\n')
-    writeFileSync(join(lifecycle.root, '.wt-gates.json'), JSON.stringify({ gates: [{ name: 'test', command: 'pnpm test:blocking', cwd: 'toolkit' }] }))
-    for (const args of [['add', '-A'], ['-c', 'user.email=t@example.invalid', '-c', 'user.name=T', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'base']]) expect(spawnSync('git', args, { cwd: lifecycle.root }).status).toBe(0)
-    const toPlan = await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))
-    expect(toPlan).toContain('## Repository-declared checks for your plan (authoritative)')
-    expect(toPlan).toContain('`claude plugin validate . --strict` (derived from .claude-plugin/plugin.json)')
-    expect(toPlan).toContain('`pnpm test:blocking` in toolkit (gate `test`, source: .wt-gates.json)')
-    const plan = planCoverage + '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
-    await lifecycle.artifact({ kind: 'plan', content: plan })
-    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' }))).not.toContain('Repository-declared checks')
-  })
-
-  it.each([
-    ['stops at the boundary leaving the named phase', 'critic', 'stopped phase=critic reason=stop-after critic'],
-    ['does not stop when the named phase is another one', 'tdd', 'accepted phase=tdd'],
-    ['does not stop without the option', undefined, 'accepted phase=tdd'],
-  ] as const)('stop-after %s', async (_name, stopAfterPhase, expected) => {
-    const lifecycle = testLifecycle('FULL', [], dualCriticLauncher([['approved', []], ['approved', []]]), null, { stopAfterPhase })
-    const plan = planCoverage + '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
-    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
-    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
-    await lifecycle.artifact({ kind: 'critic-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
-    expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-1' }))).toBe(expected)
-    const report = join(lifecycle.root, '.lane', 'pilot-report.md')
-    if (stopAfterPhase === 'critic') {
-      expect(readFileSync(report, 'utf8')).toContain('Finalization: stop-after critic')
-      expect(readFileSync(report, 'utf8')).toContain('Phase reached: critic')
-    } else expect(existsSync(report)).toBe(false)
-  })
-
   it('A-1 requires defined blocking and non-blocking severity policy in the critic report contract', async () => {
     const lifecycle = testLifecycle('FULL')
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -2948,6 +2916,40 @@ it('keeps a not-done criterion partial on the accepted report that carries its P
   expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: delivered partially: 1 unmet criteria\n${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
   expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'partial' }))).toBe('accepted phase=awaiting_fidelity')
   expect(lifecycle.state().partial).toMatchObject({ reason: 'delivered partially: 1 unmet criteria', findings: ['Ship exact bytes.'] })
+})
+
+describe.sequential('runner-hosted SDK pilot repository checks and boundary stops', () => {
+  it('names the repository-declared checks, as authoritative plan rules, on entering plan only', async () => {
+    const lifecycle = testLifecycle('FULL', [], dualCriticLauncher([['approved', []], ['approved', []]]))
+    mkdirSync(join(lifecycle.root, '.claude-plugin')); writeFileSync(join(lifecycle.root, '.claude-plugin', 'plugin.json'), '{}\n')
+    writeFileSync(join(lifecycle.root, '.wt-gates.json'), JSON.stringify({ gates: [{ name: 'test', command: 'pnpm test:blocking', cwd: 'toolkit' }] }))
+    for (const args of [['add', '-A'], ['-c', 'user.email=t@example.invalid', '-c', 'user.name=T', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'base']]) expect(spawnSync('git', args, { cwd: lifecycle.root }).status).toBe(0)
+    const toPlan = await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))
+    expect(toPlan).toContain('## Repository-declared checks for your plan (authoritative)')
+    expect(toPlan).toContain('`claude plugin validate . --strict` (derived from .claude-plugin/plugin.json)')
+    expect(toPlan).toContain('`pnpm test:blocking` in toolkit (gate `test`, source: .wt-gates.json)')
+    const plan = planCoverage + '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' }))).not.toContain('Repository-declared checks')
+  })
+
+  it.each([
+    ['stops at the boundary leaving the named phase', 'critic', 'stopped phase=critic reason=stop-after critic'],
+    ['does not stop when the named phase is another one', 'tdd', 'accepted phase=tdd'],
+    ['does not stop without the option', undefined, 'accepted phase=tdd'],
+  ] as const)('stop-after %s', async (_name, stopAfterPhase, expected) => {
+    const lifecycle = testLifecycle('FULL', [], dualCriticLauncher([['approved', []], ['approved', []]]), null, { stopAfterPhase })
+    const plan = planCoverage + '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-1' }))).toBe(expected)
+    const report = join(lifecycle.root, '.lane', 'pilot-report.md')
+    if (stopAfterPhase === 'critic') {
+      expect(readFileSync(report, 'utf8')).toContain('Finalization: stop-after critic')
+      expect(readFileSync(report, 'utf8')).toContain('Phase reached: critic')
+    } else expect(existsSync(report)).toBe(false)
+  })
 })
 
 const roots: string[] = []

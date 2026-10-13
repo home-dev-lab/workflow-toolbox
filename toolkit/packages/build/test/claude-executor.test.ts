@@ -251,27 +251,6 @@ describe('Claude SDK executor', () => {
     expect(existsSync(join(root, sandboxMarker)), `${basename(report)}: sandbox escape marker exists`).toBe(false)
   }, 160_000)
 
-  it('allows read-only review roles to Read the configured knowledge-base index and its Markdown fiches only', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-executor-kb-worktree-')); roots.push(root); mkdirSync(join(root, '.lane'))
-    const knowledgeBase = mkdtempSync(join(tmpdir(), 'wt-executor-kb-')); roots.push(knowledgeBase)
-    const index = join(knowledgeBase, 'MEMORY.md'); const fiche = join(knowledgeBase, 'fiches', 'review.md')
-    mkdirSync(join(knowledgeBase, 'fiches')); writeFileSync(index, '- [review](fiches/review.md)\n'); writeFileSync(fiche, '# Review\n'); writeFileSync(join(knowledgeBase, 'private.txt'), 'no\n')
-    const report = join(root, '.lane', 'review-report.nonce.md')
-    const options = parseExecutorArgs(['--dir', root, '--model', 'opus', '--brief', join(root, 'brief.md'), '--role', 'review', '--knowledge-base-index', index])
-    expect(options).toMatchObject({ knowledgeBaseIndex: index })
-    expect(options).toMatchObject({ repoCommit: null })
-    const sha = 'a'.repeat(40)
-    const common = ['--dir', root, '--model', 'opus', '--brief', join(root, 'brief.md'), '--role', 'review']
-    expect(parseExecutorArgs([...common, '--repo-commit', sha])).toMatchObject({ repoCommit: sha })
-    expect(parseExecutorArgs([...common, '--repo-commit', 'abcdef1'])).toMatchObject({ repoCommit: 'abcdef1' })
-    for (const bad of ['HEAD', 'main', 'abc', '../x', `${sha}\n`, 'g'.repeat(40), 'a'.repeat(65)]) expect(parseExecutorArgs([...common, '--repo-commit', bad])).toMatchObject({ error: expect.stringContaining('--repo-commit') })
-    expect(parseExecutorArgs([...common, '--repo-commit'])).toMatchObject({ error: expect.stringContaining('--repo-commit') })
-    expect(executorCanUseTool(root, report, true, 'Read', { file_path: fiche }, { knowledgeBaseIndex: index })).toEqual({ behavior: 'allow' })
-    expect(executorCanUseTool(root, report, true, 'Read', { file_path: join(knowledgeBase, 'private.txt') }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
-    expect(executorCanUseTool(root, report, true, 'Grep', { path: knowledgeBase, pattern: 'Review' }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
-    expect(executorCanUseTool(root, report, false, 'Read', { file_path: fiche }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
-  })
-
   it('prints a detached pid, loads the guard, writes only the named report, and ends its log with EXIT=0', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
     writeFileSync(brief, `Implement the task.\n\nWrite the report to \`${report}\`.\n`)
@@ -362,5 +341,28 @@ describe('Claude SDK executor', () => {
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'multiple' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8')).totals).toEqual({ input: 13, cache_creation: 16, cache_read: 22, output: 26 })
+  })
+})
+
+describe('Claude SDK executor: repository commit arguments and knowledge reads', () => {
+  it('allows read-only review roles to Read the configured knowledge-base index and its Markdown fiches only', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-executor-kb-worktree-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    const knowledgeBase = mkdtempSync(join(tmpdir(), 'wt-executor-kb-')); roots.push(knowledgeBase)
+    const index = join(knowledgeBase, 'MEMORY.md'); const fiche = join(knowledgeBase, 'fiches', 'review.md')
+    mkdirSync(join(knowledgeBase, 'fiches')); writeFileSync(index, '- [review](fiches/review.md)\n'); writeFileSync(fiche, '# Review\n'); writeFileSync(join(knowledgeBase, 'private.txt'), 'no\n')
+    const report = join(root, '.lane', 'review-report.nonce.md')
+    const options = parseExecutorArgs(['--dir', root, '--model', 'opus', '--brief', join(root, 'brief.md'), '--role', 'review', '--knowledge-base-index', index])
+    expect(options).toMatchObject({ knowledgeBaseIndex: index })
+    expect(options).toMatchObject({ repoCommit: null })
+    const sha = 'a'.repeat(40)
+    const common = ['--dir', root, '--model', 'opus', '--brief', join(root, 'brief.md'), '--role', 'review']
+    expect(parseExecutorArgs([...common, '--repo-commit', sha])).toMatchObject({ repoCommit: sha })
+    expect(parseExecutorArgs([...common, '--repo-commit', 'abcdef1'])).toMatchObject({ repoCommit: 'abcdef1' })
+    for (const bad of ['HEAD', 'main', 'abc', '../x', `${sha}\n`, 'g'.repeat(40), 'a'.repeat(65)]) expect(parseExecutorArgs([...common, '--repo-commit', bad])).toMatchObject({ error: expect.stringContaining('--repo-commit') })
+    expect(parseExecutorArgs([...common, '--repo-commit'])).toMatchObject({ error: expect.stringContaining('--repo-commit') })
+    expect(executorCanUseTool(root, report, true, 'Read', { file_path: fiche }, { knowledgeBaseIndex: index })).toEqual({ behavior: 'allow' })
+    expect(executorCanUseTool(root, report, true, 'Read', { file_path: join(knowledgeBase, 'private.txt') }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
+    expect(executorCanUseTool(root, report, true, 'Grep', { path: knowledgeBase, pattern: 'Review' }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
+    expect(executorCanUseTool(root, report, false, 'Read', { file_path: fiche }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
   })
 })

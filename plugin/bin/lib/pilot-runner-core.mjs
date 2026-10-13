@@ -76,6 +76,28 @@ function assertStopAfterReachable(route, stopAfter) {
   if (stopAfter && !ROUTE_LEAVES[route].includes(stopAfter)) throw new Error(`--stop-after ${stopAfter} is never reached on the ${route} route; it leaves only these phases: ${ROUTE_LEAVES[route].join(', ')}`)
 }
 
+function assignStopAfter(options, value) {
+  options.stopAfter = value ?? null
+  if (!STOP_AFTER_PHASES.includes(options.stopAfter)) return { error: `--stop-after must be one of: ${STOP_AFTER_PHASES.join(', ')}` }
+}
+
+function resolvePilotPaths(options) {
+  options.dir = resolve(options.dir)
+  options.contract = resolve(options.contract ?? join(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md'))
+  options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
+  if (options.profileEnv) options.profileEnv = resolve(options.profileEnv)
+  if (options.cardFile) options.cardFile = resolve(options.cardFile)
+  if (options.archiveRoot) options.archiveRoot = resolve(options.archiveRoot)
+  if (options.boardContract) options.boardContract = resolve(options.boardContract)
+  return options
+}
+
+function derivePilotRoute(cardText, options) {
+  const routing = deriveRoute(cardText)
+  assertStopAfterReachable(routing.route, options.stopAfter)
+  return routing
+}
+
 export function parsePilotRunnerArgs(argv) {
   const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false, stopAfter: null }
   for (let i = 0; i < argv.length; i += 1) {
@@ -100,8 +122,8 @@ export function parsePilotRunnerArgs(argv) {
     }
     else if (arg === '--timeout') { options.timeout = Number(argv[++i]); options.timeoutExplicit = true }
     else if (arg === '--stop-after') {
-      options.stopAfter = argv[++i] ?? null
-      if (!STOP_AFTER_PHASES.includes(options.stopAfter)) return { error: `--stop-after must be one of: ${STOP_AFTER_PHASES.join(', ')}` }
+      const error = assignStopAfter(options, argv[++i])
+      if (error) return error
     }
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
@@ -110,14 +132,7 @@ export function parsePilotRunnerArgs(argv) {
   if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
   if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
   if (options.timeout !== null && (!Number.isFinite(options.timeout) || options.timeout <= 0)) return { error: '--timeout must be a positive number of seconds' }
-  options.dir = resolve(options.dir)
-  options.contract = resolve(options.contract ?? join(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md'))
-  options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
-  if (options.profileEnv) options.profileEnv = resolve(options.profileEnv)
-  if (options.cardFile) options.cardFile = resolve(options.cardFile)
-  if (options.archiveRoot) options.archiveRoot = resolve(options.archiveRoot)
-  if (options.boardContract) options.boardContract = resolve(options.boardContract)
-  return options
+  return resolvePilotPaths(options)
 }
 
 export function loadBoardContract(value, readFile = readFileSync) {
@@ -784,8 +799,7 @@ export async function runPilot(options, dependencies) {
   const cardText = readFile(options.cardFile, 'utf8')
   const boardContract = loadBoardContract(options.boardContract, readFile)
   assertCardDefinitionOfDone(cardText)
-  const routing = deriveRoute(cardText)
-  assertStopAfterReachable(routing.route, options.stopAfter)
+  const routing = derivePilotRoute(cardText, options)
   const contractWarning = missingBoardContractWarning(boardContract, routing.route, contract)
   if (contractWarning) log(contractWarning)
   const timeoutExplicit = options.timeoutExplicit === true
