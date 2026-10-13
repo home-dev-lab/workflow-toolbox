@@ -4,7 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { blocks, REFUSAL, textOf } from './transcript-verdicts.mjs';
-import { parseRuntimeRule } from '../hooks/runtime-rule.js';
+import { parseRuntimeRule, servedText } from '../hooks/runtime-rule.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { storedRanRefusal, guardCarried } from '../hooks/guard-refusal.js';
 
@@ -265,7 +265,7 @@ export async function extractCases(options) {
       }
        const context = excerpt(records, delivery, end, acts, scopeStart);
       const facts = await factsFor(delivery.name, acts, records.slice(scopeStart, end), delivery.cwd, options);
-      const drift = evaluated.content.trim() !== delivery.text;
+      const drift = deliveryDrift(evaluated.content, delivery.text);
        const ambiguous = deliveries.some((other) => other !== delivery && other.name === delivery.name &&
          (other.line === delivery.line || other.scopeStart === delivery.scopeStart));
        const missingResult = acts.some((act) => act.id && !records.slice(act.index, end).some((record) => record.results?.some((result) => result.tool_use_id === act.id)) &&
@@ -281,6 +281,11 @@ export async function extractCases(options) {
   }
   cases.summary = { rawServed };
   return cases;
+}
+
+function deliveryDrift(content, delivered) {
+  const current = content.trim();
+  return current !== delivered && current !== servedText(delivered).trim();
 }
 
 function scopeBoundary(next, delivery) {
