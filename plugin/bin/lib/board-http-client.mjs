@@ -63,32 +63,33 @@ async function verifiedRoutedDescription(created, cardId, call) {
       const readBack = await call('get_card', { cardId })
       description = cardDescription(readBack)
     } catch (error) {
-      throw new BoardUnavailable(`created card ${cardId} read-back failed: ${error.message}; do not retry creation`)
+      return { dependencyVerified: false, dependencyVerificationReason: `created card ${cardId} read-back failed: ${error.message}; do not retry creation` }
     }
   }
   if (!independentRoutedDescription(description)) {
-    throw new BoardUnavailable(`created card ${cardId} dependency verification failed: expected exactly one canonical Depends-on: none declaration; do not retry creation`)
+    return { description, dependencyVerified: false, dependencyVerificationReason: `created card ${cardId} dependency verification failed: expected exactly one canonical Depends-on: none declaration; do not retry creation` }
   }
-  return description
+  return { description, dependencyVerified: true }
 }
 
 async function createIndependentRoutedCard({ boardContract, originCardId, sessionTag, timestamp, title, l4Reason, risk, effort, type }, call) {
   const description = routedDescription({ originCardId, sessionTag, timestamp, l4Reason })
   const listId = routingIdentifier(boardContract.listId, 'list id')
-  // create_card is closed-schema: labels are four separate calls after dependency verification.
+  const labelIds = [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]
+  // Once creation returns an id, retain it and attempt all four labels even if dependency verification fails.
   const created = await call('create_card', { listId, name: title, description, dependsOn: 'none' })
   const cardId = String(created?.id ?? created?.card?.id ?? '')
   if (!cardId) throw new BoardUnavailable('create_card returned no card id')
-  const verifiedDescription = await verifiedRoutedDescription(created, cardId, call)
+  const dependencyEvidence = await verifiedRoutedDescription(created, cardId, call)
   const labelFailures = []
-  for (const labelId of [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]) {
+  for (const labelId of labelIds) {
     try {
       await call('add_label_to_card', { cardId, labelId: String(labelId) })
     } catch (error) {
       labelFailures.push({ labelId: String(labelId), error: error instanceof Error ? error.message : String(error) })
     }
   }
-  return { ...created, id: cardId, description: verifiedDescription, labelFailures }
+  return { ...created, id: cardId, ...dependencyEvidence, labelFailures }
 }
 
 // Live Planka MCP shapes measured 2026-09-19: get_card, create_card, get_board, find_cards,

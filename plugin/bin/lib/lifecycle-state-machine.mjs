@@ -438,6 +438,15 @@ function findingsMatchReport(declared, verdict) {
   })
 }
 
+function routedDependencyEvidence(created) {
+  if (created.dependencyVerified === true) return { dependencyVerified: true }
+  return { dependencyVerified: false, dependencyVerificationReason: created.dependencyVerificationReason ?? 'board adapter supplied no dependency verification evidence' }
+}
+
+function routedDependencySuffix(record) {
+  return record.dependencyVerified ? '' : ` (dependency unverified: ${record.dependencyVerificationReason})`
+}
+
 function recordReviewDecision(state, phase, verdict, blockingFindings, routedFindings) {
   for (const finding of routedFindings) {
     if (!state.findingsToRoute.some((item) => item.text === finding.text)) state.findingsToRoute.push(finding)
@@ -1375,7 +1384,7 @@ export function createLifecycleStateMachine({
       const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
       const id = String(created?.id ?? '')
       if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('board returned no valid card id')
-      const record = { id, title: String(created.title ?? args.title), l4Reason: args.l4Reason }
+      const record = { id, title: String(created.title ?? args.title), l4Reason: args.l4Reason, ...routedDependencyEvidence(created) }
       const failure = Array.isArray(created.labelFailures) && created.labelFailures.length > 0
         ? created.labelFailures.map((item) => `add_label_to_card ${item.labelId}: ${item.error}`).join('; ')
         : null
@@ -1392,7 +1401,7 @@ export function createLifecycleStateMachine({
       }
       persistTimeline()
       const failureSuffix = failure ? ` (label failure: ${failure})` : ''
-      return `routed card ${id} — ${record.title}${failureSuffix}`
+      return `routed card ${id} — ${record.title}${routedDependencySuffix(record)}${failureSuffix}`
     } catch (error) {
       return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
     }

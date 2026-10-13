@@ -12,7 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- Recover attested red VERIFY gates with complete remediation and route independent follow-up cards with safely escaped provenance and verified dependency declarations.
+- Recover attested red VERIFY gates with diagnostic-aware remediation and route independent follow-up cards with safely escaped provenance and preserved dependency-verification status after creation.
 - Protect SDK pilot owner drafts across staging and review, honor repository quality gates, and carry decision rules into planning and reports.
 - SDK pilot reports are classified partial only from the draft the report edge judges: a refused draft (for example one that numbered its acceptance criteria) no longer forces `Partial:` onto the corrected report, and a criterion the parser cannot find is refused as a schema problem instead of counted as unmet.
 ## [0.195.1] - 2026-10-12

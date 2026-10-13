@@ -150,12 +150,13 @@ function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: 
     } finally { await boundary.close() }
   })
 
-  it.each(['missing', 'origin', 'conflict', 'readback-error'])('refuses %s returned dependency evidence without duplicate creation', async (mode) => {
+  it.each(['missing', 'origin', 'conflict', 'readback-error'])('retains a created card with unverified %s dependency evidence without duplicate creation', async (mode) => {
     const boundary = await routingHttp(mode)
     try {
-      await expect(boundary.client.createRoutedCard(routingInput)).rejects.toThrow(/created card 42.*dependenc|created card 42.*read-back/)
+      const created = await boundary.client.createRoutedCard(routingInput)
+      expect(created).toMatchObject({ id: '42', dependencyVerified: false, dependencyVerificationReason: expect.stringMatching(/created card 42.*dependenc|created card 42.*read-back/) })
       expect(boundary.calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
-      expect(boundary.calls.every((call) => ['create_card', 'get_card'].includes(call.name))).toBe(true)
+      expect(boundary.calls.filter((call) => call.name === 'add_label_to_card').map((call) => call.arguments.labelId)).toEqual(['p1', 'chore', 'm', 'project'])
     } finally { await boundary.close() }
   })
 
