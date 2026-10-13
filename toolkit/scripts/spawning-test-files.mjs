@@ -46,6 +46,7 @@ export const spawningTestFiles = [
   'packages/build/test/changelog-union-merge.test.ts',
   'packages/build/test/changeset-gate.test.ts',
   'packages/build/test/claimed-test-check.test.ts',
+  'packages/build/test/claude-config-isolation.test.ts',
   'packages/build/test/claude-executor.test.ts',
   'packages/build/test/cli-bundle-smoke.test.ts',
   'packages/build/test/cli-help-flag-value.test.ts',

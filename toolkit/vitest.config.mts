@@ -55,6 +55,9 @@ const commonTestConfig = {
     // Every git child reads a suite-owned global config, never the machine's, and cannot reach
     // the machine's SSH agent (card 1838017282 — see the file's own header).
     './test-support/git-config-isolation.setup.ts',
+    // Every claude child runs on a suite-owned config dir with no credential variable, never the
+    // developer's login (card 1884998532654433637 — see the file's own header).
+    './test-support/claude-config-isolation.setup.ts',
   ],
   globalSetup: ['./test-support/suite-lease.global-setup.mjs', './test-support/guard-journal-isolation.global-setup.ts', './test-support/orphan-reaper.global-setup.mjs'],
 }

@@ -166,7 +166,7 @@ await test('[blank pane fix schema lock] checked-in render props match the insta
     assert.deepEqual(component.props, [...component.props].sort());
     if (component.hover) assert.deepEqual(component.hover, [...component.hover].sort());
   }
-  const declaration = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'plugins', 'marketplaces', 'claude-code-plugins', 'mods', 'types', 'claude-code.d.ts');
+  const declaration = join(process.env.WT_HOST_CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'plugins', 'marketplaces', 'claude-code-plugins', 'mods', 'types', 'claude-code.d.ts');
   if (existsSync(declaration)) assert.deepEqual(parsedRenderProps(readFileSync(declaration, 'utf8')), renderPropsSnapshot);
 });
 
