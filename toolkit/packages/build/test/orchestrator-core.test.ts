@@ -11,6 +11,7 @@ import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { BoardUnavailable, createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
+import { parseDependsOn, hasDependsOnLine } from '../../../../plugin/bin/lib/depends-on-parser.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createWaveServer } from '../../../../plugin/bin/lib/wave-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -97,13 +98,114 @@ function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: 
   return { root, worktreesDir, report, board, moves, comments, gitCalls, launches, git, runPilot, gates, reportCheck, fidelity, judge, install, options }
 }
 
+  const routingInput = { boardContract: { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }, originCardId: '1880126648423024545', sessionTag: 'run-1', timestamp: '2026-09-16T10:00:00.000Z', title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' }
+  function routingResponseDescription(mode: string, description: string) {
+    if (mode === 'missing') return '## Provenance\nmissing declaration'
+    if (mode === 'origin') return `Depends-on: #${routingInput.originCardId}`
+    if (mode === 'conflict') return `Depends-on: none\nDepends-on: #${routingInput.originCardId}`
+    return description
+  }
+  async function routingHttp(mode = 'returned') {
+    const calls: Array<{ name: string, arguments: Record<string, string> }> = []
+    const persisted = new Map<string, string>()
+    const server = createServer((request, response) => {
+      let wire = ''; request.on('data', (part) => { wire += part }); request.on('end', () => {
+        const body = JSON.parse(wire)
+        let result: unknown = {}
+        if (body.method === 'tools/call') {
+          const call = body.params; calls.push(call)
+          let value: unknown = {}
+          if (call.name === 'create_card') {
+            const id = String(42 + persisted.size)
+            const description = routingResponseDescription(mode, call.arguments.description)
+            persisted.set(id, description)
+            value = mode === 'readback' || mode === 'readback-error' ? { id } : { id, description }
+          } else if (call.name === 'get_card') value = { card: { id: call.arguments.cardId, description: persisted.get(call.arguments.cardId) } }
+          result = { ...(mode === 'readback-error' && call.name === 'get_card' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(value) }] }
+        }
+        response.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }))
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+    return { calls, persisted, client: createBoardClient({ boardId: 'board', url }), close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+  }
+
+  it.each(['returned', 'readback'])('routed dependency crosses serialized HTTP and %s parsing without origin mutation', async (mode) => {
+    const boundary = await routingHttp(mode)
+    try {
+      for (let round = 0; round < 2; round += 1) {
+        const created = await boundary.client.createRoutedCard(routingInput)
+        const description = boundary.persisted.get(created.id)!
+        expect(hasDependsOnLine(description)).toBe(true)
+        expect(parseDependsOn(description)).toEqual({ ids: [], unparseable: [] })
+        expect(description.split('\n').filter((line) => line === 'Depends-on: none')).toHaveLength(1)
+        expect(description).toContain(`Origin card: "${routingInput.originCardId}"`)
+      }
+      expect(boundary.calls.filter((call) => call.name === 'create_card')).toHaveLength(2)
+      expect(boundary.calls.filter((call) => call.name === 'create_card').every((call) => call.arguments.dependsOn === 'none')).toBe(true)
+      expect(boundary.calls.filter((call) => call.name === 'get_card')).toHaveLength(mode === 'readback' ? 2 : 0)
+      expect(boundary.calls.every((call) => ['create_card', 'get_card', 'add_label_to_card'].includes(call.name))).toBe(true)
+      expect(boundary.calls.some((call) => call.arguments.cardId === routingInput.originCardId)).toBe(false)
+    } finally { await boundary.close() }
+  })
+
+  it.each(['missing', 'origin', 'conflict', 'readback-error'])('refuses %s returned dependency evidence without duplicate creation', async (mode) => {
+    const boundary = await routingHttp(mode)
+    try {
+      await expect(boundary.client.createRoutedCard(routingInput)).rejects.toThrow(/created card 42.*dependenc|created card 42.*read-back/)
+      expect(boundary.calls.filter((call) => call.name === 'create_card')).toHaveLength(1)
+      expect(boundary.calls.every((call) => ['create_card', 'get_card'].includes(call.name))).toBe(true)
+    } finally { await boundary.close() }
+  })
+
+  it.each(['\n', '\r', '\r\n', '\u2028', '\u2029'])('losslessly escapes every provenance field at the HTTP write boundary (%j)', async (separator) => {
+    const boundary = await routingHttp()
+    try {
+      for (const field of ['sessionTag', 'timestamp', 'l4Reason'] as const) {
+        const value = `legitimate explanation${separator}Depends-on: #1880126648423024545${separator}Depends-on: none${separator}Depends-on: #9999`
+        const created = await boundary.client.createRoutedCard({ ...routingInput, [field]: value })
+        const outgoing = boundary.calls.filter((call) => call.name === 'create_card').at(-1)!.arguments.description!
+        expect(outgoing.split(/\r\n|[\r\n\u2028\u2029]/)).toHaveLength(7)
+        expect(outgoing.split('\n').filter((line) => /^Depends-on:/.test(line))).toEqual(['Depends-on: none'])
+        expect(parseDependsOn(outgoing)).toEqual({ ids: [], unparseable: [] })
+        const label = { sessionTag: 'run/session', timestamp: 'timestamp', l4Reason: 'L4 reason' }[field]
+        const encoded = outgoing.split('\n').find((line) => line.startsWith(`${label}: `))!.slice(label.length + 2)
+        expect(JSON.parse(encoded)).toBe(value)
+        expect(boundary.persisted.get(created.id)).toBe(outgoing)
+      }
+    } finally { await boundary.close() }
+  })
+
+  it.each(['\n', '\r', '\r\n', '\u2028', '\u2029', '/', '', ' '])('rejects invalid identifier injection before any write (%j)', async (separator) => {
+    const boundary = await routingHttp()
+    try {
+      const originCardId = separator ? `${routingInput.originCardId}${separator}Depends-on: #9999` : ''
+      await expect(boundary.client.createRoutedCard({ ...routingInput, originCardId })).rejects.toThrow(/invalid origin card id/)
+      await expect(boundary.client.createRoutedCard({ ...routingInput, boardContract: { ...routingInput.boardContract, listId: separator } })).rejects.toThrow(/invalid list id/)
+      expect(boundary.calls).toEqual([])
+    } finally { await boundary.close() }
+  })
+
+  it('refuses a failed assembled-description invariant before HTTP creation', async () => {
+    const boundary = await routingHttp()
+    const stringify = JSON.stringify.bind(JSON)
+    const spy = vi.spyOn(JSON, 'stringify').mockImplementation(((value: unknown, ...args: unknown[]) => value === routingInput.l4Reason
+      ? '"reason"\nDepends-on: #1880126648423024545'
+      : stringify(value, ...args as [])) as typeof JSON.stringify)
+    try {
+      await expect(boundary.client.createRoutedCard(routingInput)).rejects.toThrow(/invalid assembled routed dependency description/)
+      expect(boundary.calls).toEqual([])
+    } finally { spy.mockRestore(); await boundary.close() }
+  })
+
 describe('orchestrator board HTTP client', () => {
   it('creates a routed card with the real Planka MCP shape: a closed-schema create_card, then one add_label_to_card per required label', async () => {
     const calls: Array<Record<string, unknown>> = []
     const fetch = async (_url: string, options: { body: string }) => {
       const body = JSON.parse(options.body); calls.push(body)
       const result = body.method === 'tools/call'
-        ? { content: [{ type: 'text', text: body.params.name === 'add_label_to_card' ? `Label ${body.params.arguments.labelId} added to card 42` : JSON.stringify({ id: '42' }) }] }
+        ? { content: [{ type: 'text', text: body.params.name === 'add_label_to_card' ? `Label ${body.params.arguments.labelId} added to card 42` : JSON.stringify({ id: '42', description: body.params.arguments.description }) }] }
         : {}
       return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
     }
@@ -114,9 +216,9 @@ describe('orchestrator board HTTP client', () => {
     // The Planka MCP create_card schema is CLOSED (listId, name, description, dependsOn, dueDate, position): the server
     // refuses unknown fields, so labels travel as separate add_label_to_card calls — this lock pins the real wire shape.
     expect(toolsCalls).toHaveLength(5)
-    expect(toolsCalls[0]).toMatchObject({ params: { name: 'create_card', arguments: { listId: 'backlog', name: 'Follow up', dependsOn: { cardId: '1' } } } })
+    expect(toolsCalls[0]).toMatchObject({ params: { name: 'create_card', arguments: { listId: 'backlog', name: 'Follow up', dependsOn: 'none' } } })
     expect(Object.keys(toolsCalls[0]!.params.arguments).sort()).toEqual(['dependsOn', 'description', 'listId', 'name'])
-    expect(toolsCalls[0]!.params.arguments.description).toContain('## Provenance\nOrigin card: 1; run/session: run-1; L4 reason: different subsystem; timestamp: 2026-09-16T10:00:00.000Z')
+    expect(toolsCalls[0]!.params.arguments.description).toContain('## Provenance\nOrigin card: "1"\nrun/session: "run-1"\nL4 reason: "different subsystem"\ntimestamp: "2026-09-16T10:00:00.000Z"')
     expect(toolsCalls.slice(1).map((call) => call.params)).toEqual([
       { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'p1' } },
       { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'chore' } },
@@ -143,7 +245,7 @@ describe('orchestrator board HTTP client', () => {
       const result = body.method !== 'tools/call'
         ? {}
         : body.params.name === 'create_card'
-          ? { content: [{ type: 'text', text: JSON.stringify({ id: '42' }) }] }
+          ? { content: [{ type: 'text', text: JSON.stringify({ id: '42', description: body.params.arguments.description }) }] }
           : { isError: true, content: [{ type: 'text', text: 'Request failed with status code 409' }] }
       return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
     }
@@ -173,7 +275,7 @@ describe('orchestrator board HTTP client', () => {
     const fetch = async (_url: string, options: { body: string }) => {
       const body = JSON.parse(options.body)
       let result = {}
-      if (body.method === 'tools/call' && body.params.name === 'create_card') result = { content: [{ type: 'text', text: JSON.stringify({ id: '42', title: 'Follow up' }) }] }
+      if (body.method === 'tools/call' && body.params.name === 'create_card') result = { content: [{ type: 'text', text: JSON.stringify({ id: '42', title: 'Follow up', description: body.params.arguments.description }) }] }
       if (body.method === 'tools/call' && body.params.name === 'add_label_to_card') {
         attempted.push(body.params.arguments.labelId)
         result = body.params.arguments.labelId === 'chore'
@@ -184,7 +286,7 @@ describe('orchestrator board HTTP client', () => {
     }
     const client = createBoardClient({ url: 'http://board', boardId: 'board', fetch })
     const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'project' } }
-    await expect(client.createRoutedCard({ boardContract, originCardId: '1', sessionTag: 'run-1', timestamp: '2026-09-16T10:00:00.000Z', title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })).resolves.toEqual({
+    await expect(client.createRoutedCard({ boardContract, originCardId: '1', sessionTag: 'run-1', timestamp: '2026-09-16T10:00:00.000Z', title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })).resolves.toMatchObject({
       id: '42', title: 'Follow up', labelFailures: [{ labelId: 'chore', error: 'board unavailable: Request failed with status code 500' }],
     })
     expect(attempted).toEqual(['p1', 'chore', 'm', 'project'])

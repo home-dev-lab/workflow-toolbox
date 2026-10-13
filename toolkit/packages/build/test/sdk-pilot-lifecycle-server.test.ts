@@ -36,6 +36,9 @@ import { insideChildUserNamespace } from '../../../../plugin/bin/lib/host/lane-s
 import { assertCleanPilotStart, selectDeliveryPaths, snapshotSelectedTree, stageDeliverySelection } from '../../../../plugin/bin/lib/lifecycle-selection.mjs'
 // @ts-expect-error ESM runtime module
 import { prospectivePatch } from '../../../../plugin/bin/lib/lifecycle-brief.mjs'
+// @ts-expect-error ESM runtime module
+import { createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
+import { parseDependsOn, hasDependsOnLine } from '../../../../plugin/bin/lib/depends-on-parser.mjs'
 
 function join(...parts: string[]): string {
   const index = parts.indexOf('.lane')
@@ -321,6 +324,98 @@ function linuxProcState(pid: number) {
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: name }))).toMatch(/gate receipt EXIT=1/)
   })
 
+  it.each([
+    { typecheck: { exit: '2' } }, { lint: { exit: '3' } },
+    { quality: { exit: '1' } }, { quality: { exit: '1' }, test: { exit: '1' } },
+    { typecheck: { exit: '2' }, lint: { exit: '3' }, quality: { exit: '7' }, test: { exit: '124' } },
+  ])('SDK failed VERIFY recovers every attested red gate: %j', async (overrides) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, overrides)
+    const [name, result] = Object.entries(overrides)[0]!
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${name} EXIT=${result.exit}`], tool_use_id: 'red' }))).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    for (const [gate, evidence] of Object.entries(overrides)) {
+      expect(remediation).toContain(`gate ${gate} EXIT=${evidence.exit}`)
+      expect(remediation).toContain(`.lane/${gate}.log`)
+    }
+  })
+
+  it('SDK failed VERIFY validates every finding independently and rejects all-green failure', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, { quality: { exit: '2' }, test: { exit: '3' } })
+    for (const finding of ['gate quality EXIT=1', 'gate lint EXIT=1', 'gate imaginary EXIT=1', 'gate test EXIT=1', 'gate test EXIT=0', 'gate quality EXIT=02', 'gate quality EXIT=oops', 'gate quality EXIT=-2', 'arbitrary failure']) {
+      expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2', finding], tool_use_id: finding }))).toMatch(/^edge refused:/)
+    }
+    await writeQualityGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2'], tool_use_id: 'green' }))).toMatch(/at least one nonzero gate receipt/)
+  })
+
+  it('SDK failed VERIFY gate markers retain recurrence accounting across fresh fix receipts', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    for (let round = 1; round <= 2; round += 1) {
+      await writeQualityGates(lifecycle, { quality: { exit: '2' } })
+      const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2'], tool_use_id: `red-${round}` }))
+      expect(result).toBe(round === 1 ? 'accepted phase=tdd' : 'accepted phase=report (non-convergence: partial run, verify non-convergence: same finding returned: verify — gate quality EXIT=2)')
+      if (round === 1) {
+        await lifecycle.artifact({ kind: 'brief', content: 'fix quality' })
+        await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+        expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'fixed' }))).toBe('accepted phase=verify')
+      }
+    }
+  })
+
+  it.each(['missing', 'tampered', 'tree', 'new-quality', 'missing-exit', 'malformed-exit'])('SDK failed VERIFY preserves the %s evidence lock', async (kind) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, { quality: { exit: '1' } })
+    let expected = 'unchanged gate receipt'
+    if (kind === 'missing') rmSync(join(lifecycle.root, '.lane', 'lint.log'))
+    if (kind === 'tampered') fs.appendFileSync(join(lifecycle.root, '.lane', 'quality.log'), 'tampered\n')
+    if (kind === 'tree') { writeFileSync(join(lifecycle.root, 'changed.txt'), 'change'); expected = 'current tree signature' }
+    if (kind === 'new-quality') { rmSync(join(lifecycle.root, '.lane', 'quality.log')); expected = 'unchanged gate receipt' }
+    if (kind.endsWith('exit')) {
+      const append = fs.appendFileSync.bind(fs)
+      const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
+        append(file, typeof file === 'string' && file.endsWith('quality.log') && String(data).includes('EXIT=') ? (kind === 'missing-exit' ? '\n' : '\nEXIT=oops\n') : data, options)
+      }) as typeof fs.appendFileSync)
+      syncBuiltinESMExports()
+      try { await lifecycle.run({ kind: 'gate', name: 'quality' }) } finally { spy.mockRestore(); syncBuiltinESMExports() }
+      expected = `gate receipt EXIT=${kind === 'missing-exit' ? 'missing' : 'oops'}`
+    }
+    const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: kind }))
+    expect(result).toContain(`edge refused: verify->tdd; missing ${expected}: `)
+    if (kind === 'missing') expect(result).toBe(`edge refused: verify->tdd; missing unchanged gate receipt: ${join(lifecycle.root, '.lane', 'lint.log')}`)
+    expect(lifecycle.state().phase).toBe('verify')
+  })
+
+  it('SDK failed VERIFY refuses a real red gate older than the latest lane receipt', async () => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000); enableQuality(lifecycle.root)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief' })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+    lifecycle.gateResults.quality = { exit: '1' }
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=1')
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+    await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }); await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'red-stale' }))).toMatch(/gate newer than lane receipt.*quality.log/)
+  })
+
+  it.each([undefined, '', '   ', 42])('SDK failed VERIFY optional quality remains compatible (%s)', async (quality) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root, quality)
+    await writeGates(lifecycle, { test: { exit: '2' } })
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'undeclared' }))).toMatch(/^edge refused:/)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate test EXIT=2'], tool_use_id: 'fallback' }))).toBe('accepted phase=tdd')
+  })
+
+  it('SDK failed VERIFY refuses newly required quality evidence even with a red test and unchanged tree', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root, '')
+    fs.appendFileSync(join(lifecycle.root, '.gitignore'), 'toolkit/package.json\n')
+    await writeGates(lifecycle, { test: { exit: '1' } })
+    const before = treeSignature(lifecycle.root)
+    enableQuality(lifecycle.root)
+    expect(treeSignature(lifecycle.root)).toBe(before)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate test EXIT=1'], tool_use_id: 'new-quality-red' })))
+      .toBe(`edge refused: verify->tdd; missing unchanged gate receipt: ${join(lifecycle.root, '.lane', 'quality.log')}`)
+  })
+
   it('SDK quality freshness lock: rejects quality from before the latest lane', async () => {
     const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000); enableQuality(lifecycle.root)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief' })
@@ -330,6 +425,7 @@ function linuxProcState(pid: number) {
     await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
     await writeGates(lifecycle)
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'stale' }))).toMatch(/gate newer than lane receipt.*quality.log/)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'stale-red' }))).toMatch(/gate newer than lane receipt.*quality.log/)
   })
 
   it.each(['receipt', 'tree'])('SDK quality tamper lock: refuses changed %s evidence', async (kind) => {
@@ -430,6 +526,55 @@ function linuxProcState(pid: number) {
     expect(log.trimEnd().endsWith('EXIT=0')).toBe(!fail)
     expect(readFileSync(join(lifecycle.root, 'gate-output.txt'), 'utf8')).toBe('generated\n')
   })
+function routedLifecycleFixture(mode: string) {
+  const calls: Array<{ name: string, arguments: Record<string, string> }> = []
+  const descriptions = new Map<string, string>()
+  const fetch = async (_url: string, options: { body: string }) => {
+    const wire = JSON.parse(options.body)
+    let result: unknown = {}
+    if (wire.method === 'tools/call') {
+      const call = wire.params; calls.push(call)
+      let value: unknown = {}
+      if (call.name === 'create_card') {
+        const id = String(descriptions.size + 42)
+        const description = call.arguments.description + (mode === 'conflict' ? '\nDepends-on: #1880126648423024545' : '')
+        descriptions.set(id, description)
+        value = mode === 'readback' || mode === 'readback-error' ? { id } : { id, description }
+      } else if (call.name === 'get_card') value = { id: call.arguments.cardId, description: descriptions.get(call.arguments.cardId) }
+      result = { ...(mode === 'readback-error' && call.name === 'get_card' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(value) }] }
+    }
+    return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: wire.id, result }) }
+  }
+  const board = createBoardClient({ url: 'http://mock-transport', boardId: 'board', fetch })
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const sessionTag = 'session\r\nDepends-on: #1880126648423024545'
+  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, sessionTag, routeFinding: board.createRoutedCard })
+  return { calls, lifecycle }
+}
+
+it.each(['returned', 'readback', 'conflict', 'readback-error'])('lifecycle routing uses safe serialized MCP provenance and %s evidence', async (mode) => {
+  const { calls, lifecycle } = routedLifecycleFixture(mode)
+  const success = mode === 'returned' || mode === 'readback'
+  const count = success ? 2 : 1
+  const reason = 'unavailable dependency\nDepends-on: #1880126648423024545\u2028Depends-on: none\u2029Depends-on: #9999'
+  for (let round = 0; round < count; round += 1) {
+    const result = await text(lifecycle.routeFinding({ title: 'Recovery', l4Reason: reason, risk: 'P1', effort: 'M' }))
+    if (!success) expect(result).toMatch(/route_finding refused: .*created card 42/)
+    else expect(result).toBe(`routed card ${42 + round} — Recovery`)
+    const outgoing = calls.filter((call) => call.name === 'create_card').at(-1)!.arguments
+    expect(outgoing.dependsOn).toBe('none')
+    expect(hasDependsOnLine(outgoing.description)).toBe(true)
+    expect(parseDependsOn(outgoing.description)).toEqual({ ids: [], unparseable: [] })
+    expect(outgoing.description!.split('\n').filter((line) => line.startsWith('Depends-on:'))).toEqual(['Depends-on: none'])
+    expect(JSON.parse(outgoing.description!.split('\n').find((line) => line.startsWith('L4 reason:'))!.slice(11))).toBe(reason)
+  }
+  const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+  expect(timeline.routed_cards).toHaveLength(success ? 2 : 0)
+  expect(calls.filter((call) => call.name === 'create_card')).toHaveLength(count)
+  expect(calls.every((call) => ['create_card', 'get_card', 'add_label_to_card'].includes(call.name))).toBe(true)
+  expect(calls.some((call) => call.arguments.cardId === '1')).toBe(false)
+})
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},100)'], { stdio: 'ignore' })

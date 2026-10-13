@@ -473,8 +473,16 @@ function reviewNextPhase(phase, changesRequested) {
 }
 
 function writeReviewFindings(laneDir, state, phase, verdict, writeRegularFile) {
-  const rows = verdict.findingDetails.filter((finding) => finding.blocks).map((finding) => `- ${finding.raw}`)
-  writeRegularFile(path.join(laneDir, 'review-findings.md'), `# Review findings for TDD fix round ${state.reviewRound}\n\nSource: ${phase}\n\n${rows.join('\n')}\n`)
+  const rows = verdict.findingDetails.filter((finding) => phase === 'verify' || finding.blocks).map((finding) => `- ${finding.raw}${finding.log ? ' — receipt: ' + finding.log : ''}`)
+  writeRegularFile(reviewFindingsFile(laneDir), `# Review findings for TDD fix round ${state.reviewRound}\n\nSource: ${phase}\n\n${rows.join('\n')}\n`)
+}
+
+function reviewFindingsFile(laneDir) {
+  return path.join(laneDir, 'review-findings.md')
+}
+
+function readReviewFindings(laneDir) {
+  return readRegularFile(reviewFindingsFile(laneDir)) ?? ''
 }
 
 function prepareReviewFix(laneDir, state, phase, verdict, writeRegularFile, invalidateLaneEvidence, laneBriefContexts) {
@@ -494,13 +502,15 @@ function finalizedPartial(state, phase, reason) {
 function verifyTransition({ event, state, laneDir, frozenRoute, refusal, verifyFailedSnapshot, verifySnapshot, writeRegularFile, invalidateLaneEvidence, laneBriefContexts }) {
   if (event.outcome === 'failed') {
     if (!Array.isArray(event.findings) || event.findings.length === 0 || event.findings.some((finding) => typeof finding !== 'string' || !finding.trim())) {
-      return { refused: refusal('verify->tdd', 'failing test names in findings', laneDir) }
+      return { refused: refusal('verify->tdd', 'canonical red gate markers or failing test names in findings', laneDir) }
     }
     const receipt = verifyFailedSnapshot('verify->tdd', event.findings)
-    if (receipt) return { refused: receipt }
-    const findingDetails = event.findings.map((finding) => ({ raw: finding, text: finding, severity: 'high', anchor: 'verify', location: 'test', extendsPrior: null, blocks: true }))
-    const verdict = { outcome: 'changes-requested', findings: [...event.findings], findingDetails }
-    const decision = recordReviewDecision(state, 'verify', verdict, event.findings, [])
+    if (typeof receipt === 'string') return { refused: receipt }
+    const findingDetails = receipt.findings.map((finding) => ({ ...finding, raw: finding.text, severity: 'high', anchor: 'verify', extendsPrior: null, blocks: !finding.convergenceSummary }))
+    const findings = findingDetails.map((finding) => finding.text)
+    const blockingFindings = findingDetails.filter((finding) => finding.blocks).map((finding) => finding.text)
+    const verdict = { outcome: 'changes-requested', findings, findingDetails }
+    const decision = recordReviewDecision(state, 'verify', verdict, blockingFindings, [])
     if (decision.reason) return { next: 'report', resultDetail: ` (non-convergence: partial run, ${decision.reason})` }
     prepareReviewFix(laneDir, state, 'verify', verdict, writeRegularFile, invalidateLaneEvidence, laneBriefContexts)
     return { next: 'tdd', resultDetail: '' }
@@ -706,7 +716,7 @@ function createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline
 function lifecycleTransitionDefinition(tool, z, queued, transition, session) {
   return tool(
     'transition',
-    'Advance the runner-owned lifecycle.',
+    'Advance the runner-owned lifecycle. Failed VERIFY findings accept canonical gate <name> EXIT=<actual exit> markers for required red gates, or exact extracted failed-test names. Run every required gate first; every red gate and available failed-test name is carried to TDD with log references. When test names cannot be extracted, use gate test EXIT=<actual exit>.',
     {
       phase: z.string(),
       route: z.string().optional(),
@@ -879,7 +889,7 @@ export function createLifecycleStateMachine({
     const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
       const changelogInstructions = phase === 'tdd' ? changelogSkillBody(changelogSkillPath) : ''
-      const fixInstructions = phase === 'tdd' && state.reviewRound > 0 ? `## Review fix round ${state.reviewRound} (authoritative)\n\nRead the exact runner-owned findings in \`.lane/review-findings.md\`. Fix every in-scope finding red-first; route only genuine L4 work. Run ${focusedLifecycleGateHint(root)}, and leave zero warnings in touched files. Do not run the full suite in this lane; the lifecycle runs it once in VERIFY after this fix round.\n\n` : ''
+      const fixInstructions = phase === 'tdd' && state.reviewRound > 0 ? `## Review fix round ${state.reviewRound} (authoritative)\n\nRead the exact runner-owned findings in \`.lane/review-findings.md\`. Fix every in-scope finding red-first; route only genuine L4 work. Run ${focusedLifecycleGateHint(root)}, and leave zero warnings in touched files. Do not run the full suite in this lane; the lifecycle runs it once in VERIFY after this fix round.\n\n${readReviewFindings(laneDir)}\n\n` : ''
       const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${fixInstructions}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
       const content = `${authoritative}${authoritative ? '## Pilot instructions\n\n' : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir

@@ -57,7 +57,7 @@ afterEach(() => {
     expect(spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout).not.toContain('owner-notes.tmp')
   })
 
-  it.each(['typecheck', 'lint', 'quality'])('SDK four-gate remediation lock: red %s follows the existing non-test refusal and rerun route', async (redGate) => {
+  it.each(['typecheck', 'lint', 'quality'])('SDK four-gate remediation lock: red %s recovers with all red gate evidence', async (redGate) => {
     let failing = false
     const gateRunner = async (args: { name: string, log: string, root: string }) => {
       await writePassingGate(args)
@@ -75,10 +75,87 @@ afterEach(() => {
     expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain('targeted tests, typecheck, lint, and quality')
     failing = true
     for (const name of ['typecheck', 'lint', 'quality', 'test']) await lifecycle.run({ kind: 'gate', name })
-    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > regression case'], tool_use_id: 'red' })).toMatch(new RegExp(`gate receipt EXIT=1: .*${redGate}\\.log`))
-    failing = false; await lifecycle.run({ kind: 'gate', name: redGate })
-    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > regression case'], tool_use_id: 'rerun' })).toBe('accepted phase=tdd')
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > regression case'], tool_use_id: 'red' })).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    expect(remediation).toContain(`gate ${redGate} EXIT=1`)
+    expect(remediation).toContain('suite > regression case')
   })
+  it.each([
+    ['vitest', 0, ''],
+    ['vitest', 1, ' FAIL tests/example.test.ts > suite > actual failure\n'],
+    ['auto-undetected', 1, 'opaque test failure\n'],
+    ['auto-ambiguous', 1, 'opaque test failure\n'],
+    ['auto-vitest', 1, 'runner crashed before naming tests\n'],
+  ])('attested red gate recovery: recovers quality with %s test EXIT=%s and preserves complete remediation', async (testFramework, testExit, output) => {
+    let red = false
+    const gateRunner = async (args: { name: string, log: string, root: string }) => {
+      await writePassingGate(args)
+      if (!red) return 0
+      if (args.name === 'test') { appendFileSync(args.log, output); return testExit }
+      return args.name === 'quality' ? 1 : 0
+    }
+    const lifecycle = fullLifecycle({ gateRunner, testFramework: testFramework.startsWith('auto-') ? undefined : testFramework }, (worktree) => {
+      if (testFramework === 'auto-ambiguous' || testFramework === 'auto-vitest') writeFileSync(join(worktree, 'example.ts'), '')
+      if (testFramework === 'auto-ambiguous') writeFileSync(join(worktree, 'example.py'), '')
+    })
+    mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await reachReview(lifecycle, plan, ['typecheck', 'lint', 'quality', 'test'])
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: ['initial defect'] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['initial defect'], tool_use_id: 'review-red' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix-red' })
+    red = true
+    for (const name of ['typecheck', 'lint', 'quality', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'red-gates' })).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    expect(remediation).toContain('gate quality EXIT=1')
+    expect(remediation).toContain('.lane/quality.log')
+    if (testExit) {
+      expect(remediation).toContain('gate test EXIT=1'); expect(remediation).toContain('.lane/test.log')
+      if (output.includes('actual failure')) expect(remediation).toContain('suite > actual failure')
+    }
+    const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(evidence.verify_snapshot.findings).toEqual(expect.arrayContaining([expect.objectContaining({ text: 'gate quality EXIT=1', location: 'quality' })]))
+    expect(lifecycle.ledger().priorReviewRounds.at(-1).findingDetails).toEqual(expect.arrayContaining([expect.objectContaining({ text: 'gate quality EXIT=1', location: 'quality' })]))
+    await lifecycle.artifact({ kind: 'brief', content: 'fix all gates' })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain(remediation.trim())
+  }, FIXTURE_TEST_TIMEOUT_MS)
+  it.each(['custom-runner', 'undetected'])('attested fallback rejects invented names with %s before accepting gate test', async (testFramework) => {
+    const gateRunner = async (args: { name: string, log: string, root: string }) => {
+      await writePassingGate(args)
+      return args.name === 'test' ? 1 : 0
+    }
+    const lifecycle = fullLifecycle({ gateRunner, testFramework })
+    await reachInitialVerify(lifecycle)
+    for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['invented name'], tool_use_id: 'invented' })).toMatch(/^edge refused:/)
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate test EXIT=1'], tool_use_id: 'fallback' })).toBe('accepted phase=tdd')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain('.lane/test.log')
+  }, FIXTURE_TEST_TIMEOUT_MS)
+it('attested red gate recovery preserves progress when failed names change and shrink', async () => {
+  let failedNames = ['suite > first', 'suite > second', 'suite > third']
+  const gateRunner = async (args: { name: string, log: string, root: string }) => {
+    await writePassingGate(args)
+    if (args.name !== 'test') return 0
+    for (const name of failedNames) appendFileSync(args.log, ` FAIL tests/example.test.ts > ${name}\n`)
+    return 1
+  }
+  const lifecycle = fullLifecycle({ gateRunner }); await reachInitialVerify(lifecycle)
+  for (let round = 1; round <= 2; round += 1) {
+    for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [failedNames[0]], tool_use_id: `progress-${round}` })).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    expect(remediation).toContain('gate test EXIT=1')
+    for (const name of failedNames) expect(remediation).toContain(name)
+    if (round === 2) expect(lifecycle.ledger().priorReviewRounds.at(-1).blockingFindings).toHaveLength(failedNames.length)
+    if (round === 1) {
+      failedNames = ['suite > newly exposed failure']
+      await lifecycle.artifact({ kind: 'brief', content: 'fix named tests' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+      expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'progress-fix' })).toBe('accepted phase=verify')
+    }
+  }
+}, FIXTURE_TEST_TIMEOUT_MS)
+
 describe.sequential('plan task anchor lifecycle', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('returns a MEDIUM finding on a numbered plan task to tdd', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle, numberedAnchorPlan)
@@ -891,7 +968,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [failedTest], tool_use_id: `${testFramework}-red` })).toBe('accepted phase=tdd')
   })
 
-  it.each(['custom-runner', 'undetected'])('refuses the %s failed-test adapter and tells the pilot to escalate', async (testFramework) => {
+  it.each(['custom-runner', 'undetected'])('refuses invented test names with the %s adapter but accepts the attested fallback', async (testFramework) => {
     let testRuns = 0
     const gateRunner = async (args: { name: string; log: string; root: string }) => {
       const code = await writePassingGate(args)
@@ -1097,7 +1174,7 @@ function fullLifecycle(options: Record<string, unknown> = {}, beforeStart: (work
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
   beforeStart(worktree)
   const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, testFramework: 'vitest', rules: [], ...options })
-  return { ...handlers(server), calls, base, root: worktree, state: server.state, requestStop: server.requestStop, finalizePartial: server.finalizePartial }
+  return { ...handlers(server), calls, base, root: worktree, state: server.state, ledger: server.ledger, requestStop: server.requestStop, finalizePartial: server.finalizePartial }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
@@ -1134,7 +1211,7 @@ async function writePassingGate({ log, root }: { log: string, root: string }) {
   throw new Error(`fixture gate mtime did not advance 20ms past lane receipt ${laneMtime}`)
 }
 function edgeConfig(lifecycle: { root: string }, config: Record<string, unknown>) { writeFileSync(join(lifecycle.root, '.lane', 'edge-config.json'), JSON.stringify(config)) }
-async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan, gateNames = ['typecheck', 'lint', 'test']) {
+async function reachInitialVerify(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan) {
   edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
   expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
   expect(await lifecycle.artifact({ kind: 'plan', content: planContent })).toBe('wrote plan')
@@ -1145,6 +1222,9 @@ async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planCont
   expect(await lifecycle.artifact({ kind: 'brief', content: planContent })).toBe('wrote brief')
   expect(await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })).toBe('lane tdd EXIT=0')
   expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })).toBe('accepted phase=verify')
+}
+async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan, gateNames = ['typecheck', 'lint', 'test']) {
+  await reachInitialVerify(lifecycle, planContent)
   await gates(lifecycle, gateNames)
   expect(await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })).toBe('accepted phase=review')
 }

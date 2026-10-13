@@ -138,6 +138,44 @@ function failedTestNameShape(framework) {
   return failedTestAdapters.get(framework)?.shape ?? null
 }
 
+const INTEGER_EXIT = /^(?:0|-?[1-9]\d*)$/
+const GATE_FINDING = /^gate (typecheck|lint|quality|test) EXIT=(0|-?[1-9]\d*)$/
+
+function gateExitAccepted(item, allowNonzero) {
+  return allowNonzero ? INTEGER_EXIT.test(item.exit ?? '') : item.exit === '0'
+}
+
+function failedGateFindings(receipts, failures, findings) {
+  const red = receipts.filter((item) => item.exit !== '0')
+  const markers = new Map(red.map((item) => [`gate ${item.name} EXIT=${item.exit}`, item]))
+  const invalid = findings.filter((finding) => {
+    const text = finding.trim()
+    if (text.startsWith('gate ')) return !GATE_FINDING.test(text) || !markers.has(text)
+    return !red.some((item) => item.name === 'test') || !failures?.has(text)
+  })
+  const names = new Set([...findings.map((finding) => finding.trim()).filter((finding) => !finding.startsWith('gate ')), ...failures ?? []])
+  return {
+    invalid,
+    findings: [
+      ...[...names].map((text) => ({ text, location: 'test', log: receipts.find((item) => item.name === 'test').path })),
+      ...red.map((item) => ({ text: `gate ${item.name} EXIT=${item.exit}`, location: item.name, log: item.path, convergenceSummary: item.name === 'test' && Boolean(failures?.size) })),
+    ],
+  }
+}
+
+function failedFindingProblem(invalid, { edge, testRed, failures, testFramework, testLog, laneDir, refusal }) {
+  if (invalid.length === 0) return null
+  const invalidMarker = invalid.find((finding) => finding.trim().startsWith('gate '))
+  if (invalidMarker) return refusal(edge, `canonical finding for a required red gate with its actual EXIT (${invalidMarker})`, laneDir)
+  if (testRed && !failures) return refusal(edge, `missing failed-test adapter "${testFramework}"; escalate to add an adapter before retrying red VERIFY`, testLog)
+  return refusal(edge, `failing test names found in the red full-suite receipt as ${failedTestNameShape(testFramework)} (${invalid.join('; ')})`, testLog)
+}
+
+function verifyGateSnapshot(root, receipts, findings) {
+  const gates = Object.fromEntries(receipts.map((item) => [item.name, { path: item.path, sha256: item.sha256 }]))
+  return { tree: treeSignature(root), gates, ...(findings ? { findings } : {}) }
+}
+
 function gateReceiptProblem(name, phase, log, regularFile) {
   if (fs.existsSync(log) && !regularFile(log)) return 'regular gate receipt'
   if (name === 'test' && phase !== 'verify') return 'full test suite runs only in verify'
@@ -327,19 +365,22 @@ export function createLifecycleLaunch({
     return null
   }
 
-  function gatesEvidence(edge, failedTest = false) {
+  function gatesEvidence(edge, allowNonzero = false) {
     assertLaneDir()
     const currentTree = treeSignature(root)
     for (const name of gates()) {
       const file = path.join(laneDir, `${name}.log`)
       const item = verified(file)
       if (!item) return refusal(edge, 'unchanged gate receipt', file)
-      const acceptedExit = failedTest && name === 'test' ? item.exit !== '0' && item.exit !== null : item.exit === '0'
+      const acceptedExit = gateExitAccepted(item, allowNonzero)
       if (!acceptedExit) return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
       if (item.tree !== currentTree) return refusal(edge, 'current tree signature', file)
       // Ordered by the server's own receipt count, never by mtime: a backward clock step can date a
       // later gate before the lane receipt, or an earlier one after it.
       if (item.laneReceiptSeq !== state.laneReceiptSeq) return refusal(edge, 'gate newer than lane receipt', file)
+    }
+    if (allowNonzero && ![...gates()].some((name) => attestations.get(path.join(laneDir, `${name}.log`)).exit !== '0')) {
+      return refusal(edge, 'at least one nonzero gate receipt', laneDir)
     }
     return null
   }
@@ -347,33 +388,28 @@ export function createLifecycleLaunch({
   function verifySnapshot(edge) {
     const receipt = gatesEvidence(edge)
     if (receipt) return receipt
-    const gateSnapshot = {}
-    for (const name of gates()) {
-      const item = attestations.get(path.join(laneDir, `${name}.log`))
-      gateSnapshot[name] = { path: item.path, sha256: item.sha256 }
-    }
-    state.verifySnapshot = { tree: treeSignature(root), gates: gateSnapshot }
+    state.verifySnapshot = verifyGateSnapshot(root, gateReceipts())
     audit()
     return null
+  }
+
+  function gateReceipts() {
+    return [...gates()].map((name) => ({ name, ...attestations.get(path.join(laneDir, `${name}.log`)) }))
   }
 
   function verifyFailedSnapshot(edge, findings) {
     const receipt = gatesEvidence(edge, true)
     if (receipt) return receipt
     const testLog = path.join(laneDir, 'test.log')
-    const content = readRegularFile(testLog) ?? ''
-    const failures = failedTestNames(content, testFramework)
-    if (!failures) return refusal(edge, `missing failed-test adapter "${testFramework}"; escalate to add an adapter before retrying red VERIFY`, testLog)
-    const missing = findings.filter((finding) => !failures.has(finding.trim()))
-    if (missing.length > 0) return refusal(edge, `failing test names found in the red full-suite receipt as ${failedTestNameShape(testFramework)} (${missing.join('; ')})`, testLog)
-    const gateSnapshot = {}
-    for (const name of gates()) {
-      const item = attestations.get(path.join(laneDir, `${name}.log`))
-      gateSnapshot[name] = { path: item.path, sha256: item.sha256 }
-    }
-    state.verifySnapshot = { tree: treeSignature(root), gates: gateSnapshot }
+    const receipts = gateReceipts()
+    const testRed = receipts.some((item) => item.name === 'test' && item.exit !== '0')
+    const failures = testRed ? failedTestNames(readRegularFile(testLog) ?? '', testFramework) : null
+    const remediation = failedGateFindings(receipts, failures, findings)
+    const problem = failedFindingProblem(remediation.invalid, { edge, testRed, failures, testFramework, testLog, laneDir, refusal })
+    if (problem) return problem
+    state.verifySnapshot = verifyGateSnapshot(root, receipts, remediation.findings)
     audit()
-    return null
+    return remediation
   }
 
   function snapshotEvidence(edge) {

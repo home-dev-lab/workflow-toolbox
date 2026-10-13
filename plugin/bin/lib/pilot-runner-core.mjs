@@ -55,7 +55,7 @@ const NEXT_BY_PHASE = {
 // The plan->critic edge refuses any other shape, so a route that plans learns it before its first plan, not from a refusal.
 const planShapeLine = (route) => (route === 'FULL' ? ` When you write the plan, it must match ${PLAN_SHAPE_DESCRIPTION}.` : '')
 const nextPhaseTask = (phase, root) => phase === 'verify'
-  ? `run the gates ${[...resolveLifecycleGates(root)].join('|')}, then transition verify`
+  ? `run every required gate ${[...resolveLifecycleGates(root)].join('|')}, then transition verify with outcome passed only when all exits are 0; for outcome failed supply canonical findings gate <name> EXIT=<actual exit> for required red gates or exact extracted failed-test names. Adapter detection or empty extraction cannot block attested gate recovery: use gate test EXIT=<actual exit> when names are unavailable. The runner carries every red gate, available failed-test names, and receipt paths to the TDD fix context`
   : NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'
 const PLANKA_TOOLS = new Set([
   'mcp__planka__get_card',

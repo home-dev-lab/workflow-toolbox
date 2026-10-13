@@ -165,6 +165,13 @@ form and Node path APIs for resolution and real-path containment on each host.
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd -> verify | Attested lane receipt and non-empty report. The initial FULL `tdd-brief.md` has the plan `## Tasks` block byte-identically; later TDD fix briefs carry runner-owned review findings and focused-gate instructions. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test`, plus `quality` when the current `toolkit/package.json` declares a non-empty string `scripts.quality`, have receipts ending `EXIT=0`, newer than the latest lane receipt, matching the current tree signature, and become a digest snapshot. |
+| verify -> tdd (or partial report on recurrence) | Run **all** currently required gates. Every receipt must be present, parseable, attested, digest-verified, current-tree-bound and newer than the latest lane, with at least one nonzero exit. Findings are canonical `gate <name> EXIT=<actual exit>` markers for required red gates or exact extracted failed-test names. Passing/undeclared gates, mismatched exits and invented names are refused. Every red gate and available extracted name is carried into `.lane/review-findings.md` with actual gate identity and log path. Absent/ambiguous adapters or empty extraction permit attested `gate test EXIT=<actual exit>` recovery; they never permit invented names. Existing non-convergence accounting applies. |
+
+When exact failed-test names are available, the test gate marker remains receipt context in the
+snapshot and TDD findings, while convergence counts the exact names. This avoids treating a common
+`gate test EXIT=1` summary as a recurring defect when distinct failed names shrink across fixes.
+Without extracted names the attested test marker is itself the blocking finding; non-test gate
+markers remain blocking. Repeated named failures and gate-only fallback retain loop-stop safeguards.
 | review -> refutation, tdd, or report | Attested lane receipt and report verdict. `clear` reaches refutation; blocking `changes-requested` writes `review-findings.md` and reaches a TDD fix. Mechanical non-convergence reaches a partial report. |
 | refutation -> report, tdd, or partial report | Attested lane receipt and report verdict. `clear` reaches report; blocking `changes-requested` reaches a TDD fix unless non-convergence fires. |
 | report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion as a `- ` bullet with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. That classification is re-derived from each draft this edge judges: a refused draft never leaves a partial the corrected draft must carry, and a criterion the parser cannot find is a schema refusal, never an unmet criterion. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
@@ -465,9 +472,17 @@ Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies rea
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.
 The board contract is `{ boardId, listId, labels: { priority: {P0,P1,P2}, type:
 {bug,chore,feature,research}, effort: {S,M,L}, category } }`. `route_finding` is the only card-creation
-surface: the runner makes one `create_card` MCP call with the three selected label ids, category,
-`dependsOn: {cardId: <origin>}`, and a `## Provenance` line containing origin, session, L4 reason, and
-timestamp. It records `routed_cards` in `lifecycle.json` and the archive manifest. A contested item
+surface: the runner makes one `create_card` MCP call with `dependsOn: 'none'` and exactly one canonical
+`Depends-on: none` description line. Origin card is provenance only. All interpolated provenance
+values (origin, session, L4 reason, timestamp) are losslessly quoted as JSON strings on individual
+physical lines, escaping CR/LF and U+2028/U+2029; identifier fields use the existing identifier contract.
+Before creation the assembled description must have exactly one canonical none declaration and the
+shipped dependency parser must return no IDs or malformed declarations; local refusal makes zero
+create calls. The returned description, or a `get_card` read-back if absent, is independently checked.
+A failed read-back/declaration check names the created card ID and must not retry creation or mutate
+origin dependencies. After verification the three selected label IDs and category are applied with
+four separate `add_label_to_card` calls. It records `routed_cards` in `lifecycle.json` and the archive
+manifest. A contested item
 completed in-run gets a runner comment and move to `NotDoing`; maintained disagreement stays named.
 Configured plugin directories are passed as local SDK plugins beside `pilot-guard`; the initialization
 receipt must name every one or the pilot run is refused. No plugin name or host path is built in.
