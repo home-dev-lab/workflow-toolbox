@@ -1,9 +1,24 @@
 import { readFileSync, readdirSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import ts from 'typescript'
 
 const TARGET = /wt-adopt-(?:rules-)?check-hook\.mjs|(?:^|[/\\])install\.mjs/
 const SPAWN = /^(?:spawnSync|spawn|execFileSync|execFile|fork)$/
+
+// The scanner follows values through the scanned files and the project sources they import; it never needs a
+// declaration from a package or the standard library: an ambient function has no body and an ambient variable
+// no initializer, so both expand to the call or name itself whether or not they resolve. Parsing them anyway
+// (about 10 MB per program) made every scan CPU-bound, so package and library declarations are served empty.
+const PACKAGE_DIR = `${sep}node_modules${sep}`
+
+function projectSourceHost(options) {
+  const host = ts.createCompilerHost(options)
+  const read = host.getSourceFile.bind(host)
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) => fileName.includes(PACKAGE_DIR)
+    ? ts.createSourceFile(fileName, '', languageVersion)
+    : read(fileName, languageVersion, onError, shouldCreate)
+  return host
+}
 
 function filesUnder(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -55,8 +70,7 @@ function parameterValues(param, context) {
   const fn = param.parent
   const name = fn.name ?? (ts.isVariableDeclaration(fn.parent) ? fn.parent.name : undefined)
   if (!name) return param.initializer ? [{ node: param.initializer, bindings: context.bindings }] : []
-  const symbol = context.checker.getSymbolAtLocation(name)
-  return (context.callsBySymbol.get(symbol) ?? [])
+  return context.callsTo(name)
     .flatMap((call) => expand(call.arguments[fn.parameters.indexOf(param)] ?? param.initializer, context))
 }
 
@@ -165,6 +179,8 @@ function spawnEnv(call) {
 
 function isSpawn(call, checker) {
   if (SPAWN.test(call.expression.getText().split('.').at(-1))) return true
+  // Only a bare identifier can resolve to an import specifier; resolving any other callee would type-check it.
+  if (!ts.isIdentifier(call.expression)) return false
   const imported = checker.getSymbolAtLocation(call.expression)?.declarations?.[0]
   if (!imported || !ts.isImportSpecifier(imported)) return false
   const module = imported.parent.parent.parent.moduleSpecifier?.text
@@ -175,7 +191,7 @@ function spawnContexts(call, context) {
   let fn = call.parent
   while (fn && !ts.isFunctionLike(fn)) fn = fn.parent
   const name = fn?.name ?? (fn && ts.isVariableDeclaration(fn.parent) ? fn.parent.name : undefined)
-  const calls = name && context.callsBySymbol.get(context.checker.getSymbolAtLocation(name))
+  const calls = name && context.callsTo(name)
   return calls?.length ? calls.map((invocation) => ({ ...context, bindings: bindCall(fn, invocation, context.bindings) })) : [context]
 }
 
@@ -193,8 +209,37 @@ function spawnFinding(call, context) {
   return missing.length ? [{ file: file.fileName, line: file.getLineAndCharacterOfPosition(call.getStart()).line + 1, missing }] : []
 }
 
-function scanSource(file, checker, calls, callsBySymbol) {
-  const context = { checker, callsBySymbol, bindings: new Map(), depth: 0 }
+function nameText(node) {
+  if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node) || ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)) return node.text
+  return undefined
+}
+
+function calleeName(call) {
+  if (ts.isIdentifier(call.expression) || ts.isPrivateIdentifier(call.expression)) return call.expression.text
+  return ts.isPropertyAccessExpression(call.expression) ? call.expression.name.text : undefined
+}
+
+// The calls whose callee resolves to the symbol declared by `name`, in source order. A callee spelled with
+// another name cannot resolve to that symbol, so only same-name and unnamed callees are resolved: resolving
+// every call up front type-checks each `expect(...).toBe(...)` chain of every scanned file.
+function callIndex(calls, checker) {
+  const resolved = new Map()
+  const symbolOf = (call) => {
+    if (!resolved.has(call)) resolved.set(call, checker.getSymbolAtLocation(call.expression))
+    return resolved.get(call)
+  }
+  return (name) => {
+    const symbol = checker.getSymbolAtLocation(name)
+    const text = symbol === undefined ? undefined : nameText(name)
+    return calls.filter((call) => {
+      const callee = text === undefined ? undefined : calleeName(call)
+      return (callee === undefined || callee === text) && symbolOf(call) === symbol
+    })
+  }
+}
+
+function scanSource(file, checker, calls, callsTo) {
+  const context = { checker, callsTo, bindings: new Map(), depth: 0 }
   const scope = TARGET.test(file.text)
   if (!scope) return []
   return calls.filter((call) => call.getSourceFile() === file && isSpawn(call, checker))
@@ -204,17 +249,12 @@ function scanSource(file, checker, calls, callsBySymbol) {
 export function scanAdoptSpawnIsolation(root, suppliedFiles) {
   const files = suppliedFiles ?? ['packages/build/test', 'scripts/test'].flatMap((dir) => filesUnder(join(root, dir)))
   const scoped = files.filter((file) => TARGET.test(readFileSync(file, 'utf8')))
-  const program = ts.createProgram(scoped, { allowJs: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext })
+  const options = { allowJs: true, noLib: true, types: [], target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext }
+  const program = ts.createProgram(scoped, options, projectSourceHost(options))
   const checker = program.getTypeChecker()
   const sources = scoped.map((file) => program.getSourceFile(file)).filter(Boolean)
   const calls = sources.flatMap((file) => descendants(file, ts.isCallExpression))
-  const callsBySymbol = new Map()
-  for (const call of calls) {
-    const symbol = checker.getSymbolAtLocation(call.expression)
-    if (!callsBySymbol.has(symbol)) callsBySymbol.set(symbol, [])
-    callsBySymbol.get(symbol).push(call)
-  }
-  const findings = sources.flatMap((file) => scanSource(file, checker, calls, callsBySymbol))
+  const findings = sources.flatMap((file) => scanSource(file, checker, calls, callIndex(calls, checker)))
   return [...new Map(findings.map((finding) => [JSON.stringify(finding), finding])).values()]
     .map((finding) => ({ ...finding, file: relative(root, finding.file).replaceAll('\\', '/') }))
 }
