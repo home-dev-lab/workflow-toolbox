@@ -45,6 +45,15 @@ const RECOVERY_LOCKS = [
 const SELFTEST_BUDGET_MS = 180_000
 const HOOK_MARGIN_MS = 15_000
 
+function runSelftest(plugin: string): SpawnSyncReturns<string> {
+  return spawnSync(process.execPath, [join(REPO_ROOT, 'plugins', plugin, 'hooks', 'hooks.selftest.mjs')], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: SELFTEST_BUDGET_MS,
+    killSignal: 'SIGKILL',
+  })
+}
+
 function selftestFailure(run: SpawnSyncReturns<string>): string {
   const lastLine = (run.stdout ?? '').trimEnd().split('\n').at(-1) ?? ''
   if (run.signal) return `selftest killed by ${run.signal} after the ${SELFTEST_BUDGET_MS} ms budget; last line: ${lastLine}`
@@ -63,14 +72,7 @@ describe('shipped private plugins', () => {
   for (const plugin of PLUGINS) {
     let selftest: SpawnSyncReturns<string>
 
-    beforeAll(() => {
-      selftest = spawnSync(process.execPath, [join(REPO_ROOT, 'plugins', plugin, 'hooks', 'hooks.selftest.mjs')], {
-        cwd: REPO_ROOT,
-        encoding: 'utf8',
-        timeout: SELFTEST_BUDGET_MS,
-        killSignal: 'SIGKILL',
-      })
-    }, SELFTEST_BUDGET_MS + HOOK_MARGIN_MS)
+    beforeAll(() => { selftest = runSelftest(plugin) }, SELFTEST_BUDGET_MS + HOOK_MARGIN_MS)
 
     it(`${plugin} selftest exits successfully`, () => {
       expect(selftest.status, selftestFailure(selftest)).toBe(0)
