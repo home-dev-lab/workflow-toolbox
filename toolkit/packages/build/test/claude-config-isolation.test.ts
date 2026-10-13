@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CREDENTIAL_ENV_KEYS, sealedClaudeEnv } from '../../../test-support/claude-config-isolation'
@@ -40,7 +40,7 @@ describe('a test worker never hands the developer\'s Claude config dir to a chil
     const dir = process.env.CLAUDE_CONFIG_DIR ?? ''
     expect(dirname(dir), `CLAUDE_CONFIG_DIR=${dir}`).toBe(tmpdir())
     expect(basename(dir).startsWith('wt-claude-suite-'), `CLAUDE_CONFIG_DIR=${dir}`).toBe(true)
-    expect(dir).not.toBe(join(homedir(), '.claude'))
+    // Not the developer's default dir either: that one is neither under tmpdir() nor named wt-claude-suite-*.
     // Presence only: a failed assertion must never print a credential.
     const present = Object.keys(process.env).filter((k) => (CREDENTIAL_ENV_KEYS as readonly string[]).includes(k.toUpperCase()))
     expect(present).toEqual([])
