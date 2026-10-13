@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Shorten seven bundled rule texts by compressing grammar and removing incident narrative while preserving directives, headings, thresholds, and required wording.
 - The pilot suite can be adopted once per user config dir (`adopt --set agents --global`) instead of once per project: the watchdog pairing works there too, `pilot-wave` resolves the project copy first and the user copy second, and the docs ask for one copy per name because a project copy shadows the user copy. A watchdog now reads extra project tells from `.claude/watchdog-tells/<watchdog>.md` when the file exists, so a project keeps its own tells without editing the adopted definition. The pilot definition carries the duties it needs from the shipped rules (labels and dependencies before starting, step-back routes with priors, escalations that name a recommendation, refuting a stated cause, the cross-platform verdict, the five report sections with a pasted e2e) and warns that an isolated delegate tree can be removed under a running external lane.
 - The adopted `pilot` now runs without the CLAUDE.md and rules prefix (`omitClaudeMd: true`), which keeps each of its calls far smaller, and reads the project's own `CLAUDE.md` or `AGENTS.md` at intake instead. Rules a project serves at the act still reach it.
 
