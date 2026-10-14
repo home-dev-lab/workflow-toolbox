@@ -339,7 +339,7 @@ for (const [shape, template] of [
     assert.deepEqual(argvs, []);
   });
 }
-await test('op reference rewrite with shell quoting', async () => { const { received, argvs, result } = await prefetchArgv('echo "op://Private/O\'Brien/token"'); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.deepEqual(argvs.at(-1), ['op', 'read', "op://Private/O'Brien/token"], 'the quote in the reference did not reach the prefetch argv intact'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
+await test('op reference rewrite with shell quoting', async () => { const { received, argvs, result } = await prefetchArgv('echo "op://Private/O\'Brien/token"'); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.deepEqual(argvs.at(-1), ['op', 'read', "op://Private/O'Brien/token"], 'the quote in the reference did not reach the prefetch argv intact'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); assert.equal((result.context ?? []).filter((note) => /wt-secret-guard: rewrote/.test(note)).length, 1); assert.doesNotMatch(result.text, /wt-secret-guard: rewrote/); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); const withAccount = await prefetchArgv('echo op://Private/item/field-account'); configure({}); assert.deepEqual(withAccount.argvs.at(-1), ['op', 'read', '--account', 'my.1password.com', 'op://Private/item/field-account']); assert.equal(commandPart(withAccount.received), 'echo "${__wt_secret_0}"'); const plain = await prefetchArgv('echo op://Private/item/field-plain'); assert.deepEqual(plain.argvs.at(-1), ['op', 'read', 'op://Private/item/field-plain']); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
 await test('double-quoted op reference rewrites with exactly one level of quoting', async () => { const { received } = await prefetchArgv('export K="op://Private/item/field-dq"; printf %s "$K"'); assert.equal(commandPart(received), 'export K="${__wt_secret_0}"; printf %s "$K"'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value'); });
@@ -407,7 +407,7 @@ await test('Bash secret-file reads warn and execute in measurement mode', async 
   const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event; return { text: 'fixture file contents' }; });
   assert.equal(received.command, command);
   assert.equal(result.deny, undefined);
-  assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+  assert.equal(result.text, 'fixture file contents'); assert.match(result.context?.at(-1) ?? '', /WOULD BLOCK; executed in measurement mode/);
 });
 await test('all SR Cloud and review rows retain their recorded verdicts', async () => {
   for (const fixture of corpus.denyCommands) assert.equal(verdictForBash(fixture.command).verdict, fixture.verdict, fixture.command);
@@ -418,14 +418,14 @@ await test('Bash policy evaluates the byte-identical original before reference r
   let received;
   const result = await bash($, { tool: 'Bash', command, tool_use_id: 'tool-order' }, async (event) => { received = event.command; return { text: 'ok' }; });
   assert.equal(received?.includes('__wt_secret_0'), true, 'the reference was not rewritten');
-  assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+  assert.equal(result.text, 'ok'); assert.match(result.context?.at(-1) ?? '', /WOULD BLOCK; executed in measurement mode/);
 });
 await test('Read and NotebookRead guarded paths warn but still execute', async () => {
   for (const [hook, event] of [[read, { tool: 'Read', file_path: '/tmp/.env' }], [notebookRead, { tool: 'NotebookRead', notebook_path: '/tmp/.aws/credentials' }]]) {
     let executed = false;
     const result = await hook($, event, async () => { executed = true; return { text: 'contents' }; });
     assert.equal(executed, true);
-    assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+    assert.equal(result.text, 'contents'); assert.match(result.context?.at(-1) ?? '', /WOULD BLOCK; executed in measurement mode/);
   }
 });
 await test('malformed read events fail open after a value-free evaluation', async () => {
@@ -635,10 +635,12 @@ await test('a scrubbed prompt carries the redaction note as context and keeps it
 });
 await test('a scrubbed tool result explains its tokens; an untouched one gets no note', async () => {
   const value = 'tok' + 'en=' + 'Hy72' + 'kQp1' + 'Vn38';
+  // The host renders an answered call from its result, never from a hook's `text`: the note goes in `context`.
   const scrubbed = await call('x', `out ${value}`);
-  assert.match(scrubbed.text, /REDACTION TOKEN/);
+  assert.match((scrubbed.context ?? []).join('\n'), /REDACTION TOKEN/);
+  assert.doesNotMatch(scrubbed.text, /REDACTION TOKEN/);
   const clean = await call('x', 'nothing sensitive here');
-  assert.doesNotMatch(clean.text, /REDACTION TOKEN/);
+  assert.doesNotMatch(JSON.stringify(clean), /REDACTION TOKEN/);
 });
 await test('plain prompt reaches next exactly once and preserves its outcome', async () => {
   const input = { text: 'continue', source: 'user' };
@@ -4054,6 +4056,92 @@ await test('a refused common word does not refuse text beside an issued token', 
 await test('a successful result scrubs a value that only a later field revealed', () => freshVault(async () => {
   const answer = await bash($, { tool: 'Bash', command: 'true' }, async () => ({ result: { stdout: 'PIN 6127\n', stderr: '{"type":"CONCEALED","value":"6127"}' }, text: 'PIN 6127\n', ref: 9 }));
   assert.equal(/(?<![A-Za-z0-9])6127(?![A-Za-z0-9])/.test(JSON.stringify(answer)), false, 'the value revealed by a later field stayed raw in an earlier one');
+}));
+// The host's ToolCallResult is a union: a refusal carries `deny` and nothing else, and on an answered call
+// `text` is core's own rendering, which the host does not read back from a hook (measured on a real host: a
+// warning appended there never reached the model, on a refusal or on a result). The measurement-mode warning
+// therefore travels inside the refusal text, or in `context` beside a result.
+const MEASUREMENT_WARNING = /WOULD BLOCK; executed in measurement mode/;
+// A refusal may come before anything ran (an unreadable reference), so its warning must not claim execution.
+const REFUSAL_WARNING = /\[wt-secret-guard: WOULD BLOCK(?![^\]]*executed)[^\]]*credential file/;
+const guardedCommand = 'cat "$HOME/.netrc"';
+await test('a guarded-path refusal for an unreadable reference carries the warning inside deny and no other field', () => freshVault(async () => {
+  let executed = false;
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} secret:file:/tmp/wt-secret-guard-missing` }, async () => { executed = true; return { text: 'ran' }; });
+  assert.equal(executed, false, 'the refused command ran');
+  assert.deepEqual(Object.keys(answer), ['deny'], 'a refusal carried a field the host contract forbids');
+  assert.match(answer.deny, /refused Bash execution/);
+  assert.match(answer.deny, REFUSAL_WARNING, 'the refusal did not carry a warning that stays true when nothing ran');
+  assert.doesNotMatch(answer.deny, MEASUREMENT_WARNING, 'a refusal claimed the command executed');
+}));
+await test('a guarded-path errored command answers a scrubbed refusal with the warning inside deny and no other field', () => freshVault(async () => {
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} >&2; exit 3` }, async () => erroredCore(`Exit code 3\n${erroredValue}`));
+  assert.deepEqual(Object.keys(answer), ['deny'], 'a refusal carried a field the host contract forbids');
+  assert.equal(answer.deny.includes(erroredValue), false, 'raw value reached the refusal');
+  assert.match(answer.deny, /secret:slack-token#/);
+  assert.match(answer.deny, REFUSAL_WARNING, 'the refusal did not carry a warning that stays true when nothing ran');
+  assert.doesNotMatch(answer.deny, MEASUREMENT_WARNING, 'a refusal claimed the command executed');
+}));
+await test('a guarded-path result keeps core text untouched and carries the warning in context after the context beneath', () => freshVault(async () => {
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: guardedCommand }, async () => ({ result: { stdout: 'ok\n', stderr: '' }, text: 'ok\n', ref: 9, context: ['beneath'] }));
+  assert.equal(answer.deny, undefined);
+  assert.equal(answer.text, 'ok\n', 'core text was rewritten');
+  assert.equal(answer.ref, 9, 'core ref was dropped');
+  assert.deepEqual(answer.context?.slice(0, 1), ['beneath'], 'context from the hooks beneath was dropped');
+  assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING, 'the measurement warning was not in context');
+}));
+await test('a guarded Read answers with the warning in context, never in text', () => freshVault(async () => {
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ result: { type: 'text' }, text: 'contents', ref: 4 }));
+  assert.equal(answer.text, 'contents', 'core text was rewritten');
+  assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING);
+}));
+await test('an unguarded result gets no measurement warning anywhere', () => freshVault(async () => {
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo plain' }, async () => ({ result: { stdout: 'plain\n', stderr: '' }, text: 'plain\n', ref: 3 }));
+  assert.equal(MEASUREMENT_WARNING.test(JSON.stringify(answer)), false);
+}));
+await test('an empty refusal from beneath stays a bare refusal, guarded or not, even after a reference rewrite', () => freshVault(async () => {
+  const plain = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async () => ({ deny: '' }));
+  assert.deepEqual(plain, { deny: '' }, 'an empty refusal gained a field the host contract forbids');
+  const guarded = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} && echo op://Private/item/field` }, async () => ({ deny: '' }));
+  assert.deepEqual(Object.keys(guarded), ['deny'], 'a guarded empty refusal gained a field the host contract forbids');
+  assert.match(guarded.deny, REFUSAL_WARNING);
+}));
+await test('a guarded errored result with nothing to scrub keeps core error and carries the warning in context', () => freshVault(async () => {
+  const core = { isError: true, result: 'Exit code 3', text: 'Exit code 3', ref: 7 };
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} >/dev/null; exit 3` }, async () => core);
+  assert.equal(answer.deny, undefined);
+  assert.equal(answer.result, core.result);
+  assert.equal(answer.text, core.text, 'core error text was rewritten');
+  assert.equal(answer.isError, true);
+  assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING);
+}));
+// The guard's own wording is joined to text that was already scrubbed. The join can complete a held value that
+// no single piece held, and a note can itself contain a held value, so what the guard assembles is scrubbed again.
+await test('a refusal warning joined to a refusal never completes a held value', () => freshVault(async () => {
+  const held = 'Zq8r1Lp6\n[wt-secret-guard:';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ deny: 'Zq8r1Lp6' }));
+  assert.deepEqual(Object.keys(answer), ['deny']);
+  assert.equal(answer.deny.includes(held), false, 'the refusal warning completed a held value');
+}));
+await test('a measurement warning in context never carries a held value', () => freshVault(async () => {
+  const held = 'This command can read a credential file.';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ result: { type: 'text' }, text: 'contents', ref: 4 }));
+  assert.equal(JSON.stringify(answer.context ?? []).includes(held), false, 'the measurement warning carried a held value');
+}));
+await test('a redaction note in context never carries a held value', () => freshVault(async () => {
+  const held = 'The real value was removed before it reached you';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/wt-secret-guard-notes.txt' }, async () => ({ result: { type: 'text', file: { content: held } }, text: held, ref: 5 }));
+  assert.equal(JSON.stringify(answer).includes(held), false, 'a note carried a held value');
+}));
+await test('a redaction note joined to an errored refusal never carries a held value', () => freshVault(async () => {
+  const held = 'The real value was removed before it reached you';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo plain >&2; exit 3' }, async () => erroredCore(`Exit code 3\n${erroredValue}`));
+  assert.deepEqual(Object.keys(answer), ['deny']);
+  assert.equal(answer.deny.includes(held), false, 'a note in the refusal carried a held value');
 }));
 const { runRevisionLocks } = await import('./revision-locks.mjs');
 await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
