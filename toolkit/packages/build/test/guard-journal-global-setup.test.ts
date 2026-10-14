@@ -123,35 +123,36 @@ describe('guard-journal-isolation.global-setup: sole-writer-conditional throw', 
   })
 })
 
+/** A throw-away home whose installed_plugins.json names the plugin, with both journal dirs created and the env pointing at it. */
+function fakeInstalledHome(version = '0.0.1'): { canonical: string; legacy: string; configDir: string } {
+  const home = mkdtempSync(join(os.tmpdir(), 'wt-guard-journal-global-setup-home-'))
+  tempDirs.push(home)
+  const configDir = join(home, '.claude')
+  mkdirSync(join(configDir, 'plugins'), { recursive: true })
+  writeFileSync(join(configDir, 'plugins', 'installed_plugins.json'), JSON.stringify({
+    version: 2,
+    plugins: { 'workflow-toolbox@fixture-market': [{ scope: 'user', version }] },
+  }))
+  const canonical = join(configDir, 'plugins', 'data', 'workflow-toolbox-fixture-market', 'wt-guard-journal')
+  const legacy = join(home, '.local', 'state', 'wt-guard-journal')
+  mkdirSync(canonical, { recursive: true })
+  mkdirSync(legacy, { recursive: true })
+  isolatedHome = home
+  delete process.env.WT_GUARD_JOURNAL_DIR
+  delete process.env.CLAUDE_PLUGIN_DATA
+  process.env.HOME = home
+  process.env.USERPROFILE = home
+  process.env.CLAUDE_CONFIG_DIR = configDir
+  process.env.WT_GUARD_JOURNAL_ISOLATION_STRICT = '1'
+  return { canonical, legacy, configDir }
+}
+
 // Card 1878424989787490016: with nothing redirecting it, the plugin writer (plugin/bin/lib/guard-journal.mjs
 // baseDir()) journals into the CANONICAL plugin data dir whenever installed_plugins.json names workflow-toolbox, and
 // into the legacy ~/.local/state dir otherwise. A backstop watching only the legacy dir never sees a leak on an
 // installed machine. These cases build a throw-away home whose installed_plugins.json names the plugin, so the
 // canonical dir is the one a leaking test would write.
 describe('guard-journal-isolation.global-setup: watches every directory the writer can resolve', () => {
-  function fakeInstalledHome(version = '0.0.1'): { canonical: string; legacy: string; configDir: string } {
-    const home = mkdtempSync(join(os.tmpdir(), 'wt-guard-journal-global-setup-home-'))
-    tempDirs.push(home)
-    const configDir = join(home, '.claude')
-    mkdirSync(join(configDir, 'plugins'), { recursive: true })
-    writeFileSync(join(configDir, 'plugins', 'installed_plugins.json'), JSON.stringify({
-      version: 2,
-      plugins: { 'workflow-toolbox@fixture-market': [{ scope: 'user', version }] },
-    }))
-    const canonical = join(configDir, 'plugins', 'data', 'workflow-toolbox-fixture-market', 'wt-guard-journal')
-    const legacy = join(home, '.local', 'state', 'wt-guard-journal')
-    mkdirSync(canonical, { recursive: true })
-    mkdirSync(legacy, { recursive: true })
-    isolatedHome = home
-    delete process.env.WT_GUARD_JOURNAL_DIR
-    delete process.env.CLAUDE_PLUGIN_DATA
-    process.env.HOME = home
-    process.env.USERPROFILE = home
-    process.env.CLAUDE_CONFIG_DIR = configDir
-    process.env.WT_GUARD_JOURNAL_ISOLATION_STRICT = '1'
-    return { canonical, legacy, configDir }
-  }
-
   it('growth in the canonical plugin data dir: teardown throws (strict)', () => {
     const { canonical } = fakeInstalledHome()
     const teardown = setup()
