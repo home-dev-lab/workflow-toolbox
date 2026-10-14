@@ -109,9 +109,9 @@ afterEach(() => {
     expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'red-gates' })).toBe('accepted phase=tdd')
     const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
     expect(remediation).toContain('gate quality EXIT=1')
-    expect(remediation).toContain('.lane/quality.log')
+    expect(remediation).toContain(join('.lane', 'quality.log'))
     if (testExit) {
-      expect(remediation).toContain('gate test EXIT=1'); expect(remediation).toContain('.lane/test.log')
+      expect(remediation).toContain('gate test EXIT=1'); expect(remediation).toContain(join('.lane', 'test.log'))
       if (output.includes('actual failure')) expect(remediation).toContain('suite > actual failure')
     }
     const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
@@ -130,7 +130,7 @@ afterEach(() => {
     for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name })
     expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['invented name'], tool_use_id: 'invented' })).toMatch(/^edge refused:/)
     expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate test EXIT=1'], tool_use_id: 'fallback' })).toBe('accepted phase=tdd')
-    expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain('.lane/test.log')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain(join('.lane', 'test.log'))
   }, FIXTURE_TEST_TIMEOUT_MS)
 it('attested red gate recovery preserves progress when failed names change and shrink', async () => {
   let failedNames = ['suite > first', 'suite > second', 'suite > third']

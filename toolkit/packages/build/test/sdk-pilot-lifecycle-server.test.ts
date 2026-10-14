@@ -336,7 +336,7 @@ function linuxProcState(pid: number) {
     const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
     for (const [gate, evidence] of Object.entries(overrides)) {
       expect(remediation).toContain(`gate ${gate} EXIT=${evidence.exit}`)
-      expect(remediation).toContain(`.lane/${gate}.log`)
+      expect(remediation).toContain(pathJoin('.lane', `${gate}.log`))
     }
   })
 
