@@ -6,7 +6,6 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
-import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error ESM runtime module
@@ -408,13 +407,6 @@ describe('SDK pilot runner', () => {
     expect(result.summary.account).toMatchObject({ verdict: 'profile_override', expected: 'owner@example.com' })
   })
 
-  it('account gate: parses the explicit e-mail and refuses a missing value', () => {
-    const base = ['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md']
-    expect(parsePilotRunnerArgs([...base, '--expect-account', 'owner@example.com']).expectAccount).toBe('owner@example.com')
-    expect(parsePilotRunnerArgs([...base, '--expect-account'])).toEqual({ error: '--expect-account requires an e-mail' })
-    expect(parsePilotRunnerArgs([...base, '--expect-account', '  '])).toEqual({ error: '--expect-account requires an e-mail' })
-  })
-
   it('account gate: profile credential override refuses before query starts and names only the variable', async () => {
     const f = fixture(); const profile = join(f.root, 'profile.json')
     writeFileSync(profile, JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'fixture-secret' } }))
@@ -646,7 +638,8 @@ describe('SDK pilot runner', () => {
   it('places the required arbiter card file verbatim in the first prompt and states an absent knowledge index', async () => {
     const f = fixture(); const cardFile = join(f.root, 'card.md'); const card = '# Card title\n\nDefinition of done: ship it.\n'
     writeFileSync(cardFile, card)
-    writeFileSync(join(f.dir, 'CLAUDE.md'), '# Guide\n')
+    writeFileSync(join(f.dir, 'CLAUDE.md'), '# Guide\n\nMandatory: run `acme validate --strict` before shipping.\n')
+    spawnSync('git', ['add', 'CLAUDE.md'], { cwd: f.dir }); spawnSync('git', ['commit', '-qm', 'guide'], { cwd: f.dir })
     const prompts: string[] = []
     const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
       yield initMessage()
@@ -655,7 +648,8 @@ describe('SDK pilot runner', () => {
     const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
     await runPilot({ card: '186', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
     expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
-    expect(prompts[0]).toContain(`${canonicalPath(join(f.dir, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.`)
+    expect(prompts[0]).toContain('Mandatory: run `acme validate --strict` before shipping.')
+    expect(prompts[0]).toContain('BEGIN repository guide ')
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
@@ -2387,5 +2381,34 @@ describe('SDK pilot runner: plan shape in the first prompt', () => {
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
     expect(prompts).toHaveLength(1)
     expect((prompts[0] ?? '').includes(PLAN_SHAPE_DESCRIPTION)).toBe(expected)
+  })
+})
+
+describe('SDK pilot runner: stop-after route checks and arguments', () => {
+  it('refuses a stop-after phase the card route never leaves, before any query', async () => {
+    const lite = fixture(); let queried = false
+    const query = () => { queried = true; throw new Error('query was called') }
+    const options = { ...accountOptions(lite), mailbox: join(lite.root, 'none.txt') }
+    const liteError = await runPilot({ ...options, stopAfter: 'plan' }, { query, resolvePilotModels: models }).then(() => '', (error: Error) => error.message)
+    expect(liteError).toContain('--stop-after plan')
+    expect(liteError).toContain('LITE')
+    expect(liteError).toContain('discovery, tdd, verify')
+    expect(queried).toBe(false)
+    const full = fixture(); writeFileSync(full.cardFile, 'Route: FULL\n## Definition of done\n- exercise the runner\n')
+    const fullError = await runPilot({ ...accountOptions(full), mailbox: join(full.root, 'none.txt'), stopAfter: 'critic' }, { query, resolvePilotModels: models }).then(() => '', (error: Error) => error.message)
+    expect(fullError).not.toContain('--stop-after')
+    expect(queried).toBe(true)
+  })
+
+  it('account gate: parses the explicit e-mail and refuses a missing value', () => {
+    const base = ['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md']
+    expect(parsePilotRunnerArgs(base)).toMatchObject({ stopAfter: null })
+    expect(parsePilotRunnerArgs([...base, '--stop-after', 'critic'])).toMatchObject({ stopAfter: 'critic' })
+    expect(parsePilotRunnerArgs([...base, '--stop-after', 'bogus'])).toEqual({ error: '--stop-after must be one of: discovery, plan, critic, tdd, verify, review, refutation' })
+    expect(parsePilotRunnerArgs([...base, '--stop-after', 'report'])).toMatchObject({ error: expect.stringContaining('--stop-after must be one of') })
+    expect(parsePilotRunnerArgs([...base, '--stop-after'])).toMatchObject({ error: expect.stringContaining('--stop-after must be one of') })
+    expect(parsePilotRunnerArgs([...base, '--expect-account', 'owner@example.com']).expectAccount).toBe('owner@example.com')
+    expect(parsePilotRunnerArgs([...base, '--expect-account'])).toEqual({ error: '--expect-account requires an e-mail' })
+    expect(parsePilotRunnerArgs([...base, '--expect-account', '  '])).toEqual({ error: '--expect-account requires an e-mail' })
   })
 })

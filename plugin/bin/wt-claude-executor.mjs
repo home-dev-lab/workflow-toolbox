@@ -12,7 +12,7 @@ import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { createModelTracker, modelWarnings } from './lib/model-fallback-core.mjs'
 import { appendWarnings } from './lib/host/model-fallback-files.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryInstructions } from './lib/sdk-role-profile.mjs'
 
 const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
@@ -22,6 +22,10 @@ function finish(log, code) {
     if (/^EXIT=\d+$/.test(tail)) return
   } catch {}
   appendFileSync(log, `EXIT=${code}\n`)
+}
+
+function executorRepositoryPrompt(options, launch) {
+  return withRepositoryInstructions(options.dir, launch.prompt, { commit: options.repoCommit ?? undefined })
 }
 
 async function worker(options) {
@@ -64,7 +68,7 @@ async function worker(options) {
       abortController,
       env: claudeExecutorEnv(process.env),
     }, sdkRole)
-    const stream = query({ prompt: withRepositoryGuide(options.dir, launch.prompt), options: queryOptions })
+    const stream = query({ prompt: executorRepositoryPrompt(options, launch), options: queryOptions })
     for await (const message of stream) {
       modelTracker.observe(message)
       if (!initReceiptSeen && isPreInitNotice(message)) continue

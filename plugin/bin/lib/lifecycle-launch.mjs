@@ -58,6 +58,30 @@ function launchVariantArgs(executor, variant) {
     : ['--role', variant.role]
 }
 
+// A Claude lane reads the repository's guides at the commit the run was constructed from, never at whatever
+// `.git` of its writable worktree says HEAD is by then. Only a real sha is passed; the executor refuses anything else.
+function repoCommitArgs(executor, constructionBase) {
+  return executor === 'claude-sdk' && /^[0-9a-f]{7,64}$/.test(constructionBase ?? '') ? ['--repo-commit', constructionBase] : []
+}
+
+function laneLaunchArgs({ launcher, root, model, brief, log, timeout, plan, constructionBase, nonce, snapshot, phase, knowledgeBaseIndex }) {
+  return [
+    launcher,
+    '--dir', root,
+    '--model', model,
+    '--brief', brief,
+    '--log', log,
+    '--timeout', String(timeout),
+    ...plan.args,
+    ...repoCommitArgs(plan.executor, constructionBase),
+    ...(plan.executor === 'claude-sdk' ? [] : ['--owner', 'pilot', '--owner-token', nonce, '--brief-cleanup-dir', snapshot]),
+    // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
+    ...(plan.executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
+      ? ['--knowledge-base-index', knowledgeBaseIndex]
+      : []),
+  ]
+}
+
 export function phaseLaunchPlan(phase, model, defaultExecutor, env = {}) {
   const executor = executorFamilyForModel(model) ?? defaultExecutor
   const variant = launchVariant(phase, model, env)
@@ -286,6 +310,7 @@ export function createLifecycleLaunch({
   executor,
   executorEnv,
   knowledgeBaseIndex,
+  constructionBase,
   frozenModels,
   state,
   laneBriefContexts,
@@ -507,20 +532,9 @@ export function createLifecycleLaunch({
           laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
           launch = await launchProcessWithOutput(
             process.execPath,
-            [
-              launcher,
-              '--dir', root,
-              '--model', model,
-              '--brief', snapshotBrief,
-              '--log', log,
-              '--timeout', String(timeout),
-              ...plan.args,
-              ...(plan.executor === 'claude-sdk' ? [] : ['--owner', 'pilot', '--owner-token', nonce, '--brief-cleanup-dir', snapshot]),
-              // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
-              ...(plan.executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
-                ? ['--knowledge-base-index', knowledgeBaseIndex]
-                : []),
-            ],
+            laneLaunchArgs({
+              launcher, root, model, brief: snapshotBrief, log, timeout, plan, constructionBase, nonce, snapshot, phase, knowledgeBaseIndex,
+            }),
             {
               cwd: root,
               stdoutPath: path.join(snapshot, 'launcher.stdout'),
