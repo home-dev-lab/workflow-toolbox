@@ -5,6 +5,7 @@ import { coveredCommandSpawnOptions, signalCoveredCommand, stopCoveredCommandTre
 import {
   DEFAULT_SUITE_LOCK_STALE_S,
   DEFAULT_SUITE_LOCK_WAIT_S,
+  P0_BYPASS_MAX_GRANTS,
   acquireSuiteLock,
   hasSuiteLeaseAsync,
   formatSuiteLockHolder,
@@ -26,6 +27,8 @@ const USAGE = `Usage:
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
   --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
   WT_SUITE_LOCK_PRIORITY declares P0, P1 (default), or P2; levels age one step per 30 minutes.
+  A P1/P2 ticket ages no higher than P1 until ${P0_BYPASS_MAX_GRANTS} declared-P0 admissions have passed it, so a declared P0
+  goes before aged tickets; this applies once every queued client runs this version (status names the legacy order otherwise).
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
   Release priority is reserved for the main session's release and merge-train gates.`
 

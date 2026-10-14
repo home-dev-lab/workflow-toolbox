@@ -174,6 +174,7 @@ export function discardDirectory(directory) {
 
 const LIGHT_GRANTS_FILE = 'light-grants'
 const ADMISSIONS_FILE = 'admissions'
+const P0_GRANTS_FILE = 'p0-grants'
 
 /**
  * The light-grants counter: `{ generation, grants }`. `generation` is null when there is no valid counter
@@ -184,13 +185,31 @@ export function readLightCounter(root) {
   return readCounter(root, LIGHT_GRANTS_FILE)
 }
 
-function readCounter(root, file) {
+// A counter that is absent (ENOENT) or unparsable is "no counter" at once. Any other read error (a Windows sharing
+// violation, EBUSY/EPERM/EACCES/EAGAIN) is retried a few times first: one waiter reading "no counter" while another
+// reads the real one would make each compute the other ahead. A failure that outlasts the retries still reads as no
+// counter (that waiter's tickets age as before). `read` is a test seam.
+const COUNTER_READ_ATTEMPTS = 4
+const COUNTER_READ_PAUSE_MS = 10
+
+function readCounterText(file, read) {
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  for (let attempt = 1; ; attempt += 1) {
+    try { return read(file, 'utf8') } catch (error) {
+      if (error?.code === 'ENOENT' || attempt >= COUNTER_READ_ATTEMPTS) return null
+      Atomics.wait(pause, 0, 0, COUNTER_READ_PAUSE_MS)
+    }
+  }
+}
+
+function readCounter(root, file, read = readFileSync) {
+  const text = readCounterText(path.join(root, file), read)
   try {
-    const parsed = JSON.parse(readFileSync(path.join(root, file), 'utf8'))
+    const parsed = text === null ? null : JSON.parse(text)
     if (typeof parsed?.generation === 'string' && parsed.generation !== '' && Number.isSafeInteger(parsed.grants) && parsed.grants >= 0) {
       return { generation: parsed.generation, grants: parsed.grants }
     }
-  } catch { /* missing or unreadable: no valid counter */ }
+  } catch { /* unparsable: no valid counter */ }
   return { generation: null, grants: 0 }
 }
 
@@ -202,20 +221,58 @@ function writeCounter(root, file, state) {
 
 /** The counter an exclusive waiter records against; creates it (new generation) when there is none. */
 export function ensureLightCounter(root) {
-  const current = readLightCounter(root)
+  return ensureCounter(root, LIGHT_GRANTS_FILE)
+}
+
+/** The declared-P0 counter a P1/P2 waiter records against at queue time; created like the light counter. */
+export function ensureP0Counter(root) {
+  return ensureCounter(root, P0_GRANTS_FILE)
+}
+
+/** Read-only: `{ generation: null, grants: 0 }` when there is no valid P0 counter; never creates one. */
+export function readP0Counter(root, read) {
+  return readCounter(root, P0_GRANTS_FILE, read)
+}
+
+// Shared by every counter a waiter records against. A waiter that finds the file present but unreadable (after the
+// read retries) replaces it under a new generation. That replacement can race the holder's increment, which is not
+// serialised with it: either the replacement wins (tickets recorded against the old generation no longer match and
+// age as before) or the increment republishes the old generation (the replacing waiter's own ticket no longer
+// matches and ages as before). Both directions erase a declared priority for some tickets; neither starves one.
+function ensureCounter(root, file) {
+  const current = readCounter(root, file)
   if (current.generation !== null) return current
   const fresh = { generation: randomUUID(), grants: 0 }
   try {
-    writeFileSync(path.join(root, LIGHT_GRANTS_FILE), `${JSON.stringify(fresh)}\n`, { flag: 'wx', mode: 0o600 })
+    writeFileSync(path.join(root, file), `${JSON.stringify(fresh)}\n`, { flag: 'wx', mode: 0o600 })
     return fresh
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error
   }
-  const raced = readLightCounter(root)
+  const raced = readCounter(root, file)
   if (raced.generation !== null) return raced
-  writeCounter(root, LIGHT_GRANTS_FILE, fresh) // present but unreadable: replaced under a new generation
+  writeCounter(root, file, fresh) // present but unreadable: replaced under a new generation
   return fresh
 }
+
+/**
+ * Counts one declared-P0 admission; called by the admitted holder. It only increments an existing valid counter,
+ * never creates or regenerates one. A P0 admission never overtakes without accounting: when the count cannot be
+ * written, the counter is removed, so every ticket recorded against it stops matching and ages as before (priority
+ * erased, never starvation), with one stderr line. When the removal fails too, this throws and the admission fails
+ * the way a light-grant failure does (lease handed back, transient retry, then the error).
+ * `seams.write` / `seams.remove` are test seams.
+ */
+export function recordP0Grant(root, seams = {}) {
+  const current = readCounter(root, P0_GRANTS_FILE)
+  if (current.generation === null) return
+  try { (seams.write ?? writeCounter)(root, P0_GRANTS_FILE, { generation: current.generation, grants: current.grants + 1 }) } catch (error) {
+    (seams.remove ?? removeCounterFile)(path.join(root, P0_GRANTS_FILE))
+    process.stderr.write(`wt-suite-lock: P0 admission not counted (${String(error?.code ?? 'unknown')}); p0-grants removed, so waiting P1/P2 tickets age as before\n`)
+  }
+}
+
+const removeCounterFile = (file) => rmSync(file, { force: true })
 
 /** Counts one light grant. Called by the light holder once it is admitted: the sole holder, so no writer race. */
 export function recordLightGrant(root) {

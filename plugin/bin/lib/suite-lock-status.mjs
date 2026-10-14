@@ -5,6 +5,7 @@ import { suiteLockLongHoldSeconds } from './suite-lock-priority.mjs'
 const finite = (value) => Number.isFinite(value) ? value : null
 const pidNumber = (value) => Number.isSafeInteger(value) && value > 0 ? value : null
 const OLDER_BROKER_QUEUE = 'queue unavailable from an older broker'
+const LEGACY_LEVEL_ORDER = 'queue legacy level order: a queued client predates bounded P0 order; declared P0 does not pass aged tickets until it leaves'
 function safeValue(value, depth = 0) {
   if (depth > 4) return '[truncated]'
   if (typeof value === 'string') return displayText(value)
@@ -28,22 +29,24 @@ function safeHolder(holder) {
     startTime: finite(holder.startTime) }
 }
 
+// An ordered ticket shows the level it was ordered by; stale tickets and compatible order recompute it.
 function queueEntry(ticket, position, now) {
   const record = ticket.record
   return { position, number: finite(ticket.number), pid: pidNumber(record?.pid),
-    level: numericLevel(record?.level) ? record.level : null, effectiveLevel: effectiveLevel(record, now),
+    level: numericLevel(record?.level) ? record.level : null,
+    effectiveLevel: ticket.effectiveLevel === undefined ? effectiveLevel(record, now) : ticket.effectiveLevel,
     light: record?.light === true, release: record?.priority === 'release',
     waitedMs: waitedMilliseconds(record?.startedAt, now), stale: ticket.stale, argv: displayArgv(safeArgv(record?.argv)) }
 }
 
-export function suiteLockStatusSnapshot(current, tickets, counter, now, env) {
+export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0Counter) {
   const live = tickets.filter((ticket) => !ticket.stale)
-  const ordered = orderSuiteLockTickets(live, counter, now)
+  const ordered = orderSuiteLockTickets(live, counter, now, p0Counter)
   const stale = tickets.filter((ticket) => ticket.stale).sort((left, right) => left.number - right.number)
   const ageMs = current.held ? waitedMilliseconds(current.holder?.startedAt, now) : null
   const longHoldBoundS = suiteLockLongHoldSeconds(env)
   return { ...current, holder: safeHolder(current.holder), ageMs, level: numericLevel(current.holder?.level) ? current.holder.level : null,
-    longHold: ageMs !== null && ageMs > longHoldBoundS * 1000, longHoldBoundS, order: ordered.order,
+    longHold: ageMs !== null && ageMs > longHoldBoundS * 1000, longHoldBoundS, order: ordered.order, levelOrder: ordered.levelOrder,
     queue: [...ordered.tickets, ...stale].map((ticket, index) => queueEntry(ticket, index + 1, now)) }
 }
 
@@ -74,21 +77,26 @@ function longHoldLine(current) {
   return `long hold: pid ${pidNumber(current.holder?.pid) ?? 'unknown'} held ${formatSuiteLockDuration(current.ageMs)}, above the ${finite(current.longHoldBoundS) ?? 'unknown'} s bound; the lock never pre-empts a holder`
 }
 
+function orderLines(current) {
+  if (current.order === 'compatible') return ['queue compatibility order: exact older-client ordering while a live ticket has no level']
+  return current.order === 'levels' && current.levelOrder === 'legacy' ? [LEGACY_LEVEL_ORDER] : []
+}
+
 export function formatSuiteLockStatus(current, holderText) {
   const queue = Array.isArray(current.queue) ? current.queue : []
   const waiting = queue.filter((entry) => !entry.stale).length
   const free = waiting ? `suite lock free; ${waiting} wait` : 'suite lock free'
   const lines = [current.legacyStatus ?? (current.held ? holderHeadline(current, holderText) : free)]
   if (current.longHold) lines.push(longHoldLine(current))
-  if (current.order === 'compatible') lines.push('queue compatibility order: exact older-client ordering while a live ticket has no level')
+  lines.push(...orderLines(current))
   if (!Array.isArray(current.queue)) lines.push(OLDER_BROKER_QUEUE)
   lines.push(...queue.map(queueLine))
   return lines.map(displayText).join('\n') + '\n'
 }
 
 export function suiteLockStatusJson(current) {
-  const { held, holder, stale, ageMs, level, longHold, longHoldBoundS, order, queue } = current
+  const { held, holder, stale, ageMs, level, longHold, longHoldBoundS, order, levelOrder, queue } = current
   const status = current.legacyStatus ?? (Array.isArray(queue) ? null : OLDER_BROKER_QUEUE)
   return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, order,
-    queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}) }
+    ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}) }
 }

@@ -330,7 +330,7 @@ describe('release priority', () => {
     }
     releaseSuiteLock(holder); await Promise.all(all)
     expect(order, 'release priority has no per-waiter bypass bound').toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'L', 'E'])
-    expect(readdirSync(root).sort(), 'release admissions add no release-specific state').toEqual(['admissions', 'light-grants', 'queue.d'])
+    expect(readdirSync(root).sort(), 'release admissions add no release-specific state; p0-grants comes from the default-P1 tickets, which record the P0 counter at queue time').toEqual(['admissions', 'light-grants', 'p0-grants', 'queue.d'])
     expect(readLightCounter(root).grants).toBe(1)
   }, 20_000)
 
