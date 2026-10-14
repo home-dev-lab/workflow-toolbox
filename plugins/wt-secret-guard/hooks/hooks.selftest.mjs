@@ -4115,6 +4115,34 @@ await test('a guarded errored result with nothing to scrub keeps core error and 
   assert.equal(answer.isError, true);
   assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING);
 }));
+// The guard's own wording is joined to text that was already scrubbed. The join can complete a held value that
+// no single piece held, and a note can itself contain a held value, so what the guard assembles is scrubbed again.
+await test('a refusal warning joined to a refusal never completes a held value', () => freshVault(async () => {
+  const held = 'Zq8r1Lp6\n[wt-secret-guard:';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ deny: 'Zq8r1Lp6' }));
+  assert.deepEqual(Object.keys(answer), ['deny']);
+  assert.equal(answer.deny.includes(held), false, 'the refusal warning completed a held value');
+}));
+await test('a measurement warning in context never carries a held value', () => freshVault(async () => {
+  const held = 'This command can read a credential file.';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ result: { type: 'text' }, text: 'contents', ref: 4 }));
+  assert.equal(JSON.stringify(answer.context ?? []).includes(held), false, 'the measurement warning carried a held value');
+}));
+await test('a redaction note in context never carries a held value', () => freshVault(async () => {
+  const held = 'The real value was removed before it reached you';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/wt-secret-guard-notes.txt' }, async () => ({ result: { type: 'text', file: { content: held } }, text: held, ref: 5 }));
+  assert.equal(JSON.stringify(answer).includes(held), false, 'a note carried a held value');
+}));
+await test('a redaction note joined to an errored refusal never carries a held value', () => freshVault(async () => {
+  const held = 'The real value was removed before it reached you';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo plain >&2; exit 3' }, async () => erroredCore(`Exit code 3\n${erroredValue}`));
+  assert.deepEqual(Object.keys(answer), ['deny']);
+  assert.equal(answer.deny.includes(held), false, 'a note in the refusal carried a held value');
+}));
 const { runRevisionLocks } = await import('./revision-locks.mjs');
 await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
 console.log(`hooks registered: ${hooks.length}`);

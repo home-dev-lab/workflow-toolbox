@@ -1,5 +1,6 @@
 // Mechanism/policy separation: translate pure verdicts into warn-only measurement behavior.
 import { appendEvent } from './journal.js';
+import { scrubAssembled } from './scrub.js';
 
 export const WARNING = '[wt-secret-guard: WOULD BLOCK; executed in measurement mode. This command can read a credential file.]';
 
@@ -22,7 +23,7 @@ const REFUSAL_WARNING = '[wt-secret-guard: WOULD BLOCK; this command can read a 
 // inside the refusal, or in `context`, which the model reads after the result.
 function withWarning(result) {
   if (!result || typeof result !== 'object') return result;
-  if (result.deny !== undefined) return { deny: `${result.deny}\n${REFUSAL_WARNING}` };
+  if (result.deny !== undefined) return { deny: scrubAssembled(`${result.deny}\n${REFUSAL_WARNING}`) };
   const context = Array.isArray(result.context) ? result.context : [];
-  return { ...result, context: [...context, WARNING] };
+  return { ...result, context: scrubAssembled([...context, WARNING]) };
 }
