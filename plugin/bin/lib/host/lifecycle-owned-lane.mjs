@@ -8,6 +8,23 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const terminal = (verdict) => ['terminal', 'gone'].includes(verdict.status)
 const errorText = (error) => error instanceof Error ? error.message : String(error)
 
+export function aggregateSelectedCritic(args, result, aggregate) {
+  return args?.kind === 'lane' && args.phase === 'critic' && args.criticLane ? aggregate([result]) : result
+}
+
+function owns(context, identity, phase) {
+  return context.state.ownedLanes.has(identity.slot ?? phase)
+}
+
+function register(context, record) {
+  context.state.ownedLanes.set(record.key, record)
+  return record
+}
+
+function finishLaunch(context, record) {
+  if (!record.workerPid || !context.state.ownedLanes.has(record.key)) context.finalize(record)
+}
+
 function supervision(root, record, readRegularFile, classify) {
   let saved = null
   try { saved = JSON.parse(readRegularFile(supervisionPaths(root, record.runId, record.slot).record)) } catch {}
@@ -20,7 +37,7 @@ function decisionDetail(saved) {
 
 function timeoutDetail(saved, verdict) {
   if (verdict.status === 'decision-needed') return decisionDetail(saved)
-  if (verdict.status === 'running') return `owner=${saved.owner}; live worker is still completing its bounded timeout transition; wait for the decision point before choosing; no process was killed`
+  if (verdict.status === 'running') return `liveness=running; owner=${saved.owner}; live worker is still completing its bounded timeout transition; wait for the decision point before choosing; no process was killed`
   if (verdict.status === 'worker-gone-child-alive') return `worker-gone-child-alive; surviving child pid=${saved.childPid}; no process was killed`
   if (verdict.status === 'unknown') return saved === null
     ? 'unknown liveness; no process was killed'
@@ -59,7 +76,7 @@ export function createOwnedLaneWait(context) {
   const observe = (record) => supervision(root, record, readRegularFile, classify)
   const receipt = (record, timeoutMs) => waitForLaneReceipt({ log: record.log, nonce: record.nonce, timeoutMs, pollMs: lanePollMs, readAttestation, readRegularFile })
   const bound = { ...context, root, state, refusal, controlPath, observe, receipt }
-  for (const [name, operation] of Object.entries({ reconcile, timeout, finalize, preflight, poll, copyPair, publish, awaitOwnedLane })) {
+  for (const [name, operation] of Object.entries({ owns, register, finishLaunch, reconcile, timeout, finalize, preflight, poll, copyPair, publish, awaitOwnedLane })) {
     bound[name] = (...args) => operation(bound, ...args)
   }
   return bound
@@ -169,10 +186,12 @@ function publish(context, record, logEntry) {
 }
 
 async function awaitOwnedLane(context, record) {
-  const { receipt, preflight, poll, timeout, publish, finalize, state } = context
+  const { receipt, preflight, poll, timeout, publish, finalize } = context
+  const initialWait = record.initialWait
+  record.initialWait = false
   let logEntry = await receipt(record, record.waitMs)
   if (record.runId) {
-    if (!logEntry && !state.ownedLanes.has(record.key)) await preflight(record)
+    if (!logEntry && initialWait) await preflight(record)
     const observed = await poll(record, logEntry)
     logEntry = observed.logEntry
     if (!terminal(observed.verdict)) return timeout(record, logEntry

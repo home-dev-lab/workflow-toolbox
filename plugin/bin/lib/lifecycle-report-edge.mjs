@@ -369,12 +369,21 @@ function copyProtectedLaneTree(source, destination, root) {
   }
 }
 
+function blockedArchiveSummary(root, laneDir, partial) {
+  try {
+    const summary = JSON.parse(readWorktreeRegular(path.join(laneDir, 'summary.json'), 'utf8', root))
+    const reason = partial?.finalizationReason ?? partial?.reason
+    if (summary?.blocked_on && typeof reason === 'string' && summary.reason === reason) return { completed: false, reason: summary.reason, blocked_on: summary.blocked_on }
+  } catch {}
+  return {}
+}
+
 export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, deferred, implementation, delivery = { mode: 'commit', artifacts: [] }, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const target = assertArchiveOutsideWorktree({ root, archiveRoot, target: path.join(archiveRoot ?? '', '.claude', 'reports', `${cardId}-${stamp}`) })
   const temporary = `${target}.tmp-${randomUUID()}`
   const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null, deferred: deferred ?? null, delivery, routed_cards: routedCards }, null, 2)}\n`
-  const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null, deferred: deferred ?? null, delivery }
+  const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null, deferred: deferred ?? null, delivery, ...blockedArchiveSummary(root, laneDir, partial) }
   let wroteLaneSummary = false
   try {
     assertDirectories()

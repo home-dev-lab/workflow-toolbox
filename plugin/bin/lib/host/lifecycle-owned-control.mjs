@@ -50,6 +50,9 @@ export async function runOwnedControl(context, args) {
     const result = await owned.awaitOwnedLane(record)
     return record.criticLane ? aggregate([result]) : result
   }
-  if (observation.terminal) return finish()
+  // The control CLI admits a decision only at a decision point, or an abandon of an orphaned child.
+  const admitted = observation.verdict.status === 'decision-needed'
+    || (observation.verdict.status === 'worker-gone-child-alive' && args.decision === 'abandon')
+  if (observation.terminal || !admitted) return finish()
   return decide(context, record, args, observation, finish)
 }

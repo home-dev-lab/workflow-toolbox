@@ -11,7 +11,7 @@ import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './li
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { executorFamilyForModel } from './executor-defaults.mjs'
 import { classifyLane } from './lane-supervisor-core.mjs'
-import { createOwnedLaneWait } from './host/lifecycle-owned-lane.mjs'
+import { aggregateSelectedCritic, createOwnedLaneWait } from './host/lifecycle-owned-lane.mjs'
 import { runOwnedControl } from './host/lifecycle-owned-control.mjs'
 import { ensureLaneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
@@ -477,10 +477,10 @@ export function createLifecycleLaunch({
         return refusal(`${state.phase}->next`, 'lane for current admitted phase', path.join(laneDir, `${args.phase ?? 'unknown'}-run.log`))
       }
       const phase = args.phase
-      if ([...state.ownedLanes.values()].some((record) => record.phase === phase)) {
+      const identity = criticLaneLaunchIdentity(args.criticLane, executorEnv)
+      if (owned.owns(identity, phase)) {
         return refusal(`${phase}->next`, `lane ${phase} is owned and live; decide with run { kind: 'control', decision: 'extend'|'abandon' }`, laneDir)
       }
-      const identity = criticLaneLaunchIdentity(args.criticLane, executorEnv)
       const brief = path.join(laneDir, `${phase}${identity.suffix}-brief.md`)
       if (!laneBriefContexts.has(phase)) {
         return refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief)
@@ -529,6 +529,9 @@ export function createLifecycleLaunch({
             plan.script,
           )
           laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
+          ownedRecord = owned.register({ key: identity.slot ?? phase, slot: identity.slot, phase, criticLane: args.criticLane,
+            nonce, runId: null, workerPid: null, initialWait: true,
+            log, report, canonicalLog, canonicalReport, group, laneRecord, snapshot, waitMs: laneWaitMs ?? timeout * 1000 })
           launch = await launchProcessWithOutput(
             process.execPath,
             laneLaunchArgs({
@@ -546,18 +549,15 @@ export function createLifecycleLaunch({
         }
         const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
         if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', log)}${launcherFailureDetail(launch)}`
-        ownedRecord = { key: identity.slot ?? phase, slot: identity.slot, phase, criticLane: args.criticLane,
-          nonce, runId: /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null, workerPid,
-          log, report, canonicalLog, canonicalReport, group, laneRecord, snapshot, waitMs: laneWaitMs ?? timeout * 1000 }
+        Object.assign(ownedRecord, { runId: /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null, workerPid })
         return await owned.awaitOwnedLane(ownedRecord)
       } catch (error) {
         fs.rmSync(path.join(laneDir, `${phase}-input.diff`), { force: true })
         fs.rmSync(brief, { force: true })
         return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
       } finally {
-        if (ownedRecord) {
-          if (!state.ownedLanes.has(ownedRecord.key)) owned.finalize(ownedRecord)
-        } else {
+        if (ownedRecord) owned.finishLaunch(ownedRecord)
+        else {
           if (laneRecord?.ended_at === null) recordLaneEnd(laneRecord, now(), 'missing')
           if (snapshot) fs.rmSync(snapshot, { recursive: true, force: true })
         }
@@ -617,9 +617,9 @@ export function createLifecycleLaunch({
     return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect|control', laneDir)
   }
 
-  function run(args) {
+  async function run(args) {
     const parallelCritic = args?.kind === 'lane' && args.phase === 'critic' && state.priorCriticRounds.length === 0 && !args.criticLane
-    return parallelCritic ? runParallelCritics(args) : runSingle(args)
+    return parallelCritic ? runParallelCritics(args) : aggregateSelectedCritic(args, await runSingle(args), aggregateCritics)
   }
 
   return { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot }
