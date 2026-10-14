@@ -13,7 +13,7 @@ const DEFAULT_LIMITS = Object.freeze({ total: 40_000, nestedGuides: 20, gateLine
 
 // Repository text reaches a prompt only through here: control characters (CR, LF, NUL ...) become spaces so it
 // cannot start a line or a heading, and a value past `limit` characters is cut with an ellipsis.
-export function clipValue(value, limit = DEFAULT_LIMITS.command) {
+function clipValue(value, limit = DEFAULT_LIMITS.command) {
   const text = String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
   return text.length > limit ? `${text.slice(0, limit)}…` : text
 }
