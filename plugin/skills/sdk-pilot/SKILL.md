@@ -104,7 +104,7 @@ atomically to host-only run state that no sandboxed lane can reach; no mailbox o
 binds the card criterion's literal words verbatim and records that the critic may not block again on
 that criterion for the rest of the run. The report and summary quote both.
 The waker's hook allows only the exact parent and runner-composed body, plus a `ToolSearch`
-for `select:SendMessage` (with an optional positive `max_results`). It runs without plugins or project settings and makes
+for `select:SendMessage` (with an optional `max_results` from 1 to 50); a `content` field must equal the body. It runs without plugins or project settings and makes
 one attempt per request. `parent wake: transport-accepted` means only that the correlated tool
 result returned JSON `success:true`; only the receiver's transcript proves a wake. A mode-class
 mismatch is held silently by the harness even with `success:true`, so `decision request:` in

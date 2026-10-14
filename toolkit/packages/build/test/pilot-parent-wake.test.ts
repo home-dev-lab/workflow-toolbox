@@ -84,16 +84,16 @@ describe('parent wake e2e proof', () => {
 })
 
 describe('parent wake mechanical fence', () => {
-  it.each([{}, { recipient: parent }, { type: 'message' }, { content: body(), summary: body() }, { content: body().slice(0, 10) + '…', summary: '…' }])('allows exact fields %j', async (fields) => {
+  it.each([{}, { recipient: parent }, { type: 'message' }, { content: body(), summary: body() }, { summary: '…' }, { summary: body().slice(0, 10) + '…' }])('allows exact fields %j', async (fields) => {
     expect((await createWakeFence(parent, body())(hookInput(input(fields)), 'send-1')).hookSpecificOutput.permissionDecision).toBe('allow')
   })
   it.each([
     { to: 'other' }, { message: 'different' }, { recipient: 'other' }, { recipient: undefined }, { type: 'broadcast' }, { type: undefined }, { extra: true },
-    { content: 'unrelated…' }, { summary: 'unrelated…' }, { content: body() + '…' }, { summary: body() + '……' }, { content: '' }, { summary: null },
+    { content: 'unrelated…' }, { summary: 'unrelated…' }, { content: body() + '…' }, { summary: body() + '……' }, { content: '' }, { summary: null }, { content: '…' }, { content: body().slice(0, 10) + '…' }, { content: body().split('\n')[0] + '…' },
   ])('denies changed fields %j', async (fields) => {
     expect((await createWakeFence(parent, body())(hookInput(input(fields)), 'send-1')).hookSpecificOutput.permissionDecision).toBe('deny')
   })
-  it.each([['ToolSearch', { query: 'select:SendMessage' }, 'allow'], ['ToolSearch', { query: 'SendMessage' }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', extra: 1 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 5 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 0 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1.5 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: '1' }, 'deny'], ['ToolSearch', { query: 'select:ListAgents', max_results: 1 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1, extra: 1 }, 'deny'], ['ListAgents', {}, 'deny'], ['Bash', {}, 'deny'], ['SendMessage', null, 'deny']])('fences %s %j', async (name, fields, verdict) => {
+  it.each([['ToolSearch', { query: 'select:SendMessage' }, 'allow'], ['ToolSearch', { query: 'SendMessage' }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', extra: 1 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 5 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 50 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 51 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1e308 }, 'deny'], ['ToolSearch', Object.create({ query: 'select:SendMessage' }), 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 0 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1.5 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: '1' }, 'deny'], ['ToolSearch', { query: 'select:ListAgents', max_results: 1 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1, extra: 1 }, 'deny'], ['ListAgents', {}, 'deny'], ['Bash', {}, 'deny'], ['SendMessage', null, 'deny']])('fences %s %j', async (name, fields, verdict) => {
     expect((await createWakeFence(parent, body())(hookInput(fields, name as string))).hookSpecificOutput.permissionDecision).toBe(verdict)
   })
   it('denies when input inspection throws', async () => {
@@ -143,6 +143,10 @@ describe('wake outcomes and separate accounting', () => {
 })
 
 describe('wake denial receipt', () => {
+  it('records no denial when a bounded search precedes the admitted send', async () => {
+    const receipt = await run(queryFor([assistant([{ type: 'tool_use', name: 'ToolSearch', id: 'search', input: { query: 'select:SendMessage', max_results: 1 } }]), assistant([send()]), result('{"success":true}')]))
+    expect(receipt).toMatchObject({ outcome: 'transport-accepted', denied_tool: null, tool_use_id: 'send-1' })
+  })
   it('names the denied tool, never its input, in the receipt and the log line', async () => {
     const logs: string[] = []
     const receipt = await run(queryFor([assistant([{ type: 'tool_use', name: 'ToolSearch', id: 'search', input: { query: 'select:ListAgents INJECTED' } }])]), { log: (line: string) => logs.push(line) })

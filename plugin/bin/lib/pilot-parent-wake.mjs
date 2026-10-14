@@ -58,13 +58,17 @@ function sendAllowed(input, parent, body) {
   if (!Object.keys(input).every((key) => SEND_KEYS.has(key))) return false
   if (input.to !== parent || input.message !== body) return false
   if (!optionalExact(input, 'recipient', parent) || !optionalExact(input, 'type', 'message')) return false
-  return ['content', 'summary'].every((key) => !Object.hasOwn(input, key) || truncatedBody(input[key], body))
+  // content may be what the harness delivers, so it must be the whole body; summary is a local label and may be truncated.
+  return optionalExact(input, 'content', body) && (!Object.hasOwn(input, 'summary') || truncatedBody(input.summary, body))
 }
+
+const MAX_SEARCH_RESULTS = 50
 
 // The ToolSearch schema carries an optional max_results; the waker model fills it in (measured on haiku, 3 of 3 runs).
 function searchAllowed(input) {
   if (!Object.keys(input).every((key) => key === 'query' || key === 'max_results')) return false
-  return input.query === 'select:SendMessage' && (!Object.hasOwn(input, 'max_results') || (Number.isInteger(input.max_results) && input.max_results > 0))
+  if (!Object.hasOwn(input, 'query') || input.query !== 'select:SendMessage') return false
+  return !Object.hasOwn(input, 'max_results') || (Number.isSafeInteger(input.max_results) && input.max_results >= 1 && input.max_results <= MAX_SEARCH_RESULTS)
 }
 
 function toolAllowed(name, input, parent, body) {
