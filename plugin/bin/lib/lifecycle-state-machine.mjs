@@ -1008,7 +1008,7 @@ export function createLifecycleStateMachine({
     constructionBase,
     frozenModels,
     state,
-    laneBriefContexts,
+    laneBriefContexts, laneBriefIdentities,
     prepareLaneBrief,
     assertLaneDir,
     refusal,

@@ -9,7 +9,7 @@ const terminal = (verdict) => ['terminal', 'gone'].includes(verdict.status)
 const errorText = (error) => error instanceof Error ? error.message : String(error)
 
 export function aggregateSelectedCritic(args, result, aggregate) {
-  return args?.kind === 'lane' && args.phase === 'critic' && args.criticLane ? aggregate([result]) : result
+  return args?.kind === 'lane' && args.phase === 'critic' && args.criticLane && /^lane critic EXIT=(?:0|-?[1-9]\d*)$/.test(result) ? aggregate([result]) : result
 }
 
 function owns(context, identity, phase) {
@@ -175,8 +175,8 @@ function publish(context, record, logEntry) {
   const problem = copyPair(record)
   if (problem) return problem
   try {
-    attest(canonicalReport)
-    attest(canonicalLog, { group: record.group })
+    attest(canonicalReport, { briefIdentity: record.briefIdentity })
+    attest(canonicalLog, { group: record.group, briefIdentity: record.briefIdentity })
   } catch (error) {
     return refusal(`${phase}->next`, `publish lane pair (${errorText(error)})`, canonicalLog, 'receipt')
   }

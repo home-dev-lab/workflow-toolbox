@@ -378,6 +378,12 @@ function blockedArchiveSummary(root, laneDir, partial) {
   return {}
 }
 
+function withdrawArchiveSummary(laneDir, summary, writeRegularFile) {
+  if (!summary.blocked_on) { fs.rmSync(path.join(laneDir, 'summary.json'), { force: true }); return }
+  const { archive: _archive, ...local } = summary
+  writeRegularFile(path.join(laneDir, 'summary.json'), `${JSON.stringify(local, null, 2)}\n`)
+}
+
 export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, deferred, implementation, delivery = { mode: 'commit', artifacts: [] }, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const target = assertArchiveOutsideWorktree({ root, archiveRoot, target: path.join(archiveRoot ?? '', '.claude', 'reports', `${cardId}-${stamp}`) })
@@ -400,7 +406,7 @@ export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, he
     fs.renameSync(temporary, target)
   } catch (error) {
     fs.rmSync(temporary, { recursive: true, force: true })
-    if (wroteLaneSummary) fs.rmSync(path.join(laneDir, 'summary.json'), { force: true })
+    if (wroteLaneSummary) withdrawArchiveSummary(laneDir, summary, writeRegularFile)
     throw error
   }
   return summary

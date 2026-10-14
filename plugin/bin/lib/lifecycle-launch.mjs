@@ -237,6 +237,10 @@ function criticLaneLaunchIdentity(laneId, executorEnv) {
   return { suffix: `-${laneId}`, noncePart: `.${laneId}`, slot, env: { ...executorEnv, WT_LANE_SUPERVISION_SLOT: slot } }
 }
 
+function currentBriefIdentity(contexts, identities, phase) {
+  return identities?.get(phase) ?? contexts.get(phase)
+}
+
 export function regularFile(file) {
   try {
     const stat = fs.lstatSync(file)
@@ -296,7 +300,7 @@ export function createLifecycleLaunch({
   constructionBase,
   frozenModels,
   state,
-  laneBriefContexts,
+  laneBriefContexts, laneBriefIdentities,
   prepareLaneBrief,
   assertLaneDir,
   refusal,
@@ -450,9 +454,9 @@ export function createLifecycleLaunch({
       const fallback = results.length === 1 ? results[0] : 'lane critic EXIT=missing'
       return results.find((result) => result !== 'lane critic EXIT=0') ?? fallback
     }
-    const failed = receipts.find((receipt) => receipt.exit !== '0')
-    const exit = failed?.exit ?? '0'
-    const key = receipts.map((receipt) => receipt.sha256).join(':')
+    const stale = laneIds.find((_, index) => [receipts[index], verified(laneReports[index])].some((entry) => entry.briefIdentity !== currentBriefIdentity(laneBriefContexts, laneBriefIdentities, 'critic')))
+    if (stale) return refusal('critic->next', `critic-${stale} receipt for current brief; relaunch with run { kind: 'lane', phase: 'critic', criticLane: '${stale}' }`, laneDir, 'receipt')
+    const exit = receipts.find((receipt) => receipt.exit !== '0')?.exit ?? '0', key = receipts.map((receipt) => receipt.sha256).join(':')
     if (criticAggregateKey === key) return `lane critic EXIT=${exit}`
     const canonicalLog = path.join(ensureLaneHostDir(root), 'critic-run.log')
     const canonicalReport = path.join(laneDir, 'critic-report.md')
@@ -530,7 +534,7 @@ export function createLifecycleLaunch({
           )
           laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
           ownedRecord = owned.register({ key: identity.slot ?? phase, slot: identity.slot, phase, criticLane: args.criticLane,
-            nonce, runId: null, workerPid: null, initialWait: true,
+            nonce, runId: null, workerPid: null, initialWait: true, briefIdentity: currentBriefIdentity(laneBriefContexts, laneBriefIdentities, phase),
             log, report, canonicalLog, canonicalReport, group, laneRecord, snapshot, waitMs: laneWaitMs ?? timeout * 1000 })
           launch = await launchProcessWithOutput(
             process.execPath,

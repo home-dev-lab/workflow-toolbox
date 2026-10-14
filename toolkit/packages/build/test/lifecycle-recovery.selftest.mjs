@@ -28,10 +28,10 @@ process.stdout.write('pid=42001\\nrun=123-1\\n');`
 
 function launchFixture(f, phase) {
   return createLifecycleLaunch({ root: f.root, laneDir: join(f.root, '.lane'), executor: 'gpt-lane', executorEnv: process.env,
-    frozenModels: { code: 'test', critic: 'test' }, state: f.state, laneBriefContexts: new Map([[phase, 'brief']]),
+    frozenModels: { code: 'test', critic: 'test' }, state: f.state, laneBriefContexts: f.briefs, laneBriefIdentities: f.identities,
     prepareLaneBrief: (_phase, _context, report, snapshot) => {
       f.snapshots.push(snapshot); return { canonical: 'brief', launch: JSON.stringify({ report }) }
-    }, assertLaneDir: () => {}, refusal: (edge, missing, file) => `edge refused: ${edge}; missing ${missing}: ${file}`,
+    }, assertLaneDir: () => {}, refusal: (edge, missing, file, code) => `edge refused: ${edge}; missing ${missing}: ${file}${code ? `; code=${code}` : ''}`,
     lanePhases: new Set([phase]), phases: [phase], gates: () => new Set(), laneLauncher: f.launcher, lanePollMs: 2, laneWaitMs: 2,
     lanePlatform: 'linux', laneProcessReader: {
       inspect: (pid) => { f.onInspect?.(); return f.gone?.has(pid) ? null : { pid, argv: ['fixture'], startTime: 1 } },
@@ -44,7 +44,7 @@ function fixture(phase = 'tdd', immediate = false) {
   const root = fs.mkdtempSync(join(tmpdir(), 'lifecycle-recovery-'))
   fs.mkdirSync(join(root, '.lane')); childProcess.execFileSync('git', ['init', '-q'], { cwd: root })
   const launcher = join(root, 'launcher.mjs'); fs.writeFileSync(launcher, launcherSource(root, phase, immediate))
-  const f = { root, launcher, snapshots: [], onInspect: null,
+  const f = { root, launcher, snapshots: [], onInspect: null, briefs: new Map([[phase, 'brief']]), identities: new Map([[phase, 'V1']]),
     state: { phase, ownedLanes: new Map(), laneReceiptSeq: 0, priorCriticRounds: [], verifySnapshot: null } }
   f.info = (slot = phase) => JSON.parse(fs.readFileSync(join(root, `${slot}.json`), 'utf8'))
   f.finish = (slot = phase) => {
@@ -57,9 +57,9 @@ function fixture(phase = 'tdd', immediate = false) {
 
 async function withFixture(phase, immediate, check) {
   const f = fixture(phase, immediate)
-  const originalExec = childProcess.execFileSync; const originalCopy = fs.copyFileSync
+  const originalExec = childProcess.execFileSync; const originalCopy = fs.copyFileSync; const originalRename = fs.renameSync
   try { await check(f) } finally {
-    childProcess.execFileSync = originalExec; fs.copyFileSync = originalCopy; syncBuiltinESMExports()
+    childProcess.execFileSync = originalExec; fs.copyFileSync = originalCopy; fs.renameSync = originalRename; syncBuiltinESMExports()
     for (const snapshot of f.snapshots) fs.rmSync(snapshot, { recursive: true, force: true })
     fs.rmSync(laneHostDir(f.root), { recursive: true, force: true }); fs.rmSync(f.root, { recursive: true, force: true })
   }
@@ -97,6 +97,42 @@ function orphanAbandonCheck() {
 }
 
 export const recoveryChecks = {
+  F7: () => withFixture('critic', true, async (f) => {
+    assert.equal(await f.run({ kind: 'lane', phase: 'critic' }), 'lane critic EXIT=0')
+    f.identities.set('critic', 'V2'); f.invalidateLaneEvidence('critic')
+    const result = await f.run({ kind: 'lane', phase: 'critic', criticLane: 'A' })
+    assert.match(result, /edge refused:.*critic-B.*relaunch.*code=receipt/, 'stale critic B must refuse aggregation with a receipt-coded relaunch remedy')
+    assert.notEqual(f.laneEvidence('critic'), null, 'mixed-brief receipts must remain ineligible')
+    assert.equal(f.state.laneReceiptSeq, 1)
+    assert.equal(await f.run({ kind: 'lane', phase: 'critic', criticLane: 'B' }), 'lane critic EXIT=0')
+    assert.equal(f.laneEvidence('critic'), null); assert.equal(f.state.laneReceiptSeq, 2)
+  }),
+  F8: () => withFixture('critic', true, async (f) => {
+    assert.equal(await f.run({ kind: 'lane', phase: 'critic' }), 'lane critic EXIT=0')
+    f.state.phase = 'tdd'
+    const result = await f.run({ kind: 'lane', phase: 'critic', criticLane: 'A' })
+    assert.match(result, /edge refused: tdd->next; missing lane for current admitted phase:/, 'explicit critic retry must preserve its admission refusal')
+    assert.equal(f.state.laneReceiptSeq, 1)
+  }),
+  F9: () => withFixture('tdd', false, async (f) => {
+    const archiveRoot = fs.mkdtempSync(join(tmpdir(), 'lifecycle-recovery-archive-')); f.snapshots.push(archiveRoot)
+    const laneDir = join(f.root, '.lane'); const reason = 'blocked: routed receipt-recovery'
+    const blocked = { completed: false, reason, blocked_on: { card: 'receipt-recovery' } }
+    fs.writeFileSync(join(f.root, '.gitignore'), '.lane/\n')
+    fs.writeFileSync(join(laneDir, 'summary.json'), JSON.stringify(blocked))
+    fs.writeFileSync(join(laneDir, 'blocked-report.md'), reason)
+    fs.renameSync = () => { throw new Error('injected final archive rename failure') }
+    assert.throws(() => archiveLifecycle({ root: f.root, archiveRoot, laneDir, cardId: 'fixture', route: 'LITE', head: 'fixture',
+      phases: [], evidence: 'fixture', partial: { phase: 'tdd', reason }, implementation: { name: 'fixture' },
+      assertDirectories: () => {}, copy: fs.cpSync, git: childProcess.execFileSync,
+      sha256: (content) => createHash('sha256').update(content).digest('hex'), writeRegularFile: fs.writeFileSync,
+    }), /injected final archive rename failure/)
+    assert.equal(fs.existsSync(join(laneDir, 'summary.json')), true, 'archive withdrawal must retain the local blocked summary before runner repair')
+    const summary = JSON.parse(fs.readFileSync(join(laneDir, 'summary.json'), 'utf8'))
+    assert.equal(summary.completed, false); assert.equal(summary.reason, reason); assert.deepEqual(summary.blocked_on, blocked.blocked_on)
+    assert.equal(summary.archive, undefined); assert.equal(fs.readFileSync(join(laneDir, 'blocked-report.md'), 'utf8'), reason)
+    assert.deepEqual(fs.readdirSync(join(archiveRoot, '.claude', 'reports')), [])
+  }),
   F1: () => withFixture('tdd', false, async (f) => {
     const events = createLifecycleEvents(f.state)
     events.route('receipt-recovery', 'fixture'); events.refused('receipt refusal', 'receipt')
