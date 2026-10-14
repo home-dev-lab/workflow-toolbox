@@ -1945,6 +1945,9 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
     expect(laneWorkerEnv(ambient, null)).toEqual(ambient)
     expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin' })
   })
+})
+
+describe('wt-lane --lock-priority reaches the processes the launcher starts', () => {
   it.each([[['--lock-priority', 'p0'], undefined, 'P0'], [[], undefined, 'unset'], [[], 'P2', 'unset']] as const)('the opencode child env carries the declared level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
     const f = fixture('lock-priority-env')
     // Without the flag an ambient level stays filtered out of the child, as before this flag existed.

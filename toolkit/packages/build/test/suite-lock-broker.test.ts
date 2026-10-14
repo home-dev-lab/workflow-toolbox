@@ -214,22 +214,6 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     } finally { server.close() }
   }, 8000)
 
-  // The env `wt-lane --lock-priority P0` gives its worker (laneWorkerEnv, pinned in wt-lane-launcher.test.ts), which the
-  // worker hands to the broker it spawns (lane-sandbox.mjs suite-lock bridge, `{ ...process.env }`).
-  it.each([[{ WT_SUITE_LOCK_PRIORITY: 'P0' }, 0], [{}, 1]] as const)('a broker started with lane worker env %j queues its tickets at level %i', async (workerEnv, level) => {
-    const broker = await startBroker(process.pid, { ...workerEnv })
-    const first = connect(broker.socket, { argv: ['first'], waitS: 5 })
-    const second = connect(broker.socket, { argv: ['second'], waitS: 5 })
-    try {
-      await first.waitForReply(granted)
-      expect(JSON.parse(readFileSync(broker.lock, 'utf8')).level, 'the holder the broker took for the lane').toBe(level)
-      const queue = join(broker.root, 'locks', 'queue.d')
-      await waitFor(() => readdirSync(queue).some((name) => name.endsWith('.json')))
-      const ticket = readdirSync(queue).find((name) => name.endsWith('.json'))!
-      expect(JSON.parse(readFileSync(join(queue, ticket), 'utf8')), 'the ticket the broker queued for the lane').toMatchObject({ argv: ['second'], level })
-    } finally { first.socket.destroy(); second.socket.destroy() }
-  }, 12_000)
-
   it('forwards a real broker queue improvement as a progress line', async () => {
     const broker = await startBroker()
     const first = connect(broker.socket, { argv: ['first'], waitS: 5 })
@@ -870,4 +854,27 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     expect(reclaimed.stdout).toBe('reclaimed')
   }, 10_000)
 
+})
+
+// The env `wt-lane --lock-priority P0` gives its worker (laneWorkerEnv, pinned in wt-lane-launcher.test.ts), which the
+// worker hands to the broker it spawns (lane-sandbox.mjs suite-lock bridge, `{ ...process.env }`).
+async function brokerQueuedTicket(workerEnv: NodeJS.ProcessEnv, level: number) {
+  const broker = await startBroker(process.pid, { ...workerEnv })
+  const first = connect(broker.socket, { argv: ['first'], waitS: 5 })
+  const second = connect(broker.socket, { argv: ['second'], waitS: 5 })
+  try {
+    await first.waitForReply(granted)
+    expect(JSON.parse(readFileSync(broker.lock, 'utf8')).level, 'the holder the broker took for the lane').toBe(level)
+    const queue = join(broker.root, 'locks', 'queue.d')
+    await waitFor(() => readdirSync(queue).some((name) => name.endsWith('.json')))
+    return JSON.parse(readFileSync(join(queue, readdirSync(queue).find((name) => name.endsWith('.json'))!), 'utf8'))
+  } finally { first.socket.destroy(); second.socket.destroy() }
+}
+
+describe.skipIf(process.platform === 'win32')('lane suite-lock broker carries the lane worker lock level [unix-domain sockets]', () => {
+  it.each([[{ WT_SUITE_LOCK_PRIORITY: 'P0' }, 0], [{}, 1]] as const)('a broker started with lane worker env %j queues its tickets at level %i', async (workerEnv, level) => {
+    const ticket = await brokerQueuedTicket(workerEnv, level)
+    expect(ticket.level, 'the level of the ticket the broker queued for the lane').toBe(level)
+    expect(ticket.argv.at(-1), 'the broker prefixes its own label; the client argv ends the ticket argv').toBe('second')
+  }, 12_000)
 })

@@ -396,6 +396,7 @@ function pollQueue(state, options) {
     delete holder.lightGrantsGeneration
     delete holder.p0GrantsAtQueue // queue-only: what a P1/P2 ticket records to bound how often declared P0 passes it
     delete holder.p0GrantsGeneration
+    delete holder.levelOrderVersion // queue-only: the order reads it from waiting tickets, never from the holder
     options.beforeAcquire?.() // test seam: runs between the placement and the attempt
     const taken = tryTakeLock(lockDir, holder, options.beforePublish)
     if (taken === true) return confirmAdmission(state, holder, place, options)

@@ -161,7 +161,7 @@ function agedQueue(root: string, now: number) {
 }
 function grantP0(root: string, count: number) { for (let index = 0; index < count; index += 1) recordP0Grant(root) }
 
-describe('declared P0 order in a queue older than one hour (bounded P0 bypass)', () => {
+describe('declared P0 order in a queue older than one hour (bounded P0 bypass): order and bound', () => {
   it('B1 a declared P0 queued after aged P1/P2 tickets is served first; aged tickets keep their order', () => {
     const root = temp(); const now = Date.parse('2026-01-01T12:00:00Z')
     const aged = agedQueue(root, now); const p0 = seedBounded(root, { level: 0, startedAt: minutesAgo(now, 0) })
@@ -182,6 +182,9 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass)',
     const p0Spent = seedBounded(spent, { level: 0, startedAt: minutesAgo(now, 0) })
     expect(statusNumbers(spent, now), '16 P0 admissions since queue time: aged tickets join P0 and go first by number').toEqual([...agedSpent, p0Spent])
   })
+})
+
+describe('declared P0 order in a queue older than one hour (bounded P0 bypass): with a pre-bounded client in the queue', () => {
   it('B3 one live ticket without the order marker puts the whole queue on the pre-bounded client order', async ({ skip }) => {
     const archive = temp(); const base = await baseSuiteLock(archive, 'preBoundedP0')
     if (!base.client) { skip(base.unavailable); return }
@@ -210,6 +213,9 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass)',
     expect(result.peak).toBe(1)
     expect(result.order, 'legacy key (bounded order would put P0 first): aged tickets by number, then the fresh P0, then the fresh older client').toEqual(['A1', 'A2', 'P0', 'old'])
   })
+})
+
+describe('declared P0 order in a queue older than one hour (bounded P0 bypass): counting P0 admissions', () => {
   it('B5 a real P0 acquisition passes aged tickets and counts one P0 grant; P1 and release admissions do not', async () => {
     const root = temp(); const now = Date.now()
     const aged = [seedBounded(root, { level: 1, startedAt: minutesAgo(now, 90) }), seedBounded(root, { level: 2, startedAt: minutesAgo(now, 150) })]
@@ -232,6 +238,9 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass)',
     lock.releaseSuiteLock(await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0' }))
     expect(existsSync(join(root, 'p0-grants'))).toBe(false)
   })
+})
+
+describe('declared P0 order in a queue older than one hour (bounded P0 bypass): which tickets are passable', () => {
   it('B6 a ticket with another P0 generation, or no P0 fields, is not passable and ages as before', () => {
     const root = temp(); const now = Date.parse('2026-01-01T12:00:00Z')
     const passable = seedBounded(root, { level: 1, startedAt: minutesAgo(now, 90) })
@@ -251,6 +260,9 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass)',
     const control = orderSuiteLockTickets([{ ...tickets[0]!, record: { ...tickets[0]!.record, p0GrantsAtQueue: 0, p0GrantsGeneration: 'same' } }, tickets[1]!], counter, now, p0Counter)
     expect(control.tickets.map((ticket: { number: number }) => ticket.number), 'control: the same ticket with a matching record is passed').toEqual([2, 1])
   })
+})
+
+describe('declared P0 order in a queue older than one hour (bounded P0 bypass): unreadable start time and status', () => {
   it('B7 bounded twin of C3b: an unreadable start time with P0 budget is floored at P1, so a later P0 light passes it', () => {
     const root = temp(); const now = Date.now()
     const unreadable = seedBounded(root, { level: 2, startedAt: 'unparsable' }); const light = seedBounded(root, { level: 0, light: true })
@@ -276,6 +288,9 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass)',
     expect(compatible.stdout).toContain('compatibility order'); expect(compatible.stdout, 'compatible mode names only its own order').not.toContain('legacy level order')
     expect(readFileSync(join(root, 'p0-grants'), 'utf8'), 'status never writes the P0 counter').toBe(counter)
   })
+})
+
+describe('declared P0 order in a queue older than one hour (bounded P0 bypass): when the P0 counter cannot be written', () => {
   it('B9 a P0 grant that cannot be written invalidates the P0 counter, so tickets recorded against it age as before', async () => {
     const root = temp(); const counter = ensureP0Counter(root); mkdirSync(join(root, `p0-grants.${process.pid}.tmp`))
     const notes: string[] = []; vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { notes.push(String(chunk)); return true })
@@ -299,6 +314,9 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass)',
     expect(records(root), 'the ticket is withdrawn').toEqual([])
     expect(readP0Counter(root)).toEqual(counter)
   })
+})
+
+describe('declared P0 order in a queue older than one hour (bounded P0 bypass): counter reads and queue-only fields', () => {
   it('B9d a transient counter read error is retried before it reads as no counter; absence and corruption are not retried', () => {
     const root = temp(); const counter = ensureP0Counter(root)
     let calls = 0
@@ -323,11 +341,11 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass)',
     } finally { lock.releaseSuiteLock(holder) }
     lock.releaseSuiteLock(await pending)
   })
-  it('B10 the holder record carries the order marker but not the queue-only P0 fields', async () => {
+  it('B10 the holder record carries neither the order marker nor the queue-only P0 fields', async () => {
     const root = temp(); const held = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P2' })
     try {
       const holder = JSON.parse(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8'))
-      expect(holder.levelOrderVersion).toBe(2); expect(holder).not.toHaveProperty('p0GrantsAtQueue'); expect(holder).not.toHaveProperty('p0GrantsGeneration')
+      expect(holder).not.toHaveProperty('levelOrderVersion'); expect(holder).not.toHaveProperty('p0GrantsAtQueue'); expect(holder).not.toHaveProperty('p0GrantsGeneration')
       expect(existsSync(join(root, 'p0-grants')), 'a P2 waiter records against the P0 counter, creating it').toBe(true)
     } finally { lock.releaseSuiteLock(held) }
   })
