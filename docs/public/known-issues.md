@@ -716,7 +716,8 @@ Warns, never blocks, when a `git commit` stages a change under `plugin/` while s
 Blocks a `release:` commit when the staged changelog adds no `### Quality` heading or the staged
 toolkit quality baseline improves no ratchet over the previous `workflow-toolbox--v*` tag.
 Run `pnpm quality:delta` for the missing section and `pnpm quality:baseline` after tightening a
-ratchet. The explicit `gates: quality-skipped — <reason>` trailer bypasses only this release-time
+ratchet; a full `pnpm quality:coverage` (or `pnpm certify`) run on the same tree must come first,
+because both commands refuse a coverage summary measured at another tree. The explicit `gates: quality-skipped — <reason>` trailer bypasses only this release-time
 quality decision and is journalled. Ordinary feature commits retain the warn-only behaviour below.
 
 This closes an asymmetry rather than adding a new rule. The published packages already fail red on the equivalent omission: touch a package source without a changeset and `changeset-gate` goes red. The plugin had no counterpart.

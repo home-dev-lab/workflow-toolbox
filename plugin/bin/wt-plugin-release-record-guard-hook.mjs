@@ -157,7 +157,9 @@ function blockRelease(input, reason) {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: `[workflow-toolbox release quality guard] ${reason}\n` +
-          'Run `pnpm quality:delta` to generate the changelog table and `pnpm quality:baseline` ' +
+          'Run `pnpm quality:coverage` (or `pnpm certify`) on this tree before `pnpm quality:delta`: ' +
+          'the delta reads the coverage artifact and refuses one measured at another tree. ' +
+          'Then run `pnpm quality:delta` to generate the changelog table and `pnpm quality:baseline` ' +
           'after tightening at least one ratchet. To accept a measured exception, add the commit ' +
           'trailer `gates: quality-skipped — <reason>`.',
       },

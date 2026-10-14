@@ -90,6 +90,8 @@ describe('wt-plugin-release-record-guard-hook', () => {
     const result = run(root, 'git commit -m "release: 0.2.0"')
     expect(result.denied).toBe(true)
     expect(result.stdout).toContain('pnpm quality:delta')
+    // The delta reads the coverage artifact, so the refusal must order a fresh coverage run first.
+    expect(result.stdout).toMatch(/pnpm quality:coverage[^\n]*before[^\n]*pnpm quality:delta/)
   })
 
   it('refuses a release commit when no ratchet improved', () => {
@@ -113,7 +115,9 @@ describe('wt-plugin-release-record-guard-hook', () => {
     git(root, 'add', 'toolkit/quality-baseline.json')
     expect(run(root, 'git commit -m "release: 0.2.0\n\ngates: quality-skipped — urgent"').denied).toBe(false)
   })
+})
 
+describe('wt-plugin-release-record-guard-hook staged changes', () => {
   // THE case. A broken guard most plausibly fails by staying silent here, so this is the row that
   // has to be red under mutation for any of the others to mean anything.
   it('warns when a plugin change is staged with neither the version nor the changelog', () => {
@@ -147,7 +151,9 @@ describe('wt-plugin-release-record-guard-hook', () => {
     git(root, 'add', 'README.md')
     expect(run(root).warned).toBe(false)
   })
+})
 
+describe('wt-plugin-release-record-guard-hook scope', () => {
   // Scope. Without this the guard would fire in every unrelated project on the machine that
   // happens to have a `plugin/` directory.
   it('is silent in a repository that owns no plugin manifest', () => {
@@ -165,7 +171,9 @@ describe('wt-plugin-release-record-guard-hook', () => {
     git(root, 'add', 'plugin/bin/thing.mjs')
     expect(run(root, 'ls -la plugin/').warned).toBe(false)
   })
+})
 
+describe('wt-plugin-release-record-guard-hook branches', () => {
   // Branch wording. `no-publish-from-branches.md`: a branch never bumps the version — the bump
   // happens on `main` at push time, and a branch's changelog entry carries no version heading.
   // The remedy text must match that, or it tells the committer to do the forbidden thing.
@@ -190,7 +198,9 @@ describe('wt-plugin-release-record-guard-hook', () => {
     git(root, 'add', 'plugin/bin/thing.mjs', 'plugin/CHANGELOG.md')
     expect(run(root).warned).toBe(false)
   })
+})
 
+describe('wt-plugin-release-record-guard-hook fail-open', () => {
   // Fail-open is the contract for every guard here: a hook that throws must not block the tool.
   it('exits zero even when handed input it cannot use', () => {
     const root = pluginRepo()
