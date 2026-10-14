@@ -122,6 +122,7 @@ function moveLegacyDir(legacyDir, dir, stderr, fs) {
  * Pure: reads the registry, never creates, moves or carries anything over. resolvePluginDataDir() derives its
  * canonical directory from this, so a read-only observer (a test backstop watching where a writer writes) and the
  * writer cannot disagree about the path.
+ * @knipTestSeam Imported by toolkit/test-support/guard-journal-isolation.global-setup.ts.
  */
 export function canonicalPluginDataDir({ configDir, pluginName: name = pluginName() }) {
   const marketplace = installedMarketplace(configDir, name)
