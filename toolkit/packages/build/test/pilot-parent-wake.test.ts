@@ -84,17 +84,23 @@ describe('parent wake e2e proof', () => {
 })
 
 describe('parent wake mechanical fence', () => {
-  it.each([{}, { recipient: parent }, { type: 'message' }, { content: body(), summary: body() }, { summary: '…' }, { summary: body().slice(0, 10) + '…' }])('allows exact fields %j', async (fields) => {
+  it.each([{}, { recipient: parent }, { type: 'message' }, { content: body(), summary: body() }, { summary: '…' }, { summary: body().slice(0, 10) + '…' }, { content: body().slice(0, 49) + '…' }, { content: body().slice(0, 10) + '…' }, { summary: body().split('\n')[0] }])('allows exact fields %j', async (fields) => {
     expect((await createWakeFence(parent, body())(hookInput(input(fields)), 'send-1')).hookSpecificOutput.permissionDecision).toBe('allow')
   })
   it.each([
     { to: 'other' }, { message: 'different' }, { recipient: 'other' }, { recipient: undefined }, { type: 'broadcast' }, { type: undefined }, { extra: true },
-    { content: 'unrelated…' }, { summary: 'unrelated…' }, { content: body() + '…' }, { summary: body() + '……' }, { content: '' }, { summary: null }, { content: '…' }, { content: body().slice(0, 10) + '…' }, { content: body().split('\n')[0] + '…' },
+    { content: 'unrelated…' }, { summary: 'unrelated…' }, { content: body() + '…' }, { summary: body() + '……' }, { content: '' }, { summary: null }, { content: '…' }, { content: 'x' + body().slice(1, 49) + '…' }, { summary: '' }, { summary: 'x' + body().split('\n')[0].slice(1) },
   ])('denies changed fields %j', async (fields) => {
     expect((await createWakeFence(parent, body())(hookInput(input(fields)), 'send-1')).hookSpecificOutput.permissionDecision).toBe('deny')
   })
   it.each([['ToolSearch', { query: 'select:SendMessage' }, 'allow'], ['ToolSearch', { query: 'SendMessage' }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', extra: 1 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 5 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 50 }, 'allow'], ['ToolSearch', { query: 'select:SendMessage', max_results: 51 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1e308 }, 'deny'], ['ToolSearch', Object.create({ query: 'select:SendMessage' }), 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 0 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1.5 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: '1' }, 'deny'], ['ToolSearch', { query: 'select:ListAgents', max_results: 1 }, 'deny'], ['ToolSearch', { query: 'select:SendMessage', max_results: 1, extra: 1 }, 'deny'], ['ListAgents', {}, 'deny'], ['Bash', {}, 'deny'], ['SendMessage', null, 'deny']])('fences %s %j', async (name, fields, verdict) => {
     expect((await createWakeFence(parent, body())(hookInput(fields, name as string))).hookSpecificOutput.permissionDecision).toBe(verdict)
+  })
+  // The shape the real harness hands the hook (measured on haiku): legacy recipient/type, a 50-char content preview and
+  // the body's first line, without an ellipsis, as summary.
+  it('allows the measured live SendMessage shape with a harness content preview', async () => {
+    const live = { to: parent, summary: body().split('\n')[0], message: body(), type: 'message', recipient: parent, content: body().slice(0, 49) + '…' }
+    expect((await createWakeFence(parent, body())(hookInput(live), 'send-1')).hookSpecificOutput.permissionDecision).toBe('allow')
   })
   it('denies when input inspection throws', async () => {
     const throwing = new Proxy({}, { ownKeys: () => { throw new Error('inspection failed') } })

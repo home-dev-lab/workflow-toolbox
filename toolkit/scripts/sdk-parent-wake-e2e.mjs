@@ -89,7 +89,8 @@ function runOptions(f, flags) {
   return {
     card: 'wake-fixture', cardFile: f.cardFile, dir: f.dir, archiveRoot: f.root, knowledgeBaseProjectRoot: f.root,
     contract: f.contract, parentSession: flags.parentSession, parentMode: flags.parentMode,
-    timeout: Math.ceil(flags.waitMs / 1000) + 300, timeoutExplicit: true,
+    // Measured on haiku: the three critic rounds end near minute eight, and the report phase needs about two more.
+    timeout: Math.ceil(flags.waitMs / 1000) + 600, timeoutExplicit: true,
   }
 }
 

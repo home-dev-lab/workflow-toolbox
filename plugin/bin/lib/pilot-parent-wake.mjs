@@ -58,8 +58,15 @@ function sendAllowed(input, parent, body) {
   if (!Object.keys(input).every((key) => SEND_KEYS.has(key))) return false
   if (input.to !== parent || input.message !== body) return false
   if (!optionalExact(input, 'recipient', parent) || !optionalExact(input, 'type', 'message')) return false
-  // content may be what the harness delivers, so it must be the whole body; summary is a local label and may be truncated.
-  return optionalExact(input, 'content', body) && (!Object.hasOwn(input, 'summary') || truncatedBody(input.summary, body))
+  // content arrives as a short preview of message (measured: 49 characters plus an ellipsis); message is what must
+  // equal the body. A preview must still be a non-empty prefix of the body; summary may be any prefix of it.
+  if (Object.hasOwn(input, 'content') && (input.content === '…' || !truncatedBody(input.content, body))) return false
+  return !Object.hasOwn(input, 'summary') || truncatedBody(input.summary, body) || bodyPrefix(input.summary, body)
+}
+
+// The waker model labels the send with the body's first line (measured on haiku), with no ellipsis.
+function bodyPrefix(value, body) {
+  return typeof value === 'string' && value.length > 0 && body.startsWith(value)
 }
 
 const MAX_SEARCH_RESULTS = 50
