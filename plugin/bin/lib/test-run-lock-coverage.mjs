@@ -72,13 +72,15 @@ function commandHead(segment) {
   }
 }
 
-// The runner part of a head, or null when the head does not start a test run.
-function runnerOf(head) {
-  const [first, ...args] = words(head)
-  if (!first) return null
-  const executable = lastPathPart(first)
-  if (executable === 'vitest') return args[0] === 'run' ? { kind: 'vitest', args: args.slice(1), dir: null } : null
-  if (executable !== 'pnpm') return null
+function classifyPnpmRunner(rest, dir) {
+  if (rest[0] === 'test') return { kind: 'pnpm-test', args: rest.slice(1), dir }
+  if ((rest[0] === '-r' || rest[0] === '--recursive') && rest[1] === 'test') return { kind: 'pnpm-recursive-test', args: rest.slice(2), dir }
+  if (rest[0] === 'vitest') return { kind: 'vitest', args: rest.slice(1), dir }
+  if (rest[0] === 'exec' && rest[1] === 'vitest') return { kind: 'vitest', args: rest.slice(2), dir }
+  return null
+}
+
+function pnpmRunner(args) {
   let dir = null
   let index = 0
   while (PNPM_DIR_FLAG.test(args[index] ?? '')) {
@@ -86,11 +88,17 @@ function runnerOf(head) {
     index += 2
   }
   const rest = args.slice(index)
-  if (rest[0] === 'test') return { kind: 'pnpm-test', args: rest.slice(1), dir }
-  if ((rest[0] === '-r' || rest[0] === '--recursive') && rest[1] === 'test') return { kind: 'pnpm-recursive-test', args: rest.slice(2), dir }
-  if (rest[0] === 'vitest') return { kind: 'vitest', args: rest.slice(1), dir }
-  if (rest[0] === 'exec' && rest[1] === 'vitest') return { kind: 'vitest', args: rest.slice(2), dir }
-  return null
+  return classifyPnpmRunner(rest, dir)
+}
+
+// The runner part of a head, or null when the head does not start a test run.
+function runnerOf(head) {
+  const [first, ...args] = words(head)
+  if (!first) return null
+  const executable = lastPathPart(first)
+  if (executable === 'vitest') return args[0] === 'run' ? { kind: 'vitest', args: args.slice(1), dir: null } : null
+  if (executable !== 'pnpm') return null
+  return pnpmRunner(args)
 }
 
 function expand(value, vars, home) {
@@ -121,6 +129,48 @@ function startOf(runner, rest, assigned, state) {
   }
 }
 
+function applyGroupToken(token, state, stack) {
+  if (OPENERS.has(token)) { stack.push(state.dir); return true }
+  if (CLOSERS.has(token)) {
+    if (stack.length) state.dir = stack.pop()
+    return true
+  }
+  return false
+}
+
+function applyDirectoryHead(head, state, home) {
+  if (/^(?:pushd|popd)(?:\s|$)/.test(head)) { state.dir = null; return true }
+  if (/^cd(?:\s|$)/.test(head)) {
+    const cd = head.match(/^cd\s+([^\s-]\S*)\s*$/)
+    state.dir = cd ? resolveFrom(state.dir, expand(cd[1], state.vars, home)) : null
+    return true
+  }
+  return false
+}
+
+function isMetaQuery(runner) {
+  return runner.args.slice(0, Math.max(0, runner.args.indexOf('--') === -1 ? runner.args.length : runner.args.indexOf('--'))).some((arg) => META_FLAGS.has(arg))
+}
+
+function collectStatementStart(token, state, home, starts) {
+  const { assigned, rest } = leadingAssignments(commandHead(token))
+  if (!rest) {
+    for (const [name, value] of Object.entries(assigned)) state.vars[name] = expand(value, state.vars, home) ?? `$${name}`
+    return
+  }
+  if (/^export\s+/.test(rest)) {
+    for (const exported of rest.slice(7).matchAll(/(?:^|\s)([A-Za-z_]\w*)=(\S*)/g)) {
+      state.exportedAssignment = assignmentCoverage(exported[1], exported[2]) ?? state.exportedAssignment
+    }
+    return
+  }
+  const head = commandHead(rest)
+  if (applyDirectoryHead(head, state, home)) return
+  const runner = runnerOf(head)
+  if (!runner || isMetaQuery(runner)) return
+  starts.push(startOf(runner, head, assigned, state))
+}
+
 /**
  * Every test-runner start in a Bash command, in order. A version or help query is not a start.
  * `dir` is null when the run's directory cannot be read from the command (a non-literal `cd`, `cd -`,
@@ -133,32 +183,8 @@ export function parseTestRunStarts(command, cwd = null, home = null) {
   const stack = []
   const starts = []
   for (const token of stripNonCode(command.replace(/\bWT_SUITE_LOCK=(['"])0\1/g, 'WT_SUITE_LOCK=0')).replace(/(^|[\s;&|()])#[^\n]*/gm, '$1').split(TOKEN)) {
-    if (OPENERS.has(token)) { stack.push(state.dir); continue }
-    if (CLOSERS.has(token)) {
-      if (stack.length) state.dir = stack.pop()
-      continue
-    }
-    const { assigned, rest } = leadingAssignments(commandHead(token))
-    if (!rest) {
-      for (const [name, value] of Object.entries(assigned)) state.vars[name] = expand(value, state.vars, home) ?? `$${name}`
-      continue
-    }
-    if (/^export\s+/.test(rest)) {
-      for (const exported of rest.slice(7).matchAll(/(?:^|\s)([A-Za-z_]\w*)=(\S*)/g)) {
-        state.exportedAssignment = assignmentCoverage(exported[1], exported[2]) ?? state.exportedAssignment
-      }
-      continue
-    }
-    const head = commandHead(rest)
-    if (/^(?:pushd|popd)(?:\s|$)/.test(head)) { state.dir = null; continue }
-    if (/^cd(?:\s|$)/.test(head)) {
-      const cd = head.match(/^cd\s+([^\s-]\S*)\s*$/)
-      state.dir = cd ? resolveFrom(state.dir, expand(cd[1], state.vars, home)) : null
-      continue
-    }
-    const runner = runnerOf(head)
-    if (!runner || runner.args.slice(0, Math.max(0, runner.args.indexOf('--') === -1 ? runner.args.length : runner.args.indexOf('--'))).some((arg) => META_FLAGS.has(arg))) continue
-    starts.push(startOf(runner, head, assigned, state))
+    if (applyGroupToken(token, state, stack)) continue
+    collectStatementStart(token, state, home, starts)
   }
   return starts
 }
@@ -207,21 +233,31 @@ function configCoverage(dir, readText) {
   return config !== null && CONFIG_LEASE_MARKER.test(config) ? 'lease-config' : 'uncovered'
 }
 
-/**
- * @returns {'bypassed'|'inherited-lease'|'lease-config'|'lease-script'|'uncovered'|'unknown'}
- *   `inherited-lease` runs at once inside the holder's lease: it is covered, but it does not queue.
- */
-export function lockCoverage({ dir, kind, bypass = false, assignment = null, watch = false, explicitConfig = false, readText, env = {} }) {
+function earlyCoverage(bypass, assignment, watch, env) {
   if (bypass || assignment === 'bypassed' || env.WT_SUITE_LOCK === '0') return 'bypassed'
   if (assignment === 'unknown') return 'unknown'
   if (watch) return 'uncovered'
   if (typeof env.WT_SUITE_LEASE === 'string' && env.WT_SUITE_LEASE) return 'inherited-lease'
+  return null
+}
+
+function directoryCoverage(dir, kind, explicitConfig, readText) {
   if (!dir || explicitConfig || kind === 'pnpm-recursive-test') return 'unknown'
   if (kind !== 'pnpm-test') return configCoverage(dir, readText)
   const found = nearestTestScript(dir, readText)
   if (!found) return 'uncovered'
   if (SCRIPT_LEASE_MARKER.test(found.script)) return 'lease-script'
   return SCRIPT_RUNS_VITEST.test(found.script) ? configCoverage(found.dir, readText) : 'uncovered'
+}
+
+/**
+ * @returns {'bypassed'|'inherited-lease'|'lease-config'|'lease-script'|'uncovered'|'unknown'}
+ *   `inherited-lease` runs at once inside the holder's lease: it is covered, but it does not queue.
+ */
+export function lockCoverage({ dir, kind, bypass = false, assignment = null, watch = false, explicitConfig = false, readText, env = {} }) {
+  const early = earlyCoverage(bypass, assignment, watch, env)
+  if (early !== null) return early
+  return directoryCoverage(dir, kind, explicitConfig, readText)
 }
 
 /** The least covered of several starts' coverage: one uncovered start makes the command uncovered. */

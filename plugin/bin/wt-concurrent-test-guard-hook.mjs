@@ -86,6 +86,25 @@ function isRunnerProcess(processRecord) {
   return /^(?:vitest|jest|mocha)(?:\.(?:mjs|cjs|js))?$/.test(script)
 }
 
+function runnersFromSnapshot(stdout) {
+  let processes
+  try { processes = parseSnapshot(stdout) } catch (error) {
+    return { available: false, reason: error instanceof Error ? error.message : String(error) }
+  }
+  const byPid = new Map(processes.map((record) => [record.pid, record]))
+  const excluded = new Set([process.pid])
+  let parent = process.ppid
+  while (parent > 0 && !excluded.has(parent)) {
+    excluded.add(parent)
+    parent = byPid.get(parent)?.ppid || 0
+  }
+  return {
+    available: true,
+    runners: processes.filter((record) => !excluded.has(record.pid) && isRunnerProcess(record)),
+    parentOf: (pid) => byPid.get(pid)?.ppid ?? 0,
+  }
+}
+
 function existingRunners() {
   if (process.platform === 'win32') {
     return { available: false, reason: 'process enumeration is not supported on Windows' }
@@ -115,22 +134,7 @@ function existingRunners() {
     }
   }
 
-  let processes
-  try { processes = parseSnapshot(stdout) } catch (error) {
-    return { available: false, reason: error instanceof Error ? error.message : String(error) }
-  }
-  const byPid = new Map(processes.map((record) => [record.pid, record]))
-  const excluded = new Set([process.pid])
-  let parent = process.ppid
-  while (parent > 0 && !excluded.has(parent)) {
-    excluded.add(parent)
-    parent = byPid.get(parent)?.ppid || 0
-  }
-  return {
-    available: true,
-    runners: processes.filter((record) => !excluded.has(record.pid) && isRunnerProcess(record)),
-    parentOf: (pid) => byPid.get(pid)?.ppid ?? 0,
-  }
+  return runnersFromSnapshot(stdout)
 }
 
 function deny(input, message) {
@@ -178,6 +182,31 @@ function startClass(concurrent, delegateOutside, count) {
   return count > 0 ? 'lock-queued-start' : 'solo-test-start'
 }
 
+function isUncoveredDelegate(input, concurrent, lock, coverage) {
+  const delegate = typeof input.agent_id === 'string' && input.agent_id !== '' && !isWorkflowSubagentPayload(input)
+  return !concurrent && delegate && lock.inUse && coverage === 'uncovered'
+}
+
+function recordStart(input, starts, result) {
+  const coverage = worstCoverage(starts.map((start) => lockCoverage({ ...start, readText, env: process.env })))
+  const lock = lockParticipants(process.env)
+  const count = result.runners.length
+  const outside = runnersOutsideLock(result.runners, lock.participants, result.parentOf)
+  const concurrent = count > 0 && (!isQueued(coverage) || outside > 0)
+  const delegateOutside = isUncoveredDelegate(input, concurrent, lock, coverage)
+
+  const cls = startClass(concurrent, delegateOutside, count)
+  recordGuardEvent({
+    guard: GUARD,
+    decision: concurrent || delegateOutside ? 'warned' : 'silent',
+    class: cls,
+    reason: startReason(starts, input),
+    session: input.session_id,
+    agent: input.agent_id,
+    evidence: { count, start: coverage, outside, lock: lock.state, kind: startKind(starts), starts: starts.length },
+  })
+}
+
 function main() {
   const input = readInput()
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return
@@ -190,25 +219,7 @@ function main() {
     enumerationUnavailable(input, starts, result.reason)
     return
   }
-
-  const coverage = worstCoverage(starts.map((start) => lockCoverage({ ...start, readText, env: process.env })))
-  const lock = lockParticipants(process.env)
-  const count = result.runners.length
-  const outside = runnersOutsideLock(result.runners, lock.participants, result.parentOf)
-  const concurrent = count > 0 && (!isQueued(coverage) || outside > 0)
-  const delegate = typeof input.agent_id === 'string' && input.agent_id !== '' && !isWorkflowSubagentPayload(input)
-  const delegateOutside = !concurrent && delegate && lock.inUse && coverage === 'uncovered'
-
-  const cls = startClass(concurrent, delegateOutside, count)
-  recordGuardEvent({
-    guard: GUARD,
-    decision: concurrent || delegateOutside ? 'warned' : 'silent',
-    class: cls,
-    reason: startReason(starts, input),
-    session: input.session_id,
-    agent: input.agent_id,
-    evidence: { count, start: coverage, outside, lock: lock.state, kind: startKind(starts), starts: starts.length },
-  })
+  recordStart(input, starts, result)
 }
 
 runFailOpenHook(GUARD, main)

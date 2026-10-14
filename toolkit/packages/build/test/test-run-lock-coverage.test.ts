@@ -45,6 +45,9 @@ describe('parseTestRunStart', () => {
     expect(parseTestRunStart('cd $(git rev-parse --show-toplevel) && vitest run a')).toMatchObject({ dir: null })
   })
 
+})
+
+describe('parseTestRunStart runner forms and directories', () => {
   it('reads pnpm -C / --dir as the run directory', () => {
     expect(parseTestRunStart('pnpm -C /y test')).toMatchObject({ kind: 'pnpm-test', dir: '/y' })
     expect(parseTestRunStart('pnpm --dir /y vitest run a')).toMatchObject({ kind: 'vitest', dir: '/y' })
@@ -80,6 +83,9 @@ describe('parseTestRunStart', () => {
     expect(parseTestRunStart('cd - && pnpm vitest run x', '/home')).toMatchObject({ dir: null })
   })
 
+})
+
+describe('parseTestRunStart lock assignments', () => {
   it('an exported WT_SUITE_LOCK=0 earlier in the command is a bypass', () => {
     expect(parseTestRunStart('export WT_SUITE_LOCK=0; pnpm vitest run a')).toMatchObject({ bypass: true })
   })
@@ -105,6 +111,9 @@ describe('parseTestRunStart', () => {
     },
   )
 
+})
+
+describe('parseTestRunStart shell prefixes and separators', () => {
   it.each(['then', 'do', 'else', 'elif', 'if', 'while', 'until', 'command', 'time', '!'])(
     'recognises a runner after the %s prefix', (prefix) => {
       expect(parseTestRunStart(`${prefix} pnpm test`)).toMatchObject({ kind: 'pnpm-test' })
@@ -149,6 +158,9 @@ describe('lockCoverage', () => {
     expect(lockCoverage({ dir: '/r', kind: 'pnpm-test', readText: plain, env: {} })).toBe('uncovered')
   })
 
+})
+
+describe('lockCoverage lease and uncertainty precedence', () => {
   it('an inherited live lease marker covers the run', () => {
     expect(lockCoverage({ dir: '/nowhere', kind: 'vitest', readText: fakeFiles({}), env: { WT_SUITE_LEASE: 'fs|abc' } })).toBe('inherited-lease')
   })
@@ -171,6 +183,9 @@ describe('lockCoverage', () => {
     expect(lockCoverage({ dir: '/r', kind: 'vitest', readText, env: { WT_SUITE_LOCK: '0' } })).toBe('bypassed')
   })
 
+})
+
+describe('lockCoverage config search', () => {
   it('follows Vitest: a vite.config in a nearer directory wins over a farther vitest.config', () => {
     const readText = fakeFiles({ '/r/app/vite.config.ts': PLAIN_CONFIG, '/r/vitest.config.mts': LEASED_CONFIG })
     expect(lockCoverage({ dir: '/r/app', kind: 'vitest', readText, env: {} })).toBe('uncovered')

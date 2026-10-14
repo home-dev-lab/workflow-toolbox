@@ -28,6 +28,16 @@ function sameNamespace(record, namespace) {
   return !record?.pidNamespace || !namespace || record.pidNamespace === namespace
 }
 
+function addQueuedParticipants(lock, add) {
+  try {
+    const queueDir = path.join(lock.root, 'queue.d')
+    for (const number of queuedTickets(queueDir)) add(readTicket(queueDir, number))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return false
+  }
+  return true
+}
+
 /**
  * @returns {{ state: 'held'|'free'|'unknown', inUse: boolean, participants: Set<number>|null }}
  */
@@ -43,11 +53,6 @@ export function lockParticipants(env = process.env, probes = {}) {
     if (record && !holderIsStale(record, { insideSandbox: false, ...probes.stale }) && Number.isSafeInteger(record.holder?.pid) && record.holder.pid > 0 && sameNamespace(record.holder, namespace)) participants.add(record.holder.pid)
   }
   if (lock.held) add(lock)
-  try {
-    const queueDir = path.join(lock.root, 'queue.d')
-    for (const number of queuedTickets(queueDir)) add(readTicket(queueDir, number))
-  } catch (error) {
-    if (error?.code !== 'ENOENT') return { state: 'unknown', inUse, participants: null }
-  }
+  if (!addQueuedParticipants(lock, add)) return { state: 'unknown', inUse, participants: null }
   return { state: lock.held ? 'held' : 'free', inUse, participants }
 }

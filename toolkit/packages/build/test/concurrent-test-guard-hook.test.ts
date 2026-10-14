@@ -134,6 +134,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(result.entries[0]).toMatchObject({ decision: warned ? 'warned' : 'silent', evidence: { count: String(count) } })
   })
 
+})
+
+describe('concurrent-test guard runner recognition', () => {
   it.each(['pnpm -r test', 'pnpm vitest', 'pnpm exec vitest', 'pnpm --recursive test'])(
     'recognises required test-start form: %s',
     (command) => {
@@ -150,6 +153,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(result.entries).toHaveLength(0)
   })
 
+})
+
+describe('concurrent-test guard enumeration failures', () => {
   it('WARN: unavailable process enumeration is unknown, never a silent zero', () => {
     const result = run('pnpm test', { ...process.env, PATH: '' })
     expect(result.status).toBe(0)
@@ -181,6 +187,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     },
   )
 
+})
+
+describe('concurrent-test guard queued starts', () => {
   it.skipIf(process.platform === 'win32')('SILENT: a queued start next to the lock holder and a queued waiter is not contention', () => {
     const covered = project('covered', true)
     // This live process holds the lock and a queue ticket; both injected runners descend from it.
@@ -215,6 +224,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(watching.entries[0]).toMatchObject({ decision: 'warned', evidence: { start: 'uncovered' } })
   })
 
+})
+
+describe('concurrent-test guard journal evidence', () => {
   it.skipIf(process.platform === 'win32')('WARN: one uncovered start in the command decides, even after a covered one', () => {
     const covered = project('covered', true)
     const plain = project('plain', false)
@@ -247,6 +259,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(result.entries[0]).toMatchObject({ decision: 'warned', class: 'concurrent-test-start' })
   })
 
+})
+
+describe('concurrent-test guard delegate starts', () => {
   it.skipIf(process.platform === 'win32')('DELEGATE: a sub-agent starting a run outside an in-use lock is journalled, never blocked', () => {
     const plain = project('plain', false)
     const env = { ...injectedProcessListing(SELF_ONLY), WT_SUITE_LOCK_DIR: lockRoot(null) }
@@ -273,6 +288,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(worker.entries[0]).toMatchObject({ decision: 'warned', class: 'concurrent-test-start' })
   })
 
+})
+
+describe('concurrent-test guard lock-domain overrides', () => {
   it.skipIf(process.platform === 'win32')('lock-domain overrides, watch, inherited lease and unresolved cd warn beside an inside runner', () => {
     const covered = project('covered', true)
     const env = { ...injectedProcessListing(listing([[999003, process.pid, 'vitest']])), WT_SUITE_LOCK_DIR: lockRoot(process.pid) }
@@ -292,6 +310,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(unresolved.entries[0]).toMatchObject({ decision: 'warned', evidence: { start: 'unknown' } })
   })
 
+})
+
+describe('concurrent-test guard unreadable and stale records', () => {
   it.skipIf(process.platform === 'win32')('stale and foreign lock records cannot place runners inside', () => {
     const covered = project('covered', true)
     const env = { ...injectedProcessListing(listing([[999003, 2147480000, 'vitest']])), WT_SUITE_LOCK_DIR: lockRoot(2147480000, [2147480000]) }
@@ -319,6 +340,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(unreadable.entries[0]).toMatchObject({ decision: 'warned', evidence: { lock: 'unknown', outside: '1' } })
   })
 
+})
+
+describe('concurrent-test guard lock participants', () => {
   it('a live record from another pid namespace places no pid inside; the same record in ours does', () => {
     const root = lockRoot(null)
     mkdirSync(join(root, 'lock.d'))
@@ -337,6 +361,9 @@ describe('wt-concurrent-test-guard-hook', () => {
     expect(lockParticipants({ ...process.env, WT_SUITE_LOCK_DIR: root })).toMatchObject({ state: 'held', participants: new Set([process.pid]) })
   })
 
+})
+
+describe('concurrent-test guard observe mode and registration', () => {
   it('role-closed observe mode records silent when refusal is muted', () => {
     const result = run('pnpm test', { ...process.env, PATH: '', WT_GUARD_MODE: 'observe', WT_SDK_ROLE_GUARD_FAILURE: 'closed' })
     expect(result.stdout).toBe('')
