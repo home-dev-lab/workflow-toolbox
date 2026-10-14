@@ -21,7 +21,7 @@ export function stripNonCommandText(command) {
   return stripNonCode(command)
 }
 
-export function commandHeads(command) {
+function commandHeads(command) {
   return stripNonCommandText(command)
     .split(/&&|\|\||;|\||\n|\(|\{|\$\(/)
     .map((segment) => segment.trim().replace(/^(?:sudo\s+|env\s+|(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)/, ''))
