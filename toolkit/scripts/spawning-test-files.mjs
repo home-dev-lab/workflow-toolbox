@@ -96,6 +96,7 @@ export const spawningTestFiles = [
   'packages/build/test/lane-supervisor-core.test.ts',
   'packages/build/test/lesson-harvest-hook.test.ts',
   'packages/build/test/lesson-harvest.test.ts',
+  'packages/build/test/lifecycle-owned-lanes.test.ts',
   'packages/build/test/lifecycle-phase-identity.test.ts',
   'packages/build/test/lifecycle-session-server.test.ts',
   'packages/build/test/live-config-tree-guard-hook.test.ts',

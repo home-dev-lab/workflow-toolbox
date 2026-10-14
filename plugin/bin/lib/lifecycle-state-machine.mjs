@@ -22,6 +22,8 @@ import { pathWithin } from './host/path-within.mjs'
 import { focusedLifecycleGateHint, resolveLifecycleGates } from './lifecycle-gates.mjs'
 import { snapshotSelectedTree } from './lifecycle-selection.mjs'
 import { declaredChecksForPhase } from './host/repo-instructions.mjs'
+import { createLifecycleEvents } from './lifecycle-events.mjs'
+import { createLaneTimelineRecorder } from './lifecycle-timeline-lanes.mjs'
 
 const withLeadingBreak = (text) => (text ? `\n\n${text}` : '')
 
@@ -376,7 +378,7 @@ function briefAnchorOptions(dodBullets, laneDir, readRegularFile) {
     planDodFallback: dodBullets == null,
   }
 }
-function refusal(edge, missing, file) {
+function artifactRefusal(edge, missing, file) {
   return `edge refused: ${edge}; missing ${missing}: ${file}`
 }
 function discoveryField(block, field) {
@@ -554,7 +556,7 @@ function initialLifecycleState() {
     phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
     planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
     reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], reviewWarnings: [], unresolvedFindings: [], criticEmptyRetries: 0,
-    handled: new Map(), laneReceiptSeq: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
+    handled: new Map(), laneReceiptSeq: 0, verifySnapshot: null, ownedLanes: new Map(), reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
     pendingStop: null, stopped: false, dodDisputes: [],
   }
@@ -775,6 +777,7 @@ function lifecycleRunDefinition(tool, z, queued, run) {
       name: z.string().optional(),
       what: z.string().optional(),
       decision: z.string().optional(),
+      criticLane: z.enum(['A', 'B']).optional(),
       extendSeconds: z.number().int().positive().optional(),
       timeout: z.number().int().positive().optional(),
     },
@@ -913,6 +916,8 @@ export function createLifecycleStateMachine({
     { flag: 'wx' },
   )
   const state = initialLifecycleState()
+  const events = createLifecycleEvents(state)
+  const refusal = (edge, missing, file, code = 'other') => events.refused(artifactRefusal(edge, missing, file), code)
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
   const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
@@ -1017,18 +1022,8 @@ export function createLifecycleStateMachine({
     laneProcessReader,
     gateRunner, testFramework,
     now,
-    recordLaneStart: ({ phase, model, executor: laneExecutor, startedAt, usageFile, laneId }) => {
-      const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor: laneExecutor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
-      timeline.lanes.push(record)
-      persistTimeline()
-      return record
-    },
-    recordLaneEnd: (record, endedAt, exitCode) => {
-      record.ended_at = endedAt
-      record.exit_code = exitCode ?? 'missing'
-      record.state = record.exit_code === '0' ? 'completed' : 'failed'
-      persistTimeline()
-    },
+    progress: events.progress,
+    ...createLaneTimelineRecorder({ timeline, round: (phase) => lifecycleRound(state, phase), persistTimeline }),
   })
   const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
   const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
@@ -1293,21 +1288,21 @@ export function createLifecycleStateMachine({
       const held = await holdPlanForBoundDecision(state, dodEscalation)
       if (held) return held
     }
-    try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
+    try { assertLaneDir() } catch (error) { return artifactRefusal(`${state.phase}->next`, error.message, laneDir) }
     const spec = ARTIFACTS[kind]
     if (!spec) {
-      return refusal(`${state.phase}->next`, 'known artifact kind', laneDir)
+      return artifactRefusal(`${state.phase}->next`, 'known artifact kind', laneDir)
     }
     if (state.phase !== spec[0]) {
-      return refusal(`${state.phase}->next`, `${kind} in phase ${state.phase}: write it in phase ${spec[0]}`, path.join(laneDir, spec[1]))
+      return artifactRefusal(`${state.phase}->next`, `${kind} in phase ${state.phase}: write it in phase ${spec[0]}`, path.join(laneDir, spec[1]))
     }
     if (kind === 'critic-brief' && !readRegularFile(path.join(laneDir, 'plan.md'))) {
-      return refusal('critic->next', 'plan artifact', path.join(laneDir, 'plan.md'))
+      return artifactRefusal('critic->next', 'plan artifact', path.join(laneDir, 'plan.md'))
     }
     if (kind === 'brief' && frozenRoute === 'FULL' && state.reviewRound === 0) {
       const planTasks = tasksBlock(readRegularFile(path.join(laneDir, 'plan.md')))
       if (!planTasks || tasksBlock(content) !== planTasks) {
-        return refusal('critic->tdd', 'byte-identical plan Tasks block', path.join(laneDir, spec[1]))
+        return artifactRefusal('critic->tdd', 'byte-identical plan Tasks block', path.join(laneDir, spec[1]))
       }
     }
     if (kind === 'pilot-report') {
@@ -1428,6 +1423,7 @@ export function createLifecycleStateMachine({
       }
       persistTimeline()
       const failureSuffix = failure ? ` (label failure: ${failure})` : ''
+      events.route(id, record.title)
       return `routed card ${id} — ${record.title}${routedDependencySuffix(record)}${failureSuffix}`
     } catch (error) {
       return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
@@ -1436,7 +1432,7 @@ export function createLifecycleStateMachine({
   // One MCP instance per SDK query (phase session) over this one state: the SDK connects an instance per query and an
   // instance still attached to an ending query cannot connect again. A later session's transition ids are namespaced,
   // because a fresh session numbers its ids itself and must never replay an earlier session's transition.
-  const sessionServer = (session = 1) => createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition, artifact, routeFindingTool, run }, session)
+  const sessionServer = (session = 1) => createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition: events.transition(transition), artifact, routeFindingTool, run }, session)
   const server = sessionServer()
   defineSessionAccessors(server, { sessionServer, state, timeline, route: frozenRoute })
   Object.defineProperty(server, 'lifecycle', { value: lifecycle })
@@ -1445,6 +1441,7 @@ export function createLifecycleStateMachine({
       phase: state.phase,
       partial: frozenDelivery(state.partial),
       deferred: frozenDelivery(state.deferred),
+      blocked: events.blocked(),
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })

@@ -9,7 +9,7 @@ import { deriveRoute } from './route-from-card.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
-import { phaseLaunchPlan } from './lifecycle-launch.mjs'
+import { phaseLaunchPlan, readRegularFile } from './lifecycle-launch.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
@@ -29,6 +29,7 @@ import { assertCleanPilotStart } from './lifecycle-selection.mjs'
 import { resolveLifecycleGates } from './lifecycle-gates.mjs'
 import { createParentWakeManager, validateParentWakeOptions, wakeCommandLine } from './pilot-parent-wake.mjs'
 import { hostAdapter } from './host/adapter.mjs'
+import { finalizePilotLifecycle, observeBlockedRun } from './pilot-blocked-run.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -594,6 +595,7 @@ async function* phaseFollowUps(runtime, current) {
   const { exists, report, pastBoundary, sleep, lifecycleServer } = runtime
   while (phasePromptActive(runtime, current)) {
     if (runtime.awaitingFidelityReceipt && exists(report)) { runtime.completed = true; return }
+    if (observeBlockedRun(runtime, current)) return
     if (pastBoundary(current)) {
       if (boundaryPromptEnd(runtime, current)) return
       await sleep(POLL_MS)
@@ -754,6 +756,11 @@ function phaseHandOff(log) {
 function closeSessionError(runtime, current, sessionAbort, error) {
   const { handOff, log } = runtime
   const detail = error instanceof Error ? error.message : String(error)
+  if (runtime.blockedStop && sessionAbort.signal.aborted) {
+    current.closing_error = detail
+    log(`blocked session ${current.index}: ${current.closing_error}`)
+    return
+  }
   // Only a runner-owned no-result abort or the SDK's boundary-interrupted result permits handoff.
   const ownAbort = current.ended_by === 'no_result' && sessionAbort.signal.aborted
   if (current.deniedAt === null || (!ownAbort && !current.interruptedResult)) {
@@ -778,6 +785,7 @@ async function runPhaseSession(runtime, current, prompts, mcpServer) {
     const stream = await runtime.account.open(() => query({ prompt: runtime.account.gatePrompt(prompts), options: sessionQueryOptions(current, mcpServer, sessionAbort) }), abortController)
     for await (const message of stream) consumePhaseMessage(runtime, message, current)
     if (!runtime.initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
+    if (observeBlockedRun(runtime)) return
     // A stream ending after a result past the boundary hands off even without another prompt poll.
     if (!runtime.completed && current.resultAfterBoundary) handOff(current, boundaryEnd(current))
   } catch (error) {
@@ -856,6 +864,7 @@ export async function runPilot(options, dependencies) {
   let acceptedLifecycleResults = 0
   let acceptedAtLastContinuation = 0
   let incompleteReason = null
+  let blockedStop = null
   let longestToolCall = null
   const startedTools = new Map()
   let streamIndex = 0
@@ -1001,10 +1010,10 @@ export async function runPilot(options, dependencies) {
   const modelTracker = createModelTracker(model.value, effectiveEnv)
   // Accessors share the runner's live state without changing callback receivers or async boundaries.
   const phaseRuntime = {
-    query, now, sleep, exists, readFile, log, options, report, sdkRole, model, modelTracker,
+    query, now, sleep, exists, readFile, writeFile, log, options, report, sdkRole, model, modelTracker,
     lifecycleServer, injectedDecisions, deliveredNotes, pastBoundary, handOff, boundaryEnd,
     messages, totals, modelUsage, phaseSessions, turns, tools, transcript, startedTools, lifecycleCalls, persistUsage,
-    sessionQueryOptions, abortController, clearTimer, accountSessions,
+    sessionQueryOptions, abortController, clearTimer, accountSessions, readBlockedFile: readRegularFile, writeBlockedFile: (file, content) => atomicWrite(file, content, writeFile),
     get account() { return account },
     get timeoutBoundary() { return timeoutBoundary },
     get completed() { return completed }, set completed(value) { completed = value },
@@ -1015,6 +1024,7 @@ export async function runPilot(options, dependencies) {
     get consecutiveContinuations() { return consecutiveContinuations }, set consecutiveContinuations(value) { consecutiveContinuations = value },
     get injectedTurns() { return injectedTurns }, set injectedTurns(value) { injectedTurns = value },
     get incompleteReason() { return incompleteReason }, set incompleteReason(value) { incompleteReason = value },
+    get blockedStop() { return blockedStop }, set blockedStop(value) { blockedStop = value },
     get mailboxLines() { return mailboxLines }, set mailboxLines(value) { mailboxLines = value },
     get streamIndex() { return streamIndex }, set streamIndex(value) { streamIndex = value },
     get initReceiptSeen() { return initReceiptSeen }, set initReceiptSeen(value) { initReceiptSeen = value },
@@ -1054,14 +1064,12 @@ export async function runPilot(options, dependencies) {
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
+   observeBlockedRun(phaseRuntime)
    const usage = currentUsage()
   const completedNormally = awaitingFidelityReceipt && exists(report)
-  let finalizationError = null
-  if (!completedNormally) {
-    try { lifecycleServer.finalizePartial(incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt') } catch (error) { finalizationError = error }
-  }
-  let lifecycleSummary = {}
-  try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
+  const finalized = finalizePilotLifecycle(phaseRuntime, completedNormally)
+  let finalizationError = finalized.error
+  const lifecycleSummary = finalized.summary
   const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()

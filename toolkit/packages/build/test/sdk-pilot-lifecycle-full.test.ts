@@ -751,7 +751,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     const lifecycle = await runCriticRounds([
       findings('r1', 4), findings('r2', 3), findings('r3', 2), null,
     ])
-    expect(lifecycle.state()).toEqual({ phase: 'tdd', partial: null, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'tdd', partial: null, deferred: null, blocked: null })
   })
 
   it('treats a narrowed critic finding as convergence rather than recurrence', async () => {
@@ -830,7 +830,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(timeline.phases.filter((item: { phase: string }) => ['plan', 'critic'].includes(item.phase)).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
       ['plan', 1], ['critic', 1], ['plan', 2], ['critic', 2], ['plan', 3], ['critic', 3],
     ])
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] }, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] }, deferred: null, blocked: null })
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
       .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: `${fullReport}Partial: ${reason}\n` })).toBe('wrote pilot-report')
@@ -864,7 +864,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(timeline.phases.filter((item: { phase: string; round: number | null }) => ['review', 'tdd'].includes(item.phase) && item.round !== null).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
       ['review', 1], ['tdd', 1], ['review', 2],
     ])
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: 2, reason, findings: ['finding'], question: 'The review loop stopped because same finding returned: DoD 1 — finding. The unresolved findings are: finding. How should the run parent resolve them?' }, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: 2, reason, findings: ['finding'], question: 'The review loop stopped because same finding returned: DoD 1 — finding. The unresolved findings are: finding. How should the run parent resolve them?' }, deferred: null, blocked: null })
     const authored = `${fullReport}Partial: ${reason}\n\n## Findings to route\n- pilot-authored note\n\n## Question for parent\nPilot-authored context.\n`
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: authored })).toBe('wrote pilot-report')
     const saved = readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')

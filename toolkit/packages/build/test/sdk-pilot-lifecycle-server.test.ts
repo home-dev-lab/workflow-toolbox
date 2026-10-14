@@ -785,7 +785,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     const reason = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
     expect(await text(lifecycle.routeFinding({ title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'S' })))
       .toBe(`${reason}\nrouting is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`)
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] }, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] }, deferred: null, blocked: null })
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `# report\nPartial: ${reason}\n` })))
       .toBe(`pilot-report: partial run, make "Partial: ${reason}" the first line`)
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: ${reason}\n# report\n` }))).toBe('wrote pilot-report')
@@ -948,7 +948,7 @@ printf 'report\n' > "$report"
     expect(first).toContain("run { kind: 'control', decision: 'abandon' }")
     const firstBrief = readFileSync(join(lifecycle.root, '.lane', 'launch-brief-1'), 'utf8')
     expect(existsSync(firstBrief)).toBe(true)
-    expect(await text(lifecycle.run({ kind: 'control', decision: 'abandon' }))).toMatch(/^control abandon accepted: decision=abandon/m)
+    expect(await text(lifecycle.run({ kind: 'control', decision: 'abandon' }))).toBe('control abandon submitted; lane tdd EXIT=missing')
     const firstPointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const firstRecordPath = join(lifecycle.root, '.lane', 'supervision', `${firstPointer.runId}.json`)
     for (let i = 0; i < 80 && !readFileSync(firstRecordPath, 'utf8').includes('abandoned'); i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
@@ -1652,7 +1652,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     const lifecycle = await lifecycleAtVerify()
     await writeGates(lifecycle)
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null, deferred: null, blocked: null })
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: '# report\nPartial: not partial\n' })))
       .toBe('pilot-report: this run is not partial')
   })
@@ -1962,7 +1962,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(lifecycle.state()).toEqual({
       phase: 'report',
       partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] },
-      deferred: null,
+      deferred: null, blocked: null,
     })
   })
 
@@ -2029,12 +2029,12 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(lifecycle.state()).toEqual({
       phase: 'report',
       partial: null,
-      deferred: { phase: 'report', round: null, reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] },
+      deferred: { phase: 'report', round: null, reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] }, blocked: null,
     })
     expect(partial.state()).toEqual({
       phase: 'report',
       partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: ['Ship.'] },
-      deferred: null,
+      deferred: null, blocked: null,
     })
     expect(lifecycle.state().deferred).not.toEqual(partial.state().partial)
 
@@ -2950,6 +2950,55 @@ describe.sequential('runner-hosted SDK pilot repository checks and boundary stop
       expect(readFileSync(report, 'utf8')).toContain('Phase reached: critic')
     } else expect(existsSync(report)).toBe(false)
   })
+})
+
+const blockingBoardContract = { boardId: 'b', listId: 'l' }
+const routeBlocker = (lifecycle: ReturnType<typeof testLifecycle>) => lifecycle.routeFinding({ title: 'receipt blocker', l4Reason: 'unavailable dependency: receipt owner', risk: 'P2', effort: 'S' })
+
+it('T5 a live owned lane remains a path forward after a routed ownership refusal', async () => {
+  const f = testLifecycle('LITE', [], emptyLauncher(), 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await f.artifact({ kind: 'brief', content: 'brief' })
+  await f.run({ kind: 'lane', phase: 'tdd' }); await routeBlocker(f)
+  await f.run({ kind: 'control', decision: 'extend' })
+  expect(f.state()).toMatchObject({ blocked: null })
+})
+
+it('T5 route then receipt refusal exposes the routed blocker; artifact writes do not clear it', async () => {
+  const f = testLifecycle('LITE', [], null, 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await routeBlocker(f)
+  await f.artifact({ kind: 'brief', content: 'brief' })
+  const result = await text(f.transition({ phase: 'tdd', tool_use_id: 'refused' }))
+  expect(f.state()).toMatchObject({ blocked: { cardId: 'receipt-fix', refusal: { code: 'receipt', text: result } } })
+})
+
+it('T5 routing after a refusal requires another refusal before blocking', async () => {
+  const f = testLifecycle('LITE', [], null, 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await f.transition({ phase: 'tdd', tool_use_id: 'refused' }); await routeBlocker(f)
+  expect(f.state()).toMatchObject({ blocked: null })
+  await f.run({ kind: 'control', decision: 'extend' })
+  expect(f.state()).toMatchObject({ blocked: { cardId: 'receipt-fix', refusal: { code: 'ownership' } } })
+})
+
+it('T5 a nonzero gate result is progress while an artifact is not', async () => {
+  const f = testLifecycle('LITE', [], null, 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }), gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'controlled red gate\n'); return 1 } })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await routeBlocker(f)
+  expect(await text(f.run({ kind: 'gate', name: 'lint' }))).toBe('gate lint EXIT=1')
+  await f.transition({ phase: 'tdd', tool_use_id: 'refused' })
+  expect(f.state()).toMatchObject({ blocked: null })
+})
+
+it('T5 a missing report refusal blocks, and an accepted transition clears the route', async () => {
+  const f = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1000, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await f.artifact({ kind: 'brief', content: 'brief' })
+  await f.run({ kind: 'lane', phase: 'tdd' }); await routeBlocker(f)
+  const report = join(f.root, '.lane', 'tdd-report.md'); const content = readFileSync(report, 'utf8')
+  unlinkSync(report)
+  expect(await text(f.transition({ phase: 'tdd', tool_use_id: 'missing-report' }))).toContain('non-empty unchanged lane report')
+  expect(f.state()).toMatchObject({ blocked: { cardId: 'receipt-fix' } })
+  writeFileSync(report, content); await f.run({ kind: 'lane', phase: 'tdd' })
+  await f.transition({ phase: 'tdd', tool_use_id: 'advance' })
+  expect(f.state()).toMatchObject({ phase: 'verify', blocked: null })
 })
 
 const roots: string[] = []
