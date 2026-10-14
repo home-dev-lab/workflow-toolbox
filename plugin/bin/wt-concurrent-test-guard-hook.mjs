@@ -1,21 +1,41 @@
 #!/usr/bin/env node
-// Journal before starting a test runner when another test-runner process is already alive.
+// Journal before starting a test runner when another live test runner can actually overlap it.
 // Warn paths are journal-only pending precision measurement: allow would auto-approve the
 // call, and permissionDecisionReason reaches no model. Deny paths still emit refusals.
 // Enumeration uses a structured `ps` snapshot, never `pgrep -f`: the hook excludes its entire
 // ancestor chain before looking at executable positions, so its process, launcher shell, and the
 // command text being inspected cannot manufacture a match.
+//
+// Lock awareness. The machine suite lock serializes every run that takes it, whatever the command
+// head (a Vitest config whose global setup takes the lease, or a package script wrapping it). A
+// covered start that will QUEUE next to runners that are all the lock holder, a queued waiter, or
+// their descendants is not contention: journalled `silent`, class `lock-queued-start`. Membership is
+// positive evidence only (live pids in holder.json and the queue tickets); a runner it cannot place counts
+// as outside. A start outside the lock, or running inside an inherited lease, is classified next to any
+// runner. A version or help query is not a run; every start in the command is judged, and the least
+// covered one decides.
+//
+// Record. Every inspected start is journalled with evidence {count, start, outside, lock, kind,
+// starts} and a `reason` naming the run directory and the Bash call's tool_use_id, never the command
+// text, so a firing can be classified from the record alone. `warned` means a journal-only
+// detection, not proof of a delivered notice. A sub-agent (not a Workflow worker) whose run
+// is `uncovered` on a machine that uses the lock is journalled `uncovered-delegate-start` when no
+// runner is alive; `bypassed` is left to the suite-lock bypass guard when solo. Never a permission decision
+// except the role-closed refusal when enumeration is unavailable.
 
 import { execFileSync } from 'node:child_process'
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { commandHeads } from './lib/command-invocation.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
+import { homeDirectory, lockParticipants, readText } from './lib/host/test-run-lock-host.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
+import { isWorkflowSubagentPayload } from './lib/subagent-delivery-shape.mjs'
+import { isQueued, lockCoverage, parseTestRunStarts, runnersOutsideLock, worstCoverage } from './lib/test-run-lock-coverage.mjs'
 
 const GUARD = 'wt-concurrent-test-guard-hook.mjs'
 const RUNNER_NAMES = new Set(['vitest', 'jest', 'mocha', 'pytest', 'py.test'])
+const TAG = '[workflow-toolbox concurrent-test guard]'
 
 function readInput() {
   try { return JSON.parse(readFileSync(0, 'utf8')) || {} } catch { return {} }
@@ -25,26 +45,14 @@ function basename(value) {
   return String(value || '').split(/[\\/]/).at(-1)?.toLowerCase() || ''
 }
 
-function startsTestRunner(command) {
-  if (typeof command !== 'string' || !command) return false
-  return commandHeads(command).some((head) => {
-    const direct = head.match(/^(\S+)(?:\s+(.+))?$/)
-    if (!direct) return false
-    const executable = basename(direct[1])
-    const rest = direct[2] || ''
-    if (executable === 'vitest') return /^run(?:\s|$)/.test(rest)
-    if (executable !== 'pnpm') return false
-    return /^(?:test(?:\s|$)|-r\s+test(?:\s|$)|--recursive\s+test(?:\s|$)|vitest(?:\s|$)|exec\s+vitest(?:\s|$))/.test(rest)
-  })
-}
-
 function parseSnapshot(stdout) {
   const processes = []
   for (const line of String(stdout).split('\n')) {
     if (!line.trim()) continue
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s*(.*)$/)
-    if (!match) throw new Error('process enumeration returned an unexpected shape')
-    processes.push({ pid: Number(match[1]), ppid: Number(match[2]), comm: match[3], args: match[4] })
+    const [pid, ppid, comm] = line.trim().split(/\s+/, 3)
+    if (!/^\d+$/.test(pid) || !/^\d+$/.test(ppid ?? '') || !comm) throw new Error('process enumeration returned an unexpected shape')
+    const commAt = line.indexOf(comm, line.indexOf(ppid, line.indexOf(pid) + pid.length) + ppid.length)
+    processes.push({ pid: Number(pid), ppid: Number(ppid), comm, args: line.slice(commAt + comm.length).trim() })
   }
   if (!processes.length) throw new Error('process enumeration returned no process records')
   return processes
@@ -78,7 +86,26 @@ function isRunnerProcess(processRecord) {
   return /^(?:vitest|jest|mocha)(?:\.(?:mjs|cjs|js))?$/.test(script)
 }
 
-function existingRunnerCount() {
+function runnersFromSnapshot(stdout) {
+  let processes
+  try { processes = parseSnapshot(stdout) } catch (error) {
+    return { available: false, reason: error instanceof Error ? error.message : String(error) }
+  }
+  const byPid = new Map(processes.map((record) => [record.pid, record]))
+  const excluded = new Set([process.pid])
+  let parent = process.ppid
+  while (parent > 0 && !excluded.has(parent)) {
+    excluded.add(parent)
+    parent = byPid.get(parent)?.ppid || 0
+  }
+  return {
+    available: true,
+    runners: processes.filter((record) => !excluded.has(record.pid) && isRunnerProcess(record)),
+    parentOf: (pid) => byPid.get(pid)?.ppid ?? 0,
+  }
+}
+
+function existingRunners() {
   if (process.platform === 'win32') {
     return { available: false, reason: 'process enumeration is not supported on Windows' }
   }
@@ -107,65 +134,92 @@ function existingRunnerCount() {
     }
   }
 
-  let processes
-  try { processes = parseSnapshot(stdout) } catch (error) {
-    return { available: false, reason: error instanceof Error ? error.message : String(error) }
-  }
-  const byPid = new Map(processes.map((record) => [record.pid, record]))
-  const excluded = new Set([process.pid])
-  let parent = process.ppid
-  while (parent > 0 && !excluded.has(parent)) {
-    excluded.add(parent)
-    parent = byPid.get(parent)?.ppid || 0
-  }
-  return {
-    available: true,
-    count: processes.filter((record) => !excluded.has(record.pid) && isRunnerProcess(record)).length,
-  }
+  return runnersFromSnapshot(stdout)
 }
 
 function deny(input, message) {
-  emitGuardNotice({
+  return emitGuardNotice({
     payload: input,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: `[workflow-toolbox concurrent-test guard] Refused: ${message}`,
+        permissionDecisionReason: `${TAG} Refused: ${message}`,
       },
     },
+  })
+}
+
+function startReason(starts, input) {
+  const dirs = [...new Set(starts.map((start) => start.dir ?? 'unresolved'))].join(',')
+  const tool = typeof input.tool_use_id === 'string' && input.tool_use_id ? input.tool_use_id : 'none'
+  return `dir=${dirs} tool=${tool}`
+}
+
+function startKind(starts) {
+  const kinds = [...new Set(starts.map((start) => start.kind))]
+  return kinds.length === 1 ? kinds[0] : 'mixed'
+}
+
+function enumerationUnavailable(input, starts, reason) {
+  const closed = process.env.WT_SDK_ROLE_GUARD_FAILURE === 'closed'
+  const message = `could not enumerate existing test-runner processes: ${reason}. This is unknown, not a zero count.`
+  const spoke = closed && deny(input, message)
+  recordGuardEvent({
+    guard: GUARD,
+    decision: closed ? (spoke ? 'blocked' : 'silent') : 'warned',
+    class: 'enumeration-unavailable',
+    reason: startReason(starts, input),
+    session: input.session_id,
+    agent: input.agent_id,
+    evidence: { status: 'unavailable', kind: startKind(starts), starts: starts.length },
+  })
+}
+
+function startClass(concurrent, delegateOutside, count) {
+  if (concurrent) return 'concurrent-test-start'
+  if (delegateOutside) return 'uncovered-delegate-start'
+  return count > 0 ? 'lock-queued-start' : 'solo-test-start'
+}
+
+function isUncoveredDelegate(input, concurrent, lock, coverage) {
+  const delegate = typeof input.agent_id === 'string' && input.agent_id !== '' && !isWorkflowSubagentPayload(input)
+  return !concurrent && delegate && lock.inUse && coverage === 'uncovered'
+}
+
+function recordStart(input, starts, result) {
+  const coverage = worstCoverage(starts.map((start) => lockCoverage({ ...start, readText, env: process.env })))
+  const lock = lockParticipants(process.env)
+  const count = result.runners.length
+  const outside = runnersOutsideLock(result.runners, lock.participants, result.parentOf)
+  const concurrent = count > 0 && (!isQueued(coverage) || outside > 0)
+  const delegateOutside = isUncoveredDelegate(input, concurrent, lock, coverage)
+
+  const cls = startClass(concurrent, delegateOutside, count)
+  recordGuardEvent({
+    guard: GUARD,
+    decision: concurrent || delegateOutside ? 'warned' : 'silent',
+    class: cls,
+    reason: startReason(starts, input),
+    session: input.session_id,
+    agent: input.agent_id,
+    evidence: { count, start: coverage, outside, lock: lock.state, kind: startKind(starts), starts: starts.length },
   })
 }
 
 function main() {
   const input = readInput()
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return
-  if (!startsTestRunner(input.tool_input?.command)) return
+  const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()
+  const starts = parseTestRunStarts(input.tool_input?.command, cwd, homeDirectory())
+  if (starts.length === 0) return
 
-  const result = existingRunnerCount()
+  const result = existingRunners()
   if (!result.available) {
-    const closed = process.env.WT_SDK_ROLE_GUARD_FAILURE === 'closed'
-    recordGuardEvent({
-      guard: GUARD,
-      decision: closed ? 'blocked' : 'warned',
-      class: 'enumeration-unavailable',
-      session: input.session_id,
-      agent: input.agent_id,
-      evidence: { status: 'unavailable' },
-    })
-    const message = `could not enumerate existing test-runner processes: ${result.reason}. This is unknown, not a zero count.`
-    if (closed) deny(input, message)
+    enumerationUnavailable(input, starts, result.reason)
     return
   }
-
-  recordGuardEvent({
-    guard: GUARD,
-    decision: result.count > 0 ? 'warned' : 'silent',
-    class: result.count > 0 ? 'concurrent-test-start' : 'solo-test-start',
-    session: input.session_id,
-    agent: input.agent_id,
-    evidence: { count: result.count },
-  })
+  recordStart(input, starts, result)
 }
 
 runFailOpenHook(GUARD, main)
