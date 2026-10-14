@@ -103,14 +103,22 @@ function matches(rule, record, channel, errors) {
   return matched;
 }
 
-function represented(record, index, selectedCalls, selectedResults) {
+function itemLimiter(cut) {
+  return (value) => { if (value.length <= ITEM_CHARS) return value; cut(); return `${value.slice(0, ITEM_CHARS)} … [item truncated]`; };
+}
+
+function representedParts(record, selectedCalls, selectedResults, limit) {
   const content = record.message?.content;
   const text = record.type === 'assistant' || record.type === 'user' ? textOf(content) : '';
-  if (record.type === 'system' && record.subtype === 'compact_boundary') return `line ${index + 1} [compaction boundary: rule may no longer be in context]`;
-  const limit = (value) => value.length > ITEM_CHARS ? `${value.slice(0, ITEM_CHARS)} … [item truncated]` : value;
   const parts = text ? [`[${record.type} text] ${limit(text)}`] : [];
   for (const use of selectedCalls ?? []) parts.push(`[tool call ${use.name} ${use.id}] ${limit(JSON.stringify(use.input))}`);
   for (const result of selectedResults ?? []) parts.push(`[tool result ${result.tool_use_id}] ${limit(textOf(result.content))}`);
+  return parts;
+}
+
+function represented(record, index, selectedCalls, selectedResults, cut = () => {}) {
+  if (record.type === 'system' && record.subtype === 'compact_boundary') return `line ${index + 1} [compaction boundary: rule may no longer be in context]`;
+  const parts = representedParts(record, selectedCalls, selectedResults, itemLimiter(cut));
   const description = parts.join(' ') || `[${record.type}]`;
   return `line ${index + 1} ${description}`;
 }
@@ -135,24 +143,28 @@ function excerpt(records, serve, end, acts, scopeStart) {
     }
     for (const answerIndex of act.answerIndices ?? []) add(answerIndex);
   }
-  let output = '', previous = 0, truncated = false;
+  // Two different losses: the whole excerpt hitting its budget (later lines are gone) and one item cut at ITEM_CHARS
+  // (its head is still shown). Cases record both; `truncated` keeps meaning "something was cut", and stays the only
+  // loss the prompt shows, because a prompt reporting them separately did not judge more precisely when measured.
+  let output = '', previous = 0, budgetHit = false, itemsCut = 0;
   const kept = new Set();
   for (const index of [...selected].sort((a, b) => a - b)) {
     const gap = previous ? index - previous - 1 : 0;
-    const raw = represented(records[index], index, calls.get(index), results.get(index));
+    let cuts = 0;
+    const raw = represented(records[index], index, calls.get(index), results.get(index), () => { cuts += 1; });
     const piece = (gap > 0 ? `… ${gap} lines omitted …\n` : '') + raw + '\n';
     if (output.length + piece.length > EXCERPT_CHARS) {
-      truncated = true;
-      if (!output) { output = piece.slice(0, EXCERPT_CHARS); kept.add(index); }
+      budgetHit = true;
+      if (!output) { output = piece.slice(0, EXCERPT_CHARS); kept.add(index); itemsCut += cuts; }
       break;
     }
     output += piece;
     kept.add(index);
-    truncated ||= raw.includes('[item truncated]');
+    itemsCut += cuts;
     previous = index;
   }
    const dropped = acts.filter((act) => !kept.has(act.index) || act.id && !output.includes(`[tool call ${act.use.name} ${act.id}]`)).length;
-  return { excerpt: output, truncated, droppedActs: dropped };
+  return { excerpt: output, truncated: budgetHit || itemsCut > 0, excerptBudgetHit: budgetHit, itemsCut, droppedActs: dropped };
 }
 
 async function agentFacts(acts, cwd, options) {
@@ -275,7 +287,7 @@ export async function extractCases(options) {
        cases.push({ caseId: digest(`${path}\0${delivery.line}\0${delivery.blockIndex}\0${delivery.name}\0${delivery.toolUseId}`), rule: delivery.name, ruleText: delivery.text,
         currentRuleHash: rule.hash, triggerSource: history.source ?? 'unavailable', transcriptPath: path, serveLine: delivery.line, timestamp: delivery.at,
         sessionId: records.find((record) => record.sessionId)?.sessionId ?? basename(path, '.jsonl'), agentId: delivery.agentId === 'main' && path.split(/[\\/]/).includes('subagents') ? basename(path, '.jsonl') : delivery.agentId,
-        excerpt: context.excerpt, facts, truncated: context.truncated, droppedActs: context.droppedActs,
+        excerpt: context.excerpt, facts, truncated: context.truncated, excerptBudgetHit: context.excerptBudgetHit, itemsCut: context.itemsCut, droppedActs: context.droppedActs,
         governedActs: acts.length, ...(triggerReason ? { triggerState: 'unknown', triggerReason } : { triggerState: 'known' }) });
     }
   }

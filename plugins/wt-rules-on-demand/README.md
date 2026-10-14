@@ -309,7 +309,7 @@ the compliance store or rollback archives:
 
 ```sh
 node scripts/judge-cases.mjs extract --projects-dir <config-dir>/projects --rules-dir <rules-dir> --out <judge-output-dir>
-node scripts/judge-cases.mjs judge --cases <path-printed-by-extract> --out <judge-output-dir> --model haiku
+node scripts/judge-cases.mjs judge --cases <path-printed-by-extract> --out <judge-output-dir> --model sonnet
 node scripts/judge-cases.mjs score --judges <path-printed-by-judge> --labels labels-a.jsonl --labels labels-b.jsonl
 ```
 
@@ -327,11 +327,20 @@ ambiguous ownership or missing evidence is code-decided `undecidable`.
 For each governed call the excerpt includes its preceding prompt and assistant
 text, arguments and result, with compaction markers and line-numbered gaps.
 Arguments/results are capped at 1,200 characters each and the excerpt at 12,000
-characters; the case records truncation and dropped-act count. Only the model
+characters; the case records `truncated` (anything cut), and separately
+`excerptBudgetHit` (the 12,000-character budget dropped later lines, or cut a
+first line longer than the whole budget) and `itemsCut` (how many single items
+were cut at 1,200 characters, counted where the cut is made), plus the
+dropped-act count. Most cut excerpts lose only item tails, not whole lines. Only the model
 can return `not applicable`, on non-empty evidence; code never decides a negative.
 The extract summary compares raw served blocks to cases produced, including
 serves beyond the quality scanner's refusal bound.
-`judge` defaults to concurrency 2 (override `--concurrency`) and writes under
+`judge` defaults to the `sonnet` model (override `--model`) and to concurrency 2
+(override `--concurrency`). On labelled real transcripts, `haiku` called most
+cases it decided wrongly, including violations where none occurred, so it is no
+longer the default. The judge is still measurement-only: on held-out labelled
+cases `sonnet` is right on most cases it decides, but it leaves many cases
+undecidable from the excerpt and finds few of the real violations. It writes under
 `<config-dir>/plugins/data/wt-rules-on-demand/judge/` unless `--out` chooses a
 directory. Every extract and judge run creates a new exclusive file in a fresh
 run directory and prints its path. To resume, pass the previous judge file as
@@ -348,7 +357,12 @@ model overrides, hooks, plugins, or config directory. Existing files and
 symlinked output directories are refused. Labels have
 `caseId`, `label` and `labeller` (include `rule` for per-rule reporting when a
 case lacks a judge row); score counts every multiply-labelled case for agreement,
-but only agreed cases with judge rows for precision/recall. A judge file with
+but only agreed cases with judge rows for precision/recall. It also prints a
+violation-detector line, in which `followed` and `not applicable` both count as
+no violation: violation precision and recall, no-violation precision, and the
+share of determinate cases the judge decided. A violation called on a case the
+labellers agreed is `undecidable` counts against violation precision: a warning
+the evidence cannot support is a false alarm. A judge file with
 multiple predictions for one case (for example, changed evidence or two model
 runs) must be split before scoring.
 
