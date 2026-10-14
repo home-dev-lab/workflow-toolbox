@@ -15,6 +15,9 @@ export function sealedPluginCliEnv(
     XDG_STATE_HOME: join(root, 'state'),
     CLAUDE_CONFIG_DIR: join(root, 'claude-config'),
     CLAUDE_PLUGIN_DATA: undefined,
+    // The outer gate run's own lock wait (a wrapper may export up to 12 h) is not the spawned CLI's: a broker refuses
+    // a client waitS above 10800 s. A test that needs a wait passes it as an override.
+    WT_SUITE_LOCK_WAIT_S: undefined,
     HOME: home,
     USERPROFILE: platform === 'win32' ? home : undefined,
     ...overrides,

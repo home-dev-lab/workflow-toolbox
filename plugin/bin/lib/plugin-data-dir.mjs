@@ -118,6 +118,18 @@ function moveLegacyDir(legacyDir, dir, stderr, fs) {
 }
 
 /**
+ * The installed plugin's canonical data directory, or null when installed_plugins.json does not name the plugin.
+ * Pure: reads the registry, never creates, moves or carries anything over. resolvePluginDataDir() derives its
+ * canonical directory from this, so a read-only observer (a test backstop watching where a writer writes) and the
+ * writer cannot disagree about the path.
+ * @knipTestSeam Imported by toolkit/test-support/guard-journal-isolation.global-setup.ts.
+ */
+export function canonicalPluginDataDir({ configDir, pluginName: name = pluginName() }) {
+  const marketplace = installedMarketplace(configDir, name)
+  return marketplace ? join(configDir, 'plugins', 'data', `${name}-${marketplace}`) : null
+}
+
+/**
  * The installed-plugin registry makes every caller share one canonical directory.
  * CLAUDE_PLUGIN_DATA is used only for an uninstalled --plugin-dir session; its value
  * never overrides an installed plugin's canonical directory.
@@ -125,9 +137,9 @@ function moveLegacyDir(legacyDir, dir, stderr, fs) {
 export function resolvePluginDataDir({ env = process.env, configDir = env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), pluginName: name = pluginName(), fallback, platform = process.platform, stderr = process.stderr, minimumVersion = ownVersion(), fs = DEFAULT_FS }) {
   const legacyDir = fallback || join(env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), name)
   const candidate = env.CLAUDE_PLUGIN_DATA
-  const marketplace = installedMarketplace(configDir, name)
-  if (marketplace) {
-    const dataDir = join(configDir, 'plugins', 'data', `${name}-${marketplace}`)
+  const dataDir = canonicalPluginDataDir({ configDir, pluginName: name })
+  if (dataDir) {
+    const marketplace = installedMarketplace(configDir, name)
     const dir = join(dataDir, basename(legacyDir))
     const pluginData = typeof candidate !== 'string' || !candidate
       ? 'unset'
