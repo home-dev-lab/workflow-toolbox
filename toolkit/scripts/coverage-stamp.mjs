@@ -62,6 +62,18 @@ export function writeCoverageStamp(directory, { start, end, filtered }) {
 
 const short = (id) => String(id).slice(0, 12)
 
+function filteredCoverageReason(stamp) {
+  return stamp.filtered === true
+    ? 'the coverage run did not run the whole suite (selected files or projects, a shard, a test-name pattern, a test mode, or test files that never ran), so its totals cover part of it'
+    : 'the coverage run did not record whether it ran the whole suite (merged reports, or a Vitest context this check cannot read)'
+}
+
+function dirtyCoverageReason(stamp) {
+  return stamp.dirty === true
+    ? 'the coverage run measured uncommitted changes, so its numbers describe that working tree rather than HEAD; commit them first'
+    : 'the coverage run could not read whether the tree had uncommitted changes'
+}
+
 // Whether a coverage stamp describes the checkout whose identity is `current`: { ok: true }, or
 // { ok: false, reason }. Edits made AFTER a clean run are not detected: the stamp names a committed
 // tree, and the working tree is not hashed.
@@ -77,14 +89,10 @@ export function coverageFreshness(stamp, current) {
       `${stamp.generatedAt ? ` (generated ${stamp.generatedAt})` : ''}`)
   }
   if (stamp.filtered !== false) {
-    return refuse(stamp.filtered === true
-      ? 'the coverage run did not run the whole suite (selected files or projects, a shard, a test-name pattern, a test mode, or test files that never ran), so its totals cover part of it'
-      : 'the coverage run did not record whether it ran the whole suite (merged reports, or a Vitest context this check cannot read)')
+    return refuse(filteredCoverageReason(stamp))
   }
   if (stamp.dirty !== false) {
-    return refuse(stamp.dirty === true
-      ? 'the coverage run measured uncommitted changes, so its numbers describe that working tree rather than HEAD; commit them first'
-      : 'the coverage run could not read whether the tree had uncommitted changes')
+    return refuse(dirtyCoverageReason(stamp))
   }
   return { ok: true }
 }

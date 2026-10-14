@@ -36,20 +36,20 @@ describe('child-process coverage instrument', () => {
   })
 })
 
+const git = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' })
+const readStamp = (directory: string) => JSON.parse(readFileSync(join(directory, 'coverage-stamp.json'), 'utf8'))
+
+function repoWithOneCommit() {
+  const repo = mkdtempSync(join(tmpdir(), 'wt-coverage-stamp-'))
+  roots.push(repo)
+  git(repo, 'init', '-q')
+  writeFileSync(join(repo, 'a.txt'), 'a\n')
+  git(repo, 'add', 'a.txt')
+  expect(git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'one').status).toBe(0)
+  return repo
+}
+
 describe('coverage provenance stamp', () => {
-  const git = (cwd: string, ...args: string[]) => spawnSync('git', args, { cwd, encoding: 'utf8' })
-  const readStamp = (directory: string) => JSON.parse(readFileSync(join(directory, 'coverage-stamp.json'), 'utf8'))
-
-  function repoWithOneCommit() {
-    const repo = mkdtempSync(join(tmpdir(), 'wt-coverage-stamp-'))
-    roots.push(repo)
-    git(repo, 'init', '-q')
-    writeFileSync(join(repo, 'a.txt'), 'a\n')
-    git(repo, 'add', 'a.txt')
-    expect(git(repo, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'one').status).toBe(0)
-    return repo
-  }
-
   it('records the commit and tree the coverage measured, and whether the tree was uncommitted', () => {
     const repo = repoWithOneCommit()
     const commit = git(repo, 'rev-parse', 'HEAD').stdout.trim()
@@ -87,7 +87,9 @@ describe('coverage provenance stamp', () => {
     expect(() => writeCoverageStamp(outside, { start: identity, end: identity, filtered: false })).not.toThrow()
     expect(readStamp(outside).tree).toBeNull()
   })
+})
 
+describe('coverage provenance stamp run classification and write failures', () => {
   it('classifies a filtered run from the Vitest context and the test mode', () => {
     const ctx = (over: Record<string, unknown> = {}, config: Record<string, unknown> = {}) => ({ filenamePattern: undefined, config: { project: [], changed: false, cliExclude: null, ...config }, ...over })
     expect(runIsFiltered(ctx(), {})).toBe(false)
@@ -133,32 +135,32 @@ describe('whole-suite check', () => {
   })
 })
 
-describe('coverage provider stamping', () => {
-  async function providerIn(root: string) {
-    const provider = await coverageModule.getProvider() as unknown as Record<string, unknown>
-    // Outside the repository, as `.lane/` is ignored in the real one: the reports must not make the tree dirty.
-    const scratch = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-reports-'))
-    roots.push(scratch)
-    const reports = join(scratch, 'reports')
-    const coverageFiles = join(scratch, 'coverage-files')
-    mkdirSync(coverageFiles)
-    mkdirSync(reports)
-    writeFileSync(join(reports, 'coverage-summary.json'), '{}')
-    Object.assign(provider, {
-      options: { reportsDirectory: reports },
-      coverageFilesDirectory: coverageFiles,
-      ctx: {
-        filenamePattern: undefined,
-        config: { root, project: [] },
-        state: { getFiles: () => [{ projectName: 'unit', filepath: '/suite/a.test.ts' }] },
-        globTestSpecifications: async () => [{ project: { name: 'unit' }, moduleId: '/suite/a.test.ts' }],
-      },
-      treeAtStart: readTreeIdentity(root),
-      generateReports: async () => {},
-    })
-    return { provider: provider as { reportCoverage: (map: unknown, options: unknown) => Promise<void>, mergeReports: (maps: unknown[]) => Promise<void> }, reports }
-  }
+async function providerIn(root: string) {
+  const provider = await coverageModule.getProvider() as unknown as Record<string, unknown>
+  // Outside the repository, as `.lane/` is ignored in the real one: the reports must not make the tree dirty.
+  const scratch = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-reports-'))
+  roots.push(scratch)
+  const reports = join(scratch, 'reports')
+  const coverageFiles = join(scratch, 'coverage-files')
+  mkdirSync(coverageFiles)
+  mkdirSync(reports)
+  writeFileSync(join(reports, 'coverage-summary.json'), '{}')
+  Object.assign(provider, {
+    options: { reportsDirectory: reports },
+    coverageFilesDirectory: coverageFiles,
+    ctx: {
+      filenamePattern: undefined,
+      config: { root, project: [] },
+      state: { getFiles: () => [{ projectName: 'unit', filepath: '/suite/a.test.ts' }] },
+      globTestSpecifications: async () => [{ project: { name: 'unit' }, moduleId: '/suite/a.test.ts' }],
+    },
+    treeAtStart: readTreeIdentity(root),
+    generateReports: async () => {},
+  })
+  return { provider: provider as { reportCoverage: (map: unknown, options: unknown) => Promise<void>, mergeReports: (maps: unknown[]) => Promise<void> }, reports }
+}
 
+describe('coverage provider stamping', () => {
   it('stamps the reports of an unfiltered run with the tree it measured', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-'))
     roots.push(root)
@@ -180,7 +182,9 @@ describe('coverage provider stamping', () => {
     await provider.reportCoverage(undefined, { allTestsRun: true })
     expect(JSON.parse(readFileSync(join(reports, 'coverage-stamp.json'), 'utf8')).filtered).toBe(true)
   })
+})
 
+describe('coverage provider stamping initialization and merged reports', () => {
   it('removes an older stamp when a coverage run starts', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-coverage-provider-init-'))
     roots.push(root)
