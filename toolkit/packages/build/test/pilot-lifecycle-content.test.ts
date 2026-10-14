@@ -46,7 +46,7 @@ describe('pilot lifecycle template', () => {
     expect(PILOT).toMatch(/same finding returns \(anchor plus\s+file plus normalized claim/)
     expect(PILOT).toMatch(/two\s+consecutive blocking passes fail to set a new minimum/)
     expect(PILOT).toContain('Clear passes remain recorded but do not set')
-    expect(PILOT).toContain('A red run returns its failing test names as another TDD fix round')
+    expect(PILOT).toContain('A red run returns every attested red gate as `gate <name> EXIT=<actual exit>`')
     expect(PILOT).toMatch(/VERIFY then runs the tests the card's change affects/)
     expect(PILOT).toMatch(/change to shared test infrastructure[\s\S]{0,120}runs the full suite instead/)
     expect(PILOT).toMatch(/full suite runs once per integration batch/)

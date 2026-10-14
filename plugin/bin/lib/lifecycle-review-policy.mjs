@@ -12,6 +12,7 @@ const withoutLineSuffix = (value) => value.replace(/(\.[A-Za-z0-9]+):\d+(?::\d+)
   return /[A-Za-z0-9_.-]$/.test(token) && !token.includes('://') ? extension : match
 })
 const normalizedClaim = (finding) => normalizedFinding(withoutLineSuffix(finding))
+const identityBlocker = (finding) => finding.blocks && !finding.recurrenceExempt
 const normalizedLocationFile = (location) => {
   let normalized = String(location ?? '').trim().replace(/^`|`$/g, '').replaceAll(BACKWARD_SLASH, () => FORWARD_SLASH)
   if (normalized.startsWith(`.${FORWARD_SLASH}`)) normalized = normalized.slice(2)
@@ -161,11 +162,11 @@ export function reviewConvergenceDecision(rounds) {
   const earlier = new Map()
   for (const round of blockingRounds.slice(0, -1)) {
     for (const finding of round.findingDetails ?? []) {
-      if (finding.blocks) earlier.set(`${normalizedAnchor(finding.anchor)}\0${normalizedLocationFile(finding.location)}\0${normalizedClaim(finding.text)}`, finding)
+      if (identityBlocker(finding)) earlier.set(`${normalizedAnchor(finding.anchor)}\0${normalizedLocationFile(finding.location)}\0${normalizedClaim(finding.text)}`, finding)
     }
   }
   for (const finding of latest.findingDetails ?? []) {
-    if (!finding.blocks) continue
+    if (!identityBlocker(finding)) continue
     const prior = earlier.get(`${normalizedAnchor(finding.anchor)}\0${normalizedLocationFile(finding.location)}\0${normalizedClaim(finding.text)}`)
     if (prior) return { continue: false, signal: `same finding returned: ${prior.anchor} — ${finding.text.replace(/\s+/g, ' ').trim()}` }
   }

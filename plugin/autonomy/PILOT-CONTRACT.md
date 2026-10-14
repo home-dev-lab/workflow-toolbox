@@ -22,7 +22,7 @@ inspect runs accept only `diff`, `status`, or allow-listed receipts/logs. On lan
 `run { kind: 'control', decision: 'abandon'|'extend' }` remedy; runner supplies the owner token.
 
 Call `transition` with the phase being left, not the phase being entered.
-LITE verify accepts only `outcome: passed`; spell every edge semantic into the tdd brief before launch.
+Spell every edge semantic into the tdd brief before launch.
 Search only the worktree; no unbounded `find /`.
 
 Each lane: write its brief, run it, then transition. The server prefixes authoritative rules
@@ -45,8 +45,8 @@ the plan SHA-256. FULL tdd briefs copy plan's `## Tasks` block byte-identically.
 | discovery | Inspect intake and relevant worktree sources, then transition with discovery `record` and runner's frozen route; LITE reaches tdd, FULL plan. |
 | plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote each folded DoD criterion exactly as a `- ` bullet, then `Proof:` naming a task, test, e2e, test file, or gate; then transition. |
 | critic | Write/run the brief; round 1 runs critics A and B together and unions exact-deduplicated findings. Then transition: approved -> tdd; changes-requested -> plan. |
-| tdd | Write/run the brief, then verify. Fix rounds consume `.lane/review-findings.md` and run targeted tests, typecheck, and lint (zero touched-file warnings), never the full suite. |
-| verify | Run all gates. Green reaches report/review; a red full suite transitions `failed` with test names and returns to tdd. |
+| tdd | Write/run brief -> verify. Fixes read `.lane/review-findings.md`; targeted tests + non-test gates, zero touched-file warnings; no full suite. |
+| verify | All gates: 0 -> report/review; red -> tdd (`failed`). `gate <name> EXIT=<actual exit>` or exact failed-test names. Attested/current/fresh receipts. Carry red gates/names/logs. No names: attested test marker. |
 | review | Write/run the brief; clear -> refutation, blocking changes-requested -> tdd fix. |
 | refutation | Write/run the brief; clear -> report, blocking changes-requested -> tdd fix. |
 | report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
