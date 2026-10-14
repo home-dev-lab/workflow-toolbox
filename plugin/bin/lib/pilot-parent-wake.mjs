@@ -61,9 +61,15 @@ function sendAllowed(input, parent, body) {
   return ['content', 'summary'].every((key) => !Object.hasOwn(input, key) || truncatedBody(input[key], body))
 }
 
+// The ToolSearch schema carries an optional max_results; the waker model fills it in (measured on haiku, 3 of 3 runs).
+function searchAllowed(input) {
+  if (!Object.keys(input).every((key) => key === 'query' || key === 'max_results')) return false
+  return input.query === 'select:SendMessage' && (!Object.hasOwn(input, 'max_results') || (Number.isInteger(input.max_results) && input.max_results > 0))
+}
+
 function toolAllowed(name, input, parent, body) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return false
-  if (name === 'ToolSearch') return Object.keys(input).length === 1 && input.query === 'select:SendMessage'
+  if (name === 'ToolSearch') return searchAllowed(input)
   return name === 'SendMessage' && sendAllowed(input, parent, body)
 }
 
@@ -99,14 +105,17 @@ export function buildWakeOptions({ parentSession, parentMode, body, env, abortCo
 }
 
 function newWakeState(requestId, model) {
-  return { request_id: requestId, model, tool_use_id: null, outcome: null, account: null, messages: new Map(), admitted: new Set(), denied: false, active: true, accepting: true }
+  return { request_id: requestId, model, tool_use_id: null, outcome: null, account: null, messages: new Map(), admitted: new Set(), denied: false, denied_tool: null, active: true, accepting: true }
 }
+
+// A tool name is model-chosen text: record it only when it has the shape of a tool identifier.
+const deniedToolName = (name) => typeof name === 'string' && /^[A-Za-z0-9_]{1,64}$/u.test(name) ? name : 'unknown'
 
 function observeCall(state, { name, id, allowed }) {
   if (!state.active || !state.accepting) return false
-  if (!allowed) { state.denied = true; return }
+  if (!allowed) { state.denied = true; state.denied_tool ??= deniedToolName(name); return }
   if (name !== 'SendMessage') return
-  if (typeof id !== 'string' || !TOOL_ID.test(id) || state.admitted.size > 0) { state.denied = true; return false }
+  if (typeof id !== 'string' || !TOOL_ID.test(id) || state.admitted.size > 0) { state.denied = true; state.denied_tool ??= deniedToolName(name); return false }
   state.admitted.add(id)
   state.tool_use_id = id
 }
@@ -164,13 +173,13 @@ function wakeReceipt(state, outcome, account) {
   state.active = false
   const usage = Object.fromEntries(Object.keys(USAGE_FIELDS).map((key) => [key, 0]))
   for (const message of state.messages.values()) for (const key of Object.keys(usage)) usage[key] += message.usage[key]
-  return { request_id: state.request_id, model: state.model, models: [...new Set([...state.messages.values()].map((m) => m.model))], tool_use_id: state.tool_use_id, outcome, account: account?.summary() ?? null, usage }
+  return { request_id: state.request_id, model: state.model, models: [...new Set([...state.messages.values()].map((m) => m.model))], tool_use_id: state.tool_use_id, denied_tool: state.denied_tool, outcome, account: account?.summary() ?? null, usage }
 }
 
 function logWakeReceipt(log, receipt) {
   try {
     if (receipt.outcome === 'not-sent:unsafe-value') { log('parent wake: not sent (unsafe-value)'); return }
-    log(`parent wake: ${receipt.outcome} request=${receipt.request_id} tool_use=${receipt.tool_use_id ?? 'none'}`)
+    log(`parent wake: ${receipt.outcome} request=${receipt.request_id} tool_use=${receipt.tool_use_id ?? 'none'}${receipt.denied_tool ? ` denied=${receipt.denied_tool}` : ''}`)
   } catch { /* A diagnostic failure cannot withdraw a published decision request. */ }
 }
 

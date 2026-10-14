@@ -103,14 +103,15 @@ atomically to host-only run state that no sandboxed lane can reach; no mailbox o
  runs. Never forward the question to the user. Answer within 15 minutes; after that the runner
 binds the card criterion's literal words verbatim and records that the critic may not block again on
 that criterion for the rest of the run. The report and summary quote both.
-The waker's hook allows only the exact parent and runner-composed body, plus the exact
-`ToolSearch` query `select:SendMessage`. It runs without plugins or project settings and makes
+The waker's hook allows only the exact parent and runner-composed body, plus a `ToolSearch`
+for `select:SendMessage` (with an optional positive `max_results`). It runs without plugins or project settings and makes
 one attempt per request. `parent wake: transport-accepted` means only that the correlated tool
 result returned JSON `success:true`; only the receiver's transcript proves a wake. A mode-class
 mismatch is held silently by the harness even with `success:true`, so `decision request:` in
 the log remains the fallback signal. Without parent flags, only that log signal is available.
 Summary `parent_wakes[]` records the waker's model, deduplicated assistant-message tokens,
-outcome and account verdict separately from pilot totals. Wake failures never change the decision
+outcome, account verdict and, on a fence denial, the denied tool's name (never its input), separately
+from pilot totals; the log line then ends with `denied=<tool>`. Wake failures never change the decision
 deadline or fallback winner.
 For the repeatable real-host phase-transition check, follow
 [`references/what-is-running-e2e.md`](references/what-is-running-e2e.md).

@@ -276,8 +276,8 @@ loop continues to another plan round. Each criterion is escalated at most once p
   Wakes reuse the runner's account gate, never re-enter admission, have a 120-second cap, are
   aborted at run end, and get at most five seconds of final settling. At most one is in flight;
   none is retried. Failures do not affect the decision deadline or run outcome. Model, assistant-id
-  token totals, outcome and account verdict are recorded in `summary.parent_wakes[]` separately
-  from pilot totals. Session-name reuse after a parent exits remains possible; the wake grants nothing.
+  token totals, outcome, account verdict and any denied tool's name are recorded in
+  `summary.parent_wakes[]` separately from pilot totals. Session-name reuse after a parent exits remains possible; the wake grants nothing.
 - **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading
   <text>`. The command atomically writes the SDK runner's per-run state under the host state directory
   (`XDG_STATE_HOME` or the platform equivalent), outside every lane sandbox bind. Mailbox and lane-file
