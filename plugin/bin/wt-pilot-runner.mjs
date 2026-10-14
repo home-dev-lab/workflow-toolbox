@@ -10,7 +10,7 @@ import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { decidePilotRun } from './lib/host/pilot-decision-store.mjs'
 
 function usage() {
-  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--stop-after <phase>] [...]\n       node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading <text> [--state-root <path>]'
+  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--stop-after <phase>] [--parent-session <name> --parent-mode <bypass|prompting>] [...]\n       node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading <text> [--state-root <path>]'
 }
 
 function decisionArgs(argv) {
