@@ -28,15 +28,33 @@ const REPORT_STEP = PILOT.slice(PILOT.indexOf('7. **Report**'), PILOT.indexOf('#
 // An instruction to move/mark a card Done: an arrow, "move(s) it to", "mark ... Done", etc.
 const MOVE_TO_DONE = /(?:→|->|\bmoves?\s+(?:it|the card|card)?\s*to|\bmark(?:s|ed)?\s+(?:it|the card|card)?)\s*`?Done\b/gi
 
+// A sentence that moves a card to Done is allowed only when it ties the move to the merge
+// ("at the merge") or forbids it ("never"/"not" right before the verb). Mentioning the merge
+// elsewhere in the sentence ("to Done before the merge") is not enough.
+function moveToDoneOffenders(text: string): string[] {
+  return [...text.matchAll(MOVE_TO_DONE)]
+    .filter((m) => !/\b(?:never|not)\s+$/i.test(text.slice(Math.max(0, m.index - 12), m.index)))
+    .map((m) => text.slice(m.index, m.index + 160).split(/(?<=[.;])\s/)[0] ?? '')
+    .filter((sentence) => !/\bat the merge\b/i.test(sentence))
+}
+
+describe('moveToDoneOffenders', () => {
+  it('flags a premature Done that only mentions the merge', () => {
+    expect(moveToDoneOffenders('Move the card to Done before the merge.')).toHaveLength(1)
+  })
+
+  it('accepts Done tied to the merge and a prohibition', () => {
+    expect(moveToDoneOffenders('Whoever merges will move it to Done at the merge.')).toEqual([])
+    expect(moveToDoneOffenders('You do not move it to Done yourself.')).toEqual([])
+  })
+})
+
 describe.each([
   ['pilot.md', PILOT],
   ['pilot-orchestrator.md', ORCHESTRATOR],
 ])('%s never instructs moving a card to Done before the merge', (_name, text) => {
   it('every instruction to move a card to Done names the merge within the same sentence', () => {
-    const offenders = [...text.matchAll(MOVE_TO_DONE)]
-      .map((m) => text.slice(m.index, m.index + 160).split(/(?<=[.;])\s/)[0] ?? '')
-      .filter((sentence) => !/merg/i.test(sentence))
-    expect(offenders).toEqual([])
+    expect(moveToDoneOffenders(text)).toEqual([])
   })
 
   it('does not tie Done to the pilot reaching its own definition of done', () => {
@@ -68,5 +86,15 @@ describe('pilot-orchestrator.md', () => {
   it('states Done happens at the merge and a READY card is delivered, not open work', () => {
     expect(ORCHESTRATOR).toMatch(/Done[^.]{0,80}\bat the merge\b/i)
     expect(ORCHESTRATOR).toMatch(/READY/)
+  })
+
+  it('lets a static mission complete or stall on READY cards', () => {
+    expect(ORCHESTRATOR).toMatch(/every listed id is Done or READY" for COMPLETE/)
+    expect(ORCHESTRATOR).toMatch(/every listed id is Done, READY or Blocked, ≥1 Blocked"/)
+  })
+
+  it('recognizes READY where the pilot may record it, comment fallback included', () => {
+    expect(ORCHESTRATOR).toMatch(/metadata block \(or, where the tracker has none, in the pilot's report comment\)/)
+    expect(PILOT).toMatch(/metadata block \(or, where the tracker has none, in that comment\)/)
   })
 })

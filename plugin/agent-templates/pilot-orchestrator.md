@@ -103,11 +103,12 @@ back silently.
    or park, not once at the start — that is what makes the queue dynamic: a card created or
    (re)labeled mid-run is caught on the NEXT test, not missed because you already "finished
    the list". A static mission (explicit id list) has no re-scan — its test is "every listed
-   id is Done" for COMPLETE, or "every listed id is Done or Blocked, ≥1 Blocked" for STALLED.
+   id is Done or READY" for COMPLETE, or "every listed id is Done, READY or Blocked, ≥1 Blocked"
+   for STALLED, where READY means delivered and awaiting the merge (next paragraph).
 
    **Done is moved at the merge, by whoever merges — a pilot never moves its card to Done.** A
    card its pilot delivered stays In Progress with `READY`, its branch and its tip recorded in
-   the card's metadata block: that card is delivered and awaiting the merge, not open work.
+   the card's metadata block (or, where the tracker has none, in the pilot's report comment): that card is delivered and awaiting the merge, not open work.
    Never re-brief a pilot on it, and do not let it block the stop test or hold the tier open:
    list it in your report as `ready, awaiting merge (<branch>@<tip>)`. You do not merge and do
    not move it to Done yourself unless your spawn prompt grants the merge.
