@@ -24,8 +24,10 @@ const CLAUDE = process.env.WT_CLAUDE_BIN || 'claude'
 const sealed = sealedClaudeEnv()
 afterAll(() => sealed.cleanup())
 
+// `plugin/launch-agents` is a plugin of its own (its own manifest, its own guard hooks), nested inside `plugin/`.
 const pluginDirs = [
   join(REPO_ROOT, 'plugin'),
+  join(REPO_ROOT, 'plugin', 'launch-agents'),
   ...readdirSync(join(REPO_ROOT, 'plugins'), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => join(REPO_ROOT, 'plugins', entry.name)),
@@ -40,7 +42,7 @@ const unavailable = probe.error
 
 describe('every shipped plugin passes the host validator (claude plugin validate --strict)', () => {
   it('finds the plugins it must validate', () => {
-    expect(pluginDirs.map((dir) => relative(REPO_ROOT, dir).replaceAll('\\', '/'))).toEqual(expect.arrayContaining(['plugin', 'plugins/wt-secret-guard']))
+    expect(pluginDirs.map((dir) => relative(REPO_ROOT, dir).replaceAll('\\', '/'))).toEqual(expect.arrayContaining(['plugin', 'plugin/launch-agents', 'plugins/wt-secret-guard']))
   })
 
   for (const dir of pluginDirs) {
