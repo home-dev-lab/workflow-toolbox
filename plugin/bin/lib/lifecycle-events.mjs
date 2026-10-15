@@ -10,9 +10,10 @@ export function createLifecycleEvents(state, canLaunchLane = () => false) {
     const refusal = events.findLast((event) => event.kind === 'refusal')
     if (!refusal || !['receipt', 'ownership'].includes(refusal.code)) return null
     if ([...state.ownedLanes.values()].some((record) => record.phase === state.phase)) return null
-    if (canLaunchLane(state.phase)) return null
     const newestProgress = events.findLast((event) => event.kind === 'progress')?.seq ?? 0
     const routed = events.findLast((event) => event.kind === 'route' && event.seq > newestProgress && event.seq < refusal.seq)
+    if (!routed) return null
+    try { if (canLaunchLane(state.phase)) return null } catch { /* resolver failure makes launch inadmissible */ }
     return routed ? { cardId: routed.cardId, refusal: { code: refusal.code, text: refusal.text } } : null
   }
   function transition(operation) {

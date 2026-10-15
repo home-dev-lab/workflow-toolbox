@@ -4,7 +4,7 @@
   "os import": 1,
   "existsSync": 4,
   "lstatSync": 1,
-  "rmSync": 7,
+  "rmSync": 8,
   "mkdtempSync": 1,
   "tmpdir": 1,
   "chmodSync": 1,

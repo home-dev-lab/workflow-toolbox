@@ -13,7 +13,7 @@ import { executorFamilyForModel } from './executor-defaults.mjs'
 import { classifyLane } from './lane-supervisor-core.mjs'
 import { createOwnedLaneWait } from './host/lifecycle-owned-lane.mjs'
 import { runOwnedControl } from './host/lifecycle-owned-control.mjs'
-import { ensureLaneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
+import { ensureLaneHostDir, laneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
 import { writeLaneRegularFile } from './host/lifecycle-file-write.mjs'
 
@@ -336,11 +336,16 @@ function checkSnapshotEvidence(context, edge) {
 
 function checkLanePaths({ root, laneDir }, slots) {
   for (const slot of slots) {
-    for (const file of [path.join(ensureLaneHostDir(root), `${slot}-run.log`), path.join(laneDir, `${slot}-report.md`)]) {
+    for (const file of [path.join(laneHostDir(root), `${slot}-run.log`), path.join(laneDir, `${slot}-report.md`)]) {
       if (fs.existsSync(file) && !regularFile(file)) return { missing: 'regular lane receipt or report', file, code: 'receipt' }
     }
   }
   return null
+}
+
+function invalidateCriticPair(laneDir, invalidate) {
+  for (const phase of ['critic', 'critic-A', 'critic-B']) invalidate(phase)
+  fs.rmSync(path.join(laneDir, 'critic-report.md'), { force: true })
 }
 
 function checkCriticReceipts(context, receipts, laneReports) {
@@ -483,23 +488,23 @@ export function createLifecycleLaunch({
     criticLaunching = true
     try {
       criticAggregateKey = null
-      for (const phase of ['critic', 'critic-A', 'critic-B']) invalidateLaneEvidence(phase)
+      invalidateCriticPair(laneDir, invalidateLaneEvidence)
       const results = await Promise.all(['A', 'B'].map((criticLane) => runSingle({ ...args, criticLane })))
       criticLaunching = false
-      return aggregateCritics(results)
+      return aggregateCritics(results, ['A', 'B'])
     } finally { criticLaunching = false }
   }
 
   const criticReceiptProblem = (receipts, laneReports) => checkCriticReceipts(evidenceContext, receipts, laneReports)
 
-  function pendingCriticResult() {
+  function pendingCriticResult(results, slots) {
     const pending = [...state.ownedLanes.values()].filter((record) => record.phase === 'critic')
     if (!pending.length && !criticLaunching) return null
-    return pending.map((record) => owned.timeout(record, `critic-${record.criticLane} remains unpublished`)).join('\n') || 'lane critic TIMEOUT: pair launch pending'
+    return pending.map((record) => `critic-${record.criticLane}: ${results[slots.indexOf(record.criticLane)]}`).join('\n') || 'lane critic TIMEOUT: pair launch pending'
   }
 
-  function aggregateCritics(results) {
-    const pending = pendingCriticResult()
+  function aggregateCritics(results, slots) {
+    const pending = pendingCriticResult(results, slots)
     if (pending) return pending
     const laneIds = ['A', 'B']
     const laneLogs = laneIds.map((criticLane) => path.join(ensureLaneHostDir(root), `critic-${criticLane}-run.log`))

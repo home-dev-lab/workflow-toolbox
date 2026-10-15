@@ -22,7 +22,7 @@ const slot=process.env.WT_LANE_SUPERVISION_SLOT ?? null, text=fs.readFileSync(ar
 const info=text.startsWith('{') ? JSON.parse(text) : {report:text.split('Write the report to '+tick)[1].split(tick)[0]};
 const paths=${JSON.stringify(paths)}[slot ?? '${phase}'];
 fs.mkdirSync(path.dirname(paths.record),{recursive:true});
-fs.writeFileSync(paths.record,JSON.stringify({runId:'123-1',workerPid:42001,workerArgv:['fixture'],workerStartTime:1,childPid:42002,childArgv:['fixture'],childStartTime:1,owner:'pilot',ownerToken:arg('--owner-token'),state:'decision-needed',timeoutAt:'first',evidence:{}}));
+fs.writeFileSync(paths.record,JSON.stringify({runId:'123-1',workerPid:42001,workerArgv:['fixture'],workerStartTime:1,childPid:42002,childArgv:['fixture'],childStartTime:1,owner:'pilot',ownerToken:arg('--owner-token'),state:'decision-needed',timeoutAt:'first',defaultDecision:'abandon',decisionDueAt:slot==='critic-A'?'2099-01-01T00:00:01.000Z':'2099-01-01T00:00:02.000Z',evidence:{}}));
 fs.writeFileSync(paths.pointer,JSON.stringify({runId:'123-1'}));
 fs.writeFileSync(path.join(arg('--dir'),(slot ?? '${phase}')+'.json'),JSON.stringify({...info,paths,log:arg('--log'),snapshot:path.dirname(arg('--brief'))}));
 if (${immediate}) { fs.appendFileSync(arg('--log'),'EXIT=0\\n'); fs.writeFileSync(info.report,${JSON.stringify(phase === 'critic' ? 'VERDICT: changes-requested\nFINDINGS:\n- fixture finding\n' : 'report\n')}); fs.writeFileSync(paths.record,JSON.stringify({runId:'123-1',state:'launch-failed'})); }
@@ -60,9 +60,9 @@ function fixture(phase = 'tdd', immediate = false) {
 
 async function withFixture(phase, immediate, check) {
   const f = fixture(phase, immediate)
-  const originalExec = childProcess.execFileSync; const originalCopy = fs.copyFileSync; const originalRename = fs.renameSync
+  const originalExec = childProcess.execFileSync; const originalCopy = fs.copyFileSync; const originalRename = fs.renameSync; const originalOpen = fs.openSync; const originalExists = fs.existsSync
   try { await check(f) } finally {
-    childProcess.execFileSync = originalExec; fs.copyFileSync = originalCopy; fs.renameSync = originalRename; syncBuiltinESMExports()
+    childProcess.execFileSync = originalExec; fs.copyFileSync = originalCopy; fs.renameSync = originalRename; fs.openSync = originalOpen; fs.existsSync = originalExists; syncBuiltinESMExports()
     for (const snapshot of f.snapshots) fs.rmSync(snapshot, { recursive: true, force: true })
     fs.rmSync(laneHostDir(f.root), { recursive: true, force: true }); fs.rmSync(f.root, { recursive: true, force: true })
   }
@@ -134,19 +134,127 @@ function sourceFunction(name, next) {
   return source.slice(source.indexOf(name), source.indexOf(next, source.indexOf(name)))
 }
 
-async function planWaitBlockedCheck(waitNumber = 1) {
+async function planWaitBlockedCheck(waitNumber = 1, pendingTurnEnds = 1) {
   const runtime = blockedRuntime(); runtime.state.phase = 'plan'; runtime.state.blocked = null
-  runtime.pendingTurnEnds = 1
+  runtime.pendingTurnEnds = pendingTurnEnds
   runtime.lifecycleServer.dodDisputes = () => [{ resolution: null }]
   let waits = 0
   runtime.lifecycleServer.awaitDodDecisions = async () => {
     if (++waits === waitNumber) runtime.state.blocked = { cardId: 'recovery', refusal: { text: 'ownership refusal during binding' } }
   }
   const wait = new Function(`return (${sourceFunction('async function waitForPlanBinding(', '\nfunction partialInstruction(')})`)()
-  const follow = new Function('observeBlockedRun', 'waitForPlanBinding', 'phasePromptActive', 'advanceContinuation', 'continuationContent', 'continuationMessage',
-    `${sourceFunction('async function* phaseFollowUps(', '\nfunction recordSessionCall(')}\nreturn phaseFollowUps`)(observeBlockedRun, wait, () => true, () => {}, () => 'continue', () => ({ message: 'continuation' }))
+  let injections = 0
+  const follow = new Function('observeBlockedRun', 'waitForPlanBinding', 'phasePromptActive', 'advanceContinuation', 'continuationContent', 'continuationMessage', 'mailboxOrDecision',
+    `${sourceFunction('async function* phaseFollowUps(', '\nfunction recordSessionCall(')}\nreturn phaseFollowUps`)(observeBlockedRun, wait, () => true, () => {}, () => 'continue', () => ({ message: 'continuation' }), () => { injections++; return { message: 'mailbox or decision' } })
   const current = { abort: () => {} }; runtime.pastBoundary = () => false
-  assert.equal((await follow(runtime, current).next()).done, true, 'blocked condition during plan binding must not yield a continuation')
+  assert.equal((await follow(runtime, current).next()).done, true, pendingTurnEnds ? 'blocked condition during plan binding must not yield a continuation' : 'blocked zero-pending-turn plan binding must not yield a mailbox or decision')
+  assert.equal(injections, 0, 'blocked plan binding must not inject a mailbox or decision message')
+}
+
+async function recoveryMachine(f, route = 'FULL', options = {}) {
+  const archiveRoot = fs.mkdtempSync(join(tmpdir(), 'owned-phase-archive-')); f.snapshots.push(archiveRoot)
+  childProcess.execFileSync('git', ['init', '-q'], { cwd: archiveRoot })
+  fs.writeFileSync(join(archiveRoot, '.gitignore'), '.claude/reports/\n')
+  fs.writeFileSync(join(f.root, '.gitignore'), '.lane/\n.claude/reports/\n')
+  const server = createLifecycleServer({ worktree: f.root, archiveRoot, route, cardId: 'fixture', sessionTag: 'fixture',
+    models: { lane: 'test', review: 'test' }, laneLauncher: f.launcher, laneWaitMs: 2, lanePollMs: 2, rules: [],
+    lanePlatform: 'linux', laneProcessReader: { inspect: (pid) => ({ pid, argv: ['fixture'], startTime: 1 }), processExists: () => true, processState: () => 'S' }, ...options })
+  const tools = server.instance._registeredTools
+  const invoke = async (name, args) => (await tools[name].handler(args)).content[0].text
+  await invoke('transition', { phase: 'discovery', tool_use_id: 'start', record: '## External-source ledger\n- Claim: fixture\n  Source: fixture\n  Fetched content: fixture\n  Verdict: confirmed\nGrounding route: proceed\n' })
+  if (route === 'FULL') {
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: parser; test and lint\nSeams: none: pure strings\n## State and recovery\nN/A: no state boundary touched\n'
+    await invoke('write_artifact', { kind: 'plan', content: plan })
+    assert.equal(await invoke('transition', { phase: 'plan', tool_use_id: 'plan' }), 'accepted phase=critic\n\nCoverage citation check: no existing-coverage claims detected; coverage was not verified.')
+  }
+  await invoke('write_artifact', { kind: route === 'FULL' ? 'critic-brief' : 'brief', content: 'brief' })
+  return { server, invoke }
+}
+
+async function criticRetryMachine(f) {
+  const m = await recoveryMachine(f)
+  assert.equal(await m.invoke('run', { kind: 'lane', phase: 'critic' }), 'lane critic EXIT=0')
+  for (const slot of ['critic-A', 'critic-B']) f.snapshots.push(f.info(slot).snapshot)
+  assert.match(await m.invoke('transition', { phase: 'critic', tool_use_id: 'bad-first' }), /failed critic report:.*re-run once/)
+  return m
+}
+
+function ownedCriticTransitionCheck() {
+  return withFixture('critic', true, async (f) => {
+    const m = await criticRetryMachine(f)
+    fs.writeFileSync(f.launcher, launcherSource(f.root, 'critic', false))
+    await m.invoke('run', { kind: 'lane', phase: 'critic' })
+    for (const slot of ['critic-A', 'critic-B']) f.snapshots.push(f.info(slot).snapshot)
+    // A malformed report arriving while owned must not be read, even on the second parse attempt.
+    fs.writeFileSync(join(f.root, '.lane', 'critic-report.md'), 'VERDICT: changes-requested\nFINDINGS:\n- fixture finding\n')
+    const before = m.server.timeline()
+    const open = fs.openSync; let reads = 0
+    fs.openSync = (file, ...args) => { if (file === join(f.root, '.lane', 'critic-report.md')) reads++; return open(file, ...args) }; syncBuiltinESMExports()
+    assert.match(await m.invoke('transition', { phase: 'critic', tool_use_id: 'bad-second' }), /owned lane must finish before transition/)
+    fs.openSync = open; syncBuiltinESMExports()
+    assert.equal(reads, 0, 'owned transition must refuse before opening the report')
+    assert.equal(m.server.state().phase, 'critic'); assert.equal(m.server.state().partial, null)
+    assert.deepEqual(m.server.timeline(), before, 'ownership refusal must not change the timeline')
+    const exec = childProcess.execFileSync
+    childProcess.execFileSync = (command, args, options) => {
+      if (args.includes('--decision')) throw new Error('caller is not the recorded owner')
+      return exec(command, args, options)
+    }; syncBuiltinESMExports()
+    assert.match(await m.invoke('run', { kind: 'control', decision: 'extend' }), /caller is not the recorded owner/)
+    f.finish('critic-A'); f.finish('critic-B')
+    await m.invoke('run', { kind: 'control', decision: 'abandon' })
+    assert.match(await m.invoke('transition', { phase: 'critic', tool_use_id: 'bad-terminal' }), /failed report retry: partial run/, 'owned refusal must leave the first parse retry unchanged')
+  })
+}
+
+function ownedRoutingCheck() {
+  return withFixture('tdd', false, async (f) => {
+    const m = await recoveryMachine(f, 'LITE')
+    assert.match(await m.invoke('run', { kind: 'lane', phase: 'tdd' }), /TIMEOUT/); f.snapshots.push(f.info().snapshot)
+    assert.match(await m.invoke('route_finding', { title: 'fixture', l4Reason: 'unavailable dependency', risk: 'P2', effort: 'S' }), /owned lane must finish before transition/)
+    assert.equal(m.server.state().phase, 'tdd'); assert.equal(m.server.state().partial, null)
+    f.finish()
+    assert.equal(await m.invoke('run', { kind: 'control', decision: 'extend' }), 'lane tdd EXIT=0')
+  })
+}
+
+function staleCriticCheck(failLaunch) {
+  return withFixture('critic', true, async (f) => {
+    const m = await criticRetryMachine(f)
+    fs.writeFileSync(f.launcher, failLaunch ? 'throw new Error("fixture launch failed")' : launcherSource(f.root, 'critic', false, 0, false))
+    await m.invoke('run', { kind: 'lane', phase: 'critic' })
+    assert.equal(fs.existsSync(join(f.root, '.lane', 'critic-report.md')), false, 'critic retry must remove the stale aggregate report')
+    assert.match(await m.invoke('transition', { phase: 'critic', tool_use_id: 'missing' }), /VERDICT block/)
+    assert.equal(m.server.state().phase, 'critic'); assert.equal(m.server.state().partial, null)
+  })
+}
+
+function failedPairEvidenceCheck() {
+  return withFixture('critic', true, async (f) => {
+    await f.run({ kind: 'lane', phase: 'critic' })
+    fs.writeFileSync(f.launcher, 'throw new Error("fixture launch failed")')
+    await f.run({ kind: 'lane', phase: 'critic' })
+    assert.notEqual(f.laneEvidence('critic'), null, 'both failed launches must invalidate stale aggregate attestations')
+    const evidence = JSON.parse(fs.readFileSync(join(f.root, '.lane', 'evidence.json'), 'utf8')).entries
+    assert.equal(evidence[join(laneHostDir(f.root), 'critic-run.log')], undefined, 'both failed launches must remove the aggregate log attestation')
+    assert.equal(evidence[join(f.root, '.lane', 'critic-report.md')], undefined, 'both failed launches must remove the aggregate report attestation')
+  })
+}
+
+function pairTimeoutDetailCheck(orphan = false) {
+  return withFixture('critic', false, async (f) => {
+    const launched = await f.run({ kind: 'lane', phase: 'critic' })
+    if (!orphan) {
+      for (const slot of ['critic-A', 'critic-B']) {
+        const due = slot === 'critic-A' ? '2099-01-01T00:00:01.000Z' : '2099-01-01T00:00:02.000Z'
+        assert.ok(launched.includes(`${slot}: lane critic TIMEOUT: owner=pilot decision required; lane remains live; last write unknown; process unknown; log tail ""; default=abandon at ${due}`), `${slot} must retain its exact TIMEOUT decision detail`)
+      }
+    } else {
+      f.gone = new Set([42001])
+      const result = await f.run({ kind: 'control', decision: 'extend' })
+      for (const slot of ['critic-A', 'critic-B']) assert.ok(result.includes(`${slot}: lane critic TIMEOUT: worker-gone-child-alive; surviving child pid=42002; no process was killed`), `${slot} must retain its exact orphan hint`)
+    }
+  })
 }
 
 async function machineRecoveryCheck() {
@@ -225,6 +333,81 @@ function laterCriticCheck(decision) {
 }
 
 export const recoveryChecks = {
+  GpureAdmissibility: () => withFixture('tdd', false, async (f) => {
+    const host = laneHostDir(f.root)
+    fs.rmSync(host, { recursive: true, force: true })
+    assert.equal(fs.existsSync(host), false)
+    assert.equal(f.canLaunchLane('tdd'), true)
+    assert.equal(fs.existsSync(host), false, 'launch admissibility must not create the host directory')
+  }),
+  GstateResolver: () => withFixture('tdd', false, async (f) => {
+    const m = await recoveryMachine(f, 'LITE', { boardContract: { boardId: 'fixture', listId: 'fixture' }, routeFinding: async () => ({ id: 'dependency' }) })
+    await m.invoke('route_finding', { title: 'fixture', l4Reason: 'unavailable dependency', risk: 'P2', effort: 'S' })
+    await m.invoke('transition', { phase: 'tdd', tool_use_id: 'no-receipt' })
+    const exists = fs.existsSync, log = join(laneHostDir(f.root), 'tdd-run.log')
+    fs.existsSync = (file) => { if (file === log) throw new Error('host-dir resolver failed'); return exists(file) }; syncBuiltinESMExports()
+    assert.doesNotThrow(() => m.server.state(), 'throwing host-dir path resolver must not escape state()')
+    assert.equal(m.server.state().blocked.cardId, 'dependency')
+  }),
+  GfinishedSibling: () => withFixture('critic', false, async (f) => {
+    await f.run({ kind: 'lane', phase: 'critic' }); f.finish('critic-B')
+    const calls = []
+    childProcess.execFileSync = (_command, args) => {
+      const slot = args[args.indexOf('--slot') + 1]; calls.push(slot)
+      if (slot === 'critic-A') f.finish(slot)
+      return 'decision submitted'
+    }; syncBuiltinESMExports()
+    assert.equal(await f.run({ kind: 'control', decision: 'extend' }), 'control extend submitted; lane critic EXIT=0')
+    assert.deepEqual(calls, ['critic-A'], 'already-finished sibling must receive no decision')
+  }),
+  GblockedResolver: async () => {
+    const state = { phase: 'tdd', ownedLanes: new Map() }
+    const events = createLifecycleEvents(state, () => { throw new Error('host-dir resolver failed') })
+    events.route('fixture', 'dependency'); events.refused('receipt unavailable', 'receipt')
+    assert.doesNotThrow(() => events.blocked(), 'throwing host-dir resolver must not escape blocked state polling')
+    assert.equal(events.blocked().cardId, 'fixture')
+  },
+  GblockedUnrouted: async () => {
+    let calls = 0
+    const events = createLifecycleEvents({ phase: 'tdd', ownedLanes: new Map() }, () => { calls++; return false })
+    events.refused('receipt unavailable', 'receipt')
+    assert.equal(events.blocked(), null)
+    assert.equal(calls, 0, 'unrouted polling must not resolve launch paths')
+  },
+  GownedCritic: ownedCriticTransitionCheck,
+  GownedRouting: ownedRoutingCheck,
+  GownedFinalizer: () => withFixture('tdd', false, async (f) => {
+    const m = await recoveryMachine(f, 'LITE')
+    await m.invoke('run', { kind: 'lane', phase: 'tdd' }); f.snapshots.push(f.info().snapshot)
+    m.server.finalizePartial('fixture stop')
+    const owned = m.server.state().partial?.ownedLanesAtFinalization
+    assert.equal(m.server.state().partial?.reason, 'fixture stop', 'stream-end finalization must still write the partial')
+    assert.equal(owned?.length, 1, 'stream-end finalization must name the lane that outlives the run')
+    assert.equal(owned[0].phase, 'tdd')
+    f.finish()
+  }),
+  GstaleMissing: () => staleCriticCheck(false),
+  GstaleLaunchFailure: () => staleCriticCheck(true),
+  GfailedPairEvidence: failedPairEvidenceCheck,
+  GpairTimeout: () => pairTimeoutDetailCheck(),
+  GpairRefusal: () => withFixture('critic', false, async (f) => {
+    await f.run({ kind: 'lane', phase: 'critic' })
+    childProcess.execFileSync = (_command, args) => {
+      const slot = args[args.indexOf('--slot') + 1]
+      throw new Error(`caller is not the recorded owner (${slot})`)
+    }; syncBuiltinESMExports()
+    const result = await f.run({ kind: 'control', decision: 'extend' })
+    for (const slot of ['critic-A', 'critic-B']) assert.ok(result.includes(`${slot}: edge refused: critic->next; missing control extend (caller is not the recorded owner (${slot}))`), `${slot} must retain its own exact control refusal`)
+  }),
+  GpairOrphan: () => pairTimeoutDetailCheck(true),
+  GblockedSummary: async () => {
+    const runtime = blockedRuntime(); observeBlockedRun(runtime)
+    runtime.lifecycleServer.finalizePartial = () => runtime.writes.set(join(tmpdir(), '.lane', 'summary.json'), '{}')
+    runtime.writeBlockedFile = () => { throw new Error('second persist failed') }
+    const finalized = finalizePilotLifecycle(runtime, false)
+    assert.deepEqual(finalized.summary.blocked_on, runtime.blockedStop, 'returned summary must restore blocked fields after archive replacement and failed second persist')
+  },
+  GblockedMailbox: () => planWaitBlockedCheck(1, 0),
   ClaterExtend: () => laterCriticCheck('extend'),
   ClaterAbandon: () => laterCriticCheck('abandon'),
   CcallerDocs: async () => {
@@ -363,14 +546,19 @@ export const recoveryChecks = {
     f.finish(); await f.run({ kind: 'control', decision: 'extend' }); assert.equal(f.state.ownedLanes.size, 0)
   }),
   F2: () => withFixture('critic', false, async (f) => {
-    await f.run({ kind: 'lane', phase: 'critic' })
+    const timeout = await f.run({ kind: 'lane', phase: 'critic' })
+    assert.ok(timeout.includes('critic-B: lane critic TIMEOUT: owner=pilot decision required; lane remains live; last write unknown; process unknown; log tail ""; default=abandon at 2099-01-01T00:00:02.000Z'), 'critic-B must retain its exact TIMEOUT decision detail before publication')
     const sibling = f.state.ownedLanes.get('critic-B'); f.finish('critic-A')
     const copy = fs.copyFileSync
     fs.copyFileSync = () => { throw new Error('injected A publication failure') }
     childProcess.execFileSync = () => { throw new Error('fixture still live') }; syncBuiltinESMExports()
     const failed = await f.run({ kind: 'control', decision: 'extend' })
     fs.copyFileSync = copy
-    assert.doesNotMatch(failed, /lane critic EXIT=/); assert.equal(f.state.ownedLanes.has('critic-A'), false)
+    assert.ok(failed.includes('critic-B: edge refused: critic->next; missing control extend (fixture still live)'), 'critic-B must retain its exact control refusal text')
+    assert.equal(f.state.ownedLanes.has('critic-A'), false)
+    childProcess.execFileSync = () => { throw new Error('caller is not the recorded owner') }; syncBuiltinESMExports()
+    const refused = await f.run({ kind: 'control', decision: 'extend' })
+    assert.ok(refused.includes('critic-B: edge refused: critic->next; missing control extend (caller is not the recorded owner)'), 'remaining critic-B must retain its exact owner refusal text')
     const retry = await f.run({ kind: 'lane', phase: 'critic' })
     assert.match(retry, /owned and live/, 'pair retry must wait for the owned sibling')
     assert.equal(f.state.ownedLanes.get('critic-B'), sibling)

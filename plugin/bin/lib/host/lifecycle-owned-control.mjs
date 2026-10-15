@@ -51,7 +51,7 @@ export async function runOwnedControl(context, args) {
   // Reconcile and control every member before exposing a pair result to the pilot.
   const results = await Promise.all(records.map((record) => controlRecord(context, record, args)))
   if (!records.some((record) => record.criticLane)) return results[0]
-  const result = aggregate(results)
+  const result = aggregate(results, records.map((record) => record.criticLane))
   return results.some((value) => value.startsWith(`control ${args.decision} submitted;`))
     ? `control ${args.decision} submitted; ${result}` : result
 }

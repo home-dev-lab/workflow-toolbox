@@ -62,9 +62,21 @@ const removeFile = (file) => fs.rmSync(file, { force: true })
 const NO_BOARD_CONTRACT_REASON = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
 const ROUTING_IMPOSSIBLE_INSTRUCTION = (reason) =>
   `routing is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`
+
+function ownedLaneRefusal(state, refusal, laneDir) {
+  return state.ownedLanes.size
+    ? refusal(`${state.phase}->next`, 'owned lane must finish before transition', laneDir, 'ownership')
+    : null
+}
+
+function transitionEntryRefusal(state, refusal, laneDir, stoppedRefusal) {
+  return ownedLaneRefusal(state, refusal, laneDir) ?? (state.stopped ? stoppedRefusal() : null)
+}
 // Refuses route_finding when no board contract was supplied, and ends the run at `report` from inside
 // the tool call — no phase transition carries it there, so the timeline is advanced here.
-function partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now }) {
+function partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now, refusal, laneDir }) {
+  const owned = ownedLaneRefusal(state, refusal, laneDir)
+  if (owned) return owned
   const reason = NO_BOARD_CONTRACT_REASON
   if (state.phase !== 'report' && state.phase !== 'awaiting_fidelity') {
     state.partial = { phase: state.phase, round: null, reason, findings: [] }
@@ -652,6 +664,8 @@ function reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructio
 }
 
 function handleReportProblem({ phase, problem, report, state, refusal, root, audit, now, event, shape, timeline, persistTimeline }) {
+  const owned = ownedLaneRefusal(state, refusal, path.dirname(report))
+  if (owned) return owned
   const retries = state.reportParseRetries[phase] ?? 0
   if (retries === 0) {
     state.reportParseRetries[phase] = 1
@@ -673,9 +687,11 @@ function handleReportProblem({ phase, problem, report, state, refusal, root, aud
   return result
 }
 
-function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop }) {
+function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop, refusal }) {
   const stoppedRefusal = () => `edge refused: ${state.phase}->next; ${state.partial?.reason ?? 'runner'} already stopped the lifecycle: ${laneDir}`
   const stopAtBoundary = (event) => {
+    const owned = ownedLaneRefusal(state, refusal, laneDir)
+    if (owned) return owned
     const reason = state.pendingStop
     const phase = state.phase
     const result = `stopped phase=${phase} reason=${reason}`
@@ -705,10 +721,18 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
   return { requestStop, stopAtBoundary, stoppedRefusal }
 }
 
+// The stream has ended, so nothing can wait for or control an owned lane any more: finalize anyway and
+// name every lane still running, so the partial record never hides a lane that outlives the run.
+function withOwnedLanesAtFinalization(state, partial) {
+  if (!state.ownedLanes.size) return partial
+  const owned = [...state.ownedLanes.values()].map((record) => ({ phase: record.phase, slot: record.slot ?? null, pid: record.pid ?? null, runId: record.runId ?? null }))
+  return { ...partial, ownedLanesAtFinalization: owned }
+}
+
 function createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile }) {
   return (reason) => {
     if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
-    state.partial = finalizedPartial(state, state.phase, reason)
+    state.partial = withOwnedLanesAtFinalization(state, finalizedPartial(state, state.phase, reason))
     const endedAt = now()
     timeline.phases.at(-1).exited_at ??= endedAt
     timeline.ended_at = endedAt
@@ -1025,13 +1049,13 @@ export function createLifecycleStateMachine({
     progress: events.progress,
     ...createLaneTimelineRecorder({ timeline, round: (phase) => lifecycleRound(state, phase), persistTimeline }),
   })
-  const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
+  const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop, refusal })
   const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
   const run = guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun)
   const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
   const stopRequestedAt = createPhaseStopRequest(stopAfterPhase, requestStop, state)
   function transition(event) {
-    if (state.stopped) return stoppedRefusal()
+    const entry = transitionEntryRefusal(state, refusal, laneDir, stoppedRefusal); if (entry) return entry
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!event || typeof event !== 'object' || !PHASES.includes(event.phase)) {
       return refusal('unknown->next', 'valid phase', laneDir)
@@ -1400,7 +1424,7 @@ export function createLifecycleStateMachine({
   async function routeFindingTool(args) {
     if (state.stopped) return stoppedRefusal()
     if (!boardContract || typeof routeFinding !== 'function') {
-      return partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now })
+      return partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now, refusal, laneDir })
     }
     try {
       const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })

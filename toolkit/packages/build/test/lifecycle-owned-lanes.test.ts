@@ -172,6 +172,20 @@ it('T3 controls the critic pair and reconciles B finishing while waiting on A', 
   expect(f.state.laneReceiptSeq).toBe(1); expect(f.laneEvidence('critic')).toBeNull()
 })
 
+it('T3 controls A without sending a decision to already-finished B', async () => {
+  const f = fixture('critic'); await f.run({ kind: 'lane', phase: 'critic' })
+  const ownedAtTimeout = f.state.ownedLanes.size
+  f.finish('critic-B')
+  const spy = f.control((args: readonly string[]) => {
+    if (args.includes('critic-A')) f.afterInspections(() => f.finish('critic-A'))
+  })
+  expect(await f.run({ kind: 'control', decision: 'extend' })).toBe('control extend submitted; lane critic EXIT=0')
+  expect(ownedAtTimeout).toBe(2)
+  expect(spy).toHaveBeenCalledTimes(1)
+  expect(spy.mock.calls.some((call: unknown[]) => Array.isArray(call[1]) && call[1].includes('critic-A'))).toBe(true)
+  expect(f.state.laneReceiptSeq).toBe(1); expect(f.laneEvidence('critic')).toBeNull()
+})
+
 it('T3 controls the remaining critic B with its exact saved supervision slot', async () => {
   const f = fixture('critic', 'A'); await f.run({ kind: 'lane', phase: 'critic' })
   const receiptsBefore = f.state.laneReceiptSeq
