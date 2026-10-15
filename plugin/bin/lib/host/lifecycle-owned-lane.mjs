@@ -1,16 +1,13 @@
 // Continues the lifecycle's one wait/publication path across owner decisions.
 import fs from 'node:fs'
 import { supervisionPaths, shellQuote } from '../lane-supervisor-core.mjs'
+import { readProcessLiveness } from './process-signals.mjs'
 
 const PREFLIGHT_MS = 100_000
 const SETTLE_MS = 5_000
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const terminal = (verdict) => ['terminal', 'gone'].includes(verdict.status)
 const errorText = (error) => error instanceof Error ? error.message : String(error)
-
-export function aggregateSelectedCritic(args, result, aggregate) {
-  return args?.kind === 'lane' && args.phase === 'critic' && args.criticLane && /^lane critic EXIT=(?:0|-?[1-9]\d*)$/.test(result) ? aggregate([result]) : result
-}
 
 function owns(context, identity, phase) {
   return context.state.ownedLanes.has(identity.slot ?? phase)
@@ -26,6 +23,10 @@ function finishLaunch(context, record) {
 }
 
 function supervision(root, record, readRegularFile, classify) {
+  if (!record.runId) {
+    const worker = readProcessLiveness(process, record.workerPid)
+    return { saved: null, verdict: { status: worker.status === 'gone' ? 'gone' : 'unknown', reason: worker.reason } }
+  }
   let saved = null
   try { saved = JSON.parse(readRegularFile(supervisionPaths(root, record.runId, record.slot).record)) } catch {}
   return { saved, verdict: classify(saved) }
@@ -92,8 +93,7 @@ function timeout(context, record, detail) {
   const { state, root, controlPath } = context
   state.ownedLanes.set(record.key, record)
   const slot = record.slot ? ` --slot ${shellQuote(record.slot)}` : ''
-  const selector = record.criticLane ? `, criticLane: '${record.criticLane}'` : ''
-  const remedy = `pilot: run { kind: 'control', decision: 'abandon'${selector} } or run { kind: 'control', decision: 'extend'${selector} }; human: extend with node ${shellQuote(controlPath)} --dir ${shellQuote(root)} --decision extend --owner-token ${shellQuote(record.nonce)}${slot}, or abandon with node ${shellQuote(controlPath)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(record.nonce)}${slot}`
+  const remedy = `pilot: run { kind: 'control', decision: 'abandon' } or run { kind: 'control', decision: 'extend' }; human: extend with node ${shellQuote(controlPath)} --dir ${shellQuote(root)} --decision extend --owner-token ${shellQuote(record.nonce)}${slot}, or abandon with node ${shellQuote(controlPath)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(record.nonce)}${slot}`
   return `lane ${record.phase} TIMEOUT: ${detail}; ${remedy}; after abandon completes, re-run this lifecycle lane phase to launch a fresh owner-bound lane and brief`
 }
 
@@ -202,6 +202,6 @@ async function awaitOwnedLane(context, record) {
       return publish(record, logEntry)
     } finally { finalize(record, logEntry?.exit) }
   }
-  if (!logEntry) return timeout(record, 'unknown liveness; no process was killed')
-  try { return publish(record, logEntry) } finally { finalize(record, logEntry.exit) }
+  if (!logEntry && !terminal(context.observe(record).verdict)) return timeout(record, 'unknown liveness; no process was killed')
+  try { return publish(record, logEntry) } finally { finalize(record, logEntry?.exit) }
 }

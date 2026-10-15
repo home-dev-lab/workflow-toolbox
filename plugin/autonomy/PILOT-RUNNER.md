@@ -454,8 +454,8 @@ owner decision path and identity-aware abandon control for wedged lane processes
 After a lane timeout, lifecycle `run { kind: 'control', decision: 'extend'|'abandon' }`
 checks whether that lane has already finished, then submits any needed decision and waits on the
 same launch. Submission is not application: the supervisor can turn an extension into abandonment
-at its ceiling. A second decision point returns TIMEOUT with ownership retained. For simultaneous
-critics, pass `criticLane: 'A'|'B'`; each selector keeps its original supervision slot. Terminal
+at its ceiling. A second decision point returns TIMEOUT with ownership retained. For first-round
+critics, one control call acts on the whole pair; explicit retry relaunches both. No selector exists. Terminal
 lanes release ownership even when receipt publication fails, allowing a fresh launch.
 
 An ownership or receipt refusal after a routed finding, with no lifecycle progress since that

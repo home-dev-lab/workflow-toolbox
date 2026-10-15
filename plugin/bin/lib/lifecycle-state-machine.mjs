@@ -767,35 +767,37 @@ function lifecycleFindingDefinition(tool, z, queued, routeFindingTool) {
   )
 }
 
-function lifecycleRunDefinition(tool, z, queued, run) {
-  return tool(
+function lifecycleRunDefinition(instance, z, queued, run) {
+  return instance.registerTool(
     'run',
-    'Run a fixed lane, gate, or inspection command.',
-    {
-      kind: z.string(),
-      phase: z.string().optional(),
-      name: z.string().optional(),
-      what: z.string().optional(),
-      decision: z.string().optional(),
-      criticLane: z.enum(['A', 'B']).optional(),
-      extendSeconds: z.number().int().positive().optional(),
-      timeout: z.number().int().positive().optional(),
+    { description: 'Run a fixed lane, gate, or inspection command.',
+      inputSchema: z.object({
+        kind: z.string(),
+        phase: z.string().optional(),
+        name: z.string().optional(),
+        what: z.string().optional(),
+        decision: z.string().optional(),
+        extendSeconds: z.number().int().positive().optional(),
+        timeout: z.number().int().positive().optional(),
+      }).strict(),
     },
     async (args) => ({ content: [{ type: 'text', text: await queued(() => run(args)) }] }),
   )
 }
 
 function createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition, artifact, routeFindingTool, run }, session) {
-  return createSdkMcpServer({
+  const server = createSdkMcpServer({
     name: LIFECYCLE_SERVER_NAME,
     version: '1.0.0',
     tools: [
       lifecycleTransitionDefinition(tool, z, queued, transition, session),
       lifecycleArtifactDefinition(tool, z, queued, artifact),
       lifecycleFindingDefinition(tool, z, queued, routeFindingTool),
-      lifecycleRunDefinition(tool, z, queued, run),
     ],
   })
+  // The SDK raw-shape tool factory strips unknown fields; run must reject removed selectors.
+  lifecycleRunDefinition(server.instance, z, queued, run)
+  return server
 }
 
 function constructionCommit(root) {
@@ -916,7 +918,7 @@ export function createLifecycleStateMachine({
     { flag: 'wx' },
   )
   const state = initialLifecycleState()
-  const events = createLifecycleEvents(state)
+  const events = createLifecycleEvents(state, (phase) => !state.stopped && !state.pendingStop && canLaunchLane(phase))
   const refusal = (edge, missing, file, code = 'other') => events.refused(artifactRefusal(edge, missing, file), code)
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
@@ -999,7 +1001,7 @@ export function createLifecycleStateMachine({
         }
       : independentBrief({ ...options, artifacts })
   }
-  const { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run: lifecycleRun, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = createLifecycleLaunch({
+  const { audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run: lifecycleRun, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = createLifecycleLaunch({
     root,
     laneDir,
     executor,

@@ -2,13 +2,6 @@
 import { execFileSync } from 'node:child_process'
 import { readCurrentSupervision } from '../lane-supervisor-core.mjs'
 
-function selectOwned(context, args) {
-  const records = [...context.state.ownedLanes.values()].filter((record) => record.phase === context.state.phase)
-  if (args.criticLane) return records.find((record) => record.criticLane === args.criticLane) ?? null
-  if (records.length > 1) return 'criticLane A|B for owned critic lane'
-  return records[0] ?? null
-}
-
 function submit(context, record, args) {
   const command = [context.controlPath, '--dir', context.root, '--decision', args.decision, '--owner-token', record.nonce]
   if (record.slot !== null) command.push('--slot', record.slot)
@@ -37,22 +30,28 @@ async function decide(context, record, args, observation, finish) {
   return `control ${args.decision} submitted; ${await finish()}`
 }
 
-export async function runOwnedControl(context, args) {
-  const { state, refusal, laneDir, owned, aggregate } = context
-  const edge = `${state.phase}->next`
-  if (!['abandon', 'extend'].includes(args.decision)) return refusal(edge, 'control decision abandon|extend', laneDir)
-  const record = selectOwned(context, args)
-  if (typeof record === 'string') return refusal(edge, record, laneDir)
-  if (!record) return refusal(edge, 'timed-out lane owned by this lifecycle', laneDir, 'ownership')
+async function controlRecord(context, record, args) {
+  const { owned } = context
   record.waitMs = 0
   const observation = await owned.reconcile(record)
-  const finish = async () => {
-    const result = await owned.awaitOwnedLane(record)
-    return record.criticLane ? aggregate([result]) : result
-  }
+  const finish = () => owned.awaitOwnedLane(record)
   // The control CLI admits a decision only at a decision point, or an abandon of an orphaned child.
   const admitted = observation.verdict.status === 'decision-needed'
     || (observation.verdict.status === 'worker-gone-child-alive' && args.decision === 'abandon')
   if (observation.terminal || !admitted) return finish()
   return decide(context, record, args, observation, finish)
+}
+
+export async function runOwnedControl(context, args) {
+  const { state, refusal, laneDir, aggregate } = context
+  const edge = `${state.phase}->next`
+  if (!['abandon', 'extend'].includes(args.decision)) return refusal(edge, 'control decision abandon|extend', laneDir)
+  const records = [...state.ownedLanes.values()].filter((record) => record.phase === state.phase)
+  if (!records.length) return refusal(edge, 'timed-out lane owned by this lifecycle', laneDir, 'ownership')
+  // Reconcile and control every member before exposing a pair result to the pilot.
+  const results = await Promise.all(records.map((record) => controlRecord(context, record, args)))
+  if (!records.some((record) => record.criticLane)) return results[0]
+  const result = aggregate(results)
+  return results.some((value) => value.startsWith(`control ${args.decision} submitted;`))
+    ? `control ${args.decision} submitted; ${result}` : result
 }

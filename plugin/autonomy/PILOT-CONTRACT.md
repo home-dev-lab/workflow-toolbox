@@ -20,8 +20,8 @@ review, or refutation; timeout max: 5400 seconds. Gates accept only `typecheck`,
 `test`, + `quality` iff `toolkit/package.json` now has nonblank string `scripts.quality`;
 inspect runs accept only `diff`, `status`, or allow-listed receipts/logs. On lane `TIMEOUT`, use its
 `run { kind: 'control', decision: 'abandon'|'extend' }` remedy; runner supplies the owner token.
-Control waits on the lane and publishes its receipt; another TIMEOUT retains ownership.
-For two critics select `criticLane: 'A'|'B'` on control.
+Control waits/publishes; TIMEOUT keeps ownership.
+Round 1: control acts on the whole pair; explicit retry relaunches both. No selector exists.
 
 Call `transition` with the phase being left, not the phase being entered.
 Spell every edge semantic into the tdd brief before launch.

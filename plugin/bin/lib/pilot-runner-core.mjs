@@ -602,9 +602,11 @@ async function* phaseFollowUps(runtime, current) {
       continue
     }
     await waitForPlanBinding(lifecycleServer)
+    if (observeBlockedRun(runtime, current)) return
     if (runtime.pendingTurnEnds > 0) {
       advanceContinuation(runtime)
       await waitForPlanBinding(lifecycleServer)
+      if (observeBlockedRun(runtime, current)) return
       const content = continuationContent(runtime)
       yield continuationMessage(runtime, content)
       if (runtime.incompleteReason) return

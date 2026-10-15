@@ -356,7 +356,15 @@ async function blockedRunnerScenario(mode: string) {
     aborted = (options.abortController as AbortController).signal.aborted
     if (aborted) throw new Error('intentional SDK abort')
   }])
-  const dependencies = { costSessions: [], log: (line: string) => logs.push(line), lifecycleOptions: {
+  let injectedWriteFailure = false
+  const writeFile = (file: Parameters<typeof writeFileSync>[0], content: Parameters<typeof writeFileSync>[1]) => {
+    const target = mode === 'write-report-failure' ? 'blocked-report.md.' : 'summary.json.'
+    if (mode.startsWith('write-') && !injectedWriteFailure && String(file).includes(target)) {
+      injectedWriteFailure = true; throw new Error('injected blocked evidence write failure')
+    }
+    writeFileSync(file, content)
+  }
+  const dependencies = { writeFile, costSessions: [], log: (line: string) => logs.push(line), lifecycleOptions: {
     boardContract: { boardId: 'fixture-board', listId: 'fixture-list' }, routeFinding: async () => ({ id: 'owner-recovery' }),
   } }
   // Existing cost checks may refuse publication; blocked evidence must survive it.
@@ -371,6 +379,10 @@ async function blockedRunnerScenario(mode: string) {
   const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
   if (ownerFile) { expect(readFileSync(ownerFile, 'utf8')).toBe('{"owner":"keep"}\n'); expect(summary.owner).toBeUndefined() }
   expect(summary).toMatchObject({ completed: false, blocked_on: { card: 'owner-recovery', refusal: expect.stringContaining('timed-out lane owned by this lifecycle') }, reason: expect.stringContaining('blocked: routed card owner-recovery:') })
+  expect(existsSync(join(f.dir, '.lane', 'sdk-transcript.json'))).toBe(true)
+  expect(existsSync(join(f.dir, '.lane', 'cost.json'))).toBe(true)
+  if (mode.startsWith('write-')) expect(injectedWriteFailure).toBe(true)
+  if (mode === 'write-report-failure') return
   const blocked = readFileSync(join(f.dir, '.lane', 'blocked-report.md'), 'utf8')
   expect(blocked).toContain('owner-recovery'); expect(blocked).toContain('Phase: tdd')
   if (mode === 'changing-cost') expect(existsSync(summary.archive.path)).toBe(false)
@@ -378,6 +390,7 @@ async function blockedRunnerScenario(mode: string) {
 }
 
 it.each(['continuation', 'stream-end', 'existing-cost', 'changing-cost'])('T6 routed ownership blocker persists before archival (%s)', blockedRunnerScenario)
+it.each(['write-report-failure', 'write-summary-failure'])('T6 blocked evidence write failure retains summary, cost and transcript (%s)', blockedRunnerScenario)
 it.skipIf(process.platform === 'win32').each(['symlink-report', 'symlink-summary'])('T6 blocked evidence preserves aliased owner files (%s)', blockedRunnerScenario)
 
 it('T6 an accepted transition after the routed refusal continues normally', async () => {

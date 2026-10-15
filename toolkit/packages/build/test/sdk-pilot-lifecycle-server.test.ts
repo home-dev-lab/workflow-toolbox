@@ -2963,12 +2963,12 @@ it('T5 a live owned lane remains a path forward after a routed ownership refusal
   expect(f.state()).toMatchObject({ blocked: null })
 })
 
-it('T5 route then receipt refusal exposes the routed blocker; artifact writes do not clear it', async () => {
+it('T5 route then receipt refusal stays recoverable when a fresh lane is admissible', async () => {
   const f = testLifecycle('LITE', [], null, 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
   await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await routeBlocker(f)
   await f.artifact({ kind: 'brief', content: 'brief' })
-  const result = await text(f.transition({ phase: 'tdd', tool_use_id: 'refused' }))
-  expect(f.state()).toMatchObject({ blocked: { cardId: 'receipt-fix', refusal: { code: 'receipt', text: result } } })
+  expect(await text(f.transition({ phase: 'tdd', tool_use_id: 'refused' }))).toContain('lane receipt unchanged')
+  expect(f.state()).toMatchObject({ blocked: null })
 })
 
 it('T5 routing after a refusal requires another refusal before blocking', async () => {
@@ -2988,14 +2988,14 @@ it('T5 a nonzero gate result is progress while an artifact is not', async () => 
   expect(f.state()).toMatchObject({ blocked: null })
 })
 
-it('T5 a missing report refusal blocks, and an accepted transition clears the route', async () => {
+it('T5 a missing report allows recovery, and an accepted transition clears the route', async () => {
   const f = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1000, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
   await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await f.artifact({ kind: 'brief', content: 'brief' })
   await f.run({ kind: 'lane', phase: 'tdd' }); await routeBlocker(f)
   const report = join(f.root, '.lane', 'tdd-report.md'); const content = readFileSync(report, 'utf8')
   unlinkSync(report)
   expect(await text(f.transition({ phase: 'tdd', tool_use_id: 'missing-report' }))).toContain('non-empty unchanged lane report')
-  expect(f.state()).toMatchObject({ blocked: { cardId: 'receipt-fix' } })
+  expect(f.state()).toMatchObject({ blocked: null })
   writeFileSync(report, content); await f.run({ kind: 'lane', phase: 'tdd' })
   await f.transition({ phase: 'tdd', tool_use_id: 'advance' })
   expect(f.state()).toMatchObject({ phase: 'verify', blocked: null })

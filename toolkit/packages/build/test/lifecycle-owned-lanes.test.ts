@@ -160,23 +160,21 @@ it.each(['gone', 'terminal'])('T3 finalizes a %s lane without a receipt before a
   expect(f.records[0]!.ended_at).not.toBeNull(); expect(fs.existsSync(info.snapshot)).toBe(false)
 })
 
-it('T3 keeps separate critic ownership and reconciles B finishing while waiting on A', async () => {
+it('T3 controls the critic pair and reconciles B finishing while waiting on A', async () => {
   const f = fixture('critic'); await f.run({ kind: 'lane', phase: 'critic' })
   const ownedAtTimeout = f.state.ownedLanes.size
-  const selection = await f.run({ kind: 'control', decision: 'extend' })
   const spy = f.control(() => { f.finish('critic-B'); f.afterInspections(() => f.finish('critic-A')) })
-  await f.run({ kind: 'control', decision: 'extend', criticLane: 'A' })
-  expect(await f.run({ kind: 'control', decision: 'extend', criticLane: 'B' })).toBe('lane critic EXIT=0')
-  expect(ownedAtTimeout).toBe(2); expect(selection).toContain('criticLane')
-  expect(spy).toHaveBeenCalledTimes(1); expect(spy.mock.calls[0]![1]).toContain('critic-A')
+  expect(await f.run({ kind: 'control', decision: 'extend' })).toBe('control extend submitted; lane critic EXIT=0')
+  expect(ownedAtTimeout).toBe(2)
+  expect(spy.mock.calls[0]![1]).toContain('critic-A')
   expect(f.state.laneReceiptSeq).toBe(1); expect(f.laneEvidence('critic')).toBeNull()
 })
 
-it('T3 selects critic B with its exact saved slot', async () => {
+it('T3 controls the remaining critic B with its exact saved supervision slot', async () => {
   const f = fixture('critic', 'A'); await f.run({ kind: 'lane', phase: 'critic' })
   const receiptsBefore = f.state.laneReceiptSeq
   const spy = f.control(() => f.finish('critic-B'))
-  const result = await f.run({ kind: 'control', decision: 'extend', criticLane: 'B' })
+  const result = await f.run({ kind: 'control', decision: 'extend' })
   expect(spy.mock.calls[0]![1]).toContain('--slot'); expect(spy.mock.calls[0]![1]).toContain('critic-B')
   expect(result).toBe('control extend submitted; lane critic EXIT=0'); expect(receiptsBefore).toBe(0)
 })
