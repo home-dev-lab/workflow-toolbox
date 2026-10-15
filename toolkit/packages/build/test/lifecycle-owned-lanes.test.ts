@@ -163,12 +163,12 @@ it.each(['gone', 'terminal'])('T3 finalizes a %s lane without a receipt before a
 it('T3 controls the critic pair and reconciles B finishing while waiting on A', async () => {
   const f = fixture('critic'); await f.run({ kind: 'lane', phase: 'critic' })
   const ownedAtTimeout = f.state.ownedLanes.size
-  const spy = f.control((args) => {
+  const spy = f.control((args: readonly string[]) => {
     if (args.includes('critic-A')) { f.finish('critic-B'); f.afterInspections(() => f.finish('critic-A')) }
   })
   expect(await f.run({ kind: 'control', decision: 'extend' })).toBe('control extend submitted; lane critic EXIT=0')
   expect(ownedAtTimeout).toBe(2)
-  expect(spy.mock.calls.some((call) => call[1]?.includes('critic-A'))).toBe(true)
+  expect(spy.mock.calls.some((call: unknown[]) => Array.isArray(call[1]) && call[1].includes('critic-A'))).toBe(true)
   expect(f.state.laneReceiptSeq).toBe(1); expect(f.laneEvidence('critic')).toBeNull()
 })
 
