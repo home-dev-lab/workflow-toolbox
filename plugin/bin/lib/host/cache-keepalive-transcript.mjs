@@ -37,20 +37,22 @@ function assistantCall(record, sequence) {
     ...usageCounters(usage), cacheTtl: cacheTtl(usage) }
 }
 
+/** Returns true once an incremental poll has passed its saved boundary, so the scan can stop. */
 function acceptLine(scan, line) {
-  if (!line.trim() || Buffer.byteLength(line) > MAX_RECORD_BYTES) return
+  if (!line.trim() || Buffer.byteLength(line) > MAX_RECORD_BYTES) return false
   let record
-  try { record = JSON.parse(line) } catch { return }
+  try { record = JSON.parse(line) } catch { return false }
   const call = assistantCall(record, scan.sequence--)
-  if (!call) return
-  // Continue through history for streamed records of the selected calls, but do not
-  // rediscover unrelated writers behind an incremental poll's saved boundary.
-  if (outsideIncrementalBoundary(scan, call)) return
+  if (!call) return false
+  // Streamed records of the selected calls sit together just before their final record.
+  // The first older, unselected call marks the end of them: stop reading history there.
+  if (outsideIncrementalBoundary(scan, call)) return true
   collectEvidence(scan, call)
-  if (scan.seen.has(call.id)) return
+  if (scan.seen.has(call.id)) return false
   collectCall(scan, call)
   if (!call.synthetic) scan.baselineFound = true
   if (call.id === scan.stopId) scan.stoppedAtId = true
+  return false
 }
 
 function outsideIncrementalBoundary(scan, call) {
@@ -71,8 +73,9 @@ function collectCall(scan, call) {
 
 function acceptLines(scan, lines) {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    acceptLine(scan, lines[index])
+    if (acceptLine(scan, lines[index])) return true
   }
+  return false
 }
 
 function chunkLines(scan, buffer) {
@@ -104,23 +107,24 @@ function chunkLines(scan, buffer) {
   return lines
 }
 
-// Scan bounded chunks; incremental evidence is limited to selected call IDs.
+// Scan bounded chunks. An incremental poll keeps evidence only for selected call IDs and
+// stops reading once it has passed their streamed records; initial discovery reads all history.
 export async function callsSince(transcriptPath, stopId, scanHistory = false) {
   const file = await open(transcriptPath, 'r')
   try {
     const { size } = await file.stat()
     const scan = { baselineFound: false, calls: [], carry: Buffer.alloc(0), evidence: {}, model: null,
       seen: new Set(), sequence: size, skipOversizedRecord: false, stopId, stoppedAtId: false, scanHistory }
-    let position = size
-    while (position > 0) {
+    let position = size, passedBoundary = false
+    while (position > 0 && !passedBoundary) {
       const length = Math.min(CHUNK_BYTES, position)
       position -= length
       const buffer = Buffer.allocUnsafe(length)
       await file.read(buffer, 0, length, position)
       const lines = chunkLines(scan, buffer)
-      acceptLines(scan, lines)
+      passedBoundary = acceptLines(scan, lines)
     }
-    acceptLine(scan, scan.carry.toString('utf8'))
+    if (!passedBoundary) acceptLine(scan, scan.carry.toString('utf8'))
     return { calls: scan.calls.reverse(), evidence: scan.evidence, model: scan.model }
   } finally {
     await file.close()

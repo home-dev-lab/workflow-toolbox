@@ -519,6 +519,29 @@ describe('cache keepalive stop-id TTL and platform policy locations', () => {
   })
 })
 
+// Counts the bytes callsSince reads through the real file handle, in a separate process.
+function scanReads(transcriptPath: string, stopId: string) {
+  const url = pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-transcript.mjs')).href
+  const script = `import fs from 'node:fs/promises'
+    import { syncBuiltinESMExports } from 'node:module'
+    const original = fs.open
+    let bytesRead = 0
+    fs.open = async (...args) => {
+      const handle = await original(...args)
+      return { stat: () => handle.stat(), close: () => handle.close(),
+        read: async (...readArgs) => { const result = await handle.read(...readArgs); bytesRead += result.bytesRead; return result } }
+    }
+    syncBuiltinESMExports()
+    const host = await import(${JSON.stringify(url)})
+    const { size } = await fs.stat(${JSON.stringify(transcriptPath)})
+    const result = await host.callsSince(${JSON.stringify(transcriptPath)}, ${JSON.stringify(stopId)}, false)
+    console.log(JSON.stringify({ bytesRead, size, calls: result.calls.map((call) => call.id), oneHour: result.evidence.oneHour?.callId ?? null }))`
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' })
+  expect(result.stderr).toBe('')
+  expect(result.status).toBe(0)
+  return JSON.parse(result.stdout) as { bytesRead: number, size: number, calls: string[], oneHour: string | null }
+}
+
 function managedReadPaths(platform: string, env = {}) {
   const url = pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-settings.mjs')).href
   const script = `import fs from 'node:fs/promises'
@@ -554,6 +577,21 @@ describe('cache keepalive incremental streamed writers', () => {
     append(state, assistant('newer', 'claude-sonnet-4-5', 2, { input_tokens: 250_000 }))
     expect(run(state, 52).stdout).toBe('')
     expect(saved(state).cacheEvidence).toMatchObject({ oneHour: { callId: 'newer', atMs: 120_000 } })
+  })
+
+  it('stops an incremental poll after the saved boundary instead of reading the whole history', () => {
+    const state = sized('bounded-scan', 250_000)
+    const history = Array.from({ length: 4000 }, (_, index) => assistant(`old-${index}`, 'claude-sonnet-4-5', 0))
+    writeFileSync(state.transcriptPath, `${[...history,
+      assistant('stop', 'claude-sonnet-4-5', 1, { ...HOUR, input_tokens: 249_998 }),
+      assistant('stop', 'claude-sonnet-4-5', 1, { input_tokens: 249_999 }),
+      assistant('newer', 'claude-sonnet-4-5', 2, { input_tokens: 250_000 })].join('\n')}\n`)
+    const scan = scanReads(state.transcriptPath, 'stop')
+    expect(scan.size).toBeGreaterThan(800_000)
+    expect(scan.bytesRead).toBeGreaterThan(0)
+    expect(scan.bytesRead).toBeLessThan(scan.size / 4)
+    expect(scan.calls).toEqual(['stop', 'newer'])
+    expect(scan.oneHour).toBe('stop')
   })
 })
 
