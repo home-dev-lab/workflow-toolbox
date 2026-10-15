@@ -2,7 +2,7 @@
   "child_process import": 1,
   "fs import": 1,
   "os import": 1,
-  "existsSync": 3,
+  "existsSync": 4,
   "lstatSync": 1,
   "rmSync": 7,
   "mkdtempSync": 1,

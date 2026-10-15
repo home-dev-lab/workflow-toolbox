@@ -594,8 +594,7 @@ function mailboxOrDecision(runtime) {
 async function* phaseFollowUps(runtime, current) {
   const { exists, report, pastBoundary, sleep, lifecycleServer } = runtime
   while (phasePromptActive(runtime, current)) {
-    if (runtime.awaitingFidelityReceipt && exists(report)) { runtime.completed = true; return }
-    if (observeBlockedRun(runtime, current)) return
+    if (phaseFollowUpsEnded(runtime, current, exists, report)) return
     if (pastBoundary(current)) {
       if (boundaryPromptEnd(runtime, current)) return
       await sleep(POLL_MS)
@@ -616,6 +615,11 @@ async function* phaseFollowUps(runtime, current) {
     if (message) yield message
     else await sleep(POLL_MS)
   }
+}
+
+function phaseFollowUpsEnded(runtime, current, exists, report) {
+  if (runtime.awaitingFidelityReceipt && exists(report)) { runtime.completed = true; return true }
+  return observeBlockedRun(runtime, current)
 }
 
 function recordSessionCall(current, record, messageId) {

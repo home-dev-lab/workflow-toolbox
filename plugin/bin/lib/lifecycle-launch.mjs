@@ -291,6 +291,66 @@ function snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal) {
   return null
 }
 
+function checkLaneEvidence(context, phase, allowFailed = false) {
+  const { assertLaneDir, laneOwnershipPending, root, laneDir, verified, refusal } = context
+  assertLaneDir()
+  if (laneOwnershipPending(phase)) return refusal(`${phase}->next`, 'owned lane must finish before transition', laneDir, 'ownership')
+  const log = path.join(ensureLaneHostDir(root), `${phase}-run.log`)
+  const report = path.join(laneDir, `${phase}-report.md`)
+  const logEntry = verified(log)
+  if (!logEntry) return refusal(`${phase}->next`, 'lane receipt unchanged', log, 'receipt')
+  if (logEntry.exit !== '0' && !allowFailed) return refusal(`${phase}->next`, `lane receipt EXIT=${logEntry.exit ?? 'missing'}`, log)
+  const reportEntry = verified(report)
+  if (!reportEntry || reportEntry.size === 0) return refusal(`${phase}->next`, 'non-empty unchanged lane report', report, 'receipt')
+  return null
+}
+
+function checkGatesEvidence(context, edge, allowNonzero = false) {
+  const { assertLaneDir, root, gates, laneDir, verified, refusal, state, attestations } = context
+  assertLaneDir()
+  const currentTree = treeSignature(root)
+  for (const name of gates()) {
+    const file = path.join(laneDir, `${name}.log`)
+    const item = verified(file)
+    if (!item) return refusal(edge, 'unchanged gate receipt', file)
+    const acceptedExit = gateExitAccepted(item, allowNonzero)
+    if (!acceptedExit) return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
+    if (item.tree !== currentTree) return refusal(edge, 'current tree signature', file)
+    // Server receipt order holds even when the wall clock moves backward.
+    if (item.laneReceiptSeq !== state.laneReceiptSeq) return refusal(edge, 'gate newer than lane receipt', file)
+  }
+  if (allowNonzero && ![...gates()].some((name) => attestations.get(path.join(laneDir, `${name}.log`)).exit !== '0')) return refusal(edge, 'at least one nonzero gate receipt', laneDir)
+  return null
+}
+
+function checkSnapshotEvidence(context, edge) {
+  const { assertLaneDir, state, refusal, evidencePath, root, gates, laneDir } = context
+  assertLaneDir()
+  const snapshot = state.verifySnapshot
+  if (!snapshot) return refusal(edge, 'verify digest snapshot', evidencePath)
+  if (treeSignature(root) !== snapshot.tree) return refusal(edge, 'tree signature unchanged since verify', root)
+  const missing = missingCurrentGatePath(snapshot, state, gates, laneDir)
+  if (missing) return refusal(edge, 'currently required gate in verify snapshot', missing)
+  return snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal)
+}
+
+function checkLanePaths({ root, laneDir }, slots) {
+  for (const slot of slots) {
+    for (const file of [path.join(ensureLaneHostDir(root), `${slot}-run.log`), path.join(laneDir, `${slot}-report.md`)]) {
+      if (fs.existsSync(file) && !regularFile(file)) return { missing: 'regular lane receipt or report', file, code: 'receipt' }
+    }
+  }
+  return null
+}
+
+function checkCriticReceipts(context, receipts, laneReports) {
+  const { verified, refusal, laneDir, laneBriefContexts, laneBriefIdentities } = context
+  if (receipts.some((receipt) => !receipt) || laneReports.some((report) => !verified(report))) return refusal('critic->next', "published receipts from both critic lanes; relaunch with run { kind: 'lane', phase: 'critic' }", laneDir, 'receipt')
+  const identity = currentBriefIdentity(laneBriefContexts, laneBriefIdentities, 'critic')
+  const stale = receipts.some((receipt) => receipt.briefIdentity !== identity) || laneReports.some((report) => verified(report).briefIdentity !== identity)
+  return stale ? refusal('critic->next', "critic pair receipts for current brief; relaunch with run { kind: 'lane', phase: 'critic' }", laneDir, 'receipt') : null
+}
+
 export function createLifecycleLaunch({
   root,
   laneDir,
@@ -367,44 +427,14 @@ export function createLifecycleLaunch({
     audit()
   }
 
-  function laneEvidence(phase, allowFailed = false) {
-    assertLaneDir()
-    if ([...state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && criticLaunching) {
-      return refusal(`${phase}->next`, 'owned lane must finish before transition', laneDir, 'ownership')
-    }
-    const log = path.join(ensureLaneHostDir(root), `${phase}-run.log`)
-    const report = path.join(laneDir, `${phase}-report.md`)
-    const logEntry = verified(log)
-    if (!logEntry) return refusal(`${phase}->next`, 'lane receipt unchanged', log, 'receipt')
-    if (logEntry.exit !== '0' && !allowFailed) {
-      return refusal(`${phase}->next`, `lane receipt EXIT=${logEntry.exit ?? 'missing'}`, log)
-    }
-    const reportEntry = verified(report)
-    if (!reportEntry || reportEntry.size === 0) {
-      return refusal(`${phase}->next`, 'non-empty unchanged lane report', report, 'receipt')
-    }
-    return null
+  const evidenceContext = { assertLaneDir, laneOwnershipPending, root, laneDir, verified, refusal, gates, state, attestations, evidencePath, laneBriefContexts, laneBriefIdentities }
+  const laneEvidence = (phase, allowFailed) => checkLaneEvidence(evidenceContext, phase, allowFailed)
+
+  function laneOwnershipPending(phase) {
+    return [...state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && criticLaunching
   }
 
-  function gatesEvidence(edge, allowNonzero = false) {
-    assertLaneDir()
-    const currentTree = treeSignature(root)
-    for (const name of gates()) {
-      const file = path.join(laneDir, `${name}.log`)
-      const item = verified(file)
-      if (!item) return refusal(edge, 'unchanged gate receipt', file)
-      const acceptedExit = gateExitAccepted(item, allowNonzero)
-      if (!acceptedExit) return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
-      if (item.tree !== currentTree) return refusal(edge, 'current tree signature', file)
-      // Ordered by the server's own receipt count, never by mtime: a backward clock step can date a
-      // later gate before the lane receipt, or an earlier one after it.
-      if (item.laneReceiptSeq !== state.laneReceiptSeq) return refusal(edge, 'gate newer than lane receipt', file)
-    }
-    if (allowNonzero && ![...gates()].some((name) => attestations.get(path.join(laneDir, `${name}.log`)).exit !== '0')) {
-      return refusal(edge, 'at least one nonzero gate receipt', laneDir)
-    }
-    return null
-  }
+  const gatesEvidence = (edge, allowNonzero) => checkGatesEvidence(evidenceContext, edge, allowNonzero)
 
   function verifySnapshot(edge) {
     const receipt = gatesEvidence(edge)
@@ -433,15 +463,7 @@ export function createLifecycleLaunch({
     return remediation
   }
 
-  function snapshotEvidence(edge) {
-    assertLaneDir()
-    const snapshot = state.verifySnapshot
-    if (!snapshot) return refusal(edge, 'verify digest snapshot', evidencePath)
-    if (treeSignature(root) !== snapshot.tree) return refusal(edge, 'tree signature unchanged since verify', root)
-    const missing = missingCurrentGatePath(snapshot, state, gates, laneDir)
-    if (missing) return refusal(edge, 'currently required gate in verify snapshot', missing)
-    return snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal)
-  }
+  const snapshotEvidence = (edge) => checkSnapshotEvidence(evidenceContext, edge)
 
   function launchProblem(phase) {
     if (!lanePhases.has(state.phase) || phase !== state.phase) return { missing: 'lane for current admitted phase' }
@@ -453,14 +475,7 @@ export function createLifecycleLaunch({
     return lanePathProblem(slots)
   }
 
-  function lanePathProblem(slots) {
-    for (const slot of slots) {
-      for (const file of [path.join(ensureLaneHostDir(root), `${slot}-run.log`), path.join(laneDir, `${slot}-report.md`)]) {
-        if (fs.existsSync(file) && !regularFile(file)) return { missing: 'regular lane receipt or report', file, code: 'receipt' }
-      }
-    }
-    return null
-  }
+  const lanePathProblem = (slots) => checkLanePaths(evidenceContext, slots)
 
   const canLaunchLane = (phase) => !launchProblem(phase)
 
@@ -475,15 +490,7 @@ export function createLifecycleLaunch({
     } finally { criticLaunching = false }
   }
 
-  function criticReceiptProblem(receipts, laneReports) {
-    if (receipts.some((receipt) => !receipt) || laneReports.some((report) => !verified(report))) {
-      return refusal('critic->next', "published receipts from both critic lanes; relaunch with run { kind: 'lane', phase: 'critic' }", laneDir, 'receipt')
-    }
-    const identity = currentBriefIdentity(laneBriefContexts, laneBriefIdentities, 'critic')
-    const stale = receipts.some((receipt) => receipt.briefIdentity !== identity)
-      || laneReports.some((report) => verified(report).briefIdentity !== identity)
-    return stale ? refusal('critic->next', "critic pair receipts for current brief; relaunch with run { kind: 'lane', phase: 'critic' }", laneDir, 'receipt') : null
-  }
+  const criticReceiptProblem = (receipts, laneReports) => checkCriticReceipts(evidenceContext, receipts, laneReports)
 
   function pendingCriticResult() {
     const pending = [...state.ownedLanes.values()].filter((record) => record.phase === 'critic')

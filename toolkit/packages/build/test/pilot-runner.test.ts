@@ -373,6 +373,11 @@ async function blockedRunnerScenario(mode: string) {
     if (!['existing-cost', 'changing-cost'].includes(mode)) throw error
     caught = String(error)
   }
+  verifyBlockedRunnerResult(f, mode, { caught, continuations, aborted, ownerFile, injectedWriteFailure })
+}
+
+function verifyBlockedRunnerResult(f: ReturnType<typeof phaseFixture>, mode: string, result: { caught: string, continuations: number, aborted: boolean, ownerFile: string | null, injectedWriteFailure: boolean }) {
+  const { caught, continuations, aborted, ownerFile, injectedWriteFailure } = result
   if (['existing-cost', 'changing-cost'].includes(mode)) expect(caught).toContain('cost report consistency refused:')
   expect(continuations, 'no continuation may follow an observed routed blocker').toBe(0)
   if (mode === 'continuation') expect(aborted).toBe(true)

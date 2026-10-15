@@ -144,7 +144,7 @@ async function planWaitBlockedCheck(waitNumber = 1) {
   }
   const wait = new Function(`return (${sourceFunction('async function waitForPlanBinding(', '\nfunction partialInstruction(')})`)()
   const follow = new Function('observeBlockedRun', 'waitForPlanBinding', 'phasePromptActive', 'advanceContinuation', 'continuationContent', 'continuationMessage',
-    `return (${sourceFunction('async function* phaseFollowUps(', '\nfunction recordSessionCall(')})`)(observeBlockedRun, wait, () => true, () => {}, () => 'continue', () => ({ message: 'continuation' }))
+    `${sourceFunction('async function* phaseFollowUps(', '\nfunction recordSessionCall(')}\nreturn phaseFollowUps`)(observeBlockedRun, wait, () => true, () => {}, () => 'continue', () => ({ message: 'continuation' }))
   const current = { abort: () => {} }; runtime.pastBoundary = () => false
   assert.equal((await follow(runtime, current).next()).done, true, 'blocked condition during plan binding must not yield a continuation')
 }

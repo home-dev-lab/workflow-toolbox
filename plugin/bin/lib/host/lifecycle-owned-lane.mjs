@@ -185,23 +185,26 @@ function publish(context, record, logEntry) {
   return `lane ${phase} EXIT=${logEntry.exit}`
 }
 
+async function awaitSupervisedLane(record, logEntry, initialWait, operations) {
+  const { preflight, poll, timeout, publish, finalize } = operations
+  if (!logEntry && initialWait) await preflight(record)
+  const observed = await poll(record, logEntry)
+  logEntry = observed.logEntry
+  if (!terminal(observed.verdict)) return timeout(record, logEntry
+    ? `receipt arrived while liveness is ${observed.verdict.status}; no process was killed`
+    : timeoutDetail(observed.saved, observed.verdict))
+  try {
+    if (!logEntry) return `lane ${record.phase} ${observed.verdict.status === 'gone' ? 'EXIT=missing' : 'TERMINAL receipt=missing'}`
+    return publish(record, logEntry)
+  } finally { finalize(record, logEntry?.exit) }
+}
+
 async function awaitOwnedLane(context, record) {
   const { receipt, preflight, poll, timeout, publish, finalize } = context
   const initialWait = record.initialWait
   record.initialWait = false
-  let logEntry = await receipt(record, record.waitMs)
-  if (record.runId) {
-    if (!logEntry && initialWait) await preflight(record)
-    const observed = await poll(record, logEntry)
-    logEntry = observed.logEntry
-    if (!terminal(observed.verdict)) return timeout(record, logEntry
-      ? `receipt arrived while liveness is ${observed.verdict.status}; no process was killed`
-      : timeoutDetail(observed.saved, observed.verdict))
-    try {
-      if (!logEntry) return `lane ${record.phase} ${observed.verdict.status === 'gone' ? 'EXIT=missing' : 'TERMINAL receipt=missing'}`
-      return publish(record, logEntry)
-    } finally { finalize(record, logEntry?.exit) }
-  }
+  const logEntry = await receipt(record, record.waitMs)
+  if (record.runId) return awaitSupervisedLane(record, logEntry, initialWait, { preflight, poll, timeout, publish, finalize })
   if (!logEntry && !terminal(context.observe(record).verdict)) return timeout(record, 'unknown liveness; no process was killed')
   try { return publish(record, logEntry) } finally { finalize(record, logEntry?.exit) }
 }

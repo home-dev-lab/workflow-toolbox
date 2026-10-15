@@ -767,11 +767,12 @@ function lifecycleFindingDefinition(tool, z, queued, routeFindingTool) {
   )
 }
 
-function lifecycleRunDefinition(instance, z, queued, run) {
-  return instance.registerTool(
+function lifecycleRunDefinition(tool, z, queued, run) {
+  // The SDK factory passes this schema through to MCP; strictness rejects removed selectors.
+  return tool(
     'run',
-    { description: 'Run a fixed lane, gate, or inspection command.',
-      inputSchema: z.object({
+    'Run a fixed lane, gate, or inspection command.',
+    z.object({
         kind: z.string(),
         phase: z.string().optional(),
         name: z.string().optional(),
@@ -779,25 +780,22 @@ function lifecycleRunDefinition(instance, z, queued, run) {
         decision: z.string().optional(),
         extendSeconds: z.number().int().positive().optional(),
         timeout: z.number().int().positive().optional(),
-      }).strict(),
-    },
+    }).strict(),
     async (args) => ({ content: [{ type: 'text', text: await queued(() => run(args)) }] }),
   )
 }
 
 function createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition, artifact, routeFindingTool, run }, session) {
-  const server = createSdkMcpServer({
+  return createSdkMcpServer({
     name: LIFECYCLE_SERVER_NAME,
     version: '1.0.0',
     tools: [
       lifecycleTransitionDefinition(tool, z, queued, transition, session),
       lifecycleArtifactDefinition(tool, z, queued, artifact),
       lifecycleFindingDefinition(tool, z, queued, routeFindingTool),
+      lifecycleRunDefinition(tool, z, queued, run),
     ],
   })
-  // The SDK raw-shape tool factory strips unknown fields; run must reject removed selectors.
-  lifecycleRunDefinition(server.instance, z, queued, run)
-  return server
 }
 
 function constructionCommit(root) {

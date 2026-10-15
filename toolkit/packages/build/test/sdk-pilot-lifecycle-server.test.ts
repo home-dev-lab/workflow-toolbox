@@ -894,7 +894,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
   })
 
@@ -2620,7 +2620,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'old\nEXIT=0\n')
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-report.md'), 'old\n')
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing'); expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'stale' }))).toContain('missing lane receipt unchanged')
   })
 
   it('does not attest a foreign receipt without the launch nonce', async () => {
@@ -2636,7 +2636,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')"), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing'); expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'foreign' }))).toContain('missing lane receipt unchanged')
   })
 
   it('publishes only the genuine per-launch receipt while an old worker writes every other receipt', async () => {
