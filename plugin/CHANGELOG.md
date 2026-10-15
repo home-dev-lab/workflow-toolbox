@@ -5,6 +5,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- SDK pilots can wake their launching session through a dedicated, fenced SendMessage query when a Definition-of-done decision request is published. Parent identity and permission class are explicit launch flags; only the parent's `decide` invocation can bind a reading. Wake outcomes and usage are reported separately, and the request log remains the fallback signal.
+
 ### Changed
 
 - Shorten seven bundled rule texts by compressing grammar and removing incident narrative while preserving directives, headings, thresholds, and required wording.

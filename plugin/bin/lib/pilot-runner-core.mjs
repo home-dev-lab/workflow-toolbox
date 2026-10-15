@@ -27,6 +27,8 @@ import { phaseManifest, phaseOpener, phaseRules } from './pilot-phase-session.mj
 import { bindingDecisionsSection } from './lifecycle-dod-dispute.mjs'
 import { assertCleanPilotStart } from './lifecycle-selection.mjs'
 import { resolveLifecycleGates } from './lifecycle-gates.mjs'
+import { createParentWakeManager, validateParentWakeOptions, wakeCommandLine } from './pilot-parent-wake.mjs'
+import { hostAdapter } from './host/adapter.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -63,6 +65,12 @@ const PLANKA_TOOLS = new Set([
   'mcp__planka__update_card',
   'mcp__planka__move_card',
   'mcp__planka__add_label_to_card',
+])
+const PILOT_VALUE_FLAGS = new Map([
+  ['--card', 'card'], ['--card-file', 'cardFile'], ['--dir', 'dir'], ['--profile-env', 'profileEnv'],
+  ['--contract', 'contract'], ['--board-contract', 'boardContract'], ['--mailbox', 'mailbox'],
+  ['--knowledge-base-index', 'knowledgeBaseIndex'], ['--archive-root', 'archiveRoot'],
+  ['--parent-session', 'parentSession'], ['--parent-mode', 'parentMode'],
 ])
 
 // A piece-test option: the run ends at the boundary leaving this phase. `report` is the end already.
@@ -102,19 +110,12 @@ export function parsePilotRunnerArgs(argv) {
   const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false, stopAfter: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
-    if (arg === '--card') options.card = argv[++i] ?? null
-    else if (arg === '--card-file') options.cardFile = argv[++i] ?? null
-    else if (arg === '--dir') options.dir = argv[++i] ?? null
-    else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
+    const valueKey = PILOT_VALUE_FLAGS.get(arg)
+    if (valueKey) options[valueKey] = argv[++i] ?? null
     else if (arg === '--expect-account') {
       options.expectAccount = argv[++i] ?? null
       if (!options.expectAccount?.trim() || options.expectAccount.startsWith('--')) return { error: '--expect-account requires an e-mail' }
     }
-    else if (arg === '--contract') options.contract = argv[++i] ?? null
-    else if (arg === '--board-contract') options.boardContract = argv[++i] ?? null
-    else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
-    else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
-    else if (arg === '--archive-root') options.archiveRoot = argv[++i] ?? null
     else if (arg === '--plugin-dir') {
       const pluginDir = argv[++i] ?? ''
       if (!isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
@@ -129,6 +130,8 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
+  const parentError = validateParentWakeOptions(options)
+  if (parentError) return { error: parentError }
   if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
   if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
   if (options.timeout !== null && (!Number.isFinite(options.timeout) || options.timeout <= 0)) return { error: '--timeout must be a positive number of seconds' }
@@ -268,11 +271,12 @@ function assertPilotInitReceipt(message, sdkRole) {
   if (missing.length > 0) throw new Error(RECEIPT_ERROR + JSON.stringify({ missingTools: missing, tools: initTools }))
 }
 
-function reconciledCostReport({ reportContent, cost, archive, report, dir }) {
+function reconciledCostReport({ reportContent, cost, archive, report, dir, parentWakes }) {
   if (reportContent.includes('<!-- run-cost -->')) {
     assertCostReportMatches({ report: reportContent, cost, reportPath: archive ? join(archive, 'pilot-report.md') : report, costPath: archive ? join(archive, 'cost.json') : join(dir, '.lane', 'cost.json') })
   }
-  return appendCostReport(reportContent, cost)
+  const wakeNote = parentWakes.length > 0 ? '\nParent wake usage: separately reported in summary.parent_wakes; excluded from pilot totals.\n' : ''
+  return appendCostReport(reportContent + wakeNote, cost)
 }
 
 function costPublicationFailure(error, archive, priorError, log) {
@@ -362,7 +366,7 @@ function describeExecutorVariants(models, env, defaultExecutor) {
   }))
 }
 // The request is lane-visible; the answer and binding are host-state records.
-function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {} }) {
+function parentDecisionChannel({ runId, stateFile, cli, log, root, wake, overrides = {} }) {
   const minutes = Math.ceil((overrides.waitMs ?? DOD_DECISION_WAIT_MS) / 60_000)
   const readDecisions = overrides.readDecisions ?? (() => readPilotDecisions(stateFile))
   const command = (suffix) => pilotDecisionCommand(cli, runId, process.execPath, root, undefined, suffix)
@@ -375,6 +379,7 @@ function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {
       const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
       const answer = command(` --request '${requestId}' --dod <n> --reading <text>`)
       log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes within ${minutes} min (otherwise ${FALLBACK_RULE}):\n${answer}`)
+      wake.start({ runId, requestId, criteria, requestFile: file, command: wakeCommandLine(answer, hostAdapter.platform) })
     },
     rollbackDecisionRequest: ({ criteria, requestId }) => unregisterPilotDecisionRequest(stateFile, { criteria, requestId }),
     onBound: (dispute) => {
@@ -414,6 +419,19 @@ function announceDecisionBoundary(env, log) {
 
 function assertPluginDirs(pluginDirs) {
   if ((pluginDirs ?? []).some((pluginDir) => !isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
+}
+function assertRunnerOptions(options) {
+  assertPluginDirs(options.pluginDirs)
+  const error = validateParentWakeOptions(options)
+  if (error) throw new Error(error)
+}
+
+function pilotModelSetup({ options, effectiveEnv, env, profileEnv, exists, resolvePilotModels }) {
+  const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
+  const models = resolvePilotModels({ env, settingsEnv: profileEnv })
+  const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
+  const modelVariant = model.variant ?? resolveRoleVariant(options.hard ? 'sdkPilotHard' : 'sdkPilot', model.effective, { env, settingsEnv: profileEnv })
+  return { knowledgeBase, model, modelVariant }
 }
 
 function assertCardFile(cardFile) {
@@ -776,15 +794,12 @@ async function runPhaseSession(runtime, current, prompts, mcpServer) {
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
-  assertPluginDirs(options.pluginDirs)
+  assertRunnerOptions(options)
   // One account gate per SDK query: every phase session spawns a CLI that reads the login again.
   const accountGate = (retryUnavailable = false) => createAccountGate({ expectAccount: options.expectAccount, launchEnv: env, profileEnv, log, timers: { setTimer, clearTimer }, retryUnavailable })
   let account = accountGate()
   const effectiveEnv = { ...env, ...profileEnv }
-  const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
-  const models = resolvePilotModels({ env, settingsEnv: profileEnv })
-  const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
-  const modelVariant = model.variant ?? resolveRoleVariant(options.hard ? 'sdkPilotHard' : 'sdkPilot', model.effective, { env, settingsEnv: profileEnv })
+  const { knowledgeBase, model, modelVariant } = pilotModelSetup({ options, effectiveEnv, env, profileEnv, exists, resolvePilotModels })
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
   // called directly did not — the first real wave died on a `path` of undefined.
   const contractPath = options.contract ?? resolve(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md')
@@ -878,9 +893,10 @@ export async function runPilot(options, dependencies) {
     : null
   const resolveRoutedFinding = boardContract && board && typeof board.resolveRoutedCard === 'function' ? (card) => board.resolveRoutedCard(card) : null
   const abortController = new AbortController()
+  const parentWakes = createParentWakeManager({ parentSession: options.parentSession, parentMode: options.parentMode, query, env: effectiveEnv, accountGate, log, wakeOptions: dependencies.parentWakeOptions })
   let timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
-  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
+  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, wake: parentWakes, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, stopAfterPhase: options.stopAfter, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const phaseSessions = []
   // A session aborted after assistant usage but before its result leaves usage no result covers.
@@ -1034,6 +1050,7 @@ export async function runPilot(options, dependencies) {
     for (const warning of modelWarnings(modelTracker.result(), { name: 'pilot' })) log(warning)
     clearTimer(timeoutTimer)
     if (timeoutGraceTimer !== null) clearTimer(timeoutGraceTimer)
+    await parentWakes.finish()
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
@@ -1053,6 +1070,7 @@ export async function runPilot(options, dependencies) {
   summary.phase_sessions = phaseSessions.map((item) => ({ session: item.index, ...Object.fromEntries(PHASE_SESSION_FIELDS.map((field) => [field, item[field] ?? null])) }))
   summary.handoffs = phaseSessions.filter((item) => item.handedOff).length
   summary.account_sessions = accountSessions
+  summary.parent_wakes = parentWakes.receipts
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
@@ -1071,7 +1089,7 @@ export async function runPilot(options, dependencies) {
     let costReport = null
     if (exists(report)) {
       const reportContent = `${readFile(report, 'utf8').trimEnd()}\n\nvariant=${modelVariant.value} origin=${modelVariant.origin} forced=false\n`
-      costReport = reconciledCostReport({ reportContent, cost, archive: lifecycleSummary.archive?.path, report, dir: options.dir })
+      costReport = reconciledCostReport({ reportContent, cost, archive: lifecycleSummary.archive?.path, report, dir: options.dir, parentWakes: parentWakes.receipts })
       writeFile(report, costReport)
     }
     const archive = lifecycleSummary.archive?.path
