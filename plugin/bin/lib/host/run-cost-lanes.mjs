@@ -3,6 +3,7 @@ import path from 'node:path'
 import { laneHostDir } from './lane-host-dir.mjs'
 import { defaultOpenCodeDb, queryOpenCodeSessions, usageDirectory } from './opencode-session-store.mjs'
 import { priceRunCost } from '../model-prices.mjs'
+import { ambiguousReceiptRows, bindLaneLaunch } from './run-cost-launch.mjs'
 
 function regularJson(file) {
   if (!fs.lstatSync(file).isFile()) throw new Error('host receipt is not a regular file')
@@ -19,7 +20,7 @@ function readReceipt(hostDir, lane, worktree) {
     if (lane.usage_file !== path.basename(lane.usage_file)) throw new Error('usage_file must name a host receipt basename')
     const receipt = regularJson(path.join(hostDir, lane.usage_file))
     if (receipt.receipt_for !== lane.usage_file) throw new Error('host receipt receipt_for differs from lane usage_file')
-    if (receipt.directory !== usageDirectory(worktree)) throw new Error('host receipt directory differs from run worktree realpath')
+    if (receipt.directory !== worktree) throw new Error('host receipt directory differs from run worktree realpath')
     const timeReason = receiptTimeReason(receipt, lane)
     if (timeReason) throw new Error(timeReason)
     return { receipt }
@@ -67,6 +68,18 @@ function sharedSessions(options, directories, window, needed) {
   } catch (error) { return `OpenCode session store query failed: ${error instanceof Error ? error.message : String(error)}` }
 }
 
+function validatedSharedSessions(sessions, output) {
+  if (!Array.isArray(sessions)) return sessions
+  return sessions.filter((row) => {
+    const invalid = rowReason(row)
+    if (!invalid) return true
+    const reason = `OpenCode session ${row?.id ?? 'unknown'}: ${invalid}`
+    output.entries.push({ source: 'lane', phase: 'unmatched', round: null, status: 'unknown', reason })
+    output.unknown.push(reason)
+    return false
+  })
+}
+
 function duplicateIds(records) {
   const counts = new Map()
   for (const record of records) {
@@ -87,11 +100,25 @@ function sessionRows(record) {
   return record.receipt.sessions.filter((row) => row && typeof row === 'object')
 }
 
+function reservedSessionIds(records) {
+  const ids = new Set()
+  for (const record of records) {
+    if (record.blocked || record.duplicateFile || record.receipt?.status !== 'ok') continue
+    for (const row of sessionRows(record)) {
+      if (!rowReason(row) && !record.ambiguousRows.includes(row)) ids.add(row.id)
+    }
+  }
+  return ids
+}
+
 function laneRecord(lane, hostDir, worktree, helpers, duplicateFiles) {
   const family = helpers.laneFamily(lane)
   const record = { lane, family, ...readReceipt(hostDir, lane, worktree) }
   if (record.receipt && family === 'openai') record.reason = openAiReceiptReason(record.receipt)
   if (record.receipt && family === 'anthropic') record.reason = claudeReason(record.receipt)
+  bindLaneLaunch(record, hostDir, worktree, regularJson)
+  record.ambiguousRows = ambiguousReceiptRows(record, worktree)
+  if (!record.blocked && record.ambiguousRows.length) record.reason = 'OpenCode alias session rows have ambiguous directory binding'
   if (duplicateFiles.has(lane.usage_file)) {
     record.duplicateFile = true
     record.reason = `duplicate usage_file named by multiple lane records: ${lane.usage_file}`
@@ -127,7 +154,7 @@ function receiptEntries(record, assigned, helpers) {
   if (record.receipt.status !== 'ok') return []
   const result = []
   for (const row of sessionRows(record)) {
-    if (rowReason(row) || assigned.has(row.id)) continue
+    if (rowReason(row) || assigned.has(row.id) || record.ambiguousRows.includes(row)) continue
     assigned.add(row.id)
     result.push(sessionEntry(row, record.lane, helpers))
   }
@@ -145,10 +172,11 @@ function unavailableFamily(lane, helpers) {
 
 function fallbackEntries(record, context) {
   const { lane, family } = record
-  const { sessions, assigned, reserved, worktree, helpers, sameDirectory } = context
+  const { sessions, assigned, reserved, worktree, helpers } = context
   if (family === null) return unavailableFamily(lane, helpers)
   if (family === 'anthropic') return `Anthropic lane usage unavailable for ${helpers.laneLabel(lane)}: ${record.reason}`
   if (typeof sessions === 'string') return `OpenAI lane usage unavailable for ${helpers.laneLabel(lane)}: ${sessions}`
+  const sameDirectory = (directory) => record.directories.has(directory)
   const matched = helpers.matchLaneSessions(sessions.filter((row) => !assigned.has(row.id) && !reserved.has(row.id)), worktree, lane.started_at, lane.ended_at, { explain: true, sameDirectory })
   if (!Array.isArray(matched)) return `OpenAI lane usage unavailable for ${helpers.laneLabel(lane)}: ${matched.reason}`
   return matched.flatMap((row) => {
@@ -192,7 +220,7 @@ function recordEntries(record, context, sources) {
   const { assigned, helpers } = context
   const source = laneSource(record)
   if (source) sources.add(source)
-  if (record.duplicateFile) return record.reason
+  if (record.duplicateFile || record.blocked) return record.reason
   if (record.receipt && record.family !== null) {
     const result = receiptEntries(record, assigned, helpers)
     return !result.length && record.reason ? record.reason : result
@@ -204,6 +232,7 @@ function recordEntries(record, context, sources) {
 }
 
 function collectRecord(record, context, output) {
+  for (const row of record.ambiguousRows) pushAmbiguousRow(row, record.lane, output, 'alias binding is not stable or evidenced')
   const result = recordEntries(record, context, output.sources)
   pushLaneResult(result, record, output)
   const reason = completionReason(record, context.duplicates)
@@ -218,31 +247,69 @@ function callStatus(record, result, reason) {
   return record.reason ? 'missing' : 'inferred'
 }
 
+function overlappingLane(row, context) {
+  const { lanes, window, canonical, helpers } = context
+  return lanes.find((lane) => helpers.matchLaneSessions([row], canonical, lane.started_at, lane.ended_at ?? window.endedAt).length > 0)
+}
+
 function collectUnmatched(context, output) {
-  const { sessions, assigned, reserved, helpers, sameDirectory } = context
+  const { sessions, assigned, reserved, helpers, directories, canonical } = context
   for (const row of Array.isArray(sessions) ? sessions : []) {
-    if (!sameDirectory(row.directory) || assigned.has(row.id) || reserved.has(row.id)) continue
+    if (!directories.has(row.directory) || assigned.has(row.id) || reserved.has(row.id)) continue
     assigned.add(row.id)
+    if (row.directory !== canonical) { pushAmbiguousRow(row, { phase: 'unmatched' }, output, 'matched only an unevidenced or unbound worktree spelling'); continue }
+    const lane = overlappingLane(row, context)
+    if (lane) { pushAmbiguousRow(row, lane, output, `overlaps lane window for ${helpers.laneLabel(lane)} without lane attribution`); continue }
     const reason = `OpenCode session ${row.id} matched the run but no lane window`
     output.entries.push({ ...sessionEntry(row, { phase: 'unmatched' }, helpers), status: 'unknown', reason })
     output.unknown.push(reason)
   }
 }
 
+function pushAmbiguousRow(row, lane, output, detail) {
+  const reason = `OpenCode session ${row.id} is ambiguous: ${detail}`
+  output.entries.push({ source: 'lane', phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason })
+  output.unknown.push(reason)
+}
+
+function identityFailure(timeline, canonical, helpers) {
+  let reason = canonical === null ? 'worktree identity unavailable' : null
+  if (typeof timeline.worktree_realpath === 'string' && timeline.worktree_realpath !== canonical) reason = "report worktree differs from the run's recorded worktree realpath"
+  if (!reason) return null
+  const output = { entries: [], unknown: [], sources: new Set(), missing: [], counted: 0, calls: [] }
+  for (const lane of timeline.lanes ?? []) {
+    const record = { lane, family: helpers.laneFamily(lane), reason }
+    pushLaneResult(reason, record, output)
+    output.missing.push({ phase: lane.phase, round: lane.round ?? null, reason })
+    output.calls.push({ phase: lane.phase, round: lane.round ?? null, status: 'missing', reason })
+  }
+  output.coverage = { expected: output.calls.length, counted: 0, missing: output.missing, status: 'incomplete' }
+  return output
+}
+
+function laneDirectories(records, worktree, canonical) {
+  const directories = new Set([worktree, canonical])
+  for (const record of records.filter((record) => !record.blocked)) {
+    for (const value of record.queryDirectories) directories.add(value)
+  }
+  return directories
+}
+
 export function collectLaneCosts(options, timeline, worktree, window, helpers) {
   const canonical = usageDirectory(worktree)
-  const directories = new Set([worktree, canonical])
-  const sameDirectory = (directory) => directories.has(directory)
-  const hostDir = options.laneHostDir ?? laneHostDir(canonical)
+  const failure = identityFailure(timeline, canonical, helpers)
+  if (failure) return failure
+  const hostDir = options.laneHostDir ?? laneHostDir(timeline.worktree_realpath ?? canonical)
   const lanes = timeline.lanes ?? []
   const duplicateFiles = duplicateUsageFiles(lanes)
   const records = lanes.map((lane) => laneRecord(lane, hostDir, canonical, helpers, duplicateFiles))
+  const directories = laneDirectories(records, worktree, canonical)
   const duplicates = duplicateIds(records)
-  const reserved = new Set(records.flatMap((record) => sessionRows(record).map((row) => row.id)))
-  const sessions = sharedSessions(options, directories, window, records.some((record) => record.family === 'openai' && record.absent))
+  const reserved = reservedSessionIds(records)
+  const shared = sharedSessions(options, directories, window, records.some((record) => record.family === 'openai' && record.absent && !record.blocked))
   const assigned = new Set()
   const output = { entries: [], unknown: [], sources: new Set(), missing: [], counted: 0, calls: [] }
-  const context = { assigned, reserved, sessions, worktree, helpers, duplicates, sameDirectory }
+  const context = { assigned, reserved, sessions: validatedSharedSessions(shared, output), worktree, helpers, duplicates, directories, canonical, lanes, window }
   for (const record of records) collectRecord(record, context, output)
   collectUnmatched(context, output)
   const orphans = orphanLogs(hostDir, lanes, window)

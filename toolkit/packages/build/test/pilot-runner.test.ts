@@ -1121,7 +1121,7 @@ describe('SDK pilot runner', () => {
     expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd', 'verify', 'report'])
     expect(timeline.lanes[0]).toMatchObject({ phase: 'tdd', executor: 'gpt-lane', started_at: expect.any(Number), ended_at: expect.any(Number) })
     const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8') as string)
-    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: [expect.stringContaining('OpenAI lane usage unavailable')] })
+    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: ['OpenCode launch evidence missing: no usable receipt or launch record'] })
     expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
     expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
     expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')

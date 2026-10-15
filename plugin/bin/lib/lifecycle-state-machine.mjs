@@ -22,6 +22,7 @@ import { pathWithin } from './host/path-within.mjs'
 import { focusedLifecycleGateHint, resolveLifecycleGates } from './lifecycle-gates.mjs'
 import { snapshotSelectedTree } from './lifecycle-selection.mjs'
 import { declaredChecksForPhase } from './host/repo-instructions.mjs'
+import { recordedWorktreeIdentity } from './host/canonical-path.mjs'
 
 const withLeadingBreak = (text) => (text ? `\n\n${text}` : '')
 
@@ -915,7 +916,7 @@ export function createLifecycleStateMachine({
   const state = initialLifecycleState()
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
-  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
+  const timeline = { version: 2, ...recordedWorktreeIdentity(root), started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? defaultTimelineWriter
   const persistTimeline = () => {
     try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }
@@ -1018,7 +1019,7 @@ export function createLifecycleStateMachine({
     gateRunner, testFramework,
     now,
     recordLaneStart: ({ phase, model, executor: laneExecutor, startedAt, usageFile, laneId }) => {
-      const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor: laneExecutor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
+      const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor: laneExecutor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile, launch_evidence: true }
       timeline.lanes.push(record)
       persistTimeline()
       return record
