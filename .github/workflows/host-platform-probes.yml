@@ -15,6 +15,32 @@ permissions:
   contents: read
 
 jobs:
+  opencode-directory:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      WT_RUNNER_IMAGE: ${{ matrix.os }}
+      WT_OPENCODE_PROBE_ENTRY: .opencode-probe/node_modules/opencode-ai/bin/opencode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install pinned OpenCode
+        run: npm install --prefix .opencode-probe opencode-ai@1.19.0
+      - name: Capture OpenCode directory spelling
+        run: node probes/host-platform/opencode-dir-spelling.mjs probes/host-platform/evidence/${{ matrix.os }}/opencode-dir-spelling.json
+      - name: Upload OpenCode evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-directory-evidence-${{ matrix.os }}
+          path: probes/host-platform/evidence/${{ matrix.os }}/opencode-dir-spelling.json
+          if-no-files-found: error
   capture:
     strategy:
       fail-fast: false

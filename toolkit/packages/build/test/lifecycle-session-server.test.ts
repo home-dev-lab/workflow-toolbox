@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,7 +23,7 @@ function lifecycle() {
   const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'FULL', reasons: ['test'], models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', rules: [] }) as unknown as Server
   const tools = (s: Server) => s.instance._registeredTools
   const text = async (result: Promise<{ content: Array<{ text: string }> }>) => (await result).content[0]!.text
-  return { server, tools, text }
+  return { server, tools, text, root }
 }
 
 describe('lifecycle phase sessions', () => {
@@ -58,6 +58,11 @@ describe('lifecycle phase sessions', () => {
 })
 
 describe('lifecycle phase session evidence', () => {
+  it('K12 records the native worktree identity in the initial persisted timeline', () => {
+    const { root } = lifecycle()
+    const timeline = JSON.parse(readFileSync(join(root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.worktree_realpath).toBe(realpathSync.native(root))
+  })
   it('builds every session\'s tools from one definition', () => {
     const { server } = lifecycle()
     const shape = (s: Server) => Object.fromEntries(Object.entries(s.instance._registeredTools as Record<string, { description?: string, inputSchema?: unknown }>).map(([name, entry]) => [name, JSON.stringify({ description: entry.description, schema: entry.inputSchema })]))

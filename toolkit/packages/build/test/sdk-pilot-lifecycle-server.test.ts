@@ -2952,6 +2952,17 @@ describe.sequential('runner-hosted SDK pilot repository checks and boundary stop
   })
 })
 
+it('R2 persists launch-evidence support in the initial lane record before spawning', async () => {
+  const probe = rawLauncher("import { copyFileSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; copyFileSync(join(root,'.lane','lifecycle.json'),join(root,'.lane','initial-lane.json'))")
+  const lifecycle = testLifecycle('LITE', [], probe, 30)
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+  expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('launcher pid')
+  const initial = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'initial-lane.json'), 'utf8'))
+  expect(initial.lanes).toHaveLength(1)
+  expect(initial.lanes[0]).toMatchObject({ state: 'running', ended_at: null, launch_evidence: true })
+})
+
 const roots: string[] = []
 afterEach(() => {
   const created = roots.splice(0)

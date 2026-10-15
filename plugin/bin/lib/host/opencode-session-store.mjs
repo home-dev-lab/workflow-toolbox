@@ -2,12 +2,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { canonicalDirectory } from './canonical-path.mjs'
 
 export function usageDirectory(directory) {
-  try { return fs.realpathSync.native(directory) } catch (error) {
-    if (error?.code === 'ENOENT') return path.resolve(directory)
-    throw error
-  }
+  return canonicalDirectory(directory)
 }
 
 export function defaultOpenCodeDb(options = {}) {
@@ -59,16 +57,37 @@ function captureStore(sandbox, env, platform) {
 
 function requestedDirectory(cwd, args) {
   const dirIndex = args.indexOf('--dir')
-  const base = cwd ?? process.cwd()
-  return usageDirectory(dirIndex < 0 ? base : path.resolve(base, args[dirIndex + 1]))
+  return dirIndex < 0 ? cwd ?? process.cwd() : args[dirIndex + 1]
 }
 
-function captureReceipt({ sandbox, cwd, args, startedAt, env, platform, usageReader, usageReceipt }) {
-  const receipt = { version: 1, receipt_for: path.basename(usageReceipt), source: 'opencode session store', ...captureStore(sandbox, env, platform), sandbox: sandbox.kind, directory: null, captured_at: new Date().toISOString(), status: 'unavailable', sessions: [] }
+function launchRealpath(requested, cwd, args) {
+  if (!args.includes('--dir')) return fs.realpathSync.native(requested)
+  const input = path.isAbsolute(requested) ? requested : `${cwd ?? process.cwd()}${path.sep}${requested}`
+  return fs.realpathSync.native(input)
+}
+
+export function recordOpencodeLaunch(sandbox, options) {
+  const { cwd, args, env, platform, usageReceipt, startedAt } = options
+  const requested = requestedDirectory(cwd, args)
+  const launch = { version: 1, launch_for: path.basename(usageReceipt), requested, realpath: null, spellings: [], recorded_at: startedAt, store_kind: captureStore(sandbox, env, platform).store_kind }
+  try { launch.realpath = launchRealpath(requested, cwd, args) } catch (error) {
+    launch.reason = error instanceof Error ? error.message : String(error)
+  }
+  launch.spellings = [...new Set([path.isAbsolute(requested) ? requested : null, launch.realpath].filter((value) => value !== null))]
+  try { fs.writeFileSync(`${usageReceipt}.launch.json`, `${JSON.stringify(launch, null, 2)}\n`, { flag: 'wx', mode: 0o600 }) } catch { /* Launch evidence IO cannot prevent spawn. */ }
+  return launch
+}
+
+function aliasBinding(launch, cwd, args) {
+  try { return launch.realpath !== null && launchRealpath(launch.requested, cwd, args) === launch.realpath ? 'stable' : 'retargeted' } catch { return 'retargeted' }
+}
+
+function captureReceipt({ sandbox, cwd, args, launch, startedAt, env, platform, usageReader, usageReceipt }) {
+  const receipt = { version: 1, receipt_for: path.basename(usageReceipt), source: 'opencode session store', ...captureStore(sandbox, env, platform), sandbox: sandbox.kind, directory: launch.realpath, launch, alias_binding: aliasBinding(launch, cwd, args), captured_at: new Date().toISOString(), status: 'unavailable', sessions: [] }
   try {
-    receipt.directory = requestedDirectory(cwd, args)
+    if (receipt.directory === null) throw new Error(launch.reason ?? 'worktree identity unavailable')
     if (!receipt.store) throw new Error('OpenCode session store path unavailable')
-    receipt.sessions = queryOpenCodeSessions({ dbPath: receipt.store, directory: receipt.directory, startedAt, createdOnly: true, allSessions: receipt.store_kind === 'private', execFile: usageReader })
+    receipt.sessions = queryOpenCodeSessions({ dbPath: receipt.store, directories: launch.spellings, startedAt, createdOnly: true, allSessions: receipt.store_kind === 'private', execFile: usageReader })
     receipt.status = 'ok'
   } catch (error) {
     receipt.reason = error instanceof Error ? error.message : String(error)

@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import os, { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime launcher helper
 import { spawnOpencode } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
@@ -14,6 +14,12 @@ vi.mock('../../../../plugin/bin/lib/host/lane-sandbox.mjs', async importOriginal
   ...await importOriginal<object>(), resolveLaneSandbox: () => fake.sandbox,
 }))
 const roots: string[] = []
+function launchFixture() {
+  const f = fixture(); fake.sandbox.kind = 'none'; fake.sandbox.opencodeDataDir = null
+  const alias = join(f.root, 'alias'); symlinkSync(f.root, alias, 'junction')
+  const start = (reader: UsageReader, requested = alias, spawn = () => f.child) => spawnOpencode(spawn, 'opencode', ['run', '--dir', requested], { cwd: f.root, usageReceipt: f.receipt, usageReader: reader })
+  return { ...f, alias, start, launch: () => JSON.parse(readFileSync(`${f.receipt}.launch.json`, 'utf8')) }
+}
 type UsageReader = (bin: string, args: string[], options: { timeout: number, killSignal: string }) => string
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function fixture() {
@@ -185,4 +191,43 @@ it.each(['linux', 'darwin', 'win32'])('L1 falls back to os.homedir on %s when it
   const expected = platform === 'win32' ? `${home}\\.local\\share\\opencode\\opencode.db` : `${home}/.local/share/opencode/opencode.db`
   expect(defaultOpenCodeDb({ platform, env: {} })).toBe(expected)
   expect(lookup).toHaveBeenCalledOnce()
+})
+
+it('K1 captures a shared alias row instead of publishing an empty receipt', () => {
+  const f = launchFixture()
+  f.start((_bin, args) => args[4]!.includes(`directory='${f.alias}'`) ? '[{"id":"alias-row"}]' : '[]')
+  f.child.emit('close')
+  expect(f.read().sessions).toEqual([{ id: 'alias-row' }])
+  expect(f.read()).toMatchObject({ directory: f.root, alias_binding: 'stable', launch: { requested: f.alias, realpath: f.root, spellings: [f.alias, f.root], store_kind: 'shared' } })
+})
+
+it('K1b captures retargeted alias rows with an unstable binding', () => {
+  const f = launchFixture(); f.start(() => '[{"id":"alias-row"}]')
+  const foreign = join(f.root, 'foreign'); mkdirSync(foreign); rmSync(f.alias); symlinkSync(foreign, f.alias, 'junction')
+  f.child.emit('close')
+  expect(f.read()).toMatchObject({ directory: f.root, alias_binding: 'retargeted', sessions: [{ id: 'alias-row' }] })
+})
+
+it('K5 resolves relative symlink parent traversal by the OS without evidencing a relative spelling', () => {
+  const f = launchFixture(); const target = join(f.root, 'nested', 'child'); mkdirSync(target, { recursive: true })
+  rmSync(f.alias); symlinkSync(target, f.alias, 'junction')
+  const requested = `alias${sep}..`; const expected = realpathSync.native(`${f.root}${sep}${requested}`)
+  f.start(() => '[]', requested); f.child.emit('close')
+  expect(f.read()).toMatchObject({ directory: expected, launch: { requested, realpath: expected, spellings: [expected] } })
+})
+
+it('K6 publishes a private create-once launch record before invoking spawn', () => {
+  const f = launchFixture()
+  f.start(() => '[]', f.alias, () => {
+    expect(f.launch()).toMatchObject({ version: 1, launch_for: 'run.log.usage.json', realpath: f.root, recorded_at: expect.any(Number) })
+    if (process.platform !== 'win32') expect(statSync(`${f.receipt}.launch.json`).mode & 0o777).toBe(0o600)
+    return f.child
+  })
+})
+
+it('K6 preserves an existing launch record and proceeds with the current launch evidence', () => {
+  const f = launchFixture(); writeFileSync(`${f.receipt}.launch.json`, 'original')
+  const spawn = vi.fn(() => f.child); f.start(() => '[]', f.alias, spawn); f.child.emit('close')
+  expect(spawn).toHaveBeenCalledOnce(); expect(readFileSync(`${f.receipt}.launch.json`, 'utf8')).toBe('original')
+  expect(f.read().launch.requested).toBe(f.alias)
 })
