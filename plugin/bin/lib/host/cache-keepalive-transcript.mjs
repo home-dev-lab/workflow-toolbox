@@ -13,11 +13,13 @@ function recordTimeMs(record) {
 }
 
 function usageCounters(usage) {
-  const raw = {}
-  const counters = { input: Number(raw.input_tokens = usage.input_tokens) || 0, output: Number(usage.output_tokens) || 0,
-    cacheRead: Number(raw.cache_read_input_tokens = usage.cache_read_input_tokens) || 0,
-    cacheCreation: Number(raw.cache_creation_input_tokens = usage.cache_creation_input_tokens) || 0 }
-  return { usage: counters, contextTokens: contextTokens(raw) }
+  const counters = { input: finiteUsage(usage.input_tokens), output: finiteUsage(usage.output_tokens),
+    cacheRead: finiteUsage(usage.cache_read_input_tokens), cacheCreation: finiteUsage(usage.cache_creation_input_tokens) }
+  return { usage: counters, contextTokens: contextTokens(usage) }
+}
+
+function finiteUsage(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function callId(record, sequence) {
@@ -36,18 +38,29 @@ function assistantCall(record, sequence) {
 }
 
 function acceptLine(scan, line) {
-  if (!line.trim() || Buffer.byteLength(line) > MAX_RECORD_BYTES) return false
+  if (!line.trim() || Buffer.byteLength(line) > MAX_RECORD_BYTES) return
   let record
-  try { record = JSON.parse(line) } catch { return false }
+  try { record = JSON.parse(line) } catch { return }
   const call = assistantCall(record, scan.sequence--)
-  if (!call) return false
-  retainEvidence(scan.evidence, call)
-  if (scan.seen.has(call.id)) return false
+  if (!call) return
+  // Continue through history for streamed records of the selected calls, but do not
+  // rediscover unrelated writers behind an incremental poll's saved boundary.
+  if (outsideIncrementalBoundary(scan, call)) return
+  collectEvidence(scan, call)
+  if (scan.seen.has(call.id)) return
   collectCall(scan, call)
   if (!call.synthetic) scan.baselineFound = true
-  if (!scan.stopId || call.id !== scan.stopId) return false
-  scan.stoppedAtId = true
-  return !scan.scanHistory
+  if (call.id === scan.stopId) scan.stoppedAtId = true
+}
+
+function outsideIncrementalBoundary(scan, call) {
+  return !scan.scanHistory && scan.stoppedAtId && !scan.seen.has(call.id)
+}
+
+function collectEvidence(scan, call) {
+  if (call.synthetic) return
+  if (scan.model === null) scan.model = call.model
+  if (call.model === scan.model) retainEvidence(scan.evidence, call)
 }
 
 function collectCall(scan, call) {
@@ -58,9 +71,8 @@ function collectCall(scan, call) {
 
 function acceptLines(scan, lines) {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (acceptLine(scan, lines[index])) return true
+    acceptLine(scan, lines[index])
   }
-  return false
 }
 
 function chunkLines(scan, buffer) {
@@ -92,24 +104,24 @@ function chunkLines(scan, buffer) {
   return lines
 }
 
-// Keep only the latest provenance per TTL; initial discovery scans history in bounded chunks.
+// Scan bounded chunks; incremental evidence is limited to selected call IDs.
 export async function callsSince(transcriptPath, stopId, scanHistory = false) {
   const file = await open(transcriptPath, 'r')
   try {
     const { size } = await file.stat()
-    const scan = { baselineFound: false, calls: [], carry: Buffer.alloc(0), evidence: {},
+    const scan = { baselineFound: false, calls: [], carry: Buffer.alloc(0), evidence: {}, model: null,
       seen: new Set(), sequence: size, skipOversizedRecord: false, stopId, stoppedAtId: false, scanHistory }
-    let position = size, foundStop = false
-    while (position > 0 && !foundStop) {
+    let position = size
+    while (position > 0) {
       const length = Math.min(CHUNK_BYTES, position)
       position -= length
       const buffer = Buffer.allocUnsafe(length)
       await file.read(buffer, 0, length, position)
       const lines = chunkLines(scan, buffer)
-      foundStop = acceptLines(scan, lines)
+      acceptLines(scan, lines)
     }
-    if (position === 0 && !foundStop) acceptLine(scan, scan.carry.toString('utf8'))
-    return { calls: scan.calls.reverse(), evidence: scan.evidence }
+    acceptLine(scan, scan.carry.toString('utf8'))
+    return { calls: scan.calls.reverse(), evidence: scan.evidence, model: scan.model }
   } finally {
     await file.close()
   }

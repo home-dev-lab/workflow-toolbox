@@ -111,7 +111,7 @@ function resetIdle(state) {
 
 function observeReal(state, call) {
   state.lastRealId = call.id
-  if (call.atMs !== null) state.lastRealAtMs = call.atMs
+  state.lastRealAtMs = call.atMs
   clearIdleReason(state)
   rememberContext(state, call)
 }
@@ -146,6 +146,12 @@ function transcriptReason(error) {
   return `transcript unavailable: ${error?.code ?? error?.message ?? 'read error'}`
 }
 
+function rememberEvidence(state, discovery) {
+  if (state.cacheEvidenceModel !== undefined && state.cacheEvidenceModel !== discovery.model) state.cacheEvidence = {}
+  state.cacheEvidence = { ...state.cacheEvidence, ...discovery.evidence }
+  state.cacheEvidenceModel = discovery.model
+}
+
 async function discover(context, state, nowMs) {
   let discovery
   try {
@@ -155,9 +161,13 @@ async function discover(context, state, nowMs) {
     await recordSkip(context, state, nowMs, transcriptReason(error), false)
     return null
   }
-  state.cacheEvidence = { ...state.cacheEvidence, ...discovery.evidence }
+  rememberEvidence(state, discovery)
   const stopCall = discovery.calls.find((call) => call.id === state.lastRealId)
-  if (stopCall) rememberContext(state, stopCall)
+  if (stopCall) {
+    rememberContext(state, stopCall)
+    state.lastRealAtMs = stopCall.atMs
+    state.lastModel = stopCall.model
+  }
   if (state.lastRealId) return discovery.calls.filter((call) => call.id !== state.lastRealId)
   const baseline = newestReal(discovery.calls)
   if (!baseline || baseline.atMs === null) {
@@ -237,7 +247,7 @@ function attemptAnchor(state) {
 }
 
 function contextSnapshot(state) {
-  return JSON.stringify([state.cacheEvidence, state.lastContext])
+  return JSON.stringify([state.cacheEvidence, state.cacheEvidenceModel, state.lastContext])
 }
 
 async function inspect(context, nowMs) {

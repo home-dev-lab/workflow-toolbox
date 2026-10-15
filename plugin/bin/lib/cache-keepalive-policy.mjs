@@ -11,9 +11,13 @@ export function contextTokens(usage) {
 export function cacheTtl(usage) {
   const creation = usage.cache_creation
   return {
-    oneHour: typeof creation?.ephemeral_1h_input_tokens === 'number' && creation.ephemeral_1h_input_tokens > 0,
-    fiveMinute: typeof creation?.ephemeral_5m_input_tokens === 'number' && creation.ephemeral_5m_input_tokens > 0,
+    oneHour: positiveCounter(creation?.ephemeral_1h_input_tokens),
+    fiveMinute: positiveCounter(creation?.ephemeral_5m_input_tokens),
   }
+}
+
+function positiveCounter(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
 export function retainEvidence(evidence, call) {
@@ -34,7 +38,7 @@ function effectiveFloor(value) {
 }
 
 function nativeApplies(state, settings) {
-  if (settings.enabled !== true || settings.interactive === false || !state.cacheEvidence?.oneHour) return false
+  if (settings.enabled !== true || settings.fetching !== true || settings.interactive === false || !state.cacheEvidence?.oneHour) return false
   const tokens = state.lastContext?.tokens
   return typeof tokens === 'number' && tokens >= effectiveFloor(settings.floor)
 }
@@ -46,6 +50,7 @@ function knownTtlMs(evidence) {
 
 export function skipReason(state, settings, nowMs) {
   if (nativeApplies(state, settings)) return NATIVE_SKIP_REASON
+  if (state.lastRealAtMs === null) return ''
   const ttlMs = knownTtlMs(state.cacheEvidence)
   const freshnessMs = Math.max(state.lastRealAtMs ?? 0, state.lastRefreshedAtMs ?? 0)
   return ttlMs !== null && nowMs - freshnessMs > ttlMs ? 'prompt cache freshness expired' : ''

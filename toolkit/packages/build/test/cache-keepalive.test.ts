@@ -9,6 +9,11 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const MONITOR = join(REPO_ROOT, 'plugin/bin/wt-cache-keepalive.mjs')
 const MONITORS_JSON = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const roots: string[] = []
+const PROVIDER_KEYS = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_MANTLE']
+const FETCH_ENV_KEYS = ['DISABLE_GROWTHBOOK', 'DISABLE_TELEMETRY', 'DO_NOT_TRACK',
+  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST', ...PROVIDER_KEYS]
+const CLEAN_FETCH_ENV = Object.fromEntries(FETCH_ENV_KEYS.map((key) => [key, undefined]))
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -56,6 +61,7 @@ function run(state: ReturnType<typeof scaffold>, nowMinutes: number, extraEnv: N
       CLAUDE_CODE_ENTRYPOINT: undefined,
       CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS: undefined,
       DISABLE_AUTO_COMPACT: undefined,
+      ...CLEAN_FETCH_ENV,
       WT_CACHE_KEEPALIVE_ENABLED: 'true',
       WT_CACHE_KEEPALIVE_ANTHROPIC_MINUTES: '50',
       WT_CACHE_KEEPALIVE_OPENAI_MINUTES: '25',
@@ -186,10 +192,12 @@ describe('wt-cache-keepalive', () => {
 
 describe('monitors.json registers cache-keepalive', () => {
   it('points at the executable and loads it for every session start', () => {
-    const monitors = JSON.parse(readFileSync(MONITORS_JSON, 'utf8')) as Array<{ name: string; command: string; when: string }>
+    const monitors = JSON.parse(readFileSync(MONITORS_JSON, 'utf8')) as Array<{ name: string; command: string; when: string; description: string }>
     const entry = monitors.find((monitor) => monitor.name === 'cache-keepalive')
     expect(entry?.command).toContain('wt-cache-keepalive.mjs')
     expect(entry?.when).toBe('always')
+    expect(entry?.description).toContain('On by default')
+    expect(entry?.description).toContain('yields to native idle compaction')
   })
 })
 
@@ -478,6 +486,8 @@ describe('cache keepalive retained evidence and legacy state', () => {
     append(state, assistant('five', 'claude-sonnet-4-5', 2, FIVE))
     expect(run(state, 52).stdout).toContain('CACHE KEEPALIVE:')
     expect(saved(state).cacheEvidence).toMatchObject({ oneHour: { callId: 'baseline', atMs: 0 } })
+    expect(run(state, 54).stdout).toBe('')
+    expect(saved(state).cacheEvidence).toMatchObject({ oneHour: { callId: 'baseline', atMs: 0 } })
   })
 
   it('backfills a legacy read-only stop record with an older cache writer', () => {
@@ -500,13 +510,163 @@ describe('cache keepalive stop-id TTL and platform policy locations', () => {
 
   it('uses portable managed-file locations and names unsupported policy as unknown', async () => {
     const host = await import(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-settings.mjs')).href)
-    expect(host.managedSettingsFile('linux')).toBe('/etc/claude-code/managed-settings.json')
-    expect(host.managedSettingsFile('darwin')).toBe('/Library/Application Support/ClaudeCode/managed-settings.json')
-    expect(host.managedSettingsFile('win32', { ProgramFiles: 'D:\\Programs' })).toBe('D:\\Programs\\ClaudeCode\\managed-settings.json')
-    expect(host.managedSettingsFile('unsupported')).toBeNull()
+    expect(managedReadPaths('linux').files[0]).toBe('/etc/claude-code/managed-settings.json')
+    expect(managedReadPaths('darwin').files[0]).toBe('/Library/Application Support/ClaudeCode/managed-settings.json')
+    expect(managedReadPaths('win32', { ProgramFiles: 'D:\\Programs' }).files[0]).toBe('D:\\Programs\\ClaudeCode\\managed-settings.json')
     const state = sized('unknown-platform', 250_000)
     expect(await host.compactionSettings(state.configDir, state.projectDir, { platform: 'unsupported', env: {} }))
       .toMatchObject({ enabled: null })
+  })
+})
+
+function managedReadPaths(platform: string, env = {}) {
+  const url = pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-settings.mjs')).href
+  const script = `import fs from 'node:fs/promises'
+    import { syncBuiltinESMExports } from 'node:module'
+    const files = []
+    fs.readFile = async (file) => { files.push(file); return '{}' }
+    syncBuiltinESMExports()
+    const host = await import(${JSON.stringify(url)})
+    await host.compactionSettings('config', 'project', ${JSON.stringify({ platform, env })})
+    console.log(JSON.stringify({ files }))`
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' })
+  expect(result.status).toBe(0)
+  expect(result.stderr).toBe('')
+  return JSON.parse(result.stdout) as { files: string[] }
+}
+
+describe('cache keepalive incremental streamed writers', () => {
+  it('retains a writer behind the final record of an already-established stop id', () => {
+    const state = sized('incremental-stream', 250_000, { cache_creation_input_tokens: 1 })
+    expect(run(state, 1).stdout).toBe('')
+    expect(saved(state)).toMatchObject({ lastRealId: 'baseline', cacheEvidence: {} })
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 0, { ...HOUR, input_tokens: 249_999 }))
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 0, { input_tokens: 250_000 }))
+    expect(run(state, 50).stdout).toBe('')
+    expect(saved(state).cacheEvidence).toMatchObject({ oneHour: { callId: 'baseline', atMs: 0 } })
+  })
+
+  it('collects streamed evidence for newer calls even when their records are interleaved', () => {
+    const state = sized('interleaved-stream', 250_000, { cache_creation_input_tokens: 1 })
+    expect(run(state, 1).stdout).toBe('')
+    append(state, assistant('newer', 'claude-sonnet-4-5', 2, { ...HOUR, input_tokens: 249_999 }))
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 0))
+    append(state, assistant('newer', 'claude-sonnet-4-5', 2, { input_tokens: 250_000 }))
+    expect(run(state, 52).stdout).toBe('')
+    expect(saved(state).cacheEvidence).toMatchObject({ oneHour: { callId: 'newer', atMs: 120_000 } })
+  })
+})
+
+describe('cache keepalive model-scoped evidence', () => {
+  it.each([10_000, 250_000])('does not reuse another model cache at context %i', (context) => {
+    const state = sized('model-change', context)
+    expect(run(state, 1).stdout).toBe('')
+    append(state, assistant('other-model', 'claude-opus-4-6', 120, { ...FIVE, input_tokens: context - 1 }))
+    expect(run(state, 170).stdout).toBe('')
+    expect(journal(state).at(-1)?.reason).toBe('prompt cache freshness expired')
+    expect(saved(state)).toMatchObject({ cacheEvidenceModel: 'claude-opus-4-6',
+      cacheEvidence: { fiveMinute: { callId: 'other-model', atMs: 120 * 60_000 } } })
+    expect(saved(state).cacheEvidence).not.toHaveProperty('oneHour')
+  })
+
+  it('scopes initial discovery history to the newest real model', () => {
+    const state = sized('model-history', 250_000)
+    append(state, assistant('other-model', 'claude-opus-4-6', 120, { ...FIVE, input_tokens: 249_999 }))
+    expect(run(state, 170).stdout).toBe('')
+    expect(journal(state).at(-1)?.reason).toBe('prompt cache freshness expired')
+  })
+
+  it('assigns legacy evidence without a model key to the latest model', () => {
+    const state = sized('legacy-model', 10_000, {}, 'claude-opus-4-6')
+    save(state, { lastRealId: 'baseline', lastRealAtMs: 0, lastModel: 'claude-sonnet-4-5',
+      cacheEvidence: { oneHour: { callId: 'legacy-writer', atMs: 0 } } })
+    expect(run(state, 50).stdout).toContain('CACHE KEEPALIVE:')
+    expect(saved(state)).toMatchObject({ cacheEvidenceModel: 'claude-opus-4-6',
+      cacheEvidence: { oneHour: { callId: 'legacy-writer', atMs: 0 } } })
+  })
+})
+
+describe('cache keepalive unknown freshness and malformed usage', () => {
+  it.each([undefined, 'not-a-time'])('does not expire an unknown latest timestamp %j across restarts', (timestamp) => {
+    const state = sized('unknown-time', 10_000)
+    expect(run(state, 1).stdout).toBe('')
+    const fresh = JSON.parse(assistant('unknown-time', 'claude-sonnet-4-5', 120, HOUR)) as Record<string, unknown>
+    fresh.timestamp = timestamp
+    append(state, JSON.stringify(fresh))
+    expect(run(state, 120).stdout).toContain('CACHE KEEPALIVE:')
+    expect(saved(state).lastRealAtMs).toBeNull()
+    expect(run(state, 171).stdout).toContain('CACHE KEEPALIVE:')
+    expect(journal(state).some((entry) => entry.reason === 'prompt cache freshness expired')).toBe(false)
+    append(state, assistant('known-time', 'claude-sonnet-4-5', 180, HOUR))
+    expect(run(state, 241).stdout).toBe('')
+    expect(journal(state).at(-1)?.reason).toBe('prompt cache freshness expired')
+    expect(saved(state).lastRealAtMs).toBe(180 * 60_000)
+  })
+
+  it.each(['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'])(
+    'ignores malformed historical %s without making the transcript unavailable', (key) => {
+      const state = scaffold('malformed-history')
+      writeFileSync(state.transcriptPath, `${assistant('old', 'claude-sonnet-4-5', 0,
+        { [key]: { valueOf: 0, toString: 0 } })}\n${assistant('recent', 'claude-sonnet-4-5', 120)}\n`)
+      expect(run(state, 170).stdout).toContain('CACHE KEEPALIVE:')
+      expect(journal(state).some((entry) => String(entry.reason).startsWith('transcript unavailable:'))).toBe(false)
+    })
+
+  it.each(['ephemeral_1h_input_tokens', 'ephemeral_5m_input_tokens'])('rejects non-finite %s TTL evidence', (key) => {
+    const state = sized('nonfinite-ttl', 250_000, {})
+    const line = assistant('baseline', 'claude-sonnet-4-5', 0,
+      { input_tokens: 250_000, cache_creation: { [key]: 1 } }).replace(`"${key}":1`, `"${key}":1e400`)
+    writeFileSync(state.transcriptPath, `${line}\n`)
+    expect(run(state, 50).stdout).toContain('CACHE KEEPALIVE:')
+    expect(saved(state).cacheEvidence).toEqual({})
+  })
+})
+
+describe('cache keepalive feature-flag fetching prerequisites', () => {
+  it.each([
+    ['DISABLE_GROWTHBOOK', '1', true], ['DISABLE_GROWTHBOOK', 'true', true],
+    ['DISABLE_GROWTHBOOK', '0', false], ['DISABLE_GROWTHBOOK', 'false', false],
+    ['DISABLE_GROWTHBOOK', '', true],
+    ['DISABLE_TELEMETRY', '1', true], ['DISABLE_TELEMETRY', '0', true],
+    ['DISABLE_TELEMETRY', 'false', true], ['DISABLE_TELEMETRY', '', false],
+    ['DO_NOT_TRACK', '1', true], ['DO_NOT_TRACK', 'true', true],
+    ['DO_NOT_TRACK', '0', false], ['DO_NOT_TRACK', 'false', false],
+    ['DO_NOT_TRACK', '', true],
+    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1', true],
+    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '0', true],
+    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'false', true],
+    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '', false],
+    ['DO_NOT_TRACK', 'maybe', true], ['DISABLE_GROWTHBOOK', 'maybe', true],
+  ] as const)('uses documented fetching semantics for %s=%j (wake=%s)', (key, value, wake) => {
+    expect(run(sized('fetch-switch', 250_000), 50, { [key]: value }).stdout.includes('CACHE KEEPALIVE:')).toBe(wake)
+  })
+
+  it.each(PROVIDER_KEYS)('handles %s on, off, unknown and host-managed', (key) => {
+    for (const [value, managed, wake] of [
+      ['1', undefined, true], ['true', undefined, true], ['0', undefined, false],
+      ['false', undefined, false], ['', undefined, true], ['maybe', undefined, true],
+      ['1', '1', false], ['maybe', '1', false],
+    ] as const) {
+      const state = sized('fetch-provider', 250_000)
+      expect(run(state, 50, { [key]: value, CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: managed })
+        .stdout.includes('CACHE KEEPALIVE:'), `${key}=${value}, host=${managed}`).toBe(wake)
+    }
+  })
+
+  it.each([undefined, '0'] as const)('resolves fetching switches per key with monitor override %j', (override) => {
+    const state = sized('fetch-precedence', 250_000)
+    settings(state, 'user', { env: { DISABLE_GROWTHBOOK: '1', DO_NOT_TRACK: '1' } })
+    settings(state, 'project', { env: { DISABLE_GROWTHBOOK: '0' } })
+    settings(state, 'local', { env: { OTHER: 'unrelated' } })
+    expect(run(state, 50, { DO_NOT_TRACK: override }).stdout.includes('CACHE KEEPALIVE:')).toBe(override === undefined)
+  })
+
+  it('reads provider and host-managed switches from separate settings env layers', () => {
+    const state = sized('fetch-host-settings', 250_000)
+    settings(state, 'user', { env: { CLAUDE_CODE_USE_BEDROCK: '1' } })
+    settings(state, 'local', { env: { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' } })
+    expect(run(state, 50).stdout).toBe('')
+    expect(journal(state).at(-1)?.reason).toBe('native idle compaction applies')
   })
 })
 

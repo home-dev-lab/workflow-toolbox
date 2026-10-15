@@ -73,29 +73,45 @@ count as a set `DISABLE_AUTO_COMPACT` switch. The independent scalar `idleCompac
 managed settings, `.claude/settings.local.json`, `.claude/settings.json`, then user `settings.json`
 precedence; `false` disables the size gate. Confirmed missing files use vendor defaults;
 unreadable files, malformed JSON, non-object settings, and dangling policy links leave unresolved
-values unknown. Unknown eligibility inputs keep the native gate inactive. SDK entrypoints
-`sdk-cli`, `sdk-ts`, and `sdk-py` are known headless and exclude it; piped monitor stdout cannot
-classify other sessions. See the vendor [idleCompaction reference](https://code.claude.com/docs/en/settings-reference#idlecompaction)
+values unknown. Unknown eligibility inputs keep the native gate inactive. Plugin monitors run
+only in interactive CLI sessions, never in noninteractive `-p` mode; SDK entrypoints `sdk-cli`,
+`sdk-ts`, and `sdk-py` remain extra exclusions. See the vendor [plugins reference](https://code.claude.com/docs/en/plugins-reference#monitors),
+[idleCompaction reference](https://code.claude.com/docs/en/settings-reference#idlecompaction)
 and [environment variables](https://code.claude.com/docs/en/env-vars).
+
+Native compaction also requires feature-flag fetching. `DISABLE_GROWTHBOOK` and `DO_NOT_TRACK`
+block it at `1` or `true`, but not `0` or `false`. Any non-empty `DISABLE_TELEMETRY` or
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` blocks it, including `0` and `false`.
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_FOUNDRY`,
+`CLAUDE_CODE_USE_ANTHROPIC_AWS`, and `CLAUDE_CODE_USE_MANTLE` block fetching at `1` or `true`
+unless `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` is set. Undocumented boolean values leave
+eligibility unknown. These keys use the same per-key environment/settings precedence as the
+floor. Claude apps gateway sessions have no documented signal available to this monitor.
 
 Cache freshness is separate from attempt cadence. Cadence still uses the latest real-call or
 wake timestamp; freshness uses real calls and confirmed `refreshed` outcomes only. A due wake
 is skipped with `prompt cache freshness expired` after 60 minutes with one-hour-write evidence,
-or after five minutes with five-minute-only evidence. One-hour evidence anywhere retained wins
-over five-minute writes; unknown TTL preserves the existing wake behavior. A threshold below
+or after five minutes with five-minute-only evidence. Within the latest real call's model,
+retained one-hour evidence wins over five-minute writes; evidence from another model is discarded.
+Legacy evidence without a model key belongs to the latest model. Unknown TTL or an unknown
+latest real-call timestamp preserves the existing wake behavior; a later timestamped call
+restores normal expiry. A threshold below
 five minutes can refresh before a five-minute cache expires. These checks cover stale startup
 and sleep/resume. Synthetic `uncallable` outcomes do not renew freshness. A `pendingWake` older
 than one threshold period without an outcome is journaled `unresolved` and cleared; another
 attempt is possible only when the remaining gates allow it.
 
 State stores the latest real context and writer evidence for each known TTL with call-id/time
-provenance. Initial discovery and legacy backfill scan behind the newest call for writers,
-including earlier streamed records sharing its id. Normal polls refresh rewritten stop-id usage
-without counting new work. Journal `usage` retains its four fields; `cacheTtl` is a separate
+provenance and the model to which it belongs. Discovery scans the transcript in bounded chunks.
+Initial discovery and legacy backfill search older writers for the latest model. Normal polls
+collect all streamed records for the saved stop ID and newer calls, including interleaved writer
+records, without counting rewritten stop-id usage as new work. Unrelated older calls do not
+repopulate incremental evidence. Usage fields must be finite numbers; TTL counters must also be
+positive. Journal `usage` retains its four fields; `cacheTtl` is a separate
 outcome field. File-based managed locations are Linux `/etc/claude-code`, macOS
 `/Library/Application Support/ClaudeCode`, and Windows `%ProgramFiles%/ClaudeCode`.
 Launch-only settings, managed drop-ins, registry/MDM, and server-delivered policy are not resolved
-by this monitor. Availability of native feature flags and the effect of warm turns on the native
+by this monitor. Actual native feature-flag delivery and the effect of warm turns on the native
 idle timer remain unmeasured here.
 
 The monitor resolves the current transcript as

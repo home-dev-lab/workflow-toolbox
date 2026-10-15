@@ -32,7 +32,7 @@
   {
     "name": "cache-keepalive",
     "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-cache-keepalive.mjs",
-    "description": "Opt-in prompt-cache keepalive — refreshes an idle callable session before its provider cache expires",
+    "description": "On by default: prompt-cache keepalive — refreshes an idle callable session before its provider cache expires and yields to native idle compaction",
     "when": "always"
   },
   {
