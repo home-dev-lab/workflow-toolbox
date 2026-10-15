@@ -17,7 +17,7 @@ export function observeBlockedRun(runtime, current = null) {
   return true
 }
 
-export function persistBlockedSummary(runtime) {
+function persistBlockedSummary(runtime) {
   if (!runtime.blockedStop) return
   const file = join(runtime.options.dir, '.lane', 'summary.json')
   let summary = {}
