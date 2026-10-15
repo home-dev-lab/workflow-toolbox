@@ -1,16 +1,21 @@
 import { ESLint } from 'eslint'
 import { join, resolve } from 'node:path'
+import tseslint from 'typescript-eslint'
 import { measure } from './quality-changed-measure.mjs'
+import { functionEvidence } from './quality-changed-functions.mjs'
 
 export const ownerRules = {
   complexity: ['error', 10],
-  'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+  'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true, IIFEs: true }],
   '@typescript-eslint/no-explicit-any': 'error',
 }
 export function createLinter(root) {
-  return new ESLint({ cwd: root, overrideConfigFile: join(root, 'toolkit/eslint.config.mjs'),
+  return new ESLint({ cwd: root, overrideConfigFile: true,
     ignore: false, allowInlineConfig: false,
-    overrideConfig: [{ files: ['**/*.{mjs,js,ts,mts,cts}'], rules: ownerRules }] })
+    overrideConfig: [{ files: ['**/*.{mjs,cjs,jsx,js,tsx,ts,mts,cts}'],
+      languageOptions: { parser: tseslint.parser, parserOptions: { ecmaFeatures: { jsx: true } } },
+      plugins: { '@typescript-eslint': tseslint.plugin, owner: { rules: { function: functionEvidence } } },
+      rules: { ...ownerRules, 'owner/function': 'warn' } }] })
 }
 export async function lintText(eslint, root, file, text) {
   const absolute = join(root, file)

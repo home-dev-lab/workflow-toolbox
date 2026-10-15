@@ -1,7 +1,10 @@
+import { enclosingIdentity, functionCorrespondence, allowanceIdentity } from './quality-changed-functions.mjs'
+
 const patterns = {
   complexity: /^(.*?) has a complexity of (\d+)/,
   'max-lines-per-function': /^(.*?) has too many lines \((\d+)\)/,
 }
+const identityLabel = (scope, label) => scope.length ? '' : label
 function labelValue(message) {
   if (message.ruleId === '@typescript-eslint/no-explicit-any') return ['any', 'any', '1']
   const match = patterns[message.ruleId].exec(message.message)
@@ -16,18 +19,22 @@ export function measure(results, file, text) {
     if (!['complexity', 'max-lines-per-function', '@typescript-eslint/no-explicit-any'].includes(message.ruleId)) continue
     const match = labelValue(message)
     const line = lines[message.line - 1].trim().replace(/\s+/g, ' ')
-    const identity = JSON.stringify([match[1], line])
+    const scope = enclosingIdentity(result.messages, message)
+    const identity = JSON.stringify([scope.key, identityLabel(scope.key, match[1]), scope.key.length ? '' : line, scope.ordinal])
     const labels = rules[message.ruleId] ??= Object.create(null)
     ;(labels[identity] ??= []).push(Number(match[2]))
   }
   for (const labels of Object.values(rules)) for (const values of Object.values(labels)) values.sort((a, b) => b - a)
-  return { rules, fatal }
+  const functions = results.flatMap((result) => result.messages.filter((message) => message.ruleId === 'owner/function')
+    .map((message) => JSON.parse(message.message)))
+  return { rules, fatal, functions }
 }
 export const dominated = (subject, base) => subject.length <= base.length && subject.every((value, i) => value <= base[i])
-export function regressions(file, subject, base) {
+export function regressions(file, subject, base, currentFunctions, baseFunctions) {
   const problems = []
+  const correspondence = functionCorrespondence(currentFunctions, baseFunctions)
   for (const [rule, labels] of Object.entries(subject)) for (const [identity, values] of Object.entries(labels)) {
-    const allowed = base[rule]?.[identity] ?? []
+    const allowed = base[rule]?.[allowanceIdentity(identity, correspondence)] ?? []
     if (!dominated(values, allowed)) problems.push(`${file}: ${rule} ${identity} values=${JSON.stringify(values)} base=${JSON.stringify(allowed)}`)
   }
   return problems

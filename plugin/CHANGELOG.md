@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Lane integration now certifies the pending merge with the repository's quality entry against the target's original HEAD, aborting on failure before creating a merge commit. Forced integration and changelog-only conflict resolution use the same certification. Changed-code owner checks no longer honor `WT_QUALITY_CHANGED=skip`, cover CommonJS and JSX/TSX and immediately-invoked functions, distinguish enclosing function scopes, and judge moved files as added code. Cross-OS quality uses explicit first-parent history.
+
 ### Added
 
 - SDK pilots can wake their launching session through a dedicated, fenced SendMessage query when a Definition-of-done decision request is published. Parent identity and permission class are explicit launch flags; only the parent's `decide` invocation can bind a reading. Wake outcomes and usage are reported separately, and the request log remains the fallback signal.

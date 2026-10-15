@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -360,4 +360,42 @@ describe('lane integration', () => {
     expect(await integrateLane(options(f, { ciBranch: 'ci/dispatch-own', authorizeFile: join(f.root, 'authorized.json'), dispatch: 'cross-os.yml', runner })), f.stderr.join('\n')).toBe(0)
     expect(f.stdout).toContain('run id=42 url=https://example.test/actions/runs/42')
   })
+})
+
+function copyQualityModule(from: string, to: string, seen = new Set<string>()) {
+  if (seen.has(from)) return
+  seen.add(from); mkdirSync(dirname(to), { recursive: true }); cpSync(from, to)
+  for (const [, relative = ''] of readFileSync(from, 'utf8').matchAll(/\bfrom\s+'(\.{1,2}\/[^']+)'/g)) {
+    copyQualityModule(resolve(dirname(from), relative), resolve(dirname(to), relative), seen)
+  }
+}
+function installQuality(f: ReturnType<typeof fixture>) {
+  const toolkit = fileURLToPath(new URL('../../..', import.meta.url))
+  copyQualityModule(join(toolkit, 'scripts/quality-changed.mjs'), join(f.into, 'toolkit/scripts/quality-changed.mjs'))
+  copyQualityModule(join(toolkit, 'eslint.config.mjs'), join(f.into, 'toolkit/eslint.config.mjs'))
+  writeFileSync(join(f.into, 'toolkit/package.json'), JSON.stringify({ scripts: { quality: 'node scripts/quality-changed.mjs' } }))
+  symlinkSync(join(toolkit, 'node_modules'), join(f.into, 'toolkit/node_modules'), 'junction')
+  writeFileSync(join(f.into, '.gitignore'), '.lane/\nnode_modules\n')
+  git(f.into, 'add', '.'); git(f.into, 'commit', '-qm', 'quality entry')
+}
+it.each(['ordinary', 'changelog conflict', 'forced'] as const)('integration refuses a 41-line candidate before committing its merge: %s', async (mode) => {
+  const f = fixture(); installQuality(f)
+  if (mode === 'changelog conflict') {
+    writeFileSync(join(f.into, 'plugin/CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n- ours\n')
+    git(f.into, 'add', '.'); git(f.into, 'commit', '-qm', 'ours')
+    writeFileSync(join(f.lane, 'plugin/CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n- theirs\n')
+  }
+  writeFileSync(join(f.lane, 'plugin/oversized.mjs'), `function long() {\n${'console.log(1)\n'.repeat(39)}}\n`)
+  const head = git(f.into, 'rev-parse', 'HEAD')
+  const bases: (string | undefined)[] = []
+  const runner = (program: string, args: string[], runOptions: Record<string, unknown>) => {
+    if (program === 'pnpm') bases.push((runOptions.env as NodeJS.ProcessEnv).WT_QUALITY_BASE)
+    return command(program, args, { ...runOptions, env: { ...(runOptions.env as NodeJS.ProcessEnv), pnpm_config_verify_deps_before_run: 'false' } })
+  }
+  expect(await integrateLane(options(f, { force: mode === 'forced', runner })), f.stderr.join('\n')).toBe(1)
+  expect(git(f.into, 'rev-parse', 'HEAD'), 'a rejected candidate must not be merged').toBe(head)
+  expect(git(f.into, 'status', '--porcelain')).toBe('')
+  expect(f.stderr.join('\n')).toContain('max-lines-per-function')
+  expect(bases).toEqual([head])
+  expect(existsSync(f.archiveRoot)).toBe(false)
 })

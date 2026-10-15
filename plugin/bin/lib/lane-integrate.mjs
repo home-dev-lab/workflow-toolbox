@@ -7,6 +7,7 @@ import { assertArchiveOutsideWorktree, readWorktreeRetentionMarker } from './lif
 import { hardenedGitArgs } from './host/hardened-git.mjs'
 import { laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
 import { readSuiteLock } from './suite-lock.mjs'
+import { integrationQualityDirectory, certifyIntegration } from './host/integration-quality.mjs'
 
 const STEP_NAMES = ['preflight', 'commit', 'merge', 'archive', 'pre-remove-check', 'remove', 'ci-branch', 'push', 'dispatch']
 const COMMAND_ENV = process.env
@@ -167,16 +168,16 @@ function resolveConflictMarkers(content) {
 }
 
 function mergeLane(options, runner) {
-  const args = hardenedGitArgs(['-C', options.into, 'merge', '--no-ff', '-m', options.mergeSubject, options.laneBranch])
+  const args = hardenedGitArgs(['-C', options.into, 'merge', '--no-ff', '--no-commit', '-m', options.mergeSubject, options.laneBranch])
   const result = runner('git', args, { encoding: 'utf8', env: COMMAND_ENV })
-  if (resultCode(result) === 0) return
+  if (resultCode(result) === 0) { finishLaneMerge(options, runner); return }
   const conflicts = git(runner, options.into, ['diff', '--name-only', '--diff-filter=U']).split(/\r?\n/).filter(Boolean)
   if (conflicts.length === 1 && conflicts[0].split(path.sep).join('/') === 'plugin/CHANGELOG.md') {
     try {
       const changelog = path.join(options.into, ...conflicts[0].split('/'))
       fs.writeFileSync(changelog, resolveConflictMarkers(fs.readFileSync(changelog, 'utf8')))
       git(runner, options.into, ['add', '--', conflicts[0]])
-      git(runner, options.into, ['commit', '--no-edit'])
+      finishLaneMerge(options, runner)
       return
     } catch (error) {
       try { git(runner, options.into, ['merge', '--abort']) } catch { /* retain the resolution failure */ }
@@ -185,6 +186,23 @@ function mergeLane(options, runner) {
   }
   try { git(runner, options.into, ['merge', '--abort']) } catch { /* preserve the original conflict refusal */ }
   throw new Error(`merge conflicts outside plugin/CHANGELOG.md: ${conflicts.length ? conflicts.join(', ') : commandFailure('git', args, result)}`)
+}
+
+function finishLaneMerge(options, runner) {
+  try {
+    // A pending merge's HEAD is its actual first parent, even if preflight was earlier.
+    certifyIntegration(options, runner, git(runner, options.into, ['rev-parse', 'HEAD']).trim())
+    git(runner, options.into, ['commit', '--no-edit'])
+  } catch (error) {
+    try { git(runner, options.into, ['merge', '--abort']) } catch { /* preserve certification failure */ }
+    throw error
+  }
+}
+
+function mergeCheckedLane(options, runner) {
+  assertIntegrationTreeNotGated(options)
+  options.qualityDirectory = integrationQualityDirectory(options.into)
+  mergeLane(options, runner)
 }
 
 function commitLane(options, runner) {
@@ -431,7 +449,7 @@ export async function integrateLane(input) {
   const actions = [
     () => preflight(options, runner),
     () => commitLane(options, runner),
-    () => { assertIntegrationTreeNotGated(options); mergeLane(options, runner) },
+    () => mergeCheckedLane(options, runner),
     () => archiveLane(options, copy),
     () => { if (options.preRemoveCheck) run(runner, options.preRemoveCheck[0], [...options.preRemoveCheck.slice(1), options.dir], { cwd: options.into }) },
     () => removeLane(options, runner),

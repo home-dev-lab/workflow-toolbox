@@ -20,10 +20,9 @@ async function compare(eslint, root, base, subject, file) {
   const previous = file.added ? '' : git(root, ['show', `${base}:${file.source}`])
   const current = await lintText(eslint, root, file.path, text)
   const before = await lintText(eslint, root, file.path, previous)
-  return [...current.fatal, ...regressions(file.path, current.rules, before.rules)]
+  return [...current.fatal, ...regressions(file.path, current.rules, before.rules, current.functions, before.functions)]
 }
 export async function runCli(argv) {
-  if (process.env.WT_QUALITY_CHANGED === 'skip') { console.log('quality:changed SKIPPED (WT_QUALITY_CHANGED=skip)'); return 0 }
   try {
     const options = parseArgs(argv)
     const root = git(dirname(fileURLToPath(import.meta.url)), ['rev-parse', '--show-toplevel']).trim()

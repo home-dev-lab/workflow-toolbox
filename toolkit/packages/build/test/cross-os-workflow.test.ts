@@ -73,6 +73,16 @@ type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: s
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
   jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number; steps: Step[] } }
 }
+it('cross-OS owner certification has first-parent history and no environment bypass', () => {
+  const steps = workflow.jobs.matrix.steps
+  const quality = steps.filter((step) => step.run?.trim() === 'pnpm quality')
+  expect(quality).toHaveLength(1)
+  expect(quality[0]!.env?.WT_QUALITY_CHANGED).toBeUndefined()
+  expect(quality[0]!.env?.WT_QUALITY_BASE).toBe('HEAD^1')
+  const checkouts = steps.filter((step) => step.uses?.startsWith('actions/checkout@'))
+  expect(checkouts.length).toBeGreaterThan(0)
+  for (const checkout of checkouts) expect(checkout.with?.['fetch-depth']).toBe(2)
+})
 const job = workflow.jobs.matrix
 // A workflow without `include` entries (the pre-sharding `os: [...]` list) reads as no entries, so the tests below fail by assertion.
 const entries = job.strategy.matrix.include ?? []
