@@ -643,7 +643,7 @@ function scanScript(text, ctx, depth, hits, reparsed = false, inherited = new Ma
       const isRecursive = name === 'rm' && isRecursiveRm(words, c + 1)
       for (const j of targetsOf(words, c + 1)) {
         const target = words[j]
-        if (name === 'rm' && !words.slice(0, c).some((w) => commandName(w) === 'xargs')) invocations?.targets?.push(target)
+        if (name === 'rm') invocations?.targets?.push(target)
         if (invocations && (reparsed || NON_LITERAL.test(target))) invocations.nonLiteral = true
         const hit = name === 'rm' && isRecursive && isSubstitutionTarget(target, words.slice(c))
           ? { rule: 'substitution-target', target, rewrite: null }
@@ -706,7 +706,7 @@ export function hasNonLiteralRmInvocation(command) {
 
 /** Raw target words of direct rm invocations, including nested shell scripts. No expansion
  * or unquoting: consumers can distinguish active globs from quoted/escaped literal text.
- * xargs is deliberately excluded: its operands are not direct rm target words. */
+ * An rm run through xargs is included: the shell expands its glob operands before xargs runs. */
 export function listRmTargets(command) {
   const seen = { targets: [] }
   scanScript(command, { cwd: null, home: null, env: {} }, 0, [], false, new Map(), seen)

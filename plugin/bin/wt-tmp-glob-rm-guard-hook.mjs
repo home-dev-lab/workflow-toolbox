@@ -11,9 +11,12 @@
 // shared journal bookkeeping (and stdin input). Windows Bash is Git Bash: /tmp maps to user
 // temp; /c/Users/<u>/AppData/Local/Temp and $TMP/$TEMP are recognised, case-insensitive for
 // the Windows path. macOS $TMPDIR is /var/folders/.../T; /tmp symlinks to /private/tmp.
-// WHAT IT DOES NOT COVER: PowerShell Remove-Item; find /tmp -name 'b8-*' -delete; xargs rm;
-// F=/tmp/b8-*; rm $F; a glob below the first segment of a shared temp subdirectory; rmdir;
-// arbitrary wrappers, script files, or runtime variable values not visible in command text.
+// WHAT IT DOES NOT COVER: PowerShell Remove-Item; find /tmp ... -delete or -exec rm; a glob
+// expanded elsewhere (F=/tmp/b8-*; rm $F, for f in /tmp/b8-*, rm $(ls -d /tmp/b8-*)); a relative
+// target after cd /tmp; brace lists; a variable inside the first segment; a heredoc fed to a shell;
+// a glob below the first segment of a shared temp subdirectory; rmdir; arbitrary wrappers,
+// script files, or runtime variable values not visible in command text (including a temp name
+// assigned by an earlier command).
 
 import { readStdinJson } from './lib/host/read-stdin-json.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
@@ -75,14 +78,20 @@ function isTempRootGlob(target, assigned) {
   return !/[$`]/.test(first) && hasActiveGlob(first, active.slice(start, start + first.length))
 }
 
+// A temp name assigned in this command before the rm is scratch-owned for this text-only warning.
+// An assignment after the rm does not count: the rm ran against the shared value.
+function assignedBefore(command, target) {
+  const at = command.indexOf(target)
+  const before = at < 0 ? command : command.slice(0, at)
+  return new Set([...before.matchAll(TEMP_ASSIGNMENT)].map((match) => match[1]))
+}
+
 function main() {
   const input = readStdinJson()
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return
   const command = input.tool_input?.command
   if (typeof command !== 'string' || !command) return
-  // Any command-local assignment makes that name scratch-owned for this text-only warning.
-  const assigned = new Set([...command.matchAll(TEMP_ASSIGNMENT)].map((match) => match[1]))
-  const targets = [...new Set(listRmTargets(command).filter((target) => isTempRootGlob(target, assigned)))]
+  const targets = [...new Set(listRmTargets(command).filter((target) => isTempRootGlob(target, assignedBefore(command, target))))]
   if (targets.length === 0) return
   const namedTargets = targets.map((t) => `\`${t}\``).join(', ')
   const additionalContext =
@@ -95,7 +104,7 @@ function main() {
     guard: GUARD, decision: 'warned', session: input.session_id, agent: input.agent_id,
     class: 'temp-root-glob', evidence: { shape: 'first-segment-glob', targets: targets.length },
   })
-  emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext } } })
+  emitGuardNotice({ payload: input, reachSubagents: true, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext } } })
 }
 
 runFailOpenHook(GUARD, main)

@@ -67,6 +67,8 @@ const WARN = [
   "bash -c 'bash -c \"rm -rf /tmp/b8-*\"'",
   'command /bin/rm -f /tmp/b8-* > /tmp/output.log',
   'cat <<EOF\n$(rm -rf /tmp/b8-*)\nEOF',
+  'xargs rm -rf /tmp/b8-*',
+  'printf x | xargs rm -rf /tmp/b8-*',
 ]
 
 const SILENT = [
@@ -106,7 +108,6 @@ const SILENT = [
   "cat <<'EOF'\n$(rm -rf /tmp/b8-*)\nEOF",
   "find /tmp -name 'b8-*' -delete",
   'find /tmp -type f | xargs rm -f',
-  'xargs rm -rf /tmp/b8-*',
   'F=/tmp/b8-*; rm $F',
   'rmdir /tmp/b8-*',
   'rm -rf /tmp/$F*',
@@ -119,7 +120,6 @@ const ASSIGNED_TEMP = [
   ...TEMP_NAMES.flatMap((name) => ['', 'export ', 'local ', 'declare '].map((prefix) =>
     `${prefix}${name}=$(mktemp -d); rm -rf "$${name}"/*`)),
   'export TMP=$(mktemp -d) && rm -f $TMP/*.log',
-  'rm -rf $TEMP/*; TEMP=$(mktemp -d)',
   'TMPDIR=$(mktemp -d); rm -rf "${TMPDIR:?}"/*',
 ]
 const BRACKET_LITERALS = [
@@ -165,6 +165,7 @@ describe('warn-only temp-root rm glob guard', () => {
     'TMPDIRECTORY=$(mktemp -d); rm -rf $TMPDIR/b8-*',
     'TMP=$(mktemp -d); rm -rf $TMPDIR/b8-*',
     'TMPDIR=$(mktemp -d); rm -rf /tmp/b8-*',
+    'rm -rf $TEMP/*; TEMP=$(mktemp -d)',
   ])('F1 WARN unaffected temp root: %s', (command) => {
     const result = run(command)
     expect(result.status).toBe(0)
@@ -220,6 +221,14 @@ describe('warn-only temp-root rm glob guard', () => {
     expect(result.stdout).not.toContain('permissionDecision')
     if (mode === 'observe') expect(result.stdout).toBe('')
     else expect(result.stdout).toContain('additionalContext')
+  })
+
+  it('delivers the warning to a subagent, the agents that share temp prefixes', () => {
+    const result = run('rm -rf /tmp/b8-*', 'enforce', { agent_id: 'tmpglob-subagent' })
+    expect(result.status).toBe(0)
+    const output = JSON.parse(result.stdout).hookSpecificOutput
+    expect(output.additionalContext).toContain('tmp-glob-rm guard')
+    expect(output.permissionDecision).toBeUndefined()
   })
 
   it('journals warned shape-only evidence, without raw targets or command text', () => {
