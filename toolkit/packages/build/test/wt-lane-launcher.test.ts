@@ -32,6 +32,7 @@ const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
 const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
 const WATCHER = process.env.WT_LANE_WATCH_BINARY ?? join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
 const FAKE_OPENCODE = join(ROOT, 'toolkit/packages/build/test/fixtures/fake-opencode.mjs')
+const GATE_SECTION = '\n## Gates\npnpm test\n'
 const roots: string[] = []
 const spawnedWatchers: ChildProcess[] = []
 const spawnedChildren: ChildProcess[] = []
@@ -99,7 +100,7 @@ function fixture(script: string, watcherHostCensus = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-launcher-'))); roots.push(root)
   const dir = join(root, 'worktree'); const bin = join(root, 'bin'); const config = join(root, 'config')
   mkdirSync(join(dir, '.lane'), { recursive: true }); mkdirSync(bin); mkdirSync(config)
-  writeFileSync(join(dir, 'brief.md'), '# brief\n')
+  writeFileSync(join(dir, 'brief.md'), `# brief\n${GATE_SECTION}`)
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_OPENCODE)} opencode "$@"\n`)
   writeFileSync(join(bin, 'opencode.cmd'), `@echo off\r\n"${process.execPath}" "${FAKE_OPENCODE}" opencode %*\r\n`)
   writeFileSync(join(bin, 'vm_stat'), '#!/bin/sh\nprintf "Mach Virtual Memory Statistics: (page size of 4096 bytes)\\nPages free: 524288.\\n"\n')
@@ -516,13 +517,13 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(result.stdout).toContain(`brief=${brief}\n`)
     expect(result.stdout).toMatch(/brief_age=15m\d+s\n/)
     expect(result.stdout).toContain('brief_heading=# brief\n')
-    expect(result.stdout).toContain(`brief_sha256=${createHash('sha256').update('# brief\n').digest('hex')}\n`)
+    expect(result.stdout).toContain(`brief_sha256=${createHash('sha256').update(`# brief\n${GATE_SECTION}`).digest('hex')}\n`)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
   })
 
   it('prints and journals the sha256 of the exact brief bytes the worker obeys', () => {
-    const original = '# Original round\nfirst bytes\n'
+    const original = `# Original round\nfirst bytes\n${GATE_SECTION}`
     const replacement = '# Replacement round\nchanged after detach\n'
     const f = fixture('brief=${2#Read and execute the complete brief at }; brief=${brief%.}; cp "$brief" "$PWD/obeyed.md"')
     const brief = join(f.dir, 'brief.md')
@@ -1456,7 +1457,7 @@ const interval = setInterval(() => {
   it.skipIf(process.platform !== 'linux')('does not report an unattributed opencode process whose cwd is a staging lane [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('true', true)
     const staging = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
-    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), '# brief\n')
+    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), `# brief\n${GATE_SECTION}`)
     const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run'], { cwd: staging, stdio: 'ignore' })
     spawnSync('sleep', ['0.1'])
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
@@ -1466,7 +1467,7 @@ const interval = setInterval(() => {
   it.skipIf(process.platform !== 'linux')('ignores forged supervision records in staging lanes when attributing opencode processes [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('true', true)
     const staging = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
-    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), '# brief\n')
+    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), `# brief\n${GATE_SECTION}`)
     const supervision = join(staging, '.lane', 'supervision')
     mkdirSync(supervision, { recursive: true })
     const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run'], { cwd: f.dir, stdio: 'ignore' })
@@ -1482,7 +1483,7 @@ const interval = setInterval(() => {
   ])('does not report an unattributed opencode process using the %s --dir form for a staging lane [requires Linux /proc orphan enumeration]', (_form, args) => {
     const f = fixture('true', true)
     const staging = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
-    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), '# brief\n')
+    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), `# brief\n${GATE_SECTION}`)
     const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', ...args(staging)], { cwd: f.dir, stdio: 'ignore' })
     spawnSync('sleep', ['0.1'])
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
@@ -1554,7 +1555,7 @@ const interval = setInterval(() => {
     const f = fixture('true', true)
     const staging = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
     const outside = join(f.root, 'outside')
-    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), '# brief\n')
+    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), `# brief\n${GATE_SECTION}`)
     mkdirSync(outside); symlinkSync(outside, join(staging, 'escape'))
     const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run', '--dir', join(staging, 'escape', 'missing')], { cwd: f.dir, stdio: 'ignore' })
     spawnSync('sleep', ['0.1'])
@@ -1591,7 +1592,7 @@ const interval = setInterval(() => {
   it('single-quotes printed commands for spaces, apostrophes, and command substitutions', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const hostile = join(f.root, "work tree ' $(touch INJECTED)")
-    mkdirSync(hostile); mkdirSync(join(hostile, '.lane')); writeFileSync(join(hostile, 'brief.md'), '# brief\n')
+    mkdirSync(hostile); mkdirSync(join(hostile, '.lane')); writeFileSync(join(hostile, 'brief.md'), `# brief\n${GATE_SECTION}`)
     f.dir = hostile
     f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)

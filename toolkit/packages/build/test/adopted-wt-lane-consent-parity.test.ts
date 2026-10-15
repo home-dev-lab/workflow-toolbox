@@ -168,7 +168,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
 
 function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', extra: string[] = []) {
   const brief = join(f.project, 'brief.md')
-  writeFileSync(brief, '# brief\n')
+  writeFileSync(brief, '# brief\n## Gates\npnpm test\n')
   return runChild('adopted wt-lane launcher', [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], f.env)
 }
 
@@ -266,7 +266,7 @@ describe('adopted wt-lane consent resolver', () => {
     const f = fixture()
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const brief = join(f.project, 'brief.md')
-    writeFileSync(brief, '# adopted brief\n')
+    writeFileSync(brief, '# adopted brief\n## Gates\npnpm test\n')
     const old = new Date(Date.now() - 15 * 60_000)
     utimesSync(brief, old, old)
 
