@@ -2,13 +2,21 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import coverageModule, { disableChildProcessCoverage, enableChildProcessCoverage, ranWholeSuite, runIsFiltered } from '../child-process-coverage-provider.mjs'
 import { readTreeIdentity, writeCoverageStamp } from '../coverage-stamp.mjs'
 
 const roots: string[] = []
 
+// The provider reads WT_TEST_MODE from the environment when it stamps a run: any mode but `all` marks the run
+// partial. A blocking or quarantine suite exports another mode, so every case pins `all`; a case that needs another
+// mode passes it explicitly.
+beforeEach(() => {
+  vi.stubEnv('WT_TEST_MODE', 'all')
+})
+
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
