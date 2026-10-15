@@ -15,6 +15,7 @@ const hookInput = (tool_input: unknown, tool_name = 'SendMessage') => ({ tool_na
 const accountGate = () => createAccountGate({ launchEnv: {}, profileEnv: {}, log: () => {} })
 type Hook = (input: unknown, id?: string) => Promise<{ hookSpecificOutput: { permissionDecision: string } }>
 type WakeOptions = { hooks: { PreToolUse: Array<{ hooks: Hook[] }> }; abortController: AbortController }
+type WakeQuery = { options: WakeOptions; prompt: AsyncGenerator<{ message: { content: string } }> }
 const assistant = (content: unknown[], id = 'm1', output = 3) => ({ type: 'assistant', message: { id, model: 'test-model', usage: { input_tokens: 2, output_tokens: output, cache_creation_input_tokens: 4, cache_read_input_tokens: 5 }, content } })
 const result = (content: unknown, tool_use_id = 'send-1') => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id, content }] } })
 const send = (overrides = {}, id = 'send-1') => ({ type: 'tool_use', name: 'SendMessage', id, input: input(overrides) })
@@ -26,6 +27,8 @@ const queryFor = (messages: unknown[]) => ({ options }: { options: WakeOptions }
   }
 })()
 const run = (query: unknown, extra = {}) => wakeParent({ parentSession: parent, parentMode: 'bypass', ...request, query, accountGate, env: {}, log: () => {}, ...extra })
+const heldContent = "Cross-session message held for approval (recipient: test-parent). The recipient's session has different permission-mode settings, so their user must approve it before Claude sees it."
+const informational = (content = heldContent) => ({ type: 'system', subtype: 'informational', content, level: 'warning', uuid: 'notice-id', session_id: 'waker-session' })
 
 describe('parent wake body and validation', () => {
   it('composes only runner-owned wake instructions', () => {
@@ -213,7 +216,7 @@ describe('wake bounded drain', () => {
       await vi.advanceTimersByTimeAsync(1)
       await manager.finish()
       expect(calls, 'a hung consumer must prevent further launches').toBe(1)
-      expect(manager.receipts.map((r: { outcome: string }) => r.outcome)).toEqual(['not-delivered:timeout', 'not-delivered:aborted'])
+      expect(manager.receipts.map((r: { outcome: string }) => r.outcome)).toEqual(['not-delivered:timeout', 'not-delivered:prior-waker-stuck'])
     } finally { vi.useRealTimers() }
   })
 })
@@ -338,4 +341,194 @@ it('correlates the required hook input id when the optional callback id is absen
 it('denies inconsistent hook correlation ids', async () => {
   const hook = createWakeFence(parent, body())
   expect((await hook({ ...hookInput(input()), tool_use_id: 'other' }, 'send-1')).hookSpecificOutput.permissionDecision).toBe('deny')
+})
+
+describe('recipient delivery notices', () => {
+  it.each([[heldContent, 'held'], ['Cross-session message refused by recipient', 'recipient-notice']])('records a recipient informational notice: %s', async (content, outcome) => {
+    const receipt = await run(queryFor([assistant([send()]), result('{"success":true}'), informational(content)]))
+    expect(receipt.outcome).toBe(`not-delivered:${outcome}`)
+  })
+  it('retains a recipient informational notice seen before the correlated result', async () => {
+    expect((await run(queryFor([assistant([send()]), informational(), result('{"success":true}')]))).outcome).toBe('not-delivered:held')
+  })
+  it.each([
+    informational('Unrelated status update'),
+    { ...informational(), subtype: 'init' },
+    { ...informational(), type: 'assistant' },
+    { ...informational(), content: null },
+  ])('ignores an unrelated or differently shaped notice %j', async (notice) => {
+    expect((await run(queryFor([assistant([send()]), result('{"success":true}'), notice]))).outcome).toBe('transport-accepted')
+  })
+  it('ignores notices before admission and after a denied send', async () => {
+    expect((await run(queryFor([informational(), assistant([send()]), result('{"success":true}')]))).outcome).toBe('transport-accepted')
+    expect((await run(queryFor([assistant([send({ to: 'other' })]), informational()]))).outcome).toBe('not-delivered:denied')
+  })
+})
+
+describe('wake notice observation window', () => {
+  it('holds input open past the first result for the default three-second notice window', async () => {
+    vi.useFakeTimers()
+    try {
+      let inputEnded = false
+      const query = ({ options, prompt }: WakeQuery) => (async function* () {
+        await prompt.next()
+        const ended = prompt.next().then((value) => { inputEnded = value.done === true })
+        yield* queryFor([assistant([send()]), result('{"success":true}')])({ options })
+        yield { type: 'result', subtype: 'success' }
+        await new Promise((done) => setTimeout(done, 500))
+        yield informational()
+        await ended
+      })()
+      const receipt = run(query, { timeoutMs: 10_000 })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(inputEnded, 'the first result must not close input before the notice').toBe(false)
+      await vi.advanceTimersByTimeAsync(2_499)
+      expect(inputEnded).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(inputEnded).toBe(true)
+      expect((await receipt).outcome).toBe('not-delivered:held')
+    } finally { vi.useRealTimers() }
+  })
+})
+
+describe('wake notice observation window', () => {
+  it.each([25, 5_000])('bounds the configured %i ms hold by the wake timeout through manager options', async (noticeHoldMs) => {
+    vi.useFakeTimers()
+    try {
+      let inputEnded = false
+      const query = ({ options, prompt }: WakeQuery) => (async function* () {
+        await prompt.next()
+        const ended = prompt.next().then((value) => { inputEnded = value.done === true })
+        yield* queryFor([assistant([send()]), result('{"success":true}')])({ options })
+        await ended
+      })()
+      const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, log: () => {}, wakeOptions: { timeoutMs: 100, noticeHoldMs } })
+      manager.start(request)
+      const bound = Math.min(noticeHoldMs, 100)
+      await vi.advanceTimersByTimeAsync(bound - 1)
+      expect(inputEnded).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(inputEnded).toBe(true)
+      await manager.finish()
+      expect(manager.receipts).toHaveLength(1)
+    } finally { vi.useRealTimers() }
+  })
+})
+
+describe('wake notice observation window', () => {
+  it.each(['timeout', 'run-end'])('ends the input without a SendMessage on %s', async (reason) => {
+    vi.useFakeTimers()
+    try {
+      let inputEnded = false
+      const controller = new AbortController()
+      const query = ({ prompt }: WakeQuery) => (async function* () {
+        await prompt.next()
+        inputEnded = (await prompt.next()).done === true
+      })()
+      const receipt = run(query, { timeoutMs: 100, abortController: controller })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(inputEnded).toBe(false)
+      if (reason === 'run-end') controller.abort(reason)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(inputEnded).toBe(true)
+      expect((await receipt).outcome).toBe(`not-delivered:${reason === 'timeout' ? 'timeout' : 'aborted'}`)
+    } finally { vi.useRealTimers() }
+  })
+  it('does not open a stream for an already aborted wake', async () => {
+    const controller = new AbortController(); controller.abort('run-end')
+    const query = vi.fn(() => { throw new Error('unexpected query') })
+    expect((await run(query, { abortController: controller })).outcome).toBe('not-delivered:aborted')
+    expect(query).not.toHaveBeenCalled()
+  })
+})
+
+describe('correlated wake outcome precedence', () => {
+  it('lets a held notice during the abort drain supersede earlier transport acceptance', async () => {
+    const controller = new AbortController()
+    const query = ({ options }: WakeQuery) => (async function* () {
+      yield* queryFor([assistant([send()]), result('{"success":true}')])({ options })
+      await new Promise<void>((done) => controller.signal.addEventListener('abort', () => done(), { once: true }))
+      yield informational()
+    })()
+    expect((await run(query, { abortController: controller, timeoutMs: 5 })).outcome).toBe('not-delivered:held')
+  })
+  it.each([
+    ['transport-accepted', 'timeout'], ['transport-accepted', 'run-end'],
+    ['not-delivered:held', 'timeout'], ['not-delivered:held', 'run-end'],
+  ])('preserves the correlated outcome across %s then %s', async (outcome, reason) => {
+    const controller = new AbortController()
+    const query = ({ options }: WakeQuery) => (async function* () {
+      yield* queryFor([assistant([send()]), result('{"success":true}'), ...(outcome.endsWith(':held') ? [informational()] : [])])({ options })
+      if (reason === 'run-end') controller.abort(reason)
+      else await new Promise<void>((done) => controller.signal.addEventListener('abort', () => done(), { once: true }))
+    })()
+    expect((await run(query, { abortController: controller, timeoutMs: 5 })).outcome).toBe(outcome)
+  })
+  it('keeps account refusal ahead of a correlated outcome', async () => {
+    const gate = () => {
+      const account = accountGate()
+      return { ...account, summary: () => ({ ...account.summary(), verdict: 'mismatch' }) }
+    }
+    expect((await run(queryFor([assistant([send()]), result('{"success":true}')]), { accountGate: gate })).outcome).toBe('not-delivered:account')
+  })
+})
+
+it('refuses a held receipt as parent wake proof even with a parent decision', () => {
+  const summary = { dod_disputes: [{ requestId: request.requestId, resolution: { source: 'parent' } }], parent_wakes: [{ request_id: request.requestId, outcome: 'not-delivered:held' }] }
+  expect(() => assertParentWakeProof(summary)).toThrow('Fixture did not receive transport acceptance')
+})
+
+it.each(['timeout', 'run-end'])('denies a send during the abort drain on %s', async (reason) => {
+  const controller = new AbortController()
+  const decisions: string[] = []
+  const query = ({ options }: WakeQuery) => (async function* () {
+    await new Promise<void>((done) => controller.signal.addEventListener('abort', () => done(), { once: true }))
+    decisions.push((await options.hooks.PreToolUse[0]!.hooks[0]!(hookInput(input()), 'draining-send')).hookSpecificOutput.permissionDecision)
+  })()
+  const receipt = run(query, { abortController: controller, timeoutMs: 10 })
+  if (reason === 'run-end') setTimeout(() => controller.abort(reason), 5)
+  expect((await receipt).outcome).toBe(`not-delivered:${reason === 'timeout' ? 'timeout' : 'aborted'}`)
+  expect(decisions, 'the live consumer must be fenced before receipt deactivation').toEqual(['deny'])
+})
+
+it('labels requests after a stuck drain distinctly from run-end aborts', async () => {
+  vi.useFakeTimers()
+  try {
+    let calls = 0
+    const query = () => { calls += 1; return { [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }) } }
+    const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, log: () => {}, wakeOptions: { timeoutMs: 5 } })
+    manager.start(request)
+    manager.start({ ...request, requestId: `dodreq-${'b'.repeat(24)}` })
+    await vi.advanceTimersByTimeAsync(5_005)
+    expect(manager.receipts.map((receipt: { outcome: string }) => receipt.outcome)).toEqual(['not-delivered:timeout', 'not-delivered:prior-waker-stuck'])
+    await manager.finish()
+    manager.start({ ...request, requestId: `dodreq-${'c'.repeat(24)}` })
+    await manager.finish()
+    expect(manager.receipts[2].outcome).toBe('not-delivered:aborted')
+    expect(calls).toBe(1)
+  } finally { vi.useRealTimers() }
+})
+
+it('keeps normal run-end abort labels when finish precedes drain expiry', async () => {
+  vi.useFakeTimers()
+  try {
+    const query = () => ({ [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }) })
+    const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, log: () => {}, wakeOptions: { timeoutMs: 100 } })
+    manager.start(request)
+    manager.start({ ...request, requestId: `dodreq-${'b'.repeat(24)}` })
+    await vi.advanceTimersByTimeAsync(0)
+    const finished = manager.finish()
+    await vi.advanceTimersByTimeAsync(5_000)
+    await finished
+    expect(manager.receipts.map((receipt: { outcome: string }) => receipt.outcome)).toEqual(['not-delivered:aborted', 'not-delivered:aborted'])
+  } finally { vi.useRealTimers() }
+})
+
+it('documents the parent log watcher alongside the fast wake path', () => {
+  const text = readFileSync(new URL('../../../../plugin/skills/sdk-pilot/SKILL.md', import.meta.url), 'utf8')
+  const watch = text.split('## Watch')[1]!.replace(/\s+/gu, ' ')
+  expect(watch).not.toContain('no log watcher needs to be armed')
+  expect(watch).toMatch(/watch[^.]*log[^.]*`decision request:`/u)
+  expect(watch).toContain('not-delivered:held')
+  expect(watch).toContain('not-delivered:recipient-notice')
 })

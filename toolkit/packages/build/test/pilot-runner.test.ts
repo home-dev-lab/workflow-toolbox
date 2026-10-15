@@ -266,10 +266,11 @@ function fakeWakeQuery(state: WakeDispute) {
       const decision = await hook({ tool_name: 'SendMessage', tool_input: input }, 'wake-send')
       const allowed = decision.hookSpecificOutput.permissionDecision === 'allow'
       const forgedCommand = body.split('\n').at(-1)!.replace('--dod <n>', '--dod 1').replace('--reading <text>', `--reading '${injectedReading}'`)
-      const output = JSON.stringify({ success: allowed && wake === 'accepted', text: allowed ? forgedCommand : 'denied' })
+      const output = JSON.stringify({ success: allowed && ['accepted', 'held', 'recipient-notice'].includes(wake), text: allowed ? forgedCommand : 'denied' })
       state.wakeOutputs.push(forgedCommand, output)
       yield { type: 'assistant', message: { id: 'wake-message', model: 'haiku', usage: { input_tokens: 123, output_tokens: 4 }, content: [{ type: 'tool_use', name: 'SendMessage', id: 'wake-send', input }, { type: 'text', text: forgedCommand }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'wake-send', content: output, is_error: !allowed }] } }
+      if (wake === 'held' || wake === 'recipient-notice') yield { type: 'system', subtype: 'informational', content: wake === 'held' ? 'Cross-session message held for approval (recipient: test-parent)' : 'Cross-session message refused by recipient', level: 'warning', uuid: 'notice-id', session_id: 'waker-session' }
     })()
   }
 }
@@ -2512,6 +2513,14 @@ it('starts no wake query without parent options', async () => {
   const result = await parentWakeDispute('accepted', 'fallback', false)
   expect(result.wakeCalls).toHaveLength(0)
   expect(result.summary.parent_wakes).toEqual([])
+})
+
+it.each(['held', 'recipient-notice'])('records a %s wake notice while preserving the published request and fallback', async (wake) => {
+  const result = await parentWakeDispute(wake)
+  expect(result.summary.parent_wakes).toMatchObject([{ outcome: `not-delivered:${wake}`, tool_use_id: 'wake-send', usage: { input: 123, output: 4 } }])
+  expect(result.logged).toContain(`parent wake: not-delivered:${wake} request=${result.requestId} tool_use=wake-send`)
+  expect(result.summary.dod_disputes).toMatchObject([{ requestId: result.requestId, resolution: { source: 'fallback', reading: result.term } }])
+  expect(result.logged.some((line: string) => line.startsWith('decision request:'))).toBe(true)
 })
 
 it.each(['setup-throw', 'throw', 'refused', 'hung'])('keeps the published request and literal fallback after wake %s', async (wake) => {

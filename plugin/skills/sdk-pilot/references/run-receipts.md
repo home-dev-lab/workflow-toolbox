@@ -11,6 +11,10 @@ While the run is active, the lane's usage.json receipt is atomically refreshed f
 receipt. What is running uses those receipts for live phase and run totals; delegated lane usage is
 added when that lane ends because its CLI does not expose partial usage. Dedicated parent-waker
 assistant-message usage is reported separately under `summary.parent_wakes[]` and excluded from pilot totals.
+An approval-hold notice produces `not-delivered:held`; other recipient delivery notices produce
+`not-delivered:recipient-notice`, even if the earlier tool result reported success. Neither receipt
+establishes delivery. Requests blocked by a previous consumer that failed to drain record
+`not-delivered:prior-waker-stuck`, distinct from ordinary run-end `not-delivered:aborted` receipts.
 
 To total archived costs mechanically, run `node "${CLAUDE_PLUGIN_ROOT}/bin/wt-run-cost.mjs"
 <reports-directory>`. It totals complete runs by LITE/FULL/HARD route and provider family, lists every

@@ -84,7 +84,8 @@ is incomplete or failed. Do not infer completion from model prose: the runner re
 For receipt fields, live usage and archived cost totals, read
 [`references/run-receipts.md`](references/run-receipts.md).
 With the parent flags, each published decision request starts one short SDK waker that sends a
-SendMessage wake-up to this session; no log watcher needs to be armed. Its body means
+SendMessage wake-up to this session. Treat the wake as a fast path; keep watching the log for
+`decision request:`, the guaranteed request signal. Its body means
 `request <id> waiting, run decide`. Read the disputed criterion from your own card, choose the
 reading yourself, and invoke
 `wt-pilot-runner.mjs decide --run ... --request ... --dod ... --reading ...`. The runner-composed
@@ -106,9 +107,12 @@ that criterion for the rest of the run. The report and summary quote both.
 The waker's hook allows only the exact parent and runner-composed body, plus a `ToolSearch`
 for `select:SendMessage` (with an optional `max_results` from 1 to 50); a `content` field must equal the body. It runs without plugins or project settings and makes
 one attempt per request. `parent wake: transport-accepted` means only that the correlated tool
-result returned JSON `success:true`; only the receiver's transcript proves a wake. A mode-class
-mismatch is held silently by the harness even with `success:true`, so `decision request:` in
-the log remains the fallback signal. Without parent flags, only that log signal is available.
+result returned JSON `success:true`; only the receiver's transcript proves a wake. A subsequent
+delivery notice changes that outcome to `not-delivered:held` for approval holds or
+`not-delivered:recipient-notice` for other recipient notices. The waker keeps its input open for
+three seconds after the correlated tool result to observe notices, bounded by its overall timeout.
+The `decision request:` log watcher remains necessary even with parent flags; without them,
+the log is the only request signal.
 Summary `parent_wakes[]` records the waker's model, deduplicated assistant-message tokens,
 outcome, account verdict and, on a fence denial, the denied tool's name (never its input), separately
 from pilot totals; the log line then ends with `denied=<tool>`. Wake failures never change the decision

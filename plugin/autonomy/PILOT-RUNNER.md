@@ -261,7 +261,8 @@ loop continues to another plan round. Each criterion is escalated at most once p
   `--parent-session '<name> [<ref>]' --parent-mode <bypass|prompting>`, it also starts one dedicated
   SDK waker per published request, without waiting before decision polling. Copy the exact session
   identity from ListAgents; use `bypass` for a bypassPermissions parent and `prompting` for a
-  default/auto parent. A PreToolUse fence permits only SendMessage to that parent with the exact
+  default/auto parent. The mapping for acceptEdits and plan parents has not been verified.
+  A PreToolUse fence permits only SendMessage to that parent with the exact
   runner-composed wake body and ToolSearch `select:SendMessage`; other tools and changed fields
   are denied. The body carries runner-owned run/request ids, DoD numbers, the request-file path and the decide template,
   never lane-written text. The parent reads the criterion from its own card and chooses the reading;
@@ -272,10 +273,16 @@ loop continues to another plan round. Each criterion is escalated at most once p
   the log or request file. `decide` validates the ids against host state.
   A message is a wake-up, not a decision. The structured `parent wake: transport-accepted` log
   means only a correlated JSON `success:true` transport result, not receiver delivery. Permission
-  class mismatch is held silently by the harness, so the request log line remains the fallback.
+  class mismatch can hold the message for approval: an observed hold records `not-delivered:held`,
+  and any other recipient delivery notice records `not-delivered:recipient-notice`. Input remains
+  open for three seconds after the correlated tool result (configurable as `noticeHoldMs` in wake
+  options), within the overall wake cap. The parent must still watch for `decision request:` in
+  the log; a wake is only the fast notification path.
   Wakes reuse the runner's account gate, never re-enter admission, have a 120-second cap, are
   aborted at run end, and get at most five seconds of final settling. At most one is in flight;
-  none is retried. Failures do not affect the decision deadline or run outcome. Model, assistant-id
+  none is retried. A consumer that outlives the drain bound prevents later launches with
+  `not-delivered:prior-waker-stuck`; normal run-end cancellation records `not-delivered:aborted`.
+  Failures do not affect the decision deadline or run outcome. Model, assistant-id
   token totals, outcome, account verdict and any denied tool's name are recorded in
   `summary.parent_wakes[]` separately from pilot totals. Session-name reuse after a parent exits remains possible; the wake grants nothing.
 - **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading

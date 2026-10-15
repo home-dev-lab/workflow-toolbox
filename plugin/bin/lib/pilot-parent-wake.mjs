@@ -124,7 +124,7 @@ function newWakeState(requestId, model) {
 }
 
 // A tool name is model-chosen text: record it only when it has the shape of a tool identifier.
-const deniedToolName = (name) => typeof name === 'string' && /^[A-Za-z0-9_]{1,64}$/u.test(name) ? name : 'unknown'
+const deniedToolName = (name) => typeof name === 'string' && /^\w{1,64}$/u.test(name) ? name : 'unknown'
 
 function observeCall(state, { name, id, allowed }) {
   if (!state.active || !state.accepting) return false
@@ -157,27 +157,53 @@ function correlatedOutcome(state, block) {
   } catch { return 'not-delivered:transport-refused' }
 }
 
-function consumeWakeMessage(state, message) {
-  if (!state.active) return
-  recordWakeUsage(state, message)
-  if (message.type !== 'user' || !Array.isArray(message.message?.content)) return
-  for (const block of message.message.content) state.outcome ??= correlatedOutcome(state, block)
+function consumeRecipientNotice(state, message) {
+  if (message.type !== 'system' || message.subtype !== 'informational' || !state.admitted.size) return
+  if (typeof message.content !== 'string' || !message.content.startsWith('Cross-session message')) return
+  state.outcome = message.content.startsWith('Cross-session message held for approval')
+    ? 'not-delivered:held' : 'not-delivered:recipient-notice'
 }
 
-async function* wakePrompt(body) {
+function consumeWakeMessage(state, message, onResult) {
+  if (!state.active) return
+  recordWakeUsage(state, message)
+  consumeRecipientNotice(state, message)
+  if (message.type !== 'user' || !Array.isArray(message.message?.content)) return
+  for (const block of message.message.content) {
+    const outcome = correlatedOutcome(state, block)
+    if (outcome) { state.outcome ??= outcome; onResult() }
+  }
+}
+
+function createWakeHold(signal, holdMs) {
+  let timer; let started = false; let release
+  const done = new Promise((resolve) => { release = resolve })
+  const close = () => { clearTimeout(timer); signal.removeEventListener('abort', close); release() }
+  signal.addEventListener('abort', close, { once: true })
+  if (signal.aborted) close()
+  return { done, close, onResult() {
+    if (started || signal.aborted) return
+    started = true
+    timer = setTimeout(close, holdMs)
+  } }
+}
+
+async function* wakePrompt(body, hold) {
   yield { type: 'user', message: { role: 'user', content: body } }
+  await hold.done
 }
 
 async function consumeWake(config, state, controller, body, account) {
+  const hold = createWakeHold(controller.signal, config.noticeHoldMs ?? 3_000)
   try {
     const options = buildWakeOptions({ ...config, body, abortController: controller, observe: (call) => observeCall(state, call) })
-    const prompt = account.gatePrompt(wakePrompt(body))
+    const prompt = account.gatePrompt(wakePrompt(body, hold))
     const stream = await account.open(() => config.query({ prompt, options }), controller)
-    for await (const message of stream) consumeWakeMessage(state, message)
+    for await (const message of stream) consumeWakeMessage(state, message, hold.onResult)
     return state.outcome ?? endedWakeOutcome(state)
   } catch (error) {
     return state.outcome ?? (account.errorToRethrow(error) === null ? 'not-delivered:account' : 'not-delivered:error')
-  }
+  } finally { hold.close() }
 }
 function endedWakeOutcome(state) {
   if (state.denied) return 'not-delivered:denied'
@@ -191,10 +217,14 @@ function wakeReceipt(state, outcome, account) {
   return { request_id: state.request_id, model: state.model, models: [...new Set([...state.messages.values()].map((m) => m.model))], tool_use_id: state.tool_use_id, denied_tool: state.denied_tool, outcome, account: account?.summary() ?? null, usage }
 }
 
+function wakeDenialSuffix(receipt) {
+  return receipt.denied_tool ? ` denied=${receipt.denied_tool}` : ''
+}
+
 function logWakeReceipt(log, receipt) {
   try {
     if (receipt.outcome === 'not-sent:unsafe-value') { log('parent wake: not sent (unsafe-value)'); return }
-    log(`parent wake: ${receipt.outcome} request=${receipt.request_id} tool_use=${receipt.tool_use_id ?? 'none'}${receipt.denied_tool ? ` denied=${receipt.denied_tool}` : ''}`)
+    log(`parent wake: ${receipt.outcome} request=${receipt.request_id} tool_use=${receipt.tool_use_id ?? 'none'}${wakeDenialSuffix(receipt)}`)
   } catch { /* A diagnostic failure cannot withdraw a published decision request. */ }
 }
 
@@ -205,7 +235,6 @@ function validatedWakeBody(config) {
 
 function wakeOutcome(state, terminal, account) {
   if (REFUSED_ACCOUNTS.has(account.summary()?.verdict)) return 'not-delivered:account'
-  if (['not-delivered:timeout', 'not-delivered:aborted'].includes(terminal)) return terminal
   return state.outcome ?? terminal
 }
 
@@ -224,8 +253,12 @@ async function settleWake(config, state, controller, body, account, stopped) {
   if (controller.signal.aborted) return wakeOutcome(state, await stopped, account)
   const work = consumeWake(config, state, controller, body, account)
   const terminal = await Promise.race([stopped, work])
-  try { return wakeOutcome(state, terminal, account) }
+  const correlated = state.outcome
+  let outcome
+  try { outcome = wakeOutcome(state, terminal, account) }
   finally { if (controller.signal.aborted) await drainWake(work, config) }
+  // A drain can add a recipient notice to an existing receipt, but cannot turn a timed-out send into acceptance.
+  return correlated && outcome === correlated ? state.outcome : outcome
 }
 
 export async function wakeParent(config) {
@@ -272,14 +305,14 @@ export function createParentWakeManager(config) {
       if (!config.parentSession || seen.has(request.requestId)) return
       seen.add(request.requestId)
       pending = pending.then(async () => {
-        if (closed) { failed(request.requestId, 'aborted'); return }
+        if (closed) { failed(request.requestId, closed); return }
         controller = new AbortController()
-        const receipt = await wakeParent({ ...config, ...config.wakeOptions, ...request, abortController: controller, onDrainExpired: () => { closed = true } })
+        const receipt = await wakeParent({ ...config, ...config.wakeOptions, ...request, abortController: controller, onDrainExpired: () => { closed ||= 'prior-waker-stuck' } })
         receipts.push(receipt)
       }).catch(() => failed(request.requestId, 'error'))
     },
     async finish() {
-      closed = true
+      closed = 'aborted'
       controller?.abort('run-end')
       if (seen.size === 0) return
       await pending
