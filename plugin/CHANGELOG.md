@@ -7,7 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
-- SDK pilots can wake their launching session through a dedicated, fenced SendMessage query when a Definition-of-done decision request is published. Parent identity and permission class are explicit launch flags; only the parent's `decide` invocation can bind a reading. Wake outcomes and usage are reported separately, and the request log remains the fallback signal.
+- SDK pilots can wake their launching session through a dedicated, fenced SendMessage query when an unexpired Definition-of-done decision request is published. Parent identity includes its session ref unless an explicit bare-name reason is logged; launch checks the effective peer registry and card-id alphabet. Windows wakes include Git Bash and PowerShell commands. The input hold starts at the correlated send result or the turn result, including denied and no-call turns. Wake outcomes and usage are reported separately, and the request log remains the fallback signal. A wake is an unauthenticated pointer; only the parent's `decide` invocation can bind a reading.
 
 ### Changed
 

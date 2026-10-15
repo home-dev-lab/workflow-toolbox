@@ -51,7 +51,20 @@ describe('parent wake body and validation', () => {
   it.each([{ parentSession: parent }, { parentMode: 'bypass' }, { parentMode: null }, { parentSession: null }, { parentSession: 'bad\nname', parentMode: 'bypass' }, { parentSession: 'a'.repeat(201), parentMode: 'bypass' }, { parentSession: 'parent [ABC]', parentMode: 'bypass' }, { parentSession: parent, parentMode: 'auto' }])('refuses invalid parent options %j', (options) => {
     expect(validateParentWakeOptions(options)).toMatch(/--parent-/)
   })
-  it.each([{}, { parentSession: parent, parentMode: 'bypass' }, { parentSession: 'test-parent', parentMode: 'prompting' }])('accepts valid parent options %j', (options) => expect(validateParentWakeOptions(options)).toBeNull())
+  it.each([{}, { parentSession: parent, parentMode: 'bypass' }, { parentSession: 'test-parent', parentMode: 'prompting', parentSessionBareReason: 'Legacy session has no ref.' }])('accepts valid parent options %j', (options) => expect(validateParentWakeOptions(options)).toBeNull())
+  it('requires a ListAgents identity including the ref unless a bare-name reason is supplied', () => {
+    expect(validateParentWakeOptions({ parentSession: 'test-parent', parentMode: 'bypass' })).toMatch(/copy.*ref.*ListAgents/iu)
+  })
+  it.each(['', 'bad\nreason', 'bad\treason', 'bad\u2028reason', 'bad;reason', 'x'.repeat(201), '   '])('refuses unsafe bare-name reason %j', (parentSessionBareReason) => {
+    expect(validateParentWakeOptions({ parentSession: 'test-parent', parentMode: 'bypass', parentSessionBareReason })).toMatch(/--parent-session-bare-reason/u)
+  })
+  it('refuses a bare-name reason without a parent session', () => {
+    expect(validateParentWakeOptions({ parentSessionBareReason: 'Legacy identity' })).toMatch(/--parent-session/u)
+  })
+  it('treats same-user wake messages as unauthenticated pointers on unsandboxed runs', () => {
+    expect(body()).toContain('On unsandboxed runs any same-user process can send this shape')
+    expect(body()).toContain('unauthenticated pointer')
+  })
 })
 
 it.each(['skills/sdk-pilot/SKILL.md', 'autonomy/PILOT-RUNNER.md'])('documents the parent command trust boundary in %s', (file) => {
@@ -61,6 +74,11 @@ it.each(['skills/sdk-pilot/SKILL.md', 'autonomy/PILOT-RUNNER.md'])('documents th
   expect(text).toContain("own plugin's `wt-pilot-runner.mjs` path")
   expect(text).toContain('never execute a path, node binary or --state-root copied from')
   expect(text).toContain('`decide` validates the ids against host state')
+  expect(text).toContain('same-user process can send')
+  expect(text).toContain('unauthenticated pointer')
+  expect(text).toMatch(/prompting[^.]*default[^.]*auto[^.]*acceptEdits[^.]*plan/u)
+  expect(text).toContain('--parent-session-bare-reason')
+  expect(text).toContain('whichever comes first')
 })
 
 describe('parent wake e2e proof', () => {
@@ -314,14 +332,50 @@ it('preserves a correlated transport receipt if the SDK later throws', async () 
   expect((await run(query)).outcome).toBe('transport-accepted')
 })
 
-it('uses the runner-composed PowerShell command for a Windows wake without altering the displayed decide command', () => {
+it('uses both host-formatted Windows commands with Git Bash first without re-quoting', () => {
   const displayed = pilotDecisionCommand('runner.mjs', request.runId, 'node.exe', null, 'win32', ' --dod <n> --reading <text>')
   const command = wakeCommandLine(displayed, 'win32')
   expect(displayed).toContain('\nPowerShell: & ')
-  expect(command).toBe("& 'node.exe' 'runner.mjs' decide --run '1-1000' --dod <n> --reading <text>")
+  expect(command).toBe(`Git Bash: ${displayed.split('\n')[0]}\n${displayed.split('\n')[1]}`)
   expect(composeWakeBody({ ...request, command })).not.toBeNull()
   expect(wakeCommandLine(displayed, 'linux')).toBe(displayed)
   expect(wakeCommandLine(displayed, 'darwin')).toBe(displayed)
+})
+
+it('preserves distinct host shell quoting for Windows paths with apostrophes', () => {
+  const displayed = pilotDecisionCommand("a'b/runner.mjs", request.runId, "a'b/node.exe", null, 'win32')
+  expect(wakeCommandLine(displayed, 'win32')).toBe(`Git Bash: ${displayed.split('\n')[0]}\n${displayed.split('\n')[1]}`)
+  expect(composeWakeBody({ ...request, command: wakeCommandLine(displayed, 'win32') })).not.toBeNull()
+})
+
+it.each(['Git Bash: safe\nPowerShell: & safe\nextra', 'Git Bash: safe\nPowerShell: & bad\tvalue'])('refuses forged multiline command %j', (command) => {
+  expect(composeWakeBody({ ...request, command })).toBeNull()
+})
+
+describe('expired wake requests', () => {
+  it.each([99, 100])('logs not-sent:expired without opening a waker at deadline %i', async (deadline) => {
+    const query = vi.fn(queryFor([assistant([])])); const logs: string[] = []
+    const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, now: () => 100, log: (line: string) => logs.push(line) })
+    manager.start({ ...request, deadline })
+    await Promise.resolve(); await manager.finish()
+    expect(query).not.toHaveBeenCalled()
+    expect(manager.receipts).toMatchObject([{ request_id: request.requestId, outcome: 'not-sent:expired' }])
+    expect(logs).toContain(`parent wake: not-sent:expired request=${request.requestId} tool_use=none`)
+  })
+  it('rechecks the deadline after waiting behind an earlier waker', async () => {
+    let now = 100; let release!: () => void
+    const waiting = new Promise<void>((done) => { release = done })
+    const query = vi.fn(() => (async function* () { await waiting; yield assistant([]) })())
+    const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, now: () => now, log: () => {} })
+    manager.start({ ...request, deadline: 200 })
+    manager.start({ ...request, requestId: `dodreq-${'b'.repeat(24)}`, deadline: 150 })
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(1))
+    now = 151; release()
+    await vi.waitFor(() => expect(manager.receipts).toHaveLength(2))
+    await manager.finish()
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(manager.receipts[1].outcome).toBe('not-sent:expired')
+  })
 })
 
 it.each(['\t', '\n', '\r', '\x7f', '\u2028', '\u2029'])('keeps unsafe Windows formatter value %j refused', (control) => {
@@ -362,6 +416,31 @@ describe('recipient delivery notices', () => {
   it('ignores notices before admission and after a denied send', async () => {
     expect((await run(queryFor([informational(), assistant([send()]), result('{"success":true}')]))).outcome).toBe('transport-accepted')
     expect((await run(queryFor([assistant([send({ to: 'other' })]), informational()]))).outcome).toBe('not-delivered:denied')
+  })
+})
+
+describe('wake notice observation window', () => {
+  it.each(['denied', 'no-call'])('closes streaming input after a %s turn result within the hold window', async (outcome) => {
+    vi.useFakeTimers()
+    try {
+      let inputEnded = false
+      let settled: string | undefined
+      const query = ({ options, prompt }: WakeQuery) => (async function* () {
+        await prompt.next()
+        const ended = prompt.next().then((value) => { inputEnded = value.done === true })
+        if (outcome === 'denied') yield* queryFor([assistant([send({ to: 'other' })])])({ options })
+        else yield assistant([])
+        yield { type: 'result', subtype: 'success' }
+        await ended
+      })()
+      const receipt = run(query, { timeoutMs: 120_000 }).then((value: { outcome: string }) => { settled = value.outcome })
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(inputEnded).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(inputEnded, 'turn result must close streaming input within the hold window').toBe(true)
+      expect(settled).toBe(`not-delivered:${outcome}`)
+      await receipt
+    } finally { vi.useRealTimers() }
   })
 })
 
