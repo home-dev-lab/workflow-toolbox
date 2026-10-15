@@ -2184,6 +2184,10 @@ ${request.renderClaim(request.claim)}`;
   // docs-provenance.ts
   var DOCS_PROVENANCE = [
     {
+      sources: ["plugin/bin/wt-cache-keepalive.mjs", "plugin/bin/lib/cache-keepalive-policy.mjs", "plugin/bin/lib/host/cache-keepalive-settings.mjs", "plugin/bin/lib/host/cache-keepalive-transcript.mjs"],
+      docs: ["docs/public/known-issues.md", "plugin/monitors/README.md"]
+    },
+    {
       // AgentType probing + the leaf fence + lean routing (availability gates,
       // probe prompts, graceful degradation semantics).
       sources: [

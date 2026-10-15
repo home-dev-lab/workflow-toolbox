@@ -1,7 +1,6 @@
 {
   "fs/promises import": 1,
   "os import": 1,
-  "open": 1,
   "readFile": 1,
   "writeFile": 1,
   "appendFile": 1,

@@ -271,7 +271,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-cache-keepalive.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this opt-in cache refresh monitor, its transcript clock, provider thresholds, cap, and journal under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues and the monitor guide document this default-on cache refresh monitor, its compaction and freshness gates, settings inputs, cap, and journal.',
   },
   {
     script: 'plugin/bin/wt-observer.mjs',
@@ -719,6 +719,10 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
 ]
 
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
+  {
+    sources: ['plugin/bin/wt-cache-keepalive.mjs', 'plugin/bin/lib/cache-keepalive-policy.mjs', 'plugin/bin/lib/host/cache-keepalive-settings.mjs', 'plugin/bin/lib/host/cache-keepalive-transcript.mjs'],
+    docs: ['docs/public/known-issues.md', 'plugin/monitors/README.md'],
+  },
   {
     // AgentType probing + the leaf fence + lean routing (availability gates,
     // probe prompts, graceful degradation semantics).
