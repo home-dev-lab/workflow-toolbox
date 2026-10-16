@@ -150,8 +150,7 @@ function staleDateFixture() {
   }
 }
 
-describe('WT_GUARD_MODE=observe', () => {
-  const cases: Array<{
+const cases: Array<{
     hook: string
     make: () => { payload: Record<string, unknown>; env?: NodeJS.ProcessEnv }
     contains?: string
@@ -228,6 +227,7 @@ describe('WT_GUARD_MODE=observe', () => {
     },
   ]
 
+describe('WT_GUARD_MODE=observe', () => {
   for (const { hook, make, contains } of cases) {
     it(`${hook} journals mode=observe and emits no guard notice`, () => {
       const { payload, env } = make()

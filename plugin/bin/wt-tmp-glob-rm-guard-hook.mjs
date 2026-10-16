@@ -42,20 +42,33 @@ function targetShape(word, assigned) {
       active.push(glob)
     }
   }
-  for (let i = 0; i < word.length; i += 1) {
+  let i = -1
+  while (++i < word.length) {
     const c = word[i]
     if (c === quote) { quote = null; continue }
     if (!quote && (c === '"' || c === "'")) { quote = c; continue }
-    if (c === '\\' && quote !== "'" && i + 1 < word.length) {
-      const next = word[++i]
-      append(quote === '"' && !/[$`"\\\n]/.test(next) ? `\\${next}` : next)
-      continue
-    }
-    const ref = text === '' && quote !== "'" && c === '$' ? TEMP_REF.exec(word.slice(i)) : null
-    if (ref && !assigned.has(ref[1] ?? ref[2])) { append('/tmp'); i += ref[0].length - 1; continue }
+    const escaped = appendEscapedCharacter(word, i, quote, c, append)
+    if (escaped !== null) { i = escaped; continue }
+    const referenced = appendTempReference(word, i, text, quote, c, assigned, append)
+    if (referenced !== null) { i = referenced; continue }
     append(c, quote === null && /[*?[\]]/.test(c))
   }
   return { text, active }
+}
+
+function appendEscapedCharacter(word, i, quote, c, append) {
+  if (c === '\\' && quote !== "'" && i + 1 < word.length) {
+    const next = word[++i]
+    append(quote === '"' && !/[$`"\\\n]/.test(next) ? `\\${next}` : next)
+    return i
+  }
+  return null
+}
+
+function appendTempReference(word, i, text, quote, c, assigned, append) {
+  const ref = text === '' && quote !== "'" && c === '$' ? TEMP_REF.exec(word.slice(i)) : null
+  if (ref && !assigned.has(ref[1] ?? ref[2])) { append('/tmp'); i += ref[0].length - 1; return i }
+  return null
 }
 
 function hasActiveGlob(segment, active) {

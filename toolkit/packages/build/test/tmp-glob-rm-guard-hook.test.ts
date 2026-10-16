@@ -153,7 +153,9 @@ describe('warn-only temp-root rm glob guard', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
   })
+})
 
+describe('temp-root rm glob assignments and brackets', () => {
   it.each(ASSIGNED_TEMP)('F1 SILENT assigned temp name: %s', (command) => {
     const result = run(command)
     expect(result.status).toBe(0)
@@ -183,7 +185,9 @@ describe('warn-only temp-root rm glob guard', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('additionalContext')
   })
+})
 
+describe('temp-root rm glob parameter expansions', () => {
   it.each(REQUIRED_TEMP)('F3 WARN required temp reference: %s', (command) => {
     const result = run(command)
     expect(result.status).toBe(0)
@@ -206,7 +210,9 @@ describe('warn-only temp-root rm glob guard', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
   })
+})
 
+describe('temp-root rm glob warning delivery', () => {
   it('names every offending target as written and gives the usable remedy and probation exit', () => {
     const output = JSON.parse(run('rm -rf /tmp/b5-* /tmp/b7-* "$TMPDIR"/b8-*').stdout).hookSpecificOutput.additionalContext
     for (const text of ['/tmp/b5-*', '/tmp/b7-*', '"$TMPDIR"/b8-*', 'same short prefixes', 'mutation backups', 'T=$(mktemp -d)', 'rm -rf "${T:?}"', 'Warn-only', '20 live firings', 'wt-guard-journal-scan.mjs']) {
@@ -230,7 +236,9 @@ describe('warn-only temp-root rm glob guard', () => {
     expect(output.additionalContext).toContain('tmp-glob-rm guard')
     expect(output.permissionDecision).toBeUndefined()
   })
+})
 
+describe('temp-root rm glob journaling and hook contract', () => {
   it('journals warned shape-only evidence, without raw targets or command text', () => {
     run('rm -rf /tmp/private-target-*', 'enforce', { session_id: 'tmpglob-session', agent_id: 'tmpglob-agent' })
     const journal = readdirSync(root).filter((f) => f.endsWith('.ndjson')).map((f) => readFileSync(join(root, f), 'utf8')).join('')

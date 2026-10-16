@@ -577,6 +577,11 @@ function judgeTarget(target, ctx, vars, mayBeUnset, positionals) {
   return null
 }
 
+function recordRmTarget(name, invocations, target, reparsed) {
+  if (name === 'rm') invocations?.targets?.push(target)
+  if (invocations && (reparsed || NON_LITERAL.test(target))) invocations.nonLiteral = true
+}
+
 function scanScript(text, ctx, depth, hits, reparsed = false, inherited = new Map(), invocations = null) {
   if (depth > 8) return
   const source = heredocSource(text)
@@ -643,8 +648,7 @@ function scanScript(text, ctx, depth, hits, reparsed = false, inherited = new Ma
       const isRecursive = name === 'rm' && isRecursiveRm(words, c + 1)
       for (const j of targetsOf(words, c + 1)) {
         const target = words[j]
-        if (name === 'rm') invocations?.targets?.push(target)
-        if (invocations && (reparsed || NON_LITERAL.test(target))) invocations.nonLiteral = true
+        recordRmTarget(name, invocations, target, reparsed)
         const hit = name === 'rm' && isRecursive && isSubstitutionTarget(target, words.slice(c))
           ? { rule: 'substitution-target', target, rewrite: null }
           : judgeTarget(target, { ...ctx, cwd }, vars, mayBeUnset, positionals)

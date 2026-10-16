@@ -445,18 +445,6 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'find . -newermt "5 minutes ago"' },
       }
-    case 'wt-tmp-glob-rm-guard-hook.mjs':
-      return {
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'rm -rf /tmp/b8-*' },
-      }
-    case 'wt-git-commit-backtick-guard-hook.mjs':
-      return {
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'git commit -m "the default `stretch` applied"' },
-      }
     case 'wt-isolated-spawn-report-path-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
@@ -535,6 +523,25 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_response: {
           content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
         },
+      }
+    default:
+      return supplementalPayloadFor(file)
+  }
+}
+
+function supplementalPayloadFor(file: string): unknown {
+  switch (file) {
+    case 'wt-tmp-glob-rm-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /tmp/b8-*' },
+      }
+    case 'wt-git-commit-backtick-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m "the default `stretch` applied"' },
       }
     default:
       throw new Error(`No synthetic payload defined for ${file}`)
