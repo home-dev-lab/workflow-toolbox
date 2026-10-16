@@ -34,8 +34,8 @@ without the variable keeps every refusal.
 This uses an environment variable because the host ignores plugin options from
 project settings. Project `env` values apply once the folder is trusted. There
 is no plugin option for this list. The hooks module has no Node.js globals, so
-it reads the variable through the host's environment API each time a spawn or
-a refusal needs it, never at load time.
+it reads the variable through the host's environment API when a call matches a
+before-act rule, never at load time. A disabled engine reads nothing.
 
 While the engine is enabled, every SessionStart (including resume, clear, and
 compact) with a non-empty list prints
@@ -44,18 +44,29 @@ with the configured names. An empty or absent list, or a disabled engine,
 prints no such line.
 
 Types are learned from `agent.spawn`, including workflow agents and resumed
-agents. After a module reload, a subagent or teammate spawned earlier can be
+agents, whether or not the setting is present. Spawn arrival order determines
+which completed report wins, and recording never waits on configuration. Calls
+from a resume identity keep their refusals while any resume for that id is
+starting. After a module reload, a subagent or teammate spawned earlier can be
 resolved through `$.agent.list()`. Workflow agents are not in that list, so
 one spawned before the module loaded stays subject to refusal unless a later
 spawn or resume supplies its type. Identity tracking keeps up to 256 identities,
 dropping the earliest recorded first; an evicted identity also needs this fallback.
-Only positive lookups are cached. Concurrent lookups for one identity share a
-request; unavailable, missing, or timed-out types stay refused and are retried
-on the next refusable call. Newer spawn evidence takes precedence over an older
-lookup. Once a newer environment read has applied, older reads cannot restore
-stale settings. Learned identities reset only when the parsed set of configured
-types changes.
-Each waived refusal is logged once for that call.
+Only non-empty string types are cached. Concurrent lookups for one identity
+share a request, with at most 32 distinct identities in flight; overflow keeps
+the refusal without another request. Failed, empty, or timed-out lookups back
+off for 1 second, doubling after each failure to a 60-second cap. Success clears
+the backoff. Failure counts and deadlines each retain up to 256 identities,
+dropping the earliest recorded first. Lookups only fill gaps: they cannot
+overwrite spawn evidence or record while a resume is starting.
+
+Immediately before selecting the refusal or starting the act, one synchronous
+decision checks the current parsed set and current type evidence. A waiver
+requires a non-main call, a non-empty configured set containing its recorded
+type, and no spawn in flight for that id. Stale or failed environment reads
+keep refusals. Older reads cannot overwrite newer applied settings; learned
+types survive setting changes because membership is checked at the decision.
+Each waived refusal is logged once for that call, without awaiting the log.
 
 ## Delivery and lifecycle
 

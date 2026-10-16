@@ -13,8 +13,9 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
-import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType, rememberAgentType,
-  pendingAgentType, beginAgentLookup, finishAgentLookup, recordAgentType, forgetAgentType } from './agent-types.js';
+import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType,
+  pendingAgentType, beginAgentLookup, finishAgentLookup, recordAgentType,
+  agentSpawning, beginAgentSpawn, finishAgentSpawn } from './agent-types.js';
 import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
   mergeFlightHealth, noteFlightCall, resetFlightRecorder, disableFlightRecorder } from './flight-recorder.js';
 
@@ -1126,13 +1127,14 @@ function configureReserve(options) {
 }
 
 /** @type {import('claude-code').Register} */
-export const register = (on, options, clock = Date.now) => {
+export const register = (on, options, clock = Date.now, agentClock = Date.now) => {
   token = newToken();
   activityProfile = null;
   activityWrites.clear();
   pendingActivity.clear();
   activityRetryAt = 0;
   triggerClock = clock;
+  lookupClock = agentClock;
   enabled = options?.enabled === true;
   resetAgentTypes();
   agentTypeSetting = UNREAD;
@@ -1151,66 +1153,75 @@ export const register = (on, options, clock = Date.now) => {
 };
 
 let triggerClock = Date.now;
+let lookupClock = Date.now;
 
 // The hooks module runs without Node.js globals, and register() receives no $: the project's settings env reaches it
-// only through the host's environment API, called inside a hook. The list is therefore read when a spawn or a refusal
-// needs it, and the learned types are reset whenever the parsed set changes.
+// only through the host's environment API, called inside a hook. Refusable calls gather configuration;
+// spawn evidence is learned independently, and only the adjacent-to-act decision grants a waiver.
 const UNREAD = Symbol('unread');
 let agentTypeSetting = UNREAD;
 let agentTypeRead = 0;
 let agentTypeApplied = 0;
 async function agentTypeOptOutActive($) {
   const ticket = ++agentTypeRead;
-  let value;
-  try { value = await hostCall($, $.env.get('WT_ROD_NO_REFUSE_AGENT_TYPES')); } catch { value = undefined; }
-  if (ticket < agentTypeApplied) return agentTypeOptOutConfigured();
+  let value, fresh = true;
+  try { value = await hostCall($, $.env.get('WT_ROD_NO_REFUSE_AGENT_TYPES')); } catch { fresh = false; }
+  if (ticket < agentTypeApplied) return false;
   agentTypeApplied = ticket;
   if (value !== agentTypeSetting) {
     agentTypeSetting = value;
     configureAgentTypes(value);
   }
-  return agentTypeOptOutConfigured();
+  return fresh;
 }
 
 async function agentSpawnEvent($, e, next) {
   if (!enabled) return next(e);
-  const active = agentTypeOptOutActive($).catch(() => false);
-  const result = await next(e);
-  let id;
+  let resume;
+  try { resume = e.resume?.agentId; } catch { /* Unknown resume cannot supply evidence. */ }
+  const ticket = beginAgentSpawn(resume);
   try {
-    if (!result || result.deny !== undefined) return result;
-    id = result.agentId ?? e.resume?.agentId;
-    if (await active && agentTypeOptOutConfigured()) recordAgentType(id, e.subagentType);
-  } catch { forgetAgentType(id); }
-  return result;
+    const result = await next(e);
+    recordSpawnResult(e, result, ticket);
+    return result;
+  } finally { finishAgentSpawn(ticket); }
+}
+
+function recordSpawnResult(e, result, ticket) {
+  let id = ticket.id;
+  try {
+    id = result?.agentId ?? ticket.id;
+    if (!result || result.deny !== undefined) { recordAgentType(id, null, ticket); return; }
+    recordAgentType(id, e.subagentType, ticket);
+  } catch { recordAgentType(id, null, ticket); }
 }
 
 async function lookupAgentType($, id, entry) {
-  const version = entry.version;
   let type = null;
   try { type = (await hostCall($, $.agent.list())).find((agent) => agent.id === id)?.type ?? null; }
-  catch { /* Missing evidence is retried on the next refusable call. */ }
-  if (pendingAgentType(id) !== entry) return knownAgentType(id);
-  if (entry.version !== version) { finishAgentLookup(id, entry); return knownAgentType(id); }
-  if (typeof type === 'string' && type) rememberAgentType(id, type);
-  finishAgentLookup(id, entry);
-  return type;
+  catch { /* Missing evidence starts a bounded exponential retry delay. */ }
+  finishAgentLookup(id, entry, type, lookupClock());
 }
 
-async function refusalsForAgent($, e, before) {
-  if (!before.length || agentLoop(e.agentId) === MAIN || !(await agentTypeOptOutActive($))) return before;
-  let type = knownAgentType(e.agentId);
-  if (type === undefined) {
-    let entry = pendingAgentType(e.agentId);
-    if (!entry) {
-      entry = beginAgentLookup(e.agentId);
-      entry.promise = lookupAgentType($, e.agentId, entry);
-    }
-    type = await entry.promise;
+// Evidence only: refreshes the setting and, when the type is unknown, starts or joins a lookup. It decides nothing.
+async function gatherAgentEvidence($, e, before) {
+  if (!before.length || agentLoop(e.agentId) === MAIN) return;
+  const fresh = await agentTypeOptOutActive($);
+  if (!fresh || !agentTypeOptOutConfigured() || agentSpawning(e.agentId) || knownAgentType(e.agentId) !== undefined) return;
+  let entry = pendingAgentType(e.agentId);
+  if (!entry) {
+    entry = beginAgentLookup(e.agentId, lookupClock());
+    if (entry) entry.promise = lookupAgentType($, e.agentId, entry);
   }
-  if (!neverRefuseType(type)) return before;
-  await progress($, `wt-rules-on-demand: waiving before-act refusal for agent type ${type}; serving ${before.map((rule) => rule.name).join(', ')} with the result`);
-  if ((knownAgentType(e.agentId) ?? null) !== type) return before;
+  if (entry) await entry.promise;
+}
+
+// The only waiver decision: synchronous, from current state, with nothing awaited between it and the act.
+function decideAgentRefusals($, e, before) {
+  if (!before.length || agentLoop(e.agentId) === MAIN || !agentTypeOptOutConfigured() || agentSpawning(e.agentId)) return before;
+  const type = knownAgentType(e.agentId);
+  if (type === undefined || !neverRefuseType(type)) return before;
+  void progress($, `wt-rules-on-demand: waiving before-act refusal for agent type ${type}; serving ${before.map((rule) => rule.name).join(', ')} with the result`);
   return [];
 }
 
@@ -1768,9 +1779,11 @@ async function toolCallWork($, e, next) {
   for (const pending of inputlessSteps($, e, rules, budget, slice, triggerErrors)) await pending;
   const beforeMatched = new Set();
   const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
-  const before = await refusalsForAgent($, e, beforeRules(chosen, ctx, beforeMatched));
+  const candidates = beforeRules(chosen, ctx, beforeMatched);
+  await gatherAgentEvidence($, e, candidates);
   await journal($, [], loop, [], [], [], { triggerErrors: uniqueTriggerErrors(triggerErrors) });
   if (budget.exhausted) await progress($, exhaustionNotice(budget));
+  const before = decideAgentRefusals($, e, candidates);
   const plan = before.length ? refusalSteps($, ctx, before, e, loop, admission)
     : toolResultSteps($, { ctx, e, loop, admission, slice, budget }, next, rules, chosen, measured);
   let step = plan.next();
