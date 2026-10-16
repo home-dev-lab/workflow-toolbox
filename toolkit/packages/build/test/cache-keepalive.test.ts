@@ -520,7 +520,7 @@ describe('cache keepalive stop-id TTL and platform policy locations', () => {
 })
 
 // Counts the bytes callsSince reads through the real file handle, in a separate process.
-function scanReads(transcriptPath: string, stopId: string) {
+function scanReads(transcriptPath: string, stopId: string | null, change?: { append?: string, rewrite?: string }) {
   const url = pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-transcript.mjs')).href
   const script = `import fs from 'node:fs/promises'
     import { syncBuiltinESMExports } from 'node:module'
@@ -533,13 +533,29 @@ function scanReads(transcriptPath: string, stopId: string) {
     }
     syncBuiltinESMExports()
     const host = await import(${JSON.stringify(url)})
-    const { size } = await fs.stat(${JSON.stringify(transcriptPath)})
-    const result = await host.callsSince(${JSON.stringify(transcriptPath)}, ${JSON.stringify(stopId)}, false)
-    console.log(JSON.stringify({ bytesRead, size, calls: result.calls.map((call) => call.id), oneHour: result.evidence.oneHour?.callId ?? null }))`
+    const file = ${JSON.stringify(transcriptPath)}, stopId = ${JSON.stringify(stopId)}
+    let result = await host.callsSince(file, stopId, false)
+    const initialBytes = bytesRead, modes = [result.mode], change = ${JSON.stringify(change) ?? 'undefined'}
+    if (change) {
+      if (change.append !== undefined) await fs.appendFile(file, change.append)
+      if (change.rewrite !== undefined) await fs.writeFile(file, change.rewrite)
+      bytesRead = 0
+      result = await host.callsSince(file, stopId, { cursor: result.cursor })
+      modes.push(result.mode)
+      const incrementalBytes = bytesRead
+      const next = await host.callsSince(file, stopId, { cursor: result.cursor })
+      modes.push(next.mode)
+      bytesRead = incrementalBytes
+    }
+    const { size } = await fs.stat(file)
+    console.log(JSON.stringify({ bytesRead, initialBytes, size, modes, reset: result.reset,
+      calls: result.calls.map((call) => call.id), evidence: result.evidence, cursor: result.cursor,
+      oneHour: result.evidence.oneHour?.callId ?? null }))`
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { encoding: 'utf8' })
   expect(result.stderr).toBe('')
   expect(result.status).toBe(0)
-  return JSON.parse(result.stdout) as { bytesRead: number, size: number, calls: string[], oneHour: string | null }
+  return JSON.parse(result.stdout) as { bytesRead: number, initialBytes: number, size: number, calls: string[],
+    oneHour: string | null, evidence: object, modes: string[], reset: boolean, cursor: { offset: number, size: number } }
 }
 
 function managedReadPaths(platform: string, env = {}) {
@@ -614,13 +630,15 @@ describe('cache keepalive model-scoped evidence', () => {
     expect(journal(state).at(-1)?.reason).toBe('prompt cache freshness expired')
   })
 
-  it('assigns legacy evidence without a model key to the latest model', () => {
-    const state = sized('legacy-model', 10_000, {}, 'claude-opus-4-6')
+  it('migrates legacy evidence using its writer rather than the latest model', () => {
+    const state = sized('legacy-model', 10_000)
     save(state, { lastRealId: 'baseline', lastRealAtMs: 0, lastModel: 'claude-sonnet-4-5',
-      cacheEvidence: { oneHour: { callId: 'legacy-writer', atMs: 0 } } })
-    expect(run(state, 50).stdout).toContain('CACHE KEEPALIVE:')
+      cacheEvidence: { oneHour: { callId: 'baseline', atMs: 0 } } })
+    append(state, assistant('b', 'claude-opus-4-6', 120, { ...FIVE, input_tokens: 9_999 }))
+    expect(run(state, 170).stdout).toBe('')
+    expect(journal(state).at(-1)?.reason).toBe('prompt cache freshness expired')
     expect(saved(state)).toMatchObject({ cacheEvidenceModel: 'claude-opus-4-6',
-      cacheEvidence: { oneHour: { callId: 'legacy-writer', atMs: 0 } } })
+      cacheEvidence: { fiveMinute: { callId: 'b', atMs: 120 * 60_000 } } })
   })
 })
 
@@ -660,29 +678,32 @@ describe('cache keepalive unknown freshness and malformed usage', () => {
   })
 })
 
+// Documented on/off and set-or-unset spellings, with the expected wake for each.
+const FETCH_SWITCH_CASES = [
+  ['DISABLE_GROWTHBOOK', '1', true], ['DISABLE_GROWTHBOOK', 'true', true],
+  ['DISABLE_GROWTHBOOK', '0', false], ['DISABLE_GROWTHBOOK', 'false', false],
+  ['DISABLE_GROWTHBOOK', '', false],
+  ['DISABLE_TELEMETRY', '1', true], ['DISABLE_TELEMETRY', '0', true],
+  ['DISABLE_TELEMETRY', 'false', true], ['DISABLE_TELEMETRY', '', false],
+  ['DO_NOT_TRACK', '1', true], ['DO_NOT_TRACK', 'true', true],
+  ['DO_NOT_TRACK', '0', false], ['DO_NOT_TRACK', 'false', false],
+  ['DO_NOT_TRACK', '', false],
+  ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1', true],
+  ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '0', true],
+  ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'false', true],
+  ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '', false],
+  ['DO_NOT_TRACK', 'maybe', true], ['DISABLE_GROWTHBOOK', 'maybe', true],
+] as const
+
 describe('cache keepalive feature-flag fetching prerequisites', () => {
-  it.each([
-    ['DISABLE_GROWTHBOOK', '1', true], ['DISABLE_GROWTHBOOK', 'true', true],
-    ['DISABLE_GROWTHBOOK', '0', false], ['DISABLE_GROWTHBOOK', 'false', false],
-    ['DISABLE_GROWTHBOOK', '', true],
-    ['DISABLE_TELEMETRY', '1', true], ['DISABLE_TELEMETRY', '0', true],
-    ['DISABLE_TELEMETRY', 'false', true], ['DISABLE_TELEMETRY', '', false],
-    ['DO_NOT_TRACK', '1', true], ['DO_NOT_TRACK', 'true', true],
-    ['DO_NOT_TRACK', '0', false], ['DO_NOT_TRACK', 'false', false],
-    ['DO_NOT_TRACK', '', true],
-    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '1', true],
-    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '0', true],
-    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'false', true],
-    ['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', '', false],
-    ['DO_NOT_TRACK', 'maybe', true], ['DISABLE_GROWTHBOOK', 'maybe', true],
-  ] as const)('uses documented fetching semantics for %s=%j (wake=%s)', (key, value, wake) => {
+  it.each(FETCH_SWITCH_CASES)('uses documented fetching semantics for %s=%j (wake=%s)', (key, value, wake) => {
     expect(run(sized('fetch-switch', 250_000), 50, { [key]: value }).stdout.includes('CACHE KEEPALIVE:')).toBe(wake)
   })
 
   it.each(PROVIDER_KEYS)('handles %s on, off, unknown and host-managed', (key) => {
     for (const [value, managed, wake] of [
       ['1', undefined, true], ['true', undefined, true], ['0', undefined, false],
-      ['false', undefined, false], ['', undefined, true], ['maybe', undefined, true],
+      ['false', undefined, false], ['', undefined, false], ['maybe', undefined, true],
       ['1', '1', false], ['maybe', '1', false],
     ] as const) {
       const state = sized('fetch-provider', 250_000)
@@ -756,5 +777,259 @@ describe('cache keepalive unreadable managed aliases', () => {
     const host = await import(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-settings.mjs')).href)
     expect(await host.compactionSettings(state.configDir, state.projectDir, { managedFile: file, env: {} }))
       .toMatchObject({ enabled: null })
+  })
+})
+
+function nonAssistantHistory(records: number) {
+  return Array.from({ length: records }, (_, index) => JSON.stringify({
+    type: ['user', 'tool_result', 'progress'][index % 3], content: 'x'.repeat(1000),
+  })).join('\n') + '\n'
+}
+
+function withoutTimestamp(id: string, atMinutes: number) {
+  const record = JSON.parse(assistant(id, 'claude-sonnet-4-5', atMinutes)) as Record<string, unknown>
+  delete record.timestamp
+  return JSON.stringify(record)
+}
+
+function registerCursorAppendLocks() {
+  it('reads only appended bytes plus one chunk after user/tool/progress-only history', () => {
+    const state = scaffold('non-assistant-history')
+    writeFileSync(state.transcriptPath, nonAssistantHistory(3000) + assistant('a', 'claude-sonnet-4-5', 0) + '\n')
+    const appended = JSON.stringify({ type: 'progress', content: 'next' }) + '\n'
+    const scan = scanReads(state.transcriptPath, 'a', { append: appended })
+    console.info(`cursor user/tool history: size=${scan.size} bytesRead=${scan.bytesRead} appended=${Buffer.byteLength(appended)}`)
+    expect(scan.bytesRead).toBeGreaterThan(0)
+    expect(scan.bytesRead).toBeLessThanOrEqual(Buffer.byteLength(appended) + 65_536)
+    expect(scan.modes).toEqual(['discovery', 'incremental', 'incremental'])
+  })
+
+  it.each(['<synthetic>', 'claude-sonnet-4-5'])('keeps a writer separated from its final record by %s', (separator) => {
+    const state = sized('separated-writer', 250_000, {})
+    expect(run(state, 1).stdout).toBe('')
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 0, HOUR))
+    append(state, assistant('x', separator, 0))
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 0, { input_tokens: 250_000 }))
+    expect(run(state, 50).stdout).toBe('')
+    expect(saved(state)).toMatchObject({ lastRealId: 'baseline', lastContext: { tokens: 250_000 },
+      cacheEvidence: { oneHour: { callId: 'baseline', atMs: 0 } } })
+  })
+
+  it('keeps synthetic-interleaved writer evidence when the final record arrives in the next poll', () => {
+    const state = sized('cross-poll-writer', 250_000, {})
+    expect(run(state, 1).stdout).toBe('')
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 0, HOUR))
+    append(state, assistant('x', '<synthetic>', 0))
+    expect(run(state, 2).stdout).toBe('')
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 0, { input_tokens: 250_000 }))
+    expect(run(state, 50).stdout).toBe('')
+    expect(saved(state).cacheEvidence).toMatchObject({ oneHour: { callId: 'baseline', atMs: 0 } })
+  })
+
+}
+
+function registerCursorRecoveryLocks() {
+  it.each(['truncation', 'same-size rewrite'])('rediscovers after %s', (kind) => {
+    const state = scaffold('rewritten-cursor')
+    const original = assistant('a', 'claude-sonnet-4-5', 0, HOUR) + '\n'
+    writeFileSync(state.transcriptPath, kind === 'truncation' ? nonAssistantHistory(100) + original : original)
+    const rewritten = assistant('b', 'claude-sonnet-4-5', 1, HOUR) + '\n'
+    if (kind === 'same-size rewrite') expect(Buffer.byteLength(rewritten)).toBe(Buffer.byteLength(original))
+    const scan = scanReads(state.transcriptPath, 'a', { rewrite: rewritten })
+    expect(scan.modes).toEqual(['discovery', 'discovery', 'incremental'])
+    expect(scan.reset).toBe(true)
+    expect(scan.calls).toEqual(['b'])
+    expect(scan.oneHour).toBe('b')
+  })
+
+  it('discovers legacy state once, then consumes subsequent polls incrementally', () => {
+    const state = sized('legacy-cursor', 10_000)
+    save(state, { lastRealId: 'baseline', lastRealAtMs: 0, lastModel: 'claude-sonnet-4-5', cacheEvidence: {} })
+    expect(run(state, 1).stdout).toBe('')
+    expect(saved(state).transcriptCursor).toMatchObject({ size: Buffer.byteLength(readFileSync(state.transcriptPath)) })
+    const scan = scanReads(state.transcriptPath, 'baseline', { append: '' })
+    expect(scan.modes).toEqual(['discovery', 'incremental', 'incremental'])
+    expect(scan.bytesRead).toBeGreaterThan(0)
+    expect(scan.bytesRead).toBeLessThanOrEqual(4096)
+  })
+
+}
+
+function registerDiscoveryBudgetLocks() {
+  it('bounds initial discovery and finds a recent decisive streamed writer in a larger history', () => {
+    const state = scaffold('bounded-discovery')
+    writeFileSync(state.transcriptPath, nonAssistantHistory(6000)
+      + assistant('a', 'claude-sonnet-4-5', 0, { ...HOUR, input_tokens: 249_999 }) + '\n'
+      + assistant('a', 'claude-sonnet-4-5', 0, { input_tokens: 250_000 }) + '\n')
+    const scan = scanReads(state.transcriptPath, 'a')
+    console.info(`cursor initial discovery: size=${scan.size} bytesRead=${scan.bytesRead}`)
+    expect(scan.size).toBeGreaterThan(4 * 1024 * 1024)
+    expect(scan.bytesRead).toBeGreaterThan(0)
+    expect(scan.bytesRead).toBeLessThanOrEqual(4 * 1024 * 1024)
+    expect(scan.oneHour).toBe('a')
+    expect(run(state, 50).stdout).toBe('')
+    expect(journal(state).at(-1)?.reason).toBe('native idle compaction applies')
+  })
+
+  it('leaves TTL unknown when the discovery budget cannot establish the longest TTL', () => {
+    const state = scaffold('budget-unknown')
+    writeFileSync(state.transcriptPath, nonAssistantHistory(6000)
+      + assistant('a', 'claude-sonnet-4-5', 0, FIVE) + '\n')
+    const scan = scanReads(state.transcriptPath, 'a')
+    expect(scan.bytesRead).toBeLessThanOrEqual(4 * 1024 * 1024)
+    expect(scan.evidence).toEqual({})
+    expect(run(state, 50).stdout).toContain('CACHE KEEPALIVE:')
+  })
+
+  it('stops discovery after passing records older than two longest TTLs', () => {
+    const state = scaffold('age-bound')
+    writeFileSync(state.transcriptPath, nonAssistantHistory(3000)
+      + assistant('old', 'claude-sonnet-4-5', 0, HOUR) + '\n'
+      + assistant('a', 'claude-sonnet-4-5', 121) + '\n')
+    const scan = scanReads(state.transcriptPath, null)
+    expect(scan.bytesRead).toBeLessThanOrEqual(65_536)
+    expect(scan.evidence).toEqual({})
+  })
+
+}
+
+function registerUnfinishedLineLock() {
+  it('persists an unterminated UTF-8 tail and consumes its completion exactly once', () => {
+    const state = scaffold('partial-line')
+    expect(run(state, 1).stdout).toBe('')
+    const record = assistant('new', 'claude-sonnet-4-5', 2, HOUR).replace('"type"', '"label":"é😀","type"')
+    const bytes = Buffer.from(record)
+    const split = bytes.indexOf(Buffer.from('😀')) + 1
+    writeFileSync(state.transcriptPath, Buffer.concat([readFileSync(state.transcriptPath), bytes.subarray(0, split)]))
+    expect(run(state, 2).stdout).toBe('')
+    expect(saved(state).transcriptCursor).toMatchObject({ offset: Buffer.byteLength(assistant('baseline', 'claude-sonnet-4-5', 0) + '\n') })
+    writeFileSync(state.transcriptPath, Buffer.concat([readFileSync(state.transcriptPath), bytes.subarray(split), Buffer.from('\n')]))
+    expect(run(state, 3).stdout).toBe('')
+    expect(saved(state)).toMatchObject({ lastRealId: 'new', cacheEvidence: { oneHour: { callId: 'new' } } })
+    expect(run(state, 4).stdout).toBe('')
+    expect(saved(state).lastRealId).toBe('new')
+  })
+}
+
+describe('cache keepalive consumed transcript cursor', () => {
+  registerCursorAppendLocks()
+  registerCursorRecoveryLocks()
+  registerDiscoveryBudgetLocks()
+  registerUnfinishedLineLock()
+})
+
+function registerCadenceLocks() {
+  it('keeps the known cadence anchor when a newer real call has unknown freshness', () => {
+    const state = scaffold('unknown-cadence')
+    writeFileSync(state.transcriptPath, assistant('a', 'claude-sonnet-4-5', 100) + '\n')
+    expect(run(state, 101).stdout).toBe('')
+    append(state, withoutTimestamp('b', 102))
+    expect(run(state, 102).stdout).toBe('')
+    expect(saved(state)).toMatchObject({ lastRealAtMs: null, lastCadenceAtMs: 100 * 60_000 })
+  })
+
+  it('updates the saved timestamp when an already-consumed call id is rewritten', () => {
+    const state = sized('saved-time-rewrite', 10_000)
+    expect(run(state, 1).stdout).toBe('')
+    append(state, assistant('baseline', 'claude-sonnet-4-5', 100, HOUR))
+    expect(run(state, 101).stdout).toBe('')
+    expect(saved(state).lastRealAtMs).toBe(100 * 60_000)
+    expect(run(state, 150).stdout).toContain('CACHE KEEPALIVE:')
+  })
+
+}
+
+function registerReturningModelLock() {
+  it('returns to a model with the same evidence and verdict as fresh discovery', () => {
+    const state = sized('return-model', 250_000)
+    expect(run(state, 1).stdout).toBe('')
+    append(state, assistant('b', 'claude-opus-4-6', 10))
+    expect(run(state, 11).stdout).toBe('')
+    append(state, assistant('a-return', 'claude-sonnet-4-5', 20, { input_tokens: 250_000 }))
+    expect(run(state, 21).stdout).toBe('')
+    const persisted = run(state, 70).stdout
+    const evidence = saved(state).cacheEvidence
+    expect(persisted).toBe('')
+    expect(evidence).toMatchObject({ oneHour: { callId: 'baseline', atMs: 0 } })
+    rmSync(state.journalDir, { recursive: true })
+    expect(run(state, 70).stdout).toBe(persisted)
+    expect(saved(state).cacheEvidence).toEqual(evidence)
+    expect(journal(state).at(-1)?.reason).toBe('native idle compaction applies')
+  })
+
+}
+
+function registerLegacyOwnerLocks() {
+  it.each([true, false])('resolves legacy evidence ownership with lastModel present=%s', (hasModel) => {
+    const state = sized('legacy-owner', 10_000, {}, 'claude-opus-4-6')
+    save(state, { lastRealId: 'baseline', lastRealAtMs: 0,
+      ...(hasModel ? { lastModel: 'claude-sonnet-4-5' } : {}),
+      cacheEvidence: { oneHour: { callId: 'missing-writer', atMs: 0 } } })
+    expect(run(state, 50).stdout).toContain('CACHE KEEPALIVE:')
+    expect(saved(state).cacheEvidence).toEqual({})
+    expect(saved(state).cacheEvidenceByModel).toEqual(hasModel
+      ? { 'claude-sonnet-4-5': { oneHour: { callId: 'missing-writer', atMs: 0 } }, 'claude-opus-4-6': {} }
+      : { 'claude-opus-4-6': {} })
+  })
+
+  it('uses transcript writer provenance before a contradictory legacy lastModel', () => {
+    const state = sized('legacy-owner-conflict', 10_000)
+    append(state, assistant('b', 'claude-opus-4-6', 120, { ...FIVE, input_tokens: 9_999 }))
+    save(state, { lastRealId: 'baseline', lastRealAtMs: 0, lastModel: 'claude-opus-4-6',
+      cacheEvidence: { oneHour: { callId: 'baseline', atMs: 0 } } })
+    expect(run(state, 170).stdout).toBe('')
+    expect(saved(state).cacheEvidence).not.toHaveProperty('oneHour')
+    expect(journal(state).at(-1)?.reason).toBe('prompt cache freshness expired')
+  })
+
+}
+
+function registerModelCapLock() {
+  it('caps retained models at 32 and keeps the latest model', () => {
+    const state = scaffold('model-cap')
+    expect(run(state, 1).stdout).toBe('')
+    for (let index = 0; index < 34; index += 1) {
+      append(state, assistant(`call-${index}`, `claude-model-${index}`, index + 2, HOUR))
+    }
+    expect(run(state, 36).stdout).toBe('')
+    const models = saved(state).cacheEvidenceByModel as Record<string, unknown>
+    expect(Object.keys(models)).toHaveLength(32)
+    expect(models).toHaveProperty('claude-model-33')
+    expect(models).not.toHaveProperty('claude-sonnet-4-5')
+  })
+}
+
+describe('cache keepalive cadence and model retention', () => {
+  registerCadenceLocks()
+  registerReturningModelLock()
+  registerLegacyOwnerLocks()
+  registerModelCapLock()
+})
+
+describe('cache keepalive documented fetching values', () => {
+  const rows = [
+    ['off', true], ['FALSE', true], ['No', true], ['ON', false], ['Yes', false], ['maybe', null], ['', true],
+  ] as const
+  it.each(['DISABLE_GROWTHBOOK', 'DO_NOT_TRACK', ...PROVIDER_KEYS])('reads boolean values directly for %s', async (key) => {
+    const state = sized('boolean-reader', 250_000)
+    const host = await import(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-settings.mjs')).href)
+    for (const [value, fetching] of rows) {
+      const env = { [key]: value }
+      const reading = await host.compactionSettings(state.configDir, state.projectDir,
+        { managedFile: join(state.configDir, 'absent.json'), env })
+      expect(reading.fetching, `${key}=${value}`).toBe(fetching)
+      const isolated = sized('boolean-wake', 250_000)
+      expect(run(isolated, 50, env).stdout.includes('CACHE KEEPALIVE:'), `${key}=${value}`).toBe(fetching !== true)
+    }
+  })
+
+  it.each(['DISABLE_TELEMETRY', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'])('reads empty and nonempty set-or-unset %s directly', async (key) => {
+    const state = scaffold('set-unset-reader')
+    const host = await import(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/host/cache-keepalive-settings.mjs')).href)
+    for (const value of ['', '0', 'false', 'maybe']) {
+      const reading = await host.compactionSettings(state.configDir, state.projectDir,
+        { managedFile: join(state.configDir, 'absent.json'), env: { [key]: value } })
+      expect(reading.fetching, `${key}=${value}`).toBe(value === '')
+    }
   })
 })

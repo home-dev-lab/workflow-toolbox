@@ -67,13 +67,14 @@ const PROVIDER_SWITCHES = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 
   'CLAUDE_CODE_USE_ANTHROPIC_AWS', 'CLAUDE_CODE_USE_MANTLE']
 
 function switchValue(reading, nonempty = false) {
+  // Boolean spellings are case-insensitive; set-or-unset flags keep their own rule.
   if (!reading.known) return null
   const value = reading.value
-  if (value === undefined) return false
+  if (value === undefined || value === '') return false
   if (typeof value !== 'string') return null
   if (nonempty) return value.length > 0
-  if (value === '1' || value === 'true') return true
-  if (value === '0' || value === 'false') return false
+  if (['1', 'true', 'yes', 'on'].includes(value.toLowerCase())) return true
+  if (['0', 'false', 'no', 'off'].includes(value.toLowerCase())) return false
   return null
 }
 

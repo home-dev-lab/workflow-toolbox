@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { NATIVE_SKIP_REASON, rememberContext, skipReason } from './lib/cache-keepalive-policy.mjs'
+import { evidenceOwnerIds, rememberEvidence, selectEvidence } from './lib/cache-keepalive-evidence.mjs'
 import { compactionSettings } from './lib/host/cache-keepalive-settings.mjs'
 import { callsSince } from './lib/host/cache-keepalive-transcript.mjs'
 
@@ -78,12 +79,14 @@ function modelPolicy(model, anthropicMinutes, openaiMinutes) {
 
 function freshState() {
   return { cappedLogged: false, cacheEvidence: null, lastContext: null, lastRefreshedAtMs: null, nativeSkipId: null,
-    lastReason: '', lastRealAtMs: null, lastRealId: '', lastWakeAtMs: null, pendingWake: null, refreshCount: 0 }
+    lastReason: '', lastRealAtMs: null, lastCadenceAtMs: null, lastRealId: '', lastWakeAtMs: null, pendingWake: null, refreshCount: 0 }
 }
 
 async function loadState(statePath) {
   try {
-    return { ...freshState(), ...JSON.parse(await readFile(statePath, 'utf8')) }
+    const state = { ...freshState(), ...JSON.parse(await readFile(statePath, 'utf8')) }
+    state.lastCadenceAtMs ??= state.lastRealAtMs
+    return state
   } catch {
     return freshState()
   }
@@ -112,6 +115,7 @@ function resetIdle(state) {
 function observeReal(state, call) {
   state.lastRealId = call.id
   state.lastRealAtMs = call.atMs
+  if (call.atMs !== null) state.lastCadenceAtMs = call.atMs
   clearIdleReason(state)
   rememberContext(state, call)
 }
@@ -146,39 +150,42 @@ function transcriptReason(error) {
   return `transcript unavailable: ${error?.code ?? error?.message ?? 'read error'}`
 }
 
-function rememberEvidence(state, discovery) {
-  if (state.cacheEvidenceModel !== undefined && state.cacheEvidenceModel !== discovery.model) state.cacheEvidence = {}
-  state.cacheEvidence = { ...state.cacheEvidence, ...discovery.evidence }
-  state.cacheEvidenceModel = discovery.model
-}
-
 async function discover(context, state, nowMs) {
   let discovery
   try {
     const stopId = discoveryStopId(state)
-    discovery = await callsSince(context.transcriptPath, stopId, state.cacheEvidence === null)
+    discovery = await callsSince(context.transcriptPath, stopId,
+      { cursor: state.transcriptCursor, ownerIds: evidenceOwnerIds(state) })
   } catch (error) {
     await recordSkip(context, state, nowMs, transcriptReason(error), false)
     return null
   }
   rememberEvidence(state, discovery)
-  const stopCall = discovery.calls.find((call) => call.id === state.lastRealId)
-  if (stopCall) {
+  return discoveredCalls(context, state, nowMs, discovery.calls)
+}
+
+async function discoveredCalls(context, state, nowMs, calls) {
+  const stopCall = calls.find((call) => call.id === state.lastRealId)
+  const latestReal = newestReal(calls)
+  if (stopCall && latestReal?.id === stopCall.id) {
     rememberContext(state, stopCall)
     state.lastRealAtMs = stopCall.atMs
+    if (stopCall.atMs !== null) state.lastCadenceAtMs = stopCall.atMs
     state.lastModel = stopCall.model
   }
-  if (state.lastRealId) return discovery.calls.filter((call) => call.id !== state.lastRealId)
-  const baseline = newestReal(discovery.calls)
+  if (state.lastRealId) return { calls: calls.filter((call) => call.id !== state.lastRealId),
+    latestReal: latestReal?.id === state.lastRealId ? null : latestReal }
+  const baseline = latestReal
   if (!baseline || baseline.atMs === null) {
     await recordSkip(context, state, nowMs, 'no timestamped real assistant call in transcript', false)
     return null
   }
   observeReal(state, baseline)
   state.lastModel = baseline.model
+  selectEvidence(state)
   state.lastReason = ''
   await saveState(context.statePath, state)
-  return []
+  return { calls: [], latestReal: null }
 }
 
 function resolveOutcome(context, state, calls, nowMs) {
@@ -243,22 +250,24 @@ function observeLatest(state, latestReal) {
 }
 
 function attemptAnchor(state) {
-  return Math.max(state.lastRealAtMs ?? 0, state.lastWakeAtMs ?? 0)
+  // An unknown latest timestamp affects freshness, not the last known cadence anchor.
+  return Math.max(state.lastCadenceAtMs ?? state.lastRealAtMs ?? 0, state.lastWakeAtMs ?? 0)
 }
 
 function contextSnapshot(state) {
-  return JSON.stringify([state.cacheEvidence, state.cacheEvidenceModel, state.lastContext])
+  return JSON.stringify([state.cacheEvidence, state.cacheEvidenceByModel, state.lastContext, state.transcriptCursor])
 }
 
 async function inspect(context, nowMs) {
   const state = await loadState(context.statePath)
   const metadataBefore = contextSnapshot(state)
-  const calls = await discover(context, state, nowMs)
-  if (calls === null) return null
+  const discovery = await discover(context, state, nowMs)
+  if (discovery === null) return null
+  const { calls, latestReal } = discovery
   const outcome = resolveOutcome(context, state, calls, nowMs)
   if (outcome) await outcome
-  const latestReal = newestReal(calls)
   observeLatest(state, latestReal)
+  selectEvidence(state)
   const policy = modelPolicy(state.lastModel || '', context.anthropicMinutes, context.openaiMinutes)
   if (!policy) return recordSkip(context, state, nowMs, `unrecognised model: ${state.lastModel || '(unknown)'}`)
   clearTransientReason(state)
