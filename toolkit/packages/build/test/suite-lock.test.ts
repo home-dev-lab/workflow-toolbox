@@ -298,10 +298,10 @@ describe('suite lock no-progress budget', () => {
       const target = startWaiter(root, order, 'T', 30, 0, 2.5)
       peers.push(target)
       await waitFor(() => target.stdout().includes('position 4 of 4') && queueRecords(root).length === 4, 15_000)
-      const releasedAt = Date.now()
+      const releasedAt = performance.now()
       writeFileSync(release, 'go')
       expect(await Promise.all([holder, ...peers].map((waiter) => waiter.done))).toEqual([0, 0, 0, 0, 0])
-      expect(Date.now() - releasedAt, 'target waited more than a full budget while advancing').toBeGreaterThan(3500)
+      expect(performance.now() - releasedAt, 'target waited more than a full budget while advancing').toBeGreaterThan(3500)
       expect(readOrder(order)).toEqual(['H', 'W1', 'W2', 'W3', 'T'])
       for (const position of [4, 3, 2, 1]) expect(target.stdout()).toContain(`position ${position} of`)
     } finally {
@@ -389,10 +389,10 @@ describe('suite lock no-progress budget', () => {
     const root = tempRoot('zero-wait-head')
     const holder = await acquireSuiteLock({ root, argv: ['H'] })
     try {
-      const start = Date.now()
+      const start = performance.now()
       const error = await acquireSuiteLock({ root, waitS: 0, pollMs: 30 }).catch((cause: Error & { code?: string }) => cause)
       expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-      expect(Date.now() - start).toBeLessThan(1000)
+      expect(performance.now() - start).toBeLessThan(1000)
     } finally { releaseSuiteLock(holder) }
   }, 5000)
 
@@ -403,13 +403,13 @@ describe('suite lock no-progress budget', () => {
     const pending = acquireSuiteLock({ root, waitS: 1, staleS: 2.4, pollMs: 30, argv: ['ahead'], ...POSIX_STALENESS }).catch((cause: Error) => cause)
     try {
       await waitFor(() => queueRecords(root).length === 1)
-      const start = Date.now()
+      const start = performance.now()
       const error = await acquireSuiteLock({ root, waitS: 1, staleS: 1.4, pollMs: 30, ...POSIX_STALENESS }).catch((cause: Error) => cause)
       expect(error).toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT', holder: { pid: process.pid } })
       expect(error.message).toContain(`holder pid ${process.pid} (live-holder)`)
       expect(error.message).toContain('no queue progress for')
       expect(error.message).toContain('position 2 of 2')
-      expect(Date.now() - start).toBeLessThan(2500)
+      expect(performance.now() - start).toBeLessThan(2500)
       const headError = await pending
       expect(headError.message).toContain(`holder pid ${process.pid} (live-holder)`)
       expect(headError.message).toContain('no queue progress for')
@@ -496,9 +496,9 @@ describe('suite lock queue tickets', () => {
     const root = tempRoot('ticket-head')
     const blocker = await acquireSuiteLock({ root })
     let acquiredAt = 0
-    const waiting = acquireSuiteLock({ root, pollMs: 5000, waitS: 20 }).then((lease: unknown) => { acquiredAt = Date.now(); return lease })
+    const waiting = acquireSuiteLock({ root, pollMs: 5000, waitS: 20 }).then((lease: unknown) => { acquiredAt = performance.now(); return lease })
     await new Promise((resolve) => setTimeout(resolve, 150))
-    const releasedAt = Date.now()
+    const releasedAt = performance.now()
     releaseSuiteLock(blocker)
     releaseSuiteLock(await waiting)
     expect(acquiredAt - releasedAt).toBeLessThan(1500)
@@ -668,14 +668,14 @@ describe('wt-suite-lock CLI', () => {
   it('serializes two real run commands and reports the holder', async () => {
     const root = tempRoot('integration')
     const program = 'setTimeout(() => {}, 3000)'
-    const started = Date.now()
+    const started = performance.now()
     const first = runAsync(['run', '--', process.execPath, '-e', program], root)
     await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
     await new Promise((resolve) => setTimeout(resolve, 1000))
     const second = runAsync(['run', '--', process.execPath, '-e', program], root)
     expect(await first.done).toBe(0)
     expect(await second.done).toBe(0)
-    expect(Date.now() - started).toBeGreaterThanOrEqual(5900)
+    expect(performance.now() - started).toBeGreaterThanOrEqual(5900)
     expect(second.stderr()).toMatch(/waiting for suite lock: position 1 of 1, holder pid \d+ \(.+\) since \d\d:\d\d/)
     expect(existsSync(join(root, 'lock.d'))).toBe(false)
     // Windows worst 6359 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 10000 ms).
@@ -919,9 +919,9 @@ describe('suite lock queue — round 2', () => {
     }
     const fresh = tempRoot('r2-f8-fresh')
     seedStaleHolder(fresh, 0)
-    const started = Date.now()
+    const started = performance.now()
     expect(await attempt({ root: fresh })).toBe('WT_SUITE_LOCK_TIMEOUT')
-    expect(Date.now() - started).toBeLessThan(2000)
+    expect(performance.now() - started).toBeLessThan(2000)
     const abandoned = tempRoot('r2-f8-abandoned')
     seedStaleHolder(abandoned, 120_000)
     // The reclaim takes two waiter iterations by design, each with queue-file I/O. A 0.2 s wait left no
@@ -1111,11 +1111,11 @@ describe('suite lock transient filesystem errors', () => {
     const root = tempRoot('transient-persists')
     mkdirSync(join(root, 'queue.d'))
     chmodSync(join(root, 'queue.d'), 0o500)
-    const started = Date.now()
+    const started = performance.now()
     try {
       await expect(acquireSuiteLock({ root, waitS: 60, pollMs: 20 })).rejects.toMatchObject({ code: 'EACCES' })
-      expect(Date.now() - started).toBeGreaterThanOrEqual(4500)
-      expect(Date.now() - started).toBeLessThan(15_000)
+      expect(performance.now() - started).toBeGreaterThanOrEqual(4500)
+      expect(performance.now() - started).toBeLessThan(15_000)
     } finally { chmodSync(join(root, 'queue.d'), 0o700) }
   }, 20_000)
 })

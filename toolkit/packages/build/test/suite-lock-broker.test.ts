@@ -191,9 +191,9 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     }))
     await new Promise<void>((resolve) => server.listen(address, resolve))
     try {
-      const start = Date.now()
+      const start = performance.now()
       await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-      expect(Date.now() - start).toBeLessThan(5000)
+      expect(performance.now() - start).toBeLessThan(5000)
     } finally { server.close() }
   }, 8000)
 
@@ -207,10 +207,10 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     }))
     await new Promise<void>((resolve) => server.listen(address, resolve))
     try {
-      const start = Date.now()
+      const start = performance.now()
       await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-      expect(Date.now() - start).toBeGreaterThanOrEqual(2900)
-      expect(Date.now() - start).toBeLessThan(5000)
+      expect(performance.now() - start).toBeGreaterThanOrEqual(2900)
+      expect(performance.now() - start).toBeLessThan(5000)
     } finally { server.close() }
   }, 8000)
 
@@ -777,11 +777,11 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       const client = connect(address, { argv: ['pnpm', 'install'], waitS: 2 })
       await client.waitForReply(granted)
       await client.waitForReply((text) => text.includes('error hold bound:'), 15_000)
-      const boundAt = Date.now()
+      const boundAt = performance.now()
       await new Promise((resolve) => setTimeout(resolve, 1_000))
       expect(existsSync(lock), 'lock released before the stop grace while the client may still run').toBe(true)
       await waitFor(() => !existsSync(lock), 4_000)
-      const releasedAfter = Date.now() - boundAt
+      const releasedAfter = performance.now() - boundAt
       expect(releasedAfter).toBeGreaterThanOrEqual(1_000)
       await waitFor(() => client.socket.destroyed, 15_000)
     } finally {

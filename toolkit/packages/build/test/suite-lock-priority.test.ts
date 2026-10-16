@@ -440,7 +440,7 @@ describe('release priority', () => {
     const firstAbort = new AbortController(); const releaseAbort = new AbortController()
     const first = acquireSuiteLock({ root, signal: firstAbort.signal, waitS: 3, pollMs: 10 })
     await waitFor(() => records(root).length === 1)
-    const started = Date.now()
+    const started = performance.now()
     const second = acquireSuiteLock({ root, waitS: 1.5, pollMs: 10 })
     const secondResult = second.then((lease: { holder: unknown }) => ({ lease }), (error: { code?: string }) => ({ error }))
     await waitFor(() => records(root).length === 2)
@@ -450,7 +450,7 @@ describe('release priority', () => {
     await waitFor(() => records(root).length === 3)
     try {
       expect(await secondResult).toMatchObject({ error: { code: 'WT_SUITE_LOCK_TIMEOUT' } })
-      expect(Date.now() - started, 'release arrival must not restart the ordinary deadline').toBeLessThan(2_000)
+      expect(performance.now() - started, 'release arrival must not restart the ordinary deadline').toBeLessThan(2_000)
     }
     finally {
       releaseAbort.abort(); firstAbort.abort(); releaseSuiteLock(holder)
@@ -714,9 +714,9 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
     // count of flips before it does not depend on how fast this machine runs (a small CPU slice per flip,
     // a one-second wait). Past that bound the seam stops, so a missing deadline check fails this test
     // (the lock is acquired) instead of looping forever and holding the real suite lock.
-    const started = Date.now()
+    const started = performance.now()
     const beforeAcquire = () => {
-      if (Date.now() - started > 10_000) return
+      if (performance.now() - started > 10_000) return
       flips += 1
       ticket = seedLightTicket(root)
     }
@@ -727,7 +727,7 @@ describe('regressions found in review: mixed clients, reclaim, stale counter, co
     }
     expect(await outcome(root, { argv: ['E'], waitS: 1, beforeAcquire, afterHandBack })).toBe('WT_SUITE_LOCK_TIMEOUT')
     expect(flips, 'the seam flipped the order at least twice').toBeGreaterThan(1)
-    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(performance.now() - started).toBeLessThan(5_000)
   }, 20_000)
 
   function seedLightTicket(root: string) {
