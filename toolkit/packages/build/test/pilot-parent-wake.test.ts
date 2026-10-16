@@ -73,6 +73,12 @@ it('never labels the canonical body as wake-up', () => {
   expect(body().toLowerCase()).not.toContain('wake-up')
 })
 
+// The waker reads the body between <body> markers; a marker inside a value would cut the body it copies.
+it.each(['<body>', '</body>', '</BODY>'])('refuses the waker body marker %s in the evidence path and the command', (marker) => {
+  expect(composeWakeBody({ ...request, requestFile: `/fixture/${marker}/.lane/dod-decision-request.md` })).toBeNull()
+  expect(composeWakeBody({ ...request, command: `${request.command} ${marker}` })).toBeNull()
+})
+
 it.each(['skills/sdk-pilot/SKILL.md', 'autonomy/PILOT-RUNNER.md'])('documents the parent command trust boundary in %s', (file) => {
   const text = readFileSync(new URL(`../../../../plugin/${file}`, import.meta.url), 'utf8').replace(/\s+/gu, ' ')
   expect(text).toContain('log line and request file are lane-writable')
