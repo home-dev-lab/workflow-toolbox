@@ -62,6 +62,117 @@ function assertDelivered(result) {
   assert.ok(result.context.some((text) => text.includes('Synthetic instruction for the acting agent.')));
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function setting(f, read) {
+  const original = f.$.env.get;
+  f.$.env.get = (key) => key === 'WT_ROD_NO_REFUSE_AGENT_TYPES' ? read() : original(key);
+}
+
+async function compact(f, agentId = 'worker') {
+  await f.event('session.compact', { agentId }, async () => ({}));
+}
+
+test('older env read cannot restore exemptions after a newer empty read', async () => {
+  const f = fixture(), older = deferred();
+  let reads = 0;
+  setting(f, () => ++reads === 1 ? older.promise : '');
+  const first = f.spawn();
+  await f.spawn();
+  older.resolve('my-agent');
+  await first;
+  // Re-enabling must start without evidence; stale restoration would retain the old spawn.
+  setting(f, () => older.promise);
+  assert.ok((await f.call({ agentId: 'worker' })).deny, 'older env read must not restore exemptions');
+});
+
+for (const type of ['other-agent', 'my-agent']) {
+  test(`spawn evidence overtakes a delayed lookup: ${type}`, async () => {
+    const f = fixture(), started = deferred(), lookup = deferred();
+    f.$.agent.list = () => { started.resolve(); return lookup.promise; };
+    const call = f.call({ agentId: 'worker' });
+    await started.promise;
+    await f.spawn({ subagentType: type });
+    lookup.resolve([{ id: 'worker', type: type === 'my-agent' ? 'other-agent' : 'my-agent' }]);
+    const result = await call;
+    if (type === 'my-agent') assertDelivered(result);
+    else assert.ok(result.deny, 'newer unlisted spawn must beat stale listed lookup');
+  });
+}
+
+for (const failure of ['throw', 'miss', 'timeout']) {
+  test(`a ${failure} lookup retries and accepts healthy evidence`, async () => {
+    const f = fixture();
+    if (failure === 'timeout') f.$.clock = { sleep: () => new Promise((resolve) => setTimeout(resolve, 10)) };
+    f.$.agent.list = () => {
+      if (failure === 'throw') throw new Error('unavailable');
+      return failure === 'miss' ? [] : new Promise(() => {});
+    };
+    assert.ok((await f.call({ agentId: 'worker' })).deny);
+    await compact(f);
+    f.$.agent.list = async () => [{ id: 'worker', type: 'my-agent' }];
+    assertDelivered(await f.call({ agentId: 'worker' }));
+  });
+}
+
+test('concurrent calls for one unknown identity share a lookup', async () => {
+  const f = fixture(), started = deferred(), lookup = deferred();
+  let lookups = 0;
+  f.$.agent.list = () => { lookups++; started.resolve(); return lookup.promise; };
+  const first = f.call({ agentId: 'worker' });
+  await started.promise;
+  const second = f.call({ agentId: 'worker' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(lookups, 1, 'concurrent unknown identity must have one in-flight lookup');
+  lookup.resolve([{ id: 'worker', type: 'my-agent' }]);
+  const results = await Promise.all([first, second]);
+  assert.ok(results.every((result) => !result.deny));
+  assert.ok(results.some((result) => result.context.some((text) => text.includes('Synthetic instruction'))));
+});
+
+test('equivalent parsed settings preserve learned workflow identities', async () => {
+  const f = fixture();
+  await f.spawn({ workflow: { runId: 'wf_x', agentIndex: 1 } });
+  setting(f, () => ' my-agent ');
+  assertDelivered(await f.call({ agentId: 'worker' }));
+  assert.equal(f.lookups(), 0);
+});
+
+test('explicit main identity is never waived or looked up', async () => {
+  const f = fixture();
+  await f.spawn({}, { agentId: 'main' });
+  assert.ok((await f.call({ agentId: 'main' })).deny, 'explicit main must retain before-act refusal');
+  assert.equal(f.lookups(), 0);
+});
+
+test('a spawn recorded while the waiver is being logged takes precedence', async () => {
+  const f = fixture(), logging = deferred(), release = deferred();
+  await f.spawn();
+  f.$.ui.log = async (message) => {
+    if (message.includes('waiving')) { logging.resolve(); await release.promise; }
+  };
+  const call = f.call({ agentId: 'worker' });
+  await logging.promise;
+  await f.spawn({ subagentType: 'other-agent' });
+  release.resolve();
+  assert.ok((await call).deny, 'evidence recorded during the progress line must be rechecked');
+});
+
+test('a setting change and a newer spawn during a lookup beat its stale answer', async () => {
+  const f = fixture(), started = deferred(), lookup = deferred();
+  f.$.agent.list = () => { started.resolve(); return lookup.promise; };
+  const call = f.call({ agentId: 'worker' });
+  await started.promise;
+  setting(f, () => 'my-agent, extra-agent');
+  await f.spawn({ subagentType: 'other-agent' });
+  lookup.resolve([{ id: 'worker', type: 'my-agent' }]);
+  assert.ok((await call).deny, 'a lookup detached by a configuration change must not record its answer');
+});
+
 test('project A lists the type: spawned agent runs once and receives the rule with its result', async () => {
   const f = fixture('lean-probe');
   await f.spawn({ subagentType: 'lean-probe' });
@@ -86,14 +197,14 @@ test('main loop is never exempted or looked up', async () => {
   assert.equal(f.lookups(), 0);
 });
 
-test('unknown id stays refused when list throws, and is looked up only once', async () => {
+test('unknown id stays refused when list throws, and retries the next call', async () => {
   const f = fixture();
   let lookups = 0;
   f.$.agent.list = async () => { lookups++; throw new Error('unavailable'); };
   assert.ok((await f.call({ agentId: 'unknown' })).deny);
   await f.event('session.compact', { agentId: 'unknown' }, async () => ({}));
   assert.ok((await f.call({ agentId: 'unknown' })).deny);
-  assert.equal(lookups, 1);
+  assert.equal(lookups, 2, 'failed lookups must be retried');
 });
 
 test('list resolves an agent spawned before module load and caches its type', async () => {
@@ -170,8 +281,10 @@ test('project B without the setting refuses the same type', async () => {
 test('a type named only in process.env is never exempted', async () => {
   const f = fixture(null, true, {}, 'lean-probe');
   await f.spawn({ subagentType: 'lean-probe' });
-  f.$.agent.list = async () => [{ id: 'worker', type: 'lean-probe' }];
+  let lookups = 0;
+  f.$.agent.list = async () => { lookups++; return [{ id: 'worker', type: 'lean-probe' }]; };
   assert.ok((await f.call({ agentId: 'worker' })).deny);
+  assert.equal(lookups, 0);
 });
 
 test('the setting is read through the host environment API by its literal name', async () => {
@@ -187,14 +300,16 @@ test('an environment read that throws leaves refusals in force', async () => {
     return key === 'CLAUDE_CONFIG_DIR' ? '/synthetic-config' : undefined; };
   await f.spawn({ subagentType: 'lean-probe' });
   assert.ok((await f.call({ agentId: 'worker' })).deny);
+  assert.equal(f.lookups(), 0);
 });
 
 test('plugin options no longer exempt an agent type when the env setting is absent', async () => {
   const f = fixture(null, true, { no_refuse_agent_types: ['lean-probe'] });
   await f.spawn({ subagentType: 'lean-probe' });
-  f.$.agent.list = async () => [{ id: 'worker', type: 'lean-probe' }];
+  let lookups = 0;
+  f.$.agent.list = async () => { lookups++; return [{ id: 'worker', type: 'lean-probe' }]; };
   assert.ok((await f.call({ agentId: 'worker' })).deny, 'plugin options must not exempt the type');
-  assert.equal(f.lookups(), 0);
+  assert.equal(lookups, 0);
 });
 
 test('denied spawn records neither returned nor resume identity', async () => {
@@ -223,13 +338,18 @@ test('disabled plugin passes through without reading spawn metadata or agent lis
   assert.equal(await f.handlers.get('agent.spawn')(f.$, input, async () => result), result);
   assert.equal((await f.call({ agentId: 'worker' })).deny, undefined);
   assert.equal(f.lookups(), 0);
+  register((name, handler) => f.handlers.set(name, handler), { enabled: true });
+  await f.spawn();
+  assertDelivered(await f.call({ agentId: 'worker' }));
 });
 
 test('spawn bookkeeping cannot fail an otherwise successful spawn', async () => {
   const f = fixture();
+  await f.spawn();
   const input = { get subagentType() { throw new Error('metadata unavailable'); } };
   const result = { model: 'synthetic', agentId: 'worker' };
   assert.equal(await f.handlers.get('agent.spawn')(f.$, input, async () => result), result);
+  assert.ok((await f.call({ agentId: 'worker' })).deny, 'failed bookkeeping must forget the previous occupant');
 });
 
 test('a rejected spawn propagates the host error unchanged and learns nothing', async () => {
@@ -254,6 +374,8 @@ test('a call that matches no before-rule reads neither the setting nor the agent
   await f.call({ agentId: 'worker', tool: 'Read' });
   assert.equal(f.lookups(), 0);
   assert.equal(f.envReads.includes('WT_ROD_NO_REFUSE_AGENT_TYPES'), false);
+  await f.spawn();
+  assertDelivered(await f.call({ agentId: 'worker' }));
 });
 
 test('a waived rule is delivered once per context, not on every call', async () => {

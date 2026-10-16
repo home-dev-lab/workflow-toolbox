@@ -47,10 +47,14 @@ Types are learned from `agent.spawn`, including workflow agents and resumed
 agents. After a module reload, a subagent or teammate spawned earlier can be
 resolved through `$.agent.list()`. Workflow agents are not in that list, so
 one spawned before the module loaded stays subject to refusal unless a later
-spawn or resume supplies its type. Identity tracking retains the newest 256
-agents; an evicted identity also needs this fallback. Each unknown identity is
-looked up once while retained, and unavailable or missing types stay refused,
-as does a lookup that gets no answer within the host-read deadline.
+spawn or resume supplies its type. Identity tracking keeps up to 256 identities,
+dropping the earliest recorded first; an evicted identity also needs this fallback.
+Only positive lookups are cached. Concurrent lookups for one identity share a
+request; unavailable, missing, or timed-out types stay refused and are retried
+on the next refusable call. Newer spawn evidence takes precedence over an older
+lookup. Once a newer environment read has applied, older reads cannot restore
+stale settings. Learned identities reset only when the parsed set of configured
+types changes.
 Each waived refusal is logged once for that call.
 
 ## Delivery and lifecycle

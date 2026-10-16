@@ -13,7 +13,8 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
-import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType, rememberAgentType } from './agent-types.js';
+import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType, rememberAgentType,
+  pendingAgentType, beginAgentLookup, finishAgentLookup, recordAgentType, forgetAgentType } from './agent-types.js';
 import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
   mergeFlightHealth, noteFlightCall, resetFlightRecorder, disableFlightRecorder } from './flight-recorder.js';
 
@@ -1153,12 +1154,17 @@ let triggerClock = Date.now;
 
 // The hooks module runs without Node.js globals, and register() receives no $: the project's settings env reaches it
 // only through the host's environment API, called inside a hook. The list is therefore read when a spawn or a refusal
-// needs it, and the learned types are reset whenever the value read changes.
+// needs it, and the learned types are reset whenever the parsed set changes.
 const UNREAD = Symbol('unread');
 let agentTypeSetting = UNREAD;
+let agentTypeRead = 0;
+let agentTypeApplied = 0;
 async function agentTypeOptOutActive($) {
+  const ticket = ++agentTypeRead;
   let value;
   try { value = await hostCall($, $.env.get('WT_ROD_NO_REFUSE_AGENT_TYPES')); } catch { value = undefined; }
+  if (ticket < agentTypeApplied) return agentTypeOptOutConfigured();
+  agentTypeApplied = ticket;
   if (value !== agentTypeSetting) {
     agentTypeSetting = value;
     configureAgentTypes(value);
@@ -1170,28 +1176,41 @@ async function agentSpawnEvent($, e, next) {
   if (!enabled) return next(e);
   const active = agentTypeOptOutActive($).catch(() => false);
   const result = await next(e);
+  let id;
   try {
-    if (result && result.deny === undefined && typeof e.subagentType === 'string' && await active)
-      rememberAgentType(result.agentId ?? e.resume?.agentId, e.subagentType);
-  } catch { /* Bookkeeping must never turn a started spawn into a failure. */ }
+    if (!result || result.deny !== undefined) return result;
+    id = result.agentId ?? e.resume?.agentId;
+    if (await active && agentTypeOptOutConfigured()) recordAgentType(id, e.subagentType);
+  } catch { forgetAgentType(id); }
   return result;
 }
 
-async function lookupAgentType($, id) {
-  try { return (await hostCall($, $.agent.list())).find((agent) => agent.id === id)?.type ?? null; }
-  catch { return null; }
+async function lookupAgentType($, id, entry) {
+  const version = entry.version;
+  let type = null;
+  try { type = (await hostCall($, $.agent.list())).find((agent) => agent.id === id)?.type ?? null; }
+  catch { /* Missing evidence is retried on the next refusable call. */ }
+  if (pendingAgentType(id) !== entry) return knownAgentType(id);
+  if (entry.version !== version) { finishAgentLookup(id, entry); return knownAgentType(id); }
+  if (typeof type === 'string' && type) rememberAgentType(id, type);
+  finishAgentLookup(id, entry);
+  return type;
 }
 
 async function refusalsForAgent($, e, before) {
-  if (!before.length || !e.agentId || !(await agentTypeOptOutActive($))) return before;
+  if (!before.length || agentLoop(e.agentId) === MAIN || !(await agentTypeOptOutActive($))) return before;
   let type = knownAgentType(e.agentId);
   if (type === undefined) {
-    type = lookupAgentType($, e.agentId);
-    rememberAgentType(e.agentId, type);
+    let entry = pendingAgentType(e.agentId);
+    if (!entry) {
+      entry = beginAgentLookup(e.agentId);
+      entry.promise = lookupAgentType($, e.agentId, entry);
+    }
+    type = await entry.promise;
   }
-  type = await type;
   if (!neverRefuseType(type)) return before;
   await progress($, `wt-rules-on-demand: waiving before-act refusal for agent type ${type}; serving ${before.map((rule) => rule.name).join(', ')} with the result`);
+  if ((knownAgentType(e.agentId) ?? null) !== type) return before;
   return [];
 }
 
