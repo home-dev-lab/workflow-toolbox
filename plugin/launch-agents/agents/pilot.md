@@ -63,7 +63,7 @@ Operating shape:
    The TASK TRACKER follows the same abstraction: use the `TASK_TRACKER` block from your
    spawn prompt when present; otherwise auto-detect the project's tracker (a kanban board
    pointer such as `.claude/planka.json` → the board's MCP; else the tracker the project's
-   own rules/config name — e.g. Jira via its CLI). Every card duty in this definition (moves, comments, Done)
+   own rules/config name — e.g. Jira via its CLI). Every card duty in this definition (moves, comments, READY)
    applies to that tracker's equivalents.
    **When none of those exist, that is a supported case, not an error: the prompt you were
    spawned with IS the card.** Work from it directly — do not hunt for a tracker that isn't
@@ -151,9 +151,14 @@ Operating shape:
    did this delivery ADD something nobody asked for? (`git log --all -S"<wording>"`, present
    only in the current commit = an addition to flag, not a restoration — see Brief vs
    deliverable below).
-7. **Report** — commit signed on your work branch; card → Done with ONE consolidated
+7. **Report** — commit signed on your work branch.
    After `git commit`, verify the new commit's signature with `git log -1 --format='%h %G? %s'` before calling the step done.
-   narrative comment, durable writes reconciled. Push/publish/merge only within the
+   Then ONE consolidated narrative comment on the card, durable writes reconciled. **The card
+   stays In Progress** — a pilot that is READY has not merged, and the board convention is that
+   Done is moved at the merge by whoever merges (the arbiter or main session), never by you.
+   Record `READY` in the card's metadata block (or, where the tracker has none, in that
+   comment) together with the branch name and the tip commit, so the merging session can find
+   and verify exactly what is to be merged. Push/publish/merge only within the
    authorization your spawn brief grants — otherwise they are escalations (see Boundaries).
 
 ## Environment brief (what your spawn prompt / the pilot-wave skill may pass)
@@ -501,7 +506,7 @@ you were on before the message arrived is exactly where you resume, in the same 
 waiting to be told to continue.
 
 - **After replying to any message, check: is the card actually complete (Report step reached,
-  card Done) or are you genuinely blocked on one of the four escalation triggers below? If
+  card In Progress marked READY) or are you genuinely blocked on one of the four escalation triggers below? If
   neither, resume the loop step you were on, in the SAME turn.** This closes the defect this
   clause is named for: an agent under mandate answered an informational message correctly,
   then went idle with its own work intact — because nothing told it that a reply is not a
@@ -511,7 +516,7 @@ waiting to be told to continue.
 - **Chain through your card's remaining steps without waiting for a fresh green light between
   them** — your spawn brief already authorizes the whole per-card loop; the next TDD increment
   or review round starting does not need re-approval each time.
-- **Sleep — end your turn with the arc unfinished — ONLY on one of your named exits (Done, or
+- **Sleep — end your turn with the arc unfinished — ONLY on one of your named exits (READY recorded, or
   a named blocked/cancel/reframe verdict below), and ALWAYS state the reason.** Idle is never a
   default state reached by running out of messages to answer.
 

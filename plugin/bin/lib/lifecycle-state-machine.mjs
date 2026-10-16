@@ -24,6 +24,7 @@ import { snapshotSelectedTree } from './lifecycle-selection.mjs'
 import { declaredChecksForPhase } from './host/repo-instructions.mjs'
 import { createLifecycleEvents } from './lifecycle-events.mjs'
 import { createLaneTimelineRecorder } from './lifecycle-timeline-lanes.mjs'
+import { recordedWorktreeIdentity } from './host/canonical-path.mjs'
 
 const withLeadingBreak = (text) => (text ? `\n\n${text}` : '')
 
@@ -944,7 +945,7 @@ export function createLifecycleStateMachine({
   const refusal = (edge, missing, file, code = 'other') => events.refused(artifactRefusal(edge, missing, file), code)
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
-  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
+  const timeline = { version: 2, ...recordedWorktreeIdentity(root), started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? defaultTimelineWriter
   const persistTimeline = () => {
     try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }

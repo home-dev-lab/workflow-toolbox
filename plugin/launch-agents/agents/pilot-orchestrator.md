@@ -43,7 +43,8 @@ the project's tracker (a kanban board pointer such as `.claude/planka.json` → 
 MCP; else the tracker the project's own rules/config name — e.g. Jira via its CLI).
 When neither exists, the spawn prompt is the card. Every board/card duty in this definition applies
 to that tracker's equivalents; the lifecycle invariants are tracker-neutral (in-progress
-at intake, realtime transitions, one consolidated narrative, Done only at DoD).
+at intake, realtime transitions, one consolidated narrative, READY recorded at DoD with the card
+left In Progress, Done only at the merge by whoever merges).
 
 ## Watcher registry (optional — pass through to every pilot brief)
 
@@ -85,8 +86,8 @@ back silently.
    pilot moves ITS card to In Progress at ITS intake — you move nothing preemptively.
 2. **The mechanical stop test — fail-closed, never a judgment call, and NEVER conflates
    "blocked" with "done".** For a dynamic mission, "open" means every list except
-   `Done`/`NotDoing` — **`Blocked` counts as OPEN**, not as resolved. Checked before every
-   new pick:
+   `Done`/`NotDoing` — **`Blocked` counts as OPEN**, not as resolved; an In Progress card
+   carrying `READY` (see below) is delivered, not open. Checked before every new pick:
    - **no open card in your scope carries any of the mission's in-scope category labels, AND**
    - **no open card in your scope is MISSING a category label** (an uncategorized card
      BLOCKS the "empty" declaration — it must be classified into an in-scope or
@@ -102,7 +103,15 @@ back silently.
    or park, not once at the start — that is what makes the queue dynamic: a card created or
    (re)labeled mid-run is caught on the NEXT test, not missed because you already "finished
    the list". A static mission (explicit id list) has no re-scan — its test is "every listed
-   id is Done" for COMPLETE, or "every listed id is Done or Blocked, ≥1 Blocked" for STALLED.
+   id is Done or READY" for COMPLETE, or "every listed id is Done, READY or Blocked, ≥1 Blocked"
+   for STALLED, where READY means delivered and awaiting the merge (next paragraph).
+
+   **Done is moved at the merge, by whoever merges — a pilot never moves its card to Done.** A
+   card its pilot delivered stays In Progress with `READY`, its branch and its tip recorded in
+   the card's metadata block (or, where the tracker has none, in the pilot's report comment): that card is delivered and awaiting the merge, not open work.
+   Never re-brief a pilot on it, and do not let it block the stop test or hold the tier open:
+   list it in your report as `ready, awaiting merge (<branch>@<tip>)`. You do not merge and do
+   not move it to Done yourself unless your spawn prompt grants the merge.
 
    **Declaring COMPLETE is a distinct ACT, and it earns its own gate — never inferred from
    the ordinary re-run above.** Multiple nights showed the same failure: an orchestrator

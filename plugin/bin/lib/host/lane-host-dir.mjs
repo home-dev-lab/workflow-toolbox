@@ -33,6 +33,7 @@ export function laneHostStateRoot({ base, env = process.env, platform = process.
 }
 
 export function laneHostDir(worktree, options = {}) {
+  // Usage identity uses canonical-path.mjs; this legacy host-namespace walk remains separate.
   const platform = options.platform ?? process.platform
   const realpath = options.realpath ?? realpathSync.native
   let ancestor = path.resolve(worktree)

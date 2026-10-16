@@ -9,7 +9,7 @@ import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-al
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
 import { readFrontmatterFile } from './frontmatter.mjs'
 import { announceDroppedBinds, announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
-import { finishOpencodeUsage } from './host/opencode-session-store.mjs'
+import { finishOpencodeUsage, recordOpencodeLaunch } from './host/opencode-session-store.mjs'
 
 // The launcher reaches the suite-lock CLI through this module, so an adopted launcher (which
 // loads it from the installed plugin root) resolves the CLI of that same plugin.
@@ -60,6 +60,10 @@ export function spawnCommand(spawnFn, bin, args, options, platform) {
 // Every OpenCode child the plugin starts passes here: the environment is allow-listed, and on Linux
 // the process runs inside the lane sandbox (lib/host/lane-sandbox.mjs). `sandboxPaths` lets a caller
 // expose a directory it owns (a probe fixture).
+function prepareUsageLaunch(sandbox, usageOptions, usageReceipt) {
+  if (usageReceipt) usageOptions.launch = recordOpencodeLaunch(sandbox, usageOptions)
+}
+
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform, extraNames = []) {
   const modelIndex = args.indexOf('--model')
   const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
@@ -72,6 +76,7 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
   announceDroppedBinds(sandbox, diagnostics)
   const [command, commandArgs] = sandbox.wrap(bin, args)
   const usageOptions = { usageReceipt, usageReader, cwd: childOptions.cwd, args, env: childOptions.env, platform, startedAt: Date.now() }
+  prepareUsageLaunch(sandbox, usageOptions, usageReceipt)
   let child
   // A synchronous spawn failure (ENOENT on bwrap, EAGAIN) must still tear the bridges down.
   try { child = spawnCommand(spawnFn, command, commandArgs, childOptions, platform) } catch (error) {
