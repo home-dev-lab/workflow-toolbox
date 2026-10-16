@@ -373,7 +373,12 @@ injection) and `servingSeq` (the serving call's admission). Its journal entry
 and any window verdict share those fields. Every verdict has a `verdictId` and
 `actSeq` (the deciding call's admission, or a lifecycle close sequence). A
 per-act verdict can list windows it ended in `discharged`; turn end, compaction
-and eviction record a context `lastClose`. Sequence numbers are process-local;
+and eviction record a context `lastClose`; a compaction also counts in the
+context's `resets` by reason (`compaction` when the host dispatched
+`session.compact`, `compaction-detected` when the main loop found a new
+compaction boundary in the session's transcript, `session-changed` when the
+session id changed under the main loop, after `/clear`). Sequence numbers are
+process-local;
 the ID prefix identifies that process's registration. No new store key is used.
 
 The readers join by ID and session before counting. Identical `verdictId`s

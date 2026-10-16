@@ -35,7 +35,7 @@ export const mergeSessions = (stores) => sumSessions(stores.map((store) => store
 // several archives plus the live store, each holding a disjoint SEGMENT of its rows. Segments are SUMMED (counters
 // added, rows concatenated, governed acts merged by rule identity, close markers merged), unlike mergeSessions, which
 // merges COPIES of one store (mirror directories) and must not double count them.
-const COUNTER_FIELDS = ['served', 'suppressedCap', 'servedIdentity', 'suppressedIdentity'];
+const COUNTER_FIELDS = ['served', 'suppressedCap', 'servedIdentity', 'suppressedIdentity', 'resets'];
 const later = (a, b) => (String(b ?? '') > String(a ?? '') ? b : a);
 const earlier = (a, b) => (a == null || (b != null && String(b) < String(a)) ? b : a);
 function sumCounters(a = {}, b = {}) {
