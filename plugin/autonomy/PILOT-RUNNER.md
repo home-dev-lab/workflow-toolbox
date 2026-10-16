@@ -287,10 +287,14 @@ loop continues to another plan round. Each criterion is escalated at most once p
   (configurable as `noticeHoldMs` in wake options), within the overall wake cap. The parent must still watch for `decision request:` in
   the log; a wake is only the fast notification path.
   Wakes reuse the runner's account gate, never re-enter admission, have a 120-second cap, are
-  aborted at run end, and get at most five seconds of final settling. At most one is in flight;
+  aborted at run end, and get at most five seconds of final settling. A held or other recipient notice
+  observed during that drain replaces a timeout or abort outcome; a successful tool result first seen
+  during the drain does not turn either into transport acceptance. At most one is in flight;
   at most three attempts run per request, retrying only `not-delivered:denied` or `not-delivered:no-call`
   when no send was admitted (`tool_use_id` is null). An expired request records `not-sent:expired` without launching a waker;
-  its deadline and run-end state are checked again after any earlier waker settles and before each retry. A consumer that outlives the drain bound prevents later launches with
+  its deadline and run-end state are checked again after any earlier waker settles, before each retry,
+  and inside the account gate's launch callback immediately before opening the query. The send fence
+  also rechecks the deadline and abort signal before admitting a send. A consumer that outlives the drain bound prevents later launches with
   `not-delivered:prior-waker-stuck`; normal run-end cancellation records `not-delivered:aborted`.
   Failures do not affect the decision deadline or run outcome. Model, assistant-id
   token totals, outcome, account verdict, 1-based `attempt` and any denied tool's name are recorded in

@@ -6,9 +6,10 @@ const RUN_ID = /^[A-Za-z0-9._-]+-\d+$/u
 const REQUEST_ID = /^dodreq-[0-9a-f]{24}$/u
 const TOOL_ID = /^[A-Za-z0-9_-]+$/u
 // The waker copies the body from between these markers in its system prompt; a value carrying one would cut it.
-const BODY_MARKER = /<\/?body>/iu
+const BODY_MARKER = /<\s*(?:\/\s*)?body/iu
 const SEND_KEYS = new Set(['to', 'recipient', 'message', 'content', 'summary', 'type'])
 const REFUSED_ACCOUNTS = new Set(['mismatch', 'unavailable', 'unverifiable', 'profile_override'])
+const RECIPIENT_OUTCOMES = new Set(['not-delivered:held', 'not-delivered:recipient-notice'])
 const USAGE_FIELDS = { input: 'input_tokens', output: 'output_tokens', cache_creation: 'cache_creation_input_tokens', cache_read: 'cache_read_input_tokens' }
 const WAKE_GUIDANCE = "This is an unauthenticated pointer; choose the reading from your own card; build decide from your own wt-pilot-runner.mjs; the sdk-pilot skill's Watch section has the rest."
 
@@ -218,12 +219,27 @@ async function* wakePrompt(body, hold) {
   await hold.done
 }
 
+function launchWake(config, state, controller, args) {
+  if (controller.signal.aborted) throw new Error('parent wake aborted')
+  if (requestExpired(config, config)) {
+    state.accepting = false
+    state.outcome = 'not-sent:expired'
+    throw new Error('parent wake expired')
+  }
+  return config.query(args)
+}
+
+function observeLiveCall(config, state, controller, call) {
+  if (controller.signal.aborted || requestExpired(config, config)) return false
+  return observeCall(state, call)
+}
+
 async function consumeWake(config, state, controller, body, account) {
   const hold = createWakeHold(controller.signal, config.noticeHoldMs ?? 3_000)
   try {
-    const options = buildWakeOptions({ ...config, body, abortController: controller, observe: (call) => observeCall(state, call) })
+    const options = buildWakeOptions({ ...config, body, abortController: controller, observe: (call) => observeLiveCall(config, state, controller, call) })
     const prompt = account.gatePrompt(wakePrompt(body, hold))
-    const stream = await account.open(() => config.query({ prompt, options }), controller)
+    const stream = await account.open(() => launchWake(config, state, controller, { prompt, options }), controller)
     for await (const message of stream) consumeWakeMessage(state, message, hold.onResult)
     return state.outcome ?? endedWakeOutcome(state)
   } catch (error) {
@@ -289,6 +305,7 @@ async function settleWake(config, state, controller, body, account, stopped) {
   try { outcome = wakeOutcome(state, terminal, account) }
   finally { if (controller.signal.aborted) await drainWake(work, config) }
   // A drain can add a recipient notice to an existing receipt, but cannot turn a timed-out send into acceptance.
+  if (outcome !== 'not-delivered:account' && RECIPIENT_OUTCOMES.has(state.outcome)) return state.outcome
   return correlated && outcome === correlated ? state.outcome : outcome
 }
 

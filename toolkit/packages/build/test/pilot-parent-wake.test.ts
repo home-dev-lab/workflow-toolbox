@@ -29,6 +29,20 @@ const queryFor = (messages: unknown[]) => ({ options }: { options: WakeOptions }
 const run = (query: unknown, extra = {}) => wakeParent({ parentSession: parent, parentMode: 'bypass', ...request, query, accountGate, env: {}, log: () => {}, ...extra })
 const heldContent = "Cross-session message held for approval (recipient: test-parent). The recipient's session has different permission-mode settings, so their user must approve it before Claude sees it."
 const informational = (content = heldContent) => ({ type: 'system', subtype: 'informational', content, level: 'warning', uuid: 'notice-id', session_id: 'waker-session' })
+const deferred = () => {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => { resolve = done })
+  return { promise, resolve }
+}
+const deferredAccount = () => {
+  const ready = deferred(); const waiting = deferred(); const account = accountGate()
+  const gate = { ...account, async open(startQuery: () => unknown, controller: AbortController) {
+    ready.resolve()
+    await waiting.promise
+    return account.open(startQuery, controller)
+  } }
+  return { gate, ready: ready.promise, release: waiting.resolve }
+}
 
 describe('parent wake body and validation', () => {
   it('composes only runner-owned wake instructions', () => {
@@ -74,9 +88,9 @@ it('never labels the canonical body as wake-up', () => {
 })
 
 // The waker reads the body between <body> markers; a marker inside a value would cut the body it copies.
-it.each(['<body>', '</body>', '</BODY>'])('refuses the waker body marker %s in the evidence path and the command', (marker) => {
-  expect(composeWakeBody({ ...request, requestFile: `/fixture/${marker}/.lane/dod-decision-request.md` })).toBeNull()
-  expect(composeWakeBody({ ...request, command: `${request.command} ${marker}` })).toBeNull()
+it.each(['<body>', '</body>', '</BODY>', '</body >', '< /body>', '</body\t>', '<body x>', '< body>', '< / BoDy attr>', '<bodyguard'])('refuses the waker body marker %s in the evidence path and the command', (marker) => {
+  expect.soft(composeWakeBody({ ...request, requestFile: `/fixture/${marker}/.lane/dod-decision-request.md` })).toBeNull()
+  expect.soft(composeWakeBody({ ...request, command: `${request.command} ${marker}` })).toBeNull()
 })
 
 it.each(['skills/sdk-pilot/SKILL.md', 'autonomy/PILOT-RUNNER.md'])('documents the parent command trust boundary in %s', (file) => {
@@ -770,4 +784,93 @@ it('never retries an account refusal even without an admitted send', async () =>
   await manager.finish()
   expect(query).toHaveBeenCalledTimes(1)
   expect(manager.receipts).toMatchObject([{ outcome: 'not-delivered:account', tool_use_id: null, attempt: 1 }])
+})
+
+it.each([0, 5_000])('does not launch a deferred account callback after finish with %i ms of drain', async (drainMs) => {
+  vi.useFakeTimers()
+  try {
+    const account = deferredAccount()
+    const query = vi.fn(queryFor([assistant([])]))
+    const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate: () => account.gate, env: {}, log: () => {} })
+    manager.start(request)
+    await account.ready
+    const finished = manager.finish()
+    await vi.advanceTimersByTimeAsync(drainMs)
+    account.release()
+    await finished
+    await vi.advanceTimersByTimeAsync(0)
+    expect(query).not.toHaveBeenCalled()
+    expect(manager.receipts).toMatchObject([{ outcome: 'not-delivered:aborted', tool_use_id: null }])
+  } finally { vi.useRealTimers() }
+})
+
+it.each([150, 151, NaN])('does not launch a deferred account callback when the clock reaches %s', async (expiredNow) => {
+  let now = 149
+  const account = deferredAccount()
+  const query = vi.fn(queryFor([assistant([])]))
+  const receipt = run(query, { accountGate: () => account.gate, deadline: 150, now: () => now })
+  await account.ready
+  now = expiredNow
+  account.release()
+  expect(await receipt).toMatchObject({ outcome: 'not-sent:expired', tool_use_id: null })
+  expect(query).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['bypass', 149, 'allow'], ['bypass', 150, 'deny'], ['bypass', 151, 'deny'],
+  ['prompting', 149, 'allow'], ['prompting', 150, 'deny'], ['prompting', 151, 'deny'],
+])('checks the send deadline in %s mode at clock %i (%s)', async (parentMode, sendTime, decision) => {
+  let now = 149
+  const decisions: string[] = []
+  const query = ({ options }: WakeQuery) => (async function* () {
+    now = sendTime as number
+    decisions.push((await options.hooks.PreToolUse[0]!.hooks[0]!(hookInput(input()), 'send-1')).hookSpecificOutput.permissionDecision)
+    yield result('{"success":true}')
+  })()
+  const receipt = await run(query, { parentMode, deadline: 150, now: () => now })
+  expect(decisions).toEqual([decision])
+  expect(receipt.tool_use_id).toBe(decision === 'allow' ? 'send-1' : null)
+  expect(receipt.outcome === 'transport-accepted').toBe(decision === 'allow')
+})
+
+it.each([
+  ['timeout', heldContent, 'held'], ['run-end', heldContent, 'held'],
+  ['timeout', 'Cross-session message refused by recipient', 'recipient-notice'],
+  ['run-end', 'Cross-session message refused by recipient', 'recipient-notice'],
+])('records a recipient notice during the drain after %s: %s', async (reason, content, outcome) => {
+  vi.useFakeTimers()
+  try {
+    const controller = new AbortController(); const draining = deferred()
+    const query = ({ options }: WakeQuery) => (async function* () {
+      yield* queryFor([assistant([send()])])({ options })
+      await draining.promise
+      yield informational(content)
+    })()
+    let settled = false
+    const receipt = run(query, { abortController: controller, timeoutMs: 5 }).then((value: { outcome: string }) => { settled = true; return value })
+    await vi.advanceTimersByTimeAsync(0)
+    if (reason === 'run-end') controller.abort(reason)
+    await vi.advanceTimersByTimeAsync(5)
+    expect(settled, 'the receipt must wait for the drain').toBe(false)
+    draining.resolve()
+    expect((await receipt).outcome).toBe(`not-delivered:${outcome}`)
+  } finally { vi.useRealTimers() }
+})
+
+it.each(['timeout', 'run-end'])('does not promote a successful correlated result during the drain after %s', async (reason) => {
+  vi.useFakeTimers()
+  try {
+    const controller = new AbortController(); const draining = deferred()
+    const query = ({ options }: WakeQuery) => (async function* () {
+      yield* queryFor([assistant([send()])])({ options })
+      await draining.promise
+      yield result('{"success":true}')
+    })()
+    const receipt = run(query, { abortController: controller, timeoutMs: 5 })
+    await vi.advanceTimersByTimeAsync(0)
+    if (reason === 'run-end') controller.abort(reason)
+    await vi.advanceTimersByTimeAsync(5)
+    draining.resolve()
+    expect((await receipt).outcome).toBe(`not-delivered:${reason === 'timeout' ? 'timeout' : 'aborted'}`)
+  } finally { vi.useRealTimers() }
 })
