@@ -19,7 +19,7 @@
 //   7. compatibility locks: boolean flags still accept help (these also pass on the old helper).
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { devNull, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { inspectHelpRequest, isHelpRequested } from '../../../../plugin/bin/lib/cli-help.mjs'
@@ -367,10 +367,13 @@ describe('a guard given a flag VALUE spelled --help / -h does not take the help 
 
   it('wt-check-commit-signatures --range --help exits non-zero in a real git repository (the card lock: exit 0 is "pass")', () => {
     const repo = tempRoot('repo')
+    // An empty file, not os.devNull: Git for Windows exits 128 on GIT_CONFIG_GLOBAL set to the \\.\nul device.
+    const emptyConfig = join(tempRoot('cfg'), 'empty.gitconfig')
+    writeFileSync(emptyConfig, '')
     const git = (...a: string[]) =>
       spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', ...a], {
         encoding: 'utf8',
-        env: { ...process.env, HOME: repo, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: '1' },
+        env: { ...process.env, HOME: repo, GIT_CONFIG_GLOBAL: emptyConfig, GIT_CONFIG_NOSYSTEM: '1' },
       })
     expect(git('init', '-q').status).toBe(0)
     expect(git('commit', '-q', '--allow-empty', '-m', 'one').status).toBe(0)
