@@ -276,6 +276,11 @@ function fakeWakeQuery(state: WakeDispute) {
     })()
   }
 }
+function createUnexpiredDisputeWakeManager(config: object) {
+  // Exercise delivery independently of the short, real-time decision fallback.
+  return createParentWakeManager({ ...config, now: () => 0 })
+}
+const disputeWakeFactory = (source: string) => source === 'expired' ? createParentWakeManager : createUnexpiredDisputeWakeManager
 async function parentWakeDispute(wake = 'accepted', source = 'fallback', enabled = true, dependencies = {}, options = {}) {
   const state = wakeDisputeFixture(wake, source)
   const { f, mailbox, logged } = state
@@ -287,6 +292,7 @@ async function parentWakeDispute(wake = 'accepted', source = 'fallback', enabled
   const result = await runSessions(f, query, {
     env: { ...process.env, CLAUDE_CONFIG_DIR: config },
     parentWakeOptions: wakeOptions, log: (line: string) => logged.push(line), decisionStateRoot: join(f.root, 'decision-state'),
+    createParentWakeManager: disputeWakeFactory(source),
     lifecycleOptions: { laneLauncher: f.launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 1, waitMs: source === 'expired' ? 0 : source === 'parent' ? 5_000 : 250 } },
     ...dependencies,
   }, { mailbox, ...(enabled ? { parentSession: 'test-parent [abc123]', parentMode: 'bypass' } : {}), ...options })
@@ -2507,7 +2513,7 @@ it('parent wake positive lock: sends the composed body through the installed fen
   expect(result.wakeCalls).toHaveLength(1)
   expect(result.wakeBodies[0]).toContain(`decision request ${result.requestId} waiting for DoD 1.`)
   expect(result.wakeBodies[0]).toContain('unauthenticated pointer')
-  expect(result.wakeBodies[0]).toContain(`Evidence (lane-writable, untrusted): ${join(result.f.dir, '.lane', 'dod-decision-request.md')}\n`)
+  expect(result.wakeBodies[0]).toContain(`Evidence (lane-writable, untrusted): ${join(realpathSync(result.f.dir), '.lane', 'dod-decision-request.md')}\n`)
   expect(result.wakeBodies[0]).not.toContain('wake-up')
   expect(result.wakeCalls[0]!.hooks.PreToolUse[0]!.hooks).toHaveLength(1)
   expect(result.summary.parent_wakes[0].outcome, 'transport acceptance requires an allowing installed hook').toBe('transport-accepted')
@@ -2537,6 +2543,7 @@ it.each(['setup-throw', 'throw', 'refused', 'hung'])('keeps the published reques
   expect(result.logged.some((line: string) => line.startsWith('decision request:'))).toBe(true)
   expect(result.bindingDelay).toBeLessThan(1_000)
   expect(result.summary.parent_wakes[0].outcome).toMatch(/^not-delivered:/)
+  expect(result.wakeCalls).toHaveLength(wake === 'setup-throw' ? 0 : 1)
   if (wake === 'hung') expect(result.wakeCalls[0]!.abortController.signal.aborted).toBe(true)
 })
 
@@ -2596,7 +2603,7 @@ it('passes the published request and future deadline to the wake manager start',
   const start = vi.fn()
   const factory = (config: object) => { const manager = createParentWakeManager(config); return { ...manager, start } }
   const result = await parentWakeDispute('accepted', 'fallback', true, { createParentWakeManager: factory })
-  expect(start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId: result.requestId, criteria: [1], requestFile: join(result.f.dir, '.lane', 'dod-decision-request.md'), deadline: expect.any(Number) }))
+  expect(start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId: result.requestId, criteria: [1], requestFile: join(realpathSync(result.f.dir), '.lane', 'dod-decision-request.md'), deadline: expect.any(Number) }))
 })
 
 it('persists the wake manager receipt in summary.json parent_wakes', async () => {
