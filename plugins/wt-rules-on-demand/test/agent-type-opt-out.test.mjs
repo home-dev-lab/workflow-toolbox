@@ -659,6 +659,21 @@ test('a rule name that runs host code when formatted cannot run between the deci
   assertDelivered(result);
 });
 
+test('a rule whose file name cannot be converted refuses the call instead of leaving the rule set', async () => {
+  const f = fixture();
+  const broken = { [Symbol.toPrimitive]() { throw new Error('unconvertible'); } };
+  f.$.fs.list = async (dir) => dir === '/synthetic-config/rules-on-demand' ? [{ kind: 'file', name: broken }] : [];
+  await f.spawn({ subagentType: 'other-agent' });
+  const refused = await f.call({ agentId: 'worker' });
+  assert.match(refused.deny ?? '', /file name that cannot be read/, 'an unloadable rule must refuse, never drop out');
+  assert.equal(f.acts(), 0, 'the refused call must not run');
+  assert.ok(f.logs.some((line) => line.includes('file name that cannot be read')), 'the refusal is logged');
+  // The refusal lasts only while the entry is there: the next load reads the directory again.
+  f.$.fs.list = async (dir) => dir === '/synthetic-config/rules-on-demand' ? [{ kind: 'file', name: 'sample.md' }] : [];
+  const later = await f.call({ agentId: 'worker' });
+  assert.equal(later.deny?.includes('file name that cannot be read') ?? false, false, 'a readable rule set no longer refuses for it');
+});
+
 test('a list call that throws at once frees its host slot', async () => {
   const f = fixture();
   f.$.agent.list = () => { throw new Error('unavailable'); };

@@ -633,17 +633,17 @@ function loadRootCandidates(root, config, linked, fallback) {
 const projectScope = (real, configReal) => real !== null && !sameDirectory(real, configReal);
 
 // A rule name is formatted after the waiver decision, so it is made a primitive string here, once, where host code may
-// still run; a name that cannot be made one is skipped.
-function ruleFileName(entry) {
-  try { return String(entry?.name); } catch { return null; }
+// still run. A name that cannot be made one fails the whole load: the rule behind it is unknown, so it may gate any call.
+class UnloadableRule extends Error {}
+function ruleFileName(entry, dir) {
+  try { return String(entry?.name); } catch { throw new UnloadableRule(`a rule in ${dir} has a file name that cannot be read`); }
 }
 
 // Synchronous plans expose the existing awaited operations without adding a helper's async completion turn.
 function* loadRuleCopies($, locations, copies, staticFiles, physicalDirs, rules) {
   for (const [scope, dir] of locations) {
     for (const entry of yield list($, dir)) {
-      const name = ruleFileName(entry);
-      if (name === null) continue;
+      const name = ruleFileName(entry, dir);
       const file = `${dir}/${name}`;
       const kind = yield entryKind($, file, entry);
       if (kind !== 'file' || !name.endsWith('.md')) continue;
@@ -1786,6 +1786,16 @@ function* toolResultSteps($, call, next, rules, chosen, measured) {
   return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
 }
 
+// A rule set that cannot be read whole refuses the call (fail closed). Any other load failure keeps its existing path.
+async function gatedRules($, ctx, e) {
+  try { return { rules: await rulesFor($, ctx, e.cwd ?? '.') }; }
+  catch (error) {
+    if (!(error instanceof UnloadableRule)) throw error;
+    await notice($, error.message);
+    return { deny: `wt-rules-on-demand: ${error.message}, so every call is refused until it is renamed or removed.` };
+  }
+}
+
 // One matcherless tool.call handler: the host permits only one per module.
 async function toolCallWork($, e, next) {
   if (!enabled) return next(e);
@@ -1796,8 +1806,9 @@ async function toolCallWork($, e, next) {
   const existing = contexts.get(loop);
   const nextRecords = existing ? decideNext(existing, e) : [];
   const ctx = await context($, loop);
-  const rules = await rulesFor($, ctx, e.cwd ?? '.');
+  const { rules, deny } = await gatedRules($, ctx, e);
   for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission, noAct: record.noAct });
+  if (deny) return { deny };
   const measured = new Set();
   await evaluate($, ctx, e, loop, measured, admission);
   const triggerErrors = [];
