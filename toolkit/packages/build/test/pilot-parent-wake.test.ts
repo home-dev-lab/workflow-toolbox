@@ -88,9 +88,15 @@ it('never labels the canonical body as wake-up', () => {
 })
 
 // The waker reads the body between <body> markers; a marker inside a value would cut the body it copies.
-it.each(['<body>', '</body>', '</BODY>', '</body >', '< /body>', '</body\t>', '<body x>', '< body>', '< / BoDy attr>', '<bodyguard'])('refuses the waker body marker %s in the evidence path and the command', (marker) => {
+it.each(['<body>', '</body>', '</BODY>', '</body >', '< /body>', '</body\t>', '<body x>', '< body>', '< / BoDy attr>', '<body/>', '<body'])('refuses the waker body marker %s in the evidence path and the command', (marker) => {
   expect.soft(composeWakeBody({ ...request, requestFile: `/fixture/${marker}/.lane/dod-decision-request.md` })).toBeNull()
   expect.soft(composeWakeBody({ ...request, command: `${request.command} ${marker}` })).toBeNull()
+})
+
+// A tag name that only starts with "body" is not the marker and must stay accepted.
+it.each(['<bodyguard', '<bodyx>', '</body_old>'])('accepts the non-marker tag %s in the evidence path and the command', (value) => {
+  expect.soft(composeWakeBody({ ...request, requestFile: `/fixture/${value}/.lane/dod-decision-request.md` })).not.toBeNull()
+  expect.soft(composeWakeBody({ ...request, command: `${request.command} ${value}` })).not.toBeNull()
 })
 
 it.each(['skills/sdk-pilot/SKILL.md', 'autonomy/PILOT-RUNNER.md'])('documents the parent command trust boundary in %s', (file) => {

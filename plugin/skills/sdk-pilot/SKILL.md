@@ -122,8 +122,8 @@ delivery notice changes that outcome to `not-delivered:held` for approval holds 
 `unconfirmed:recipient-notice` for other recipient notices. An admitted send without a correlated result
 or recipient notice records `unconfirmed:<reason>` for `timeout`, `stream-ended`, `aborted`, `error` or
 a later `denied` call; delivery is unknown and the receipt never retries. Without an admitted send,
-failures remain `not-delivered:<reason>`. Correlated results retain `transport-accepted` or
-`not-delivered:transport-refused`; account refusals retain `not-delivered:account`. The waker keeps its input open for
+failures remain `not-delivered:<reason>`. Without a recipient notice, correlated results keep `transport-accepted` or
+`not-delivered:transport-refused`; account refusals keep `not-delivered:account` even when a notice arrives. The waker keeps its input open for
 three seconds after the correlated tool result or the first SDK turn `result`, whichever comes first,
 to observe notices, bounded by its overall timeout. Expired requests never start a waker and record
 `not-sent:expired`; the deadline is rechecked after any earlier waker settles.

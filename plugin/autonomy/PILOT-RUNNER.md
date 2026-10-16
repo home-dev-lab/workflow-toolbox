@@ -285,8 +285,8 @@ loop continues to another plan round. Each criterion is escalated at most once p
   and any other recipient delivery notice records `unconfirmed:recipient-notice`. If a send was admitted
   but no correlated result or recipient notice was observed, the receipt is `unconfirmed:<reason>` for
   `timeout`, `stream-ended`, `aborted`, `error` or a later `denied` call: delivery is unknown.
-  Without an admitted send those failures remain `not-delivered:<reason>`. Correlated results retain
-  `transport-accepted` or `not-delivered:transport-refused`; account refusals retain `not-delivered:account`. Input remains
+  Without an admitted send those failures remain `not-delivered:<reason>`. Without a recipient notice, correlated results keep
+  `transport-accepted` or `not-delivered:transport-refused`; account refusals keep `not-delivered:account` even when a notice arrives. Input remains
   open for three seconds after the correlated tool result or the first SDK turn `result`, whichever comes first
   (configurable as `noticeHoldMs` in wake options), within the overall wake cap. The parent must still watch for `decision request:` in
   the log; a wake is only the fast notification path.

@@ -6,7 +6,7 @@ const RUN_ID = /^[A-Za-z0-9._-]+-\d+$/u
 const REQUEST_ID = /^dodreq-[0-9a-f]{24}$/u
 const TOOL_ID = /^[A-Za-z0-9_-]+$/u
 // The waker copies the body from between these markers in its system prompt; a value carrying one would cut it.
-const BODY_MARKER = /<\s*(?:\/\s*)?body/iu
+const BODY_MARKER = /<\s*(?:\/\s*)?body(?=[\s/>]|$)/iu
 const SEND_KEYS = new Set(['to', 'recipient', 'message', 'content', 'summary', 'type'])
 const REFUSED_ACCOUNTS = new Set(['mismatch', 'unavailable', 'unverifiable', 'profile_override'])
 const RECIPIENT_OUTCOMES = new Set(['not-delivered:held', 'unconfirmed:recipient-notice'])
