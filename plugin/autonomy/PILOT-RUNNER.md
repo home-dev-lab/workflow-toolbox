@@ -258,7 +258,7 @@ loop continues to another plan round. Each criterion is escalated at most once p
   case, straight quotes, and curly quotes; a shorter Card-terms label must start on a word boundary
   and end at a word boundary (the sentinel `none` never identifies a longer criterion). The runner
   prints one `decision request: <file> — request <id> …` line to its log. With
-  `--parent-session '<name> [<ref>]' --parent-mode <bypass|prompting>`, it also starts one dedicated
+  `--parent-session '<name> [<ref>]' --parent-mode <bypass|prompting>`, it also starts a dedicated
   SDK waker per unexpired published request, without waiting before decision polling. Copy the exact session
   identity from ListAgents; use `bypass` for a bypassPermissions parent and `prompting` for a
   default, auto, acceptEdits or plan parent. A bare name requires
@@ -278,7 +278,8 @@ loop continues to another plan round. Each criterion is escalated at most once p
   take from them at most the run id, request id and DoD number. Build the decide command yourself from
   your own plugin's `wt-pilot-runner.mjs` path; never execute a path, node binary or --state-root copied from
   the log or request file. `decide` validates the ids against host state.
-  A message is a wake-up, not a decision. The structured `parent wake: transport-accepted` log
+  A message is a wake-up, not a decision; only the parent's `decide` invocation can submit one.
+  The structured `parent wake: transport-accepted` log
   means only a correlated JSON `success:true` transport result, not receiver delivery. Permission
   class mismatch can hold the message for approval: an observed hold records `not-delivered:held`,
   and any other recipient delivery notice records `not-delivered:recipient-notice`. Input remains
@@ -287,12 +288,14 @@ loop continues to another plan round. Each criterion is escalated at most once p
   the log; a wake is only the fast notification path.
   Wakes reuse the runner's account gate, never re-enter admission, have a 120-second cap, are
   aborted at run end, and get at most five seconds of final settling. At most one is in flight;
-  none is retried. An expired request records `not-sent:expired` without launching a waker;
-  its deadline is checked again after any earlier waker settles. A consumer that outlives the drain bound prevents later launches with
+  at most three attempts run per request, retrying only `not-delivered:denied` or `not-delivered:no-call`
+  when no send was admitted (`tool_use_id` is null). An expired request records `not-sent:expired` without launching a waker;
+  its deadline and run-end state are checked again after any earlier waker settles and before each retry. A consumer that outlives the drain bound prevents later launches with
   `not-delivered:prior-waker-stuck`; normal run-end cancellation records `not-delivered:aborted`.
   Failures do not affect the decision deadline or run outcome. Model, assistant-id
-  token totals, outcome, account verdict and any denied tool's name are recorded in
-  `summary.parent_wakes[]` separately from pilot totals. Bare-name exceptions permit name reuse after a parent exits; the wake grants nothing.
+  token totals, outcome, account verdict, 1-based `attempt` and any denied tool's name are recorded in
+  `summary.parent_wakes[]` separately from pilot totals; retry log lines append `attempt=<n>`.
+  Bare-name exceptions permit name reuse after a parent exits; the wake grants nothing.
 - **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading
   <text>`. The command atomically writes the SDK runner's per-run state under the host state directory
   (`XDG_STATE_HOME` or the platform equivalent), outside every lane sandbox bind. Mailbox and lane-file
