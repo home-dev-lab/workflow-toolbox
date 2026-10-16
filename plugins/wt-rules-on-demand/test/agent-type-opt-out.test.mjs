@@ -109,13 +109,15 @@ for (const type of ['other-agent', 'my-agent']) {
 for (const failure of ['throw', 'miss', 'timeout']) {
   test(`a ${failure} lookup retries and accepts healthy evidence`, async () => {
     let now = 0;
-    const f = fixture('my-agent', true, {}, 'decoy', Date.now, () => now);
+    const f = fixture('my-agent', true, {}, 'decoy', Date.now, () => now), hung = deferred();
     if (failure === 'timeout') f.$.clock = { sleep: () => new Promise((resolve) => setTimeout(resolve, 10)) };
     f.$.agent.list = () => {
       if (failure === 'throw') throw new Error('unavailable');
-      return failure === 'miss' ? [] : new Promise(() => {});
+      return failure === 'miss' ? [] : hung.promise;
     };
     assert.ok((await f.call({ agentId: 'worker' })).deny);
+    // Host lookup slots outlive a reset, so a request this test leaves hanging would hold one for later tests.
+    hung.resolve([]);
     await compact(f);
     now = 1001;
     f.$.agent.list = async () => [{ id: 'worker', type: 'my-agent' }];
@@ -158,12 +160,16 @@ test('explicit main identity is never waived or looked up', async () => {
 test('waiver logging follows the act and cannot hold it pending', { timeout: 1000 }, async () => {
   const f = fixture(), logging = deferred(), release = deferred();
   await f.spawn();
-  f.$.ui.log = async (message) => {
-    if (message.includes('waiving')) { logging.resolve(); await release.promise; }
+  let actsAtLog;
+  f.$.ui.log = (message) => {
+    if (!message.includes('waiving')) return undefined;
+    actsAtLog = f.acts();
+    logging.resolve();
+    return release.promise;
   };
   const call = f.call({ agentId: 'worker' });
   await logging.promise;
-  assert.equal(f.acts(), 1, 'the act must start without waiting for the waiver log');
+  assert.equal(actsAtLog, 1, 'the waiver logger must be invoked only after the act was handed to the host');
   await f.spawn({ subagentType: 'other-agent' });
   release.resolve();
   assertDelivered(await call);
@@ -410,8 +416,10 @@ test('an agent list that never answers is cut off by the host deadline and refus
     const timer = setTimeout(resolve, 20);
     options?.signal?.addEventListener('abort', () => clearTimeout(timer));
   }) };
-  f.$.agent.list = () => new Promise(() => {});
+  const hung = deferred();
+  f.$.agent.list = () => hung.promise;
   assert.ok((await f.call({ agentId: 'worker' })).deny);
+  hung.resolve([]);
 });
 
 test('registration clears previously learned types', async () => {
@@ -578,6 +586,159 @@ test('L8 failed lookups back off until the injected clock passes the deadline', 
   assertDelivered(await f.call({ agentId: 'worker' }));
 });
 
+test('a logger that re-enters with a resume cannot run between the decision and the act', async () => {
+  const f = fixture(), held = deferred();
+  await f.spawn();
+  let resume, resuming = false, actedWhileResuming = false;
+  f.$.ui.log = (message) => {
+    if (!message.includes('waiving') || resume) return;
+    resuming = true;
+    resume = f.event('agent.spawn', { resume: { agentId: 'worker' }, subagentType: 'other-agent' }, () => held.promise);
+  };
+  const result = await f.event('tool.call', { cwd: '/synthetic-project', tool: 'Agent', agentId: 'worker' },
+    async () => { actedWhileResuming ||= resuming; return { context: ['original context'] }; });
+  held.resolve({ agentId: 'worker' });
+  await resume;
+  assert.equal(actedWhileResuming, false, 'no host callback may run between the waiver decision and the act');
+  assertDelivered(result);
+  await compact(f);
+  assert.ok((await f.call({ agentId: 'worker' })).deny, 'the settled unlisted resume is refused');
+});
+
+test('no microtask boundary separates the waiver decision from the act', async () => {
+  const outcomes = new Set();
+  for (let hops = 0; hops < 40; hops++) {
+    const { f, started, release } = pausedDecision();
+    await f.spawn();
+    const held = deferred();
+    let resuming = false, actedWhileResuming = false, resume;
+    const call = f.event('tool.call', { cwd: '/synthetic-project', tool: 'Agent', agentId: 'worker' },
+      async () => { actedWhileResuming ||= resuming; return { context: ['original context'] }; });
+    await started.promise;
+    release.resolve();
+    let chain = Promise.resolve();
+    for (let i = 0; i < hops; i++) chain = chain.then(() => {});
+    chain.then(() => {
+      resuming = true;
+      resume = f.event('agent.spawn', { resume: { agentId: 'worker' }, subagentType: 'other-agent' }, () => held.promise);
+    });
+    const result = await call;
+    held.resolve({ agentId: 'worker' });
+    await resume;
+    assert.equal(actedWhileResuming, false, `a resume arriving ${hops} microtasks after the pre-act await must not meet an act`);
+    outcomes.add(result.deny ? 'refused' : 'waived');
+  }
+  assert.deepEqual([...outcomes].sort(), ['refused', 'waived'], 'the scan must straddle the decision point');
+});
+
+test('a list call that throws at once frees its host slot', async () => {
+  const f = fixture();
+  f.$.agent.list = () => { throw new Error('unavailable'); };
+  for (let i = 0; i < 33; i++) assert.ok((await f.call({ agentId: `thrown-${i}` })).deny);
+  f.$.agent.list = async () => [{ id: 'worker', type: 'my-agent' }];
+  assertDelivered(await f.call({ agentId: 'worker' }));
+});
+
+// 254 fillers after A and B fill the sequence map; updating A keeps it first, so a new id evicts it at a high sequence.
+async function heldPastFloor(f, first, second, held) {
+  await f.spawn({ subagentType: first }, { model: 'synthetic', agentId: 'A' });
+  if (second) await f.spawn({ subagentType: second }, { model: 'synthetic', agentId: 'B' });
+  for (let i = 0; i < (second ? 254 : 255); i++) await f.spawn({ subagentType: 'other-agent' }, { model: 'synthetic', agentId: `filler-${i}` });
+  const late = f.event('agent.spawn', { subagentType: held.type }, () => held.promise);
+  await f.spawn({}, { model: 'synthetic', agentId: 'A' });
+  await f.spawn({ subagentType: 'other-agent' }, { model: 'synthetic', agentId: 'C' });
+  // Wrapped: an async function returning the bare promise would wait for it.
+  return { late };
+}
+
+test('a late unlisted completion replaces an older listed type after another eviction', async () => {
+  const f = fixture(), held = Object.assign(deferred(), { type: 'other-agent' });
+  const { late } = await heldPastFloor(f, 'my-agent', 'my-agent', held);
+  held.resolve({ model: 'synthetic', agentId: 'B' });
+  await late;
+  assert.ok((await f.call({ agentId: 'B' })).deny, 'newer unlisted evidence must not leave the older listed type standing');
+});
+
+test('a late listed completion replaces an older unlisted type after another eviction', async () => {
+  const f = fixture(), held = Object.assign(deferred(), { type: 'my-agent' });
+  const { late } = await heldPastFloor(f, 'my-agent', 'other-agent', held);
+  held.resolve({ model: 'synthetic', agentId: 'B' });
+  await late;
+  assertDelivered(await f.call({ agentId: 'B' }));
+});
+
+test('a completion the floor cannot order forgets a looked-up type so a lookup refills it', async () => {
+  const f = fixture(), held = Object.assign(deferred(), { type: 'my-agent' });
+  const { late } = await heldPastFloor(f, 'my-agent', null, held);
+  // Looked up after the fillers, so the type map's own bound cannot be what clears it.
+  f.$.agent.list = async () => [{ id: 'B', type: 'other-agent' }];
+  assert.ok((await f.call({ agentId: 'B' })).deny);
+  await compact(f, 'B');
+  f.$.agent.list = async () => [];
+  assert.ok((await f.call({ agentId: 'B' })).deny, 'the looked-up unlisted type is cached');
+  held.resolve({ model: 'synthetic', agentId: 'B' });
+  await late;
+  await compact(f, 'B');
+  let requests = 0;
+  f.$.agent.list = async () => { requests++; return [{ id: 'B', type: 'my-agent' }]; };
+  assertDelivered(await f.call({ agentId: 'B' }));
+  assert.equal(requests, 1, 'the unordered completion must have forgotten the cached type');
+});
+
+test('a timed-out lookup keeps its host slot until the request settles', async () => {
+  const f = fixture(), pending = [];
+  f.$.clock = { sleep: () => new Promise((resolve) => setTimeout(resolve, 2)) };
+  f.$.agent.list = () => { const request = deferred(); pending.push(request); return request.promise; };
+  try {
+    for (let i = 0; i < 32; i++) assert.ok((await f.call({ agentId: `hung-${i}` })).deny);
+    assert.ok((await f.call({ agentId: 'next' })).deny);
+    assert.equal(pending.length, 32, 'requests past their deadline still occupy their host slot');
+    pending[0].resolve([]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok((await f.call({ agentId: 'after' })).deny);
+    assert.equal(pending.length, 33, 'a settled request frees exactly one slot');
+  } finally { for (const request of pending) request.resolve([]); }
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test('resumes past the spawning bound suspend every waiver until they settle', async () => {
+  const f = fixture(), held = deferred();
+  await f.spawn();
+  const resumes = Array.from({ length: 257 }, (_, i) =>
+    f.event('agent.spawn', { resume: { agentId: `resumed-${i}` }, subagentType: 'other-agent' }, () => held.promise));
+  assert.ok((await f.call({ agentId: 'worker' })).deny, 'an untracked resume may concern any agent, so none is waived');
+  held.resolve({ model: 'synthetic' });
+  await Promise.all(resumes);
+  await compact(f);
+  // 257 new records evicted worker's own; a fresh spawn shows waivers are back.
+  await f.spawn();
+  assertDelivered(await f.call({ agentId: 'worker' }));
+});
+
+test('a spawn from before a reset neither records evidence nor clears a new resume mark', async () => {
+  const f = fixture(), old = deferred(), current = deferred();
+  const stale = f.event('agent.spawn', { resume: { agentId: 'worker' } }, () => old.promise);
+  resetForSelftest();
+  register((name, handler) => f.handlers.set(name, handler), { enabled: true });
+  f.$.agent.list = async () => [{ id: 'worker', type: 'my-agent' }];
+  const resume = f.event('agent.spawn', { resume: { agentId: 'worker' }, subagentType: 'my-agent' }, () => current.promise);
+  old.resolve({ agentId: 'worker' });
+  await stale;
+  assert.ok((await f.call({ agentId: 'worker' })).deny, 'the new resume is still in flight');
+  current.resolve({ agentId: 'worker' });
+  await resume;
+});
+
+test('an old-session completion cannot record a type into the new session', async () => {
+  const f = fixture(), old = deferred();
+  const stale = f.event('agent.spawn', { subagentType: 'my-agent' }, () => old.promise);
+  resetForSelftest();
+  register((name, handler) => f.handlers.set(name, handler), { enabled: true });
+  old.resolve({ model: 'synthetic', agentId: 'worker' });
+  await stale;
+  assert.ok((await f.call({ agentId: 'worker' })).deny, 'evidence from before the reset must not grant a waiver');
+});
+
 test('lookup backoff doubles to 60 seconds and success clears failure history', async () => {
   let now = 0, requests = 0;
   const f = fixture('my-agent', true, {}, 'decoy', Date.now, () => now);
@@ -605,14 +766,14 @@ test('lookup backoff doubles to 60 seconds and success clears failure history', 
   assertDelivered(await f.call({ agentId: 'worker' }));
 });
 
-test('failure and backoff maps evict the earliest of 257 identities', async () => {
+test('cycling 257 missing identities cannot evict a retry deadline', async () => {
   let now = 0;
   const f = fixture('my-agent', true, {}, 'decoy', Date.now, () => now);
   for (let i = 0; i < 257; i++) assert.ok((await f.call({ agentId: `missing-${i}` })).deny);
+  assert.equal(f.lookups(), 256, 'with every retry slot holding a live deadline, a new identity sends no request');
   await compact(f, 'missing-0');
-  const before = f.lookups();
   assert.ok((await f.call({ agentId: 'missing-0' })).deny);
-  assert.equal(f.lookups(), before + 1, 'evicted backoff permits another request');
+  assert.equal(f.lookups(), 256, 'the first identity must still wait out its deadline');
   await compact(f, 'missing-0');
   now = 1000;
   f.$.agent.list = async () => [{ id: 'missing-0', type: 'my-agent' }];

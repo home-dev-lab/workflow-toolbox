@@ -47,18 +47,24 @@ Types are learned from `agent.spawn`, including workflow agents and resumed
 agents, whether or not the setting is present. Spawn arrival order determines
 which completed report wins, and recording never waits on configuration. Calls
 from a resume identity keep their refusals while any resume for that id is
-starting. After a module reload, a subagent or teammate spawned earlier can be
+starting. While more than 256 resumes are starting at once, no call is waived
+until the excess settles. A completion that arrives after the record it should
+be ordered against was evicted cannot be ordered, so it clears that identity's
+type instead of recording one. After a module reload, a subagent or teammate spawned earlier can be
 resolved through `$.agent.list()`. Workflow agents are not in that list, so
 one spawned before the module loaded stays subject to refusal unless a later
 spawn or resume supplies its type. Identity tracking keeps up to 256 identities,
 dropping the earliest recorded first; an evicted identity also needs this fallback.
 Only non-empty string types are cached. Concurrent lookups for one identity
-share a request, with at most 32 distinct identities in flight; overflow keeps
-the refusal without another request. Failed, empty, or timed-out lookups back
-off for 1 second, doubling after each failure to a 60-second cap. Success clears
-the backoff. Failure counts and deadlines each retain up to 256 identities,
-dropping the earliest recorded first. Lookups only fill gaps: they cannot
-overwrite spawn evidence or record while a resume is starting.
+share a request. At most 32 list requests may be outstanding on the host: a
+request that passed its deadline keeps its slot until the host settles it, and
+overflow keeps the refusal without another request. Failed, empty, or timed-out
+lookups back off for 1 second, doubling after each failure to a 60-second cap.
+Success clears the backoff. Pending lookups and retry deadlines together retain
+at most 256 identities, and a deadline is never dropped before it passes: when
+all are live, a new identity keeps its refusal without a request. Lookups only
+fill gaps: they cannot overwrite spawn evidence or record while a resume is
+starting.
 
 Immediately before selecting the refusal or starting the act, one synchronous
 decision checks the current parsed set and current type evidence. A waiver
@@ -66,7 +72,10 @@ requires a non-main call, a non-empty configured set containing its recorded
 type, and no spawn in flight for that id. Stale or failed environment reads
 keep refusals. Older reads cannot overwrite newer applied settings; learned
 types survive setting changes because membership is checked at the decision.
-Each waived refusal is logged once for that call, without awaiting the log.
+The decision reads nothing from the host, and its log line is written only after
+the act has been handed to the host, so no host callback runs between the
+decision and the act. Each waived refusal is logged once for that call, without
+awaiting the log.
 
 ## Delivery and lifecycle
 
