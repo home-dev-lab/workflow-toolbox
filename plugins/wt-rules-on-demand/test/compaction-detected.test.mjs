@@ -17,6 +17,8 @@ import { shippedFile } from '../paths.js';
 import { externalTest } from './external-test.mjs';
 
 const PUSH = { command: 'git push origin main' };
+// The hooks module has no node:path and joins with '/', which Windows accepts: compare paths separator-blind.
+const slash = (path) => path.replaceAll('\\', '/');
 const served = (result) => JSON.stringify(result ?? {}).includes('<rule name=\\"sample.md\\">');
 const idle = async () => ({});
 let ids = 0;
@@ -675,12 +677,12 @@ test('P. a session that changes (/clear without a prompt.context): the next scan
   session = 'other-session';
   await turnEnd(f);
   const opened = request(state.runs.at(-1));
-  assert.deepEqual([opened.file, opened.snapshot], [other, true], 'the new transcript, noted where it ends');
+  assert.deepEqual([slash(opened.file), opened.snapshot], [slash(other), true], 'the new transcript, noted where it ends');
   assert.deepEqual(resets(f, 'other-session'), { 'session-changed': 1 }, 'a new conversation holds no rule (journaled under its own session)');
   assert.ok(served(await f.call({ ...PUSH })), 'served again');
   await compacted({ transcript: other });
   await turnEnd(f);
-  assert.equal(request(state.runs.at(-1)).file, other);
+  assert.equal(slash(request(state.runs.at(-1)).file), slash(other));
   assert.deepEqual(resets(f, 'other-session'), { 'session-changed': 1, 'compaction-detected': 1 }, 'its compactions are detected; its earlier row is not');
 });
 
@@ -995,7 +997,7 @@ test('P. two transcripts that both report identity 0:0, under a new session id: 
   assert.ok(served(await f.call({ ...PUSH })), 'served again in the new conversation');
   await compacted({ transcript: other });
   await turnEnd(f);
-  assert.equal(request(state.runs.at(-1)).file, other, 'the new transcript is the one read');
+  assert.equal(slash(request(state.runs.at(-1)).file), slash(other), 'the new transcript is the one read');
   assert.deepEqual(sessionResets(f, 'other-session'), { 'session-changed': 1, 'compaction-detected': 1 }, 'its boundary is found');
 });
 
