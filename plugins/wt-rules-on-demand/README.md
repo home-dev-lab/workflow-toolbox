@@ -10,6 +10,51 @@ to `true`. Claude Code exports this option to the startup hook as
 quality check. When rules exist but the switch is off, startup reports their count.
 See [TRIGGERS.md](TRIGGERS.md).
 
+## Agent types that are never refused
+
+Set `WT_ROD_NO_REFUSE_AGENT_TYPES` to the exact agent type names whose tool calls
+should skip this plugin's refusal round. Matching rules are still delivered
+with the call's result. The trade-off is that the rule arrives **after the act**
+and cannot guide that first action. The main loop is never affected; unlisted
+and unknown agent types keep the usual refusal behavior.
+
+Put the list in the project's `.claude/settings.json`, or in
+`.claude/settings.local.json` for a personal, uncommitted choice:
+
+```json
+{ "env": { "WT_ROD_NO_REFUSE_AGENT_TYPES": "my-agent,other-agent" } }
+```
+
+The value is one comma-separated string. Names are trimmed, case-sensitive,
+and matched exactly; empty entries are ignored. There are no patterns or
+wildcards: `"*"` matches only an agent type literally named `*`. An absent or
+empty variable means no exemptions. Each project sets its own list; a project
+without the variable keeps every refusal.
+
+This uses an environment variable because the host ignores plugin options from
+project settings. Project `env` values apply once the folder is trusted. There
+is no plugin option for this list. The hooks module has no Node.js globals, so
+it reads the variable through the host's environment API each time a spawn or
+a refusal needs it, never at load time.
+
+While the engine is enabled, every SessionStart (including resume, clear, and
+compact) with a non-empty list prints
+`wt-rules-on-demand: rules served after the act for: my-agent, other-agent`
+with the configured names. An empty or absent list, or a disabled engine,
+prints no such line.
+
+Types are learned from `agent.spawn`, including workflow agents and resumed
+agents. After a module reload, a subagent or teammate spawned earlier can be
+resolved through `$.agent.list()`. Workflow agents are not in that list, so
+one spawned before the module loaded stays subject to refusal unless a later
+spawn or resume supplies its type. Identity tracking retains the newest 256
+agents; an evicted identity also needs this fallback. Each unknown identity is
+looked up once while retained, and unavailable or missing types stay refused,
+as does a lookup that gets no answer within the host-read deadline.
+Each waived refusal is logged once for that call.
+
+## Delivery and lifecycle
+
 A separate command hook announces when the host unloads the rules-on-demand
 engine because its hooks worker was terminated: no at-act rule is then served
 or refused. It announces on the next user prompt, session start, or Agent, Task

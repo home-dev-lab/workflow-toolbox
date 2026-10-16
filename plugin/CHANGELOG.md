@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- `wt-rules-on-demand` can skip its refusal round for exact agent types listed in `WT_ROD_NO_REFUSE_AGENT_TYPES` in a project's settings `env` block, still delivers matched rules with the call's result, and names the configured types at SessionStart.
 - SDK pilots can wake their launching session through a dedicated, fenced SendMessage query when a Definition-of-done decision request is published. Parent identity and permission class are explicit launch flags; only the parent's `decide` invocation can bind a reading. Wake outcomes and usage are reported separately, and the request log remains the fallback signal.
 
 ### Changed

@@ -13,6 +13,7 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
+import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType, rememberAgentType } from './agent-types.js';
 import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
   mergeFlightHealth, noteFlightCall, resetFlightRecorder, disableFlightRecorder } from './flight-recorder.js';
 
@@ -1101,6 +1102,28 @@ function claim(ctx, rules) {
   for (const rule of rules) { const state = servedAs(ctx, rule); ctx.served.set(rule.name, { count: (state?.count ?? 0) + 1, at: Date.now(), identity: rule.identity }); }
 }
 
+function reserveRequested(options) {
+  return options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
+}
+
+function reserveEnvironmentLimit() {
+  return Number(typeof process !== 'undefined' ? process.env?.WT_ROD_MAX_PER_CONTEXT : NaN);
+}
+
+function configureReserve(options) {
+  reserve = reserveRequested(options);
+  // Read the environment even when reserve is off, preserving registration order.
+  const envLimit = reserveEnvironmentLimit();
+  // Host userConfig defaults arrive as explicit options: max_per_context only applies with time_reserve.
+  limit = 1;
+  if (reserve) {
+    limit = 3;
+    const configured = Number(options?.max_per_context);
+    if (Number.isInteger(configured) && configured > 0) limit = configured;
+    if (Number.isInteger(envLimit) && envLimit > 0) limit = envLimit;
+  }
+}
+
 /** @type {import('claude-code').Register} */
 export const register = (on, options, clock = Date.now) => {
   token = newToken();
@@ -1110,16 +1133,9 @@ export const register = (on, options, clock = Date.now) => {
   activityRetryAt = 0;
   triggerClock = clock;
   enabled = options?.enabled === true;
-  reserve = options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
-  // Host userConfig defaults arrive as explicit options: max_per_context only applies with time_reserve.
-  const envLimit = Number(typeof process !== 'undefined' ? process.env?.WT_ROD_MAX_PER_CONTEXT : NaN);
-  limit = 1;
-  if (reserve) {
-    limit = 3;
-    const configured = Number(options?.max_per_context);
-    if (Number.isInteger(configured) && configured > 0) limit = configured;
-    if (Number.isInteger(envLimit) && envLimit > 0) limit = envLimit;
-  }
+  resetAgentTypes();
+  agentTypeSetting = UNREAD;
+  configureReserve(options);
   contexts = new Map();
   archiveSequence = 0;
   storeSwept = false;
@@ -1130,9 +1146,54 @@ export const register = (on, options, clock = Date.now) => {
   on('prompt.submit', promptSubmitEvent);
   on('turn.complete', turnCompleteEvent);
   on('tool.call', toolCallEvent);
+  on('agent.spawn', agentSpawnEvent);
 };
 
 let triggerClock = Date.now;
+
+// The hooks module runs without Node.js globals, and register() receives no $: the project's settings env reaches it
+// only through the host's environment API, called inside a hook. The list is therefore read when a spawn or a refusal
+// needs it, and the learned types are reset whenever the value read changes.
+const UNREAD = Symbol('unread');
+let agentTypeSetting = UNREAD;
+async function agentTypeOptOutActive($) {
+  let value;
+  try { value = await hostCall($, $.env.get('WT_ROD_NO_REFUSE_AGENT_TYPES')); } catch { value = undefined; }
+  if (value !== agentTypeSetting) {
+    agentTypeSetting = value;
+    configureAgentTypes(value);
+  }
+  return agentTypeOptOutConfigured();
+}
+
+async function agentSpawnEvent($, e, next) {
+  if (!enabled) return next(e);
+  const active = agentTypeOptOutActive($).catch(() => false);
+  const result = await next(e);
+  try {
+    if (result && result.deny === undefined && typeof e.subagentType === 'string' && await active)
+      rememberAgentType(result.agentId ?? e.resume?.agentId, e.subagentType);
+  } catch { /* Bookkeeping must never turn a started spawn into a failure. */ }
+  return result;
+}
+
+async function lookupAgentType($, id) {
+  try { return (await hostCall($, $.agent.list())).find((agent) => agent.id === id)?.type ?? null; }
+  catch { return null; }
+}
+
+async function refusalsForAgent($, e, before) {
+  if (!before.length || !e.agentId || !(await agentTypeOptOutActive($))) return before;
+  let type = knownAgentType(e.agentId);
+  if (type === undefined) {
+    type = lookupAgentType($, e.agentId);
+    rememberAgentType(e.agentId, type);
+  }
+  type = await type;
+  if (!neverRefuseType(type)) return before;
+  await progress($, `wt-rules-on-demand: waiving before-act refusal for agent type ${type}; serving ${before.map((rule) => rule.name).join(', ')} with the result`);
+  return [];
+}
 
 // Only the host-facing promise settles on abort; the body retains its real lifetime.
 async function settleHook(signal, body) {
@@ -1688,7 +1749,7 @@ async function toolCallWork($, e, next) {
   for (const pending of inputlessSteps($, e, rules, budget, slice, triggerErrors)) await pending;
   const beforeMatched = new Set();
   const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
-  const before = beforeRules(chosen, ctx, beforeMatched);
+  const before = await refusalsForAgent($, e, beforeRules(chosen, ctx, beforeMatched));
   await journal($, [], loop, [], [], [], { triggerErrors: uniqueTriggerErrors(triggerErrors) });
   if (budget.exhausted) await progress($, exhaustionNotice(budget));
   const plan = before.length ? refusalSteps($, ctx, before, e, loop, admission)
@@ -1703,4 +1764,4 @@ async function toolCallWork($, e, next) {
   return step.value;
 }
 
-export function resetForSelftest(keepFlightConfig = false) { resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; usageMissing = false; usageStalled = false; scanUnavailable = false; scanStalled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest(keepFlightConfig = false) { resetAgentTypes(); agentTypeSetting = UNREAD; resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; usageMissing = false; usageStalled = false; scanUnavailable = false; scanStalled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
