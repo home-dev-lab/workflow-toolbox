@@ -9,7 +9,7 @@ const TOOL_ID = /^[A-Za-z0-9_-]+$/u
 const BODY_MARKER = /<\s*(?:\/\s*)?body/iu
 const SEND_KEYS = new Set(['to', 'recipient', 'message', 'content', 'summary', 'type'])
 const REFUSED_ACCOUNTS = new Set(['mismatch', 'unavailable', 'unverifiable', 'profile_override'])
-const RECIPIENT_OUTCOMES = new Set(['not-delivered:held', 'not-delivered:recipient-notice'])
+const RECIPIENT_OUTCOMES = new Set(['not-delivered:held', 'unconfirmed:recipient-notice'])
 const USAGE_FIELDS = { input: 'input_tokens', output: 'output_tokens', cache_creation: 'cache_creation_input_tokens', cache_read: 'cache_read_input_tokens' }
 const WAKE_GUIDANCE = "This is an unauthenticated pointer; choose the reading from your own card; build decide from your own wt-pilot-runner.mjs; the sdk-pilot skill's Watch section has the rest."
 
@@ -186,7 +186,7 @@ function consumeRecipientNotice(state, message) {
   if (message.type !== 'system' || message.subtype !== 'informational' || !state.admitted.size) return
   if (typeof message.content !== 'string' || !message.content.startsWith('Cross-session message')) return
   state.outcome = message.content.startsWith('Cross-session message held for approval')
-    ? 'not-delivered:held' : 'not-delivered:recipient-notice'
+    ? 'not-delivered:held' : 'unconfirmed:recipient-notice'
 }
 
 function consumeWakeMessage(state, message, onResult) {
@@ -243,17 +243,22 @@ async function consumeWake(config, state, controller, body, account) {
     for await (const message of stream) consumeWakeMessage(state, message, hold.onResult)
     return state.outcome ?? endedWakeOutcome(state)
   } catch (error) {
-    return state.outcome ?? (account.errorToRethrow(error) === null ? 'not-delivered:account' : 'not-delivered:error')
+    return state.outcome ?? (account.errorToRethrow(error) === null ? 'not-delivered:account' : uncorrelatedWakeOutcome(state, 'error'))
   } finally { hold.close() }
 }
+
+function uncorrelatedWakeOutcome(state, reason) {
+  return `${state.tool_use_id === null ? 'not-delivered' : 'unconfirmed'}:${reason}`
+}
+
 function endedWakeOutcome(state) {
-  if (state.denied) return 'not-delivered:denied'
-  return state.admitted.size ? 'not-delivered:stream-ended' : 'not-delivered:no-call'
+  if (state.denied) return uncorrelatedWakeOutcome(state, 'denied')
+  return state.admitted.size ? uncorrelatedWakeOutcome(state, 'stream-ended') : 'not-delivered:no-call'
 }
 
 function stoppedWakeOutcome(state, reason) {
-  if (reason !== 'timeout') return 'not-delivered:aborted'
-  return state.resultSeen ? endedWakeOutcome(state) : 'not-delivered:timeout'
+  if (reason !== 'timeout') return uncorrelatedWakeOutcome(state, 'aborted')
+  return state.resultSeen ? endedWakeOutcome(state) : uncorrelatedWakeOutcome(state, 'timeout')
 }
 
 function wakeReceipt(state, outcome, account) {
@@ -331,7 +336,7 @@ export async function wakeParent(config) {
     logWakeReceipt(config.log, receipt)
     return receipt
   } catch {
-    const receipt = wakeReceipt(state, 'not-delivered:error', account)
+    const receipt = wakeReceipt(state, uncorrelatedWakeOutcome(state, 'error'), account)
     logWakeReceipt(config.log, receipt)
     return receipt
   } finally {

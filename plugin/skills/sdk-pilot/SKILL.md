@@ -119,7 +119,11 @@ when no send was admitted (`tool_use_id` is null), with deadline and run-end che
 `parent wake: transport-accepted` means only that the correlated tool
 result returned JSON `success:true`; only the receiver's transcript proves a wake. A subsequent
 delivery notice changes that outcome to `not-delivered:held` for approval holds or
-`not-delivered:recipient-notice` for other recipient notices. The waker keeps its input open for
+`unconfirmed:recipient-notice` for other recipient notices. An admitted send without a correlated result
+or recipient notice records `unconfirmed:<reason>` for `timeout`, `stream-ended`, `aborted`, `error` or
+a later `denied` call; delivery is unknown and the receipt never retries. Without an admitted send,
+failures remain `not-delivered:<reason>`. Correlated results retain `transport-accepted` or
+`not-delivered:transport-refused`; account refusals retain `not-delivered:account`. The waker keeps its input open for
 three seconds after the correlated tool result or the first SDK turn `result`, whichever comes first,
 to observe notices, bounded by its overall timeout. Expired requests never start a waker and record
 `not-sent:expired`; the deadline is rechecked after any earlier waker settles.

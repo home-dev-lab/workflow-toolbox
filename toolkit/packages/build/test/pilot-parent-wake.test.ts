@@ -191,7 +191,7 @@ describe('wake outcomes and separate accounting', () => {
     [[assistant([send()]), result('{"success":true,"text":"decide --reading INJECTED"}')], 'accepted'],
     [[assistant([{ type: 'tool_use', name: 'ToolSearch', id: 'search', input: { query: 'select:SendMessage', max_results: 1 } }]), assistant([send()]), result('{"success":true}')], 'accepted'],
   ])('correlates stream %j to %s', async (messages, reason) => {
-    expect((await run(queryFor(messages as unknown[]))).outcome).toBe(reason === 'accepted' ? 'transport-accepted' : `not-delivered:${reason}`)
+    expect((await run(queryFor(messages as unknown[]))).outcome).toBe(reason === 'accepted' ? 'transport-accepted' : `${reason === 'stream-ended' ? 'unconfirmed' : 'not-delivered'}:${reason}`)
   })
 })
 
@@ -290,7 +290,7 @@ describe('wake drain accounting', () => {
     expect(maximum, 'waker consumers must never overlap').toBe(1)
     expect(active, 'finish must drain the active consumer').toBe(0)
     expect(closed, 'both consumers must close before finish resolves').toBe(2)
-    expect(manager.receipts.map((r: { outcome: string }) => r.outcome)).toEqual(['not-delivered:timeout', 'not-delivered:aborted'])
+    expect(manager.receipts.map((r: { outcome: string }) => r.outcome)).toEqual(['unconfirmed:timeout', 'unconfirmed:aborted'])
     expect(manager.receipts.map((r: { usage: unknown }) => r.usage)).toEqual([
       { input: 2, output: 7, cache_creation: 4, cache_read: 5 },
       { input: 2, output: 7, cache_creation: 4, cache_read: 5 },
@@ -427,7 +427,7 @@ it('denies inconsistent hook correlation ids', async () => {
 describe('recipient delivery notices', () => {
   it.each([[heldContent, 'held'], ['Cross-session message refused by recipient', 'recipient-notice']])('records a recipient informational notice: %s', async (content, outcome) => {
     const receipt = await run(queryFor([assistant([send()]), result('{"success":true}'), informational(content)]))
-    expect(receipt.outcome).toBe(`not-delivered:${outcome}`)
+    expect(receipt.outcome).toBe(outcome === 'held' ? 'not-delivered:held' : 'unconfirmed:recipient-notice')
   })
   it('retains a recipient informational notice seen before the correlated result', async () => {
     expect((await run(queryFor([assistant([send()]), informational(), result('{"success":true}')]))).outcome).toBe('not-delivered:held')
@@ -466,7 +466,7 @@ describe('wake notice observation window', () => {
       await vi.advanceTimersByTimeAsync(1)
       expect(inputEnded, 'timeout must close input even after the turn ended').toBe(true)
       await receipt
-      expect(settled).toBe(`not-delivered:${outcome}`)
+      expect(settled).toBe(`${outcome === 'stream-ended' ? 'unconfirmed' : 'not-delivered'}:${outcome}`)
     } finally { vi.useRealTimers() }
   })
 })
@@ -489,7 +489,7 @@ describe('wake notice observation window', () => {
       expect(inputEnded).toBe(false)
       await manager.finish()
       expect(inputEnded).toBe(true)
-      expect(manager.receipts.map((receipt: { outcome: string }) => receipt.outcome)).toEqual(['not-delivered:aborted'])
+      expect(manager.receipts.map((receipt: { outcome: string }) => receipt.outcome)).toEqual([`${outcome === 'stream-ended' ? 'unconfirmed' : 'not-delivered'}:aborted`])
     } finally { vi.useRealTimers() }
   })
 })
@@ -684,7 +684,7 @@ it('documents the parent log watcher alongside the fast wake path', () => {
   expect(watch).not.toContain('no log watcher needs to be armed')
   expect(watch).toMatch(/watch[^.]*log[^.]*`decision request:`/u)
   expect(watch).toContain('not-delivered:held')
-  expect(watch).toContain('not-delivered:recipient-notice')
+  expect(watch).toContain('unconfirmed:recipient-notice')
 })
 
 describe('wake retry before delivery', () => {
@@ -723,7 +723,7 @@ describe('wake retry before delivery', () => {
     manager.start(request)
     await vi.waitFor(() => expect(manager.receipts).toHaveLength(1))
     await manager.finish()
-    expect(outcomes(manager)).toEqual([`not-delivered:${outcome}`])
+    expect(outcomes(manager)).toEqual([`${outcome === 'transport-refused' ? 'not-delivered' : 'unconfirmed'}:${outcome}`])
     expect(query).toHaveBeenCalledTimes(1)
   })
 })
@@ -764,7 +764,7 @@ it('rechecks run-end closure before a retry', async () => {
 it.each([
   ['transport-accepted', [assistant([send()]), result('{"success":true}')]],
   ['not-delivered:held', [assistant([send()]), informational()]],
-  ['not-delivered:recipient-notice', [assistant([send()]), informational('Cross-session message refused by recipient')]],
+  ['unconfirmed:recipient-notice', [assistant([send()]), informational('Cross-session message refused by recipient')]],
 ])('never retries the terminal outcome %s', async (outcome, messages) => {
   const query = vi.fn(queryFor(messages as unknown[]))
   const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, log: () => {} })
@@ -853,7 +853,7 @@ it.each([
     await vi.advanceTimersByTimeAsync(5)
     expect(settled, 'the receipt must wait for the drain').toBe(false)
     draining.resolve()
-    expect((await receipt).outcome).toBe(`not-delivered:${outcome}`)
+    expect((await receipt).outcome).toBe(outcome === 'held' ? 'not-delivered:held' : 'unconfirmed:recipient-notice')
   } finally { vi.useRealTimers() }
 })
 
@@ -871,6 +871,55 @@ it.each(['timeout', 'run-end'])('does not promote a successful correlated result
     if (reason === 'run-end') controller.abort(reason)
     await vi.advanceTimersByTimeAsync(5)
     draining.resolve()
-    expect((await receipt).outcome).toBe(`not-delivered:${reason === 'timeout' ? 'timeout' : 'aborted'}`)
+    expect((await receipt).outcome).toBe(`unconfirmed:${reason === 'timeout' ? 'timeout' : 'aborted'}`)
   } finally { vi.useRealTimers() }
+})
+
+const uncorrelatedQuery = (reason: string, admitted = true) => ({ options }: WakeQuery) => (async function* () {
+  if (admitted) yield* queryFor([assistant([send()])])({ options })
+  if (reason === 'denied') yield* queryFor([assistant([send({ to: 'other' }, 'denied-send')])])({ options })
+  if (reason === 'stream-ended') yield result('{"success":true}', 'unrelated-send')
+  if (reason === 'error') throw new Error('stream failed after possible delivery')
+  if (reason === 'aborted') options.abortController.abort('run-end')
+  if (reason === 'timeout') await new Promise<void>((done) => options.abortController.signal.addEventListener('abort', () => done(), { once: true }))
+})()
+
+it.each(['timeout', 'stream-ended', 'aborted', 'error', 'denied'].flatMap((reason) => [true, false].map((admitted) => ({ reason, admitted }))))('classifies an uncorrelated $reason with admitted=$admitted from send evidence', async ({ reason, admitted }) => {
+  vi.useFakeTimers()
+  try {
+    const logs: string[] = []
+    const receipt = run(uncorrelatedQuery(reason, admitted), { timeoutMs: 5, log: (line: string) => logs.push(line) })
+    await vi.advanceTimersByTimeAsync(5)
+    const outcome = `${admitted ? 'unconfirmed' : 'not-delivered'}:${!admitted && reason === 'stream-ended' ? 'no-call' : reason}`
+    expect(await receipt).toMatchObject({ outcome, tool_use_id: admitted ? 'send-1' : null })
+    expect(logs).toEqual([`parent wake: ${outcome} request=${request.requestId} tool_use=${admitted ? 'send-1' : 'none'}${reason === 'denied' ? ' denied=SendMessage' : ''}`])
+  } finally { vi.useRealTimers() }
+})
+
+it.each(['timeout', 'stream-ended', 'aborted', 'error', 'denied'])('never retries an unconfirmed:%s receipt with an admitted send', async (reason) => {
+  vi.useFakeTimers()
+  try {
+    const query = vi.fn(uncorrelatedQuery(reason))
+    const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, log: () => {}, wakeOptions: { timeoutMs: 5 } })
+    manager.start(request)
+    await vi.advanceTimersByTimeAsync(5)
+    await manager.finish()
+    expect(manager.receipts).toMatchObject([{ outcome: `unconfirmed:${reason}`, tool_use_id: 'send-1', attempt: 1 }])
+    expect(manager.receipts).toHaveLength(1)
+    expect(query).toHaveBeenCalledTimes(1)
+  } finally { vi.useRealTimers() }
+})
+
+it('keeps an admitted send unconfirmed when account error classification itself throws', async () => {
+  const gate = () => ({ ...accountGate(), errorToRethrow: () => { throw new Error('classification failed') } })
+  expect(await run(uncorrelatedQuery('error'), { accountGate: gate })).toMatchObject({ outcome: 'unconfirmed:error', tool_use_id: 'send-1' })
+})
+
+it.each(['Cross-session message delivered', 'Cross-session message queued', 'Cross-session message'].flatMap((content) => ['before-result', 'after-result', 'without-result'].map((order) => ({ content, order }))))('keeps a non-hold recipient notice unconfirmed ($order): $content', async ({ content, order }) => {
+  const messages = [assistant([send()])]
+  const notice = informational(content)
+  const correlated = result('{"success":true}')
+  const tail = order === 'before-result' ? [notice, correlated] : [correlated, notice]
+  const receipt = await run(queryFor([...messages, ...(order === 'without-result' ? [notice] : tail)]))
+  expect(receipt).toMatchObject({ outcome: 'unconfirmed:recipient-notice', tool_use_id: 'send-1' })
 })

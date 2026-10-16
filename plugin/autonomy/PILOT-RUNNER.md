@@ -282,7 +282,11 @@ loop continues to another plan round. Each criterion is escalated at most once p
   The structured `parent wake: transport-accepted` log
   means only a correlated JSON `success:true` transport result, not receiver delivery. Permission
   class mismatch can hold the message for approval: an observed hold records `not-delivered:held`,
-  and any other recipient delivery notice records `not-delivered:recipient-notice`. Input remains
+  and any other recipient delivery notice records `unconfirmed:recipient-notice`. If a send was admitted
+  but no correlated result or recipient notice was observed, the receipt is `unconfirmed:<reason>` for
+  `timeout`, `stream-ended`, `aborted`, `error` or a later `denied` call: delivery is unknown.
+  Without an admitted send those failures remain `not-delivered:<reason>`. Correlated results retain
+  `transport-accepted` or `not-delivered:transport-refused`; account refusals retain `not-delivered:account`. Input remains
   open for three seconds after the correlated tool result or the first SDK turn `result`, whichever comes first
   (configurable as `noticeHoldMs` in wake options), within the overall wake cap. The parent must still watch for `decision request:` in
   the log; a wake is only the fast notification path.
@@ -295,7 +299,8 @@ loop continues to another plan round. Each criterion is escalated at most once p
   its deadline and run-end state are checked again after any earlier waker settles, before each retry,
   and inside the account gate's launch callback immediately before opening the query. The send fence
   also rechecks the deadline and abort signal before admitting a send. A consumer that outlives the drain bound prevents later launches with
-  `not-delivered:prior-waker-stuck`; normal run-end cancellation records `not-delivered:aborted`.
+  `not-delivered:prior-waker-stuck`; normal run-end cancellation records `not-delivered:aborted`
+  before send admission or `unconfirmed:aborted` after admission without a confirmed outcome.
   Failures do not affect the decision deadline or run outcome. Model, assistant-id
   token totals, outcome, account verdict, 1-based `attempt` and any denied tool's name are recorded in
   `summary.parent_wakes[]` separately from pilot totals; retry log lines append `attempt=<n>`.

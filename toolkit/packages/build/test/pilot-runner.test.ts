@@ -2531,8 +2531,8 @@ it('starts no wake query without parent options', async () => {
 
 it.each(['held', 'recipient-notice'])('records a %s wake notice while preserving the published request and fallback', async (wake) => {
   const result = await parentWakeDispute(wake)
-  expect(result.summary.parent_wakes).toMatchObject([{ outcome: `not-delivered:${wake}`, tool_use_id: 'wake-send', usage: { input: 123, output: 4 } }])
-  expect(result.logged).toContain(`parent wake: not-delivered:${wake} request=${result.requestId} tool_use=wake-send`)
+  expect(result.summary.parent_wakes).toMatchObject([{ outcome: `${wake === 'held' ? 'not-delivered' : 'unconfirmed'}:${wake}`, tool_use_id: 'wake-send', usage: { input: 123, output: 4 } }])
+  expect(result.logged).toContain(`parent wake: ${wake === 'held' ? 'not-delivered' : 'unconfirmed'}:${wake} request=${result.requestId} tool_use=wake-send`)
   expect(result.summary.dod_disputes).toMatchObject([{ requestId: result.requestId, resolution: { source: 'fallback', reading: result.term } }])
   expect(result.logged.some((line: string) => line.startsWith('decision request:'))).toBe(true)
 })
