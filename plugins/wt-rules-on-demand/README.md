@@ -58,7 +58,9 @@ dropping the earliest recorded first; an evicted identity also needs this fallba
 Only non-empty string types are cached. Concurrent lookups for one identity
 share a request. At most 32 list requests may be outstanding on the host: a
 request that passed its deadline keeps its slot until the host settles it, and
-overflow keeps the refusal without another request. Failed, empty, or timed-out
+overflow keeps the refusal without another request. A deadline frees the waiting
+call, never the slot: if 32 requests never settle, every later unknown identity
+keeps its refusals, with or without a host clock. Failed, empty, or timed-out
 lookups back off for 1 second, doubling after each failure to a 60-second cap.
 Success clears the backoff. Pending lookups and retry deadlines together retain
 at most 256 identities, and a deadline is never dropped before it passes: when

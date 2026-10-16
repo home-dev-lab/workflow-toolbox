@@ -631,6 +631,34 @@ test('no microtask boundary separates the waiver decision from the act', async (
   assert.deepEqual([...outcomes].sort(), ['refused', 'waived'], 'the scan must straddle the decision point');
 });
 
+test('a rule name that runs host code when formatted cannot run between the decision and the act', async () => {
+  const { f, started, release } = pausedDecision();
+  const held = deferred();
+  let armed = false, resuming = false, actedWhileResuming = false, resume;
+  const name = {
+    [Symbol.toPrimitive]() {
+      if (armed && !resume) {
+        resuming = true;
+        resume = f.event('agent.spawn', { resume: { agentId: 'worker' }, subagentType: 'other-agent' }, () => held.promise);
+      }
+      return 'sample.md';
+    },
+    endsWith: (suffix) => 'sample.md'.endsWith(suffix),
+  };
+  f.$.fs.list = async (dir) => dir === '/synthetic-config/rules-on-demand' ? [{ kind: 'file', name }] : [];
+  await f.spawn();
+  const call = f.event('tool.call', { cwd: '/synthetic-project', tool: 'Agent', agentId: 'worker' },
+    async () => { actedWhileResuming ||= resuming; return { context: ['original context'] }; });
+  await started.promise;
+  armed = true;
+  release.resolve();
+  const result = await call;
+  held.resolve({ agentId: 'worker' });
+  await resume;
+  assert.equal(actedWhileResuming, false, 'a rule name formatted after the decision must not run host code before the act');
+  assertDelivered(result);
+});
+
 test('a list call that throws at once frees its host slot', async () => {
   const f = fixture();
   f.$.agent.list = () => { throw new Error('unavailable'); };

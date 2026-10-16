@@ -632,15 +632,23 @@ function loadRootCandidates(root, config, linked, fallback) {
 }
 const projectScope = (real, configReal) => real !== null && !sameDirectory(real, configReal);
 
+// A rule name is formatted after the waiver decision, so it is made a primitive string here, once, where host code may
+// still run; a name that cannot be made one is skipped.
+function ruleFileName(entry) {
+  try { return String(entry?.name); } catch { return null; }
+}
+
 // Synchronous plans expose the existing awaited operations without adding a helper's async completion turn.
 function* loadRuleCopies($, locations, copies, staticFiles, physicalDirs, rules) {
   for (const [scope, dir] of locations) {
     for (const entry of yield list($, dir)) {
-      const file = `${dir}/${entry.name}`;
+      const name = ruleFileName(entry);
+      if (name === null) continue;
+      const file = `${dir}/${name}`;
       const kind = yield entryKind($, file, entry);
-      if (kind !== 'file' || !entry.name.endsWith('.md')) continue;
-      if (!copies.has(entry.name)) copies.set(entry.name, []);
-      copies.get(entry.name).push({ scope, dir, file });
+      if (kind !== 'file' || !name.endsWith('.md')) continue;
+      if (!copies.has(name)) copies.set(name, []);
+      copies.get(name).push({ scope, dir, file });
     }
   }
   for (const [name, found] of copies) yield* loadWinner($, name, found, staticFiles, physicalDirs, rules);
