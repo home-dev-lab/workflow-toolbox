@@ -118,6 +118,27 @@ function loggedGh(f: ReturnType<typeof fixture>, log: string, failingJob = 'matr
   } }
   return io
 }
+// Narrows the authorized commit list to one wrong commit so the real hook refuses. The range is matched by
+// content, not position: options such as `--end-of-options` may precede it. `state.narrowed` proves it fired.
+function narrowedRangeIO(fake: ReturnType<typeof fakeGh>, base: string) {
+  const state = { narrowed: 0 }
+  const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program !== 'git' || args[0] !== 'rev-list' || !args.some((arg) => arg.startsWith('public/main..'))) return fake.io.run(program, args, opts)
+    state.narrowed++
+    return { status: 0, stdout: `${base}\n`, stderr: '' }
+  } }
+  return { io, state }
+}
+
+describe('option-like child-process values', () => {
+  const flags = ['--merge', '--ref', '--base', '--remote', '--workflow', '--repo-slug']
+  it.each(flags.flatMap((flag) => ['--help', '-h', '--all', '--'].map((value) => [flag, value])))('%s %s is refused before any child runs', async (flag, value) => {
+    const out = output()
+    const io = { ...commandIO, run() { throw new Error('child must not run') } }
+    expect(await dispatch(['release-check', flag, value], { io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain(`${flag} must not start with "-"`)
+  })
+})
 
 type Fixture = ReturnType<typeof fixture>
 type Fake = ReturnType<typeof fakeGh>
@@ -252,6 +273,19 @@ function timedOutBranchIo(fake: Fake, auth: string) {
     return result
   } }
   return { io, authAtDelete, state }
+}
+// Records every gh argv; answers `gh run list` with one new workflow_dispatch row whose databaseId is `id`.
+function runListIdIO(f: ReturnType<typeof fixture>, id: unknown) {
+  const calls: string[][] = []
+  let dispatched = false
+  const fake = fakeGh(f)
+  const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program === 'gh') calls.push(args)
+    if (program === 'gh' && args[0] === 'workflow') dispatched = true
+    if (program === 'gh' && args[1] === 'list') return { status: 0, stdout: JSON.stringify(dispatched ? [{ databaseId: id, url: `https://github.com/owner/repo/actions/runs/${String(id)}`, event: 'workflow_dispatch', headBranch: `card/ci-${f.host.slice(0, 12)}`, headSha: f.host, status: 'in_progress' }] : []), stderr: '' }
+    return fake.io.run(program, args, opts)
+  } }
+  return { io, calls }
 }
 describe('cross-OS dispatch', () => {
   it('reconciles every primitive and spawning test with a live host-layer glob', () => {
@@ -482,12 +516,9 @@ describe('cross-OS dispatch', () => {
 
   it('removes its authorization after the hook refuses a push', async () => {
     const f = publicFixture(); const out = output()
-    const fake = fakeGh(f)
-    const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
-      if (program === 'git' && args[0] === 'rev-list' && args[1]?.startsWith('public/main..')) return { status: 0, stdout: `${f.base}\n`, stderr: '' }
-      return fake.io.run(program, args, opts)
-    } }
+    const { io, state } = narrowedRangeIO(fakeGh(f), f.base)
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
+    expect(state.narrowed).toBe(1)
     expect(out.lines.join('\n')).toContain('git push public')
     expect(existsSync(authPathOf(f.dir))).toBe(false)
   })
@@ -731,6 +762,44 @@ describe('cross-OS dispatch', () => {
   })
 })
 
+// Stored and listed run IDs, and the authorized commit list: kept apart from the cross-OS describe, whose function
+// length is already at its quality ratchet.
+describe('cross-OS dispatch: stored and listed IDs', () => {
+  it.each(['--help', '--help=true'])('a stored run id %s is never passed to gh and reads as a missing record', async (runId) => {
+    const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos')
+    const args = ['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo']
+    const missing = output()
+    const missingCode = await dispatch(args, { io: fakeGh(f).io, print: missing.print })
+    mkdirSync(store)
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId, workflow: 'cross-os.yml', branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
+    const fake = fakeGh(f); const out = output()
+    expect(await dispatch(args, { io: fake.io, print: out.print })).toBe(missingCode)
+    expect(out.lines).toEqual(missing.lines)
+    expect(fake.calls.some((argv) => argv.some((arg) => arg.startsWith('--help')))).toBe(false)
+  })
+
+  it('skips a gh run list row whose id is not a positive integer, and never views it', async () => {
+    const f = publicFixture(); const out = output()
+    const { io, calls } = runListIdIO(f, '-x')
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(3)
+    expect(calls.some((argv) => argv[1] === 'view' && argv.includes('-x'))).toBe(false)
+    expect(out.lines.join('\n')).toContain('found 0')
+  })
+
+  it('never passes a non-commit entry of the authorization file to git, and refuses it as stale', async () => {
+    const f = publicFixture(); const out = output(); const path = authPathOf(f.dir)
+    writeFileSync(path, JSON.stringify({ commits: ['--help'] }))
+    const fake = fakeGh(f); const gitCalls: string[][] = []
+    const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'git') gitCalls.push(args)
+      return fake.io.run(program, args, opts)
+    } }
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
+    expect(gitCalls.some((argv) => argv.includes('--help'))).toBe(false)
+    expect(out.lines.join('\n')).toContain('authorization exists')
+    expect(readFileSync(path, 'utf8')).toContain('--help')
+  })
+})
 describe('green only from positive evidence', () => {
   const sha = 'a'.repeat(40)
   const positive = () => ({

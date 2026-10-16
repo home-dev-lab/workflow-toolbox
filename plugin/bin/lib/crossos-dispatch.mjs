@@ -6,6 +6,10 @@ const LIST = '.github/cross-os-host-layer.json'
 const RESULTS = { 0: 'green', 1: 'red', 2: 'error', 3: 'mismatch', 4: 'timeout', 5: 'pending' }
 const failure = (message, code = 2) => Object.assign(new Error(message), { code })
 const lines = (text) => text.trim().split('\n').filter(Boolean)
+// Every run ID and commit read from storage or from gh output is checked before any gh or git argv uses it.
+const RUN_ID = /^[1-9][0-9]*$/
+const COMMIT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+const validRunId = (id) => RUN_ID.test(String(id))
 
 function extractFailedTests(log) {
   const failures = new Map()
@@ -29,6 +33,12 @@ function extractFailedTests(log) {
   return [...failures.values()]
 }
 
+function childValue(flag, value) {
+  const forwarded = ['--merge', '--ref', '--base', '--remote', '--workflow', '--repo-slug']
+  if (forwarded.includes(flag) && value.startsWith('-')) throw failure(`${flag} must not start with "-"`)
+  return value
+}
+
 function options(argv) {
   const command = argv[0]
   if (!['decide', 'run', 'collect', 'release-check'].includes(command)) throw failure('usage: decide|run|collect|release-check [options]')
@@ -39,7 +49,7 @@ function options(argv) {
     if (flag === '--dry-run') { out.dryRun = true; continue }
     // Own properties only: `names` is a plain object, so `constructor` / `toString` would otherwise pass as options.
     if (!Object.hasOwn(names, flag) || !argv[index + 1]) throw failure(`unknown or missing option: ${flag}`)
-    out[names[flag]] = argv[++index]
+    out[names[flag]] = childValue(flag, argv[++index])
   }
   if (['decide', 'run', 'collect'].includes(command) && !out.merge) throw failure('--merge is required')
   if (!Number.isFinite(Number(out.timeoutMin)) || Number(out.timeoutMin) <= 0) throw failure('--timeout-min must be positive')
@@ -53,7 +63,7 @@ function checked(io, cwd, program, args) {
 }
 const git = (ctx, ...args) => checked(ctx.io, ctx.cwd, 'git', args)
 const gh = (ctx, ...args) => JSON.parse(checked(ctx.io, ctx.cwd, 'gh', args))
-const shaOf = (ctx, ref) => git(ctx, 'rev-parse', '--verify', `${ref}^{commit}`)
+const shaOf = (ctx, ref) => git(ctx, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`)
 const recordPath = (ctx, sha) => ctx.io.join(ctx.store, `${sha}.json`)
 function reportSuccessfulDiagnostics(ctx, jobs) {
   for (const job of jobs) {
@@ -140,9 +150,12 @@ function save(ctx, record) {
     ctx.io.writeText(ctx.io.join(ctx.args.evidenceDir, `${record.sha}.json`), text)
   }
 }
+// A record whose runId is not a positive integer reads as a missing record: it never reaches `gh run view`.
 function readRecord(ctx, sha) {
   const file = recordPath(ctx, sha)
-  return ctx.io.exists(file) ? JSON.parse(ctx.io.readText(file)) : null
+  if (!ctx.io.exists(file)) return null
+  const record = JSON.parse(ctx.io.readText(file))
+  return record?.runId === undefined || validRunId(record.runId) ? record : null
 }
 
 function decide(ctx, sha, announce = true, listSource) {
@@ -207,7 +220,8 @@ function authorizedPush(ctx, args, content, verifyReceipt) {
     }
     const stale = ctx.io.readText(auth)
     const commits = JSON.parse(stale).commits ?? []
-    const already = commits.filter((sha) => ctx.io.run('git', ['merge-base', '--is-ancestor', sha, `${ctx.args.remote}/main`], { cwd: ctx.cwd }).status === 0).length
+    const ancestor = (sha) => COMMIT_ID.test(sha) && ctx.io.run('git', ['merge-base', '--is-ancestor', sha, `${ctx.args.remote}/main`], { cwd: ctx.cwd }).status === 0
+    const already = commits.filter(ancestor).length
     throw failure(`authorization exists: ${auth} mtime=${ctx.io.mtime(auth)} commits=${commits.join(',')} already-on-${ctx.args.remote}/main=${already}; remove with: rm '${auth}'`)
   }
   const cleanup = () => { if (owned && ctx.io.exists(auth) && ctx.io.readText(auth) === content) ctx.io.removeFile(auth) }
@@ -240,7 +254,7 @@ async function discoverRun(ctx, record) {
   checked(ctx.io, ctx.cwd, 'gh', ['workflow', 'run', ctx.args.workflow, '-R', ctx.slug, '--ref', record.branch])
   let fresh = []
   for (let attempt = 0; attempt < 90; attempt++) {
-    fresh = runList(ctx, record.branch).filter((run) => !prior.has(run.databaseId) && run.event === 'workflow_dispatch')
+    fresh = runList(ctx, record.branch).filter((run) => !prior.has(run.databaseId) && run.event === 'workflow_dispatch' && validRunId(run.databaseId))
     if (fresh.length) break
     await ctx.io.sleep(2000)
   }
@@ -350,7 +364,7 @@ async function run(ctx, sha) {
   if (!ctx.args.dryRun) git(ctx, 'fetch', ctx.args.remote, 'main')
   const branch = ciBranchFor(sha)
   if (!ctx.args.dryRun && git(ctx, 'ls-remote', '--heads', ctx.args.remote, `refs/heads/${branch}`)) throw failure(`branch already exists: ${branch}`)
-  const commits = lines(git(ctx, 'rev-list', `${ctx.args.remote}/main..${sha}`))
+  const commits = lines(git(ctx, 'rev-list', '--end-of-options', `${ctx.args.remote}/main..${sha}`, '--'))
   const auth = ctx.io.join(ctx.gitDir, 'wt-push-authorized.json')
   if (ctx.args.dryRun) {
     ctx.print(`DRY-RUN branch=${branch} commits=${commits.join(',')} auth=${auth}`)
@@ -383,7 +397,7 @@ function releaseCheck(ctx) {
     if (shown.status !== 0) throw failure(`missing ${source}; override with --paths-file <file>`)
     data = shown.stdout
   }
-  const commits = lines(git(ctx, 'rev-list', '--topo-order', `${base}..${ref}`))
+  const commits = lines(git(ctx, 'rev-list', '--topo-order', '--end-of-options', `${base}..${ref}`, '--'))
   let verdict = null
   for (const sha of commits) {
     const decision = decide(ctx, sha, false, { source, data })

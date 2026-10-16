@@ -367,17 +367,21 @@ describe('a guard given a flag VALUE spelled --help / -h does not take the help 
 
   it('wt-check-commit-signatures --range --help exits non-zero in a real git repository (the card lock: exit 0 is "pass")', () => {
     const repo = tempRoot('repo')
+    // An empty file, not os.devNull: Git for Windows exits 128 on GIT_CONFIG_GLOBAL set to the \\.\nul device.
+    const emptyConfig = join(tempRoot('cfg'), 'empty.gitconfig')
+    writeFileSync(emptyConfig, '')
     const git = (...a: string[]) =>
       spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.test', '-c', 'commit.gpgsign=false', ...a], {
         encoding: 'utf8',
-        env: { ...process.env, HOME: repo, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
+        env: { ...process.env, HOME: repo, GIT_CONFIG_GLOBAL: emptyConfig, GIT_CONFIG_NOSYSTEM: '1' },
       })
     expect(git('init', '-q').status).toBe(0)
     expect(git('commit', '-q', '--allow-empty', '-m', 'one').status).toBe(0)
-    for (const spelling of SPELLINGS) {
+    for (const spelling of [...SPELLINGS, '--all', '--']) {
       const r = runCli('wt-check-commit-signatures.mjs', ['--repo', repo, '--range', spelling], { cwd: repo })
       expect(r.timedOut).toBe(false)
-      expect(r.status, `stdout: ${r.stdout} stderr: ${r.stderr}`).not.toBe(0)
+      expect(r.status, `stdout: ${r.stdout} stderr: ${r.stderr}`).toBe(2)
+      expect(r.stderr).toContain('--range must not start with "-"')
       expect(r.stdout).not.toContain(usageOf('wt-check-commit-signatures.mjs'))
     }
   })
@@ -394,13 +398,13 @@ const EXTRA_PARSER_SOURCES: Record<string, string[]> = {
 const NOT_OPTIONS_OF_THE_CLI: Record<string, { literals: string[]; reason: string }> = {
   'wt-changelog-entry.mjs': { literals: ['--abbrev-ref', '--name-only'], reason: 'arguments of the `git rev-parse` / `git diff` it runs' },
   'wt-check-commit-signatures.mjs': {
-    literals: ['--root', '--git-dir', '--get', '--bool', '--not'],
+    literals: ['--root', '--git-dir', '--get', '--bool', '--not', '--end-of-options'],
     reason: 'arguments of the `git rev-list` / `git config` / `git rev-parse` calls it makes',
   },
   'wt-crossos-dispatch.mjs': {
     literals: [
       '--verify', '--job', '--log', '--parents', '--name-only', '--no-renames', '--get', '--git-path', '--is-ancestor',
-      '--delete', '--branch', '--json', '--heads', '--topo-order', '--absolute-git-dir', '--git-common-dir',
+      '--delete', '--branch', '--json', '--heads', '--topo-order', '--absolute-git-dir', '--git-common-dir', '--end-of-options',
     ],
     reason: 'arguments of the git and gh commands lib/crossos-dispatch.mjs builds; none is read from its own argv',
   },
