@@ -276,8 +276,9 @@ export async function callsSince(transcriptPath, stopId, options = {}) {
   try {
     const stat = await file.stat()
     const prefix = await validatedPrefix(file, stat, settings.cursor)
-    return prefix === null ? await discovery(file, stat, stopId, settings)
-      : await incremental(file, stat, stopId, settings, prefix)
+    if (prefix !== null) return await incremental(file, stat, stopId, settings, prefix)
+    // A saved cursor that no longer validates means a different transcript: its old stop id must not end discovery early.
+    return await discovery(file, stat, settings.cursor ? null : stopId, settings)
   } finally {
     await file.close()
   }

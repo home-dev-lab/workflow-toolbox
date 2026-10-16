@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -313,7 +313,25 @@ describe('cache keepalive native compaction fallback', () => {
     writeFileSync(older.transcriptPath, `${compactBoundary(-5)}\n${assistant('baseline', 'claude-sonnet-4-5', 0, { ...HOUR, input_tokens: 249_999 })}\n`)
     expect(run(older, 56).stdout).toContain('CACHE KEEPALIVE:')
   })
+
+  it('rediscovers an equal-time boundary when a replaced transcript repeats the last call', () => {
+    const state = scaffold('native-replaced-equal-boundary')
+    const contents = `${compactBoundary(0)}\n${assistant('a', 'claude-sonnet-4-5', 0, { ...HOUR, input_tokens: 250_000 })}\n`
+    writeFileSync(state.transcriptPath, contents)
+    expect(run(state, 50).stdout).toBe('')
+    expect(saved(state).lastCompactedAtMs).toBe(0)
+    replaceFile(state.transcriptPath, contents)
+    expect(run(state, 57).stdout).toBe('')
+    expect(saved(state).lastCompactedAtMs).toBe(0)
+    expect(journal(state).some((entry) => entry.kind === 'wake')).toBe(false)
+  })
 })
+
+// A rename over the path gives the transcript a new inode even when its bytes are identical.
+function replaceFile(path: string, contents: string) {
+  writeFileSync(`${path}.next`, contents)
+  renameSync(`${path}.next`, path)
+}
 
 describe('cache keepalive environment floor', () => {
   it.each([
@@ -886,8 +904,12 @@ function registerTruncationLocks() {
   it('does not carry the old attempt cap, wake or refresh into a replaced transcript', () => {
     const state = scaffold('replaced-keeps-nothing')
     expect(run(state, 1).stdout).toBe('')
-    save(state, { ...saved(state), refreshCount: 10, cappedLogged: true, lastWakeAtMs: 50 * 60_000, lastRefreshedAtMs: 51 * 60_000 })
+    save(state, { ...saved(state), refreshCount: 10, cappedLogged: true, lastWakeAtMs: 50 * 60_000, lastRefreshedAtMs: 51 * 60_000,
+      lastCompactedAtMs: 52 * 60_000, pendingWake: { atMs: 50 * 60_000, model: 'claude-sonnet-4-5' } })
     writeFileSync(state.transcriptPath, `${assistant('b', 'claude-sonnet-4-5', 10, HOUR)}\n`)
+    expect(run(state, 11).stdout).toBe('')
+    expect(saved(state)).toMatchObject({ refreshCount: 0, cappedLogged: false, lastWakeAtMs: null, lastRefreshedAtMs: null,
+      lastCompactedAtMs: null, pendingWake: null, lastRealId: 'b' })
     expect(run(state, 60).stdout).toContain('CACHE KEEPALIVE:')
   })
 }

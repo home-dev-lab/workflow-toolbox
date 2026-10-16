@@ -152,10 +152,14 @@ function transcriptReason(error) {
 
 // A detected discontinuity (truncation, rewrite) voids what the old bytes said about activity.
 // nativeSkipId stays: it only dedupes the journal line, and a re-read of the same call must not repeat it.
+// A reset returns every field to its fresh value except these: the journal deduplication, and the evidence the
+// discovery has just replaced.
+const RESET_KEEPS = new Set(['nativeSkipId', 'lastReason', 'cacheEvidence'])
+
 function forgetActivity(state) {
-  Object.assign(state, { lastRealId: '', lastRealAtMs: null, lastCadenceAtMs: null, lastContext: null,
-    lastCompactedAtMs: null, lastRefreshedAtMs: null, lastWakeAtMs: null, pendingWake: null })
-  resetIdle(state)
+  for (const [key, value] of Object.entries(freshState())) {
+    if (!RESET_KEEPS.has(key)) state[key] = value
+  }
 }
 
 function rememberCompaction(state, atMs) {
