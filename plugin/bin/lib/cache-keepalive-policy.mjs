@@ -37,10 +37,30 @@ function effectiveFloor(value) {
   return Math.max(100_000, Number(value))
 }
 
-function nativeApplies(state, settings) {
+// Native idle compaction fires at 0.9 of the one-hour TTL (54 min) but can refuse at fire time
+// (rate-limit status, lapsed timer, changed prefix). The two-minute grace covers a compaction that
+// is still writing its boundary; a warm emitted by the next 60 s poll still lands before 60 min.
+const NATIVE_FALLBACK_MS = 56 * 60_000
+
+function nativeEligible(state, settings) {
   if (settings.enabled !== true || settings.fetching !== true || settings.interactive === false || !state.cacheEvidence?.oneHour) return false
   const tokens = state.lastContext?.tokens
   return typeof tokens === 'number' && tokens >= effectiveFloor(settings.floor)
+}
+
+function freshnessAtMs(state) {
+  return state.lastRealAtMs === null ? null : Math.max(state.lastRealAtMs, state.lastRefreshedAtMs ?? 0)
+}
+
+export function nativeFallbackDue(state, settings, nowMs) {
+  const freshness = freshnessAtMs(state)
+  if (freshness === null || !nativeEligible(state, settings)) return false
+  if (state.lastCompactedAtMs !== null && state.lastCompactedAtMs !== undefined && state.lastCompactedAtMs >= freshness) return false
+  return nowMs - freshness >= NATIVE_FALLBACK_MS
+}
+
+function nativeApplies(state, settings, nowMs) {
+  return nativeEligible(state, settings) && !nativeFallbackDue(state, settings, nowMs)
 }
 
 function knownTtlMs(evidence) {
@@ -49,9 +69,9 @@ function knownTtlMs(evidence) {
 }
 
 export function skipReason(state, settings, nowMs) {
-  if (nativeApplies(state, settings)) return NATIVE_SKIP_REASON
-  if (state.lastRealAtMs === null) return ''
+  if (nativeApplies(state, settings, nowMs)) return NATIVE_SKIP_REASON
+  const freshnessMs = freshnessAtMs(state)
+  if (freshnessMs === null) return ''
   const ttlMs = knownTtlMs(state.cacheEvidence)
-  const freshnessMs = Math.max(state.lastRealAtMs ?? 0, state.lastRefreshedAtMs ?? 0)
   return ttlMs !== null && nowMs - freshnessMs > ttlMs ? 'prompt cache freshness expired' : ''
 }

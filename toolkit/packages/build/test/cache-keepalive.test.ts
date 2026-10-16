@@ -230,6 +230,11 @@ function sized(tag: string, context: number, ttl: object = HOUR, model = 'claude
   return state
 }
 
+function compactBoundary(atMinutes: number) {
+  return JSON.stringify({ type: 'system', subtype: 'compact_boundary', timestamp: new Date(atMinutes * 60_000).toISOString(),
+    compactMetadata: { trigger: 'auto', preTokens: 250_000 } })
+}
+
 function settings(state: Session, scope: 'user' | 'project' | 'local', value: object) {
   const file = scope === 'user' ? join(state.configDir, 'settings.json')
     : join(state.projectDir, '.claude', scope === 'local' ? 'settings.local.json' : 'settings.json')
@@ -278,6 +283,35 @@ describe('cache keepalive native compaction and freshness gates', () => {
     writeFileSync(state.transcriptPath, transcript)
     expect(run(state, 52).stdout).toBe('')
     expect(journal(state).filter((entry) => entry.reason === 'native idle compaction applies')).toHaveLength(1)
+  })
+})
+
+describe('cache keepalive native compaction fallback', () => {
+  it('warms an eligible one-hour cache when native idle compaction has not run by its fire time plus grace', () => {
+    const state = sized('native-fallback', 250_000)
+    expect(run(state, 50).stdout).toBe('')
+    expect(run(state, 55).stdout).toBe('')
+    expect(run(state, 56).stdout).toContain('CACHE KEEPALIVE:')
+    expect(journal(state).at(-1)).toEqual(expect.objectContaining({ kind: 'wake', nativeFallback: true }))
+  })
+
+  it('stays silent once a compaction boundary newer than the last call is appended', () => {
+    const state = sized('native-compacted', 250_000)
+    expect(run(state, 50).stdout).toBe('')
+    append(state, compactBoundary(54))
+    expect(run(state, 56).stdout).toBe('')
+    expect(run(state, 59).stdout).toBe('')
+    expect(saved(state).lastCompactedAtMs).toBe(54 * 60_000)
+    expect(journal(state).some((entry) => entry.kind === 'wake')).toBe(false)
+  })
+
+  it('finds a compaction boundary on first discovery and ignores one older than the last call', () => {
+    const compacted = sized('native-compacted-discovery', 250_000)
+    append(compacted, compactBoundary(54))
+    expect(run(compacted, 56).stdout).toBe('')
+    const older = scaffold('native-older-boundary')
+    writeFileSync(older.transcriptPath, `${compactBoundary(-5)}\n${assistant('baseline', 'claude-sonnet-4-5', 0, { ...HOUR, input_tokens: 249_999 })}\n`)
+    expect(run(older, 56).stdout).toContain('CACHE KEEPALIVE:')
   })
 })
 
@@ -828,6 +862,36 @@ function registerCursorAppendLocks() {
 
 }
 
+function registerTruncationLocks() {
+  it('forgets the saved activity when the transcript is truncated, so an emptied file never wakes', () => {
+    const state = scaffold('truncated-to-empty')
+    expect(run(state, 1).stdout).toBe('')
+    writeFileSync(state.transcriptPath, '')
+    expect(run(state, 50).stdout).toBe('')
+    expect(saved(state)).toMatchObject({ lastRealId: '', lastRealAtMs: null, lastCadenceAtMs: null })
+  })
+
+  it('re-reads a transcript truncated and regrown past the old offset, and anchors on its own calls', () => {
+    const state = scaffold('truncated-regrown')
+    writeFileSync(state.transcriptPath, nonAssistantHistory(5) + assistant('a', 'claude-sonnet-4-5', 0) + '\n')
+    expect(run(state, 1).stdout).toBe('')
+    const oldSize = Buffer.byteLength(readFileSync(state.transcriptPath))
+    writeFileSync(state.transcriptPath, assistant('b', 'claude-sonnet-4-5', 10) + '\n' + nonAssistantHistory(10))
+    expect(Buffer.byteLength(readFileSync(state.transcriptPath))).toBeGreaterThan(oldSize)
+    expect(run(state, 55).stdout).toBe('')
+    expect(saved(state)).toMatchObject({ lastRealId: 'b', lastCadenceAtMs: 10 * 60_000 })
+    expect(run(state, 61).stdout).toContain('CACHE KEEPALIVE:')
+  })
+
+  it('does not carry the old attempt cap, wake or refresh into a replaced transcript', () => {
+    const state = scaffold('replaced-keeps-nothing')
+    expect(run(state, 1).stdout).toBe('')
+    save(state, { ...saved(state), refreshCount: 10, cappedLogged: true, lastWakeAtMs: 50 * 60_000, lastRefreshedAtMs: 51 * 60_000 })
+    writeFileSync(state.transcriptPath, `${assistant('b', 'claude-sonnet-4-5', 10, HOUR)}\n`)
+    expect(run(state, 60).stdout).toContain('CACHE KEEPALIVE:')
+  })
+}
+
 function registerCursorRecoveryLocks() {
   it.each(['truncation', 'same-size rewrite'])('rediscovers after %s', (kind) => {
     const state = scaffold('rewritten-cursor')
@@ -914,6 +978,7 @@ function registerUnfinishedLineLock() {
 describe('cache keepalive consumed transcript cursor', () => {
   registerCursorAppendLocks()
   registerCursorRecoveryLocks()
+  registerTruncationLocks()
   registerDiscoveryBudgetLocks()
   registerUnfinishedLineLock()
 })

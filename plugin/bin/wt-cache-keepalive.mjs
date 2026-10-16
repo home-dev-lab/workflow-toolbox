@@ -6,7 +6,7 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
-import { NATIVE_SKIP_REASON, rememberContext, skipReason } from './lib/cache-keepalive-policy.mjs'
+import { NATIVE_SKIP_REASON, nativeFallbackDue, rememberContext, skipReason } from './lib/cache-keepalive-policy.mjs'
 import { evidenceOwnerIds, rememberEvidence, selectEvidence } from './lib/cache-keepalive-evidence.mjs'
 import { compactionSettings } from './lib/host/cache-keepalive-settings.mjs'
 import { callsSince } from './lib/host/cache-keepalive-transcript.mjs'
@@ -79,7 +79,7 @@ function modelPolicy(model, anthropicMinutes, openaiMinutes) {
 
 function freshState() {
   return { cappedLogged: false, cacheEvidence: null, lastContext: null, lastRefreshedAtMs: null, nativeSkipId: null,
-    lastReason: '', lastRealAtMs: null, lastCadenceAtMs: null, lastRealId: '', lastWakeAtMs: null, pendingWake: null, refreshCount: 0 }
+    lastReason: '', lastCompactedAtMs: null, lastRealAtMs: null, lastCadenceAtMs: null, lastRealId: '', lastWakeAtMs: null, pendingWake: null, refreshCount: 0 }
 }
 
 async function loadState(statePath) {
@@ -150,6 +150,18 @@ function transcriptReason(error) {
   return `transcript unavailable: ${error?.code ?? error?.message ?? 'read error'}`
 }
 
+// A detected discontinuity (truncation, rewrite) voids what the old bytes said about activity.
+// nativeSkipId stays: it only dedupes the journal line, and a re-read of the same call must not repeat it.
+function forgetActivity(state) {
+  Object.assign(state, { lastRealId: '', lastRealAtMs: null, lastCadenceAtMs: null, lastContext: null,
+    lastCompactedAtMs: null, lastRefreshedAtMs: null, lastWakeAtMs: null, pendingWake: null })
+  resetIdle(state)
+}
+
+function rememberCompaction(state, atMs) {
+  if (typeof atMs === 'number' && (state.lastCompactedAtMs === null || atMs > state.lastCompactedAtMs)) state.lastCompactedAtMs = atMs
+}
+
 async function discover(context, state, nowMs) {
   let discovery
   try {
@@ -161,6 +173,8 @@ async function discover(context, state, nowMs) {
     return null
   }
   rememberEvidence(state, discovery)
+  if (discovery.reset) forgetActivity(state)
+  rememberCompaction(state, discovery.compactedAtMs)
   return discoveredCalls(context, state, nowMs, discovery.calls)
 }
 
@@ -222,8 +236,10 @@ async function recordUnresolved(context, state, nowMs) {
 }
 
 async function dueWake(context, state, policy, nowMs, metadataChanged = false) {
-  const reason = skipReason(state, await compactionSettings(context.configDir, context.projectDir), nowMs)
+  const settings = await compactionSettings(context.configDir, context.projectDir)
+  const reason = skipReason(state, settings, nowMs)
   if (reason) return recordSkip(context, state, nowMs, reason)
+  const fallback = nativeFallbackDue(state, settings, nowMs) ? { nativeFallback: true } : {}
   state.lastReason = ''
   if (state.refreshCount >= context.maxRefreshes) {
     if (!state.cappedLogged) {
@@ -238,7 +254,7 @@ async function dueWake(context, state, policy, nowMs, metadataChanged = false) {
   state.pendingWake = { atMs: nowMs, model: state.lastModel }
   state.cappedLogged = false
   await journal(context.journalPath, { kind: 'wake', model: state.lastModel, nowMs,
-    provider: policy.provider, refreshCount: state.refreshCount, thresholdMinutes: policy.thresholdMinutes })
+    provider: policy.provider, refreshCount: state.refreshCount, thresholdMinutes: policy.thresholdMinutes, ...fallback })
   await saveState(context.statePath, state)
   return 'CACHE KEEPALIVE: Reply with exactly one word: warm. Do not perform any other work.'
 }

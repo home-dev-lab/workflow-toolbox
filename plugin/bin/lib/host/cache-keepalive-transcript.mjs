@@ -22,18 +22,27 @@ function finiteUsage(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function parsedRecord(line) {
+function parsedLine(line) {
   if (!line.length || line.length > MAX_RECORD_BYTES) return null
-  let record
-  try { record = JSON.parse(line.toString('utf8')) } catch { return null }
-  if (record?.type !== 'assistant' || !record.message || typeof record.message !== 'object') return null
-  const usage = record.message.usage
-  if (!usage || typeof usage !== 'object') return null
-  return record
+  try { return JSON.parse(line.toString('utf8')) } catch { return null }
 }
 
-function assistantCall(line, sequence) {
-  const record = parsedRecord(line)
+function usableAssistant(record) {
+  if (record?.type !== 'assistant' || !record.message || typeof record.message !== 'object') return null
+  const usage = record.message.usage
+  return usage && typeof usage === 'object' ? record : null
+}
+
+// A native compaction writes this record; its time tells the monitor the cached prefix was replaced.
+function noteBoundary(scan, record) {
+  if (record?.type !== 'system' || record.subtype !== 'compact_boundary') return false
+  const atMs = recordTimeMs(record)
+  if (atMs !== null && (scan.compactedAtMs === null || atMs > scan.compactedAtMs)) scan.compactedAtMs = atMs
+  return true
+}
+
+function assistantCall(parsed, sequence) {
+  const record = usableAssistant(parsed)
   if (!record) return null
   const usage = record.message.usage
   const model = typeof record.message.model === 'string' ? record.message.model : ''
@@ -48,7 +57,7 @@ function assistantCall(line, sequence) {
 
 function newScan(stopId, ownerIds, backward) {
   return { stopId, backward, ownerIds, owners: {}, calls: new Map(), evidenceByModel: new Map(), model: null,
-    baselineFound: false, stoppedAtId: false, newestAtMs: null, done: false,
+    baselineFound: false, stoppedAtId: false, newestAtMs: null, done: false, compactedAtMs: null,
     carry: Buffer.alloc(0), skipLarge: false, trailing: true, tail: '', offset: 0, tailSkipped: false }
 }
 
@@ -79,7 +88,9 @@ function mergeForwardEvidence(evidence, call) {
 }
 
 function acceptBackward(scan, line, position) {
-  const call = assistantCall(line, position)
+  const record = parsedLine(line)
+  if (noteBoundary(scan, record)) return
+  const call = assistantCall(record, position)
   if (!call) return
   if (beyondHistory(scan, call)) { scan.done = true; return }
   collectEvidence(scan, call)
@@ -107,7 +118,9 @@ function beyondHistory(scan, call) {
 }
 
 function acceptForward(scan, line, position) {
-  const call = assistantCall(line, position)
+  const record = parsedLine(line)
+  if (noteBoundary(scan, record)) return
+  const call = assistantCall(record, position)
   if (!call) return
   collectEvidence(scan, call)
   // Reinsert so each call's newest record supplies both its fields and its order.
@@ -193,7 +206,8 @@ function scanResult(scan, cursor, mode, reset = false) {
   const calls = [...scan.calls.values()]
   if (scan.backward) calls.reverse()
   return { calls, evidence: scan.evidenceByModel.get(scan.model) ?? {}, model: scan.model,
-    evidenceByModel: Object.fromEntries(scan.evidenceByModel), owners: scan.owners, cursor, mode, reset }
+    evidenceByModel: Object.fromEntries(scan.evidenceByModel), owners: scan.owners, cursor, mode, reset,
+    compactedAtMs: scan.compactedAtMs }
 }
 
 async function discovery(file, stat, stopId, options) {
