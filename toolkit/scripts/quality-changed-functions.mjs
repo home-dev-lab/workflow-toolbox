@@ -3,7 +3,8 @@
 import { createHash } from 'node:crypto'
 
 const functionTypes = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'])
-const scopeTypes = new Set([...functionTypes, 'ClassDeclaration', 'ClassExpression', 'ObjectExpression', 'TSModuleDeclaration'])
+const blockTypes = new Set(['BlockStatement', 'StaticBlock'])
+const scopeTypes = new Set([...functionTypes, ...blockTypes, 'ClassDeclaration', 'ClassExpression', 'ObjectExpression', 'TSModuleDeclaration'])
 const propertyTypes = new Set(['Property', 'MethodDefinition', 'PropertyDefinition'])
 const callTypes = new Set(['CallExpression', 'NewExpression'])
 const compact = (node, source) => source.getTokens(node).map((token) => token.value).join('')
@@ -16,6 +17,31 @@ function diagnosticStart(node) {
 }
 function heading(node, source) {
   const parent = node.parent
+  if (blockTypes.has(node.type)) return blockHeading(node, parent, source)
+  return functionHeading(node, parent, source)
+}
+function blockHeading(node, parent, source) {
+  return JSON.stringify([parent.type, blockPosition(node), parent.test && compact(parent.test, source)])
+}
+function blockPosition(node) {
+  const position = []
+  for (let current = node; current.parent; current = current.parent) {
+    const parent = current.parent
+    position.unshift(childPosition(parent, current))
+    if (scopeTypes.has(parent.type) || parent.type === 'Program') break
+  }
+  return position
+}
+function childPosition(parent, node) {
+  for (const key of Object.keys(parent)) {
+    if (key === 'parent') continue
+    const value = parent[key]
+    if (value === node) return key
+    if (Array.isArray(value) && value.includes(node)) return [key, value.indexOf(node)]
+  }
+  throw new Error('owner block path has no parent edge')
+}
+function functionHeading(node, parent, source) {
   const binding = { VariableDeclarator: 'id', AssignmentExpression: 'left' }[parent?.type]
   if (binding) return `binding:${parent.type}:${bindingLabel(parent[binding], source)}:${node.id?.name ?? ''}`
   if (propertyTypes.has(parent?.type)) {
@@ -38,7 +64,9 @@ export const functionEvidence = {
       const group = JSON.stringify(key), ordinal = occurrences.get(group) ?? 0
       occurrences.set(group, ordinal + 1)
       const id = JSON.stringify([key, ordinal])
-      const hash = createHash('sha256').update(source.getText(node.body)).digest('hex')
+      const signatureNode = propertyTypes.has(node.parent?.type) ? node.parent : node
+      const signature = source.getTokens(signatureNode).filter((token) => token.range[0] < node.body.range[0]).map((token) => token.value).join('')
+      const hash = createHash('sha256').update(signature + source.getText(node.body)).digest('hex')
       context.report({ node, message: JSON.stringify({ key, group, ordinal, id, hash, start: diagnosticStart(node), end: node.loc.end }) })
     }
     return Object.fromEntries([...functionTypes].map((type) => [type, record]))
@@ -73,18 +101,19 @@ function pairPass(current, pairs, remaining, select) {
 }
 export function functionCorrespondence(current = [], before = []) {
   const remaining = new Map(before.map((entry) => [entry.id, entry])), pairs = new Map()
-  // Body hashes first anchor unchanged functions without ordinal drift. Pair
-  // remaining edits within their lexical group in source order. A body moved
-  // between same-header callbacks then reverses those pairings and loses debt.
+  // Only identical signatures and bodies can inherit debt; edits have no allowance.
   pairPass(current, pairs, remaining, (entry) => [...remaining.values()].find((old) => old.group === entry.group && old.hash === entry.hash))
+  const unchanged = new Set(pairs.keys())
   pairPass(current, pairs, remaining, (entry) => [...remaining.values()].find((old) => old.group === entry.group))
   const order = current.map((entry) => pairs.get(entry.id)).filter(Boolean)
-  return { pairs, moved: movedIdentities(order, before.map((entry) => entry.id)) }
+  return { pairs, unchanged, moved: movedIdentities(order, before.map((entry) => entry.id)) }
 }
 export function allowanceIdentity(identity, correspondence) {
   const [scope, label, line, ordinal] = JSON.parse(identity)
   if (!scope.length) return identity
-  const original = correspondence.pairs.get(JSON.stringify([scope, ordinal]))
+  const id = JSON.stringify([scope, ordinal])
+  if (!correspondence.unchanged.has(id)) return undefined
+  const original = correspondence.pairs.get(id)
   if (!original || correspondence.moved.has(original)) return undefined
   const [oldScope, oldOrdinal] = JSON.parse(original)
   return JSON.stringify([oldScope, label, line, oldOrdinal])

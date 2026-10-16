@@ -70,7 +70,12 @@ it('rejects untracked violating code', () => {
   const root = fixture(); write(root, 'plugin/new.mjs', violation(11))
   expect(run(root).status).toBe(1)
 })
-it.each([['unchanged', 11, 0], ['shrinking', 10, 0], ['growing', 12, 1]] as const)('legacy %s violation', (_name, count, status) => {
+it('rejects intent-to-add code even after rebuilding the temporary index', () => {
+  const root = fixture(); write(root, 'plugin/new.mjs', oversized())
+  git(root, 'add', '--intent-to-add', 'plugin/new.mjs')
+  expect(run(root).status).toBe(1)
+})
+it.each([['unchanged', 11, 0], ['shrinking', 10, 1], ['growing', 12, 1]] as const)('legacy %s violation', (_name, count, status) => {
   const root = fixture({ 'plugin/old.mjs': violation(11) })
   write(root, 'plugin/old.mjs', violation(count) + '\nexport const addition = 1\n')
   expect(run(root).status).toBe(status)
@@ -124,10 +129,57 @@ it('a moved and edited violating file is added code', () => {
   write(root, 'plugin/new.mjs', violation(11) + 'export const addition = 1\n')
   expect(run(root).status).toBe(1)
 })
-it('rename to excluded destination is skipped', () => {
+it('rename to fixtures remains subject to owner limits', () => {
   const root = fixture({ 'plugin/old.mjs': violation(11) })
   mkdirSync(join(root, 'plugin/fixtures')); renameSync(join(root, 'plugin/old.mjs'), join(root, 'plugin/fixtures/new.mjs'))
-  expect(run(root).status).toBe(0)
+  expect(run(root).status).toBe(1)
+})
+it.each(['plugin/bin/lib/vendor/helper.mjs', 'plugin/fixtures/helper.mjs'])('reserved directory names do not exempt %s', (file) => {
+  const root = fixture(); write(root, file, oversized())
+  expect(run(root).status).toBe(1)
+})
+it('only the exact vendored artifact is exempt', () => {
+  const root = fixture(); write(root, 'plugin/bin/lib/vendor/yaml.mjs', oversized())
+  const result = run(root)
+  expect(result.status).toBe(0)
+  expect(result.stdout).toContain('0 files checked')
+})
+it('extensionless non-Node data is not parsed as code', () => {
+  const root = fixture()
+  write(root, '.gitignore', 'node_modules/\nthis is not javascript\n')
+  const result = run(root)
+  expect(result.stdout).toContain('0 files checked')
+  expect(result.status, result.stderr).toBe(0)
+})
+it('same-condition blocks retain distinct positional ancestry', () => {
+  const body = oversized().replace('function long', 'function work')
+  const root = fixture({ 'plugin/blocks.mjs': `if (ready) {\n${body}}\nif (ready) {\nfunction work() {}\n}\n` })
+  write(root, 'plugin/blocks.mjs', `if (ready) {}\nif (ready) {\n${body}}\n`)
+  expect(run(root).status).toBe(1)
+})
+it('try and finally blocks cannot exchange unchanged function debt', () => {
+  const body = oversized().replace('export function long', 'function work')
+  const root = fixture({ 'plugin/blocks.mjs': `try {\n${body}} finally {\nfunction work() {}\n}\n` })
+  write(root, 'plugin/blocks.mjs', `try {} finally {\n${body}}\n`)
+  expect(run(root).status).toBe(1)
+})
+it.each(['catch', 'else-if', 'static'])('nested structural block paths separate %s scopes', (kind) => {
+  const body = oversized().replace('function long', 'function work')
+  const compliant = 'function work() {}\n'
+  const wrap = (first: string, second: string) => kind === 'catch'
+    ? `try {} catch (error) {\n${first}}\ntry {} catch (error) {\n${second}}\n`
+    : kind === 'static' ? `class Example { static {\n${first}} static {\n${second}} }\n`
+      : `if (ready) {} else if (ready) {\n${first}} else if (ready) {\n${second}}\n`
+  const root = fixture({ 'plugin/blocks.mjs': wrap(body, compliant) })
+  write(root, 'plugin/blocks.mjs', wrap('', body))
+  expect(run(root).status).toBe(1)
+})
+it.each(['async ', '*', 'class async ', 'class *'])('method modifier %s changes an oversized function', (modifier) => {
+  const body = `run() {\n${'console.log(1)\n'.repeat(39)}}`
+  const prefix = modifier.startsWith('class ') ? 'export class Example' : 'export const object ='
+  const root = fixture({ 'plugin/method.mjs': `${prefix} { ${body} }\n` })
+  write(root, 'plugin/method.mjs', `${prefix} { ${modifier.replace('class ', '')}${body} }\n`)
+  expect(run(root).status).toBe(1)
 })
 it('non-merge develop HEAD checks zero files', () => {
   const result = run(fixture({ 'plugin/old.mjs': violation(11) }))
@@ -260,7 +312,7 @@ it('ignores unrelated untracked unborn nested repositories', () => {
 })
 
 const oversized = (name = 'long', statements = 39) => `function ${name}() {\n${'console.log(1)\n'.repeat(statements)}}\n`
-it.each(['plugin/new.cjs', 'plugin/new.jsx', 'toolkit/new.tsx'])('rejects an added 41-line function in %s', (file) => {
+it.each(['plugin/new.cjs', 'plugin/new.jsx', 'toolkit/new.tsx', 'plugin/new.MJS', 'plugin/new.CJS', 'toolkit/new.TSX'])('rejects an added 41-line function in %s', (file) => {
   const root = fixture(); write(root, file, oversized())
   const result = run(root)
   expect(result.status, result.stdout + result.stderr).toBe(1)
@@ -276,21 +328,21 @@ it('allows an unchanged pre-existing 41-line function alongside new compliant co
   write(root, 'plugin/old.mjs', oversized() + 'export const added = 1\n')
   expect(run(root).status).toBe(0)
 })
-it('keeps the ratchet for a named legacy function when parameters and body change', () => {
+it('rejects a changed legacy function even when it shrinks to 41 lines', () => {
   const root = fixture({ 'plugin/old.mjs': oversized('long', 41) })
   write(root, 'plugin/old.mjs', oversized('long', 39).replace('long()', 'long(value = 1)'))
-  expect(run(root).status).toBe(0)
+  expect(run(root).status).toBe(1)
 })
-it.each(['async', 'generator'])('keeps the same named legacy function budget when its %s kind changes', (kind) => {
+it.each(['async', 'generator'])('rejects a violating function when its %s kind changes', (kind) => {
   const text = oversized()
   const root = fixture({ 'plugin/old.mjs': text })
   write(root, 'plugin/old.mjs', text.replace('function long()', kind === 'async' ? 'async function long()' : 'function* long()'))
-  expect(run(root).status).toBe(0)
+  expect(run(root).status).toBe(1)
 })
-it('keeps a legacy explicit-any count when the same function body changes', () => {
+it('rejects a legacy explicit-any when the same function body changes', () => {
   const root = fixture({ 'plugin/old.ts': 'function legacy(value: any) { return value }\n' })
   write(root, 'plugin/old.ts', 'function legacy(value: any) { return String(value) }\n')
-  expect(run(root).status).toBe(0)
+  expect(run(root).status).toBe(1)
 })
 it('rejects explicit any introduced into a previously compliant function', () => {
   const root = fixture({ 'plugin/old.ts': 'function legacy(value: string) { return value }\n' })
@@ -309,11 +361,11 @@ it('keeps an unchanged typed arrow and its signature any budget when formatting 
   write(root, 'plugin/old.ts', text.replace('= (value) =>', '= ( value ) =>'))
   expect(run(root).status).toBe(0)
 })
-it('keeps the ratchet when an existing immediately-invoked function shrinks', () => {
+it('rejects an existing immediately-invoked function that shrinks but still violates', () => {
   const iife = (count: number) => `(function () {\n${'console.log(1)\n'.repeat(count)}})()\n`
   const root = fixture({ 'plugin/old.mjs': iife(41) })
   write(root, 'plugin/old.mjs', iife(39))
-  expect(run(root).status).toBe(0)
+  expect(run(root).status).toBe(1)
 })
 it('rejects an added 41-line immediately-invoked function', () => {
   const root = fixture()
@@ -405,4 +457,33 @@ it('main judges its first parent rather than the already-integrated develop tree
   git(root, 'checkout', '-q', 'main')
   git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'merge', '--no-ff', '-qm', 'release', 'develop')
   expect(run(root).status).toBe(1)
+})
+it.each(['empty', 'partial'])('refuses %s owner rule exports independently of their coverage loop', (mode) => {
+  const root = fixture(), file = join(root, 'toolkit/scripts/quality-changed-lint.mjs')
+  const source = readFileSync(file, 'utf8')
+  writeFileSync(file, source.replace(/export const ownerRules = \{[\s\S]*?\n\}/,
+    `export const ownerRules = ${mode === 'empty' ? '{}' : "{ complexity: ['error', 10] }"}`))
+  write(root, 'plugin/new.mjs', oversized())
+  const result = run(root)
+  expect(result.status, result.stdout + result.stderr).not.toBe(0)
+  expect(result.stderr).toContain('owner config missing')
+})
+it('sibling if blocks cannot transfer signature-any debt after deleting the first work function', () => {
+  const root = fixture({ 'plugin/old.ts': 'if (first) { function work(value: any) { return value } }\nif (second) { function work(value: string) { return value } }\n' })
+  write(root, 'plugin/old.ts', 'if (second) { function work(value: any) { return value } }\n')
+  expect(run(root).status).toBe(1)
+})
+it.each(['added', 'renamed', 'committed'])('checks extensionless Node shebang code: %s', (mode) => {
+  const text = '#!/usr/bin/env node\n' + oversized()
+  const root = fixture(mode === 'renamed' ? { 'plugin/bin/old.mjs': text } : {})
+  const base = git(root, 'rev-parse', 'HEAD')
+  if (mode === 'renamed') renameSync(join(root, 'plugin/bin/old.mjs'), join(root, 'plugin/bin/run-task'))
+  else write(root, 'plugin/bin/run-task', text)
+  const args = mode === 'committed' ? ['--base', base, '--subject-ref', commit(root)] : []
+  expect(run(root, args).status).toBe(1)
+})
+it('keeps an unchanged legacy body in a case-variant code extension', () => {
+  const root = fixture({ 'plugin/old.MJS': oversized() })
+  write(root, 'plugin/old.MJS', oversized() + 'export const addition = 1\n')
+  expect(run(root).status).toBe(0)
 })

@@ -7,7 +7,7 @@ import { assertArchiveOutsideWorktree, readWorktreeRetentionMarker } from './lif
 import { hardenedGitArgs } from './host/hardened-git.mjs'
 import { laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
 import { readSuiteLock } from './suite-lock.mjs'
-import { integrationQualityDirectory, certifyIntegration } from './host/integration-quality.mjs'
+import { prepareCertification, certifyIntegration, cleanupCertification, certifiedIndexDifference } from './host/integration-quality.mjs'
 
 const STEP_NAMES = ['preflight', 'commit', 'merge', 'archive', 'pre-remove-check', 'remove', 'ci-branch', 'push', 'dispatch']
 const COMMAND_ENV = process.env
@@ -177,32 +177,50 @@ function mergeLane(options, runner) {
       const changelog = path.join(options.into, ...conflicts[0].split('/'))
       fs.writeFileSync(changelog, resolveConflictMarkers(fs.readFileSync(changelog, 'utf8')))
       git(runner, options.into, ['add', '--', conflicts[0]])
-      finishLaneMerge(options, runner)
-      return
     } catch (error) {
-      try { git(runner, options.into, ['merge', '--abort']) } catch { /* retain the resolution failure */ }
+      rollbackCertification(options, runner, error)
       throw error
     }
+    finishLaneMerge(options, runner)
+    return
   }
-  try { git(runner, options.into, ['merge', '--abort']) } catch { /* preserve the original conflict refusal */ }
-  throw new Error(`merge conflicts outside plugin/CHANGELOG.md: ${conflicts.length ? conflicts.join(', ') : commandFailure('git', args, result)}`)
+  const error = new Error(`merge conflicts outside plugin/CHANGELOG.md: ${conflicts.length ? conflicts.join(', ') : commandFailure('git', args, result)}`)
+  rollbackCertification(options, runner, error)
+  throw error
 }
 
 function finishLaneMerge(options, runner) {
   try {
     // A pending merge's HEAD is its actual first parent, even if preflight was earlier.
     certifyIntegration(options, runner, git(runner, options.into, ['rev-parse', 'HEAD']).trim())
+    const difference = certifiedIndexDifference(options)
+    if (difference) throw new Error(`index differs from certified working tree: ${difference.split('\0').filter(Boolean).join(', ')}`)
     git(runner, options.into, ['commit', '--no-edit'])
   } catch (error) {
-    try { git(runner, options.into, ['merge', '--abort']) } catch { /* preserve certification failure */ }
+    rollbackCertification(options, runner, error)
     throw error
+  }
+}
+function rollbackCertification(options, runner, error) {
+  let abort = ''
+  const pending = runner('git', hardenedGitArgs(['-C', options.into, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']), { encoding: 'utf8', env: COMMAND_ENV })
+  if (resultCode(pending) === 0) {
+    try { git(runner, options.into, ['merge', '--abort']) } catch (failure) { abort = failure.message }
+  }
+  const head = git(runner, options.into, ['rev-parse', 'HEAD']).trim()
+  const status = git(runner, options.into, ['status', '--porcelain', '--untracked-files=all']).replace(/\r?\n$/, '')
+  const unexpected = status.split(/\r?\n/).filter((line) => line && !options.certificationStatus.includes(line)).join('\n')
+  if (abort || head !== options.certificationHead || unexpected) {
+    throw new Error(`${error.message}\nrollback incomplete: abort=${abort || '0'} HEAD=${head} expected=${options.certificationHead} tracked=${unexpected || '(clean)'}`)
   }
 }
 
 function mergeCheckedLane(options, runner) {
   assertIntegrationTreeNotGated(options)
-  options.qualityDirectory = integrationQualityDirectory(options.into)
-  mergeLane(options, runner)
+  options.certificationHead = git(runner, options.into, ['rev-parse', 'HEAD']).trim()
+  options.certificationStatus = git(runner, options.into, ['status', '--porcelain', '--untracked-files=all']).split(/\r?\n/)
+  options.certification = prepareCertification(options.into, runner, options.certificationHead)
+  try { mergeLane(options, runner) } finally { cleanupCertification(options) }
 }
 
 function commitLane(options, runner) {
@@ -423,7 +441,7 @@ function dispatchWorkflow(options, runner, stdout, wait) {
   if (current.conclusion !== 'success') throw new Error(`workflow run ${current.databaseId} concluded ${current.conclusion ?? 'unknown'}`)
 }
 
-export async function integrateLane(input) {
+function integrationContext(input) {
   const options = { remote: 'public', wait: false, dryRun: false, keepWorktree: false, force: false, ...input }
   const runner = options.runner ?? defaultRunner
   const copy = options.copy ?? ((source, destination) => source === laneHostDir(options.dir)
@@ -432,6 +450,11 @@ export async function integrateLane(input) {
   const stdout = options.stdout ?? ((line) => process.stdout.write(`${line}\n`))
   const stderr = options.stderr ?? ((line) => process.stderr.write(`wt-lane integrate: ${line}\n`))
   const wait = options.sleep ?? sleep
+  return { options, runner, copy, stdout, stderr, wait }
+}
+
+export async function integrateLane(input) {
+  const { options, runner, copy, stdout, stderr, wait } = integrationContext(input)
   let stepCount = 6
   if (options.ciBranch) stepCount = options.dispatch ? 9 : 8
   const enabledSteps = STEP_NAMES.slice(0, stepCount)

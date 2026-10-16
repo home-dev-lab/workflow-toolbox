@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, existsSync, rmSync, readFileSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, extname } from 'node:path'
+import { exemptPaths } from './quality-changed-exemptions.mjs'
 
 export function git(root, args, env = process.env, execute = execFileSync) {
   return execute('git', ['-C', root, ...args], { env: { ...env, GIT_NO_LAZY_FETCH: '1' },
@@ -25,9 +26,8 @@ export function resolveBase(root, ref) {
   } catch { throw new Error('cannot resolve base; pass --base <ref> or WT_QUALITY_BASE (fetch develop history)') }
 }
 export function inScope(file) {
-  return /\.(mjs|cjs|jsx|js|tsx|ts|mts|cts)$/.test(file)
-    && !/(^|\/)(dist|node_modules|fixtures)\//.test(file)
-    && file !== 'plugin/bin/lib/vendor/yaml.mjs'
+  return (/\.(mjs|cjs|jsx|js|tsx|ts|mts|cts)$/iu.test(file) || !extname(file))
+    && !exemptPaths.has(file)
 }
 function parseDiff(text) {
   const fields = text.split('\0').filter(Boolean), files = []
@@ -58,16 +58,21 @@ export function changedFiles(root, base, subject) {
     if (existsSync(index)) copyFileSync(index, env.GIT_INDEX_FILE)
     else git(root, ['read-tree', 'HEAD'], env)
     clearIndexStatCache(root, env)
-    const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(inScope)
+    const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z'], env).split('\0')
+      .filter((file) => inScope(file) && lstatSync(join(root, file)).isFile() && codeShebang(root, undefined, file))
     if (untracked.length) git(root, ['add', '--intent-to-add', '--', ...untracked], env)
     return parseDiff(git(root, ['diff', '-M', '--name-status', '-z', base, '--'], env))
   } finally { rmSync(temp, { recursive: true, force: true }) }
 }
 export function isCodeSubject(root, ref, file) {
-  if (ref) return !git(root, ['ls-tree', '-z', ref, '--', file]).startsWith('120000 ')
+  if (ref) return !git(root, ['ls-tree', '-z', ref, '--', file]).startsWith('120000 ') && codeShebang(root, ref, file)
   const stat = lstatSync(join(root, file))
   if (stat.isSymbolicLink()) return false
   if (!stat.isFile()) throw new Error(`unsupported non-regular code file: ${file}`)
-  return true
+  return codeShebang(root, ref, file)
+}
+function codeShebang(root, ref, file) {
+  if (extname(file)) return true
+  return /^#![^\r\n]*(?:\/|\s)node(?:\s|$)/.test(readSubject(root, ref, file).split(/\r?\n/, 1)[0])
 }
 export const readSubject = (root, ref, file) => ref ? git(root, ['show', `${ref}:${file}`]) : readFileSync(join(root, file), 'utf8')
