@@ -140,7 +140,7 @@ export function buildWakeOptions({ parentSession, parentMode, body, env, abortCo
 }
 
 function newWakeState(requestId, model) {
-  return { request_id: requestId, model, tool_use_id: null, outcome: null, account: null, messages: new Map(), admitted: new Set(), denied: false, denied_tool: null, active: true, accepting: true }
+  return { request_id: requestId, model, tool_use_id: null, outcome: null, account: null, messages: new Map(), admitted: new Set(), denied: false, denied_tool: null, resultSeen: false, active: true, accepting: true }
 }
 
 // A tool name is model-chosen text: record it only when it has the shape of a tool identifier.
@@ -188,7 +188,7 @@ function consumeWakeMessage(state, message, onResult) {
   if (!state.active) return
   recordWakeUsage(state, message)
   consumeRecipientNotice(state, message)
-  if (message.type === 'result') onResult()
+  if (message.type === 'result') { state.resultSeen = true; onResult() }
   if (message.type !== 'user' || !Array.isArray(message.message?.content)) return
   for (const block of message.message.content) {
     const outcome = correlatedOutcome(state, block)
@@ -229,6 +229,11 @@ async function consumeWake(config, state, controller, body, account) {
 function endedWakeOutcome(state) {
   if (state.denied) return 'not-delivered:denied'
   return state.admitted.size ? 'not-delivered:stream-ended' : 'not-delivered:no-call'
+}
+
+function stoppedWakeOutcome(state, reason) {
+  if (reason !== 'timeout') return 'not-delivered:aborted'
+  return state.resultSeen ? endedWakeOutcome(state) : 'not-delivered:timeout'
 }
 
 function wakeReceipt(state, outcome, account) {
@@ -292,7 +297,7 @@ export async function wakeParent(config) {
   }
   const controller = config.abortController ?? new AbortController()
   let timer; let abort
-  const stopped = new Promise((resolve) => { abort = () => { state.accepting = false; resolve(`not-delivered:${controller.signal.reason === 'timeout' ? 'timeout' : 'aborted'}`) } })
+  const stopped = new Promise((resolve) => { abort = () => { state.accepting = false; resolve(stoppedWakeOutcome(state, controller.signal.reason)) } })
   controller.signal.addEventListener('abort', abort, { once: true })
   timer = setTimeout(() => controller.abort('timeout'), config.timeoutMs ?? 120_000)
   let account

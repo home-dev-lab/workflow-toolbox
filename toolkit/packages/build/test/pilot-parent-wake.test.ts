@@ -420,6 +420,54 @@ describe('recipient delivery notices', () => {
 })
 
 describe('wake notice observation window', () => {
+  it.each(['denied', 'no-call', 'stream-ended'])('keeps the %s turn outcome when timeout closes the default hold', async (outcome) => {
+    vi.useFakeTimers()
+    try {
+      let inputEnded = false
+      let settled: string | undefined
+      const query = ({ options, prompt }: WakeQuery) => (async function* () {
+        await prompt.next()
+        const ended = prompt.next().then((value) => { inputEnded = value.done === true })
+        if (outcome !== 'no-call') yield* queryFor([assistant([send(outcome === 'denied' ? { to: 'other' } : {})])])({ options })
+        yield { type: 'result', subtype: 'success' }
+        await ended
+      })()
+      const receipt = run(query, { timeoutMs: 1_000 }).then((value: { outcome: string }) => { settled = value.outcome })
+      await vi.advanceTimersByTimeAsync(999)
+      expect(inputEnded).toBe(false)
+      expect(settled).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(inputEnded, 'timeout must close input even after the turn ended').toBe(true)
+      await receipt
+      expect(settled).toBe(`not-delivered:${outcome}`)
+    } finally { vi.useRealTimers() }
+  })
+})
+
+describe('wake notice observation window', () => {
+  it.each(['denied', 'no-call', 'stream-ended'])('keeps a manager abort distinct after a %s turn result', async (outcome) => {
+    vi.useFakeTimers()
+    try {
+      let inputEnded = false
+      const query = ({ options, prompt }: WakeQuery) => (async function* () {
+        await prompt.next()
+        const ended = prompt.next().then((value) => { inputEnded = value.done === true })
+        if (outcome !== 'no-call') yield* queryFor([assistant([send(outcome === 'denied' ? { to: 'other' } : {})])])({ options })
+        yield { type: 'result', subtype: 'success' }
+        await ended
+      })()
+      const manager = createParentWakeManager({ parentSession: parent, parentMode: 'bypass', query, accountGate, env: {}, log: () => {}, wakeOptions: { timeoutMs: 1_000 } })
+      manager.start(request)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(inputEnded).toBe(false)
+      await manager.finish()
+      expect(inputEnded).toBe(true)
+      expect(manager.receipts.map((receipt: { outcome: string }) => receipt.outcome)).toEqual(['not-delivered:aborted'])
+    } finally { vi.useRealTimers() }
+  })
+})
+
+describe('wake notice observation window', () => {
   it.each(['denied', 'no-call'])('closes streaming input after a %s turn result within the hold window', async (outcome) => {
     vi.useFakeTimers()
     try {
