@@ -33,7 +33,7 @@ export function rememberContext(state, call) {
 }
 
 function effectiveFloor(value) {
-  if (typeof value !== 'string' || !/^[0-9]+$/.test(value) || !/[1-9]/.test(value)) return 200_000
+  if (typeof value !== 'string' || !/^\d+$/.test(value) || !/[1-9]/.test(value)) return 200_000
   return Math.max(100_000, Number(value))
 }
 

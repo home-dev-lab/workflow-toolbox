@@ -84,7 +84,7 @@ function journal(state: ReturnType<typeof scaffold>): Array<Record<string, unkno
     .trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
 }
 
-describe('wt-cache-keepalive', () => {
+describe('wt-cache-keepalive defaults and thresholds', () => {
   it('is on by default and stays silent only when explicitly disabled', () => {
     const state = scaffold('off')
     const runWith = (value: string | undefined) => spawnSync(process.execPath, [MONITOR, '--once', '--now', String(60 * 60_000), '--project', state.projectDir], {
@@ -117,6 +117,9 @@ describe('wt-cache-keepalive', () => {
     expect(journal(state).at(-1)).toMatchObject({ provider: 'openai', thresholdMinutes: 20 })
   })
 
+})
+
+describe('wt-cache-keepalive activity and refresh limits', () => {
   it('stays silent while real calls continue and resets the consecutive refresh count on work', () => {
     const state = scaffold('work')
     expect(run(state, 50).stdout).toContain('CACHE KEEPALIVE:')
@@ -153,6 +156,9 @@ describe('wt-cache-keepalive', () => {
     expect(run(state, 250, env).stdout).toBe('')
   })
 
+})
+
+describe('wt-cache-keepalive transcripts and CLI', () => {
   it('deduplicates streamed records sharing one message id', () => {
     const state = scaffold('stream')
     expect(run(state, 50).stdout).toContain('CACHE KEEPALIVE:')
