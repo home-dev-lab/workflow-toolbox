@@ -193,12 +193,6 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     }
   })
 
-  it('runs every sharded suite step even after an earlier gating step failed, so one red never hides the suite', () => {
-    const suites = steps.filter((step) => /test:shard --shard=/.test(step.run ?? ''))
-    expect(suites.length, 'sharded suite steps').toBeGreaterThanOrEqual(3)
-    for (const step of suites) expect(strip(String(step.if ?? '')).split('&&').map((term) => term.trim()), `"${step.name}" if`).toContain('!cancelled()')
-  })
-
   it('runs each Windows shard `test:shard --shard=<its own number>/N --coverage`, exactly one suite step per shard', () => {
     const count = windowsEntries().length
     for (const entry of windowsEntries()) {
@@ -293,5 +287,13 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     const names = entries.map((entry) => interpolate(String(upload.with?.name), entry))
     expect(new Set(names).size, names.join(', ')).toBe(entries.length)
     for (const name of names) expect(name).not.toContain('/')
+  })
+})
+
+describe('cross-os workflow: one red never hides the suite', () => {
+  it('runs every sharded suite step even after an earlier gating step failed, so one red never hides the suite', () => {
+    const suites = steps.filter((step) => /test:shard --shard=/.test(step.run ?? ''))
+    expect(suites.length, 'sharded suite steps').toBeGreaterThanOrEqual(3)
+    for (const step of suites) expect(strip(String(step.if ?? '')).split('&&').map((term) => term.trim()), `"${step.name}" if`).toContain('!cancelled()')
   })
 })

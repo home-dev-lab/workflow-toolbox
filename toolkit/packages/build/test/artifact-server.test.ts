@@ -594,7 +594,43 @@ async function health(state: Discovery) {
   return JSON.parse(response.body) as { service: string, version: string, uid: number | string, pid: number, port: number, registeredSessions: number }
 }
 
-describe('review test infrastructure', () => {
+describe('health probe always settles', () => {
+  async function probeAgainst(handler: Parameters<typeof createServer>[1], timeout: number) {
+    const server = createServer(handler)
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as { port: number }
+    let timer: NodeJS.Timeout | undefined
+    const pending = new Promise<'pending'>((resolve) => { timer = setTimeout(() => resolve('pending'), timeout + 2_000) })
+    try {
+      return await Promise.race([probeArtifactServer(port, timeout), pending])
+    } finally {
+      clearTimeout(timer)
+      server.closeAllConnections()
+      await closeServer(server)
+    }
+  }
+
+  it('settles as unknown when the server dies after sending headers and part of the body', async () => {
+    const cut: Parameters<typeof createServer>[1] = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' })
+      response.write('{"service":', () => response.socket?.destroy())
+    }
+    expect(await probeAgainst(cut, 1_000)).toEqual({ kind: 'unknown' })
+  })
+
+  it('settles as unknown within its timeout when the server trickles bytes that never finish the body', async () => {
+    const trickle: Parameters<typeof createServer>[1] = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      const tick = setInterval(() => { if (!response.destroyed) response.write(' ') }, 100)
+      response.on('close', () => clearInterval(tick))
+    }
+    const started = Date.now()
+    expect(await probeAgainst(trickle, 500)).toEqual({ kind: 'unknown' })
+    expect(Date.now() - started, 'the probe outlived its own timeout').toBeLessThan(1_500)
+  })
+})
+
+describe('test requests and health probes open fresh connections', () => {
   async function connectionsFor(send: (port: number) => Promise<unknown>) {
     let connections = 0
     const server = createServer((_request, response) => response.end('{}'))
@@ -618,7 +654,9 @@ describe('review test infrastructure', () => {
   it('opens a fresh connection for every health probe', async () => {
     expect(await connectionsFor((port) => probeArtifactServer(port, 2_000)), 'a second probe reused a pooled keep-alive socket').toBe(2)
   })
+})
 
+describe('review test infrastructure', () => {
   it('[B-01] retries awaited async predicates', async () => {
     let calls = 0
     const result = await waitFor(async () => ++calls === 3 ? 'ready' : null)
