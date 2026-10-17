@@ -635,7 +635,7 @@ describe('health probe always settles', () => {
       response.on('close', () => { serverSawClose = true; clearInterval(tick) })
     }
     // Read the flag before the fixture's own cleanup closes every connection, so only the probe can have set it.
-    const settleWindow = async () => { await new Promise((resolve) => setTimeout(resolve, 200)); closedBeforeCleanup = serverSawClose }
+    const settleWindow = async () => { closedBeforeCleanup = await waitFor(() => serverSawClose ? true : null, 15_000).then(() => true, () => false) }
     const { result, elapsed } = await probeAgainst(trickle, 300, settleWindow)
     expect(result).toEqual({ kind: 'unknown' })
     expect(bytes, 'bytes kept arriving, so the idle timer never fired').toBeGreaterThanOrEqual(3)
