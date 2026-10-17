@@ -529,8 +529,6 @@ export async function listenArtifactLoopback(listen, port) {
   }
 }
 
-const PROBE_TOTAL_IDLE_MULTIPLE = 4
-
 export async function probeArtifactServer(port, timeout = process.platform === 'win32' ? 10_000 : 750, expectedUid = artifactUid()) {
   const { request } = await import('node:http')
   return new Promise((resolve) => {
@@ -547,9 +545,10 @@ export async function probeArtifactServer(port, timeout = process.platform === '
     const req = request({ host: '127.0.0.1', port, path: '/__wt-artifact-server/health', method: 'GET', headers: { Host: `localhost:${port}` }, timeout, agent: false }, (response) => {
       readHealthResponse(response, expectedUid, settle)
     })
-    // `timeout` stays the socket idle bound. The cap below only ends a reply that keeps sending bytes without ever
-    // finishing, which resets that idle timer forever; a slow but complete reply still gets read.
-    deadline = setTimeout(() => settle({ kind: 'unknown' }), timeout * PROBE_TOTAL_IDLE_MULTIPLE)
+    // `timeout` is the caller's whole budget, not only socket idleness: a reply that keeps sending bytes resets the
+    // idle timer, so without this a trickling or never-finished reply would hold the caller past its own deadline.
+    // Armed after request() returns, so a synchronous request() failure leaves no timer behind.
+    deadline = setTimeout(() => settle({ kind: 'unknown' }), timeout)
     req.once('timeout', () => settle({ kind: 'unknown' }))
     req.once('error', (error) => settle(error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH' ? { kind: 'free' } : { kind: 'unknown' }))
     req.end()

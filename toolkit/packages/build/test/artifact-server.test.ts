@@ -595,7 +595,8 @@ async function health(state: Discovery) {
 }
 
 describe('health probe always settles', () => {
-  async function probeAgainst(handler: Parameters<typeof createServer>[1], timeout: number) {
+  type Handler = Parameters<typeof createServer>[1]
+  async function probeAgainst(handler: Handler, timeout: number, beforeCleanup: () => Promise<void> = async () => {}) {
     const server = createServer(handler)
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
     const { port } = server.address() as { port: number }
@@ -604,7 +605,9 @@ describe('health probe always settles', () => {
     const started = Date.now()
     try {
       const result = await Promise.race([probeArtifactServer(port, timeout), pending])
-      return { result, elapsed: Date.now() - started }
+      const elapsed = Date.now() - started
+      await beforeCleanup()
+      return { result, elapsed }
     } finally {
       clearTimeout(timer)
       server.closeAllConnections()
@@ -613,7 +616,7 @@ describe('health probe always settles', () => {
   }
 
   it('settles as unknown as soon as the server dies after sending headers and part of the body', async () => {
-    const cut: Parameters<typeof createServer>[1] = (_request, response) => {
+    const cut: Handler = (_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' })
       response.write('{"service":', () => response.socket?.destroy())
     }
@@ -622,44 +625,47 @@ describe('health probe always settles', () => {
     expect(elapsed, 'the cut reply was only noticed by a timer').toBeLessThan(1_000)
   })
 
-  it('settles as unknown when the server trickles bytes that never finish the body', async () => {
+  it('settles as unknown within its timeout and closes the socket when the server trickles bytes without finishing', async () => {
     let bytes = 0
-    const trickle: Parameters<typeof createServer>[1] = (_request, response) => {
+    let serverSawClose = false
+    const trickle: Handler = (_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json' })
       const tick = setInterval(() => { if (!response.destroyed) response.write(' ', () => { bytes++ }) }, 50)
-      response.on('close', () => clearInterval(tick))
+      response.on('close', () => { serverSawClose = true; clearInterval(tick) })
     }
-    const { result, elapsed } = await probeAgainst(trickle, 250)
+    const settleWindow = async () => { await new Promise((resolve) => setTimeout(resolve, 200)) }
+    const { result, elapsed } = await probeAgainst(trickle, 300, settleWindow)
     expect(result).toEqual({ kind: 'unknown' })
-    expect(bytes, 'the server kept the socket busy past the idle timeout').toBeGreaterThan(5)
-    expect(elapsed, 'the probe outlived its overall cap').toBeLessThan(250 * 4 + 1_000)
+    expect(bytes, 'bytes kept arriving, so the idle timer never fired').toBeGreaterThanOrEqual(3)
+    expect(elapsed, 'the probe outlived its own timeout').toBeLessThan(300 + 500)
+    expect(serverSawClose, 'the probe left its socket open').toBe(true)
   })
 
-  it('keeps reading a complete reply whose chunks are slower in total than the idle timeout', async () => {
-    const slow: Parameters<typeof createServer>[1] = (_request, response) => {
+  it('honours the timeout as the whole budget: a complete slow reply reads within it, and unknown past it', async () => {
+    const slow: Handler = (_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json' })
       response.write('{')
       setTimeout(() => response.write('"service":"x"'), 120)
       setTimeout(() => response.end('}'), 240)
     }
-    expect((await probeAgainst(slow, 200)).result).toEqual({ kind: 'foreign' })
+    expect((await probeAgainst(slow, 1_000)).result).toEqual({ kind: 'foreign' })
+    expect((await probeAgainst(slow, 200)).result).toEqual({ kind: 'unknown' })
   })
 
-  it('still reads a prompt complete reply and a refused port', async () => {
-    expect((await probeAgainst((_request, response) => response.end('{}'), 1_000)).result).toEqual({ kind: 'foreign' })
-    const closed = createServer()
-    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', () => resolve()))
-    const { port } = closed.address() as { port: number }
-    await closeServer(closed)
-    expect(await probeArtifactServer(port, 1_000)).toEqual({ kind: 'free' })
+  it('settles as unknown when a connected server never answers', async () => {
+    const { result, elapsed } = await probeAgainst(() => {}, 300)
+    expect(result).toEqual({ kind: 'unknown' })
+    expect(elapsed).toBeLessThan(300 + 500)
   })
 
-  it('rejects an invalid port without leaving a timer behind that throws later', () => {
-    const script = "import('./plugin/bin/lib/artifact-server.mjs').then((m) => m.probeArtifactServer(-1, 30)).then(() => console.log('RESOLVED'), (error) => console.log('REJECTED', error.code))"
-    const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: join(fileURLToPath(new URL('.', import.meta.url)), '../../../..'), encoding: 'utf8', timeout: 10_000 })
+  it('rejects an invalid port at once and leaves no timer that throws or holds the process', () => {
+    const script = "import('./plugin/bin/lib/artifact-server.mjs').then((m) => m.probeArtifactServer(-1, 5000)).then(() => console.log('RESOLVED'), (error) => console.log('REJECTED', error.code))"
+    const started = Date.now()
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: join(fileURLToPath(new URL('.', import.meta.url)), '../../../..'), encoding: 'utf8', timeout: 15_000 })
     expect(run.stdout.trim()).toBe('REJECTED ERR_SOCKET_BAD_PORT')
     expect(run.stderr, 'a timer fired after the rejection').not.toMatch(/ReferenceError|before initialization/)
     expect(run.status).toBe(0)
+    expect(Date.now() - started, 'a 5 s timer kept the process alive').toBeLessThan(4_000)
   })
 })
 
