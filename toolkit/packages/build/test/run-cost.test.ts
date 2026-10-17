@@ -17,6 +17,18 @@ const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-run-cost.mjs', impo
 const OUTPUT_UNDERCOUNT_FIXTURE = new URL('./fixtures/run-cost/sdk-output-undercount.json', import.meta.url)
 const LANE_FAMILIES_FIXTURE = new URL('./fixtures/run-cost/lane-families.json', import.meta.url)
 const KNOWN_RUN_FIXTURE = new URL('./fixtures/run-cost/sdk-lite-run-20260919.cost.json', import.meta.url)
+// Synthetic worktree spellings must already be canonical on the host: run cost binds unattributed OpenCode rows only to
+// the worktree's canonical path. A literal '/work/a' canonicalizes to a drive-qualified path on Windows, and the
+// archived '/home/dev/...' worktree went unmatched on the hosted macOS runner. A never-created child of the temp
+// directory's realpath is canonical on every OS.
+const CANONICAL_WORK = join(realpathSync.native(tmpdir()), 'wt-run-cost-work')
+const work = (name: string) => join(CANONICAL_WORK, name)
+function laneFamiliesFixture() {
+  const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+  fixture.gpt.worktree = work('sdkrunB-1866229328')
+  fixture.gpt.session.directory = fixture.gpt.worktree
+  return fixture
+}
 const PRICE_TABLE = new URL('../../../../plugin/pricing/model-prices.json', import.meta.url)
 type LaneFixture = { phase: string, round: number | null, started_at: number, ended_at: number, [key: string]: unknown }
 
@@ -57,13 +69,13 @@ describe('run cost', () => {
     }))
     const slash = model.indexOf('/')
     const sessions = openAi ? [{
-      id: 'priced-model', directory: '/work/priced-model',
+      id: 'priced-model', directory: work('priced-model'),
       model: { providerID: slash < 0 ? family : model.slice(0, slash), id: slash < 0 ? model : model.slice(slash + 1) },
       tokens_input: tokens.input, tokens_output: tokens.output ?? 0, tokens_cache_read: tokens.cache_read ?? 0,
       ...optionalTokenColumn(tokens, 'reasoning'), ...optionalTokenColumn(tokens, 'cache_write'),
       time_created: 1200, time_updated: 1800,
     }] : undefined
-    const cost = computeRunCost({ laneDir: lane, worktree: '/work/priced-model', sessions, priceTable })
+    const cost = computeRunCost({ laneDir: lane, worktree: work('priced-model'), sessions, priceTable })
     const row = Object.values(cost.phases.flatMap((phase: { models: Record<string, unknown> }) => Object.values(phase.models)))[0] as Record<string, unknown>
     return { cost, row }
   }
@@ -235,7 +247,7 @@ describe('run cost', () => {
   }
 
   function spawnCompute(lane: string, output: string, ...args: string[]) {
-    return spawnSync(process.execPath, [CLI, '--compute', lane, '--output', output, '--worktree', '/work/cli', ...args], { encoding: 'utf8' })
+    return spawnSync(process.execPath, [CLI, '--compute', lane, '--output', output, '--worktree', work('cli'), ...args], { encoding: 'utf8' })
   }
 
   function realOutputUndercountLane(resultOutput = 134665) {
@@ -258,7 +270,7 @@ describe('run cost', () => {
   }
 
   it('reconciles the real transcript output undercount without marking the run incomplete', () => {
-    const cost = computeRunCost({ laneDir: realOutputUndercountLane(), worktree: '/work/real-run', priceTable: JSON.parse(readFileSync(PRICE_TABLE, 'utf8')) })
+    const cost = computeRunCost({ laneDir: realOutputUndercountLane(), worktree: work('real-run'), priceTable: JSON.parse(readFileSync(PRICE_TABLE, 'utf8')) })
 
     expect(cost.cross_checks.pilot_result).toMatchObject({
       agrees: true,
@@ -308,7 +320,7 @@ describe('run cost', () => {
   })
 
   it('splits priced phase, inferred, and unmatched dollars from missing lane sources', () => {
-    const lane = root(); const worktree = '/work/coverage'
+    const lane = root(); const worktree = work('coverage')
     writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL' }))
     writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: false, served_model: 'claude-opus-5' }))
     writeFileSync(join(lane, 'usage.json'), JSON.stringify({ fresh_tokens: 'unavailable', messages: [
@@ -334,7 +346,7 @@ describe('run cost', () => {
   })
 
   it('attributes a priced lane phase that the lifecycle timeline does not list, so the dollar split covers the total', () => {
-    const lane = root(); const worktree = '/work/unlisted-phase'
+    const lane = root(); const worktree = work('unlisted-phase')
     writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL' }))
     writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, served_model: 'claude-opus-5' }))
     writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} }))
@@ -356,14 +368,14 @@ describe('run cost', () => {
   })
 
   it('reconciles a positive terminal-result residual without an arbitrary share cutoff', () => {
-    const cost = computeRunCost({ laneDir: realOutputUndercountLane(1_010_000), worktree: '/work/sparse-messages' })
+    const cost = computeRunCost({ laneDir: realOutputUndercountLane(1_010_000), worktree: work('sparse-messages') })
     expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: true, attributed_sum: { output: 1_010_000 }, difference: { output: 0, fresh_tokens: 0 } })
     expect(cost.reconciled).toEqual([expect.objectContaining({ kind: 'terminal_result_output', tokens: 1_008_990 })])
     expect(cost.unknown).toEqual([])
   })
 
   it('reports assistant-message output overcount as a disagreement', () => {
-    const cost = computeRunCost({ laneDir: realOutputUndercountLane(1000), worktree: '/work/altered-run' })
+    const cost = computeRunCost({ laneDir: realOutputUndercountLane(1000), worktree: work('altered-run') })
     expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: false, difference: { output: 10, fresh_tokens: 10 } })
     expect(cost.reconciled).toEqual([])
     expect(cost.unknown).toEqual([])
@@ -375,7 +387,7 @@ describe('run cost', () => {
     usage.model_usage['claude-opus-5'].outputTokens -= 1
     writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage))
 
-    const check = computeRunCost({ laneDir: lane, worktree: '/work/divergent-model-usage' }).cross_checks.model_usage
+    const check = computeRunCost({ laneDir: lane, worktree: work('divergent-model-usage') }).cross_checks.model_usage
     expect(check).toMatchObject({
       agrees: false,
       primary_model: 'claude-opus-5',
@@ -389,7 +401,7 @@ describe('run cost', () => {
     usage.model_usage = { 'claude-opus-5-20260915': usage.model_usage['claude-opus-5'] }
     writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage))
 
-    const cost = computeRunCost({ laneDir: lane, worktree: '/work/dated-primary' })
+    const cost = computeRunCost({ laneDir: lane, worktree: work('dated-primary') })
     expect(cost.cross_checks.model_usage).toEqual({
       status: 'unavailable',
       reason: 'SDK modelUsage has no key matching primary model claude-opus-5',
@@ -406,7 +418,7 @@ describe('run cost', () => {
     const usage = JSON.parse(readFileSync(join(lane, 'usage.json'), 'utf8'))
     delete usage.model_usage
     writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage))
-    expect(computeRunCost({ laneDir: lane, worktree: '/work/legacy-run' }).cross_checks.model_usage).toEqual({
+    expect(computeRunCost({ laneDir: lane, worktree: work('legacy-run') }).cross_checks.model_usage).toEqual({
       status: 'unavailable',
       reason: 'SDK result modelUsage unavailable',
     })
@@ -437,12 +449,12 @@ describe('run cost', () => {
     const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL', executor: 'opencode' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true }))
     writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: { input: 0, cache_creation: 0, cache_read: 0, output: 0 } }))
     writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 3000, phases: [], lanes: [{ phase: 'critic', round: 1, executor: 'gpt-lane', model: 'openai/gpt', started_at: 1000, ended_at: 3000 }] }))
-    const cost = computeRunCost({ laneDir: lane, worktree: '/work/a', sessions: [{ id: 's', directory: '/work/a', model: { providerID: 'openai', id: 'gpt' }, tokens_input: 100, tokens_output: 20, tokens_reasoning: 30, tokens_cache_read: 40, time_created: 1200, time_updated: 2800 }] })
+    const cost = computeRunCost({ laneDir: lane, worktree: work('a'), sessions: [{ id: 's', directory: work('a'), model: { providerID: 'openai', id: 'gpt' }, tokens_input: 100, tokens_output: 20, tokens_reasoning: 30, tokens_cache_read: 40, time_created: 1200, time_updated: 2800 }] })
     expect(cost.phases[0].models['openai/gpt']).toMatchObject({ family: 'openai', input: 100, cache_write: 'not measured', cache_read: 40, output: 20, reasoning: 30, first_pass_input: 100, fresh_tokens: 150, usd: 'price unknown' })
   })
 
   it('attributes each lane by its own model family when a run mixes Claude and GPT lanes', () => {
-    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const fixture = laneFamiliesFixture()
     const claudeLane = { ...fixture.claude.lane, executor: 'claude-sdk' }
     const gptLane = { ...fixture.gpt.lane, executor: 'gpt-lane' }
     const { lane, sessions } = archiveDerivedLaneCost(
@@ -460,7 +472,7 @@ describe('run cost', () => {
   })
 
   it('uses archived lane model evidence instead of a contradictory run executor', () => {
-    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const fixture = laneFamiliesFixture()
     const { lane, sessions } = archiveDerivedLaneCost(
       { ...fixture.gpt.route, executor: 'claude-sdk' },
       [fixture.gpt.lane],
@@ -474,7 +486,7 @@ describe('run cost', () => {
   })
 
   it('reports contradictory executor and model evidence on one lane as unknown', () => {
-    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const fixture = laneFamiliesFixture()
     const contradictory = { ...fixture.gpt.lane, executor: 'opencode', model: 'anthropic/claude-sonnet-5' }
     const { lane, sessions } = archiveDerivedLaneCost(fixture.gpt.route, [contradictory], [fixture.gpt.session])
 
@@ -486,7 +498,7 @@ describe('run cost', () => {
   })
 
   it('names an OpenAI lane lookup miss instead of recording zero or the run family', () => {
-    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const fixture = laneFamiliesFixture()
     const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane])
 
     const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, sessions: [] })
@@ -502,7 +514,7 @@ describe('run cost', () => {
     const laneRecord = { phase: 'critic', round: 1, model: 'unknown', started_at: 1000, ended_at: 2000, usage_file: null }
     const { lane } = archiveDerivedLaneCost({ route: 'FULL', executor: 'claude-sdk' }, [laneRecord])
 
-    const cost = computeRunCost({ laneDir: lane, worktree: '/work/a', sessions: [] })
+    const cost = computeRunCost({ laneDir: lane, worktree: work('a'), sessions: [] })
 
     expect(cost.phases[0].unknown).toEqual([
       'lane usage family unavailable for critic round 1: executor and model do not identify Anthropic or OpenAI',
@@ -513,13 +525,13 @@ describe('run cost', () => {
   it('passes hostile-looking database paths after sqlite option termination with a raised buffer', () => {
     const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL', executor: 'opencode' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} })); writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 2000, phases: [], lanes: [{ phase: 'critic', round: 1, executor: 'gpt-lane', model: 'openai/gpt', started_at: 1000, ended_at: 2000 }] }))
     let receipt: { args?: string[], maxBuffer?: number } = {}
-    computeRunCost({ laneDir: lane, worktree: '/work/a', dbPath: '-database', execFile: (_program: string, args: string[], options: { maxBuffer: number }) => { receipt = { args, maxBuffer: options.maxBuffer }; return '[]' } })
+    computeRunCost({ laneDir: lane, worktree: work('a'), dbPath: '-database', execFile: (_program: string, args: string[], options: { maxBuffer: number }) => { receipt = { args, maxBuffer: options.maxBuffer }; return '[]' } })
     expect(receipt.args?.slice(0, 4)).toEqual(['-readonly', '-json', '--', '-database'])
     expect(receipt.maxBuffer).toBe(64 * 1024 * 1024)
   })
 
   it('degrades an unavailable OpenCode store to a family-specific unknown', () => {
-    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const fixture = laneFamiliesFixture()
     const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane])
     const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, dbPath: '/missing/opencode.db', execFile: () => { throw new Error('sqlite unavailable') } })
 
@@ -529,7 +541,7 @@ describe('run cost', () => {
   })
 
   it('L1 queries the documented win32 path and degrades a missing store to unknown', () => {
-    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const fixture = laneFamiliesFixture()
     const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane]); let store: string | undefined
     const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, platform: 'win32', env: { USERPROFILE: 'C:\\Users\\u' }, execFile: (_bin: string, args: string[]) => { store = args[3]; throw new Error('unable to open database file') } })
 
@@ -540,21 +552,21 @@ describe('run cost', () => {
   it('derives wall time from archived transcript timestamps and marks it inferred', () => {
     const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'LITE', executor: 'claude-sdk' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, minutes: 999 }))
     writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} })); writeFileSync(join(lane, 'sdk-transcript.json'), JSON.stringify([{ timestamp: '2026-01-01T00:00:00.000Z' }, { timestamp: '2026-01-01T00:41:26.400Z' }]))
-    const cost = computeRunCost({ laneDir: lane, worktree: '/work/a' })
+    const cost = computeRunCost({ laneDir: lane, worktree: work('a') })
     expect(cost.totals.wall_time_ms).toBe(2_486_400)
     expect(cost.window).toMatchObject({ started_at: '2026-01-01T00:00:00.000Z', ended_at: '2026-01-01T00:41:26.400Z', inferred: true })
   })
 
   it('matches OpenCode sessions only to the exact worktree and overlapping lane window', () => {
     const sessions = [
-      { id: 'before', directory: '/work/a', time_created: 1, time_updated: 99 },
-      { id: 'overlap-start', directory: '/work/a', time_created: 90, time_updated: 110 },
-      { id: 'inside', directory: '/work/a', time_created: 120, time_updated: 180 },
-      { id: 'overlap-end', directory: '/work/a', time_created: 190, time_updated: 220 },
-      { id: 'other-tree', directory: '/work/b', time_created: 120, time_updated: 180 },
-      { id: 'after', directory: '/work/a', time_created: 201, time_updated: 300 },
+      { id: 'before', directory: work('a'), time_created: 1, time_updated: 99 },
+      { id: 'overlap-start', directory: work('a'), time_created: 90, time_updated: 110 },
+      { id: 'inside', directory: work('a'), time_created: 120, time_updated: 180 },
+      { id: 'overlap-end', directory: work('a'), time_created: 190, time_updated: 220 },
+      { id: 'other-tree', directory: work('b'), time_created: 120, time_updated: 180 },
+      { id: 'after', directory: work('a'), time_created: 201, time_updated: 300 },
     ]
-    expect(matchLaneSessions(sessions, '/work/a', 100, 200).map((row: { id: string }) => row.id))
+    expect(matchLaneSessions(sessions, work('a'), 100, 200).map((row: { id: string }) => row.id))
       .toEqual(['overlap-start', 'inside', 'overlap-end'])
   })
 
@@ -570,8 +582,8 @@ describe('run cost', () => {
     writeFileSync(join(lane, 'critic-run.z.log'), '2026-01-01T00:02:00.000Z start\n2026-01-01T00:03:00.000Z end\n')
     writeFileSync(join(lane, 'review-run.a.log'), '2026-01-01T00:05:00.000Z start\n2026-01-01T00:06:00.000Z end\n')
     writeFileSync(join(lane, 'harden-run.empty.log'), '2026-01-01T00:08:00.000Z start\n2026-01-01T00:09:00.000Z end\n')
-    const row = (id: string, created: number, updated: number, input: number) => ({ id, directory: '/work/a', model: { providerID: 'openai', id }, tokens_input: input, tokens_output: 1, tokens_reasoning: 2, tokens_cache_read: 3, time_created: created, time_updated: updated })
-    const cost = computeRunCost({ laneDir: lane, worktree: '/work/a', sessions: [row('review', Date.parse('2026-01-01T00:05:10Z'), Date.parse('2026-01-01T00:05:20Z'), 50), row('critic', Date.parse('2026-01-01T00:02:10Z'), Date.parse('2026-01-01T00:02:20Z'), 20), row('extra', Date.parse('2026-01-01T00:07:00Z'), Date.parse('2026-01-01T00:07:10Z'), 70)] })
+    const row = (id: string, created: number, updated: number, input: number) => ({ id, directory: work('a'), model: { providerID: 'openai', id }, tokens_input: input, tokens_output: 1, tokens_reasoning: 2, tokens_cache_read: 3, time_created: created, time_updated: updated })
+    const cost = computeRunCost({ laneDir: lane, worktree: work('a'), sessions: [row('review', Date.parse('2026-01-01T00:05:10Z'), Date.parse('2026-01-01T00:05:20Z'), 50), row('critic', Date.parse('2026-01-01T00:02:10Z'), Date.parse('2026-01-01T00:02:20Z'), 20), row('extra', Date.parse('2026-01-01T00:07:00Z'), Date.parse('2026-01-01T00:07:10Z'), 70)] })
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'critic').models['openai/critic'].input).toBe(20)
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'review').models['openai/review'].input).toBe(50)
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'harden').unknown).toHaveLength(1)
@@ -581,7 +593,7 @@ describe('run cost', () => {
 
   it('reports unknown outcome when summary.json is absent and replaces only its delimited report block', () => {
     const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'LITE', executor: 'claude-sdk', cardId: '7' })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} })); writeFileSync(join(lane, 'sdk-transcript.json'), JSON.stringify([{ timestamp: '2026-01-01T00:00:00Z' }]))
-    const cost = computeRunCost({ laneDir: lane, worktree: '/work/a' })
+    const cost = computeRunCost({ laneDir: lane, worktree: work('a') })
     expect(cost.outcome).toEqual({ status: 'unknown', reason: 'summary.json unavailable' })
     const original = '# Pilot\n\n## Run Cost\nThis pilot-authored heading stays.\n\n<!-- run-cost -->\nold generated text\n<!-- /run-cost -->\n\n## Closing\nkeep me\n'
     const updated = appendCostReport(original, cost)
@@ -608,7 +620,7 @@ describe('run cost', () => {
 
   it('reports a deferred summary distinctly from partial cost outcomes', () => {
     const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'LITE', executor: 'claude-sdk' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, partial: null, deferred: { reason: 'delivery deferred: 1 criterion' } })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} })); writeFileSync(join(lane, 'sdk-transcript.json'), JSON.stringify([{ timestamp: '2026-01-01T00:00:00Z' }]))
-    expect(computeRunCost({ laneDir: lane, worktree: '/work/a' }).outcome).toEqual({ status: 'deferred', reason: 'delivery deferred: 1 criterion' })
+    expect(computeRunCost({ laneDir: lane, worktree: work('a') }).outcome).toEqual({ status: 'deferred', reason: 'delivery deferred: 1 criterion' })
   })
 
   it('aggregates complete runs by route by default and lists partial runs separately', () => {
@@ -647,13 +659,13 @@ describe('run cost', () => {
     expect(result.status).toBe(0)
     expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({
       route: 'HARD',
-      worktree: '/work/cli',
+      worktree: work('cli'),
       window: { started_at: '2026-01-01T00:00:00.000Z', ended_at: '2026-01-01T00:01:00.000Z' },
     })
   })
 
   it('prints usage and exits 2 when compute is missing a required option', () => {
-    const result = spawnSync(process.execPath, [CLI, '--compute', cliLane(), '--worktree', '/work/cli'], { encoding: 'utf8' })
+    const result = spawnSync(process.execPath, [CLI, '--compute', cliLane(), '--worktree', work('cli')], { encoding: 'utf8' })
 
     expect(result.status).toBe(2)
     expect(result.stderr).toMatch(/^Usage: node wt-run-cost\.mjs /)

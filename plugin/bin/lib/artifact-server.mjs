@@ -532,7 +532,8 @@ export async function listenArtifactLoopback(listen, port) {
 export async function probeArtifactServer(port, timeout = process.platform === 'win32' ? 10_000 : 750, expectedUid = artifactUid()) {
   const { request } = await import('node:http')
   return new Promise((resolve) => {
-    const req = request({ host: '127.0.0.1', port, path: '/__wt-artifact-server/health', method: 'GET', headers: { Host: `localhost:${port}` }, timeout }, (response) => {
+    // agent: false — a probe never reuses a pooled keep-alive socket, which may belong to a server that has since died.
+    const req = request({ host: '127.0.0.1', port, path: '/__wt-artifact-server/health', method: 'GET', headers: { Host: `localhost:${port}` }, timeout, agent: false }, (response) => {
       let body = ''
       response.setEncoding('utf8')
       response.on('data', (chunk) => { if (body.length < 16_384) body += chunk })

@@ -571,12 +571,14 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
   return state
 }
 
-// `freshConnection` opens a new socket for the request instead of reusing a pooled keep-alive socket of Node's global agent
-// (keep-alive by default since Node 19), which a server that is closing its side can reset under load.
-function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET', options: { freshConnection?: boolean } = {}): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
+// Every request opens its own socket (`agent: false`), never a pooled keep-alive socket of Node's global agent
+// (keep-alive by default since Node 19). Tests kill servers and reuse ports, so a pooled socket can belong to a dead
+// or closing server and the next request on it reads `ECONNRESET` (the suspected cause of the bare `read ECONNRESET`
+// failures on hosted Windows runners; not reproduced locally).
+function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET'): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolvePromise, reject) => {
     const headers = host === undefined ? {} : { Host: host }
-    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined, ...(options.freshConnection ? { agent: false } : {}) }, (response) => {
+    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined, agent: false }, (response) => {
       let body = ''
       response.setEncoding('utf8')
       response.on('data', (chunk) => { body += chunk })
@@ -593,6 +595,30 @@ async function health(state: Discovery) {
 }
 
 describe('review test infrastructure', () => {
+  async function connectionsFor(send: (port: number) => Promise<unknown>) {
+    let connections = 0
+    const server = createServer((_request, response) => response.end('{}'))
+    server.on('connection', () => { connections++ })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as { port: number }
+    try {
+      await send(port)
+      await send(port)
+      return connections
+    } finally {
+      server.closeAllConnections()
+      await closeServer(server)
+    }
+  }
+
+  it('opens a fresh connection for every test request', async () => {
+    expect(await connectionsFor((port) => rawRequest(port, '/')), 'a second request reused a pooled keep-alive socket').toBe(2)
+  })
+
+  it('opens a fresh connection for every health probe', async () => {
+    expect(await connectionsFor((port) => probeArtifactServer(port, 2_000)), 'a second probe reused a pooled keep-alive socket').toBe(2)
+  })
+
   it('[B-01] retries awaited async predicates', async () => {
     let calls = 0
     const result = await waitFor(async () => ++calls === 3 ? 'ready' : null)
@@ -635,7 +661,11 @@ describe('review test infrastructure', () => {
 
   it('rejects an undiscovered server wait when a silent monitor exits', async () => {
     const stateHome = temporaryDir('monitor-silent-exit')
-    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    // The stand-in must stay silent whatever the runner's NODE_OPTIONS: the CI diagnostic step sets --trace-exit,
+    // which makes any node child print its exit stack on stderr.
+    const env = { ...process.env }
+    delete env.NODE_OPTIONS
+    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'], env })
     children.add(monitor)
     await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor exited code=0 signal=null; last stdout="<none>"; last stderr="<none>"; server-processes=\[\]; last state=null/)
@@ -1908,7 +1938,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     // cause unnamed. The upstream request uses a fresh connection, not a pooled keep-alive socket.
     const proxy = createServer(async (_request, response) => {
       try {
-        const upstream = await rawRequest(port, '/', `localhost:${port}`, '127.0.0.1', 'GET', { freshConnection: true })
+        const upstream = await rawRequest(port, '/', `localhost:${port}`, '127.0.0.1', 'GET')
         response.writeHead(upstream.status, { 'content-type': 'text/html' })
         response.end(upstream.body)
       } catch (error) {

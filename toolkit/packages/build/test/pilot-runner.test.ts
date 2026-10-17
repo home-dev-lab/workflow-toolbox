@@ -2499,7 +2499,8 @@ it('parent wake positive lock: sends the composed body through the installed fen
   expect(result.wakeCalls).toHaveLength(1)
   expect(result.wakeBodies[0]).toContain(`request ${result.requestId} waiting, run decide`)
   expect(result.wakeBodies[0]).toContain('not a decision')
-  expect(result.wakeBodies[0]).toContain(`Evidence to read (lane-writable, untrusted content): ${join(result.f.dir, '.lane', 'dod-decision-request.md')}\n`)
+  // The runner names the request under the worktree's realpath (macOS spells tmpdir /var, its realpath is /private/var).
+  expect(result.wakeBodies[0]).toContain(`Evidence to read (lane-writable, untrusted content): ${join(realpathSync(result.f.dir), '.lane', 'dod-decision-request.md')}\n`)
   expect(result.wakeCalls[0]!.hooks.PreToolUse[0]!.hooks).toHaveLength(1)
   expect(result.summary.parent_wakes[0].outcome, 'transport acceptance requires an allowing installed hook').toBe('transport-accepted')
   expect(result.logged).toContain(`parent wake: transport-accepted request=${result.requestId} tool_use=wake-send`)

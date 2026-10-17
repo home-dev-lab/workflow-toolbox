@@ -93,15 +93,17 @@ function windowsEntries(): Entry[] {
 
 const strip = (expression: string) => expression.trim().replace(/^\$\{\{\s*/, '').replace(/\s*\}\}$/, '')
 
-// Evaluates the `if` forms this workflow uses: `&&` of `always()`, `success()`, `runner.os ==|!= 'X'`, `matrix.shard ==|!= N`.
+// Evaluates the `if` forms this workflow uses: `&&` of `always()`, `success()`, `!cancelled()`, `runner.os ==|!= 'X'`,
+// `matrix.shard ==|!= N`.
 // Any other form throws, so a new shape forces this evaluator to be extended rather than silently read as true.
-// An absent `if` is the implicit `success()`; `always()` and `success()` are both true here (no earlier step is failed).
+// An absent `if` is the implicit `success()`; `always()`, `success()` and `!cancelled()` are all true here (no earlier
+// step is failed and the run is not cancelled).
 // A matrix key the entry does not define is null in GitHub expressions, and null coerces to 0 in `==` / `!=` against a number.
 function runsOn(step: Step, entry: Entry): boolean {
   if (step.if === undefined) return true
   return strip(String(step.if)).split('&&').every((raw) => {
     const term = raw.trim()
-    if (term === 'always()' || term === 'success()') return true
+    if (term === 'always()' || term === 'success()' || term === '!cancelled()') return true
     const os = /^runner\.os\s*(==|!=)\s*'([A-Za-z]+)'$/.exec(term)
     if (os) return (runnerOs(entry) === os[2]) === (os[1] === '==')
     const shard = /^matrix\.shard\s*(==|!=)\s*(\d+)$/.exec(term)
@@ -189,6 +191,12 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
       expect(gates.length, `gating steps of Windows shard ${entry.shard}`).toBeGreaterThanOrEqual(1)
       for (const step of gates) expect(step['continue-on-error'], `"${step.name}" continue-on-error`).toBeUndefined()
     }
+  })
+
+  it('runs every sharded suite step even after an earlier gating step failed, so one red never hides the suite', () => {
+    const suites = steps.filter((step) => /test:shard --shard=/.test(step.run ?? ''))
+    expect(suites.length, 'sharded suite steps').toBeGreaterThanOrEqual(3)
+    for (const step of suites) expect(strip(String(step.if ?? '')).split('&&').map((term) => term.trim()), `"${step.name}" if`).toContain('!cancelled()')
   })
 
   it('runs each Windows shard `test:shard --shard=<its own number>/N --coverage`, exactly one suite step per shard', () => {
