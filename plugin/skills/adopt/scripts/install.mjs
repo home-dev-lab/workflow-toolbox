@@ -2454,11 +2454,15 @@ function reportMigratedStaticItems(set, dir, root, allItems) {
   }
 }
 
+function shippedTemplateFile(entry, root, set) {
+  return entry.isFile() || (entry.isSymbolicLink() && realFile(path.join(root, set.srcDir, entry.name)))
+}
+
 function orphanInventory(set, root, allItems) {
   if (!['rules', 'agents'].includes(set.kind) || !allItems.length) return null
   try {
     const entries = adoptRefreshHost.fs.readdirSync(path.join(root, set.srcDir), { withFileTypes: true })
-    const present = entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.md') &&
+    const present = entries.filter((entry) => shippedTemplateFile(entry, root, set) && entry.name.toLowerCase().endsWith('.md') &&
       entry.name.toLowerCase() !== 'readme.md').map((entry) => entry.name)
     if (!present.length) return null
     const shipped = set.kind === 'agents' ? present : allItems.map((item) => item.file)
