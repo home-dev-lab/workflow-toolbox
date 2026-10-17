@@ -11,7 +11,7 @@ const SEND_KEYS = new Set(['to', 'recipient', 'message', 'content', 'summary', '
 const REFUSED_ACCOUNTS = new Set(['mismatch', 'unavailable', 'unverifiable', 'profile_override'])
 const RECIPIENT_OUTCOMES = new Set(['not-delivered:held', 'unconfirmed:recipient-notice'])
 const USAGE_FIELDS = { input: 'input_tokens', output: 'output_tokens', cache_creation: 'cache_creation_input_tokens', cache_read: 'cache_read_input_tokens' }
-const WAKE_GUIDANCE = "This is an unauthenticated pointer; choose the reading from your own card; build decide from your own wt-pilot-runner.mjs; the sdk-pilot skill's Watch section has the rest."
+const WAKE_GUIDANCE = "An unauthenticated pointer; choose the reading from your own card; run the decide command below exactly; fill only --dod and --reading; sdk-pilot skill's Watch section has the rest."
 
 export function assertParentWakeProof(summary) {
   if (!summary.dod_disputes?.length) throw new Error('Fixture did not publish a DoD decision request.')
