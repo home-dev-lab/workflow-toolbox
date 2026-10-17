@@ -594,27 +594,35 @@ async function health(state: Discovery) {
   return JSON.parse(response.body) as { service: string, version: string, uid: number | string, pid: number, port: number, registeredSessions: number }
 }
 
-describe('health probe always settles', () => {
-  type Handler = Parameters<typeof createServer>[1]
-  async function probeAgainst(handler: Handler, timeout: number, beforeCleanup: () => Promise<void> = async () => {}) {
-    const server = createServer(handler)
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
-    const { port } = server.address() as { port: number }
-    let timer: NodeJS.Timeout | undefined
-    const pending = new Promise<'pending'>((resolve) => { timer = setTimeout(() => resolve('pending'), timeout * 4 + 2_000) })
-    const started = Date.now()
-    try {
-      const result = await Promise.race([probeArtifactServer(port, timeout), pending])
-      const elapsed = Date.now() - started
-      await beforeCleanup()
-      return { result, elapsed }
-    } finally {
-      clearTimeout(timer)
-      server.closeAllConnections()
-      await closeServer(server)
-    }
-  }
+// The stand-in must stay silent whatever the runner's NODE_OPTIONS: the CI diagnostic step sets --trace-exit,
+// which makes any node child print its exit stack on stderr.
+function envWithoutNodeOptions() {
+  const env = { ...process.env }
+  delete env.NODE_OPTIONS
+  return env
+}
 
+type Handler = Parameters<typeof createServer>[1]
+async function probeAgainst(handler: Handler, timeout: number, beforeCleanup: () => Promise<void> = async () => {}) {
+  const server = createServer(handler)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  const { port } = server.address() as { port: number }
+  let timer: NodeJS.Timeout | undefined
+  const pending = new Promise<'pending'>((resolve) => { timer = setTimeout(() => resolve('pending'), timeout * 4 + 2_000) })
+  const started = Date.now()
+  try {
+    const result = await Promise.race([probeArtifactServer(port, timeout), pending])
+    const elapsed = Date.now() - started
+    await beforeCleanup()
+    return { result, elapsed }
+  } finally {
+    clearTimeout(timer)
+    server.closeAllConnections()
+    await closeServer(server)
+  }
+}
+
+describe('health probe settles on a broken reply', () => {
   it('settles as unknown as soon as the server dies after sending headers and part of the body', async () => {
     const cut: Handler = (_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' })
@@ -642,7 +650,9 @@ describe('health probe always settles', () => {
     expect(elapsed, 'the probe outlived its own timeout').toBeLessThan(300 + 500)
     expect(closedBeforeCleanup, 'the probe left its socket open').toBe(true)
   })
+})
 
+describe('health probe budget', () => {
   it('honours the timeout as the whole budget: a complete slow reply reads within it, and unknown past it', async () => {
     const slow: Handler = (_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json' })
@@ -740,11 +750,7 @@ describe('review test infrastructure', () => {
 
   it('rejects an undiscovered server wait when a silent monitor exits', async () => {
     const stateHome = temporaryDir('monitor-silent-exit')
-    // The stand-in must stay silent whatever the runner's NODE_OPTIONS: the CI diagnostic step sets --trace-exit,
-    // which makes any node child print its exit stack on stderr.
-    const env = { ...process.env }
-    delete env.NODE_OPTIONS
-    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'], env })
+    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'], env: envWithoutNodeOptions() })
     children.add(monitor)
     await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor exited code=0 signal=null; last stdout="<none>"; last stderr="<none>"; server-processes=\[\]; last state=null/)
