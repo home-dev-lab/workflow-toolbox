@@ -101,7 +101,7 @@ function registerRelationshipContracts() {
     const host = createHostAdapter({ platform: 'win32', invoke: { run } })
     host.readProcessRelationships()
     host.readProcessSnapshot()
-    expect(run.mock.calls.map((call) => call[2])).toEqual([{ timeout: 15_000 }, { timeout: 15_000 }])
+    expect(run.mock.calls.map((call) => call[2])).toEqual([{ timeout: 5_000 }, { timeout: 5_000 }])
   })
 
   contract('answers pid to parent-pid from the captured process table', platforms, (platform) => {

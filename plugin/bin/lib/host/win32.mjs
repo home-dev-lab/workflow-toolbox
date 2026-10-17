@@ -10,11 +10,7 @@ const PROCESS_TABLE_SCRIPT = [
   '    executableName = $_.Name }',
   '} | ConvertTo-Json -Depth 4 -Compress',
 ].join(' ')
-// A cold Windows PowerShell plus a full Get-CimInstance Win32_Process walk measured 3007 ms on a hosted Windows
-// runner that passed, so the former 5 s bound left under 2 s of margin; on two other runs the real-host contract read
-// the table as unsupported (cause not captured). The bound only stops a hung PowerShell, so it leaves room for a slow
-// but healthy read.
-const PROCESS_READ_TIMEOUT_MS = 15_000
+const PROCESS_READ_TIMEOUT_MS = 5_000
 const PROCESS_SNAPSHOT_SCRIPT = "$now = Get-Date; Get-CimInstance Win32_Process | ForEach-Object { $elapsed = if ($null -eq $_.CreationDate) { -1 } else { [math]::Round(($now - $_.CreationDate).TotalMilliseconds) }; $start = if ($null -eq $_.CreationDate) { -1 } else { [DateTimeOffset]::new($_.CreationDate).ToUnixTimeMilliseconds() }; '{0} {1} {2} {3} {4}' -f $_.ProcessId,$_.ParentProcessId,$elapsed,$start,$_.CommandLine }"
 export const processRelationshipOperation = { command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_TABLE_SCRIPT] }
 export const processSnapshotOperation = { command: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_SNAPSHOT_SCRIPT] }
