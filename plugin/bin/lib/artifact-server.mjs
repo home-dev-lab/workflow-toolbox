@@ -529,12 +529,13 @@ export async function listenArtifactLoopback(listen, port) {
   }
 }
 
+const PROBE_TOTAL_IDLE_MULTIPLE = 4
+
 export async function probeArtifactServer(port, timeout = process.platform === 'win32' ? 10_000 : 750, expectedUid = artifactUid()) {
   const { request } = await import('node:http')
   return new Promise((resolve) => {
     let settled = false
-    // `timeout` bounds the whole probe, not only socket idleness: a trickling or cut-off reply still settles.
-    const deadline = setTimeout(() => settle({ kind: 'unknown' }), timeout)
+    let deadline
     function settle(result) {
       if (settled) return
       settled = true
@@ -546,6 +547,9 @@ export async function probeArtifactServer(port, timeout = process.platform === '
     const req = request({ host: '127.0.0.1', port, path: '/__wt-artifact-server/health', method: 'GET', headers: { Host: `localhost:${port}` }, timeout, agent: false }, (response) => {
       readHealthResponse(response, expectedUid, settle)
     })
+    // `timeout` stays the socket idle bound. The cap below only ends a reply that keeps sending bytes without ever
+    // finishing, which resets that idle timer forever; a slow but complete reply still gets read.
+    deadline = setTimeout(() => settle({ kind: 'unknown' }), timeout * PROBE_TOTAL_IDLE_MULTIPLE)
     req.once('timeout', () => settle({ kind: 'unknown' }))
     req.once('error', (error) => settle(error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH' ? { kind: 'free' } : { kind: 'unknown' }))
     req.end()
