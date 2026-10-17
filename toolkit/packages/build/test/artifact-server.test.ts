@@ -628,17 +628,19 @@ describe('health probe always settles', () => {
   it('settles as unknown within its timeout and closes the socket when the server trickles bytes without finishing', async () => {
     let bytes = 0
     let serverSawClose = false
+    let closedBeforeCleanup = false
     const trickle: Handler = (_request, response) => {
       response.writeHead(200, { 'content-type': 'application/json' })
       const tick = setInterval(() => { if (!response.destroyed) response.write(' ', () => { bytes++ }) }, 50)
       response.on('close', () => { serverSawClose = true; clearInterval(tick) })
     }
-    const settleWindow = async () => { await new Promise((resolve) => setTimeout(resolve, 200)) }
+    // Read the flag before the fixture's own cleanup closes every connection, so only the probe can have set it.
+    const settleWindow = async () => { await new Promise((resolve) => setTimeout(resolve, 200)); closedBeforeCleanup = serverSawClose }
     const { result, elapsed } = await probeAgainst(trickle, 300, settleWindow)
     expect(result).toEqual({ kind: 'unknown' })
     expect(bytes, 'bytes kept arriving, so the idle timer never fired').toBeGreaterThanOrEqual(3)
     expect(elapsed, 'the probe outlived its own timeout').toBeLessThan(300 + 500)
-    expect(serverSawClose, 'the probe left its socket open').toBe(true)
+    expect(closedBeforeCleanup, 'the probe left its socket open').toBe(true)
   })
 
   it('honours the timeout as the whole budget: a complete slow reply reads within it, and unknown past it', async () => {
