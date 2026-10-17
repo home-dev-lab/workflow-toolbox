@@ -2,7 +2,6 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, existsSync, rmSync, readFileSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, extname } from 'node:path'
-import { exemptPaths } from './quality-changed-exemptions.mjs'
 
 export function git(root, args, env = process.env, execute = execFileSync) {
   return execute('git', ['-C', root, ...args], { env: { ...env, GIT_NO_LAZY_FETCH: '1' },
@@ -26,8 +25,7 @@ export function resolveBase(root, ref) {
   } catch { throw new Error('cannot resolve base; pass --base <ref> or WT_QUALITY_BASE (fetch develop history)') }
 }
 export function inScope(file) {
-  return (/\.(mjs|cjs|jsx|js|tsx|ts|mts|cts)$/iu.test(file) || !extname(file))
-    && !exemptPaths.has(file)
+  return /\.(mjs|cjs|jsx|js|tsx|ts|mts|cts)$/iu.test(file) || !extname(file)
 }
 function parseDiff(text) {
   const fields = text.split('\0').filter(Boolean), files = []

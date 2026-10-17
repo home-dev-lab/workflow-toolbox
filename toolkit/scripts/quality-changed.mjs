@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { git, resolveBase, resolveCommit, changedFiles, isCodeSubject, readSubject } from './quality-changed-git.mjs'
 import { createLinter, lintText } from './quality-changed-lint.mjs'
 import { regressions } from './quality-changed-measure.mjs'
+import { selectChangedScope } from './quality-changed-scope.mjs'
 
 function parseArgs(argv) {
   const options = { base: process.env.WT_QUALITY_BASE, subject: undefined }
@@ -30,10 +31,12 @@ export async function runCli(argv) {
     const base = resolveBase(root, options.base)
     const subject = options.subject ? resolveCommit(root, options.subject) : undefined
     const files = changedFiles(root, base, subject).filter((file) => isCodeSubject(root, subject, file.path))
+    const { selected, skipped } = await selectChangedScope(checkerRoot, files)
     const eslint = createLinter(checkerRoot), problems = []
-    for (const file of files) problems.push(...await compare(eslint, root, base, subject, file, checkerRoot))
+    for (const file of selected) problems.push(...await compare(eslint, root, base, subject, file, checkerRoot))
     for (const problem of problems) console.log(problem)
-    console.log(`quality:changed ${files.length} files checked; ${problems.length} regressions`)
+    for (const file of skipped) console.log(`quality:changed skipped ${file.path} — ${file.reason}`)
+    console.log(`quality:changed ${selected.length} files checked; ${problems.length} regressions; ${skipped.length} files skipped`)
     if (!problems.length && process.env.WT_CERTIFICATION_NONCE) console.log(`WT_OWNER_CHECKED=${process.env.WT_CERTIFICATION_NONCE}`)
     return problems.length ? 1 : 0
   } catch (error) { console.error(`quality:changed TOOL ERROR: ${error.message.replace(/[\r\n]/g, ' ')}; pass --base <ref> or WT_QUALITY_BASE`); return 2 }

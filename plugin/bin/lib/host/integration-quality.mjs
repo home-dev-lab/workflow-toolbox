@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, mkdtempSync, rmSync, lstatSync, readdirSync, symlinkSync, realpathSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, mkdtempSync, rmSync, lstatSync, readdirSync, symlinkSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { hardenedGitArgs } from './hardened-git.mjs'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { spawnNeedsShell } from '../suite-lock.mjs'
+import { resolvedBinary } from '../resolved-binary.mjs'
 
 const certificationControlFile = (file) => /(^|\/)(package\.json|\.npmrc|pnpm-workspace\.yaml|pnpm-lock\.yaml|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock)$/iu.test(file)
 
@@ -119,9 +120,10 @@ export function cleanupCertification(options) {
   rmSync(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 function removeCheckout(root, checkout) {
+  const git = certificationGitExecutable()
   for (let attempt = 0; ; attempt++) {
     try {
-      execFileSync('git', hardenedGitArgs(['-C', root, 'worktree', 'remove', '--force', checkout]), { encoding: 'utf8', stdio: 'pipe', timeout: 120000 })
+      execFileSync(git, hardenedGitArgs(['-C', root, 'worktree', 'remove', '--force', checkout]), { encoding: 'utf8', stdio: 'pipe', timeout: 120000 })
       return
     } catch (error) {
       if (attempt === 4) throw error
@@ -139,12 +141,19 @@ function unlinkDependencies(directory) {
 }
 export function certifiedIndexDifference(options) {
   const index = path.join(options.certification.temp, 'index')
-  const execute = (args) => execFileSync('git', hardenedGitArgs(['-C', options.into, ...args]),
+  const git = certificationGitExecutable()
+  const execute = (args) => execFileSync(git, hardenedGitArgs(['-C', options.into, ...args]),
     { encoding: 'utf8', timeout: 120000, env: { ...process.env, GIT_INDEX_FILE: index, GIT_NO_LAZY_FETCH: '1' }, maxBuffer: 1 << 28 })
-  const tree = certificationGit(options.into, (program, args, config) => {
-    try { return { status: 0, stdout: execFileSync(program, args, config) } }
+  const tree = certificationGit(options.into, (_program, args, config) => {
+    try { return { status: 0, stdout: execFileSync(git, args, config) } }
     catch (error) { return { status: error.status, stderr: error.stderr } }
   }, ['write-tree']).trim()
   execute(['read-tree', tree])
   return execute(['diff', '--name-only', '-z'])
+}
+function certificationGitExecutable() {
+  const git = resolvedBinary('git', process.env, { accessSyncFn: accessSync, constants,
+    platform: process.platform, realpathSyncFn: realpathSync, statSyncFn: statSync, pathApi: path })
+  if (!git) throw new Error('certification git unavailable: install git and add it to PATH before integrating')
+  return git
 }
