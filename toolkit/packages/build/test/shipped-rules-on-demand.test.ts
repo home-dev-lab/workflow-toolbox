@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSy
 import { homedir, tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const root = fileURLToPath(new URL('../../../..', import.meta.url))
 const plugin = join(root, 'plugins', 'wt-rules-on-demand')
@@ -19,12 +20,16 @@ function* files(dir: string): Generator<string> {
 // directory is already physical, run the suite under an aliased one so Linux gates catch that class too.
 export function aliasedTempEnv(): { env: NodeJS.ProcessEnv, cleanup: () => void } {
   const base = tmpdir()
-  if (realpathSync(base) !== base) return { env: process.env, cleanup: () => {} }
+  // Every child gets plugin-location state (HOME, config dir, npm prefix...) inside a directory removed afterwards.
+  const sealRoot = mkdtempSync(join(base, 'rod-sealed-'))
+  const sealed = sealedPluginCliEnv(sealRoot)
+  const removeSeal = () => rmSync(sealRoot, { recursive: true, force: true })
+  if (realpathSync(base) !== base) return { env: sealed, cleanup: removeSeal }
   const real = mkdtempSync(join(base, 'rod-real-tmp-'))
   const alias = `${real}-alias`
   symlinkSync(real, alias, 'junction')
-  const env = { ...process.env, TMPDIR: alias, TMP: alias, TEMP: alias }
-  return { env, cleanup: () => { rmSync(alias, { force: true }); rmSync(real, { recursive: true, force: true }) } }
+  const env = { ...sealed, TMPDIR: alias, TMP: alias, TEMP: alias }
+  return { env, cleanup: () => { rmSync(alias, { force: true }); rmSync(real, { recursive: true, force: true }); removeSeal() } }
 }
 
 // The spec reporter prints only 'test failed' for a test FILE whose process exited non-zero while every subtest passed.
@@ -32,8 +37,6 @@ export function aliasedTempEnv(): { env: NodeJS.ProcessEnv, cleanup: () => void 
 const helper = (name: string) => new URL(`./helpers/${name}`, import.meta.url).href
 const NODE_TEST_ARGS = ['--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
   `--test-reporter=${helper('node-test-exit-reporter.mjs')}`, '--test-reporter-destination=stderr']
-// TEMPORARY diagnostic (remove with helpers/node-test-exit-trace.mjs once the Windows-only file-level failure is explained).
-const TRACE_IMPORT = `--import=${helper('node-test-exit-trace.mjs')}`
 // The plugin's spec output is far below this; the default 1 MiB would end the run with ENOBUFS once it grows past it.
 const MAX_OUTPUT = 64 * 1024 * 1024
 
@@ -47,27 +50,18 @@ describe('shipped rules-on-demand', () => {
   it('runs dependency-free Node tests', () => {
     const temp = aliasedTempEnv()
     try {
-      const run = spawnSync(process.execPath, [TRACE_IMPORT, ...NODE_TEST_ARGS], { cwd: plugin, encoding: 'utf8', env: temp.env, maxBuffer: MAX_OUTPUT })
+      const run = spawnSync(process.execPath, NODE_TEST_ARGS, { cwd: plugin, encoding: 'utf8', env: temp.env, maxBuffer: MAX_OUTPUT })
       expect(run.status, nodeTestOutcome(run)).toBe(0)
     } finally { temp.cleanup() }
   // The plugin's own `node --test` took 67.9 s on the windows-latest runner (run 36971793287) and
   // 57.0 s on ubuntu-latest and 42.9 s on macos-latest in the same run; 180 s leaves about 2.6x the
   // slowest measurement.
   }, 180_000)
-  // TEMPORARY diagnostic (remove with helpers/node-test-exit-trace.mjs): the Windows suite failed lsp-symbol.test.mjs at
-  // file level while every subtest passed. Running that file alone, three times, tells a failure of the file itself from
-  // one that needs the concurrent suite around it; each outcome is printed on every platform, so a green run reads too.
-  it('TEMPORARY: runs lsp-symbol.test.mjs alone and prints how its process ended', () => {
-    const outcomes = [1, 2, 3].map(() => spawnSync(process.execPath, [TRACE_IMPORT, ...NODE_TEST_ARGS, join('test', 'lsp-symbol.test.mjs')],
-      { cwd: plugin, encoding: 'utf8', env: process.env, maxBuffer: MAX_OUTPUT }))
-    outcomes.forEach((run, index) => console.log(`lsp-symbol.test.mjs alone, run ${index + 1}: ${run.status === 0 ? `exit status 0, signal ${run.signal ?? 'none'}` : nodeTestOutcome(run)}`))
-    expect(outcomes.map((run) => run.status), outcomes.map(nodeTestOutcome).join('\n')).toEqual([0, 0, 0])
-  }, 60_000)
   it('names the exit code of a test file whose process failed after every subtest passed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rod-exit-reporter-'))
     try {
       writeFileSync(join(dir, 'quiet-exit.test.mjs'), "import { test } from 'node:test'\ntest('passes', () => {})\nprocess.exitCode = 3\n")
-      const run = spawnSync(process.execPath, NODE_TEST_ARGS, { cwd: dir, encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: undefined } })
+      const run = spawnSync(process.execPath, NODE_TEST_ARGS, { cwd: dir, encoding: 'utf8', env: sealedPluginCliEnv(join(dir, 'sealed'), { NODE_TEST_CONTEXT: undefined }) })
       expect(run.stdout).toContain("'test failed'")
       expect(run.stderr).toMatch(/quiet-exit\.test\.mjs exited with code 3 \(0x3\), signal none, failure type testCodeFailure/)
     } finally { rmSync(dir, { recursive: true, force: true }) }
