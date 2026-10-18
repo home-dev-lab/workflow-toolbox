@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.196.0] - 2026-10-18
+
 - Lane integration now certifies the pending merge from a detached checkout of the target commit, using its quality entry, checker, configuration and existing installed dependencies. The target owner checker measures pending-merge inputs and must return a per-run execution receipt; missing checks refuse with a remedy. Candidate configuration is never swapped into the certification runtime, and compliant checker/configuration deletions integrate. Failed rollbacks report changed HEAD, tracked changes and new untracked residue; the certified working tree must match a rebuilt private index. Forced integration and changelog-only conflict resolution use the same certification. Every added or changed function must meet the owner limits (40 lines, complexity 10, no explicit `any`); only provably unchanged functions retain existing violations. Checks independently assert the required rules, include extensionless Node shebang scripts and case-variant code extensions, distinguish positional block scopes and method modifiers, and judge moved files as added code. Exemptions name exact target-owned paths, so fixture/vendor directory names confer no exemption. Documentation symlinks remain usable. Cross-OS quality uses explicit first-parent history without an environment skip.
 
 ### Added
@@ -15,6 +17,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 
+- Marketplace plugin versions in this release: `wt-rules-on-demand` 0.1.2 (the per-agent-type refusal opt-out, compaction detection, and the judge changes listed below) and `wt-secret-guard` 0.1.7 (the guard's notes reach the model). Update both with the plugin for the changes to load.
 - Shorten seven bundled rule texts by compressing grammar and removing incident narrative while preserving directives, headings, thresholds, and required wording.
 - Rules-on-demand delivery omits the leading adopt provenance stamp while preserving directive text; transcript drift comparisons normalize provenance and static cost uses the harness comment model.
 - The pilot suite can be adopted once per user config dir (`adopt --set agents --global`) instead of once per project: the watchdog pairing works there too, `pilot-wave` resolves the project copy first and the user copy second, and the docs ask for one copy per name because a project copy shadows the user copy. A watchdog now reads extra project tells from `.claude/watchdog-tells/<watchdog>.md` when the file exists, so a project keeps its own tells without editing the adopted definition. The pilot definition carries the duties it needs from the shipped rules (labels and dependencies before starting, step-back routes with priors, escalations that name a recommendation, refuting a stated cause, the cross-platform verdict, the five report sections with a pasted e2e) and warns that an isolated delegate tree can be removed under a running external lane.
