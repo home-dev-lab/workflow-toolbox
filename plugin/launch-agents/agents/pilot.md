@@ -645,8 +645,17 @@ asleep mid-mission from finished cleanly, so update state changes immediately, n
   SendMessage is needed after yielding). For a toolbox-launched lane, run its waiter in the
   FOREGROUND: `node <configDir>/scripts/wt-lane-wait.mjs --dir <worktree> --pid <pid printed at launch> --timeout <cap in seconds>`.
   It reads the launcher's host supervision record and returns one line: `LANE DONE exit=<n>`,
-  `LANE DIED exit=unknown`, or `LANE TIMEOUT exit=124`. Read the line's outcome
-  word, never the exit status (`LANE DONE exit=124` and a timeout both exit 124). `LANE DIED` means
+  `LANE DIED exit=unknown`, or `WAIT BUDGET ENDED: lane pid <N> still running` (exit 125).
+  A budget-ended line says `liveness unknown (<reason>)` when identity cannot be verified, or names
+  a gone worker and surviving child. The waiter's `--timeout` never stops the lane. Read the line's outcome
+  word, never the exit status alone (a lane can itself exit 125). `LANE DONE exit=124` propagates a lane exit;
+  the waiter never prints `LANE TIMEOUT`. Timeout abandonment is terminal: `LANE DONE exit=126 cause=timeout`
+  means the supervisor's grace default or extension ceiling abandoned the lane. Exit 126 with `cause=idle`
+  means the idle watchdog stopped it; `cause=owner` means owner abandonment; `cause=grace-error` means the
+  grace transition failed. These causes come from `decisionSource`, never a stale timeout reason.
+  A non-running budget line includes its state: `state=decision-needed` plus `timeoutAt` and `decisionDueAt`
+  means an extend/abandon decision is pending; `state=terminating` means termination publication is pending,
+  so investigate stalled termination instead of assuming productive work. `LANE DIED` means
   no terminal record was found, not proof that the lane stopped: probe the pid before acting. Neither
   an `EXIT=` line in the lane's run.log (which includes the lane's own output) nor an existing report
   file signals completion.
