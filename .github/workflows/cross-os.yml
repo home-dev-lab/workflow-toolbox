@@ -92,6 +92,8 @@ jobs:
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
         timeout-minutes: 8
       # Replay checks the parsers; this contract also checks native invocation and process lifetime.
+      # The suite steps below carry `!cancelled()`: a red contract still fails the job, but no longer skips the suite
+      # and hides every other failure of that entry.
       - name: Host adapter contract against the REAL platform
         if: ${{ matrix.shard != 1 }}
         shell: bash
@@ -105,7 +107,7 @@ jobs:
       - name: Test (macOS shard 1/2)
         shell: bash
         id: mac_shard_1
-        if: ${{ runner.os == 'macOS' }}
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
         continue-on-error: true
         env:
           WT_VITEST_MAX_WORKERS: 2
@@ -116,7 +118,7 @@ jobs:
       - name: Test (macOS shard 2/2)
         shell: bash
         id: mac_shard_2
-        if: ${{ runner.os == 'macOS' }}
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
         continue-on-error: true
         env:
           WT_VITEST_MAX_WORKERS: 2
@@ -143,7 +145,7 @@ jobs:
       # Windows. Shard 1 carries nothing else; shard 2 carries the diagnostic step and the typecheck, quality, lint
       # and smoke steps.
       - name: Test (Windows shard ${{ matrix.shard }}/2)
-        if: ${{ runner.os == 'Windows' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         env:
           # windows-latest has 4 vCPUs; two workers avoid oversubscribing process-heavy fixtures.

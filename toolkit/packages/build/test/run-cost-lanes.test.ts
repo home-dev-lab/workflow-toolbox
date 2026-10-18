@@ -762,6 +762,18 @@ it('R4 returns no identity when a walked ancestor fails with ENOTDIR', () => {
   expect(canonicalDirectory(input, { realpath: { native }, lstat: () => ({ isSymbolicLink: () => false }) })).toBeNull()
 })
 
+it('R4 returns no identity for a child beneath a regular file when the host reports ENOENT, as Windows does', () => {
+  const f = fixture(); const file = join(f.hostDir, 'file'), input = join(file, 'child')
+  const native = vi.fn((value: string) => {
+    if (value === file) return file
+    throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+  })
+  const lstat = vi.fn(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) })
+  const stat = vi.fn((value: string) => ({ isDirectory: () => value !== file }))
+  expect(canonicalDirectory(input, { realpath: { native }, lstat, stat })).toBeNull()
+  expect(stat).toHaveBeenCalledWith(file)
+})
+
 it('R4 reports every OpenAI lane missing when a worktree component is a file', () => {
   const f = fixture(); const file = join(f.hostDir, 'file'); writeFileSync(file, 'file')
   const query = vi.fn(() => JSON.stringify([f.row('unrelated')]))

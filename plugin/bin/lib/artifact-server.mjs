@@ -532,21 +532,43 @@ export async function listenArtifactLoopback(listen, port) {
 export async function probeArtifactServer(port, timeout = process.platform === 'win32' ? 10_000 : 750, expectedUid = artifactUid()) {
   const { request } = await import('node:http')
   return new Promise((resolve) => {
-    const req = request({ host: '127.0.0.1', port, path: '/__wt-artifact-server/health', method: 'GET', headers: { Host: `localhost:${port}` }, timeout }, (response) => {
-      let body = ''
-      response.setEncoding('utf8')
-      response.on('data', (chunk) => { if (body.length < 16_384) body += chunk })
-      response.on('end', () => {
-        try {
-          const health = JSON.parse(body)
-          resolve(response.statusCode === 200 && health.service === ARTIFACT_SERVER_ID && health.uid === expectedUid ? { kind: 'ours', health } : { kind: 'foreign' })
-        } catch { resolve({ kind: 'foreign' }) }
-      })
+    let settled = false
+    let deadline
+    function settle(result) {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      req.destroy()
+      resolve(result)
+    }
+    // agent: false — a probe never reuses a pooled keep-alive socket, which may belong to a server that has since died.
+    const req = request({ host: '127.0.0.1', port, path: '/__wt-artifact-server/health', method: 'GET', headers: { Host: `localhost:${port}` }, timeout, agent: false }, (response) => {
+      readHealthResponse(response, expectedUid, settle)
     })
-    req.once('timeout', () => { req.destroy(); resolve({ kind: 'unknown' }) })
-    req.once('error', (error) => resolve(error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH' ? { kind: 'free' } : { kind: 'unknown' }))
+    // `timeout` is the caller's whole budget, not only socket idleness: a reply that keeps sending bytes resets the
+    // idle timer, so without this a trickling or never-finished reply would hold the caller past its own deadline.
+    // Armed after request() returns, so a synchronous request() failure leaves no timer behind.
+    deadline = setTimeout(() => settle({ kind: 'unknown' }), timeout)
+    req.once('timeout', () => settle({ kind: 'unknown' }))
+    req.once('error', (error) => settle(error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH' ? { kind: 'free' } : { kind: 'unknown' }))
     req.end()
   })
+}
+
+function readHealthResponse(response, expectedUid, settle) {
+  let body = ''
+  response.setEncoding('utf8')
+  response.on('data', (chunk) => { if (body.length < 16_384) body += chunk })
+  response.on('end', () => {
+    try {
+      const health = JSON.parse(body)
+      settle(response.statusCode === 200 && health.service === ARTIFACT_SERVER_ID && health.uid === expectedUid ? { kind: 'ours', health } : { kind: 'foreign' })
+    } catch { settle({ kind: 'foreign' }) }
+  })
+  // A reply cut off before its end emits these instead of `end`; it proves nothing about who owns the port.
+  response.once('aborted', () => settle({ kind: 'unknown' }))
+  response.once('error', () => settle({ kind: 'unknown' }))
+  response.once('close', () => settle({ kind: 'unknown' }))
 }
 
 function globRegex(pattern) {
