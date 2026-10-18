@@ -21,7 +21,7 @@ const stored = new Map();
 const $ = {
   fs: { list: async (dir) => [...files.keys()].filter((path) => path.startsWith(`${dir}/`)).map((path) => ({ kind: 'file', name: path.slice(dir.length + 1) })), read: async (path) => files.get(path),
     stat: async (path) => ({ kind: 'file', size: rule.length, realPath: path }) },
-  env: { get: async (key) => ({ CLAUDE_CONFIG_DIR: '/mock-config' })[key] },
+  env: { get: async (key) => ({ CLAUDE_CONFIG_DIR: '/mock-config', WT_ROD_NO_REFUSE_AGENT_TYPES: 'lean-probe' })[key] },
   session: { messages: async () => [], id: async () => 'synthetic' },
   ui: { log: async () => {} },
   store: { get: async (key) => stored.get(key), set: async (key, value) => stored.set(key, value) },
@@ -37,5 +37,18 @@ for (const cwd of [undefined, '/mock-project']) {
   assert.match((await handlers.get('tool.call')($, { ...event, tool: 'Agent' }, async () => ({}))).deny, /Read this rule/);
   await handlers.get('turn.complete')($, event, async () => ({}));
 }
+// A listed agent type, known only through $.env.get in a realm without process, rides along instead of being refused.
+module.namespace.resetForSelftest();
+for (const [agentId, subagentType] of [['probe-listed', 'lean-probe'], ['probe-other', 'plain-probe']]) {
+  await handlers.get('agent.spawn')($, { subagentType }, async () => ({ model: 'synthetic', agentId }));
+}
+const listedEvent = { cwd: '/mock-project', tool: 'Agent', agentId: 'probe-listed' };
+await handlers.get('prompt.context')($, listedEvent, async () => ({}));
+const waived = await handlers.get('tool.call')($, listedEvent, async () => ({ context: [] }));
+assert.equal(waived.deny, undefined);
+assert.match(waived.context.join('\n'), /Read this rule/);
+const otherEvent = { cwd: '/mock-project', tool: 'Agent', agentId: 'probe-other' };
+await handlers.get('prompt.context')($, otherEvent, async () => ({}));
+assert.match((await handlers.get('tool.call')($, otherEvent, async () => ({}))).deny, /Read this rule/);
 assert.equal(typeof context.process, 'undefined');
 assert.ok(Object.values(stored.get('health').days).some((day) => day.calls >= 1));

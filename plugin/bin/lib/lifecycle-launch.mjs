@@ -10,8 +10,10 @@ import { gatePathSnapshot, warnGatePathChanges } from './lifecycle-selection.mjs
 import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { executorFamilyForModel } from './executor-defaults.mjs'
-import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
-import { ensureLaneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
+import { classifyLane } from './lane-supervisor-core.mjs'
+import { createOwnedLaneWait } from './host/lifecycle-owned-lane.mjs'
+import { runOwnedControl } from './host/lifecycle-owned-control.mjs'
+import { ensureLaneHostDir, laneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
 import { writeLaneRegularFile } from './host/lifecycle-file-write.mjs'
 
@@ -25,26 +27,7 @@ function launcherFailureDetail(launch) {
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
-const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
-// Bounds receipt settling after a live worker's child exits, starting at the first observation.
-const LANE_FINISH_SETTLE_MS = 5_000
 const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
-
-function laneReceiptPollDeadline(record, verdict, workerPid, transitionDueAt, settle) {
-  if (record.workerPid !== workerPid || record.owner !== 'pilot') return null
-  if (verdict.status === 'running') return transitionDueAt
-  // A child being torn down can still list its start time with an empty cmdline, reading unknown, not gone.
-  const childExiting = verdict.child === 'gone'
-    ? verdict.reason === 'inconsistent-record'
-    : verdict.child === 'unknown' && /^identity-unreadable/.test(verdict.reason)
-  const finishing = verdict.status === 'unknown' && childExiting && verdict.worker === 'running'
-    && ['running', 'decision-needed'].includes(record.state)
-  // The worker publishes state 'exited' before it appends EXIT= (wt-lane.mjs onChildClose).
-  const publishing = verdict.status === 'terminal' && verdict.reason === 'exited' && verdict.worker === 'running'
-  if (!finishing && !publishing) return null
-  settle.dueAt ??= Date.now() + LANE_FINISH_SETTLE_MS
-  return Math.max(Number.isFinite(transitionDueAt) ? transitionDueAt : 0, settle.dueAt)
-}
 
 // The effort a lane is launched at; the pilot runner records the same resolution in its run summary.
 function launchVariant(phase, model, env) {
@@ -249,9 +232,13 @@ function combinedCriticReport(reports) {
 }
 
 function criticLaneLaunchIdentity(laneId, executorEnv) {
-  if (!laneId) return { suffix: '', noncePart: '', slot: null, env: executorEnv }
+  if (!laneId) return { suffix: '', noncePart: '', slot: null, env: { ...executorEnv, WT_LANE_SUPERVISION_SLOT: undefined } }
   const slot = `critic-${laneId}`
   return { suffix: `-${laneId}`, noncePart: `.${laneId}`, slot, env: { ...executorEnv, WT_LANE_SUPERVISION_SLOT: slot } }
+}
+
+function currentBriefIdentity(contexts, identities, phase) {
+  return identities?.get(phase) ?? contexts.get(phase)
 }
 
 export function regularFile(file) {
@@ -304,7 +291,72 @@ function snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal) {
   return null
 }
 
-export function createLifecycleLaunch({
+function checkLaneEvidence(context, phase, allowFailed = false) {
+  const { assertLaneDir, laneOwnershipPending, root, laneDir, verified, refusal } = context
+  assertLaneDir()
+  if (laneOwnershipPending(phase)) return refusal(`${phase}->next`, 'owned lane must finish before transition', laneDir, 'ownership')
+  const log = path.join(ensureLaneHostDir(root), `${phase}-run.log`)
+  const report = path.join(laneDir, `${phase}-report.md`)
+  const logEntry = verified(log)
+  if (!logEntry) return refusal(`${phase}->next`, 'lane receipt unchanged', log, 'receipt')
+  if (logEntry.exit !== '0' && !allowFailed) return refusal(`${phase}->next`, `lane receipt EXIT=${logEntry.exit ?? 'missing'}`, log)
+  const reportEntry = verified(report)
+  if (!reportEntry || reportEntry.size === 0) return refusal(`${phase}->next`, 'non-empty unchanged lane report', report, 'receipt')
+  return null
+}
+
+function checkGatesEvidence(context, edge, allowNonzero = false) {
+  const { assertLaneDir, root, gates, laneDir, verified, refusal, state, attestations } = context
+  assertLaneDir()
+  const currentTree = treeSignature(root)
+  for (const name of gates()) {
+    const file = path.join(laneDir, `${name}.log`)
+    const item = verified(file)
+    if (!item) return refusal(edge, 'unchanged gate receipt', file)
+    const acceptedExit = gateExitAccepted(item, allowNonzero)
+    if (!acceptedExit) return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
+    if (item.tree !== currentTree) return refusal(edge, 'current tree signature', file)
+    // Server receipt order holds even when the wall clock moves backward.
+    if (item.laneReceiptSeq !== state.laneReceiptSeq) return refusal(edge, 'gate newer than lane receipt', file)
+  }
+  if (allowNonzero && ![...gates()].some((name) => attestations.get(path.join(laneDir, `${name}.log`)).exit !== '0')) return refusal(edge, 'at least one nonzero gate receipt', laneDir)
+  return null
+}
+
+function checkSnapshotEvidence(context, edge) {
+  const { assertLaneDir, state, refusal, evidencePath, root, gates, laneDir } = context
+  assertLaneDir()
+  const snapshot = state.verifySnapshot
+  if (!snapshot) return refusal(edge, 'verify digest snapshot', evidencePath)
+  if (treeSignature(root) !== snapshot.tree) return refusal(edge, 'tree signature unchanged since verify', root)
+  const missing = missingCurrentGatePath(snapshot, state, gates, laneDir)
+  if (missing) return refusal(edge, 'currently required gate in verify snapshot', missing)
+  return snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal)
+}
+
+function checkLanePaths({ root, laneDir }, slots) {
+  for (const slot of slots) {
+    for (const file of [path.join(laneHostDir(root), `${slot}-run.log`), path.join(laneDir, `${slot}-report.md`)]) {
+      if (fs.existsSync(file) && !regularFile(file)) return { missing: 'regular lane receipt or report', file, code: 'receipt' }
+    }
+  }
+  return null
+}
+
+function invalidateCriticPair(laneDir, invalidate) {
+  for (const phase of ['critic', 'critic-A', 'critic-B']) invalidate(phase)
+  fs.rmSync(path.join(laneDir, 'critic-report.md'), { force: true })
+}
+
+function checkCriticReceipts(context, receipts, laneReports) {
+  const { verified, refusal, laneDir, laneBriefContexts, laneBriefIdentities } = context
+  if (receipts.some((receipt) => !receipt) || laneReports.some((report) => !verified(report))) return refusal('critic->next', "published receipts from both critic lanes; relaunch with run { kind: 'lane', phase: 'critic' }", laneDir, 'receipt')
+  const identity = currentBriefIdentity(laneBriefContexts, laneBriefIdentities, 'critic')
+  const stale = receipts.some((receipt) => receipt.briefIdentity !== identity) || laneReports.some((report) => verified(report).briefIdentity !== identity)
+  return stale ? refusal('critic->next', "critic pair receipts for current brief; relaunch with run { kind: 'lane', phase: 'critic' }", laneDir, 'receipt') : null
+}
+
+function launchOptions({
   root,
   laneDir,
   executor,
@@ -313,7 +365,7 @@ export function createLifecycleLaunch({
   constructionBase,
   frozenModels,
   state,
-  laneBriefContexts,
+  laneBriefContexts, laneBriefIdentities,
   prepareLaneBrief,
   assertLaneDir,
   refusal,
@@ -330,102 +382,89 @@ export function createLifecycleLaunch({
   now = () => Date.now(),
   recordLaneStart = () => null,
   recordLaneEnd = () => {},
+  progress = () => {},
 }) {
-  const evidencePath = path.join(laneDir, 'evidence.json')
-  const attestations = new Map()
+  return { root, laneDir, executor, executorEnv, knowledgeBaseIndex, constructionBase, frozenModels, state,
+    laneBriefContexts, laneBriefIdentities, prepareLaneBrief, assertLaneDir, refusal, lanePhases, phases, gates,
+    laneLauncher, lanePollMs, laneWaitMs, lanePlatform, laneProcessReader, gateRunner, testFramework, now,
+    recordLaneStart, recordLaneEnd, progress }
+}
 
-  const controlRemedy = (token) => `pilot: run { kind: 'control', decision: 'abandon' } or run { kind: 'control', decision: 'extend' }; human: extend with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision extend --owner-token ${shellQuote(token)}, or abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(token)}`
-  const timeoutResult = (phase, detail, token) => {
-    state.pendingControl = { phase, token }
-    return `lane ${phase} TIMEOUT: ${detail}; ${controlRemedy(token)}; after abandon completes, re-run this lifecycle lane phase to launch a fresh owner-bound lane and brief`
-  }
+function initializeLaunch(context) {
+  const { laneDir, lanePlatform, laneProcessReader } = context
+  context.evidencePath = path.join(laneDir, 'evidence.json')
+  context.attestations = new Map()
+  context.criticAggregateKey = null
+  context.criticLaunching = false
   const classify = (record) => classifyLane(record, {
     platform: lanePlatform,
     ...(laneProcessReader ? { inspect: laneProcessReader.inspect, processExists: laneProcessReader.processExists, processState: laneProcessReader.processState } : {}),
   })
 
-  function audit() {
+  const { root, state, lanePollMs, refusal, recordLaneEnd, now, assertLaneDir, attest, progress } = context
+  context.owned = createOwnedLaneWait({ root, state, readRegularFile, readAttestation, waitForLaneReceipt, classify,
+    lanePollMs, refusal, controlPath: CONTROL, recordLaneEnd, now, regularFile, assertLaneDir, attest, progress, maxReportBytes: MAX_LANE_REPORT_BYTES })
+}
+
+function launchAudit(context, entries = context.attestations) {
+    const { assertLaneDir, evidencePath, state } = context
     assertLaneDir()
     writeRegularFile(
       evidencePath,
-      `${JSON.stringify({ version: 1, entries: Object.fromEntries(attestations), verify_snapshot: state.verifySnapshot }, null, 2)}\n`,
+      `${JSON.stringify({ version: 1, entries: Object.fromEntries(entries), verify_snapshot: state.verifySnapshot }, null, 2)}\n`,
     )
-  }
+}
 
-  function attest(file, extra = {}) {
+function launchAttest(context, file, extra = {}) {
+    const { assertLaneDir, attestations, audit } = context
     assertLaneDir()
     const entry = readAttestation(file)
     if (!entry) return null
     const saved = { ...entry, ...extra }
+    const proposed = new Map(attestations)
+    proposed.set(file, saved)
+    audit(proposed)
     attestations.set(file, saved)
-    audit()
     return saved
-  }
+}
 
-  function verified(file) {
+function launchVerified(context, file) {
+    const { assertLaneDir, attestations } = context
     assertLaneDir()
     const saved = attestations.get(file)
     const current = readAttestation(file)
     return saved && current && saved.size === current.size && saved.sha256 === current.sha256 && saved.mtime === current.mtime
       ? saved
       : null
-  }
+}
 
-  function invalidateLaneEvidence(phase) {
+function launchInvalidate(context, phase) {
+    const { attestations, root, laneDir, audit } = context
     attestations.delete(path.join(ensureLaneHostDir(root), `${phase}-run.log`))
     attestations.delete(path.join(laneDir, `${phase}-report.md`))
     audit()
-  }
+}
 
-  function laneEvidence(phase, allowFailed = false) {
-    assertLaneDir()
-    const log = path.join(ensureLaneHostDir(root), `${phase}-run.log`)
-    const report = path.join(laneDir, `${phase}-report.md`)
-    const logEntry = verified(log)
-    if (!logEntry) return refusal(`${phase}->next`, 'lane receipt unchanged', log)
-    if (logEntry.exit !== '0' && !allowFailed) {
-      return refusal(`${phase}->next`, `lane receipt EXIT=${logEntry.exit ?? 'missing'}`, log)
-    }
-    const reportEntry = verified(report)
-    if (!reportEntry || reportEntry.size === 0) {
-      return refusal(`${phase}->next`, 'non-empty unchanged lane report', report)
-    }
-    return null
-  }
+function launchOwnershipPending(context, phase) {
+    return [...context.state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && context.criticLaunching
+}
 
-  function gatesEvidence(edge, allowNonzero = false) {
-    assertLaneDir()
-    const currentTree = treeSignature(root)
-    for (const name of gates()) {
-      const file = path.join(laneDir, `${name}.log`)
-      const item = verified(file)
-      if (!item) return refusal(edge, 'unchanged gate receipt', file)
-      const acceptedExit = gateExitAccepted(item, allowNonzero)
-      if (!acceptedExit) return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
-      if (item.tree !== currentTree) return refusal(edge, 'current tree signature', file)
-      // Ordered by the server's own receipt count, never by mtime: a backward clock step can date a
-      // later gate before the lane receipt, or an earlier one after it.
-      if (item.laneReceiptSeq !== state.laneReceiptSeq) return refusal(edge, 'gate newer than lane receipt', file)
-    }
-    if (allowNonzero && ![...gates()].some((name) => attestations.get(path.join(laneDir, `${name}.log`)).exit !== '0')) {
-      return refusal(edge, 'at least one nonzero gate receipt', laneDir)
-    }
-    return null
-  }
-
-  function verifySnapshot(edge) {
+function launchVerifySnapshot(context, edge) {
+    const { gatesEvidence, state, root, gateReceipts, audit } = context
     const receipt = gatesEvidence(edge)
     if (receipt) return receipt
     state.verifySnapshot = verifyGateSnapshot(root, gateReceipts())
     audit()
     return null
-  }
+}
 
-  function gateReceipts() {
+function launchGateReceipts(context) {
+    const { gates, attestations, laneDir } = context
     return [...gates()].map((name) => ({ name, ...attestations.get(path.join(laneDir, `${name}.log`)) }))
-  }
+}
 
-  function verifyFailedSnapshot(edge, findings) {
+function launchVerifyFailedSnapshot(context, edge, findings) {
+    const { gatesEvidence, laneDir, gateReceipts, testFramework, refusal, state, root, audit } = context
     const receipt = gatesEvidence(edge, true)
     if (receipt) return receipt
     const testLog = path.join(laneDir, 'test.log')
@@ -438,54 +477,92 @@ export function createLifecycleLaunch({
     state.verifySnapshot = verifyGateSnapshot(root, receipts, remediation.findings)
     audit()
     return remediation
-  }
+}
 
-  function snapshotEvidence(edge) {
-    assertLaneDir()
-    const snapshot = state.verifySnapshot
-    if (!snapshot) return refusal(edge, 'verify digest snapshot', evidencePath)
-    if (treeSignature(root) !== snapshot.tree) return refusal(edge, 'tree signature unchanged since verify', root)
-    const missing = missingCurrentGatePath(snapshot, state, gates, laneDir)
-    if (missing) return refusal(edge, 'currently required gate in verify snapshot', missing)
-    return snapshotGateDigestsEvidence(snapshot, readAttestation, edge, refusal)
-  }
+function launchProblem(context, phase) {
+    const { lanePhases, state, laneBriefContexts, lanePathProblem } = context
+    if (!lanePhases.has(state.phase) || phase !== state.phase) return { missing: 'lane for current admitted phase' }
+    if ([...state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && context.criticLaunching) {
+      return { missing: `lane ${phase} is owned and live; decide with run { kind: 'control', decision: 'extend'|'abandon' }` }
+    }
+    if (!laneBriefContexts.has(phase)) return { missing: 'brief not written through write_artifact' }
+    const slots = phase === 'critic' && state.priorCriticRounds.length === 0 ? ['critic', 'critic-A', 'critic-B'] : [phase]
+    return lanePathProblem(slots)
+}
 
-  async function runParallelCritics(args) {
+async function launchParallelCritics(context, args) {
+    const { laneDir, invalidateLaneEvidence, runSingle, aggregateCritics } = context
+    context.criticLaunching = true
+    try {
+      context.criticAggregateKey = null
+      invalidateCriticPair(laneDir, invalidateLaneEvidence)
+      const results = await Promise.all(['A', 'B'].map((criticLane) => runSingle({ ...args, criticLane })))
+      context.criticLaunching = false
+      return aggregateCritics(results, ['A', 'B'])
+    } finally { context.criticLaunching = false }
+}
+
+function launchPendingCriticResult(context, results, slots) {
+    const { state } = context
+    const pending = [...state.ownedLanes.values()].filter((record) => record.phase === 'critic')
+    if (!pending.length && !context.criticLaunching) return null
+    return pending.map((record) => `critic-${record.criticLane}: ${results[slots.indexOf(record.criticLane)]}`).join('\n') || 'lane critic TIMEOUT: pair launch pending'
+}
+
+function launchAggregateCritics(context, results, slots) {
+    const { pendingCriticResult, root, laneDir, verified, criticReceiptProblem, refusal, attest, state, progress } = context
+    const pending = pendingCriticResult(results, slots)
+    if (pending) return pending
     const laneIds = ['A', 'B']
-    const results = await Promise.all(laneIds.map((criticLane) => runSingle({ ...args, criticLane })))
     const laneLogs = laneIds.map((criticLane) => path.join(ensureLaneHostDir(root), `critic-${criticLane}-run.log`))
     const laneReports = laneIds.map((criticLane) => path.join(laneDir, `critic-${criticLane}-report.md`))
-    const receipts = laneLogs.map(readAttestation)
-    if (receipts.some((receipt) => !receipt) || laneReports.some((report) => !regularFile(report))) {
-      return results.find((result) => result !== 'lane critic EXIT=0') ?? 'lane critic EXIT=missing'
-    }
-    const failed = receipts.find((receipt) => receipt.exit !== '0')
-    const exit = failed?.exit ?? '0'
+    const receipts = laneLogs.map(verified)
+    const problem = criticReceiptProblem(receipts, laneReports)
+    if (problem) return results.find((result) => result.startsWith('edge refused:')) ?? problem
+    const exit = receipts.find((receipt) => receipt.exit !== '0')?.exit ?? '0', key = receipts.map((receipt) => receipt.sha256).join(':')
+    if (context.criticAggregateKey === key) return `lane critic EXIT=${exit}`
     const canonicalLog = path.join(ensureLaneHostDir(root), 'critic-run.log')
     const canonicalReport = path.join(laneDir, 'critic-report.md')
     const laneLogSections = laneIds.map((laneId, index) => `LANE=${laneId}\n${readRegularFile(laneLogs[index])}`)
-    writeRegularFile(canonicalLog, `${laneLogSections.join('\n')}\nEXIT=${exit}\n`)
     const combinedReport = combinedCriticReport(laneReports.map(readRegularFile))
     if (!combinedReport) return refusal('critic->next', 'valid verdict blocks from both critic lanes', canonicalReport)
     writeRegularFile(canonicalReport, combinedReport)
+    writeRegularFile(canonicalLog, `${laneLogSections.join('\n')}\nEXIT=${exit}\n`)
     attest(canonicalReport)
     attest(canonicalLog, { group: 'worker-owned' })
     state.laneReceiptSeq += 1
+    context.criticAggregateKey = key
+    progress()
     return `lane critic EXIT=${exit}`
-  }
+}
 
-  async function runSingle(args) {
+async function launchRunSingle(context, args) {
+    const { assertLaneDir, refusal, state, laneDir } = context
     try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!args || typeof args !== 'object') return refusal(`${state.phase}->next`, 'run arguments object', laneDir)
-    if (args.kind === 'lane') {
+    if (args.kind === 'lane') return launchRunLane(context, args)
+    if (args.kind === 'gate') return launchRunGate(context, args)
+    if (args.kind === 'control') {
+      const { root, owned, aggregateCritics } = context
+      return runOwnedControl({ root, state, laneDir, refusal, owned, controlPath: CONTROL, aggregate: aggregateCritics }, args)
+    }
+    if (args.kind === 'inspect') return launchInspect(context, args)
+    return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect|control', laneDir)
+}
+
+function prepareLaneLaunch(context, args) {
+      const { lanePhases, state, refusal, laneDir, executorEnv, owned, laneBriefContexts, root, now } = context
       if (!lanePhases.has(state.phase) || args.phase !== state.phase) {
-        return refusal(`${state.phase}->next`, 'lane for current admitted phase', path.join(laneDir, `${args.phase ?? 'unknown'}-run.log`))
+        return { refused: refusal(`${state.phase}->next`, 'lane for current admitted phase', path.join(laneDir, `${args.phase ?? 'unknown'}-run.log`)) }
       }
       const phase = args.phase
       const identity = criticLaneLaunchIdentity(args.criticLane, executorEnv)
+      if (owned.owns(identity, phase)) {
+        return { refused: refusal(`${phase}->next`, `lane ${phase} is owned and live; decide with run { kind: 'control', decision: 'extend'|'abandon' }`, laneDir) }
+      }
       const brief = path.join(laneDir, `${phase}${identity.suffix}-brief.md`)
       if (!laneBriefContexts.has(phase)) {
-        return refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief)
+        return { refused: refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief) }
       }
       const canonicalLog = path.join(ensureLaneHostDir(root), `${phase}${identity.suffix}-run.log`)
       const canonicalReport = path.join(laneDir, `${phase}${identity.suffix}-report.md`)
@@ -494,19 +571,28 @@ export function createLifecycleLaunch({
       const nonce = randomUUID()
       const log = path.join(ensureLaneHostDir(root), `${phase}-run${identity.noncePart}.${nonce}.log`)
       const report = path.join(laneDir, `${phase}-report${identity.noncePart}.${nonce}.md`)
+      return finishLanePreparation(context, { phase, identity, brief, canonicalLog, canonicalReport, timeout, launchedAt, nonce, log, report })
+}
+
+function finishLanePreparation(context, lane) {
+      const { state, refusal } = context
+      const { canonicalLog, canonicalReport } = lane
       if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
-        return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
+        return { refused: refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog, 'receipt') }
       }
       if (fs.existsSync(canonicalReport) && !regularFile(canonicalReport)) {
-        return refusal(`${state.phase}->next`, 'regular lane report', canonicalReport)
+        return { refused: refusal(`${state.phase}->next`, 'regular lane report', canonicalReport, 'receipt') }
       }
       fs.rmSync(canonicalLog, { force: true })
       fs.rmSync(canonicalReport, { force: true })
-      let snapshot = null
-      let group = 'worker-owned'
-      let laneRecord = null
-      try {
-        snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-launch-'))
+      return lane
+}
+
+function prepareLaunchSnapshot(context, lane) {
+        const { prepareLaneBrief, laneBriefContexts, frozenModels } = context
+        const { phase, report, brief, log, nonce } = lane
+        lane.snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-launch-'))
+        const snapshot = lane.snapshot
         fs.chmodSync(snapshot, 0o700)
         const launchBriefs = prepareLaneBrief(phase, laneBriefContexts.get(phase), report, snapshot)
         fs.rmSync(brief, { force: true })
@@ -514,168 +600,77 @@ export function createLifecycleLaunch({
         const snapshotBrief = path.join(snapshot, 'brief.md')
         fs.writeFileSync(snapshotBrief, launchBriefs.launch, { flag: 'wx', mode: 0o400 })
         fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
-        const model = phase === 'tdd'
-          ? frozenModels.code
-          : phase === 'refutation'
-            ? frozenModels.refutation
-            : phase === 'critic'
-              ? frozenModels.critic
-              : frozenModels.review
+        const model = phase === 'tdd' ? frozenModels.code
+          : phase === 'refutation' ? frozenModels.refutation
+            : phase === 'critic' ? frozenModels.critic : frozenModels.review
+        return { snapshotBrief, model }
+}
+
+function registerLaunch(context, lane, args, model, plan) {
+        const { recordLaneStart, owned, laneBriefContexts, laneBriefIdentities, laneWaitMs } = context
+        const { phase, launchedAt, log, identity, nonce, report, canonicalLog, canonicalReport, group, snapshot, timeout } = lane
+        lane.laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
+        lane.ownedRecord = owned.register({ key: identity.slot ?? phase, slot: identity.slot, phase, criticLane: args.criticLane,
+          nonce, runId: null, workerPid: null, initialWait: true, briefIdentity: currentBriefIdentity(laneBriefContexts, laneBriefIdentities, phase),
+          log, report, canonicalLog, canonicalReport, group, laneRecord: lane.laneRecord, snapshot, waitMs: laneWaitMs ?? timeout * 1000 })
+}
+
+function spawnLifecycleLane(context, lane, args, snapshotBrief, model) {
+        const { executor, executorEnv, laneLauncher, root, constructionBase, knowledgeBaseIndex } = context
+        const { phase, log, timeout, nonce, snapshot, identity } = lane
+        const plan = phaseLaunchPlan(phase, model, executor, executorEnv)
+        const launcher = laneLauncher ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', plan.script)
+        registerLaunch(context, lane, args, model, plan)
+        return launchProcessWithOutput(process.execPath,
+          laneLaunchArgs({ launcher, root, model, brief: snapshotBrief, log, timeout, plan, constructionBase, nonce, snapshot, phase, knowledgeBaseIndex }),
+          { cwd: root, stdoutPath: path.join(snapshot, 'launcher.stdout'), stderrPath: path.join(snapshot, 'launcher.stderr'), env: identity.env })
+}
+
+function finishLifecycleLaunch(context, lane) {
+        const { owned, recordLaneEnd, now } = context
+        if (lane.ownedRecord) owned.finishLaunch(lane.ownedRecord)
+        else {
+          if (lane.laneRecord?.ended_at === null) recordLaneEnd(lane.laneRecord, now(), 'missing')
+          if (lane.snapshot) fs.rmSync(lane.snapshot, { recursive: true, force: true })
+        }
+}
+
+async function launchRunLane(context, args) {
+      const { refusal, state, laneDir, owned } = context
+      const lane = prepareLaneLaunch(context, args)
+      if (lane.refused) return lane.refused
+      const { phase, brief, log } = lane
+      Object.assign(lane, { snapshot: null, group: 'worker-owned', laneRecord: null, ownedRecord: null })
+      try {
+        const { snapshotBrief, model } = prepareLaunchSnapshot(context, lane)
         let launch
         try {
-          const plan = phaseLaunchPlan(phase, model, executor, executorEnv)
-          const launcher = laneLauncher ?? path.join(
-            path.dirname(fileURLToPath(import.meta.url)),
-            '..',
-            plan.script,
-          )
-          laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
-          launch = await launchProcessWithOutput(
-            process.execPath,
-            laneLaunchArgs({
-              launcher, root, model, brief: snapshotBrief, log, timeout, plan, constructionBase, nonce, snapshot, phase, knowledgeBaseIndex,
-            }),
-            {
-              cwd: root,
-              stdoutPath: path.join(snapshot, 'launcher.stdout'),
-              stderrPath: path.join(snapshot, 'launcher.stderr'),
-              env: identity.env,
-            },
-          )
+          launch = await spawnLifecycleLane(context, lane, args, snapshotBrief, model)
         } catch (error) {
           return refusal(`${state.phase}->next`, `lane spawn (${error instanceof Error ? error.message : String(error)})`, log)
         }
-        const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
-        if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', log)}${launcherFailureDetail(launch)}`
-        let logEntry = await waitForLaneReceipt({
-          log,
-          nonce,
-          timeoutMs: laneWaitMs ?? timeout * 1000,
-          pollMs: lanePollMs,
-          readAttestation,
-          readRegularFile,
-        })
-        if (!logEntry) {
-          const runId = /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null
-          const supervisionFile = runId ? supervisionPaths(root, runId, identity.slot).record : null
-          const supervisionPointer = runId ? supervisionPaths(root, null, identity.slot).pointer : null
-          let status = supervisionFile ? readRegularFile(supervisionFile) : null
-          if (runId) {
-            let pointerRunId = null
-            try { pointerRunId = JSON.parse(readRegularFile(supervisionPointer)).runId } catch {}
-            const preflightDeadline = Date.now() + LANE_PREFLIGHT_BOUND_MS
-            const workerLaunching = () => { try { return JSON.parse(status).state === 'launching' } catch { return false } }
-            while ((!status || pointerRunId !== runId || workerLaunching()) && Date.now() < preflightDeadline) {
-              await new Promise((resolve) => setTimeout(resolve, 25))
-              try { pointerRunId = JSON.parse(readRegularFile(supervisionPointer)).runId } catch {}
-              status = readRegularFile(supervisionFile)
-            }
-          }
-          let parsed = null
-          try {
-            parsed = JSON.parse(status)
-            let verdict = classify(parsed)
-            const transitionDueAt = Date.parse(parsed.decisionTransitionDueAt)
-            const settle = { dueAt: null }
-            let pollDeadline = laneReceiptPollDeadline(parsed, verdict, workerPid, transitionDueAt, settle)
-            while (!logEntry && pollDeadline !== null && Date.now() <= pollDeadline) {
-              logEntry = await waitForLaneReceipt({
-                log,
-                nonce,
-                timeoutMs: Math.min(25, Math.max(0, pollDeadline - Date.now())),
-                pollMs: lanePollMs,
-                readAttestation,
-                readRegularFile,
-              })
-              status = readRegularFile(supervisionFile)
-              parsed = JSON.parse(status)
-              verdict = classify(parsed)
-              pollDeadline = laneReceiptPollDeadline(parsed, verdict, workerPid, transitionDueAt, settle)
-            }
-            // Branch on the verdict the loop last judged, and read the receipt once more: it can land
-            // between the last receipt poll and the state read that ended the loop.
-            logEntry ??= await waitForLaneReceipt({ log, nonce, timeoutMs: 0, pollMs: lanePollMs, readAttestation, readRegularFile })
-            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'decision-needed') {
-              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
-              snapshot = null
-              return timeoutResult(phase, detail, nonce)
-            }
-            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'running') {
-              snapshot = null
-              return timeoutResult(phase, `owner=${parsed.owner}; live worker is still completing its bounded timeout transition; wait for the decision point before choosing; no process was killed`, nonce)
-            }
-            if (!logEntry && verdict.status === 'worker-gone-child-alive') {
-              snapshot = null
-              return timeoutResult(phase, `worker-gone-child-alive; surviving child pid=${parsed.childPid}; no process was killed`, nonce)
-            }
-            if (!logEntry && verdict.status === 'unknown') {
-              snapshot = null
-              return timeoutResult(phase, `unknown liveness (${verdict.reason}); no process was killed`, nonce)
-            }
-            if (!logEntry && verdict.status === 'gone') return `lane ${phase} EXIT=missing`
-            if (!logEntry && verdict.status === 'terminal') return `lane ${phase} TERMINAL receipt=missing`
-            if (!logEntry) {
-              snapshot = null
-              return timeoutResult(phase, `${verdict.status}; no process was killed`, nonce)
-            }
-          } catch {}
-          if (!logEntry) {
-            snapshot = null
-            return timeoutResult(phase, 'unknown liveness; no process was killed', nonce)
-          }
-        }
-        if (logEntry) {
-          const runId = /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null
-          if (runId) {
-            let record = null
-            try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId, identity.slot).record)) } catch {}
-            let verdict = classify(record)
-            const settleDeadline = Date.now() + 1_000
-            while (!['terminal', 'gone'].includes(verdict.status) && Date.now() < settleDeadline) {
-              await new Promise((resolve) => setTimeout(resolve, lanePollMs))
-              try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId, identity.slot).record)) } catch {}
-              verdict = classify(record)
-            }
-            if (!['terminal', 'gone'].includes(verdict.status)) {
-              snapshot = null
-              return timeoutResult(phase, `receipt arrived while liveness is ${verdict.status}; no process was killed`, nonce)
-            }
-          }
-        }
-        recordLaneEnd(laneRecord, now(), logEntry?.exit)
-        const reportStat = regularFile(report)
-        if (!logEntry || !regularFile(log) || !reportStat) return `lane ${phase} EXIT=missing`
-        if (reportStat.size > MAX_LANE_REPORT_BYTES) {
-          return refusal(`${phase}->next`, `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
-        }
-        assertLaneDir()
-        if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
-          return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
-        }
-        fs.rmSync(canonicalLog, { force: true })
-        fs.rmSync(canonicalReport, { force: true })
-        try {
-          fs.copyFileSync(log, canonicalLog, fs.constants.COPYFILE_EXCL)
-          fs.copyFileSync(report, canonicalReport, fs.constants.COPYFILE_EXCL)
-        } catch (error) {
-          fs.rmSync(canonicalLog, { force: true })
-          fs.rmSync(canonicalReport, { force: true })
-          return refusal(`${state.phase}->next`, `publish lane pair (${error instanceof Error ? error.message : String(error)})`, canonicalLog)
-        }
-        attest(canonicalReport)
-        attest(canonicalLog, { group })
-        state.laneReceiptSeq += 1
-        return `lane ${phase} EXIT=${logEntry.exit}`
+        const pidProblem = acceptLauncherPid(context, lane, launch)
+        if (pidProblem) return pidProblem
+        return await owned.awaitOwnedLane(lane.ownedRecord)
       } catch (error) {
         fs.rmSync(path.join(laneDir, `${phase}-input.diff`), { force: true })
         fs.rmSync(brief, { force: true })
         return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
       } finally {
-        if (laneRecord?.ended_at === null) recordLaneEnd(laneRecord, now(), 'missing')
-        if (snapshot) fs.rmSync(snapshot, { recursive: true, force: true })
+        finishLifecycleLaunch(context, lane)
       }
-    }
-    if (args.kind === 'gate') {
+}
+
+function acceptLauncherPid(context, lane, launch) {
+  const { refusal, state } = context
+  const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
+  if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', lane.log)}${launcherFailureDetail(launch)}`
+  Object.assign(lane.ownedRecord, { runId: /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null, workerPid })
+  return null
+}
+
+async function launchRunGate(context, args) {
+      const { gates, refusal, state, laneDir, root, gateRunner, attest, progress } = context
       if (!gates().has(args.name)) {
         return refusal(`${state.phase}->next`, `gate ${[...gates()].join('|')}`, path.join(laneDir, `${args.name ?? 'unknown'}.log`))
       }
@@ -701,24 +696,12 @@ export function createLifecycleLaunch({
       }
       fs.appendFileSync(log, `\nEXIT=${code}\n`)
       attest(log, { tree: treeSignature(root), laneReceiptSeq: state.laneReceiptSeq })
+      progress()
       return `gate ${args.name} EXIT=${code}`
-    }
-    if (args.kind === 'control') {
-      if (!['abandon', 'extend'].includes(args.decision)) return refusal(`${state.phase}->next`, 'control decision abandon|extend', laneDir)
-      const pending = state.pendingControl
-      if (!pending || pending.phase !== state.phase) return refusal(`${state.phase}->next`, 'timed-out lane owned by this lifecycle', laneDir)
-      const command = ['--dir', root, '--decision', args.decision, '--owner-token', pending.token]
-      if (args.decision === 'extend' && args.extendSeconds !== undefined) command.push('--extend', String(args.extendSeconds))
-      try {
-        const output = execFileSync(process.execPath, [CONTROL, ...command], { cwd: root, encoding: 'utf8' })
-        state.pendingControl = null
-        return `control ${args.decision} accepted: ${output.trim()}`
-      } catch (error) {
-        const detail = error?.stderr?.toString().trim() || (error instanceof Error ? error.message : String(error))
-        return refusal(`${state.phase}->next`, `control ${args.decision} (${detail})`, laneDir)
-      }
-    }
-    if (args.kind === 'inspect') {
+}
+
+function launchInspect(context, args) {
+      const { gates, phases, lanePhases, refusal, state, laneDir, root } = context
       const allowed = [...gates()]
         .map((name) => `${name}.log`)
         .concat(phases.filter((phase) => lanePhases.has(phase)).flatMap((phase) => [`${phase}-run.log`, `${phase}-report.md`]))
@@ -736,14 +719,49 @@ export function createLifecycleLaunch({
           : args.what === 'diff' ? ['diff', '--stat'] : ['status', '--short'],
         { cwd: root, encoding: 'utf8' },
       )
+}
+
+async function launchRun(context, args) {
+    const { refusal, state, laneDir, runParallelCritics, runSingle } = context
+    if (args && Object.hasOwn(args, 'criticLane')) return refusal(`${state.phase}->next`, 'criticLane is not supported; run or control the whole phase', laneDir)
+    if (args?.kind === 'lane') {
+      const problem = launchProblem(context, args.phase)
+      if (problem) return refusal(`${state.phase}->next`, problem.missing, problem.file ?? laneDir, problem.code)
+      if (args.phase === 'critic' && state.priorCriticRounds.length === 0) return runParallelCritics(args)
     }
-    return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect|control', laneDir)
-  }
+    return runSingle(args)
+}
 
-  function run(args) {
-    const parallelCritic = args?.kind === 'lane' && args.phase === 'critic' && state.priorCriticRounds.length === 0 && !args.criticLane
-    return parallelCritic ? runParallelCritics(args) : runSingle(args)
-  }
+function bindLaunchEvidence(context) {
+  context.audit = (...args) => launchAudit(context, ...args)
+  context.attest = (...args) => launchAttest(context, ...args)
+  context.verified = (...args) => launchVerified(context, ...args)
+  context.invalidateLaneEvidence = (...args) => launchInvalidate(context, ...args)
+  context.laneOwnershipPending = (...args) => launchOwnershipPending(context, ...args)
+  context.laneEvidence = (...args) => checkLaneEvidence(context, ...args)
+  context.gatesEvidence = (...args) => checkGatesEvidence(context, ...args)
+  context.verifySnapshot = (...args) => launchVerifySnapshot(context, ...args)
+  context.gateReceipts = () => launchGateReceipts(context)
+  context.verifyFailedSnapshot = (...args) => launchVerifyFailedSnapshot(context, ...args)
+  context.snapshotEvidence = (...args) => checkSnapshotEvidence(context, ...args)
+}
 
-  return { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot }
+function bindLaunchRunners(context) {
+  context.lanePathProblem = (...args) => checkLanePaths(context, ...args)
+  context.canLaunchLane = (phase) => !launchProblem(context, phase)
+  context.runParallelCritics = (...args) => launchParallelCritics(context, ...args)
+  context.criticReceiptProblem = (...args) => checkCriticReceipts(context, ...args)
+  context.pendingCriticResult = (...args) => launchPendingCriticResult(context, ...args)
+  context.aggregateCritics = (...args) => launchAggregateCritics(context, ...args)
+  context.runSingle = (...args) => launchRunSingle(context, ...args)
+  context.run = (...args) => launchRun(context, ...args)
+}
+
+export function createLifecycleLaunch(options) {
+  const context = launchOptions(options)
+  bindLaunchEvidence(context)
+  initializeLaunch(context)
+  bindLaunchRunners(context)
+  const { audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = context
+  return { audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot }
 }

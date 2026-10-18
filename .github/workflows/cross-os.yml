@@ -49,12 +49,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 5
+        with:
+          # The current tree and its first parent are sufficient for owner certification.
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         timeout-minutes: 5
         with:
           node-version: 24
-      # The checkout is shallow; suite-lock interop tests unpack historical clients by descriptor role.
-      # Fetch every descriptor commit rather than the whole history.
+      # Suite-lock interop clients can be outside this ref's ancestry.
+      # Fetch every descriptor commit explicitly alongside first-parent comparison history.
       - name: Fetch the base-version lock client
         shell: bash
         run: |
@@ -178,8 +181,8 @@ jobs:
       - name: Quality
         if: ${{ matrix.shard != 1 }}
         env:
-          # Shallow platform checkouts have no comparison history; merge certification judges changed code.
-          WT_QUALITY_CHANGED: skip
+          # Judge this revision against its first parent, including dispatched merge refs.
+          WT_QUALITY_BASE: HEAD^1
         run: pnpm quality
         timeout-minutes: 5
       - name: Lint
