@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Lane integration now certifies the pending merge from a detached checkout of the target commit, using its quality entry, checker, configuration and existing installed dependencies. The target owner checker measures pending-merge inputs and must return a per-run execution receipt; missing checks refuse with a remedy. Candidate configuration is never swapped into the certification runtime, and compliant checker/configuration deletions integrate. Failed rollbacks report changed HEAD, tracked changes and new untracked residue; the certified working tree must match a rebuilt private index. Forced integration and changelog-only conflict resolution use the same certification. Every added or changed function must meet the owner limits (40 lines, complexity 10, no explicit `any`); only provably unchanged functions retain existing violations. Checks independently assert the required rules, include extensionless Node shebang scripts and case-variant code extensions, distinguish positional block scopes and method modifiers, and judge moved files as added code. Exemptions name exact target-owned paths, so fixture/vendor directory names confer no exemption. Documentation symlinks remain usable. Cross-OS quality uses explicit first-parent history without an environment skip.
+
 ### Added
 
 - SDK pilots can wake their launching session through a dedicated, fenced SendMessage query when a Definition-of-done decision request is published. Parent identity and permission class are explicit launch flags; only the parent's `decide` invocation can bind a reading. Wake outcomes and usage are reported separately, and the request log remains the fallback signal.

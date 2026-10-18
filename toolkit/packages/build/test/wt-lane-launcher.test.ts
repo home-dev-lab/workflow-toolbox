@@ -328,6 +328,7 @@ function quotedExitReceiptCase() {
   writeFileSync(join(f.dir, 'emit-quoted-exit'), 'ready\n')
   waitForContent(log, /^EXIT=0$/m)
   waitForContent(status, /"extensionCount": 1/)
+  waitForContent(log, /LANE_EXTENDED count=1\/1 source=grace-default/)
   const text = readFileSync(log, 'utf8')
   expect(text).toMatch(/EXIT=0\n[\s\S]*LANE_DECISION_NEEDED /)
   expect(text).toContain('LANE_EXTENDED count=1/1 source=grace-default')
