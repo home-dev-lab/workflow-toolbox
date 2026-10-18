@@ -342,6 +342,93 @@ function partialReportTools(options: { mcpServers: Record<string, unknown> }) {
     expect(spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: f.dir, encoding: 'utf8' }).stdout).toBe('private.txt\n')
   })
 
+function blockedAlias(f: ReturnType<typeof phaseFixture>, mode: string) {
+  if (!mode.startsWith('symlink-')) return null
+  const owner = join(f.root, 'owner-draft.json'); writeFileSync(owner, '{"owner":"keep"}\n')
+  symlinkSync(owner, join(f.dir, '.lane', mode === 'symlink-report' ? 'blocked-report.md' : 'summary.json'))
+  return owner
+}
+
+async function blockedRunnerScenario(mode: string) {
+  const f = phaseFixture(); let continuations = 0; let aborted = false; let ownerFile: string | null = null; const logs: string[] = []
+  const staleCost = { route: 'LITE', outcome: { status: 'complete' }, unknown: [], totals: { wall_time_ms: 1 }, phases: [{ phase: 'tdd', round: null, wall_time_ms: 1, unknown: [], models: { stale: { family: 'anthropic', input: 99, cache_write: 0, cache_read: 0, output: 1, reasoning: 'not measured', first_pass_input: 99, fresh_tokens: 100 } } }], reconciled: [], cross_checks: {} }
+  const fake = sessions([async function* ({ tools }) {
+    await tools.transition!({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'start' })
+    yield* turnEnd('setup-blocked-phase')
+  }, async function* ({ tools, prompt, options }) {
+    await tools.route_finding!({ title: 'owner recovery', l4Reason: 'unavailable dependency: lane owner', risk: 'P2', effort: 'S' })
+    await tools.run!({ kind: 'control', decision: 'extend' })
+    ownerFile = blockedAlias(f, mode)
+    if (mode === 'existing-cost' || mode === 'changing-cost') {
+      writeFileSync(join(f.dir, '.lane', 'pilot-report.md'), mode === 'changing-cost' ? `# pilot report\n\n${costReportSection(staleCost)}` : '# pilot report without a cost block\n')
+      writeFileSync(join(f.dir, '.lane', 'cost.json'), JSON.stringify(staleCost))
+    }
+    if (mode !== 'continuation') return
+    yield* turnEnd('blocked-turn')
+    const next = await prompt.next()
+    if (!next.done) continuations += 1
+    aborted = (options.abortController as AbortController).signal.aborted
+    if (aborted) throw new Error('intentional SDK abort')
+  }])
+  let injectedWriteFailure = false
+  const writeFile = (file: Parameters<typeof writeFileSync>[0], content: Parameters<typeof writeFileSync>[1]) => {
+    const target = mode === 'write-report-failure' ? 'blocked-report.md.' : 'summary.json.'
+    if (mode.startsWith('write-') && !injectedWriteFailure && String(file).includes(target)) {
+      injectedWriteFailure = true; throw new Error('injected blocked evidence write failure')
+    }
+    writeFileSync(file, content)
+  }
+  const dependencies = { writeFile, costSessions: [], log: (line: string) => logs.push(line), lifecycleOptions: {
+    boardContract: { boardId: 'fixture-board', listId: 'fixture-list' }, routeFinding: async () => ({ id: 'owner-recovery' }),
+  } }
+  // Existing cost checks may refuse publication; blocked evidence must survive it.
+  let caught = ''
+  try { await runSessions(f, fake.query, dependencies) } catch (error) {
+    if (!['existing-cost', 'changing-cost'].includes(mode)) throw error
+    caught = String(error)
+  }
+  verifyBlockedRunnerResult(f, mode, { caught, continuations, aborted, ownerFile, injectedWriteFailure })
+}
+
+function verifyBlockedRunnerResult(f: ReturnType<typeof phaseFixture>, mode: string, result: { caught: string, continuations: number, aborted: boolean, ownerFile: string | null, injectedWriteFailure: boolean }) {
+  const { caught, continuations, aborted, ownerFile, injectedWriteFailure } = result
+  if (['existing-cost', 'changing-cost'].includes(mode)) expect(caught).toContain('cost report consistency refused:')
+  expect(continuations, 'no continuation may follow an observed routed blocker').toBe(0)
+  if (mode === 'continuation') expect(aborted).toBe(true)
+  const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+  if (ownerFile) { expect(readFileSync(ownerFile, 'utf8')).toBe('{"owner":"keep"}\n'); expect(summary.owner).toBeUndefined() }
+  expect(summary).toMatchObject({ completed: false, blocked_on: { card: 'owner-recovery', refusal: expect.stringContaining('timed-out lane owned by this lifecycle') }, reason: expect.stringContaining('blocked: routed card owner-recovery:') })
+  expect(existsSync(join(f.dir, '.lane', 'sdk-transcript.json'))).toBe(true)
+  expect(existsSync(join(f.dir, '.lane', 'cost.json'))).toBe(true)
+  if (mode.startsWith('write-')) expect(injectedWriteFailure).toBe(true)
+  if (mode === 'write-report-failure') return
+  const blocked = readFileSync(join(f.dir, '.lane', 'blocked-report.md'), 'utf8')
+  expect(blocked).toContain('owner-recovery'); expect(blocked).toContain('Phase: tdd')
+  if (mode === 'changing-cost') expect(existsSync(summary.archive.path)).toBe(false)
+  if (summary.archive?.path && existsSync(summary.archive.path)) expect(readFileSync(join(summary.archive.path, 'blocked-report.md'), 'utf8')).toBe(blocked)
+}
+
+it.each(['continuation', 'stream-end', 'existing-cost', 'changing-cost'])('T6 routed ownership blocker persists before archival (%s)', blockedRunnerScenario)
+it.each(['write-report-failure', 'write-summary-failure'])('T6 blocked evidence write failure retains summary, cost and transcript (%s)', blockedRunnerScenario)
+it.skipIf(process.platform === 'win32').each(['symlink-report', 'symlink-summary'])('T6 blocked evidence preserves aliased owner files (%s)', blockedRunnerScenario)
+
+it('T6 an accepted transition after the routed refusal continues normally', async () => {
+  const f = phaseFixture()
+  const fake = sessions([async function* ({ tools }) {
+    await tools.route_finding!({ title: 'owner recovery', l4Reason: 'unavailable dependency: owner', risk: 'P2', effort: 'S' })
+    await tools.run!({ kind: 'control', decision: 'extend' })
+    await tools.transition!({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'clear' })
+    yield* turnEnd('clear')
+  }, async function* () { yield* turnEnd('continued') }])
+  const result = await runSessions(f, fake.query, { lifecycleOptions: {
+    boardContract: { boardId: 'fixture-board', listId: 'fixture-list' }, routeFinding: async () => ({ id: 'owner-recovery' }),
+    laneLauncher: f.launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 },
+  } })
+  expect(result.summary.blocked_on).toBeUndefined()
+  expect(existsSync(join(f.dir, '.lane', 'blocked-report.md'))).toBe(false)
+  expect(fake.seen).toHaveLength(2)
+})
+
 describe('SDK pilot runner', () => {
   it('account gate: mismatch refuses before an eager SDK reads a user prompt and records both accounts', async () => {
     const f = fixture(); const fake = accountStream({ email: 'other@example.com', apiProvider: 'firstParty' }); const logs: string[] = []
@@ -1216,7 +1303,7 @@ describe('SDK pilot runner', () => {
     expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd', 'verify', 'report'])
     expect(timeline.lanes[0]).toMatchObject({ phase: 'tdd', executor: 'gpt-lane', started_at: expect.any(Number), ended_at: expect.any(Number) })
     const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8') as string)
-    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: [expect.stringContaining('OpenAI lane usage unavailable')] })
+    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: ['OpenCode launch evidence missing: no usable receipt or launch record'] })
     expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
     expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
     expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')

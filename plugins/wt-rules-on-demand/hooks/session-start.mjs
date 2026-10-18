@@ -12,10 +12,15 @@ import { retainArchives } from '../scripts/archive-retention.mjs';
 import { discoverFiles } from '../scripts/discover-files.mjs';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
 import { revertNotificationLine, dailyRollbackLines } from './revert-notifications.mjs';
+import { parseAgentTypes } from './agent-types.js';
 
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
 const event = JSON.parse(input || '{}');
+// A disabled engine refuses nothing, so it announces no waiver either.
+const engineEnabled = ['true', '1'].includes(process.env.CLAUDE_PLUGIN_OPTION_ENABLED);
+const noRefuseTypes = engineEnabled ? parseAgentTypes(process.env.WT_ROD_NO_REFUSE_AGENT_TYPES) : [];
+if (noRefuseTypes.length) process.stdout.write(`wt-rules-on-demand: rules served after the act for: ${noRefuseTypes.join(', ')}\n`);
 // Archive retention runs for every session-start source (startup, resume, clear, compact): Function Hooks cannot delete,
 // so this is the only place the archive directory is bounded. Everything after it is startup-only.
 const archiveConfig = configDirectory(process.env);
@@ -111,7 +116,7 @@ for (const [name, path] of demand) {
     process.stdout.write(equal ? `loaded twice: ${staticPath} and ${path}; the on-demand copy is not served\n` : `same name, different rule: ${staticPath} and ${path}\n`);
   }
 }
-const enabled = ['true', '1'].includes(process.env.CLAUDE_PLUGIN_OPTION_ENABLED);
+const enabled = engineEnabled;
 if (!enabled) {
   const unserved = demand.filter(([, path]) => !suppressed.has(path)).length;
   if (unserved) process.stdout.write(`wt-rules-on-demand: engine disabled; ${unserved} on-demand rules are neither static nor served. Enable wt-rules-on-demand userConfig enabled=true.\n`);

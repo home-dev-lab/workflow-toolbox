@@ -85,7 +85,7 @@ test('git history at the serve supplies a candidate trigger but cannot prove it 
   const { spawnSync } = await import('node:child_process');
   const f = await setup(t, [served('r.md', ''), call(use('old', 'Agent'))]);
   const git = (...args) => {
-    const run = spawnSync('git', ['-C', f.rules, ...args], { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T00:00:00Z' } });
+    const run = spawnSync('git', ['-C', f.rules, ...args], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_COUNT: '0', GIT_AUTHOR_DATE: '2025-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T00:00:00Z' } });
     assert.equal(run.status, 0, run.stderr);
   };
   git('init', '-q'); git('add', 'r.md'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'initial rule');

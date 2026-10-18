@@ -163,7 +163,92 @@ For the windowed kinds, `window: 3` and `on-close: not applicable` are required;
 Bash triggers mask read-only mentions by default; `mentions: true` opts out.
 A rule is served once per main or subagent context, with independent counters;
 compaction resets that loop. `time_reserve` explicitly opts into re-serving.
-Pending compliance windows close with a compaction reason before the reset.
+Compliance windows still pending when the reset runs close with its reason. A
+`next`-call window is decided by the call that follows it before anything else
+runs, so the first tool call after a compaction the plugin has not yet seen still
+decides the windows opened before it; only the windows left pending close with
+the compaction reason.
+Where the host does not hand `session.compact` to the plugin (a host may forward
+it past every plugin a person installs), the main loop finds the compaction in the
+session's transcript: the host writes a `compact_boundary` row there for every
+compaction, manual or automatic. When the main context is created, the loop notes
+where the transcript ends (the end of its last complete line) and never reads what
+came before: only boundaries written after that point count. It notes that end
+before it reads the conversation for the rules it already holds, so a compaction
+that lands between the two leaves a boundary after the noted end. It then reads the rows
+added since its last look at every main turn end and, earlier, when the live
+window's input tokens are lower than the last reading that had them, or absent
+after one (absent counts once, until a reading has tokens again). Only the first
+such sign of a turn reads the transcript. While a rule counts as served (held in
+the conversation, or served since the last reset), the first triggering event after
+a turn end also reads it when no reading has completed since that turn end, so a
+boundary written just after a turn-end reading that found nothing, with no sign,
+is found before a served rule is withheld. That costs at most one more child per
+turn, only in turns where a rule is served, and one when a context is created over
+a conversation that holds a rule block; it waits for a reading in progress and is
+bounded by the same deadline. Because the host writes the row a little
+after the compaction ends, a sign whose reading finds nothing, and every
+dispatched `session.compact` of the main loop, starts a re-scan plan: readings
+after 0.1, 0.3, 0.7, 1.5, 3.1 and 6.3 seconds. The plan ends as soon as it found
+the boundaries it waits for, after its last reading, or 10 seconds after it
+started, whichever comes first; a turn end does not end it, and a request made
+while it runs joins it rather than starting a second one. A boundary row the loop
+has not seen resets the loop as above under the reason `compaction-detected`, so
+a compaction is caught at the latest at the end of the turn it happened in, or by
+the plan when the row lands after that turn end. What the conversation says
+decides nothing: a summary that quotes a served rule does not hide the compaction,
+and a block another plugin rewrote, or the host split, with no compaction never
+resets anything. A boundary counts once by its identifier. Each reading checks
+that the file is the same one (device and inode), at least as long as where the
+last reading stopped, and that the 64 bytes before that point are unchanged; when
+any of these fails (the transcript replaced, truncated, or truncated and written
+again past the old point) it is read again from its start, and there only
+boundaries dated after the previous reading began, less 5 seconds, count; when that
+re-read stops at its time budget, the readings that continue it keep the same date
+filter until one reaches the length the re-read started from; a row
+rejected there is not remembered, so the same row written later past the cursor
+still counts. On every other reading the row's date plays no part, so a clock set
+back does not hide a boundary. Every reading also reads the session id: when it
+changed (`/clear` on a host that does not hand the plugin `prompt.context`), the
+new session's transcript is noted where it ends and the loop resets under the
+reason `session-changed`, journaled under the new session (with any compliance
+window it closes). A new id that names the same file (same device and a non-zero
+inode) is the same conversation: the id is adopted, the reading continues where it
+stood, and nothing resets. Where the filesystem reports inode 0, no two files are
+taken for one: a new id always resets and reads the new path. The transcript is
+`<config dir>/projects/<session root with every character outside A-Z, a-z, 0-9
+and - replaced by ->/<session id>.jsonl`; when it is not there (after `/cd`, or a
+path the host shortens), the file named `<session id>.jsonl` is looked for in
+every project folder. The reading runs `node` on the plugin's
+`scripts/compact-boundary.mjs` as a child process, under a 5 second limit, which
+reads only the bytes added since the last reading, for at most 3 seconds: past
+that it stops at the last complete line it read, and the next reading resumes
+there. A line longer than 256 KiB is skipped, never held (a boundary row is about
+1.5 KB), and the next reading resumes past the bytes it dropped, even when a
+reading's budget ends inside that line. One reading runs at a time: while a
+reading's child is still running past its deadline, a reading reads nothing and
+starts no second child. The transcript reading's deadline also covers its
+preparation (the session id, root and environment reads): a preparation past it
+never starts a child, frees the context for the next reading, and pauses the
+readings until the next turn end, so a host read that never answers costs one
+deadline per turn. A host that
+cannot start a child run reads nothing and says nothing; a transcript that cannot
+be read prints one progress line and loses nothing once the loop has noted where
+the transcript ended, since the next reading starts where the last good one
+stopped; when the transcript cannot be read at the moment the context is created,
+the end is noted at the first good reading, and a boundary written before it is
+not seen (a dispatched `session.compact` still resets). Each host read on this
+path, the live window included, counts as unreadable when it has not answered
+within its deadline (2 seconds, 6 for the transcript reading); a live-window
+reading past it pauses the mid-turn readings, with one progress line, until a turn
+end reads the live window again. Both resets share one queue with
+`session.compact`, and one compaction resets once: a dispatched `session.compact`
+waits for a reading in progress, and when a boundary was found with nothing served
+since, it is skipped; the next boundary found after a dispatched `session.compact`,
+within 10 seconds, is that compaction's own, not a second one; every other new
+boundary resets. Sub-agent contexts are not checked this way: they end with their turn,
+and a sub-agent's own boundary rows are ignored. Each context's journal counts its
+resets per reason (`resets`).
 Verdicts retain the measurement's opening time (`injectedAt`) and trigger channel; model classification
 uses bounded call arguments (including the triggering tool call for tool-delivered
 model rules), while persisted verdict evidence keeps only a command head or file

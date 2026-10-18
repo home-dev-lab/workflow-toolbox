@@ -313,6 +313,61 @@ describe('wt-adopt-check-hook — selection', () => {
     expect(context).toContain(`${ladder}: DOUBLE-LOAD`)
   })
 })
+function injectedRecheck(output: string, status: number | null, timedOut = false) {
+  const f = fixture('partial-recheck')
+  const dir = join(f.cfg, 'agents')
+  const initial = '  a.md: STALE (installed v0.0.1)\n  b.md: STALE (installed v0.0.1)\n  retired.md: ORPHAN (retired)\n'
+  const source = `
+    import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    let refreshed = false;
+    cp.spawnSync = (command, args) => {
+      if (args.includes('--refresh-only')) { refreshed = true; return { status: 1 }; }
+      if (!args.includes(${JSON.stringify(dir)})) return { status: 0, stdout: '' };
+      if (!refreshed) return { status: 0, stdout: ${JSON.stringify(initial)} };
+      return { status: ${status}, stdout: ${JSON.stringify(output)},
+        stderr: ${JSON.stringify(status === 1 ? 'adopt: fatal read' : '')},
+        error: ${timedOut ? "Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })" : 'undefined'} };
+    };
+    syncBuiltinESMExports();
+    const { main } = await import(${JSON.stringify(pathToFileURL(HOOK).href)});
+    main();`
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+    input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: f.proj }), encoding: 'utf8', env: f.env,
+  })
+  expect(result.status, result.stderr).toBe(0)
+  return { dir, context: JSON.parse(result.stdout).hookSpecificOutput.additionalContext as string }
+}
+
+describe('wt-adopt-check-hook — partial recheck', () => {
+  it.each([
+    ['timeout', null, true, ''],
+    ['fatal read', 1, false, ''],
+    ['successful truncated output', 0, false, ''],
+    ['equal count with a different filename', 0, false, '  unrelated.md: UP-TO-DATE (v1.0.0)\n'],
+  ] as const)('retains unreached findings and orphans after %s', (_label, status, timedOut, extra) => {
+    const { dir, context } = injectedRecheck('  a.md: UP-TO-DATE (v1.0.0)\n' + extra, status, timedOut)
+    expect(context, 'unreached b.md stays actionable').toContain(`b.md (${dir}): behind v`)
+    expect(context, 'prior orphan survives an incomplete recheck').toContain(`retired.md (${dir}): ORPHAN`)
+    expect(context).toContain('refreshed 1 unedited stale copy')
+    expect(context).not.toContain(`a.md (${dir}): behind v`)
+  })
+})
+
+describe('wt-adopt-check-hook — complete recheck', () => {
+  it('supersedes prior findings and orphans only after a successful complete recheck', () => {
+    const { context } = injectedRecheck('  a.md: UP-TO-DATE (v1.0.0)\n  b.md: UP-TO-DATE (v1.0.0)\n', 0)
+    expect(context).toContain('refreshed 2 unedited stale copies')
+    expect(context).not.toContain('ORPHAN')
+    expect(context).not.toContain('SESSION ACTION: run')
+  })
+  it('retains prior orphans even when a failed recheck prints every requested filename', () => {
+    const { dir, context } = injectedRecheck('  a.md: UP-TO-DATE (v1.0.0)\n  b.md: UP-TO-DATE (v1.0.0)\n', 1)
+    expect(context, 'a fatal exit cannot clear prior orphans').toContain(`retired.md (${dir}): ORPHAN`)
+    expect(context).toContain('refreshed 2 unedited stale copies')
+  })
+})
+
 describe('wt-adopt-check-hook — nonzero recheck', () => {
   it('uses refreshed per-file output when an unrelated unverified finding makes recheck exit one', () => {
     const f = fixture('recheck-nonzero')
@@ -515,6 +570,49 @@ describe('wt-adopt-check-hook — live templates', () => {
     expect(checked.stdout).not.toContain('new-live-agent.md: ORPHAN')
   })
 })
+function symlinkTemplateFixture(kind: 'file' | 'dangling' | 'directory') {
+  const f = fixture(`template-link-${kind}`)
+  const shipped = makeHookCopy()
+  const dir = join(f.cfg, 'agents')
+  const seeded = spawnSync(process.execPath, [shipped.installer, '--install', '--set', 'agents', '--dir', dir], { env: f.env, encoding: 'utf8' })
+  expect(seeded.status, seeded.stderr).toBe(0)
+  const name = kind === 'file' ? 'pilot.md' : `${kind}-template.md`
+  const template = join(shipped.rulesDir, '..', 'agent-templates', name)
+  const target = join(f.root, 'template-target')
+  if (kind === 'file') {
+    cpSync(template, target)
+    rmSync(template)
+  } else {
+    cpSync(join(dir, 'pilot.md'), join(dir, name))
+    if (kind === 'directory') mkdirSync(target)
+  }
+  return { ...f, shipped, dir, name, template, target }
+}
+
+describe('wt-adopt-check-hook — symlinked template inventory', () => {
+  for (const kind of ['file', 'dangling', 'directory'] as const) it(`classifies a template symlink to ${kind} by its target`, (context) => {
+    const f = symlinkTemplateFixture(kind)
+    try {
+      symlinkSync(f.target, f.template, kind === 'directory' ? 'dir' : 'file')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOTSUP', 'ENOSYS'].includes(code ?? '')) {
+        context.skip(`Windows cannot create this symlink: ${code}; requires symlink privileges or Developer Mode`)
+      }
+      throw error
+    }
+    const checked = spawnSync(process.execPath, [f.shipped.installer, '--check', '--set', 'agents', '--dir', f.dir], { env: f.env, encoding: 'utf8' })
+    expect(checked.status, checked.stderr).toBe(0)
+    if (kind === 'file') {
+      expect(checked.stdout).toContain(`${f.name}: UP-TO-DATE`)
+      expect(checked.stdout, 'a live symlinked template is not an orphan').not.toContain(`${f.name}: ORPHAN`)
+      expect(runHook(f.proj, f.env, f.shipped.hook).context).not.toContain(`${f.name} (${f.dir}): ORPHAN`)
+    } else {
+      expect(checked.stdout, 'non-file symlink targets stay outside the shipped inventory').toContain(`${f.name}: ORPHAN`)
+    }
+  })
+})
+
 describe('wt-adopt-check-hook — stale-root orphan suppression', () => {
   it('suppresses orphan advice from a stale running plugin root', () => {
     const { f, dir, staleEnv } = staleRootFixture()

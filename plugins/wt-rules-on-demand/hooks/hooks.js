@@ -2,7 +2,7 @@ import { parseRuntimeRule } from './runtime-rule.js';
 import { maskReadOnlyMentions } from './bash-mention.js';
 import { bashCommandVerdict, isGovernedAct, classify } from './act-checks.js';
 import { toolInputVerdict, correlateTurn } from './declarative-checks.js';
-import { ruleDirectories, configDirectory, agentLoop, projectRuleRoots, sameDirectory, normal, rawAbsolute, joinSlash, worktreePlan } from '../paths.js';
+import { ruleDirectories, configDirectory, shippedFile, agentLoop, projectRuleRoots, sameDirectory, normal, rawAbsolute, joinSlash, worktreePlan } from '../paths.js';
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-match.js';
 import { regexCallBudget } from './linear-regex.js';
@@ -13,6 +13,9 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
+import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType,
+  pendingAgentType, beginAgentLookup, settleAgentLookup, finishAgentLookup, recordAgentType,
+  agentSpawning, beginAgentSpawn, finishAgentSpawn } from './agent-types.js';
 import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
   mergeFlightHealth, noteFlightCall, resetFlightRecorder, disableFlightRecorder } from './flight-recorder.js';
 
@@ -57,6 +60,10 @@ let flightPending = false;
 let flightConfig = null;
 let flightSession = null;
 let flightDisabled = false;
+let usageMissing = false;
+let usageStalled = false;
+let scanUnavailable = false;
+let scanStalled = false;
 
 function rememberFlightConfig(config) {
   flightConfig ??= config;
@@ -250,12 +257,15 @@ const key = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
 // Reserve the new context and detach the victim before any close I/O: a concurrent caller for the
 // same loop then receives the same object, and no second caller can pick the same victim.
 // A hit moves the loop to the recent end of the map (delete then set), so the first non-main key is always the least recently used.
-const context = async ($, loop) => {
+// The main context returned is the one the model now reads: a compaction it was never told about resets it first.
+// `verify` (the main turn end) reads the conversation of an existing context whatever the live window says.
+const context = async ($, loop, verify = false) => {
   const existing = contexts.get(loop);
   if (existing) {
     contexts.delete(loop);
     contexts.set(loop, existing);
     if (existing.filling) await existing.filling;
+    await detectCompaction($, existing, loop, verify);
     return existing;
   }
   let victim = null;
@@ -267,15 +277,16 @@ const context = async ($, loop) => {
       victim = { loop: oldest, evicted, actSeq: ++sequence, closing: [...evicted.pending.splice(0), ...detachNext(evicted)] };
     }
   }
-  const created = { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [], filling: null, held: null };
+  const created = { rules: null, served: new Map(), pending: [], nextWindows: new Set(), refusing: new Map(), prompting: new Map(), correlation: [], filling: null, held: null, found: 0, expected: [], turns: 0, confirmedTurn: -1 };
   contexts.set(loop, created);
-  created.filling = conversationHeld($, loop).then((held) => { created.held = held; }).finally(() => { created.filling = null; });
+  created.filling = fillContext($, created, loop).finally(() => { created.filling = null; });
   if (victim) {
     for (const pending of victim.closing) await close($, pending, victim.loop, 'context evicted', victim.actSeq);
     await closeCorrelation($, victim.evicted, victim.loop, victim.actSeq);
     await journal($, [], victim.loop, [], [], [], { close: { seq: victim.actSeq } });
   }
   if (created.filling) await created.filling;
+  await detectCompaction($, created, loop, false);
   return created;
 };
 // The session root decides the project rule set, whatever directory the event (a sub-agent's included) runs in.
@@ -294,18 +305,43 @@ function publish(ctx, root, rules) {
   holdServed(ctx, rules);
 }
 // The only record of what a context was served is the conversation its next request is built from: a rule counts as
-// served only when that conversation holds the rule's exact served or pre-upgrade file-body block. The text is read once, when the context is created,
-// and spent by the first load of its rules; unreadable (a throw, a refusal, no list) it holds nothing, so every rule is
-// served again, never withheld.
+// served only when that conversation holds the rule's exact served or pre-upgrade file-body block. This read (`as: 'api'`)
+// runs once per context, when it is created, and its text is spent by the first load of its rules. (Every dispatched
+// prompt.context reads the history too, apart from this one, to tell a cleared conversation: promptContextWork.)
+// Unreadable (a throw, a refusal, no list), it holds nothing, so every rule is served again, never withheld.
+// The main loop notes where its transcript ends BEFORE it reads the conversation: a compaction that lands between the two
+// then lies past the cursor, and the first check of the context reads it.
+async function fillContext($, ctx, loop) {
+  if (loop === MAIN) await openCursor($, ctx);
+  ctx.held = await conversationHeld($, loop);
+}
 async function conversationHeld($, loop) {
   let failure = 'the host returned no message list';
   try {
-    const found = await $.session.messages(loop === MAIN ? { as: 'api' } : { as: 'api', agentId: loop });
+    const found = await hostCall($, $.session.messages(loop === MAIN ? { as: 'api' } : { as: 'api', agentId: loop }));
     if (Array.isArray(found)) return JSON.stringify(found);
     if (found && typeof found === 'object' && 'deny' in found) failure = 'the host refused the messages';
   } catch (error) { failure = error.message; }
   await notice($, `conversation unavailable, every rule counts as unserved: ${failure}`).catch(() => {});
   return null;
+}
+// A host read answers within its deadline (HOST_DEADLINE_MS unless given) or fails: one that never settles would
+// otherwise hold every later check of the context, and the tool calls and prompts queued behind them. The bound is far
+// above a real read (a 3.6 MB conversation serialises in under 10 ms) and well inside a hook's 10 s budget, which a
+// clock wait spends. A host without a clock has no deadline.
+const HOST_DEADLINE_MS = 2_000;
+async function hostCall($, pending, deadline = HOST_DEADLINE_MS) {
+  let stop, waiting;
+  try {
+    stop = new AbortController();
+    waiting = $.clock.sleep(deadline, { signal: stop.signal });
+  } catch { return pending; }
+  // A wait the host itself ends early (a reload) leaves the read without a deadline rather than failing it.
+  try { return await Promise.race([pending, waiting.then(() => pastDeadline(deadline), () => pending)]); }
+  finally { stop.abort(); }
+}
+function pastDeadline(deadline) {
+  throw Object.assign(new Error(`no answer within ${deadline} ms`), { deadline: true });
 }
 function holdServed(ctx, rules) {
   const held = ctx.held;
@@ -596,15 +632,23 @@ function loadRootCandidates(root, config, linked, fallback) {
 }
 const projectScope = (real, configReal) => real !== null && !sameDirectory(real, configReal);
 
+// A rule name is formatted after the waiver decision, so it is made a primitive string here, once, where host code may
+// still run. A name that cannot be made one fails the whole load: the rule behind it is unknown, so it may gate any call.
+class UnloadableRule extends Error {}
+function ruleFileName(entry, dir) {
+  try { return String(entry?.name); } catch { throw new UnloadableRule(`a rule in ${dir} has a file name that cannot be read`); }
+}
+
 // Synchronous plans expose the existing awaited operations without adding a helper's async completion turn.
 function* loadRuleCopies($, locations, copies, staticFiles, physicalDirs, rules) {
   for (const [scope, dir] of locations) {
     for (const entry of yield list($, dir)) {
-      const file = `${dir}/${entry.name}`;
+      const name = ruleFileName(entry, dir);
+      const file = `${dir}/${name}`;
       const kind = yield entryKind($, file, entry);
-      if (kind !== 'file' || !entry.name.endsWith('.md')) continue;
-      if (!copies.has(entry.name)) copies.set(entry.name, []);
-      copies.get(entry.name).push({ scope, dir, file });
+      if (kind !== 'file' || !name.endsWith('.md')) continue;
+      if (!copies.has(name)) copies.set(name, []);
+      copies.get(name).push({ scope, dir, file });
     }
   }
   for (const [name, found] of copies) yield* loadWinner($, name, found, staticFiles, physicalDirs, rules);
@@ -828,6 +872,7 @@ function journalContext(ctx, names, { suppressed, acts, injected }, { triggerErr
   journalActs(ctx, acts, now);
   for (const pending of injected) ctx.complianceInjected.push({ rule: pending.rule.name, ruleIdentity: pending.rule.identity, at: now, ...deliveryFields(pending) });
   if (advancesClose(ctx.lastClose, closeMark)) ctx.lastClose = { token, seq: closeMark.seq, at: now };
+  journalReset(ctx, closeMark);
   if (triggerErrors.length) {
     ctx.triggerErrors ??= [];
     // IDs belong to this event, not to stored history: a refused write must not issue the same ID twice.
@@ -835,6 +880,13 @@ function journalContext(ctx, names, { suppressed, acts, injected }, { triggerErr
     // Retain every error from this call, even when a mass serve exceeds the usual history cap; older rows yield first.
     ctx.triggerErrors = ctx.triggerErrors.slice(-Math.max(100, triggerErrors.length));
   }
+}
+
+// A close that reset the served set counts under its reason: 'compaction' when session.compact reached this plugin,
+// 'compaction-detected' when the live window showed one it was never told about.
+function journalReset(ctx, closeMark) {
+  if (!closeMark?.reason) return;
+  ctx.resets = { ...ctx.resets, [closeMark.reason]: (ctx.resets?.[closeMark.reason] ?? 0) + 1 };
 }
 
 async function journal($, names, loop, suppressed = [], acts = [], injected = [], options = {}) {
@@ -1056,21 +1108,23 @@ async function progress($, message) {
   try { await $.ui.log(message); } catch { /* A progress line is best effort. */ }
 }
 function claim(ctx, rules) {
+  ctx.detectedSinceServe = false;
   for (const rule of rules) { const state = servedAs(ctx, rule); ctx.served.set(rule.name, { count: (state?.count ?? 0) + 1, at: Date.now(), identity: rule.identity }); }
 }
 
-/** @type {import('claude-code').Register} */
-export const register = (on, options, clock = Date.now) => {
-  token = newToken();
-  activityProfile = null;
-  activityWrites.clear();
-  pendingActivity.clear();
-  activityRetryAt = 0;
-  triggerClock = clock;
-  enabled = options?.enabled === true;
-  reserve = options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
+function reserveRequested(options) {
+  return options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
+}
+
+function reserveEnvironmentLimit() {
+  return Number(typeof process !== 'undefined' ? process.env?.WT_ROD_MAX_PER_CONTEXT : NaN);
+}
+
+function configureReserve(options) {
+  reserve = reserveRequested(options);
+  // Read the environment even when reserve is off, preserving registration order.
+  const envLimit = reserveEnvironmentLimit();
   // Host userConfig defaults arrive as explicit options: max_per_context only applies with time_reserve.
-  const envLimit = Number(typeof process !== 'undefined' ? process.env?.WT_ROD_MAX_PER_CONTEXT : NaN);
   limit = 1;
   if (reserve) {
     limit = 3;
@@ -1078,6 +1132,21 @@ export const register = (on, options, clock = Date.now) => {
     if (Number.isInteger(configured) && configured > 0) limit = configured;
     if (Number.isInteger(envLimit) && envLimit > 0) limit = envLimit;
   }
+}
+
+/** @type {import('claude-code').Register} */
+export const register = (on, options, clock = Date.now, agentClock = Date.now) => {
+  token = newToken();
+  activityProfile = null;
+  activityWrites.clear();
+  pendingActivity.clear();
+  activityRetryAt = 0;
+  triggerClock = clock;
+  lookupClock = agentClock;
+  enabled = options?.enabled === true;
+  resetAgentTypes();
+  agentTypeSetting = UNREAD;
+  configureReserve(options);
   contexts = new Map();
   archiveSequence = 0;
   storeSwept = false;
@@ -1088,9 +1157,96 @@ export const register = (on, options, clock = Date.now) => {
   on('prompt.submit', promptSubmitEvent);
   on('turn.complete', turnCompleteEvent);
   on('tool.call', toolCallEvent);
+  on('agent.spawn', agentSpawnEvent);
 };
 
 let triggerClock = Date.now;
+let lookupClock = Date.now;
+
+// The hooks module runs without Node.js globals, and register() receives no $: the project's settings env reaches it
+// only through the host's environment API, called inside a hook. Refusable calls gather configuration;
+// spawn evidence is learned independently, and only the adjacent-to-act decision grants a waiver.
+const UNREAD = Symbol('unread');
+let agentTypeSetting = UNREAD;
+let agentTypeRead = 0;
+let agentTypeApplied = 0;
+async function agentTypeOptOutActive($) {
+  const ticket = ++agentTypeRead;
+  let value, fresh = true;
+  try { value = await hostCall($, $.env.get('WT_ROD_NO_REFUSE_AGENT_TYPES')); } catch { fresh = false; }
+  if (ticket < agentTypeApplied) return false;
+  agentTypeApplied = ticket;
+  if (value !== agentTypeSetting) {
+    agentTypeSetting = value;
+    configureAgentTypes(value);
+  }
+  return fresh;
+}
+
+async function agentSpawnEvent($, e, next) {
+  if (!enabled) return next(e);
+  let resume;
+  try { resume = e.resume?.agentId; } catch { /* Unknown resume cannot supply evidence. */ }
+  const ticket = beginAgentSpawn(resume);
+  try {
+    const result = await next(e);
+    recordSpawnResult(e, result, ticket);
+    return result;
+  } finally { finishAgentSpawn(ticket); }
+}
+
+function recordSpawnResult(e, result, ticket) {
+  let id = ticket.id;
+  try {
+    id = result?.agentId ?? ticket.id;
+    if (!result || result.deny !== undefined) { recordAgentType(id, null, ticket); return; }
+    recordAgentType(id, e.subagentType, ticket);
+  } catch { recordAgentType(id, null, ticket); }
+}
+
+async function lookupAgentType($, id, entry) {
+  let type = null;
+  try { type = (await hostCall($, sentLookup($, entry))).find((agent) => agent.id === id)?.type ?? null; }
+  catch { /* Missing evidence starts a bounded exponential retry delay. */ }
+  finishAgentLookup(id, entry, type, lookupClock());
+}
+
+// The lookup's slot belongs to the host request: a deadline frees the waiting call, while the slot stays taken until
+// the request itself settles.
+function sentLookup($, entry) {
+  let request;
+  try { request = $.agent.list(); } catch (error) { settleAgentLookup(entry); throw error; }
+  Promise.resolve(request).then(() => settleAgentLookup(entry), () => settleAgentLookup(entry));
+  return request;
+}
+
+// Evidence only: refreshes the setting and, when the type is unknown, starts or joins a lookup. It decides nothing.
+async function gatherAgentEvidence($, agentId, before) {
+  if (!before.length || agentLoop(agentId) === MAIN) return;
+  const fresh = await agentTypeOptOutActive($);
+  if (!fresh || !agentTypeOptOutConfigured() || agentSpawning(agentId) || knownAgentType(agentId) !== undefined) return;
+  let entry = pendingAgentType(agentId);
+  if (!entry) {
+    entry = beginAgentLookup(agentId, lookupClock());
+    if (entry) entry.promise = lookupAgentType($, agentId, entry);
+  }
+  if (entry) await entry.promise;
+}
+
+// The only waiver decision: synchronous and from current state. It touches nothing the host owns, so no host callback
+// or getter can run between it and the act; its log line waits until the act has been handed to the host.
+function waivedAgentType(agentId, before) {
+  if (!before.length || agentLoop(agentId) === MAIN || !agentTypeOptOutConfigured() || agentSpawning(agentId)) return undefined;
+  const type = knownAgentType(agentId);
+  return type !== undefined && neverRefuseType(type) ? type : undefined;
+}
+// The refusal set, and the waiver line to log once the act has started.
+function waiverPlan(agentId, candidates) {
+  const type = waivedAgentType(agentId, candidates);
+  if (type === undefined) return { before: candidates, waiver: null };
+  const names = candidates.map((rule) => rule.name).join(', ');
+  return { before: [], waiver: `wt-rules-on-demand: waiving before-act refusal for agent type ${type}; serving ${names} with the result` };
+}
 
 // Only the host-facing promise settles on abort; the body retains its real lifetime.
 async function settleHook(signal, body) {
@@ -1159,30 +1315,318 @@ async function toolCallEvent($, e, next) { return abortableEvent($, e, next, 'to
 
 async function promptContextWork($, e, next) {
     if (enabled) {
-      try { if (!(await $.session.messages()).some((message) => message?.role === 'assistant')) { contexts.delete(MAIN); currentMain++; } } catch { /* Message history may be unavailable at startup. */ }
+      // Under the host-read deadline: a history that never answers keeps the current context rather than hold the prompt.
+      try { if (!(await hostCall($, $.session.messages())).some((message) => message?.role === 'assistant')) { contexts.delete(MAIN); currentMain++; } } catch { /* Message history may be unavailable at startup. */ }
        await rulesFor($, await context($, MAIN), e.cwd ?? '.');
     }
     return next(e);
 }
 async function sessionCompactWork($, e, next) {
-    const result = await next(e);
-     if (!result || typeof result !== 'object' || !('skip' in result)) {
-       const loop = agentLoop(e.agentId), ctx = contexts.get(loop);
-       if (ctx) {
-           const actSeq = ++sequence;
-           await closePending($, ctx, loop, 'compaction', actSeq);
-          await closeCorrelation($, ctx, loop, actSeq);
-          await journal($, [], loop, [], [], [], { close: { seq: actSeq } });
-          ctx.rules = null;
-          ctx.loading = null;
-           if (ctx.filling) await ctx.filling;
-           ctx.held = null;
-           ctx.served.clear();
-           ctx.lspServed = null;
-            ctx.prompting = new Map(ctx.prompting);
-       }
-     }
-    return result;
+  const result = await next(e);
+  if (!result || typeof result !== 'object' || !('skip' in result)) {
+    const loop = agentLoop(e.agentId), ctx = contexts.get(loop);
+    if (ctx) await inQueue(ctx, dispatchedReset($, ctx, loop, ctx.detecting));
+  }
+  return result;
+}
+// Both resets share one queue per context, and one compaction resets once: after a detected reset with nothing served
+// since, the dispatched session.compact of that same compaction skips. A dispatched compaction of the main loop also
+// expects its own boundary row in the transcript, written just after it: it asks the re-scan plan to find it, and the
+// next new boundary is that one while the plan lives. Every other dispatched compaction, and every other new boundary,
+// resets (the rules are loaded again).
+async function dispatchedReset($, ctx, loop, previous) {
+  try { await previous; } catch { /* The earlier event reported its own failure. */ }
+  if (ctx.detectedSinceServe) return;
+  await resetServed($, ctx, loop, 'compaction');
+  if (loop !== MAIN) return;
+  ctx.expected.push(monotonic() + RESCAN_LIFETIME_MS);
+  requestRescan($, ctx, true);
+}
+// Close what the context measured and forget what it served: the next event loads its rules again and serves them as in a
+// fresh context. Shared by the dispatched compaction and the detected one; `reason` tells the journal which.
+// After it, the next live-window reading is the new baseline.
+async function resetServed($, ctx, loop, reason) {
+  const actSeq = ++sequence;
+  await closePending($, ctx, loop, reason, actSeq);
+  await closeCorrelation($, ctx, loop, actSeq);
+  await journal($, [], loop, [], [], [], { close: { seq: actSeq, reason } });
+  ctx.rules = null;
+  ctx.loading = null;
+  if (ctx.filling) await ctx.filling;
+  ctx.held = null;
+  ctx.served.clear();
+  ctx.lspServed = null;
+  ctx.prompting = new Map(ctx.prompting);
+  ctx.detectedSinceServe = reason !== 'compaction';
+  ctx.windowTokens = undefined;
+  ctx.absentSigned = false;
+}
+// A host may forward session.compact (and prompt.context) past every plugin a person installs, so a compaction can reach
+// the main loop untold. The host still records it: a `compact_boundary` row in the session's transcript. When the main
+// context is created, the main loop notes where the transcript ends; it then reads only the rows added since, at every
+// turn end and, earlier, when the live window gives a sign (its input tokens absent, until the first response after a
+// compaction, or lower than the last reading that had them); a boundary it has not seen before resets the context.
+// Agent contexts are not checked: they end with their turn.
+// Checks and both resets run one at a time per context: a parallel call admitted while a reset runs waits for it.
+async function detectCompaction($, ctx, loop, verify) {
+  if (loop !== MAIN) return;
+  await inQueue(ctx, chainCompactionCheck($, ctx, ctx.detecting, verify));
+}
+async function inQueue(ctx, step) {
+  ctx.detecting = step;
+  try { await step; } finally { if (ctx.detecting === step) ctx.detecting = null; }
+}
+// A named async step, not a closure: the host validator refuses $ captured in a function expression.
+async function chainCompactionCheck($, ctx, previous, verify) {
+  try { await previous; } catch { /* The earlier event reported its own failure. */ }
+  return compactionCheck($, ctx, verify);
+}
+// The context noted where the transcript ended when it was created (fillContext). A sign whose scan finds nothing new asks
+// the re-scan plan: the host writes the boundary row a little after the compaction ends.
+async function compactionCheck($, ctx, verify) {
+  if (ctx.cursor === undefined) await openCursor($, ctx);
+  const sign = await windowShrank($, ctx, verify);
+  if (!scanDue(ctx, sign, verify)) return;
+  const fresh = await newBoundaries($, ctx);
+  if (verify) ctx.turns++;
+  if (sign && fresh?.length === 0) requestRescan($, ctx, false);
+}
+// The turn end always scans (and lifts a paused preparation). Mid-turn, the first sign of a turn scans, and so does the
+// first event of a turn while a rule counts as served (held in the conversation, or served since) and no reading has
+// completed since the last turn end: a boundary written after the turn-end scan, with no sign, never lets a served rule
+// be withheld. At most one such scan per turn.
+function scanDue(ctx, sign, verify) {
+  if (verify) {
+    ctx.midTurnScan = false;
+    scanStalled = false;
+    return true;
+  }
+  const firstSign = sign && !ctx.midTurnScan;
+  if (firstSign) ctx.midTurnScan = true;
+  const confirm = ctx.confirmedTurn !== ctx.turns && (ctx.served.size > 0 || Boolean(ctx.held?.includes('<rule name=')));
+  if (confirm) ctx.confirmedTurn = ctx.turns;
+  return firstSign || confirm;
+}
+async function boundaryReset($, ctx, fresh) {
+  const now = monotonic(), expected = ctx.expected.filter((until) => until > now);
+  const consumed = Math.min(expected.length, fresh.length);
+  ctx.expected = expected.slice(consumed);
+  if (fresh.length === consumed) return;
+  await resetServed($, ctx, MAIN, 'compaction-detected');
+  await progress($, 'wt-rules-on-demand: compaction detected; rules are served again');
+}
+// The re-scan plan serves the compactions that asked for it: a sign whose scan found nothing, and each dispatched
+// compaction. A request made while it lives joins it (a dispatched one adds one boundary to wait for; a sign adds
+// none, being no certain compaction). It scans after each back-off wait, and ends as soon as it found as many new
+// boundaries as it waits for, or once RESCAN_LIFETIME_MS of monotonic time has passed since it started, however long its
+// scans took, or when its context is replaced. A turn end never ends it, and the expectation of a dispatched compaction
+// lives exactly as long.
+const RESCAN_BACKOFF_MS = [100, 200, 400, 800, 1600, 3200];
+const RESCAN_LIFETIME_MS = 10_000;
+const monotonic = () => (typeof performance === 'undefined' ? Date.now() : performance.now());
+const planLive = (plan) => Boolean(plan) && !plan.ended && monotonic() - plan.startedAt < RESCAN_LIFETIME_MS;
+const planServed = (ctx, plan) => ctx.found - plan.foundAt >= plan.requests;
+const rescanWanted = (ctx, plan) => ctx.plan === plan && contexts.get(MAIN) === ctx && planLive(plan) && !planServed(ctx, plan);
+function requestRescan($, ctx, dispatched) {
+  const live = ctx.plan;
+  if (planLive(live) && !planServed(ctx, live)) {
+    if (dispatched) live.requests++;
+    return;
+  }
+  const plan = { requests: 1, foundAt: ctx.found, startedAt: monotonic() };
+  ctx.plan = plan;
+  void rescanPlan($, ctx, plan);
+}
+async function rescanPlan($, ctx, plan) {
+  try {
+    for (const ms of RESCAN_BACKOFF_MS) {
+      try { await $.clock.sleep(ms); } catch { return; }
+      if (!rescanWanted(ctx, plan)) return;
+      await inQueue(ctx, chainRescan($, ctx, ctx.detecting, plan));
+    }
+  } finally { plan.ended = true; }
+}
+async function chainRescan($, ctx, previous, plan) {
+  try { await previous; } catch { /* The earlier event reported its own failure. */ }
+  if (rescanWanted(ctx, plan)) await newBoundaries($, ctx);
+}
+// The transcript: `<config>/projects/<root with every character outside [A-Za-z0-9-] as '-'>/<session id>.jsonl`, the
+// host's layout; when it is not there the scanner looks for `<session id>.jsonl` in every project folder. The cursor
+// starts where the transcript ended when the main context was created, so no scan reads history, and each scan reads
+// only what was added since. A boundary counts once (its uuid). A scan that had to read the file again from 0 (another
+// file, a shorter one, or other bytes before the offset) counts only the boundaries dated after the previous scan
+// began (RESTART_SKEW_MS earlier), and never marks the others seen. Every scan reads the session id: a new one (after
+// /clear, for example) is a new conversation, whose transcript is noted where it ends, and the context is reset.
+const RESTART_SKEW_MS = 5_000;
+async function openCursor($, ctx) {
+  ctx.cursor = null;
+  const job = await scanBoundaries($, ctx, null);
+  if (job) ctx.cursor = cursorOf(job);
+  return Boolean(job);
+}
+const cursorOf = (job) => ({ path: job.scan.path, projects: job.place.projects, session: job.place.session, offset: job.scan.offset,
+  identity: job.scan.identity, tail: job.scan.tail, scannedAt: job.startedAt, seen: new Set() });
+async function newBoundaries($, ctx) {
+  if (!ctx.cursor) return (await openCursor($, ctx)) ? [] : null;
+  const job = await scanBoundaries($, ctx, ctx.cursor);
+  if (!job) return null;
+  if (job.changed) return sessionChanged($, ctx, job);
+  ctx.confirmedTurn = ctx.turns;
+  const fresh = freshBoundaries(ctx.cursor, job.scan);
+  Object.assign(ctx.cursor, { path: job.scan.path, offset: job.scan.offset, identity: job.scan.identity, tail: job.scan.tail, scannedAt: job.startedAt });
+  ctx.found += fresh.length;
+  if (fresh.length) await boundaryReset($, ctx, fresh);
+  return fresh;
+}
+// A re-read from 0 that stopped at its budget keeps its date filter on the scans that continue it, until one reaches the
+// size the re-read started from.
+function freshBoundaries(cursor, scan) {
+  const unseen = scan.boundaries.filter((row) => !cursor.seen.has(row.uuid));
+  const restart = scan.restarted ? { since: cursor.scannedAt - RESTART_SKEW_MS, until: scan.size } : cursor.restart;
+  cursor.restart = restart && scan.partial && scan.offset < restart.until ? restart : null;
+  const fresh = restart ? unseen.filter((row) => row.timestamp !== null && Date.parse(row.timestamp) >= restart.since) : unseen;
+  for (const row of fresh) cursor.seen.add(row.uuid);
+  return fresh.map((row) => row.uuid);
+}
+// The same file (device and inode) under another id is the same conversation: adopt the id and keep reading where the
+// cursor stands. Only a KNOWN identity on both sides says so: a string with a non-zero inode (equal to the cursor's, so
+// that one is known too). An inode of 0 (some Windows and network filesystems) is shared by different files, so it is a
+// real change: reset, and read the new path.
+const knownIdentity = (identity) => typeof identity === 'string' && /^[^:]+:(?!0$).+$/.test(identity);
+async function sessionChanged($, ctx, job) {
+  if (knownIdentity(job.scan.identity) && job.scan.identity === ctx.cursor.identity) {
+    ctx.cursor.session = job.place.session;
+    return null;
+  }
+  ctx.cursor = cursorOf(job);
+  ctx.expected = [];
+  ctx.plan = null;
+  await resetServed($, ctx, MAIN, 'session-changed');
+  await progress($, 'wt-rules-on-demand: a new session started; rules are served again');
+  // Not an empty reading: the sign that found the new session was the cleared conversation, and no boundary will follow.
+  return null;
+}
+async function transcriptPlace($) {
+  try {
+    const config = flightConfig ?? configDirectory({ CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') });
+    const root = await $.session.root(), session = await $.session.id();
+    if (!config || !root || !session) return null;
+    const projects = joinSlash(config, 'projects');
+    return { path: `${projects}/${String(root).replace(/[^A-Za-z0-9-]/g, '-')}/${session}.jsonl`, projects, session };
+  } catch { return null; }
+}
+// One `node` run of the scanner per scan, under its own time limit, a reading budget, and a deadline on the host call.
+// The scanner ships beside this module; its path comes from this module's own URL. Its arguments are built inside the
+// call: JavaScript evaluates the callee before them, so a host without child runs (older than the hosts that pass
+// session.compact over a plugin: nothing is missing there) throws before any session, root or environment read, and
+// nothing is said. One child at a time per context: while one still runs past its deadline, a scan reads nothing and
+// starts none (the queue already bounds every waiting check by that one deadline). Any other failure, an unknown
+// plugin directory or session included, is told once per load, as a progress line; the cursor stays where it was, so
+// the next scan reads what this one missed.
+const SCAN_TIMEOUT_MS = 5_000;
+const SCAN_BUDGET_MS = 3_000;
+const SCAN_DEADLINE_MS = 6_000;
+const SCANNER = shippedFile(import.meta.url, 'scripts/compact-boundary.mjs');
+async function scanBoundaries($, ctx, cursor) {
+  if (!SCANNER) return scanFailed($, new Error(`the plugin directory is not known from ${import.meta.url}`));
+  if (ctx.scanning || scanStalled) return null;
+  const job = { startedAt: Date.now(), preparing: false, launched: false, abandoned: false };
+  const started = runScanner($, job, cursor);
+  ctx.scanning = started;
+  started.then(() => endScan(ctx, started), () => endScan(ctx, started));
+  try {
+    job.scan = scanAnswer(await hostCall($, started, SCAN_DEADLINE_MS));
+    return job;
+  } catch (error) {
+    return scanError($, ctx, job, started, error);
+  }
+}
+// The deadline covers the preparation (the session, root and environment reads) as well as the child.
+async function runScanner($, job, cursor) {
+  return $.process.run(await launchArgv($, job, cursor), { timeoutMs: SCAN_TIMEOUT_MS });
+}
+async function launchArgv($, job, cursor) {
+  job.preparing = true;
+  const argv = await scanArgv($, job, cursor);
+  if (job.abandoned) throw new Error('the scanner preparation outlived its deadline');
+  job.launched = true;
+  return argv;
+}
+// No child runs on this host (the callee threw before any preparation): nothing is missing, nothing is said. A preparation
+// past its deadline is abandoned (it never starts a child), frees the context for the next scan, and pauses the scans
+// until a turn end, so a host read that never answers costs one deadline per turn, not one per event.
+function scanError($, ctx, job, started, error) {
+  if (!job.preparing && !error?.unplaced) return null;
+  if (error?.deadline && !job.launched) {
+    job.abandoned = true;
+    scanStalled = true;
+    endScan(ctx, started);
+  }
+  return scanFailed($, error);
+}
+function scanAnswer(result) {
+  if (result?.exitCode !== 0) throw new Error(`scanner exit ${result?.exitCode}: ${String(result?.stderr ?? '').slice(-200)}`);
+  const scan = JSON.parse(result.stdout);
+  if (!validScan(scan)) throw new Error('scanner answer not understood');
+  return scan;
+}
+function endScan(ctx, started) {
+  if (ctx.scanning === started) ctx.scanning = null;
+}
+// A new cursor, or a cursor of another session, snapshots where the transcript ends; otherwise the scan continues.
+async function scanArgv($, job, cursor) {
+  const place = await transcriptPlace($);
+  if (!place) throw Object.assign(new Error('the session, its root or the configuration directory is not known'), { unplaced: true });
+  job.place = place;
+  job.changed = Boolean(cursor) && place.session !== cursor.session;
+  if (!cursor || job.changed) return ['node', SCANNER, '--transcript', place.path, '--projects', place.projects, '--session', place.session, '--snapshot'];
+  return ['node', SCANNER, '--transcript', cursor.path, '--projects', place.projects, '--session', place.session, '--from', String(cursor.offset),
+    '--budget-ms', String(SCAN_BUDGET_MS), ...(cursor.identity ? ['--identity', cursor.identity] : []), ...(cursor.tail ? ['--tail', cursor.tail] : [])];
+}
+const validScan = (scan) => typeof scan?.path === 'string' && Number.isSafeInteger(scan.offset) && Array.isArray(scan.boundaries) &&
+  scan.boundaries.every((row) => typeof row?.uuid === 'string');
+function scanFailed($, error) {
+  if (!scanUnavailable) void progress($, `wt-rules-on-demand: compaction detection unavailable, the transcript cannot be read: ${error.message}`);
+  scanUnavailable = true;
+  return null;
+}
+// The live window's input tokens: a number, null when absent, undefined when the host cannot answer (no sign then).
+// A host without session.usage is older than the hosts that pass session.compact over a plugin, so it still dispatches
+// it: nothing is missing there. A reading that fails otherwise is told once per load, as a progress line the hook never
+// waits for, not as a plugin error. A reading past the deadline pauses the mid-turn readings: each would spend the
+// deadline again, on every tool call. The turn end still reads, and its first answer resumes them.
+async function windowTokens($, verify) {
+  if (usageStalled && !verify) return undefined;
+  try {
+    const tokens = (await hostCall($, $.session.usage()))?.context?.tokens;
+    usageStalled = false;
+    return Number.isFinite(tokens) ? tokens : null;
+  } catch (error) {
+    usageFailed($, error);
+    return undefined;
+  }
+}
+function usageFailed($, error) {
+  if (error?.deadline) {
+    if (!usageStalled) void progress($, `wt-rules-on-demand: live window readings paused until a turn end reads it again: ${error.message}`);
+    usageStalled = true;
+  } else if (!usageMissing && !/is not a function/.test(String(error?.message))) { usageMissing = true; void progress($, `wt-rules-on-demand: compaction detection unavailable, the live window cannot be read: ${error.message}`); }
+}
+// A sign: tokens lower than the last reading that had them, or absent after one. An absent reading signs once per
+// baseline: until a reading has tokens again, the next absent ones are the same compaction, not new ones.
+async function windowShrank($, ctx, verify) {
+  const tokens = await windowTokens($, verify);
+  if (tokens === undefined) return false;
+  const baseline = Number.isFinite(ctx.windowTokens);
+  if (tokens === null) {
+    const sign = baseline && !ctx.absentSigned;
+    if (sign) ctx.absentSigned = true;
+    return sign;
+  }
+  const previous = ctx.windowTokens;
+  ctx.windowTokens = tokens;
+  ctx.absentSigned = false;
+  return baseline && tokens < previous;
 }
  async function promptSubmitWork($, e, next) {
      if (!enabled) return next(e);
@@ -1225,7 +1669,7 @@ async function turnCompleteWork($, e, next) {
     const result = await next(e);
      if (enabled) {
        const loop = agentLoop(e.agentId);
-       const ctx = await context($, loop);
+       const ctx = await context($, loop, true);
          const actSeq = ++sequence;
          await closePending($, ctx, loop, 'turn ended', actSeq);
         await closeCorrelation($, ctx, loop, actSeq);
@@ -1317,8 +1761,10 @@ function* servedSteps($, { ctx, e, loop, admission, slice, budget }, rules, meas
 }
 
 function* toolResultSteps($, call, next, rules, chosen, measured) {
-  const { ctx, e, loop, admission } = call;
-  const result = yield next(e);
+  const { ctx, e, loop, admission, waiver } = call;
+  const acting = next(e);
+  if (waiver) void progress($, waiver);
+  const result = yield acting;
   const refused = Boolean(result && 'deny' in result);
   if (skipToolResult(result, refused)) return result;
   recordCorrelation(ctx, rules, e, result, refused);
@@ -1340,16 +1786,29 @@ function* toolResultSteps($, call, next, rules, chosen, measured) {
   return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
 }
 
+// A rule set that cannot be read whole refuses the call (fail closed). Any other load failure keeps its existing path.
+async function gatedRules($, ctx, e) {
+  try { return { rules: await rulesFor($, ctx, e.cwd ?? '.') }; }
+  catch (error) {
+    if (!(error instanceof UnloadableRule)) throw error;
+    await notice($, error.message);
+    return { deny: `wt-rules-on-demand: ${error.message}, so every call is refused until it is renamed or removed.` };
+  }
+}
+
 // One matcherless tool.call handler: the host permits only one per module.
 async function toolCallWork($, e, next) {
   if (!enabled) return next(e);
   const admission = ++sequence;
-  const loop = agentLoop(e.agentId);
+  // Read once: a host getter read inside the waiver decision could run host code between its own checks.
+  const agentId = e.agentId;
+  const loop = agentLoop(agentId);
   const existing = contexts.get(loop);
   const nextRecords = existing ? decideNext(existing, e) : [];
   const ctx = await context($, loop);
-  const rules = await rulesFor($, ctx, e.cwd ?? '.');
+  const { rules, deny } = await gatedRules($, ctx, e);
   for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission, noAct: record.noAct });
+  if (deny) return { deny };
   const measured = new Set();
   await evaluate($, ctx, e, loop, measured, admission);
   const triggerErrors = [];
@@ -1358,11 +1817,13 @@ async function toolCallWork($, e, next) {
   for (const pending of inputlessSteps($, e, rules, budget, slice, triggerErrors)) await pending;
   const beforeMatched = new Set();
   const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
-  const before = beforeRules(chosen, ctx, beforeMatched);
+  const candidates = beforeRules(chosen, ctx, beforeMatched);
+  await gatherAgentEvidence($, agentId, candidates);
   await journal($, [], loop, [], [], [], { triggerErrors: uniqueTriggerErrors(triggerErrors) });
   if (budget.exhausted) await progress($, exhaustionNotice(budget));
+  const { before, waiver } = waiverPlan(agentId, candidates);
   const plan = before.length ? refusalSteps($, ctx, before, e, loop, admission)
-    : toolResultSteps($, { ctx, e, loop, admission, slice, budget }, next, rules, chosen, measured);
+    : toolResultSteps($, { ctx, e, loop, admission, slice, budget, waiver }, next, rules, chosen, measured);
   let step = plan.next();
   while (!step.done) {
     let value;
@@ -1373,4 +1834,4 @@ async function toolCallWork($, e, next) {
   return step.value;
 }
 
-export function resetForSelftest(keepFlightConfig = false) { resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest(keepFlightConfig = false) { resetAgentTypes(); agentTypeSetting = UNREAD; resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; usageMissing = false; usageStalled = false; scanUnavailable = false; scanStalled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

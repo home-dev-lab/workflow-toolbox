@@ -10,6 +10,77 @@ to `true`. Claude Code exports this option to the startup hook as
 quality check. When rules exist but the switch is off, startup reports their count.
 See [TRIGGERS.md](TRIGGERS.md).
 
+## Agent types that are never refused
+
+Set `WT_ROD_NO_REFUSE_AGENT_TYPES` to the exact agent type names whose tool calls
+should skip this plugin's refusal round. Matching rules are still delivered
+with the call's result. The trade-off is that the rule arrives **after the act**
+and cannot guide that first action. The main loop is never affected; unlisted
+and unknown agent types keep the usual refusal behavior.
+
+Put the list in the project's `.claude/settings.json`, or in
+`.claude/settings.local.json` for a personal, uncommitted choice:
+
+```json
+{ "env": { "WT_ROD_NO_REFUSE_AGENT_TYPES": "my-agent,other-agent" } }
+```
+
+The value is one comma-separated string. Names are trimmed, case-sensitive,
+and matched exactly; empty entries are ignored. There are no patterns or
+wildcards: `"*"` matches only an agent type literally named `*`. An absent or
+empty variable means no exemptions. Each project sets its own list; a project
+without the variable keeps every refusal.
+
+This uses an environment variable because the host ignores plugin options from
+project settings. Project `env` values apply once the folder is trusted. There
+is no plugin option for this list. The hooks module has no Node.js globals, so
+it reads the variable through the host's environment API when a call matches a
+before-act rule, never at load time. A disabled engine reads nothing.
+
+While the engine is enabled, every SessionStart (including resume, clear, and
+compact) with a non-empty list prints
+`wt-rules-on-demand: rules served after the act for: my-agent, other-agent`
+with the configured names. An empty or absent list, or a disabled engine,
+prints no such line.
+
+Types are learned from `agent.spawn`, including workflow agents and resumed
+agents, whether or not the setting is present. Spawn arrival order determines
+which completed report wins, and recording never waits on configuration. Calls
+from a resume identity keep their refusals while any resume for that id is
+starting. While more than 256 resumes are starting at once, no call is waived
+until the excess settles. A completion that arrives after the record it should
+be ordered against was evicted cannot be ordered, so it clears that identity's
+type instead of recording one. After a module reload, a subagent or teammate spawned earlier can be
+resolved through `$.agent.list()`. Workflow agents are not in that list, so
+one spawned before the module loaded stays subject to refusal unless a later
+spawn or resume supplies its type. Identity tracking keeps up to 256 identities,
+dropping the earliest recorded first; an evicted identity also needs this fallback.
+Only non-empty string types are cached. Concurrent lookups for one identity
+share a request. At most 32 list requests may be outstanding on the host: a
+request that passed its deadline keeps its slot until the host settles it, and
+overflow keeps the refusal without another request. A deadline frees the waiting
+call, never the slot: if 32 requests never settle, every later unknown identity
+keeps its refusals, with or without a host clock. Failed, empty, or timed-out
+lookups back off for 1 second, doubling after each failure to a 60-second cap.
+Success clears the backoff. Pending lookups and retry deadlines together retain
+at most 256 identities, and a deadline is never dropped before it passes: when
+all are live, a new identity keeps its refusal without a request. Lookups only
+fill gaps: they cannot overwrite spawn evidence or record while a resume is
+starting.
+
+Immediately before selecting the refusal or starting the act, one synchronous
+decision checks the current parsed set and current type evidence. A waiver
+requires a non-main call, a non-empty configured set containing its recorded
+type, and no spawn in flight for that id. Stale or failed environment reads
+keep refusals. Older reads cannot overwrite newer applied settings; learned
+types survive setting changes because membership is checked at the decision.
+The decision reads nothing from the host, and its log line is written only after
+the act has been handed to the host, so no host callback runs between the
+decision and the act. Each waived refusal is logged once for that call, without
+awaiting the log.
+
+## Delivery and lifecycle
+
 A separate command hook announces when the host unloads the rules-on-demand
 engine because its hooks worker was terminated: no at-act rule is then served
 or refused. It announces on the next user prompt, session start, or Agent, Task
@@ -373,7 +444,12 @@ injection) and `servingSeq` (the serving call's admission). Its journal entry
 and any window verdict share those fields. Every verdict has a `verdictId` and
 `actSeq` (the deciding call's admission, or a lifecycle close sequence). A
 per-act verdict can list windows it ended in `discharged`; turn end, compaction
-and eviction record a context `lastClose`. Sequence numbers are process-local;
+and eviction record a context `lastClose`; a compaction also counts in the
+context's `resets` by reason (`compaction` when the host dispatched
+`session.compact`, `compaction-detected` when the main loop found a new
+compaction boundary in the session's transcript, `session-changed` when the
+session id changed under the main loop, after `/clear`). Sequence numbers are
+process-local;
 the ID prefix identifies that process's registration. No new store key is used.
 
 The readers join by ID and session before counting. Identical `verdictId`s

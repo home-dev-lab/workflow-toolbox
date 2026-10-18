@@ -150,8 +150,11 @@ export const exhaustedBudgetClock = () => { let t = 0; return () => (t += 5000);
 
 // One registered hook over a real config dir and project, with the given store. `triggerClock` is passed to register as
 // the regex budget's clock (default: the real Date.now). `messages` is `$.session.messages`: called with `{ as: 'api' }` (and
-// `agentId` for a sub-agent) it answers the conversation the next request is built from.
-export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [], log } = {}) {
+// `agentId` for a sub-agent) it answers the conversation the next request is built from. `usage`, when given, is
+// `$.session.usage`; absent, the fixture has no such capability, as an older host. `clock`, when given, is `$.clock`;
+// absent, the host has no clock, so a host read has no deadline. `processRun` is `$.process.run`; absent, the host has
+// no such noun, as an older one.
+export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [], usage, log, clock, processRun } = {}) {
   const config = join(root, 'config'), project = join(root, 'project');
   await mkdir(join(config, 'rules-on-demand'), { recursive: true });
   await mkdir(project, { recursive: true });
@@ -167,8 +170,10 @@ export async function hookFixture(root, store, { sessionId = 'sample-session', f
     fs,
     ui: { log: async (line) => { logs.push(line); await log?.(line); } },
     store: store.api,
-    session: { id: async () => sessionId, messages, root: async () => project },
+    session: { id: async () => sessionId, messages, root: async () => project, ...(usage ? { usage } : {}) },
     model: { classify: async () => 'followed' },
+    ...(clock ? { clock } : {}),
+    ...(processRun ? { process: { run: processRun } } : {}),
   }).map(([name, surface]) => [name, trackedMembers(surface)]));
   const call = (event, next = async () => ({})) => handlers.get('tool.call')($, { tool: 'Bash', cwd: project, ...event }, next);
   const identity = `user:${await realpath(join(config, 'rules-on-demand'))}:sample.md`;

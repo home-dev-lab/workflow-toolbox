@@ -357,6 +357,7 @@ it('never places the sandbox-visible brief in a lane-writable temporary director
 
 it.skipIf(process.platform === 'win32')('refuses a symlinked worktree log without modifying its target', () => {
   const { dir, worktree } = fixture()
+  writeFileSync(join(worktree, 'brief.md'), '# brief\n## Gates\npnpm test\n')
   const target = join(dir, 'target')
   writeFileSync(target, 'untouched\n')
   symlinkSync(target, join(worktree, '.lane', 'run.log'))
@@ -386,6 +387,7 @@ it('hashes case-insensitive platform canonical paths to the same key', () => {
 
 it.skipIf(process.platform !== 'linux')('refuses launch while a legacy record names a live worker and child', () => {
   const { dir, worktree } = fixture()
+  writeFileSync(join(worktree, 'brief.md'), '# brief\n## Gates\npnpm test\n')
   const legacy = join(worktree, '.lane', 'supervision')
   mkdirSync(legacy)
   const id = '1-1'

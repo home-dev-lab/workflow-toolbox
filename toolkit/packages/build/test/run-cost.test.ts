@@ -31,6 +31,10 @@ function mixedLaneCost(lane: string, claudeLane: { usage_file: string }, fixture
   return computeRunCost({ laneDir: lane, worktree, laneHostDir: host, sessions: sessions.map((row: object) => ({ ...row, directory: worktree })) })
 }
 
+function optionalTokenColumn(tokens: Record<string, unknown>, key: string) {
+  return typeof tokens[key] === 'number' ? { [`tokens_${key}`]: tokens[key] } : {}
+}
+
 describe('run cost', () => {
   function catalogue(models: Record<string, unknown>) {
     return { openai: { models }, 'zai-coding-plan': { models } }
@@ -55,8 +59,8 @@ describe('run cost', () => {
     const sessions = openAi ? [{
       id: 'priced-model', directory: '/work/priced-model',
       model: { providerID: slash < 0 ? family : model.slice(0, slash), id: slash < 0 ? model : model.slice(slash + 1) },
-      tokens_input: tokens.input, tokens_output: tokens.output, tokens_reasoning: tokens.reasoning,
-      tokens_cache_read: tokens.cache_read, tokens_cache_write: tokens.cache_write,
+      tokens_input: tokens.input, tokens_output: tokens.output ?? 0, tokens_cache_read: tokens.cache_read ?? 0,
+      ...optionalTokenColumn(tokens, 'reasoning'), ...optionalTokenColumn(tokens, 'cache_write'),
       time_created: 1200, time_updated: 1800,
     }] : undefined
     const cost = computeRunCost({ laneDir: lane, worktree: '/work/priced-model', sessions, priceTable })
@@ -315,10 +319,10 @@ describe('run cost', () => {
       phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: 2000 }],
       lanes: [
         { phase: 'critic', round: 1, executor: 'opencode', model: 'openai/gpt', started_at: 1200, ended_at: 1800 },
-        { phase: 'harden', round: 4, executor: 'opencode', model: 'openai/gpt', started_at: 3000, ended_at: null },
+        { phase: 'harden', round: 4, executor: 'opencode', model: 'openai/gpt', started_at: 3000, ended_at: 3800 },
       ],
     }))
-    const sessions = [5000, 6000].map((time, i) => ({ id: `extra-${i}`, directory: worktree, model: { providerID: 'openai', id: 'gpt' }, tokens_input: 1_000_000, time_created: time, time_updated: time + 100 }))
+    const sessions = [5000, 6000].map((time, i) => ({ id: `extra-${i}`, directory: worktree, model: { providerID: 'openai', id: 'gpt' }, tokens_input: 1_000_000, tokens_output: 0, tokens_cache_read: 0, time_created: time, time_updated: time + 100 }))
     const priceTable = { models: { 'claude-opus-5': { family: 'anthropic', input: 1, output: 1 }, 'openai/gpt': { family: 'openai', input: 2, output: 1 } } }
     const cost = computeRunCost({ laneDir: lane, worktree, sessions, priceTable })
     // Two lane windows with no session row, plus the absent terminal SDK result (usage 'unavailable'): three missing sources.
@@ -338,7 +342,7 @@ describe('run cost', () => {
       phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: 2000 }],
       lanes: [{ phase: 'critic', round: 1, executor: 'opencode', model: 'openai/gpt', started_at: 1200, ended_at: 1800 }],
     }))
-    const sessions = [{ id: 'critic-1', directory: worktree, model: { providerID: 'openai', id: 'gpt' }, tokens_input: 1_000_000, time_created: 1300, time_updated: 1700 }]
+    const sessions = [{ id: 'critic-1', directory: worktree, model: { providerID: 'openai', id: 'gpt' }, tokens_input: 1_000_000, tokens_output: 0, tokens_cache_read: 0, time_created: 1300, time_updated: 1700 }]
     const priceTable = { models: { 'openai/gpt': { family: 'openai', input: 2, output: 1 } } }
     const cost = computeRunCost({ laneDir: lane, worktree, sessions, priceTable })
     expect(cost.totals.usd).toBe(2)

@@ -22,6 +22,9 @@ import { pathWithin } from './host/path-within.mjs'
 import { focusedLifecycleGateHint, resolveLifecycleGates } from './lifecycle-gates.mjs'
 import { snapshotSelectedTree } from './lifecycle-selection.mjs'
 import { declaredChecksForPhase } from './host/repo-instructions.mjs'
+import { createLifecycleEvents } from './lifecycle-events.mjs'
+import { createLaneTimelineRecorder } from './lifecycle-timeline-lanes.mjs'
+import { recordedWorktreeIdentity } from './host/canonical-path.mjs'
 
 const withLeadingBreak = (text) => (text ? `\n\n${text}` : '')
 
@@ -60,9 +63,21 @@ const removeFile = (file) => fs.rmSync(file, { force: true })
 const NO_BOARD_CONTRACT_REASON = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
 const ROUTING_IMPOSSIBLE_INSTRUCTION = (reason) =>
   `routing is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`
+
+function ownedLaneRefusal(state, refusal, laneDir) {
+  return state.ownedLanes.size
+    ? refusal(`${state.phase}->next`, 'owned lane must finish before transition', laneDir, 'ownership')
+    : null
+}
+
+function transitionEntryRefusal(state, refusal, laneDir, stoppedRefusal) {
+  return ownedLaneRefusal(state, refusal, laneDir) ?? (state.stopped ? stoppedRefusal() : null)
+}
 // Refuses route_finding when no board contract was supplied, and ends the run at `report` from inside
 // the tool call — no phase transition carries it there, so the timeline is advanced here.
-function partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now }) {
+function partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now, refusal, laneDir }) {
+  const owned = ownedLaneRefusal(state, refusal, laneDir)
+  if (owned) return owned
   const reason = NO_BOARD_CONTRACT_REASON
   if (state.phase !== 'report' && state.phase !== 'awaiting_fidelity') {
     state.partial = { phase: state.phase, round: null, reason, findings: [] }
@@ -376,7 +391,7 @@ function briefAnchorOptions(dodBullets, laneDir, readRegularFile) {
     planDodFallback: dodBullets == null,
   }
 }
-function refusal(edge, missing, file) {
+function artifactRefusal(edge, missing, file) {
   return `edge refused: ${edge}; missing ${missing}: ${file}`
 }
 function discoveryField(block, field) {
@@ -554,7 +569,7 @@ function initialLifecycleState() {
     phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
     planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
     reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], reviewWarnings: [], unresolvedFindings: [], criticEmptyRetries: 0,
-    handled: new Map(), laneReceiptSeq: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
+    handled: new Map(), laneReceiptSeq: 0, verifySnapshot: null, ownedLanes: new Map(), reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
     pendingStop: null, stopped: false, dodDisputes: [],
   }
@@ -650,6 +665,8 @@ function reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructio
 }
 
 function handleReportProblem({ phase, problem, report, state, refusal, root, audit, now, event, shape, timeline, persistTimeline }) {
+  const owned = ownedLaneRefusal(state, refusal, path.dirname(report))
+  if (owned) return owned
   const retries = state.reportParseRetries[phase] ?? 0
   if (retries === 0) {
     state.reportParseRetries[phase] = 1
@@ -671,9 +688,11 @@ function handleReportProblem({ phase, problem, report, state, refusal, root, aud
   return result
 }
 
-function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop }) {
+function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop, refusal }) {
   const stoppedRefusal = () => `edge refused: ${state.phase}->next; ${state.partial?.reason ?? 'runner'} already stopped the lifecycle: ${laneDir}`
   const stopAtBoundary = (event) => {
+    const owned = ownedLaneRefusal(state, refusal, laneDir)
+    if (owned) return owned
     const reason = state.pendingStop
     const phase = state.phase
     const result = `stopped phase=${phase} reason=${reason}`
@@ -703,10 +722,18 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
   return { requestStop, stopAtBoundary, stoppedRefusal }
 }
 
+// The stream has ended, so nothing can wait for or control an owned lane any more: finalize anyway and
+// name every lane still running, so the partial record never hides a lane that outlives the run.
+function withOwnedLanesAtFinalization(state, partial) {
+  if (!state.ownedLanes.size) return partial
+  const owned = [...state.ownedLanes.values()].map((record) => ({ phase: record.phase, slot: record.slot ?? null, pid: record.pid ?? null, runId: record.runId ?? null }))
+  return { ...partial, ownedLanesAtFinalization: owned }
+}
+
 function createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile }) {
   return (reason) => {
     if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
-    state.partial = finalizedPartial(state, state.phase, reason)
+    state.partial = withOwnedLanesAtFinalization(state, finalizedPartial(state, state.phase, reason))
     const endedAt = now()
     timeline.phases.at(-1).exited_at ??= endedAt
     timeline.ended_at = endedAt
@@ -766,18 +793,19 @@ function lifecycleFindingDefinition(tool, z, queued, routeFindingTool) {
 }
 
 function lifecycleRunDefinition(tool, z, queued, run) {
+  // The SDK factory passes this schema through to MCP; strictness rejects removed selectors.
   return tool(
     'run',
     'Run a fixed lane, gate, or inspection command.',
-    {
-      kind: z.string(),
-      phase: z.string().optional(),
-      name: z.string().optional(),
-      what: z.string().optional(),
-      decision: z.string().optional(),
-      extendSeconds: z.number().int().positive().optional(),
-      timeout: z.number().int().positive().optional(),
-    },
+    z.object({
+        kind: z.string(),
+        phase: z.string().optional(),
+        name: z.string().optional(),
+        what: z.string().optional(),
+        decision: z.string().optional(),
+        extendSeconds: z.number().int().positive().optional(),
+        timeout: z.number().int().positive().optional(),
+    }).strict(),
     async (args) => ({ content: [{ type: 'text', text: await queued(() => run(args)) }] }),
   )
 }
@@ -822,7 +850,7 @@ function transitionRepositoryChecks(next, root, constructionBase) {
   return withLeadingBreak(declaredChecksForPhase(next, root, { commit: constructionBase, gateNames: next === 'plan' ? [...resolveLifecycleGates(root)] : [] }))
 }
 
-export function createLifecycleStateMachine({
+function lifecycleCoreOptions({
   worktree,
   archiveRoot,
   route,
@@ -833,27 +861,58 @@ export function createLifecycleStateMachine({
   models,
   cardId,
   sessionTag,
+}) {
+  return { worktree, archiveRoot, route, reasons, executor, executorEnv, knowledgeBase, models, cardId, sessionTag }
+}
+
+function lifecycleLaneOptions(worktree, {
   sdk = null,
   sdkRequire = null,
   laneLauncher = null,
   lanePollMs = 25, laneWaitMs = null,
-  lanePlatform = process.platform, laneProcessReader = null,
-  gateRunner = null, testFramework = detectFailedTestFramework(worktree),
+   lanePlatform = process.platform, laneProcessReader = null,
+   gateRunner = null, testFramework = detectFailedTestFramework(worktree),
+}) {
+  return { sdk, sdkRequire, laneLauncher, lanePollMs, laneWaitMs, lanePlatform, laneProcessReader, gateRunner, testFramework }
+}
+
+function lifecycleRepositoryOptions({
   git = execFileSync,
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
-  rules = null,
+   rules = null,
+}) {
+  return { git, copy, prospectivePatchMaxBuffer, rules }
+}
+
+function lifecycleReportOptions({
   cardText = null, lsp = { available: false, reason: 'not prepared' },
   now = () => Date.now(),
   timelineWriter = null,
   boardContract = null,
-  routeFinding = null,
+   routeFinding = null,
+}) {
+  return { cardText, lsp, now, timelineWriter, boardContract, routeFinding }
+}
+
+function lifecycleDecisionOptions({
   resolveRoutedFinding = null,
   onBoundaryStop = null,
   stopAfterPhase = null,
   dodDecisions = {},
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
+  return { resolveRoutedFinding, onBoundaryStop, stopAfterPhase, dodDecisions, changelogSkillPath }
+}
+
+function lifecycleOptions(options) {
+  const core = lifecycleCoreOptions(options)
+  const lanes = lifecycleLaneOptions(core.worktree, options)
+  return { ...core, ...lanes, ...lifecycleRepositoryOptions(options), ...lifecycleReportOptions(options), ...lifecycleDecisionOptions(options) }
+}
+
+function initializeLifecycleRoot(context) {
+  const { worktree, cardId, git, cardText, rules, archiveRoot } = context
   if (!path.isAbsolute(worktree)) {
     throw new Error('lifecycle worktree must be absolute')
   }
@@ -888,6 +947,12 @@ export function createLifecycleStateMachine({
     const resetScript = "const fs=require('node:fs'),p=process.argv[1],k=p+'.interrupted-'+new Date().toISOString().replace(/[:.]/g,'-');fs.renameSync(p,k);fs.mkdirSync(p,{recursive:true});console.log('interrupted lifecycle kept at '+k)"
     throw new Error(`lifecycle startup refused: ${routePath} belongs to an interrupted lifecycle; keep its evidence aside and relaunch on a fresh .lane: node -e ${JSON.stringify(resetScript)} ${JSON.stringify(laneDir)}`)
   }
+  Object.assign(context, { root, artefactsAtStart, dodBullets, rawDodBullets, activeRules, constructionBase, laneDir, assertLaneDir, routePath })
+}
+
+function initializeLifecycleIdentity(context) {
+  const { cardText, laneDir, route, models, executor, cardId, sessionTag, sdkRequire, root, sdk, routePath,
+    reasons, constructionBase, testFramework } = context
   if (typeof cardText === 'string') {
     const cardPath = path.join(laneDir, 'card.md')
     const existingCard = readRegularFile(cardPath)
@@ -913,9 +978,17 @@ export function createLifecycleStateMachine({
     { flag: 'wx' },
   )
   const state = initialLifecycleState()
+  const events = createLifecycleEvents(state, (phase) => !state.stopped && !state.pendingStop && context.canLaunchLane(phase))
+  const refusal = (edge, missing, file, code = 'other') => events.refused(artifactRefusal(edge, missing, file), code)
+  Object.assign(context, { frozenRoute, frozenModels, executors, lifecycle, createSdkMcpServer, tool, z, state, events, refusal })
+  initializeLifecycleTimeline(context)
+}
+
+function initializeLifecycleTimeline(context) {
+  const { laneDir, now, root, lsp, timelineWriter } = context
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
-  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
+  const timeline = { version: 2, ...recordedWorktreeIdentity(root), started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? defaultTimelineWriter
   const persistTimeline = () => {
     try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }
@@ -923,10 +996,20 @@ export function createLifecycleStateMachine({
   persistTimeline()
   const laneBriefContexts = new Map()
   const laneBriefIdentities = new Map()
-  let serial = Promise.resolve()
-  function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
+  Object.assign(context, { timeline, persistTimeline, laneBriefContexts, laneBriefIdentities, serial: Promise.resolve() })
+}
+
+function prepareLifecycleLaneBrief(machine, phase, context, reportPath, snapshotDir = null) {
+    const { activeRules } = machine
     const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
+      return prepareAuthorLaneBrief(machine, phase, context, reportPath, snapshotDir, roleRules)
+    }
+    return prepareIndependentLaneBrief(machine, phase, context, reportPath, snapshotDir, roleRules)
+}
+
+function prepareAuthorLaneBrief(machine, phase, context, reportPath, snapshotDir, roleRules) {
+       const { changelogSkillPath, state, root, laneDir } = machine
       const changelogInstructions = phase === 'tdd' ? changelogSkillBody(changelogSkillPath) : ''
       const fixInstructions = phase === 'tdd' && state.reviewRound > 0 ? `## Review fix round ${state.reviewRound} (authoritative)\n\nRead the exact runner-owned findings in \`.lane/review-findings.md\`. Fix every in-scope finding red-first; route only genuine L4 work. Run ${focusedLifecycleGateHint(root)}, and leave zero warnings in touched files. Do not run the full suite in this lane; the lifecycle runs it once in VERIFY after this fix round.\n\n${readReviewFindings(laneDir)}\n\n` : ''
       const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${fixInstructions}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
@@ -934,7 +1017,10 @@ export function createLifecycleStateMachine({
       return snapshotDir
         ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; if another lane is started after this one ends, resume from the existing worktree state and preserve the same report and receipt contract. Do not rely on other background processes surviving the lane.\n` }
         : content
-    }
+}
+
+function collectIndependentArtifacts(machine, phase, snapshotDir) {
+    const { laneDir } = machine
     const artifacts = []
     const canonicalArtifacts = []
     let planDigest = null
@@ -955,6 +1041,13 @@ export function createLifecycleStateMachine({
       }
       planDigest = sha256(plan)
     } else {
+      collectReviewArtifacts(machine, phase, snapshotDir, snapshotFile, canonicalArtifacts, artifacts)
+    }
+    return { artifacts, canonicalArtifacts, planDigest, snapshotFile }
+}
+
+function collectReviewArtifacts(machine, phase, snapshotDir, snapshotFile, canonicalArtifacts, artifacts) {
+       const { root, state, constructionBase, laneDir, git, prospectivePatchMaxBuffer, artefactsAtStart } = machine
       const inputName = `.lane/${phase}-input.diff`
       const inputPath = path.join(root, inputName)
       const patchBase = phase === 'review' && state.reviewBase ? state.reviewBase : constructionBase
@@ -969,32 +1062,47 @@ export function createLifecycleStateMachine({
         canonicalArtifacts.push(`.lane/${gateName}`)
         artifacts.push(snapshotDir ? snapshotFile(gateName, gateContent) : `.lane/${gateName}`)
       }
-    }
+}
+
+function knowledgeBaseBriefLine(knowledgeBase, executors, phase) {
+    return knowledgeBase.path
+      ? executors[phase] === 'claude-sdk'
+        ? `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path}`
+        : `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`
+      : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
+}
+
+function prepareIndependentLaneBrief(machine, phase, context, reportPath, snapshotDir, roleRules) {
+    const { laneDir, knowledgeBase, executors } = machine
+    const { artifacts, canonicalArtifacts, planDigest, snapshotFile } = collectIndependentArtifacts(machine, phase, snapshotDir)
     const discovery = phase === 'critic' ? readRegularFile(path.join(laneDir, 'discovery.md')) : null
     if (phase === 'critic' && discovery === null) throw new Error('discovery record unavailable')
     if (phase === 'critic') {
       canonicalArtifacts.push('.lane/discovery.md')
       artifacts.push(snapshotDir ? snapshotFile('discovery.md', discovery) : canonicalArtifacts.at(-1))
     }
-    const knowledgeBaseLine = knowledgeBase.path
-      ? executors[phase] === 'claude-sdk'
-        ? `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path}`
-        // OpenCode lanes run with --auto, which approves an external_directory read the user's opencode
-        // config leaves on "ask" (measured 2026-09-14: a Luna run read this index). A config that DENIES it
-        // wins, so the lane must report a refused read instead of claiming it read the fiches.
-        : `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`
-      : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
-    const priorRounds = phase === 'critic' ? state.priorCriticRounds : state.priorReviewReports
-    const briefBase = phase === 'review' && state.priorReviewReports.length > 0 && state.reviewBase ? state.reviewBase : constructionBase
-    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine, bindingDecisions: phase === 'critic' ? bindingDecisionsSection(state.dodDisputes) : '', ...briefAnchorOptions(dodBullets, laneDir, readRegularFile) }
+    const knowledgeBaseLine = knowledgeBaseBriefLine(knowledgeBase, executors, phase)
+    const options = independentLaneOptions(machine, phase, { phase, context, reportPath, discovery, planDigest }, roleRules, knowledgeBaseLine)
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
           launch: independentBrief({ ...options, artifacts, snapshotDir }),
         }
       : independentBrief({ ...options, artifacts })
-  }
-  const { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run: lifecycleRun, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = createLifecycleLaunch({
+}
+
+function independentLaneOptions(machine, phase, fields, roleRules, knowledgeBaseLine) {
+    const { state, constructionBase, dodBullets, laneDir } = machine
+    const priorRounds = phase === 'critic' ? state.priorCriticRounds : state.priorReviewReports
+    const briefBase = phase === 'review' && state.priorReviewReports.length > 0 && state.reviewBase ? state.reviewBase : constructionBase
+    return { ...fields, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine, bindingDecisions: phase === 'critic' ? bindingDecisionsSection(state.dodDisputes) : '', ...briefAnchorOptions(dodBullets, laneDir, readRegularFile) }
+}
+
+function initializeLifecycleLaunch(context) {
+  const { root, laneDir, executor, executorEnv, knowledgeBase, constructionBase, frozenModels, state,
+    laneBriefContexts, laneBriefIdentities, prepareLaneBrief, assertLaneDir, refusal, laneLauncher, lanePollMs,
+    laneWaitMs, lanePlatform, laneProcessReader, gateRunner, testFramework, now, events, timeline, persistTimeline } = context
+  const launch = createLifecycleLaunch({
     root,
     laneDir,
     executor,
@@ -1003,7 +1111,7 @@ export function createLifecycleStateMachine({
     constructionBase,
     frozenModels,
     state,
-    laneBriefContexts,
+    laneBriefContexts, laneBriefIdentities,
     prepareLaneBrief,
     assertLaneDir,
     refusal,
@@ -1017,33 +1125,29 @@ export function createLifecycleStateMachine({
     laneProcessReader,
     gateRunner, testFramework,
     now,
-    recordLaneStart: ({ phase, model, executor: laneExecutor, startedAt, usageFile, laneId }) => {
-      const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor: laneExecutor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
-      timeline.lanes.push(record)
-      persistTimeline()
-      return record
-    },
-    recordLaneEnd: (record, endedAt, exitCode) => {
-      record.ended_at = endedAt
-      record.exit_code = exitCode ?? 'missing'
-      record.state = record.exit_code === '0' ? 'completed' : 'failed'
-      persistTimeline()
-    },
+    progress: events.progress,
+    ...createLaneTimelineRecorder({ timeline, round: (phase) => lifecycleRound(state, phase), persistTimeline }),
   })
-  const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
+  const { run: lifecycleRun, ...evidence } = launch
+  Object.assign(context, evidence, { lifecycleRun })
+}
+
+function initializeLifecycleControls(context) {
+  const { state, laneDir, timeline, now, persistTimeline, onBoundaryStop, refusal, rawDodBullets, dodBullets,
+    dodDecisions, lifecycleRun, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath,
+    assertLaneDir, copy, stopAfterPhase } = context
+  const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop, refusal })
   const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
   const run = guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun)
   const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
   const stopRequestedAt = createPhaseStopRequest(stopAfterPhase, requestStop, state)
-  function transition(event) {
-    if (state.stopped) return stoppedRefusal()
-    try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
-    if (!event || typeof event !== 'object' || !PHASES.includes(event.phase)) {
-      return refusal('unknown->next', 'valid phase', laneDir)
-    }
-    if (!event.tool_use_id) {
-      return refusal(`${state.phase}->next`, 'tool_use_id', laneDir)
-    }
+  Object.assign(context, { requestStop, stopAtBoundary, stoppedRefusal, dodEscalation, run, finalizePartial, stopRequestedAt })
+}
+
+function lifecycleTransition(context, event) {
+    const entry = lifecycleTransitionEntry(context, event)
+    if (entry !== null) return entry
+    const { state, refusal, laneDir, persistTimeline, stopAtBoundary } = context
     const shape = JSON.stringify(event)
     const previous = state.handled.get(event.tool_use_id)
     if (previous) {
@@ -1054,9 +1158,40 @@ export function createLifecycleStateMachine({
       return refusal(`${state.phase}->next`, `current phase ${state.phase}`, laneDir)
     }
     if (state.pendingStop && state.phase === 'report') return stopAtBoundary(event)
-    let next = null
-    let resultDetail = ''
-    if (state.phase === 'discovery') {
+    const outcome = lifecyclePhaseTransition(context, event, shape)
+    if (typeof outcome === 'string') return outcome
+    return acceptLifecycleTransition(context, event, shape, outcome.next, outcome.resultDetail)
+}
+
+function lifecycleTransitionEntry(context, event) {
+    const { state, refusal, laneDir, stoppedRefusal, assertLaneDir } = context
+    const entry = transitionEntryRefusal(state, refusal, laneDir, stoppedRefusal); if (entry) return entry
+    try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
+    if (!event || typeof event !== 'object' || !PHASES.includes(event.phase)) {
+      return refusal('unknown->next', 'valid phase', laneDir)
+    }
+    if (!event.tool_use_id) {
+      return refusal(`${state.phase}->next`, 'tool_use_id', laneDir)
+    }
+    return null
+}
+
+function lifecyclePhaseTransition(context, event, shape) {
+    const { state } = context
+    if (state.phase === 'discovery') return discoveryTransition(context, event)
+    if (state.phase === 'plan') return planTransition(context)
+    if (state.phase === 'critic') return criticTransition(context, event, shape)
+    if (state.phase === 'tdd') return tddTransition(context)
+    if (state.phase === 'verify') return lifecycleVerifyTransition(context, event)
+    if (state.phase === 'review' || state.phase === 'refutation') return lifecycleReviewTransition(context, event, shape)
+    if (state.phase === 'report') return lifecycleReportTransition(context)
+    return { next: null, resultDetail: '' }
+}
+
+function discoveryTransition(context, event) {
+    const { frozenRoute, reasons, laneDir, refusal } = context
+    let next
+    const resultDetail = ''
       if (event.route && event.route !== frozenRoute) {
         return refusal(
           'discovery->next',
@@ -1071,7 +1206,13 @@ export function createLifecycleStateMachine({
       if (groundingProblem) return refusal('discovery->next', `${groundingProblem}; ${DISCOVERY_GROUNDING_FORMAT}`, path.join(laneDir, 'discovery.md'))
       writeRegularFile(path.join(laneDir, 'discovery.md'), event.record)
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
-    } else if (state.phase === 'plan') {
+    return { next, resultDetail }
+}
+
+function planTransition(context) {
+    const { state, laneDir, dodBullets, timeline, refusal, root } = context
+    let next
+    let resultDetail
       const plan = path.join(laneDir, 'plan.md')
       if (state.dodDisputes.some((dispute) => !dispute.resolution)) return refusal('plan->critic', 'bound DoD decision before revising the plan', plan)
       const planContent = readRegularFile(plan)
@@ -1085,7 +1226,48 @@ export function createLifecycleStateMachine({
       }
       resultDetail = `\n\n${planCoverageCitationResult(planContent, root)}`
       next = 'critic'
-    } else if (state.phase === 'critic') {
+    return { next, resultDetail }
+}
+
+function criticTransition(context, event, shape) {
+    const { timeline, persistTimeline, laneEvidence } = context
+    const parsed = criticTransitionReport(context, event, shape)
+    if (typeof parsed === 'string') return parsed
+    const { report, reportContent, verdict } = parsed
+    const contests = criticContests(context, verdict, report)
+    if (typeof contests === 'string') return contests
+    const { contestedThisRound, repeatedContests, effectiveFindingDetails } = contests
+    const allNonBlocking = verdict.outcome === 'changes-requested' && effectiveFindingDetails.every((finding) => !finding.blocks)
+    const receipt = laneEvidence('critic', verdict.outcome === 'changes-requested' && !allNonBlocking)
+    if (receipt) return receipt
+    const emptyDecision = criticEmptyTransition(context, verdict, reportContent, report)
+    if (typeof emptyDecision === 'string') return emptyDecision
+    const { next, resultDetail } = emptyDecision
+    recordNonBlockingCriticFindings(context, verdict)
+    const decision = decideCriticTransition(context, verdict, reportContent, allNonBlocking, repeatedContests, { next, resultDetail })
+    if (typeof decision === 'string') return decision
+    if (contestedThisRound.size > 0) {
+      for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
+      persistTimeline()
+    }
+    return decision
+}
+
+function criticEmptyTransition(context, verdict, reportContent, report) {
+  const { state, root, audit, refusal } = context
+  const emptyCritic = applyCriticEmptyPolicy(state, verdict, reportContent, root, audit)
+  if (emptyCritic?.retry) return refusal('critic->next', 'failed critic round: zero findings without a per-section attack account; re-run once', report)
+  let next = null
+  let resultDetail = ''
+  if (emptyCritic?.reason) {
+    next = 'report'
+    resultDetail = ` (failed critic retry: partial run, ${emptyCritic.reason})`
+  }
+  return { next, resultDetail }
+}
+
+function criticTransitionReport(context, event, shape) {
+       const { laneDir, dodBullets, state, refusal, root, audit, now, timeline, persistTimeline } = context
       const report = path.join(laneDir, 'critic-report.md')
       if ((regularFile(report)?.size ?? 0) > MAX_LANE_REPORT_BYTES) {
         return refusal('critic->next', `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
@@ -1101,6 +1283,11 @@ export function createLifecycleStateMachine({
       if (!findingsMatchReport(event.findings, verdict)) {
         return refusal('critic->next', 'findings do not match the lane report', report)
       }
+      return { report, reportContent, verdict }
+}
+
+function criticContests(context, verdict, report) {
+       const { timeline, refusal, state, dodBullets, dodDecisions, laneDir, laneBriefContexts } = context
       const contestedThisRound = new Set()
       const repeatedContests = new Set()
       for (const finding of verdict.findings) {
@@ -1120,15 +1307,11 @@ export function createLifecycleStateMachine({
       if (repeatedContests.size > 0 && !/(?:^|\s)(?:\.?\.?[/\\])?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)*:\d+(?:-\d+)?\b/.test(laneBriefContexts.get('critic') ?? '')) {
         return refusal('critic->next', 'pilot citation supporting maintained L4 reason', path.join(laneDir, 'critic-brief.md'))
       }
-      const allNonBlocking = verdict.outcome === 'changes-requested' && effectiveFindingDetails.every((finding) => !finding.blocks)
-      const receipt = laneEvidence('critic', verdict.outcome === 'changes-requested' && !allNonBlocking)
-      if (receipt) return receipt
-      const emptyCritic = applyCriticEmptyPolicy(state, verdict, reportContent, root, audit)
-      if (emptyCritic?.retry) return refusal('critic->next', 'failed critic round: zero findings without a per-section attack account; re-run once', report)
-      if (emptyCritic?.reason) {
-        next = 'report'
-        resultDetail = ` (failed critic retry: partial run, ${emptyCritic.reason})`
-      }
+       return { contestedThisRound, repeatedContests, effectiveFindingDetails }
+}
+
+function recordNonBlockingCriticFindings(context, verdict) {
+       const { state, laneDir } = context
       const newNonBlockingFindings = verdict.findings.filter((_finding, index) => !verdict.findingDetails[index].blocks)
       for (const finding of newNonBlockingFindings) {
         if (!state.nonBlockingFindings.includes(finding)) state.nonBlockingFindings.push(finding)
@@ -1139,6 +1322,11 @@ export function createLifecycleStateMachine({
           `## Non-blocking critic findings (runner-owned, trusted)\n${state.nonBlockingFindings.map((finding) => `- ${finding}`).join('\n')}\n`,
         )
       }
+}
+
+function decideCriticTransition(context, verdict, reportContent, allNonBlocking, repeatedContests, decision) {
+       let { next, resultDetail } = decision
+       const { laneDir, refusal, state } = context
       if (!next && (verdict.outcome === 'approved' || allNonBlocking)) {
         const digest = sha256(readRegularFile(path.join(laneDir, 'plan.md')) ?? '')
         if (!reportContent.includes(digest)) {
@@ -1147,11 +1335,26 @@ export function createLifecycleStateMachine({
         state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings: [], findingDetails: verdict.findingDetails })
         next = 'tdd'
       } else if (!next && verdict.outcome === 'changes-requested') {
+         return changedCriticTransition(context, verdict, repeatedContests)
+       } else if (!next) {
+         return refusal('critic->next', 'admissible outcome', path.join(laneDir, 'critic-report.md'))
+       }
+       return { next, resultDetail }
+}
+
+function changedCriticTransition(context, verdict, repeatedContests) {
         const blockingFindings = verdict.findings.filter((finding, index) => {
           const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(finding)?.[1]
           return (!id || !repeatedContests.has(id)) && verdict.findingDetails[index].blocks
         })
         const findingDetails = verdict.findingDetails.filter((_finding, index) => blockingFindings.includes(verdict.findings[index]))
+        return advanceCriticRound(context, verdict, blockingFindings, findingDetails)
+}
+
+function advanceCriticRound(context, verdict, blockingFindings, findingDetails) {
+         const { state, dodEscalation, root, audit } = context
+         let next
+         let resultDetail
         const priorCriticRounds = structuredClone(state.priorCriticRounds)
         const priorPlanRound = state.planRound
         const priorPlateauUsed = state.criticPlateauUsed
@@ -1175,14 +1378,13 @@ export function createLifecycleStateMachine({
           state.criticPlateauUsed = priorPlateauUsed
           throw error
         }
-      } else if (!next) {
-        return refusal('critic->next', 'admissible outcome', path.join(laneDir, 'critic-report.md'))
-      }
-      if (contestedThisRound.size > 0) {
-        for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
-        persistTimeline()
-      }
-    } else if (state.phase === 'tdd') {
+         return { next, resultDetail }
+}
+
+function tddTransition(context) {
+    const { state, laneEvidence, frozenRoute, laneDir, refusal } = context
+    let next
+    const resultDetail = ''
       const receipt = laneEvidence(state.phase)
       if (receipt) return receipt
       if (state.reviewRound === 0 && frozenRoute === 'FULL') {
@@ -1193,12 +1395,40 @@ export function createLifecycleStateMachine({
         }
       }
       next = 'verify'
-    } else if (state.phase === 'verify') {
-      const verification = verifyTransition({ event, state, laneDir, frozenRoute, refusal, verifyFailedSnapshot, verifySnapshot, writeRegularFile, invalidateLaneEvidence, laneBriefContexts })
-      if (verification.refused) return verification.refused
-      next = verification.next
-      resultDetail = verification.resultDetail
-    } else if (state.phase === 'review' || state.phase === 'refutation') {
+    return { next, resultDetail }
+}
+
+function lifecycleVerifyTransition(context, event) {
+    const { state, laneDir, frozenRoute, refusal, verifyFailedSnapshot, verifySnapshot,
+      invalidateLaneEvidence, laneBriefContexts } = context
+       const verification = verifyTransition({ event, state, laneDir, frozenRoute, refusal, verifyFailedSnapshot, verifySnapshot, writeRegularFile, invalidateLaneEvidence, laneBriefContexts })
+       if (verification.refused) return verification.refused
+       return { next: verification.next, resultDetail: verification.resultDetail }
+}
+
+function lifecycleReviewTransition(context, event, shape) {
+    const { state, laneDir, laneEvidence, invalidateLaneEvidence, laneBriefContexts } = context
+    let next = null
+    let resultDetail = ''
+    const verdict = reviewTransitionReport(context, event, shape)
+    if (typeof verdict === 'string') return verdict
+    const { blocking: blockingFindings, routed: routedFindings } = reviewFindingGroups(verdict)
+    const receipt = laneEvidence(state.phase, verdict.outcome === 'changes-requested' && blockingFindings.length > 0)
+    if (receipt) return receipt
+    recordReviewWarnings(state, verdict, laneDir, writeRegularFile)
+    if (state.phase === 'review' && state.pendingReviewBase) state.reviewBase = state.pendingReviewBase
+    const reviewDecision = recordReviewDecision(state, state.phase, verdict, blockingFindings, routedFindings)
+    if (reviewDecision.reason) {
+      next = 'report'
+      resultDetail = ` (non-convergence: partial run, ${reviewDecision.reason})`
+    }
+    if (reviewDecision.changesRequested && !reviewDecision.reason) prepareReviewFix(laneDir, state, state.phase, verdict, writeRegularFile, invalidateLaneEvidence, laneBriefContexts)
+    if (!next) next = reviewNextPhase(state.phase, reviewDecision.changesRequested)
+    return { next, resultDetail }
+}
+
+function reviewTransitionReport(context, event, shape) {
+       const { state, laneDir, dodBullets, refusal, root, audit, now, timeline, persistTimeline } = context
       const report = path.join(laneDir, `${state.phase}-report.md`)
       if ((regularFile(report)?.size ?? 0) > MAX_LANE_REPORT_BYTES) {
         return refusal(`${state.phase}->next`, `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
@@ -1213,19 +1443,11 @@ export function createLifecycleStateMachine({
       if (!findingsMatchReport(event.findings, verdict)) {
         return refusal(`${state.phase}->next`, 'findings do not match the lane report', report)
       }
-      const { blocking: blockingFindings, routed: routedFindings } = reviewFindingGroups(verdict)
-      const receipt = laneEvidence(state.phase, verdict.outcome === 'changes-requested' && blockingFindings.length > 0)
-      if (receipt) return receipt
-      recordReviewWarnings(state, verdict, laneDir, writeRegularFile)
-      if (state.phase === 'review' && state.pendingReviewBase) state.reviewBase = state.pendingReviewBase
-      const reviewDecision = recordReviewDecision(state, state.phase, verdict, blockingFindings, routedFindings)
-      if (reviewDecision.reason) {
-        next = 'report'
-        resultDetail = ` (non-convergence: partial run, ${reviewDecision.reason})`
-      }
-      if (reviewDecision.changesRequested && !reviewDecision.reason) prepareReviewFix(laneDir, state, state.phase, verdict, writeRegularFile, invalidateLaneEvidence, laneBriefContexts)
-      if (!next) next = reviewNextPhase(state.phase, reviewDecision.changesRequested)
-    } else if (state.phase === 'report') {
+       return verdict
+}
+
+function lifecycleReportTransition(context) {
+    const { state, laneDir, refusal, dodBullets, timeline, snapshotEvidence, pilotReportProblem, reportProblemWithHeadline } = context
       const pilotReportPath = path.join(laneDir, 'pilot-report.md')
       const pilotReport = readRegularFile(pilotReportPath)
       if (!pilotReport) {
@@ -1244,7 +1466,15 @@ export function createLifecycleStateMachine({
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
-      const reportReceipt = completeLifecycleReport({
+      const reportReceipt = completeLifecycleTransitionReport(context)
+      if (reportReceipt) return reportReceipt
+      return { next: 'awaiting_fidelity', resultDetail: '' }
+}
+
+function completeLifecycleTransitionReport(context) {
+    const { root, archiveRoot, laneDir, cardId, sessionTag, artefactsAtStart, frozenRoute, state,
+      evidencePath, timeline, assertLaneDir, copy, git, refusal } = context
+       return completeLifecycleReport({
         root,
         archiveRoot,
         laneDir,
@@ -1265,9 +1495,11 @@ export function createLifecycleStateMachine({
         writeRegularFile,
         refusal,
       })
-      if (reportReceipt) return reportReceipt
-      next = 'awaiting_fidelity'
-    }
+}
+
+function acceptLifecycleTransition(context, event, shape, next, resultDetail) {
+    const { state, refusal, laneDir, stopRequestedAt, stopAtBoundary, activeRules, root, constructionBase,
+      now, timeline, persistTimeline } = context
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
     if (stopRequestedAt(state.phase)) return stopAtBoundary(event)
     const phaseRules = phaseTransitionRules(activeRules, state, next)
@@ -1286,35 +1518,23 @@ export function createLifecycleStateMachine({
     }
     persistTimeline()
     return result
-  }
-  async function artifact({ kind, content }) {
+}
+
+async function lifecycleArtifact(context, { kind, content }) {
+    const { state, stoppedRefusal, dodEscalation, reportProblemWithHeadline, resolveRoutedFinding, timeline } = context
     if (state.stopped) return stoppedRefusal()
     if (kind === 'plan') {
       const held = await holdPlanForBoundDecision(state, dodEscalation)
       if (held) return held
     }
-    try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
-    const spec = ARTIFACTS[kind]
-    if (!spec) {
-      return refusal(`${state.phase}->next`, 'known artifact kind', laneDir)
-    }
-    if (state.phase !== spec[0]) {
-      return refusal(`${state.phase}->next`, `${kind} in phase ${state.phase}: write it in phase ${spec[0]}`, path.join(laneDir, spec[1]))
-    }
-    if (kind === 'critic-brief' && !readRegularFile(path.join(laneDir, 'plan.md'))) {
-      return refusal('critic->next', 'plan artifact', path.join(laneDir, 'plan.md'))
-    }
-    if (kind === 'brief' && frozenRoute === 'FULL' && state.reviewRound === 0) {
-      const planTasks = tasksBlock(readRegularFile(path.join(laneDir, 'plan.md')))
-      if (!planTasks || tasksBlock(content) !== planTasks) {
-        return refusal('critic->tdd', 'byte-identical plan Tasks block', path.join(laneDir, spec[1]))
-      }
-    }
+    const checked = lifecycleArtifactSpec(context, kind, content)
+    if (typeof checked === 'string') return checked
+    const spec = checked
     if (kind === 'pilot-report') {
       const problem = reportProblemWithHeadline(content)
       if (problem) return problem
       if (typeof resolveRoutedFinding === 'function') {
-        for (const card of timeline.routed_cards.filter((item) => item.contested && !new RegExp(`Outcome:\\s*deferred:\\s*card\\s+${item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(content))) {
+        for (const card of contestedReportCards(timeline, content)) {
           if (!state.resolvedRoutedCards.has(card.id)) {
             await resolveRoutedFinding(card)
             state.resolvedRoutedCards.add(card.id)
@@ -1323,6 +1543,43 @@ export function createLifecycleStateMachine({
       }
       content = withRunnerOwnedReportSections(content, timeline.routed_cards, state)
     }
+    return writeLifecycleArtifact(context, kind, content, spec)
+}
+
+function lifecycleArtifactSpec(context, kind, content) {
+    const { assertLaneDir, state, laneDir } = context
+    try { assertLaneDir() } catch (error) { return artifactRefusal(`${state.phase}->next`, error.message, laneDir) }
+    const spec = ARTIFACTS[kind]
+    if (!spec) {
+      return artifactRefusal(`${state.phase}->next`, 'known artifact kind', laneDir)
+    }
+    if (state.phase !== spec[0]) {
+      return artifactRefusal(`${state.phase}->next`, `${kind} in phase ${state.phase}: write it in phase ${spec[0]}`, path.join(laneDir, spec[1]))
+    }
+    if (kind === 'critic-brief' && !readRegularFile(path.join(laneDir, 'plan.md'))) {
+      return artifactRefusal('critic->next', 'plan artifact', path.join(laneDir, 'plan.md'))
+    }
+    return lifecycleBriefSpec(context, kind, content, spec)
+}
+
+function lifecycleBriefSpec(context, kind, content, spec) {
+    const { frozenRoute, state, laneDir } = context
+    if (kind === 'brief' && frozenRoute === 'FULL' && state.reviewRound === 0) {
+      const planTasks = tasksBlock(readRegularFile(path.join(laneDir, 'plan.md')))
+      if (!planTasks || tasksBlock(content) !== planTasks) {
+        return artifactRefusal('critic->tdd', 'byte-identical plan Tasks block', path.join(laneDir, spec[1]))
+      }
+    }
+    return spec
+}
+
+function contestedReportCards(timeline, content) {
+    return timeline.routed_cards.filter((item) => item.contested && !new RegExp(`Outcome:\\s*deferred:\\s*card\\s+${item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(content))
+}
+
+function writeLifecycleArtifact(context, kind, content, spec) {
+    const { state, prepareLaneBrief, laneDir, laneBriefContexts, laneBriefIdentities, invalidateLaneEvidence,
+      dodBullets, timeline, pilotReportProblem } = context
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let laneContext = content
     if (kind === 'brief' && state.nonBlockingFindings.length > 0) {
@@ -1349,15 +1606,16 @@ export function createLifecycleStateMachine({
     if (LANE_PHASES.has(briefPhase)) { invalidateLaneEvidence(briefPhase); laneBriefContexts.set(briefPhase, laneContext) }
     if (kind === 'pilot-report') { state.pilotReportDigest = sha256(artifactContent); classifyReportDelivery(artifactContent, dodBullets, timeline.routed_cards, state, pilotReportProblem(artifactContent, true)) }
     return `wrote ${kind}`
-  }
+}
   // The pilot report's partial/full contract, checked on the exact bytes given: at write_artifact
   // and again at the report edge on the file about to be committed (Sol round 14: a stale or
   // edited pilot-report.md used to satisfy the edge by merely existing).
-  function reportProblemWithHeadline(content, enforceSchema = false) {
-    return reportHeadlineProblem(content, state, enforceSchema) ?? pilotReportProblem(content, enforceSchema)
-  }
+function lifecycleReportProblemWithHeadline(context, content, enforceSchema = false) {
+    return reportHeadlineProblem(content, context.state, enforceSchema) ?? context.pilotReportProblem(content, enforceSchema)
+}
   // Content and schema checks; the headline checks live in reportHeadlineProblem.
-  function pilotReportProblem(content, enforceSchema = false) {
+function lifecyclePilotReportProblem(context, content, enforceSchema = false) {
+    const { timeline, dodBullets, frozenRoute } = context
     const deferredProblem = deferredOutcomeProblem(content, timeline.routed_cards)
     if (deferredProblem) return `pilot-report: ${deferredProblem}`
     if (!enforceSchema) return null
@@ -1365,6 +1623,12 @@ export function createLifecycleStateMachine({
       const acceptanceProblem = reportAcceptanceProblem(content, dodBullets)
       if (acceptanceProblem) return `pilot-report: missing ${acceptanceProblem}`
     }
+    const e2eProblem = pilotReportE2eProblem(content)
+    if (e2eProblem) return e2eProblem
+    return pilotReportReviewProblem(content, frozenRoute)
+}
+
+function pilotReportE2eProblem(content) {
     const e2e = reportSection(content, 'E2E')
     if (!e2e) return 'pilot-report: missing or empty ## E2E section'
     const e2eNotRun = /^e2e not run: \S[^\r\n]*$/i.test(e2e)
@@ -1377,6 +1641,10 @@ export function createLifecycleStateMachine({
     if (!e2eNotRun && !(hasProcedure && hasOutput) && !hasEvidenceLine) {
       return 'pilot-report: ## E2E requires command/procedure and verbatim output, or exactly "e2e not run: <reason>"'
     }
+    return null
+}
+
+function pilotReportReviewProblem(content, frozenRoute) {
     if (frozenRoute === 'FULL') {
       const review = reportSection(content, 'Independent Review')
       if (!review) return 'pilot-report: missing or empty ## Independent Review section on FULL route'
@@ -1385,14 +1653,14 @@ export function createLifecycleStateMachine({
       }
     }
     return null
-  }
-  function reportSection(content, heading) {
+}
+function reportSection(content, heading) {
     return new RegExp(`(?:^|\\n)## ${heading}\\s*\\r?\\n([\\s\\S]*?)(?=\\r?\\n## |$)`, 'i').exec(content)?.[1].trim() ?? ''
-  }
-  async function queued(work) {
-    const prior = serial
+}
+async function lifecycleQueued(context, work) {
+    const prior = context.serial
     let release
-    serial = new Promise((resolve) => {
+    context.serial = new Promise((resolve) => {
       release = resolve
     })
     await prior
@@ -1401,22 +1669,45 @@ export function createLifecycleStateMachine({
     } finally {
       release()
     }
-  }
-  async function routeFindingTool(args) {
+}
+async function lifecycleRouteFinding(context, args) {
+    const { state, stoppedRefusal, boardContract, routeFinding, timeline, root, audit, persistTimeline, now,
+      refusal, laneDir, cardId, sessionTag, events } = context
     if (state.stopped) return stoppedRefusal()
     if (!boardContract || typeof routeFinding !== 'function') {
-      return partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now })
+      return partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now, refusal, laneDir })
     }
     try {
       const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
-      const id = String(created?.id ?? '')
+      const id = routedCardId(created)
       if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('board returned no valid card id')
+      const { record, failure } = routedFindingRecord(created, args, id)
+      timeline.routed_cards.push(record)
+      refreshRoutedReport(context)
+      persistTimeline()
+      const failureSuffix = failure ? ` (label failure: ${failure})` : ''
+      events.route(id, record.title)
+      return `routed card ${id} — ${record.title}${routedDependencySuffix(record)}${failureSuffix}`
+    } catch (error) {
+      return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
+    }
+}
+
+function routedCardId(created) {
+  return String(created?.id ?? '')
+}
+
+function routedFindingRecord(created, args, id) {
       const record = { id, title: String(created.title ?? args.title), l4Reason: args.l4Reason, ...routedDependencyEvidence(created) }
       const failure = Array.isArray(created.labelFailures) && created.labelFailures.length > 0
         ? created.labelFailures.map((item) => `add_label_to_card ${item.labelId}: ${item.error}`).join('; ')
         : null
       if (failure) record.failure = failure
-      timeline.routed_cards.push(record)
+      return { record, failure }
+}
+
+function refreshRoutedReport(context) {
+      const { state, laneDir, timeline } = context
       if (state.phase === 'report' && state.pilotReportDigest) {
         const reportPath = path.join(laneDir, 'pilot-report.md')
         const report = readRegularFile(reportPath)
@@ -1426,17 +1717,14 @@ export function createLifecycleStateMachine({
           state.pilotReportDigest = sha256(updated)
         }
       }
-      persistTimeline()
-      const failureSuffix = failure ? ` (label failure: ${failure})` : ''
-      return `routed card ${id} — ${record.title}${routedDependencySuffix(record)}${failureSuffix}`
-    } catch (error) {
-      return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
-    }
-  }
+}
   // One MCP instance per SDK query (phase session) over this one state: the SDK connects an instance per query and an
   // instance still attached to an ending query cannot connect again. A later session's transition ids are namespaced,
   // because a fresh session numbers its ids itself and must never replay an earlier session's transition.
-  const sessionServer = (session = 1) => createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition, artifact, routeFindingTool, run }, session)
+function lifecycleServer(context) {
+  const { createSdkMcpServer, tool, z, queued, transition, events, artifact, routeFindingTool, run,
+    state, timeline, frozenRoute, lifecycle, finalizePartial, requestStop, dodEscalation } = context
+  const sessionServer = (session = 1) => createLifecycleSessionServer({ createSdkMcpServer, tool, z, queued, transition: events.transition(transition), artifact, routeFindingTool, run }, session)
   const server = sessionServer()
   defineSessionAccessors(server, { sessionServer, state, timeline, route: frozenRoute })
   Object.defineProperty(server, 'lifecycle', { value: lifecycle })
@@ -1445,9 +1733,30 @@ export function createLifecycleStateMachine({
       phase: state.phase,
       partial: frozenDelivery(state.partial),
       deferred: frozenDelivery(state.deferred),
+      blocked: events.blocked(),
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })
   Object.defineProperties(server, { requestStop: { value: requestStop }, dodDisputes: { value: () => structuredClone(state.dodDisputes) }, awaitDodDecisions: { value: dodEscalation.awaitDecisions } })
   return server
+}
+
+function bindLifecycleTools(context) {
+  context.prepareLaneBrief = (...args) => prepareLifecycleLaneBrief(context, ...args)
+  context.transition = (...args) => lifecycleTransition(context, ...args)
+  context.artifact = (...args) => lifecycleArtifact(context, ...args)
+  context.reportProblemWithHeadline = (...args) => lifecycleReportProblemWithHeadline(context, ...args)
+  context.pilotReportProblem = (...args) => lifecyclePilotReportProblem(context, ...args)
+  context.queued = (...args) => lifecycleQueued(context, ...args)
+  context.routeFindingTool = (...args) => lifecycleRouteFinding(context, ...args)
+}
+
+export function createLifecycleStateMachine(options) {
+  const context = lifecycleOptions(options)
+  initializeLifecycleRoot(context)
+  initializeLifecycleIdentity(context)
+  bindLifecycleTools(context)
+  initializeLifecycleLaunch(context)
+  initializeLifecycleControls(context)
+  return lifecycleServer(context)
 }

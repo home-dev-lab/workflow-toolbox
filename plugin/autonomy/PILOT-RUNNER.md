@@ -480,6 +480,20 @@ keeps `reason: timeout` in the summary and lifecycle partial, preserves its mess
 SDK exception before the grace abort remains a stream error. Supervised executor lanes retain their
 owner decision path and identity-aware abandon control for wedged lane processes.
 
+After a lane timeout, lifecycle `run { kind: 'control', decision: 'extend'|'abandon' }`
+checks whether that lane has already finished, then submits any needed decision and waits on the
+same launch. Submission is not application: the supervisor can turn an extension into abandonment
+at its ceiling. A second decision point returns TIMEOUT with ownership retained. For first-round
+critics, one control call acts on the whole pair; explicit retry relaunches both. No selector exists. Terminal
+lanes release ownership even when receipt publication fails, allowing a fresh launch.
+
+An ownership or receipt refusal after a routed finding, with no lifecycle progress since that
+route, stops the pilot when its current phase has no owned lane left. The runner aborts the SDK
+session, writes `.lane/blocked-report.md`
+and `blocked_on` in `.lane/summary.json` before partial archival, and preserves those local records
+through archive or cost-publication failures. The blocked report identifies the routed card,
+refusal, phase, and observation time.
+
 Timeout delivery itself has no shell, signal, process-table, or filesystem-injection dependency:
 `pilot-runner-core.mjs` uses the cross-platform Node timer and `AbortController`, and
 `lifecycle-state-machine.mjs` receives the request in process. A phase running an executor still uses

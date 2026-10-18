@@ -50,6 +50,47 @@ async function loadIntegrationModule() {
 
 const ATTACH_REMOVED = '--attach was removed: compose the extra text into the brief file, or expose a read-only path to the lane with WT_LANE_SANDBOX_READ'
 
+export const BRIEF_GATE_RUNNABLES = Object.freeze([
+  'gate-chain.sh', 'run-quality.mjs', 'pnpm test', 'pnpm typecheck', 'pnpm lint',
+  'pnpm quality', 'node --test', '.selftest.mjs', '.test.mjs', '.test.ts',
+])
+const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
+const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
+
+function hasBriefGateSection(text) {
+  let inGates = false
+  for (const line of text.split(/\r?\n/)) {
+    if (/^##\s+/.test(line)) {
+      inGates = /^##\s+Gates\b/i.test(line)
+      continue
+    }
+    if (inGates && BRIEF_GATE_RUNNABLES.some((command) => line.includes(command))) return true
+  }
+  return false
+}
+
+export function briefGateSectionRefusal(text, { owner, role, noGateSectionReason, brief = '<path>' } = {}) {
+  if (owner === 'pilot' || ['critic', 'review', 'refutation'].includes(role) || noGateSectionReason?.trim()) return null
+  if (hasBriefGateSection(text)) return null
+  return `wt-lane: Refused: brief ${brief} has no gate section. Add these lines with the repository's gate command:\n## Gates\nRun detached, by exit code each: bash <gate-chain.sh> --dir <worktree>/toolkit --out <log-dir> --stamp <stamp> -- typecheck lint quality test\nRecognised runnable gates: ${BRIEF_GATE_RUNNABLES.join(', ')}.\nExemptions: ${GATE_SECTION_EXEMPTIONS}.`
+}
+
+function laneGateSectionChoiceError(out) {
+  if (!Object.hasOwn(out, 'noGateSectionReason')) return null
+  const reason = out.noGateSectionReason?.trim()
+  if (!reason || reason.startsWith('--')) return '--no-gate-section requires a non-empty reason for read-only work'
+  out.noGateSectionReason = reason
+  return null
+}
+
+function launchBriefRefusal(briefEvidence, opts) {
+  if (briefEvidence.ageMs > opts.maxBriefAge * 1000 && !opts.acknowledgeStaleBrief) {
+    return { code: 1, message: `wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.` }
+  }
+  const refusal = briefGateSectionRefusal(briefEvidence.bytes.toString('utf8'), opts)
+  return refusal ? { code: 2, message: refusal } : null
+}
+
 function launchRecoveryCondition(reason) {
   if (reason === 'owner process liveness is unknown') return 'its liveness probe returns a known answer; unknown liveness never authorises recovery'
   return reason === 'owner process is still running'
@@ -58,7 +99,7 @@ function launchRecoveryCondition(reason) {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. Idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. Idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
 }
 
 // The suite-lock level a lane's host broker queues its gates at. Release stays reserved to the main session.
@@ -86,7 +127,7 @@ const laneLockPriorityEnvNames = (lockPriority) => lockPriority ? ['WT_SUITE_LOC
 // The option values parse() checks after reading argv, in the order it always checked them; normalises
 // --lock-priority in place. Returns the first refusal, or null.
 function laneChoiceError(out) {
-  return laneOwnerChoiceError(out) ?? laneRunChoiceError(out)
+  return laneGateSectionChoiceError(out) ?? laneOwnerChoiceError(out) ?? laneRunChoiceError(out)
 }
 
 function laneOwnerChoiceError(out) {
@@ -117,7 +158,7 @@ export function parse(argv) {
     else if (arg === '--brief') out.brief = argv[++i] ?? null
     else if (arg === '--max-brief-age') out.maxBriefAge = Number(argv[++i])
     else if (arg === '--acknowledge-stale-brief') out.acknowledgeStaleBrief = true
-    else if (arg === '--brief-receipt') out.briefReceipt = argv[++i] ?? null
+    else if (Object.hasOwn(BRIEF_VALUE_OPTIONS, arg)) out[BRIEF_VALUE_OPTIONS[arg]] = argv[++i] ?? null
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
     else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
@@ -300,13 +341,14 @@ function terminateWindowsTree(pid) {
   spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { timeout: 5_000, windowsHide: true, stdio: 'ignore' })
 }
 
-export function briefEvidenceLines(receipt, upper = false) {
+export function briefEvidenceLines(receipt, upper = false, noGateSectionReason = null) {
   if (!upper) return [`brief=${receipt.path}`, `brief_age=${receipt.age}`, `brief_heading=${receipt.heading}`, `brief_sha256=${receipt.sha256}`]
   return [
     `BRIEF_PATH=${receipt.path}`,
     `BRIEF_AGE=${receipt.age}`,
     `BRIEF_HEADING=${receipt.heading}`,
     `BRIEF_SHA256=${receipt.sha256}`,
+    ...(noGateSectionReason ? [`NO_GATE_SECTION_REASON=${JSON.stringify(noGateSectionReason)}`] : []),
   ]
 }
 
@@ -574,10 +616,8 @@ async function main() {
       process.stderr.write(`wt-lane: --brief is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
       return 2
     }
-    if (briefEvidence.ageMs > opts.maxBriefAge * 1000 && !opts.acknowledgeStaleBrief) {
-      process.stderr.write(`wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.\n`)
-      return 1
-    }
+    const briefRefusal = launchBriefRefusal(briefEvidence, opts)
+    if (briefRefusal) { process.stderr.write(`${briefRefusal.message}\n`); return briefRefusal.code }
   }
   if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
   if (!worker && !opts.allowMissingInstall) {
@@ -609,7 +649,7 @@ async function main() {
     launchLock = path.join(paths.dir, 'launch.lock')
     const recoveryLock = path.join(paths.dir, 'launch.lock.recovery')
     mkdirSync(paths.dir, { recursive: true })
-    writeLaneStage(opts.log, 'inspect-launcher-start', { reset: true, runId, header: briefEvidenceLines(briefEvidence, true) })
+    writeLaneStage(opts.log, 'inspect-launcher-start', { reset: true, runId, header: briefEvidenceLines(briefEvidence, true, opts.noGateSectionReason) })
     const launcherInspect = (pid, options = {}) => inspectLauncherProcess(consentModules.inspectProcess, pid, { ...options, platform: process.platform })
     const identity = launcherInspect(process.pid, { recordedArgv: process.argv }) ?? fallbackLauncherIdentity()
     writeLaneStage(opts.log, 'inspect-launcher-done')
