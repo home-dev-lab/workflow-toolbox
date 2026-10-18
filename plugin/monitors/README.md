@@ -25,13 +25,46 @@ assistant record, with the exact `SendMessage` call: main sends it verbatim, inc
 `[wt-relay ...]` marker. A background command that no subagent of this session launched is
 main's own and stays silent; unattributable records produce `ARC WATCH DEGRADED`, never a
 guessed target. An unresolved WAKE is announced again with backoff until its target
-resumes; main's SendMessage is still a model step. A completion older than 24 hours is
+resumes or main acknowledges it; main's SendMessage is still a model step. Times on
+WAKE lines explicitly carry the UTC `Z` suffix. A completion older than 24 hours is
 never relayed, since waking an agent that late points it at stale work; the one-shot
 scanner lists those as `STALE (not relayed ...)`. A delegate spawned anonymously or named
 with worktree isolation self-woke in the measured majority (606 of 628 and 168 of 173 on
 two installations), not every case.
 
-The watch announces WAKE only. Whether a nested delegate's parent received its completion
+The watch announces actionable WAKEs and once-only `ORPHANED BY RESTART` observations.
+A background notice enqueued before the current boot or the session's parent-process
+start is orphaned, whether its status is `killed` or `completed`; it never asks main to
+relay to that dead agent. The watcher probes Linux `/proc/stat` `btime`, macOS
+`sysctl -n kern.boottime`, or Windows CIM `LastBootUpTime` (Fast Startup shutdowns do
+not reset that Windows value; restarts do). Parent start comes from `ps lstart` on
+Linux/macOS and `Get-Process StartTime` on Windows. A plugin reload does not use the
+watcher's own start as evidence. A wrapper parent can weaken that session boundary;
+unavailable evidence stays unknown, with an explicit degraded diagnostic. Unknown boot
+time produces one `ARC WATCH DEGRADED: boot time unknown (...)` per session and does not
+invent a restart boundary. Historical replay ignores boundaries newer than `--at`.
+
+Both WAKE and ORPHANED lines include an exact, absolute-path scanner command with
+`--session <main-transcript> --ack <raw-agent-id>`. Paste that command to silence that
+agent in this session, across watcher restarts, for at least 7 days (see the bound below). This is independent of the
+spawn registry's name-keyed acknowledgement. Immutable event/acknowledgement decisions
+live in `<wake-data-dir>/<session-id>.decisions/`, beside the retry throttle JSON;
+`WT_DELEGATE_WAKE_DIR` overrides the default outbound registry's `delegate-wake/`.
+Concurrent writers publish complete decisions atomically without overwriting each
+other. Orphan claims precede output: a crash between claim and stdout can lose that
+diagnostic rather than repeat it. Deleting decision storage loses those guarantees.
+An orphan whose notice is older than the 24 hour relay ceiling is claimed silently:
+the decision is recorded, no line is printed (the one-shot scanner lists it as `STALE`).
+The decisions directory is bounded by age: each claim first deletes decision files older
+than `DECISION_MAX_AGE_MS` (7 days, `plugin/bin/lib/host/delegate-wake-decisions.mjs`).
+That is safe because the bound exceeds the relay ceiling: a notice an expired decision
+covered is past the ceiling, so an orphan is claimed silently again and a stale wake is
+never relayed. An acknowledgement and the once-only boot diagnostic lapse once older than
+that bound, at the next claim that prunes them (so they last at least 7 days, sometimes longer).
+`--ack` accepts a raw agent id only; anything else prints `not a raw agent id: <input>`
+on stderr and exits 2, recording nothing.
+
+Whether a nested delegate's parent received its completion
 notice is inferred from missing records, and that inference did not survive real
 transcripts, so `FORWARD` candidates are not announced: `wt-delegate-wake-scan.mjs` lists
 them as `FORWARD (unverified)` diagnostics whose precision is unmeasured.
@@ -44,6 +77,11 @@ does not prove it is finished.
 The one-shot `wt-delegate-wake-scan.mjs --session <main transcript> [--at <iso>]`
 replays the same attribution and can append transcript-confirmed `resumed` transitions
 with `--write-resumed` (using `WT_OUTBOUND_GUARD_DIR` when set).
+Replay reads acknowledgements but does not consume the watcher's once-only orphan
+announcements. Both CLIs accept `--boot-at <iso|unknown>` and
+`--session-started-at <iso|unknown>` to inject measured boundaries for replay or fixtures.
+The scanner leaves session start unknown unless supplied: its invoking shell is not
+the monitored session. The persistent watcher probes its own parent once at startup.
 
 ## Prompt-cache keepalive
 
