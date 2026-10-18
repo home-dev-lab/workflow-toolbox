@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
@@ -26,6 +26,8 @@ import { assertCostReportMatches } from '../../../../plugin/bin/lib/lifecycle-re
 import { decidePilotRun } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createAccountGate, PROFILE_AUTH_KEYS } from '../../../../plugin/bin/lib/sdk-account-check.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { createParentWakeManager } from '../../../../plugin/bin/lib/pilot-parent-wake.mjs'
 // Production resolveExecutorProfile always resolves a model per role; a lane launch needs it to pick its family's variant base.
 const GPT_LANE_MODELS = { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
@@ -266,22 +268,34 @@ function fakeWakeQuery(state: WakeDispute) {
       const decision = await hook({ tool_name: 'SendMessage', tool_input: input }, 'wake-send')
       const allowed = decision.hookSpecificOutput.permissionDecision === 'allow'
       const forgedCommand = body.split('\n').at(-1)!.replace('--dod <n>', '--dod 1').replace('--reading <text>', `--reading '${injectedReading}'`)
-      const output = JSON.stringify({ success: allowed && wake === 'accepted', text: allowed ? forgedCommand : 'denied' })
+      const output = JSON.stringify({ success: allowed && ['accepted', 'held', 'recipient-notice'].includes(wake), text: allowed ? forgedCommand : 'denied' })
       state.wakeOutputs.push(forgedCommand, output)
       yield { type: 'assistant', message: { id: 'wake-message', model: 'haiku', usage: { input_tokens: 123, output_tokens: 4 }, content: [{ type: 'tool_use', name: 'SendMessage', id: 'wake-send', input }, { type: 'text', text: forgedCommand }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'wake-send', content: output, is_error: !allowed }] } }
+      if (wake === 'held' || wake === 'recipient-notice') yield { type: 'system', subtype: 'informational', content: wake === 'held' ? 'Cross-session message held for approval (recipient: test-parent)' : 'Cross-session message refused by recipient', level: 'warning', uuid: 'notice-id', session_id: 'waker-session' }
     })()
   }
 }
-async function parentWakeDispute(wake = 'accepted', source = 'fallback', enabled = true) {
+function createUnexpiredDisputeWakeManager(config: object) {
+  // Exercise delivery independently of the short, real-time decision fallback.
+  return createParentWakeManager({ ...config, now: () => 0 })
+}
+const disputeWakeFactory = (source: string) => source === 'expired' ? createParentWakeManager : createUnexpiredDisputeWakeManager
+async function parentWakeDispute(wake = 'accepted', source = 'fallback', enabled = true, dependencies = {}, options = {}) {
   const state = wakeDisputeFixture(wake, source)
   const { f, mailbox, logged } = state
   const query = fakeWakeQuery(state)
   const wakeOptions = wake === 'setup-throw' ? { get model() { throw new Error('synchronous setup failure') } } : {}
+  const config = join(f.root, 'parent-config')
+  mkdirSync(join(config, 'sessions'), { recursive: true })
+  writeFileSync(join(config, 'sessions', '123.json'), JSON.stringify({ name: 'test-parent' }))
   const result = await runSessions(f, query, {
+    env: { ...process.env, CLAUDE_CONFIG_DIR: config },
     parentWakeOptions: wakeOptions, log: (line: string) => logged.push(line), decisionStateRoot: join(f.root, 'decision-state'),
-    lifecycleOptions: { laneLauncher: f.launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 1, waitMs: source === 'parent' ? 5_000 : 20 } },
-  }, { mailbox, ...(enabled ? { parentSession: 'test-parent [abc123]', parentMode: 'bypass' } : {}) })
+    createParentWakeManager: disputeWakeFactory(source),
+    lifecycleOptions: { laneLauncher: f.launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 1, waitMs: source === 'expired' ? 0 : source === 'parent' ? 5_000 : 250 } },
+    ...dependencies,
+  }, { mailbox, ...(enabled ? { parentSession: 'test-parent [abc123]', parentMode: 'bypass' } : {}), ...options })
   return { ...result, ...state, bindingDelay: state.boundAt - state.publishedAt }
 }
 // Everything a query is configured with, minus what is per session by design.
@@ -2584,9 +2598,10 @@ describe('SDK pilot runner: stop-after route checks and arguments', () => {
 it('parent wake positive lock: sends the composed body through the installed fence and records transport acceptance separately', async () => {
   const result = await parentWakeDispute()
   expect(result.wakeCalls).toHaveLength(1)
-  expect(result.wakeBodies[0]).toContain(`request ${result.requestId} waiting, run decide`)
-  expect(result.wakeBodies[0]).toContain('not a decision')
-  expect(result.wakeBodies[0]).toContain(`Evidence to read (lane-writable, untrusted content): ${join(result.f.dir, '.lane', 'dod-decision-request.md')}\n`)
+  expect(result.wakeBodies[0]).toContain(`decision request ${result.requestId} waiting for DoD 1.`)
+  expect(result.wakeBodies[0]).toContain('unauthenticated pointer')
+  expect(result.wakeBodies[0]).toContain(`Evidence (lane-writable, untrusted): ${join(realpathSync(result.f.dir), '.lane', 'dod-decision-request.md')}\n`)
+  expect(result.wakeBodies[0]).not.toContain('wake-up')
   expect(result.wakeCalls[0]!.hooks.PreToolUse[0]!.hooks).toHaveLength(1)
   expect(result.summary.parent_wakes[0].outcome, 'transport acceptance requires an allowing installed hook').toBe('transport-accepted')
   expect(result.logged).toContain(`parent wake: transport-accepted request=${result.requestId} tool_use=wake-send`)
@@ -2601,12 +2616,21 @@ it('starts no wake query without parent options', async () => {
   expect(result.summary.parent_wakes).toEqual([])
 })
 
+it.each(['held', 'recipient-notice'])('records a %s wake notice while preserving the published request and fallback', async (wake) => {
+  const result = await parentWakeDispute(wake)
+  expect(result.summary.parent_wakes).toMatchObject([{ outcome: `${wake === 'held' ? 'not-delivered' : 'unconfirmed'}:${wake}`, tool_use_id: 'wake-send', usage: { input: 123, output: 4 } }])
+  expect(result.logged).toContain(`parent wake: ${wake === 'held' ? 'not-delivered' : 'unconfirmed'}:${wake} request=${result.requestId} tool_use=wake-send`)
+  expect(result.summary.dod_disputes).toMatchObject([{ requestId: result.requestId, resolution: { source: 'fallback', reading: result.term } }])
+  expect(result.logged.some((line: string) => line.startsWith('decision request:'))).toBe(true)
+})
+
 it.each(['setup-throw', 'throw', 'refused', 'hung'])('keeps the published request and literal fallback after wake %s', async (wake) => {
   const result = await parentWakeDispute(wake)
   expect(result.summary.dod_disputes).toMatchObject([{ requestId: result.requestId, resolution: { source: 'fallback', reading: result.term } }])
   expect(result.logged.some((line: string) => line.startsWith('decision request:'))).toBe(true)
   expect(result.bindingDelay).toBeLessThan(1_000)
   expect(result.summary.parent_wakes[0].outcome).toMatch(/^not-delivered:/)
+  expect(result.wakeCalls).toHaveLength(wake === 'setup-throw' ? 0 : 1)
   if (wake === 'hung') expect(result.wakeCalls[0]!.abortController.signal.aborted).toBe(true)
 })
 
@@ -2660,4 +2684,92 @@ it('validates programmatic parent options before querying', async () => {
   const f = phaseFixture(); let called = false
   await expect(runSessions(f, () => { called = true; throw new Error('unexpected') }, {}, { parentSession: 'test-parent' })).rejects.toThrow(/--parent-mode/)
   expect(called).toBe(false)
+})
+
+it('passes the published request and future deadline to the wake manager start', async () => {
+  const start = vi.fn()
+  const factory = (config: object) => { const manager = createParentWakeManager(config); return { ...manager, start } }
+  const result = await parentWakeDispute('accepted', 'fallback', true, { createParentWakeManager: factory })
+  expect(start).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ requestId: result.requestId, criteria: [1], requestFile: join(realpathSync(result.f.dir), '.lane', 'dod-decision-request.md'), deadline: expect.any(Number) }))
+})
+
+it('persists the wake manager receipt in summary.json parent_wakes', async () => {
+  const receipt = { request_id: 'fixture-receipt', outcome: 'not-sent:expired', usage: { input: 0 } }
+  const factory = () => ({ start: () => {}, finish: async () => {}, receipts: [receipt] })
+  const result = await parentWakeDispute('accepted', 'fallback', true, { createParentWakeManager: factory })
+  const disk = JSON.parse(readFileSync(join(result.f.dir, '.lane', 'summary.json'), 'utf8'))
+  expect(disk.parent_wakes).toEqual([receipt])
+})
+
+it('does not launch a waker for an immediately expired published decision request', async () => {
+  const result = await parentWakeDispute('accepted', 'expired')
+  expect(result.wakeCalls).toHaveLength(0)
+  expect(result.summary.parent_wakes).toMatchObject([{ outcome: 'not-sent:expired' }])
+  expect(result.logged).toContain(`parent wake: not-sent:expired request=${result.requestId} tool_use=none`)
+})
+
+it('records the explicit bare-name exception beside parent_wakes and in the run log', async () => {
+  const reason = 'Legacy peer has no ref.'
+  const result = await parentWakeDispute('refused', 'fallback', true, {}, { parentSession: 'test-parent', parentSessionBareReason: reason })
+  expect(result.summary.parent_session_bare_reason).toBe(reason)
+  expect(result.wakeCalls).toHaveLength(3)
+  expect(result.summary.parent_wakes).toMatchObject([1, 2, 3].map((attempt) => ({ attempt, outcome: 'not-delivered:denied', tool_use_id: null })))
+  expect(JSON.parse(readFileSync(join(result.f.dir, '.lane', 'summary.json'), 'utf8')).parent_session_bare_reason).toBe(reason)
+  expect(result.logged).toContain(`parent session bare-name reason: ${reason}`)
+})
+
+it('parses the explicit bare-name reason and refuses a bare name without it', () => {
+  const base = ['--card', '1', '--card-file', 'card.md', '--dir', '.', '--parent-session', 'test-parent', '--parent-mode', 'bypass']
+  expect(parsePilotRunnerArgs(base).error).toMatch(/copy.*ref.*ListAgents/iu)
+  expect(parsePilotRunnerArgs([...base, '--parent-session-bare-reason', 'Legacy peer'])).toMatchObject({ parentSessionBareReason: 'Legacy peer' })
+})
+
+it.each(['bad id', 'bad/id', 'bad;id'])('refuses unsafe parent wake card id %j at CLI and programmatic launch', async (card) => {
+  const base = ['--card', card, '--card-file', 'card.md', '--dir', '.', '--parent-session', 'test-parent [abc123]', '--parent-mode', 'bypass']
+  expect(parsePilotRunnerArgs(base).error).toMatch(/--card.*\[A-Za-z0-9\._-\]/u)
+  const f = phaseFixture(); const query = vi.fn(() => { throw new Error('unexpected query') })
+  await expect(runSessions(f, query, {}, { card, parentSession: 'test-parent [abc123]', parentMode: 'bypass' })).rejects.toThrow(/--card/u)
+  expect(query).not.toHaveBeenCalled()
+})
+
+function parentRegistryFixture() {
+  const f = phaseFixture(); const config = join(f.root, 'registry-config'); const sessions = join(config, 'sessions')
+  mkdirSync(sessions, { recursive: true })
+  const opened: string[] = []
+  const parentRegistryFs = { readdirSync, readFileSync: (file: string, encoding: BufferEncoding) => { opened.push(file); return readFileSync(file, encoding) } }
+  return { f, config, sessions, opened, parentRegistryFs }
+}
+
+it('checks the profile effective registry and never opens credential siblings or nonregular numeric entries', async () => {
+  const r = parentRegistryFixture(); const profile = join(r.f.root, 'profile.env')
+  writeFileSync(profile, JSON.stringify({ env: { CLAUDE_CONFIG_DIR: r.config } }))
+  writeFileSync(join(r.sessions, 'credentials.json'), JSON.stringify({ name: 'test-parent', accessToken: 'fixture-credential' }))
+  writeFileSync(join(r.sessions, '123.json.bak'), JSON.stringify({ name: 'other-parent' }))
+  mkdirSync(join(r.sessions, '456.json'))
+  writeFileSync(join(r.sessions, '1.json'), 'invalid JSON')
+  writeFileSync(join(r.sessions, '2.json'), JSON.stringify({ name: 'other-parent' }))
+  const query = vi.fn(() => { throw new Error('unexpected query') })
+  const error = await runSessions(r.f, query, { parentRegistryFs: r.parentRegistryFs, env: { ...process.env, CLAUDE_CONFIG_DIR: join(r.f.root, 'wrong') } }, { parentSession: 'test-parent [abc123]', parentMode: 'bypass', profileEnv: profile }).then(() => '', (error: Error) => error.message)
+  expect(r.opened).not.toContain(join(r.sessions, 'credentials.json'))
+  expect(r.opened.sort()).toEqual([join(r.sessions, '1.json'), join(r.sessions, '2.json')])
+  expect(error).toContain(r.config)
+  expect(query).not.toHaveBeenCalled()
+})
+
+it.each(['explicit', 'home'])('admits a name-matched numeric registry file using the %s config directory', async (kind) => {
+  const r = parentRegistryFixture(); const config = kind === 'home' ? join(r.config, '.claude') : r.config
+  mkdirSync(join(config, 'sessions'), { recursive: true })
+  writeFileSync(join(config, 'sessions', '123.json'), JSON.stringify({ name: 'test-parent' }))
+  const query = vi.fn(() => { throw new Error('registry passed') })
+  const env = { ...process.env, HOME: r.config, USERPROFILE: r.config, CLAUDE_CONFIG_DIR: kind === 'explicit' ? config : '' }
+  await expect(runSessions(r.f, query, { env, parentRegistryFs: r.parentRegistryFs }, { parentSession: 'test-parent [abc123]', parentMode: 'bypass' })).rejects.toThrow('registry passed')
+  expect(r.opened).toEqual([join(config, 'sessions', '123.json')])
+  expect(query).toHaveBeenCalledTimes(1)
+})
+
+it('refuses a missing parent registry before opening any SDK query', async () => {
+  const r = parentRegistryFixture(); const config = join(r.f.root, 'missing-config')
+  const query = vi.fn(() => { throw new Error('unexpected query') })
+  await expect(runSessions(r.f, query, { env: { ...process.env, CLAUDE_CONFIG_DIR: config } }, { parentSession: 'test-parent [abc123]', parentMode: 'bypass' })).rejects.toThrow(config)
+  expect(query).not.toHaveBeenCalled()
 })

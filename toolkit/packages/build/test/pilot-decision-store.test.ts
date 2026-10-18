@@ -14,6 +14,22 @@ const PROCESS = fileURLToPath(new URL('./fixtures/pilot-decision-process.mjs', i
 // Node's --import takes a URL: a bare Windows path (d:\...) is read as the scheme 'd:'.
 const WITHDRAW = pathToFileURL(fileURLToPath(new URL('./fixtures/pilot-decision-withdraw.mjs', import.meta.url))).href
 
+it('rejects a repeated decide for the same request and leaves binding bytes unchanged', () => {
+  const decide = decidePilotRun
+  const root = mkdtempSync(join(tmpdir(), 'wt-decide-repeat-'))
+  try {
+    const runId = 'repeat'; const requestId = 'request-repeat'; const criterion = 1
+    const file = initializePilotDecisionStore(runId, { root })
+    registerPilotDecisionRequest(file, { requestId, criteria: [criterion], deadline: 100 })
+    const options = { runId, requestId, criterion, root, decidedAt: 1, reading: 'parent reading' }
+    decide(options)
+    const binding = join(dirname(file), 'bindings', `${Buffer.from(requestId).toString('hex')}-${criterion}.json`)
+    const before = readFileSync(binding)
+    expect(() => decide({ ...options, reading: 'replacement reading', decidedAt: 2 })).toThrow('already bound')
+    expect(readFileSync(binding)).toEqual(before)
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
 describe('pilot parent decision store', () => {
   it('accepts only a registered criterion and exposes one shared atomic record', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-pilot-decisions-'))

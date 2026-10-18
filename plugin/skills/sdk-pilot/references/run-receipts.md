@@ -11,6 +11,17 @@ While the run is active, the lane's usage.json receipt is atomically refreshed f
 receipt. What is running uses those receipts for live phase and run totals; delegated lane usage is
 added when that lane ends because its CLI does not expose partial usage. Dedicated parent-waker
 assistant-message usage is reported separately under `summary.parent_wakes[]` and excluded from pilot totals.
+An approval-hold notice produces `not-delivered:held`; other recipient delivery notices produce
+`unconfirmed:recipient-notice`, even if the earlier tool result reported success. A hold establishes
+non-delivery at observation time; other notices leave delivery unknown. An admitted send with no
+correlated result or recipient notice records `unconfirmed:<reason>` for `timeout`, `stream-ended`,
+`aborted`, `error` or a later `denied` call. Without an admitted send, failures remain
+`not-delivered:<reason>`. Without a recipient notice, correlated results keep `transport-accepted` or `not-delivered:transport-refused`,
+and account refusals keep `not-delivered:account` even when a notice arrives. Requests blocked by a previous consumer that failed
+to drain record `not-delivered:prior-waker-stuck`. Ordinary run-end cancellation records
+`not-delivered:aborted` before send admission or `unconfirmed:aborted` after admission without a confirmed
+outcome. Retry still requires `tool_use_id` to be null and a `not-delivered:denied` or
+`not-delivered:no-call` receipt; an `unconfirmed:*` receipt never retries. `not-sent:*` outcomes are unchanged.
 
 To total archived costs mechanically, run `node "${CLAUDE_PLUGIN_ROOT}/bin/wt-run-cost.mjs"
 <reports-directory>`. It totals complete runs by LITE/FULL/HARD route and provider family, lists every
