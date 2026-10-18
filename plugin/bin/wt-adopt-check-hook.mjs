@@ -80,11 +80,17 @@ function readInput() {
 function checkDir(dir, set = 'rules', locationKind = 'static', project = null, onFailure = () => {}, timeout = 5_000) {
   const map = new Map()
   map.orphans = []
+  map.complete = false
   const checked = spawnCheck(dir, set, project, onFailure, timeout)
   if (!checked) return map
   const stdout = checkStdout(checked.response, onFailure)
   for (const line of stdout.split('\n')) parseStatusLine(map, line, dir, locationKind)
+  map.complete = checkCompleted(checked)
   return map
+}
+
+function checkCompleted(checked) {
+  return !checked.response?.error && checked.response?.status === 0 && !checked.response?.signal
 }
 
 function spawnCheck(dir, set, project, onFailure, timeout) {
@@ -153,7 +159,15 @@ function refreshLocation(map, copies, set, project, started) {
   if (!checked.size) return { map, refreshed: [] }
   const refreshed = copies.filter(([file]) => /^UP-TO-DATE\b/.test(checked.get(file)?.status ?? ''))
     .map(([file, finding]) => ({ file, ...finding, afterStatus: checked.get(file).status }))
-  return { map: checked, refreshed }
+  return { map: overlayRecheck(map, checked), refreshed }
+}
+
+function overlayRecheck(prior, checked) {
+  // Successful exit alone cannot prove a truncated scan covered the requested inventory.
+  if (checked.complete && [...prior.keys()].every((file) => checked.has(file))) return checked
+  const combined = new Map([...prior, ...checked])
+  combined.orphans = [...(prior.orphans ?? []), ...(checked.orphans ?? [])]
+  return combined
 }
 
 function refreshSet(maps, set, project, started, refreshed) {
