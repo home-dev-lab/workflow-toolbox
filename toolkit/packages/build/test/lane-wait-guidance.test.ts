@@ -23,7 +23,10 @@ describe('lane waiter outcome guidance', () => {
   })
 
   it('announces the parser break and coordinated re-adoption', () => {
-    const text = read('plugin/CHANGELOG.md').split('## [Unreleased]')[1]!.split('\n## ')[0]!
+    // Find the section by the entry it must carry: the heading holding it is `## [Unreleased]` before the release and
+    // `## [<version>]` after it, and the entry itself does not move.
+    const sections = read('plugin/CHANGELOG.md').split('\n## ')
+    const text = sections.find((section) => section.includes('`LANE TIMEOUT exit=124` is removed')) ?? ''
     expect(text).toContain('Breaking')
     expect(text).toContain('`LANE TIMEOUT exit=124` is removed')
     expect(text).toMatch(/`LANE DIED`[\s\S]{0,100}125/)
