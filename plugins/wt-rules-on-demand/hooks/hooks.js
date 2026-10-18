@@ -13,6 +13,9 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
+import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType,
+  pendingAgentType, beginAgentLookup, settleAgentLookup, finishAgentLookup, recordAgentType,
+  agentSpawning, beginAgentSpawn, finishAgentSpawn } from './agent-types.js';
 import { prepareFlight, startFlight, entryFlight, finallyFlight, completeFlight, harvestFlight, markHarvested,
   mergeFlightHealth, noteFlightCall, resetFlightRecorder, disableFlightRecorder } from './flight-recorder.js';
 
@@ -629,15 +632,23 @@ function loadRootCandidates(root, config, linked, fallback) {
 }
 const projectScope = (real, configReal) => real !== null && !sameDirectory(real, configReal);
 
+// A rule name is formatted after the waiver decision, so it is made a primitive string here, once, where host code may
+// still run. A name that cannot be made one fails the whole load: the rule behind it is unknown, so it may gate any call.
+class UnloadableRule extends Error {}
+function ruleFileName(entry, dir) {
+  try { return String(entry?.name); } catch { throw new UnloadableRule(`a rule in ${dir} has a file name that cannot be read`); }
+}
+
 // Synchronous plans expose the existing awaited operations without adding a helper's async completion turn.
 function* loadRuleCopies($, locations, copies, staticFiles, physicalDirs, rules) {
   for (const [scope, dir] of locations) {
     for (const entry of yield list($, dir)) {
-      const file = `${dir}/${entry.name}`;
+      const name = ruleFileName(entry, dir);
+      const file = `${dir}/${name}`;
       const kind = yield entryKind($, file, entry);
-      if (kind !== 'file' || !entry.name.endsWith('.md')) continue;
-      if (!copies.has(entry.name)) copies.set(entry.name, []);
-      copies.get(entry.name).push({ scope, dir, file });
+      if (kind !== 'file' || !name.endsWith('.md')) continue;
+      if (!copies.has(name)) copies.set(name, []);
+      copies.get(name).push({ scope, dir, file });
     }
   }
   for (const [name, found] of copies) yield* loadWinner($, name, found, staticFiles, physicalDirs, rules);
@@ -1101,18 +1112,19 @@ function claim(ctx, rules) {
   for (const rule of rules) { const state = servedAs(ctx, rule); ctx.served.set(rule.name, { count: (state?.count ?? 0) + 1, at: Date.now(), identity: rule.identity }); }
 }
 
-/** @type {import('claude-code').Register} */
-export const register = (on, options, clock = Date.now) => {
-  token = newToken();
-  activityProfile = null;
-  activityWrites.clear();
-  pendingActivity.clear();
-  activityRetryAt = 0;
-  triggerClock = clock;
-  enabled = options?.enabled === true;
-  reserve = options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
+function reserveRequested(options) {
+  return options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
+}
+
+function reserveEnvironmentLimit() {
+  return Number(typeof process !== 'undefined' ? process.env?.WT_ROD_MAX_PER_CONTEXT : NaN);
+}
+
+function configureReserve(options) {
+  reserve = reserveRequested(options);
+  // Read the environment even when reserve is off, preserving registration order.
+  const envLimit = reserveEnvironmentLimit();
   // Host userConfig defaults arrive as explicit options: max_per_context only applies with time_reserve.
-  const envLimit = Number(typeof process !== 'undefined' ? process.env?.WT_ROD_MAX_PER_CONTEXT : NaN);
   limit = 1;
   if (reserve) {
     limit = 3;
@@ -1120,6 +1132,21 @@ export const register = (on, options, clock = Date.now) => {
     if (Number.isInteger(configured) && configured > 0) limit = configured;
     if (Number.isInteger(envLimit) && envLimit > 0) limit = envLimit;
   }
+}
+
+/** @type {import('claude-code').Register} */
+export const register = (on, options, clock = Date.now, agentClock = Date.now) => {
+  token = newToken();
+  activityProfile = null;
+  activityWrites.clear();
+  pendingActivity.clear();
+  activityRetryAt = 0;
+  triggerClock = clock;
+  lookupClock = agentClock;
+  enabled = options?.enabled === true;
+  resetAgentTypes();
+  agentTypeSetting = UNREAD;
+  configureReserve(options);
   contexts = new Map();
   archiveSequence = 0;
   storeSwept = false;
@@ -1130,9 +1157,96 @@ export const register = (on, options, clock = Date.now) => {
   on('prompt.submit', promptSubmitEvent);
   on('turn.complete', turnCompleteEvent);
   on('tool.call', toolCallEvent);
+  on('agent.spawn', agentSpawnEvent);
 };
 
 let triggerClock = Date.now;
+let lookupClock = Date.now;
+
+// The hooks module runs without Node.js globals, and register() receives no $: the project's settings env reaches it
+// only through the host's environment API, called inside a hook. Refusable calls gather configuration;
+// spawn evidence is learned independently, and only the adjacent-to-act decision grants a waiver.
+const UNREAD = Symbol('unread');
+let agentTypeSetting = UNREAD;
+let agentTypeRead = 0;
+let agentTypeApplied = 0;
+async function agentTypeOptOutActive($) {
+  const ticket = ++agentTypeRead;
+  let value, fresh = true;
+  try { value = await hostCall($, $.env.get('WT_ROD_NO_REFUSE_AGENT_TYPES')); } catch { fresh = false; }
+  if (ticket < agentTypeApplied) return false;
+  agentTypeApplied = ticket;
+  if (value !== agentTypeSetting) {
+    agentTypeSetting = value;
+    configureAgentTypes(value);
+  }
+  return fresh;
+}
+
+async function agentSpawnEvent($, e, next) {
+  if (!enabled) return next(e);
+  let resume;
+  try { resume = e.resume?.agentId; } catch { /* Unknown resume cannot supply evidence. */ }
+  const ticket = beginAgentSpawn(resume);
+  try {
+    const result = await next(e);
+    recordSpawnResult(e, result, ticket);
+    return result;
+  } finally { finishAgentSpawn(ticket); }
+}
+
+function recordSpawnResult(e, result, ticket) {
+  let id = ticket.id;
+  try {
+    id = result?.agentId ?? ticket.id;
+    if (!result || result.deny !== undefined) { recordAgentType(id, null, ticket); return; }
+    recordAgentType(id, e.subagentType, ticket);
+  } catch { recordAgentType(id, null, ticket); }
+}
+
+async function lookupAgentType($, id, entry) {
+  let type = null;
+  try { type = (await hostCall($, sentLookup($, entry))).find((agent) => agent.id === id)?.type ?? null; }
+  catch { /* Missing evidence starts a bounded exponential retry delay. */ }
+  finishAgentLookup(id, entry, type, lookupClock());
+}
+
+// The lookup's slot belongs to the host request: a deadline frees the waiting call, while the slot stays taken until
+// the request itself settles.
+function sentLookup($, entry) {
+  let request;
+  try { request = $.agent.list(); } catch (error) { settleAgentLookup(entry); throw error; }
+  Promise.resolve(request).then(() => settleAgentLookup(entry), () => settleAgentLookup(entry));
+  return request;
+}
+
+// Evidence only: refreshes the setting and, when the type is unknown, starts or joins a lookup. It decides nothing.
+async function gatherAgentEvidence($, agentId, before) {
+  if (!before.length || agentLoop(agentId) === MAIN) return;
+  const fresh = await agentTypeOptOutActive($);
+  if (!fresh || !agentTypeOptOutConfigured() || agentSpawning(agentId) || knownAgentType(agentId) !== undefined) return;
+  let entry = pendingAgentType(agentId);
+  if (!entry) {
+    entry = beginAgentLookup(agentId, lookupClock());
+    if (entry) entry.promise = lookupAgentType($, agentId, entry);
+  }
+  if (entry) await entry.promise;
+}
+
+// The only waiver decision: synchronous and from current state. It touches nothing the host owns, so no host callback
+// or getter can run between it and the act; its log line waits until the act has been handed to the host.
+function waivedAgentType(agentId, before) {
+  if (!before.length || agentLoop(agentId) === MAIN || !agentTypeOptOutConfigured() || agentSpawning(agentId)) return undefined;
+  const type = knownAgentType(agentId);
+  return type !== undefined && neverRefuseType(type) ? type : undefined;
+}
+// The refusal set, and the waiver line to log once the act has started.
+function waiverPlan(agentId, candidates) {
+  const type = waivedAgentType(agentId, candidates);
+  if (type === undefined) return { before: candidates, waiver: null };
+  const names = candidates.map((rule) => rule.name).join(', ');
+  return { before: [], waiver: `wt-rules-on-demand: waiving before-act refusal for agent type ${type}; serving ${names} with the result` };
+}
 
 // Only the host-facing promise settles on abort; the body retains its real lifetime.
 async function settleHook(signal, body) {
@@ -1647,8 +1761,10 @@ function* servedSteps($, { ctx, e, loop, admission, slice, budget }, rules, meas
 }
 
 function* toolResultSteps($, call, next, rules, chosen, measured) {
-  const { ctx, e, loop, admission } = call;
-  const result = yield next(e);
+  const { ctx, e, loop, admission, waiver } = call;
+  const acting = next(e);
+  if (waiver) void progress($, waiver);
+  const result = yield acting;
   const refused = Boolean(result && 'deny' in result);
   if (skipToolResult(result, refused)) return result;
   recordCorrelation(ctx, rules, e, result, refused);
@@ -1670,16 +1786,29 @@ function* toolResultSteps($, call, next, rules, chosen, measured) {
   return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
 }
 
+// A rule set that cannot be read whole refuses the call (fail closed). Any other load failure keeps its existing path.
+async function gatedRules($, ctx, e) {
+  try { return { rules: await rulesFor($, ctx, e.cwd ?? '.') }; }
+  catch (error) {
+    if (!(error instanceof UnloadableRule)) throw error;
+    await notice($, error.message);
+    return { deny: `wt-rules-on-demand: ${error.message}, so every call is refused until it is renamed or removed.` };
+  }
+}
+
 // One matcherless tool.call handler: the host permits only one per module.
 async function toolCallWork($, e, next) {
   if (!enabled) return next(e);
   const admission = ++sequence;
-  const loop = agentLoop(e.agentId);
+  // Read once: a host getter read inside the waiver decision could run host code between its own checks.
+  const agentId = e.agentId;
+  const loop = agentLoop(agentId);
   const existing = contexts.get(loop);
   const nextRecords = existing ? decideNext(existing, e) : [];
   const ctx = await context($, loop);
-  const rules = await rulesFor($, ctx, e.cwd ?? '.');
+  const { rules, deny } = await gatedRules($, ctx, e);
   for (const record of nextRecords) await safeVerdict($, record.pending, loop, record.value, record.evidence, record.reason, { seq: admission, noAct: record.noAct });
+  if (deny) return { deny };
   const measured = new Set();
   await evaluate($, ctx, e, loop, measured, admission);
   const triggerErrors = [];
@@ -1688,11 +1817,13 @@ async function toolCallWork($, e, next) {
   for (const pending of inputlessSteps($, e, rules, budget, slice, triggerErrors)) await pending;
   const beforeMatched = new Set();
   const chosen = await selected($, ctx, rules, e, false, { errors: triggerErrors, budget, beforeMatched, slice });
-  const before = beforeRules(chosen, ctx, beforeMatched);
+  const candidates = beforeRules(chosen, ctx, beforeMatched);
+  await gatherAgentEvidence($, agentId, candidates);
   await journal($, [], loop, [], [], [], { triggerErrors: uniqueTriggerErrors(triggerErrors) });
   if (budget.exhausted) await progress($, exhaustionNotice(budget));
+  const { before, waiver } = waiverPlan(agentId, candidates);
   const plan = before.length ? refusalSteps($, ctx, before, e, loop, admission)
-    : toolResultSteps($, { ctx, e, loop, admission, slice, budget }, next, rules, chosen, measured);
+    : toolResultSteps($, { ctx, e, loop, admission, slice, budget, waiver }, next, rules, chosen, measured);
   let step = plan.next();
   while (!step.done) {
     let value;
@@ -1703,4 +1834,4 @@ async function toolCallWork($, e, next) {
   return step.value;
 }
 
-export function resetForSelftest(keepFlightConfig = false) { resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; usageMissing = false; usageStalled = false; scanUnavailable = false; scanStalled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest(keepFlightConfig = false) { resetAgentTypes(); agentTypeSetting = UNREAD; resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; usageMissing = false; usageStalled = false; scanUnavailable = false; scanStalled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
