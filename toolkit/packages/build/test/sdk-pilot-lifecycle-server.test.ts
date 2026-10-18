@@ -76,6 +76,23 @@ const descendantSkipReason = inBwrapPidNamespace
 // fixture override. Real-launch fixtures cannot share their private host root there.
 const realLaunchUnavailable = process.platform === 'win32' || insideChildUserNamespace() === true
 
+function assertUncitedCoverageWarning(warning: string) {
+  expect(warning).toMatch(/^accepted phase=critic/)
+  expect(warning).toContain('WARN ONLY')
+  expect(warning).toContain('The existing test proves the guard remains active.')
+  expect(warning).toContain('must carry a repo-relative `path:line` citation')
+}
+
+function descendantFixtureGit(_program: string, args: string[]) {
+  return args[0] === 'write-tree'
+    ? '1111111111111111111111111111111111111111\n'
+    : args[0] === 'status'
+      ? ' M changed.txt\n'
+      : args[0] === 'diff' && args.includes('--binary')
+        ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
+        : ''
+}
+
 function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, signal = process.kill) {
   if (inspect(pid) !== null) return true
   try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
@@ -683,6 +700,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     })
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('retains a VERIFY-driven non-convergence partial', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-verify-retention-')); roots.push(root); mkdirSync(join(root, '.lane'))
     expect(writeWorktreeRetentionMarker({
@@ -722,6 +742,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     expect(deriveRoute(card).route).toBe(expected)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('routes card signals mechanically, with a human override first', () => {
     expect(deriveRoute('Route: LITE\nType: feature\nRisk: guard')).toMatchObject({ route: 'LITE', reasons: ['human Route: LITE'] })
     expect(deriveRoute('Type: feature')).toMatchObject({ route: 'FULL' })
@@ -758,6 +781,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     else expect(result.reasons).toEqual(['all LITE signals clear'])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('routes the two archived real cards from their copied fixtures', () => {
     expect(deriveRoute(readFileSync(new URL('./fixtures/typescript-lsp-card.md', import.meta.url), 'utf8')).route).toBe('LITE')
     expect(deriveRoute(readFileSync(new URL('./fixtures/intake-triage-card.md', import.meta.url), 'utf8')).route).toBe('FULL')
@@ -791,6 +817,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: ${reason}\n# report\n` }))).toBe('wrote pilot-report')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('routes an L4 finding through the runner and persists its trusted lifecycle record', async () => {
     const created: Array<Record<string, unknown>> = []
     const boardContract = {
@@ -825,6 +854,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     }])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
     const lifecycle = testLifecycle('LITE')
     expect(await text(lifecycle.artifact({ kind, content: 'content' }))).toMatch(/^edge refused: discovery->next; missing .*: /)
@@ -870,6 +902,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     expect(result).toContain(DISCOVERY_REFUSAL_FORMAT)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts fetched content or its digest beside each external claim', async () => {
     const lifecycle = testLifecycle('FULL')
     const record = '## External-source ledger\n- Claim: docs promise retries\n  Source: https://example.test/docs\n  Fetched SHA-256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n  Verdict: confirmed\n- Claim: tickets report timeouts\n  Source: ticket 42\n  Fetched content: timeout occurs after 30 seconds\n  Verdict: refuted\n\nGrounding route: proceed\n'
@@ -898,6 +933,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('keeps the launch snapshot for a genuine pilot decision timeout [fixture records identity from Linux /proc]', async () => {
     const timeoutLauncher = rawLauncher("import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const brief=args[args.indexOf('--brief')+1]; const runId='999-1'; const dir=join(root,'.lane','supervision'); writeFileSync(join(root,'.lane','snapshot-path'),brief); mkdirSync(dir,{recursive:true}); const source=\"const fs=require('fs'),path=require('path');const root=process.argv[1],runId='999-1',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv,owner:'pilot',defaultDecision:'extend',decisionDueAt:'later',evidence:{}}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)\"; const child=spawn(process.execPath,['-e',source,root],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')")
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
@@ -923,7 +961,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it.skipIf(realLaunchUnavailable)('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane [requires POSIX and host user namespace]', async () => {
+})
+
+function restartLaneLauncher() {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
@@ -942,6 +982,12 @@ report=$(node -e 'const fs=require("fs"),tick=String.fromCharCode(96),text=fs.re
 printf 'report\n' > "$report"
 `
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
+    return wrapper
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(realLaunchUnavailable)('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane [requires POSIX and host user namespace]', async () => {
+    const wrapper = restartLaneLauncher()
     const lifecycle = testLifecycle('LITE', [], wrapper, 7_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const first = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
@@ -964,6 +1010,9 @@ printf 'report\n' > "$report"
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-restart-count'), 'utf8')).toBe('2')
   }, 60_000)
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(realLaunchUnavailable)('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [requires POSIX and host user namespace]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
@@ -996,6 +1045,9 @@ printf 'report\n' > "$report"
     await waitForIdentityExit({ pid: supervision.workerPid, argv: supervision.workerArgv })
   }, 15_000)
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not accept a reused worker pid with different argv as live lane evidence', async () => {
     const pidFileName = '.lane/reused-worker-pid'
     const workerArgv = [process.execPath, '-e', 'setInterval(()=>{},1000)']
@@ -1024,6 +1076,9 @@ printf 'report\n' > "$report"
     killIdentity(identity, 'SIGKILL')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('returns actionable TIMEOUT and kills nothing while a matching worker remains running past transition due [fixture records identity from Linux /proc]', async () => {
     const pidFileName = '.lane/running-worker-pid'
     const running = rawLauncher(`import { spawn } from 'node:child_process'; import { mkdirSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const workerSource="const fs=require('fs'),path=require('path');const root=process.argv[1],pidFile=process.argv[2],runId='996-1',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(root,pidFile),String(process.pid));fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'running',workerPid:process.pid,workerArgv,owner:'pilot',decisionTransitionDueAt:new Date(Date.now()-1).toISOString()}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)"; mkdirSync(join(root,'.lane','supervision'),{recursive:true}); const child=spawn(process.execPath,['-e',workerSource,root,${JSON.stringify(pidFileName)}],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun=996-1\\n')`)
@@ -1037,10 +1092,10 @@ printf 'report\n' > "$report"
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
-    const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
-    for (const entry of ['running', 'finishing', 'exited-first', 'child-unreadable'] as const) {
-      const workerSource = `
+})
+
+function finishingWorkerSource(supervisor: string, entry: string) {
+  return `
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -1074,6 +1129,13 @@ writeFileSync(report, 'report\\n')
 appendFileSync(log, 'genuine\\nEXIT=0\\n')
 writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))
 `
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
+    const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
+    for (const entry of ['running', 'finishing', 'exited-first', 'child-unreadable'] as const) {
+      const workerSource = finishingWorkerSource(supervisor, entry)
       const finishing = rawLauncher(`import { spawn } from 'node:child_process'; import { existsSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],log=args[args.indexOf('--log')+1],brief=args[args.indexOf('--brief')+1]; const worker=spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(workerSource)},root,log,brief],{detached:true,stdio:'ignore'}); worker.unref(); const ready=join(root,'.lane',${JSON.stringify(`${entry === 'running' ? 'initial' : 'finishing'}-verdict.json`)}),deadline=Date.now()+15_000; while(!existsSync(ready)&&Date.now()<deadline) await new Promise((resolve)=>setTimeout(resolve,10)); process.stdout.write('pid='+worker.pid+'\\nrun=993-1\\n')`)
       // While a child exits, Linux /proc can serve its stat with an empty cmdline: identity reads unknown, not gone.
       // The emulated window lasts until the worker records its exit, far longer than the real one.
@@ -1111,6 +1173,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     }
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('returns TIMEOUT naming a surviving child when the worker is gone [fixture records Linux argv identity]', async () => {
     const detached = launcher(`import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],runId='995-1',dir=join(root,'.lane','supervision'),source='setInterval(()=>{},1000)',child=spawn(process.execPath,['-e',source],{detached:true,stdio:'ignore'}); child.unref(); mkdirSync(dir,{recursive:true}); writeFileSync(join(root,'.lane','orphan-pid'),String(child.pid)); writeFileSync(join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv:process.argv,childPid:child.pid,childArgv:[process.execPath,'-e',source],worktree:root,owner:'pilot',ownerToken:args[args.indexOf('--owner-token')+1],timeoutAt:new Date().toISOString()})); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('run='+runId+'\\n')`)
     const lifecycle = testLifecycle('LITE', [], detached, 30)
@@ -1144,6 +1209,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     killIdentity(inspectProcess(pid), 'SIGKILL')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses a lane receipt with an empty report', async () => {
     const lifecycle = testLifecycle('LITE', [], logOnlyLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -1185,6 +1253,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'stepped' }))).toBe('accepted phase=report')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses verify with gates run before the latest lane receipt, whatever their mtimes say', async () => {
     const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
@@ -1226,6 +1297,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .resolves.toMatch(/missing gate digest changed .*?[a-f0-9]{64}.*[a-f0-9]{64}.*test\.log/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts a real-git report transaction with a tracked file deleted before the gates', async () => {
     const lifecycle = realGitLifecycle()
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -1263,6 +1337,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain('missing declared artefact .lane/missing.txt')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts a new declared artefact backdated before the lifecycle start', async () => {
     const lifecycle = await realGitLifecycleReadyForReport()
     const artefact = join(lifecycle.root, '.lane', 'backdated.txt')
@@ -1299,6 +1376,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain('declared artefact predates this run: tracked.txt')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform === 'win32')('refuses an old file declared via a directory alias', async () => {
     const lifecycle = await realGitLifecycleReadyForReport('alias')
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/alias/pre-existing.txt\`\n` })
@@ -1337,6 +1417,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(existsSync(join(root, '.lane', 'card.md'))).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses a pre-existing declared artefact rewritten during the run despite its old mtime', async () => {
     const lifecycle = await realGitLifecycleReadyForReport(true)
     const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
@@ -1374,6 +1457,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('fixture gate receipts land past the filesystem clock tick of the lane receipt', async () => {
     // The server appends EXIT= to a gate log AFTER the fixture runner returns, so the receipt carries the real
     // clock. A fake gate is instantaneous: without a deliberate pause both writes can share one coarse
@@ -1401,6 +1487,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('publishes matching cost receipts and refuses a stale report with its first divergent phase row', () => {
     const fixture = (stale: boolean) => {
       const container = mkdtempSync(join(tmpdir(), 'wt-cost-publish-')); roots.push(container)
@@ -1429,6 +1518,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readdirSync(join(stale.archiveRoot, '.claude', 'reports'))).toEqual([])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('allows no cost block only before cost.json exists and refuses an unreadable or unpaired receipt', () => {
     const publish = (kind: 'absent' | 'cost-only' | 'report-only' | 'unreadable') => {
       const container = mkdtempSync(join(tmpdir(), 'wt-cost-missing-')); roots.push(container)
@@ -1461,6 +1553,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports')).filter((name) => !name.includes('.tmp-'))).toHaveLength(1)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('records the commit, archive manifest digest, and lifecycle implementation', async () => {
     let revisions = 0
     const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
@@ -1492,6 +1587,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toThrow(/archive destination must be outside the lifecycle worktree/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('keeps the lifecycle archive readable after removing its real git worktree', async () => {
     const container = mkdtempSync(join(tmpdir(), 'wt-lifecycle-removal-')); roots.push(container)
     const project = join(container, 'project'); const worktree = join(container, 'card-worktree')
@@ -1520,6 +1618,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(createHash('sha256').update(manifestContent).digest('hex')).toBe(summary.archive.manifest_sha256)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses to remove a marked worktree while its card is open, then removes it after the marker is cleared', async () => {
     const container = mkdtempSync(join(tmpdir(), 'wt-retained-worktree-')); roots.push(container)
     const project = join(container, 'project'); const worktree = join(container, 'card-worktree')
@@ -1548,6 +1649,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(existsSync(worktree)).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses to remove a marked worktree when the board is unavailable and allows expiry in Done', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-retention-decision-')); roots.push(root)
     mkdirSync(join(root, '.lane')); mkdirSync(join(root, '.git'))
@@ -1572,6 +1676,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     ])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('fails closed for invalid, dangling, and foreign retention markers and names the marker and card', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-retention-invalid-')); roots.push(root)
     const foreign = mkdtempSync(join(tmpdir(), 'wt-retention-foreign-')); roots.push(foreign)
@@ -1590,7 +1697,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     await expect(removeLifecycleWorktree({ root, board: null })).rejects.toThrow(new RegExp(`${markerPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*card 42.*${realpathSync(foreign).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*${realpathSync(root).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   })
 
-  it('drives the real retention CLI through configured HTTP for terminal, open, and unavailable cards', async () => {
+})
+
+function retentionCliWorktrees() {
     const container = mkdtempSync(join(tmpdir(), 'wt-retention-cli-')); roots.push(container)
     const project = join(container, 'project'); mkdirSync(project); writeFileSync(join(project, '.gitignore'), '.lane/\n'); writeFileSync(join(project, 'tracked.txt'), 'base\n')
     const git = (...args: string[]) => spawnSync('git', args, { cwd: project, encoding: 'utf8' })
@@ -1605,10 +1714,13 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       }))
       return [name, worktree]
     }))
-    let unavailable = false
+    return { container, worktrees }
+}
+
+function retentionHttpServer(isUnavailable: () => boolean) {
     const server = createServer((request, response) => {
       let body = ''; request.setEncoding('utf8'); request.on('data', (chunk) => { body += chunk }); request.on('end', () => {
-        if (unavailable) { response.writeHead(500); response.end('unavailable'); return }
+        if (isUnavailable()) { response.writeHead(500); response.end('unavailable'); return }
         let rpc: { method?: string, id?: unknown, params?: { name?: string, arguments?: { cardId?: string } } }
         try { rpc = JSON.parse(body) } catch { response.writeHead(400); response.end(); return }
         let result = {}
@@ -1621,6 +1733,14 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
         response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id ?? null, result }))
       })
     })
+    return server
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it('drives the real retention CLI through configured HTTP for terminal, open, and unavailable cards', async () => {
+    const { container, worktrees } = retentionCliWorktrees()
+    let unavailable = false
+    const server = retentionHttpServer(() => unavailable)
     await new Promise<void>((resolveReady) => server.listen(0, '127.0.0.1', resolveReady))
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('HTTP fixture has no port')
     const incompleteStatus = await new Promise<number>((resolveStatus, reject) => {
@@ -1648,6 +1768,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     } finally { await new Promise<void>((resolveClose) => server.close(() => resolveClose())) }
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('H14-2 lock: refuses a Partial line on a full run and exposes null partial state', async () => {
     const lifecycle = await lifecycleAtVerify()
     await writeGates(lifecycle)
@@ -1670,6 +1793,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(fs.existsSync(/--brief (\S+)/.exec(call)![1]!)).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('launches an independent lane from a read-only snapshot outside the worktree', async () => {
     const recordedBrief = join(tmpdir(), `wt-h9-brief-${process.pid}-${Date.now()}`)
     const recordedInput = `${recordedBrief}.diff`
@@ -1704,6 +1830,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(recordedInput, 'utf8')).not.toContain('forged diff')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not terminate a launcher-reported process group after attesting its receipt', async () => {
     const pidFile = join(tmpdir(), `wt-h9-pid-${process.pid}-${Date.now()}`)
     roots.push(pidFile)
@@ -1732,7 +1861,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(refused).toContain('wt-lane: Refused: another lane launch owns the current supervision pointer')
   })
 
-  it.skipIf(process.platform === 'win32' || inBwrapPidNamespace)(`the shipped launcher keeps ordinary descendants in the terminated lane group [${descendantSkipReason}]`, async () => {
+})
+
+function prepareDescendantFixture() {
     const bin = mkdtempSync(join(tmpdir(), 'wt-h10-bin-')); roots.push(bin)
     const config = mkdtempSync(join(tmpdir(), 'wt-h10-config-')); roots.push(config)
     const watcher = join(bin, 'watcher.mjs')
@@ -1751,13 +1882,28 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     process.env.PATH = hermeticPath([bin]); process.env.CLAUDE_CONFIG_DIR = config; process.env.XDG_STATE_HOME = join(config, 'state')
     process.env.NODE_OPTIONS = `${oldNodeOptions ? `${oldNodeOptions} ` : ''}--require=${platformPreload}`
     process.env.WT_LANE_MIN_AVAILABLE_MIB = '0'
-    const git = (_program: string, args: string[]) => args[0] === 'write-tree'
-      ? '1111111111111111111111111111111111111111\n'
-      : args[0] === 'status'
-      ? ' M changed.txt\n'
-      : args[0] === 'diff' && args.includes('--binary')
-        ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
-        : ''
+    return { oldPath, oldConfig, oldState, oldNodeOptions, oldMinimum }
+}
+
+function restoreDescendantFixture(lifecycle: ReturnType<typeof testLifecycle>, saved: ReturnType<typeof prepareDescendantFixture>) {
+       const { oldPath, oldConfig, oldState, oldNodeOptions, oldMinimum } = saved
+       process.env.PATH = oldPath
+       if (oldConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
+       else process.env.CLAUDE_CONFIG_DIR = oldConfig
+       if (oldState === undefined) delete process.env.XDG_STATE_HOME
+       else process.env.XDG_STATE_HOME = oldState
+       if (oldNodeOptions === undefined) delete process.env.NODE_OPTIONS
+       else process.env.NODE_OPTIONS = oldNodeOptions
+       if (oldMinimum === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
+       else process.env.WT_LANE_MIN_AVAILABLE_MIB = oldMinimum
+       const pgidFile = join(lifecycle.root, '.lane', 'survivor-pgid')
+       if (fs.existsSync(pgidFile)) { try { process.kill(-Number(readFileSync(pgidFile, 'utf8')), 'SIGKILL') } catch {} }
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(process.platform === 'win32' || inBwrapPidNamespace)(`the shipped launcher keeps ordinary descendants in the terminated lane group [${descendantSkipReason}]`, async () => {
+    const saved = prepareDescendantFixture()
+    const git = descendantFixtureGit
     const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), DESCENDANT_LANE_WAIT_MS, {
       git,
       lanePlatform: 'darwin',
@@ -1785,20 +1931,13 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'review-snapshot.json'), 'utf8'))).toEqual({ dir: 0o700, brief: 0o400 })
       expect(() => process.kill(survivorPid, 0), `ordinary descendant ${survivorPid} survived its lane receipt`).toThrow()
     } finally {
-      process.env.PATH = oldPath
-      if (oldConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = oldConfig
-      if (oldState === undefined) delete process.env.XDG_STATE_HOME
-      else process.env.XDG_STATE_HOME = oldState
-      if (oldNodeOptions === undefined) delete process.env.NODE_OPTIONS
-      else process.env.NODE_OPTIONS = oldNodeOptions
-      if (oldMinimum === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
-      else process.env.WT_LANE_MIN_AVAILABLE_MIB = oldMinimum
-      const pgidFile = join(lifecycle.root, '.lane', 'survivor-pgid')
-      if (fs.existsSync(pgidFile)) { try { process.kill(-Number(readFileSync(pgidFile, 'utf8')), 'SIGKILL') } catch {} }
+      restoreDescendantFixture(lifecycle, saved)
     }
   }, DESCENDANT_TEST_BUDGET_MS)
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses traversal and absolute inspect log names', async () => {
     const lifecycle = testLifecycle('LITE')
     for (const name of ['../../x', '/tmp/x']) expect(await text(lifecycle.run({ kind: 'inspect', what: 'log', name }))).toContain('missing log name')
@@ -1817,6 +1956,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['Quality coverage', '', 'Missing ## Quality coverage'],
     ['State and recovery', '## State and recovery\n\n', 'Empty ## State and recovery'],
@@ -1845,6 +1987,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(priorEvidence, 'utf8')).toBe('prior critic evidence\n')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('warns on uncited existing coverage, checks citation targets, and leaves future coverage untouched', async () => {
     const plan = (claim: string) => planCoverage + `## ADR\nDecision: x\nRejected: y\n## Tasks\n- ${claim} DoD: green\n## Gates\n- test\n`
 
@@ -1852,10 +1997,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     await uncited.transition({ phase: 'discovery', tool_use_id: 'start' })
     await uncited.artifact({ kind: 'plan', content: plan('The existing test proves the guard remains active.') })
     const warning = await text(uncited.transition({ phase: 'plan', tool_use_id: 'plan' }))
-    expect(warning).toMatch(/^accepted phase=critic/)
-    expect(warning).toContain('WARN ONLY')
-    expect(warning).toContain('The existing test proves the guard remains active.')
-    expect(warning).toContain('must carry a repo-relative `path:line` citation')
+    assertUncitedCoverageWarning(warning)
 
     const cited = testLifecycle('FULL')
     writeFileSync(join(cited.root, 'guard.test.ts'), 'setup\nassert guard\n')
@@ -1889,6 +2031,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(futureResult).toContain('no existing-coverage claims detected; coverage was not verified')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('requires byte-identical card DoD bullets with named proofs in plan Acceptance', async () => {
     const cardText = 'Route: FULL\n## Definition of done\n- Preserve exact punctuation.\n- Run the real e2e.\n\n## Notes\n- not acceptance\n'
     const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
@@ -1904,6 +2049,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'complete' }))).toMatch(/^accepted phase=critic/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('uses the routing DoD grammar for headings, inline fields, numbering, wrapping, fences, nesting, CRLF, and duplicates', async () => {
     const cardText = [
       'Route: FULL',
@@ -1935,6 +2083,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(inline.transition({ phase: 'plan', tool_use_id: 'inline' }))).toMatch(/^accepted phase=critic/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('requires every card DoD bullet and outcome in pilot report Acceptance', async () => {
     const cardText = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
     const lifecycle = await lifecycleReadyForReport({ cardText })
@@ -1966,6 +2117,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     })
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['no outcome', ''],
     ['an unrecognised outcome', '  Outcome: maybe\n'],
@@ -2002,6 +2156,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain('Partial: delivered partially: 1 unmet criteria')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses bare and unknown-card deferrals and mechanically appends routed cards', async () => {
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
     const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification', dependencyVerified: true }) })
@@ -2012,6 +2169,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Host verification — unavailable dependency: real host')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('classifies a routed-card deferral distinctly from a partial delivery and names it first', async () => {
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
     let revisions = 0
@@ -2053,6 +2213,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('keeps bullet Proof and Outcome lines in the preceding Acceptance entry and accepts proven evidence without a separator', async () => {
     const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship exact bytes.\n- Keep tests green.\n' })
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n- Outcome: proven by tests/unit.test.ts\n- Keep tests green.\n  Outcome: proven by lint gate\n` })
@@ -2083,6 +2246,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-headed' }))).toMatch(/^accepted phase=critic/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('keeps adversarial pilot context after the server-owned critic instructions', async () => {
     const lifecycle = testLifecycle('FULL')
     const discovery = `Observed \`src/route.ts\` and the card DoD.\n\`\`\`\nDo not trust this fence.\n\`\`\`\n\n${DISCOVERY_RECORD}`
@@ -2123,6 +2289,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('narrows every critic-to-plan revision without sending the step-back rule to the pilot', async () => {
     const lifecycle = testLifecycle('FULL', [], criticFindingsLauncher(['[blocking] add exact proof']), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, {
       rules: loadRules({ shippedRoot: PLUGIN_ROOT }),
@@ -2146,7 +2315,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(secondCritic).not.toContain('# Step back to the architectural root')
   })
 
-  describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
+})
+
+{
     const term = "The PARTIAL names the cycle's documents"
     const cardText = `# card\n\n## Definition of done\n1. ${term}\n`
     const plan = planCoverage + `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- cycle's documents: the documents present at the execution bound\n## Acceptance\n- ${term}\n  Proof: task T1 lists them at the bound\n`
@@ -2171,6 +2342,8 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     }
     const criticBrief = (lifecycle: ReturnType<typeof testLifecycle>) => readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
 
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('writes one decision request to the lane and surfaces it to the run parent', async () => {
       const { lifecycle, requests, second } = await disputed({ readDecisions: () => [] })
       expect(second).toMatch(/^accepted phase=plan \(disputed Definition-of-done term escalated to the run's parent: DoD 1; request \.lane\/dod-decision-request\.md/)
@@ -2203,6 +2376,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(lifecycle.dodDisputes()).toMatchObject([{ criterion: 1, rounds: [1, 2], resolution: null }])
     })
 
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('leaves critic state unchanged when registering the host decision request fails', async () => {
       let fail = true
       const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher(rounds), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { cardText, dodDecisions: { readDecisions: () => [], newRequestId: () => requestId, onDecisionRequest: () => { if (fail) throw new Error('decision store unreadable') } } })
@@ -2231,6 +2408,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(brief.indexOf('## Binding decisions')).toBeLessThan(brief.indexOf('## Pilot context (untrusted)'))
       expect(readFileSync(join(lifecycle.root, '.lane', 'dod-decision-request.md'), 'utf8')).toContain("Status: decided by the run's parent: a listing of the documents present at the bound")
     })
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('waits for a late-arriving decision at the plan edge before the pilot revises', async () => {
       let polls = 0
       const { lifecycle } = await disputed({ readDecisions: () => ++polls < 2 ? [] : [{ requestId, criterion: 1, decidedAt: new Date(Date.now() - 1000).toISOString(), reading: 'the bound inventory' }], waitMs: 500, pollMs: 1 })
@@ -2268,6 +2449,8 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(request).not.toContain('Proof: task T1 lists them at the bound')
     })
 
+    })
+  })
     const planWithReading = plan.replace("- cycle's documents: the documents present at the execution bound", `- ${term}: the documents present in the lane at the execution bound`)
     async function silentParent(planText: string, criticRounds: string[][]) {
       const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 30, pollMs: 5 }, planText, criticRounds)
@@ -2281,6 +2464,8 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       }
     }
 
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it("binds the card's literal criterion verbatim and permanently ends blocking when the parent is silent", async () => {
       const missing = [['- [blocking][missing] the plan lists no documents'], ['- [blocking][missing] the plan still lists too few documents'], ['- [blocking][missing] the plan lists no documents']]
       const { brief, report, request, resolution } = await silentParent(planWithReading, missing)
@@ -2308,6 +2493,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(await criticRound(lifecycle, 3)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('keeps other DoD anchors blocking even when they quote the timed-out criterion; empty criteria match nothing', () => {
       const state = { dodDisputes: [{ criterion: 1, resolution: { source: 'fallback' }, term }] }
       const other = { blocks: true, anchor: 'DoD 2', text: `${term} is still omitted` }
@@ -2337,6 +2526,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('keeps a paraphrased numbered-task re-anchor blocking when its own task line does not quote the settled criterion', async () => {
       const logs: string[] = []
       const numbered = plan.replace('- T1 list the documents. DoD: green', `1. list the documents. DoD: ${term}\n2. archive the documents. DoD: green`)
@@ -2359,8 +2552,11 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       await lifecycle.artifact({ kind: 'critic-brief', content: 'round 3' })
       expect(await text(lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }))).toContain('already stopped the lifecycle')
     })
+    })
   })
+}
 
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
     const finding = '[blocking] CONTEST routed card 42: this is in scope'
     const snapshots: Array<{ phases: Array<{ phase: string }>, routed_cards: Array<{ contested?: boolean }> }> = []
@@ -2398,6 +2594,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(brief).toContain("the repository's mandatory gates")
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['unions exact-deduplicated findings', [['changes-requested', ['[blocking] shared', '[blocking] alpha']], ['changes-requested', ['[blocking] shared', '[blocking] beta']]], 'changes-requested', ['[blocking] shared', '[blocking] alpha', '[blocking] beta']],
     ['requests changes when only one critic blocks', [['approved', []], ['changes-requested', ['[blocking] one lane blocks']]], 'changes-requested', ['[blocking] one lane blocks']],
@@ -2419,6 +2618,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(existsSync(join(lifecycle.root, '.lane', 'critic-B-report.md'))).toBe(true)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['all non-blocking advances and carries findings', ['[non-blocking] polish the wording'], 'tdd'],
     ['any blocking consumes a round', ['[non-blocking] polish the wording', '[blocking] missing proof'], 'plan'],
@@ -2460,6 +2662,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain(expected)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('R3 carries mixed-round non-blocking findings and deduplicates exact text', async () => {
     const first = ['- [non-blocking] polish wording', '- [non-blocking] polish wording', '- [blocking] add proof']
     const second = ['- [non-blocking] optional rename']
@@ -2495,6 +2700,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(lifecycle.state().phase).toBe('critic')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('publishes and attests the nonce report rather than stale shared reports', async () => {
     const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(join(root,'.lane/critic-report.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(join(root,'.lane/critic-report.other.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] genuine\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
     const lifecycle = testLifecycle('FULL', [], worker, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
@@ -2524,6 +2732,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(commits).toBe(1)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('derives the critic verdict from its attested report and rejects a pilot mismatch', async () => {
     const lifecycle = testLifecycle('FULL', [], verdictLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -2537,6 +2748,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toBe('accepted phase=plan')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not collect bullets after the findings section ends at a following heading', async () => {
     const lifecycle = testLifecycle('FULL', [], launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] real finding\\n## Notes\\n- explanatory bullet\\n')"), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -2573,6 +2787,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(empty.transition({ phase: 'critic', tool_use_id: 'empty' }))).toContain('VERDICT block')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses a symlinked lane report and a symlinked .lane directory', async () => {
     const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -2614,6 +2831,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(clean.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'audit' }))).toBe('accepted phase=report')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('removes stale receipts before launch and refuses to attest them', async () => {
     const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -2655,6 +2875,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(Object.keys(evidence.entries).filter((file) => file.includes('tdd-run'))).toEqual([join(lifecycle.root, '.lane', 'tdd-run.log')])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each(['run', 'write_artifact', 'transition'] as const)('refuses %s after .lane is replaced', async (operation) => {
     const lifecycle = testLifecycle('LITE')
     const moved = mkdtempSync(join(tmpdir(), 'wt-lifecycle-replaced-lane-')); roots.push(moved)
@@ -2693,6 +2916,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readdirSync(join(archive.archiveRoot, '.claude', 'reports')).filter((name) => name.includes('.tmp-'))).toEqual([])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not commit again after post-commit status throws', async () => {
     let revisions = 0; let commits = 0; let statusReads = 0
     const git = (_program: string, call: string[]) => {
@@ -2733,6 +2959,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports'))).toEqual([])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses an archive whose reports ancestor becomes a symlink', async () => {
     let revisions = 0
     const lifecycle = await lifecycleReadyForReport({ git: (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '' })
@@ -2767,6 +2996,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'one', route: 'LITE' }))).toContain('unique tool_use_id')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts a transition despite a lifecycle receipt write failure and retries it idempotently', async () => {
     let writes = 0
     const lifecycle = testLifecycle('LITE', [], null, null, {
@@ -2783,6 +3015,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd'])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts lifecycle and archive directories reached through a symlinked temporary ancestor', () => {
     const physical = mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-')); roots.push(physical)
     const linked = join(tmpdir(), `wt-lifecycle-link-${Date.now()}`)
@@ -2803,6 +3038,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
   // Card 1873173639063406158: WT_AGENT_SDK_PATH, set for the runner only, reached the run's own
   // `pnpm test` gate and turned two correct tests red. The real default gate path (no gateRunner) runs a
   // fake `pnpm` that prints the environment it received into the gate log.
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform === 'win32')('runs a lifecycle gate without the runner-only WT_* variables and keeps what a gate needs', async () => {
     const bin = realpathSync(mkdtempSync(join(tmpdir(), 'wt-gate-env-bin-'))); roots.push(bin)
     writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'for (const [k, v] of Object.entries(process.env)) console.log(k + "=" + v)'\n`)

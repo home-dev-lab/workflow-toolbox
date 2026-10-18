@@ -356,7 +356,7 @@ function checkCriticReceipts(context, receipts, laneReports) {
   return stale ? refusal('critic->next', "critic pair receipts for current brief; relaunch with run { kind: 'lane', phase: 'critic' }", laneDir, 'receipt') : null
 }
 
-export function createLifecycleLaunch({
+function launchOptions({
   root,
   laneDir,
   executor,
@@ -384,28 +384,39 @@ export function createLifecycleLaunch({
   recordLaneEnd = () => {},
   progress = () => {},
 }) {
-  const evidencePath = path.join(laneDir, 'evidence.json')
-  const attestations = new Map()
+  return { root, laneDir, executor, executorEnv, knowledgeBaseIndex, constructionBase, frozenModels, state,
+    laneBriefContexts, laneBriefIdentities, prepareLaneBrief, assertLaneDir, refusal, lanePhases, phases, gates,
+    laneLauncher, lanePollMs, laneWaitMs, lanePlatform, laneProcessReader, gateRunner, testFramework, now,
+    recordLaneStart, recordLaneEnd, progress }
+}
 
-  let criticAggregateKey = null
-  let criticLaunching = false
+function initializeLaunch(context) {
+  const { laneDir, lanePlatform, laneProcessReader } = context
+  context.evidencePath = path.join(laneDir, 'evidence.json')
+  context.attestations = new Map()
+  context.criticAggregateKey = null
+  context.criticLaunching = false
   const classify = (record) => classifyLane(record, {
     platform: lanePlatform,
     ...(laneProcessReader ? { inspect: laneProcessReader.inspect, processExists: laneProcessReader.processExists, processState: laneProcessReader.processState } : {}),
   })
 
-  const owned = createOwnedLaneWait({ root, state, readRegularFile, readAttestation, waitForLaneReceipt, classify,
+  const { root, state, lanePollMs, refusal, recordLaneEnd, now, assertLaneDir, attest, progress } = context
+  context.owned = createOwnedLaneWait({ root, state, readRegularFile, readAttestation, waitForLaneReceipt, classify,
     lanePollMs, refusal, controlPath: CONTROL, recordLaneEnd, now, regularFile, assertLaneDir, attest, progress, maxReportBytes: MAX_LANE_REPORT_BYTES })
+}
 
-  function audit(entries = attestations) {
+function launchAudit(context, entries = context.attestations) {
+    const { assertLaneDir, evidencePath, state } = context
     assertLaneDir()
     writeRegularFile(
       evidencePath,
       `${JSON.stringify({ version: 1, entries: Object.fromEntries(entries), verify_snapshot: state.verifySnapshot }, null, 2)}\n`,
     )
-  }
+}
 
-  function attest(file, extra = {}) {
+function launchAttest(context, file, extra = {}) {
+    const { assertLaneDir, attestations, audit } = context
     assertLaneDir()
     const entry = readAttestation(file)
     if (!entry) return null
@@ -415,45 +426,45 @@ export function createLifecycleLaunch({
     audit(proposed)
     attestations.set(file, saved)
     return saved
-  }
+}
 
-  function verified(file) {
+function launchVerified(context, file) {
+    const { assertLaneDir, attestations } = context
     assertLaneDir()
     const saved = attestations.get(file)
     const current = readAttestation(file)
     return saved && current && saved.size === current.size && saved.sha256 === current.sha256 && saved.mtime === current.mtime
       ? saved
       : null
-  }
+}
 
-  function invalidateLaneEvidence(phase) {
+function launchInvalidate(context, phase) {
+    const { attestations, root, laneDir, audit } = context
     attestations.delete(path.join(ensureLaneHostDir(root), `${phase}-run.log`))
     attestations.delete(path.join(laneDir, `${phase}-report.md`))
     audit()
-  }
+}
 
-  const evidenceContext = { assertLaneDir, laneOwnershipPending, root, laneDir, verified, refusal, gates, state, attestations, evidencePath, laneBriefContexts, laneBriefIdentities }
-  const laneEvidence = (phase, allowFailed) => checkLaneEvidence(evidenceContext, phase, allowFailed)
+function launchOwnershipPending(context, phase) {
+    return [...context.state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && context.criticLaunching
+}
 
-  function laneOwnershipPending(phase) {
-    return [...state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && criticLaunching
-  }
-
-  const gatesEvidence = (edge, allowNonzero) => checkGatesEvidence(evidenceContext, edge, allowNonzero)
-
-  function verifySnapshot(edge) {
+function launchVerifySnapshot(context, edge) {
+    const { gatesEvidence, state, root, gateReceipts, audit } = context
     const receipt = gatesEvidence(edge)
     if (receipt) return receipt
     state.verifySnapshot = verifyGateSnapshot(root, gateReceipts())
     audit()
     return null
-  }
+}
 
-  function gateReceipts() {
+function launchGateReceipts(context) {
+    const { gates, attestations, laneDir } = context
     return [...gates()].map((name) => ({ name, ...attestations.get(path.join(laneDir, `${name}.log`)) }))
-  }
+}
 
-  function verifyFailedSnapshot(edge, findings) {
+function launchVerifyFailedSnapshot(context, edge, findings) {
+    const { gatesEvidence, laneDir, gateReceipts, testFramework, refusal, state, root, audit } = context
     const receipt = gatesEvidence(edge, true)
     if (receipt) return receipt
     const testLog = path.join(laneDir, 'test.log')
@@ -466,44 +477,40 @@ export function createLifecycleLaunch({
     state.verifySnapshot = verifyGateSnapshot(root, receipts, remediation.findings)
     audit()
     return remediation
-  }
+}
 
-  const snapshotEvidence = (edge) => checkSnapshotEvidence(evidenceContext, edge)
-
-  function launchProblem(phase) {
+function launchProblem(context, phase) {
+    const { lanePhases, state, laneBriefContexts, lanePathProblem } = context
     if (!lanePhases.has(state.phase) || phase !== state.phase) return { missing: 'lane for current admitted phase' }
-    if ([...state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && criticLaunching) {
+    if ([...state.ownedLanes.values()].some((record) => record.phase === phase) || phase === 'critic' && context.criticLaunching) {
       return { missing: `lane ${phase} is owned and live; decide with run { kind: 'control', decision: 'extend'|'abandon' }` }
     }
     if (!laneBriefContexts.has(phase)) return { missing: 'brief not written through write_artifact' }
     const slots = phase === 'critic' && state.priorCriticRounds.length === 0 ? ['critic', 'critic-A', 'critic-B'] : [phase]
     return lanePathProblem(slots)
-  }
+}
 
-  const lanePathProblem = (slots) => checkLanePaths(evidenceContext, slots)
-
-  const canLaunchLane = (phase) => !launchProblem(phase)
-
-  async function runParallelCritics(args) {
-    criticLaunching = true
+async function launchParallelCritics(context, args) {
+    const { laneDir, invalidateLaneEvidence, runSingle, aggregateCritics } = context
+    context.criticLaunching = true
     try {
-      criticAggregateKey = null
+      context.criticAggregateKey = null
       invalidateCriticPair(laneDir, invalidateLaneEvidence)
       const results = await Promise.all(['A', 'B'].map((criticLane) => runSingle({ ...args, criticLane })))
-      criticLaunching = false
+      context.criticLaunching = false
       return aggregateCritics(results, ['A', 'B'])
-    } finally { criticLaunching = false }
-  }
+    } finally { context.criticLaunching = false }
+}
 
-  const criticReceiptProblem = (receipts, laneReports) => checkCriticReceipts(evidenceContext, receipts, laneReports)
-
-  function pendingCriticResult(results, slots) {
+function launchPendingCriticResult(context, results, slots) {
+    const { state } = context
     const pending = [...state.ownedLanes.values()].filter((record) => record.phase === 'critic')
-    if (!pending.length && !criticLaunching) return null
+    if (!pending.length && !context.criticLaunching) return null
     return pending.map((record) => `critic-${record.criticLane}: ${results[slots.indexOf(record.criticLane)]}`).join('\n') || 'lane critic TIMEOUT: pair launch pending'
-  }
+}
 
-  function aggregateCritics(results, slots) {
+function launchAggregateCritics(context, results, slots) {
+    const { pendingCriticResult, root, laneDir, verified, criticReceiptProblem, refusal, attest, state, progress } = context
     const pending = pendingCriticResult(results, slots)
     if (pending) return pending
     const laneIds = ['A', 'B']
@@ -513,7 +520,7 @@ export function createLifecycleLaunch({
     const problem = criticReceiptProblem(receipts, laneReports)
     if (problem) return results.find((result) => result.startsWith('edge refused:')) ?? problem
     const exit = receipts.find((receipt) => receipt.exit !== '0')?.exit ?? '0', key = receipts.map((receipt) => receipt.sha256).join(':')
-    if (criticAggregateKey === key) return `lane critic EXIT=${exit}`
+    if (context.criticAggregateKey === key) return `lane critic EXIT=${exit}`
     const canonicalLog = path.join(ensureLaneHostDir(root), 'critic-run.log')
     const canonicalReport = path.join(laneDir, 'critic-report.md')
     const laneLogSections = laneIds.map((laneId, index) => `LANE=${laneId}\n${readRegularFile(laneLogs[index])}`)
@@ -524,26 +531,38 @@ export function createLifecycleLaunch({
     attest(canonicalReport)
     attest(canonicalLog, { group: 'worker-owned' })
     state.laneReceiptSeq += 1
-    criticAggregateKey = key
+    context.criticAggregateKey = key
     progress()
     return `lane critic EXIT=${exit}`
-  }
+}
 
-  async function runSingle(args) {
+async function launchRunSingle(context, args) {
+    const { assertLaneDir, refusal, state, laneDir } = context
     try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!args || typeof args !== 'object') return refusal(`${state.phase}->next`, 'run arguments object', laneDir)
-    if (args.kind === 'lane') {
+    if (args.kind === 'lane') return launchRunLane(context, args)
+    if (args.kind === 'gate') return launchRunGate(context, args)
+    if (args.kind === 'control') {
+      const { root, owned, aggregateCritics } = context
+      return runOwnedControl({ root, state, laneDir, refusal, owned, controlPath: CONTROL, aggregate: aggregateCritics }, args)
+    }
+    if (args.kind === 'inspect') return launchInspect(context, args)
+    return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect|control', laneDir)
+}
+
+function prepareLaneLaunch(context, args) {
+      const { lanePhases, state, refusal, laneDir, executorEnv, owned, laneBriefContexts, root, now } = context
       if (!lanePhases.has(state.phase) || args.phase !== state.phase) {
-        return refusal(`${state.phase}->next`, 'lane for current admitted phase', path.join(laneDir, `${args.phase ?? 'unknown'}-run.log`))
+        return { refused: refusal(`${state.phase}->next`, 'lane for current admitted phase', path.join(laneDir, `${args.phase ?? 'unknown'}-run.log`)) }
       }
       const phase = args.phase
       const identity = criticLaneLaunchIdentity(args.criticLane, executorEnv)
       if (owned.owns(identity, phase)) {
-        return refusal(`${phase}->next`, `lane ${phase} is owned and live; decide with run { kind: 'control', decision: 'extend'|'abandon' }`, laneDir)
+        return { refused: refusal(`${phase}->next`, `lane ${phase} is owned and live; decide with run { kind: 'control', decision: 'extend'|'abandon' }`, laneDir) }
       }
       const brief = path.join(laneDir, `${phase}${identity.suffix}-brief.md`)
       if (!laneBriefContexts.has(phase)) {
-        return refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief)
+        return { refused: refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief) }
       }
       const canonicalLog = path.join(ensureLaneHostDir(root), `${phase}${identity.suffix}-run.log`)
       const canonicalReport = path.join(laneDir, `${phase}${identity.suffix}-report.md`)
@@ -552,20 +571,28 @@ export function createLifecycleLaunch({
       const nonce = randomUUID()
       const log = path.join(ensureLaneHostDir(root), `${phase}-run${identity.noncePart}.${nonce}.log`)
       const report = path.join(laneDir, `${phase}-report${identity.noncePart}.${nonce}.md`)
+      return finishLanePreparation(context, { phase, identity, brief, canonicalLog, canonicalReport, timeout, launchedAt, nonce, log, report })
+}
+
+function finishLanePreparation(context, lane) {
+      const { state, refusal } = context
+      const { canonicalLog, canonicalReport } = lane
       if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
-        return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog, 'receipt')
+        return { refused: refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog, 'receipt') }
       }
       if (fs.existsSync(canonicalReport) && !regularFile(canonicalReport)) {
-        return refusal(`${state.phase}->next`, 'regular lane report', canonicalReport, 'receipt')
+        return { refused: refusal(`${state.phase}->next`, 'regular lane report', canonicalReport, 'receipt') }
       }
       fs.rmSync(canonicalLog, { force: true })
       fs.rmSync(canonicalReport, { force: true })
-      let snapshot = null
-      let group = 'worker-owned'
-      let laneRecord = null
-      let ownedRecord = null
-      try {
-        snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-launch-'))
+      return lane
+}
+
+function prepareLaunchSnapshot(context, lane) {
+        const { prepareLaneBrief, laneBriefContexts, frozenModels } = context
+        const { phase, report, brief, log, nonce } = lane
+        lane.snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-launch-'))
+        const snapshot = lane.snapshot
         fs.chmodSync(snapshot, 0o700)
         const launchBriefs = prepareLaneBrief(phase, laneBriefContexts.get(phase), report, snapshot)
         fs.rmSync(brief, { force: true })
@@ -573,57 +600,77 @@ export function createLifecycleLaunch({
         const snapshotBrief = path.join(snapshot, 'brief.md')
         fs.writeFileSync(snapshotBrief, launchBriefs.launch, { flag: 'wx', mode: 0o400 })
         fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
-        const model = phase === 'tdd'
-          ? frozenModels.code
-          : phase === 'refutation'
-            ? frozenModels.refutation
-            : phase === 'critic'
-              ? frozenModels.critic
-              : frozenModels.review
+        const model = phase === 'tdd' ? frozenModels.code
+          : phase === 'refutation' ? frozenModels.refutation
+            : phase === 'critic' ? frozenModels.critic : frozenModels.review
+        return { snapshotBrief, model }
+}
+
+function registerLaunch(context, lane, args, model, plan) {
+        const { recordLaneStart, owned, laneBriefContexts, laneBriefIdentities, laneWaitMs } = context
+        const { phase, launchedAt, log, identity, nonce, report, canonicalLog, canonicalReport, group, snapshot, timeout } = lane
+        lane.laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
+        lane.ownedRecord = owned.register({ key: identity.slot ?? phase, slot: identity.slot, phase, criticLane: args.criticLane,
+          nonce, runId: null, workerPid: null, initialWait: true, briefIdentity: currentBriefIdentity(laneBriefContexts, laneBriefIdentities, phase),
+          log, report, canonicalLog, canonicalReport, group, laneRecord: lane.laneRecord, snapshot, waitMs: laneWaitMs ?? timeout * 1000 })
+}
+
+function spawnLifecycleLane(context, lane, args, snapshotBrief, model) {
+        const { executor, executorEnv, laneLauncher, root, constructionBase, knowledgeBaseIndex } = context
+        const { phase, log, timeout, nonce, snapshot, identity } = lane
+        const plan = phaseLaunchPlan(phase, model, executor, executorEnv)
+        const launcher = laneLauncher ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', plan.script)
+        registerLaunch(context, lane, args, model, plan)
+        return launchProcessWithOutput(process.execPath,
+          laneLaunchArgs({ launcher, root, model, brief: snapshotBrief, log, timeout, plan, constructionBase, nonce, snapshot, phase, knowledgeBaseIndex }),
+          { cwd: root, stdoutPath: path.join(snapshot, 'launcher.stdout'), stderrPath: path.join(snapshot, 'launcher.stderr'), env: identity.env })
+}
+
+function finishLifecycleLaunch(context, lane) {
+        const { owned, recordLaneEnd, now } = context
+        if (lane.ownedRecord) owned.finishLaunch(lane.ownedRecord)
+        else {
+          if (lane.laneRecord?.ended_at === null) recordLaneEnd(lane.laneRecord, now(), 'missing')
+          if (lane.snapshot) fs.rmSync(lane.snapshot, { recursive: true, force: true })
+        }
+}
+
+async function launchRunLane(context, args) {
+      const { refusal, state, laneDir, owned } = context
+      const lane = prepareLaneLaunch(context, args)
+      if (lane.refused) return lane.refused
+      const { phase, brief, log } = lane
+      Object.assign(lane, { snapshot: null, group: 'worker-owned', laneRecord: null, ownedRecord: null })
+      try {
+        const { snapshotBrief, model } = prepareLaunchSnapshot(context, lane)
         let launch
         try {
-          const plan = phaseLaunchPlan(phase, model, executor, executorEnv)
-          const launcher = laneLauncher ?? path.join(
-            path.dirname(fileURLToPath(import.meta.url)),
-            '..',
-            plan.script,
-          )
-          laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
-          ownedRecord = owned.register({ key: identity.slot ?? phase, slot: identity.slot, phase, criticLane: args.criticLane,
-            nonce, runId: null, workerPid: null, initialWait: true, briefIdentity: currentBriefIdentity(laneBriefContexts, laneBriefIdentities, phase),
-            log, report, canonicalLog, canonicalReport, group, laneRecord, snapshot, waitMs: laneWaitMs ?? timeout * 1000 })
-          launch = await launchProcessWithOutput(
-            process.execPath,
-            laneLaunchArgs({
-              launcher, root, model, brief: snapshotBrief, log, timeout, plan, constructionBase, nonce, snapshot, phase, knowledgeBaseIndex,
-            }),
-            {
-              cwd: root,
-              stdoutPath: path.join(snapshot, 'launcher.stdout'),
-              stderrPath: path.join(snapshot, 'launcher.stderr'),
-              env: identity.env,
-            },
-          )
+          launch = await spawnLifecycleLane(context, lane, args, snapshotBrief, model)
         } catch (error) {
           return refusal(`${state.phase}->next`, `lane spawn (${error instanceof Error ? error.message : String(error)})`, log)
         }
-        const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
-        if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', log)}${launcherFailureDetail(launch)}`
-        Object.assign(ownedRecord, { runId: /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null, workerPid })
-        return await owned.awaitOwnedLane(ownedRecord)
+        const pidProblem = acceptLauncherPid(context, lane, launch)
+        if (pidProblem) return pidProblem
+        return await owned.awaitOwnedLane(lane.ownedRecord)
       } catch (error) {
         fs.rmSync(path.join(laneDir, `${phase}-input.diff`), { force: true })
         fs.rmSync(brief, { force: true })
         return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
       } finally {
-        if (ownedRecord) owned.finishLaunch(ownedRecord)
-        else {
-          if (laneRecord?.ended_at === null) recordLaneEnd(laneRecord, now(), 'missing')
-          if (snapshot) fs.rmSync(snapshot, { recursive: true, force: true })
-        }
+        finishLifecycleLaunch(context, lane)
       }
-    }
-    if (args.kind === 'gate') {
+}
+
+function acceptLauncherPid(context, lane, launch) {
+  const { refusal, state } = context
+  const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
+  if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', lane.log)}${launcherFailureDetail(launch)}`
+  Object.assign(lane.ownedRecord, { runId: /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null, workerPid })
+  return null
+}
+
+async function launchRunGate(context, args) {
+      const { gates, refusal, state, laneDir, root, gateRunner, attest, progress } = context
       if (!gates().has(args.name)) {
         return refusal(`${state.phase}->next`, `gate ${[...gates()].join('|')}`, path.join(laneDir, `${args.name ?? 'unknown'}.log`))
       }
@@ -651,11 +698,10 @@ export function createLifecycleLaunch({
       attest(log, { tree: treeSignature(root), laneReceiptSeq: state.laneReceiptSeq })
       progress()
       return `gate ${args.name} EXIT=${code}`
-    }
-    if (args.kind === 'control') {
-      return runOwnedControl({ root, state, laneDir, refusal, owned, controlPath: CONTROL, aggregate: aggregateCritics }, args)
-    }
-    if (args.kind === 'inspect') {
+}
+
+function launchInspect(context, args) {
+      const { gates, phases, lanePhases, refusal, state, laneDir, root } = context
       const allowed = [...gates()]
         .map((name) => `${name}.log`)
         .concat(phases.filter((phase) => lanePhases.has(phase)).flatMap((phase) => [`${phase}-run.log`, `${phase}-report.md`]))
@@ -673,19 +719,49 @@ export function createLifecycleLaunch({
           : args.what === 'diff' ? ['diff', '--stat'] : ['status', '--short'],
         { cwd: root, encoding: 'utf8' },
       )
-    }
-    return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect|control', laneDir)
-  }
+}
 
-  async function run(args) {
+async function launchRun(context, args) {
+    const { refusal, state, laneDir, runParallelCritics, runSingle } = context
     if (args && Object.hasOwn(args, 'criticLane')) return refusal(`${state.phase}->next`, 'criticLane is not supported; run or control the whole phase', laneDir)
     if (args?.kind === 'lane') {
-      const problem = launchProblem(args.phase)
+      const problem = launchProblem(context, args.phase)
       if (problem) return refusal(`${state.phase}->next`, problem.missing, problem.file ?? laneDir, problem.code)
       if (args.phase === 'critic' && state.priorCriticRounds.length === 0) return runParallelCritics(args)
     }
     return runSingle(args)
-  }
+}
 
+function bindLaunchEvidence(context) {
+  context.audit = (...args) => launchAudit(context, ...args)
+  context.attest = (...args) => launchAttest(context, ...args)
+  context.verified = (...args) => launchVerified(context, ...args)
+  context.invalidateLaneEvidence = (...args) => launchInvalidate(context, ...args)
+  context.laneOwnershipPending = (...args) => launchOwnershipPending(context, ...args)
+  context.laneEvidence = (...args) => checkLaneEvidence(context, ...args)
+  context.gatesEvidence = (...args) => checkGatesEvidence(context, ...args)
+  context.verifySnapshot = (...args) => launchVerifySnapshot(context, ...args)
+  context.gateReceipts = () => launchGateReceipts(context)
+  context.verifyFailedSnapshot = (...args) => launchVerifyFailedSnapshot(context, ...args)
+  context.snapshotEvidence = (...args) => checkSnapshotEvidence(context, ...args)
+}
+
+function bindLaunchRunners(context) {
+  context.lanePathProblem = (...args) => checkLanePaths(context, ...args)
+  context.canLaunchLane = (phase) => !launchProblem(context, phase)
+  context.runParallelCritics = (...args) => launchParallelCritics(context, ...args)
+  context.criticReceiptProblem = (...args) => checkCriticReceipts(context, ...args)
+  context.pendingCriticResult = (...args) => launchPendingCriticResult(context, ...args)
+  context.aggregateCritics = (...args) => launchAggregateCritics(context, ...args)
+  context.runSingle = (...args) => launchRunSingle(context, ...args)
+  context.run = (...args) => launchRun(context, ...args)
+}
+
+export function createLifecycleLaunch(options) {
+  const context = launchOptions(options)
+  bindLaunchEvidence(context)
+  initializeLaunch(context)
+  bindLaunchRunners(context)
+  const { audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = context
   return { audit, canLaunchLane, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot }
 }
