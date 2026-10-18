@@ -13,6 +13,7 @@ import { STORE_BUDGETS, FOREIGN_KEYS_BUDGET, MIN_BUDGET, VERDICTS, shrink, archi
 import { extractSymbol, detectorEnvironment, servedExtensions, classifyGrep } from './lsp-symbol.js';
 import { joinIdentityActivity, migrationGeneration, noteActivity, stampActivity, healthActivity } from './identity-activity.js';
 import { ownerNumber } from './owner-number.js';
+import { servedBlock as block } from './served-block.js';
 import { configureAgentTypes, resetAgentTypes, agentTypeOptOutConfigured, neverRefuseType, knownAgentType,
   pendingAgentType, beginAgentLookup, settleAgentLookup, finishAgentLookup, recordAgentType,
   agentSpawning, beginAgentSpawn, finishAgentSpawn } from './agent-types.js';
@@ -813,7 +814,6 @@ async function selected($, ctx, rules, e, prompt, { errors, budget, beforeMatche
   return chosen;
 }
 const exhaustionNotice = (budget) => `wt-rules-on-demand: shared regex budget exhausted: ${budget.unresolved.size} rules served unevaluated`;
-const block = (rule) => `<rule name="${rule.name}">\n${rule.content}\n</rule>`;
 async function sessionId($) {
   try {
     const id = await $.session.id();

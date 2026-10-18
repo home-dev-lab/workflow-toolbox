@@ -13,6 +13,7 @@ import { discoverFiles } from '../scripts/discover-files.mjs';
 import { sameRule, ruleBody } from '../duplicate-rule.js';
 import { revertNotificationLine, dailyRollbackLines } from './revert-notifications.mjs';
 import { parseAgentTypes } from './agent-types.js';
+import { parsePreserveRules, preserveStartLine } from '../scripts/preserve-list.mjs';
 
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
@@ -21,6 +22,8 @@ const event = JSON.parse(input || '{}');
 const engineEnabled = ['true', '1'].includes(process.env.CLAUDE_PLUGIN_OPTION_ENABLED);
 const noRefuseTypes = engineEnabled ? parseAgentTypes(process.env.WT_ROD_NO_REFUSE_AGENT_TYPES) : [];
 if (noRefuseTypes.length) process.stdout.write(`wt-rules-on-demand: rules served after the act for: ${noRefuseTypes.join(', ')}\n`);
+const preserveLine = engineEnabled ? preserveStartLine(parsePreserveRules(process.env.WT_ROD_PRESERVE_RULES)) : '';
+if (preserveLine) process.stdout.write(`${preserveLine}\n`);
 // Archive retention runs for every session-start source (startup, resume, clear, compact): Function Hooks cannot delete,
 // so this is the only place the archive directory is bounded. Everything after it is startup-only.
 const archiveConfig = configDirectory(process.env);
