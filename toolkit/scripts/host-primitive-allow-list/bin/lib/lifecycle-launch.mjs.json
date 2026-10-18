@@ -4,14 +4,13 @@
   "os import": 1,
   "existsSync": 4,
   "lstatSync": 1,
-  "rmSync": 11,
+  "rmSync": 8,
   "mkdtempSync": 1,
   "tmpdir": 1,
   "chmodSync": 1,
   "writeFileSync": 3,
-  "copyFileSync": 2,
   "openSync": 2,
   "closeSync": 2,
   "appendFileSync": 1,
-  "execFileSync": 2
+  "execFileSync": 1
 }

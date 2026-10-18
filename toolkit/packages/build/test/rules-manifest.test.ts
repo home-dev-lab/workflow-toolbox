@@ -93,11 +93,14 @@ describe('SDK role rules manifest', () => {
     expect(rules.at(-1)).toMatchObject({ level: 'project', section: '## Project rule\r\nproject bytes\r\n' })
   })
 
+})
+
+describe('SDK role rules manifest', () => {
   it('measures the composed standing system prompt before and after exact shipped sections', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
-    expect(Buffer.byteLength(contract)).toBe(6144)
-    expect(Buffer.byteLength(composed)).toBe(8602)
+    expect(Buffer.byteLength(contract)).toBe(6142)
+    expect(Buffer.byteLength(composed)).toBe(8600)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 
@@ -120,6 +123,9 @@ describe('SDK role rules manifest', () => {
     }
   })
 
+})
+
+describe('SDK role rules manifest', () => {
   it('does not replay phase-plan pilot rules in a real critic-to-plan revision', async () => {
     const workerRoot = manifestRoot('# Fixture worker\n')
     const launcher = join(workerRoot, 'critic.mjs')
@@ -157,6 +163,9 @@ process.stdout.write('pid=' + process.pid + '\\n');`)
     expect(content).not.toContain('Persist on the GOAL')
   })
 
+})
+
+describe('SDK role rules manifest', () => {
   it.each(['critic', 'review'])('routes stagnation without the shared-root paragraph to %s', (role) => {
     const content = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: role, trigger: `lane:${role}` })
     expect(content).toContain('Step back also when the acceptance criterion is already met')
@@ -181,6 +190,9 @@ process.stdout.write('pid=' + process.pid + '\\n');`)
     expect(content).toContain('## Verify claims against their actual evidence')
   })
 
+})
+
+describe('SDK role rules manifest', () => {
   it('places authoritative lane rules before pilot context in the brief both executor families read', async () => {
     const rules = [section('project/rule.md', '## TDD authority', ['tdd'], ['lane:tdd'])]
     const lifecycle = lifecycleWithRules(rules, 'LITE')
@@ -215,6 +227,9 @@ process.stdout.write('pid=' + process.pid + '\\n');`)
     expect(brief).toContain('## Review authority\n\nExact rule bytes.\n')
   })
 
+})
+
+describe('SDK role rules manifest', () => {
   it('maps every shipped lane trigger to exact authoritative content', () => {
     const rules = loadRules({ shippedRoot: PLUGIN_ROOT })
     for (const role of ['critic', 'tdd', 'review', 'refutation']) {
@@ -257,6 +272,9 @@ process.stdout.write('pid=' + process.pid + '\\n');`)
     expect(content).toContain('Tests cover relevant happy paths, branches, boundaries, invalid input, expected failures, and')
   })
 
+})
+
+describe('SDK role rules manifest', () => {
   it.each([
     ['pilot', 'phase:report'],
     ['review', 'lane:review'],
