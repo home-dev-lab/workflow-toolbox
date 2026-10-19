@@ -5,9 +5,15 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.196.1] - 2026-10-18
+
 ### Added
 
 - `wt-rules-on-demand` can serve chosen rules to chosen agent types at sub-agent start: `WT_ROD_PRESERVE_RULES` (`type=rule[,rule...][;type=...]`, in a project's settings `env` block) makes a `SubagentStart` hook place those rules in the sub-agent's first context in the engine's exact served form, so its first matching action is not refused. Rules resolve as the engine resolves them for the session (nearest project copy, static duplicates excluded, unreadable directories empty) and are read fresh at every start; when the sub-agent's directory differs from the session root, a rule is placed only if both roots give the same text. The injected text stays within 9,500 characters; a rule that does not fit is skipped whole, and one line names the listed rules not placed and why, up to a 600-character cap. Unlisted or unknown types get nothing, a failure injects nothing and never blocks the spawn, and SessionStart names the configured types.
+
+### Changed
+
+- Marketplace plugin version in this release: `wt-rules-on-demand` 0.1.3 (rules served at sub-agent start). Update it with the plugin for the change to load.
 
 ## [0.196.0] - 2026-10-18
 
