@@ -521,8 +521,9 @@ function watchedRun(root: string, args: string[], env: NodeJS.ProcessEnv) {
 async function expectWatchedRun(root: string, run: ReturnType<typeof watchedRun>, grant: { held: string; free: string; warns: boolean }) {
   try {
     await waitFor(() => existsSync(join(root, 'started')))
-    // The 1 ms warning timer is armed before the command is spawned, so it has fired once the command runs.
-    if (grant.warns) await waitFor(() => lightWarnings(run.stderr()) === 1); else await pause(200)
+    // The 1 ms warning timer is armed before the command is spawned, so it has fired once the command runs;
+    // the no-warning case needs no wait: its count is asserted after the run exits.
+    if (grant.warns) await waitFor(() => lightWarnings(run.stderr()) === 1)
     expect(existsSync(join(root, grant.held, 'holder.json')), `${grant.held} holds the run`).toBe(true)
     expect(existsSync(join(root, grant.free, 'holder.json')), `${grant.free} stays free`).toBe(false)
   } finally { run.finish() }
