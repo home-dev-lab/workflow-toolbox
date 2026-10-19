@@ -921,6 +921,93 @@ describe('review test infrastructure', () => {
   })
 })
 
+async function artifactPage(source: string, file = 'document.md') {
+  const project = temporaryDir('page-title-project')
+  const root = temporaryDir('page-title-root')
+  const stateHome = temporaryDir('page-title-state')
+  writeFileSync(join(root, file), source)
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  spawnEnsure(project, baseEnv(stateHome, {
+    WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
+  }))
+  await waitForState(stateHome, (state) => state.roots.some((entry) => entry.name === 'artifacts'))
+  const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
+  expect(response.status).toBe(200)
+  return { title: response.body.match(/<title>(.*?)<\/title>/)?.[1], port, root }
+}
+
+describe('artifact page titles', () => {
+  it.each([1, 2, 3, 4, 5, 6])('uses the first ATX heading at level %i', async (level) => {
+    const { title } = await artifactPage(`Intro\n${'#'.repeat(level)} First heading\n# Later heading`)
+    expect(title).toBe('First heading')
+  })
+
+  it('strips inline Markdown and closing hashes, then trims the heading', async () => {
+    const { title } = await artifactPage('##   **bold** *em* _other_ __strong__ `code` [text](https://example.com)   ###  ')
+    expect(title).toBe('bold em other strong code text')
+  })
+
+  it.each([
+    'Just prose', '#hashtag', '```md\n# Code heading\n```\nMore prose',
+    '~~~~\n# Code heading\n~~~\n## Still code\n~~~~',
+  ])('falls back to the basename without a heading: %s', async (source) => {
+    const { title } = await artifactPage(source, 'fallback.md')
+    expect(title).toBe('fallback.md')
+  })
+
+  it('skips fenced headings before selecting the first real heading', async () => {
+    const { title } = await artifactPage('```\n# Code heading\n```\n   ### Real heading ###')
+    expect(title).toBe('Real heading')
+  })
+
+  it('escapes HTML-special characters exactly once', async () => {
+    const { title } = await artifactPage('# A & B <tag> "quoted" \'single\'')
+    expect(title).toBe('A &amp; B &lt;tag&gt; &quot;quoted&quot; &#39;single&#39;')
+  })
+
+  it('caps the trimmed title at 120 code points without splitting a surrogate pair', async () => {
+    const { title } = await artifactPage(`# \`   ${'a'.repeat(119)}🚀Z   \`   ###`)
+    expect(title).toBe(`${'a'.repeat(119)}🚀`)
+    expect([...title!]).toHaveLength(120)
+  })
+
+  it.each(['txt', 'log', 'json'])('uses the basename for a %s file', async (extension) => {
+    expect((await artifactPage('plain text', `notes.${extension}`)).title).toBe(`notes.${extension}`)
+  })
+})
+
+describe('artifact directory titles', () => {
+  it('puts the directory name before its path in a directory listing title', async () => {
+    const { port } = await artifactPage('plain text')
+    const response = await rawRequest(port, '/artifacts/', `localhost:${port}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toContain('<title>artifacts/ — /artifacts/</title>')
+    expect(response.body).toContain('<h1>Index of /artifacts/</h1>')
+  })
+
+  it('uses a slash as the root index title', async () => {
+    const { port } = await artifactPage('plain text')
+    const response = await rawRequest(port, '/', `localhost:${port}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toContain('<title>/</title>')
+  })
+
+  it('distinguishes differently named directories including a nested directory', async () => {
+    const { port, root } = await artifactPage('plain text')
+    mkdirSync(join(root, 'a', 'b'), { recursive: true })
+    const titles = []
+    for (const directory of ['a', 'a/b']) {
+      const response = await rawRequest(port, `/artifacts/${directory}/`, `localhost:${port}`)
+      expect(response.status).toBe(200)
+      titles.push(response.body.match(/<title>(.*?)<\/title>/)?.[1])
+      expect(response.body).toContain(`<h1>Index of /artifacts/${directory}/</h1>`)
+    }
+    expect(titles).toEqual(['a/ — /artifacts/a/', 'b/ — /artifacts/a/b/'])
+  })
+})
+
 function projectWithRoots(tag: string) {
   const project = temporaryDir(tag)
   const reports = join(project, '.claude', 'reports')

@@ -32,6 +32,7 @@ import {
   registrationPidStatus,
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { markdownTitle } from './lib/artifact-markdown-title.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { signalProcess } from './lib/host/process-signal-boundary.mjs'
@@ -119,7 +120,39 @@ function htmlPage(title, body) {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><style>body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;color:#202124}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f5;padding:1rem;border-radius:.35rem}code{font-family:ui-monospace,monospace}a{color:#0759b6}.table-scroll{overflow-x:auto}table{border-collapse:collapse;min-width:max-content}th,td{border:1px solid #bbb;padding:.35rem .6rem;text-align:left}</style></head><body>${body}</body></html>`
 }
 
-function renderMarkdown(source) {
+function markdownTable({ line, lines, lineIndex }, flush) {
+  const headers = tableCells(line)
+  const separators = tableCells(lines[lineIndex + 1] ?? '')
+  if (!(headers && separators && headers.length === separators.length &&
+    separators.every((cell) => /^:?-{3,}:?$/.test(cell)))) return null
+  flush()
+  const body = []
+  let nextIndex = lineIndex + 2
+  while (nextIndex < lines.length) {
+    const cells = tableCells(lines[nextIndex])
+    if (!cells || cells.length > headers.length) break
+    while (cells.length < headers.length) cells.push('')
+    body.push(`<tr>${cells.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join('')}</tr>`)
+    nextIndex += 1
+  }
+  return { headers, body, nextIndex }
+}
+
+function renderTable(table) {
+  return `<div class="table-scroll"><table><thead><tr>${table.headers.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${table.body.join('')}</tbody></table></div>`
+}
+
+function markdownListItem(line, { output, listOpen, flushParagraph, openList }) {
+  const item = /^[-*+]\s+(.+)$/.exec(line)
+  if (!item) return false
+  flushParagraph()
+  if (!listOpen) output.push('<ul>')
+  openList()
+  output.push(`<li>${inlineMarkdown(item[1])}</li>`)
+  return true
+}
+
+function renderMarkdown(source, fallback) {
   const lines = escapeHtml(source).split(/\r?\n/)
   const output = []
   let paragraph = []
@@ -140,22 +173,10 @@ function renderMarkdown(source) {
       continue
     }
     if (fenceOpen) { output.push(`${line}\n`); continue }
-    const headers = tableCells(line)
-    const separators = tableCells(lines[lineIndex + 1] ?? '')
-    if (headers && separators && headers.length === separators.length &&
-      separators.every((cell) => /^:?-{3,}:?$/.test(cell))) {
-      flushParagraph(); closeList()
-      const body = []
-      lineIndex += 2
-      while (lineIndex < lines.length) {
-        const cells = tableCells(lines[lineIndex])
-        if (!cells || cells.length > headers.length) break
-        while (cells.length < headers.length) cells.push('')
-        body.push(`<tr>${cells.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join('')}</tr>`)
-        lineIndex += 1
-      }
-      output.push(`<div class="table-scroll"><table><thead><tr>${headers.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${body.join('')}</tbody></table></div>`)
-      lineIndex -= 1
+    const table = markdownTable({ line, lines, lineIndex }, () => { flushParagraph(); closeList() })
+    if (table) {
+      output.push(renderTable(table))
+      lineIndex = table.nextIndex - 1
       continue
     }
     const heading = /^(#{1,6})\s+(.+)$/.exec(line)
@@ -163,15 +184,11 @@ function renderMarkdown(source) {
       flushParagraph(); closeList(); output.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`)
       continue
     }
-    const item = /^[-*+]\s+(.+)$/.exec(line)
-    if (item) {
-      flushParagraph(); if (!listOpen) output.push('<ul>'); listOpen = true; output.push(`<li>${inlineMarkdown(item[1])}</li>`)
-      continue
-    }
+    if (markdownListItem(line, { output, listOpen, flushParagraph, openList: () => { listOpen = true } })) continue
     if (line.trim() === '') { flushParagraph(); closeList() } else paragraph.push(line)
   }
   flushParagraph(); closeList(); if (fenceOpen) output.push('</code></pre>')
-  return htmlPage('Markdown artifact', output.join('\n'))
+  return htmlPage(markdownTitle(source, fallback), output.join('\n'))
 }
 
 function decodeRequestPath(rawUrl) {
@@ -234,7 +251,7 @@ async function directoryPage(root, target, urlSegments) {
     const suffix = entry.isDirectory() ? '/' : ''
     return `<li><a href="${requestPath}${encodeURIComponent(entry.name)}${suffix}">${escapeHtml(entry.name)}${suffix}</a></li>`
   }).join('\n')
-  return htmlPage(`Index of ${requestPath}`, `<h1>Index of ${escapeHtml(requestPath)}</h1><ul>${parent}${items}</ul>`)
+  return htmlPage(`${urlSegments.at(-1)}/ — ${requestPath}`, `<h1>Index of ${escapeHtml(requestPath)}</h1><ul>${parent}${items}</ul>`)
 }
 
 function idleGraceMs() {
@@ -243,55 +260,55 @@ function idleGraceMs() {
   return seconds * 1_000
 }
 
-async function serve() {
-  ensureSecureStateDir()
-  const requestedPort = configuredArtifactPort()
-  const tailscale = detectTailscale(requestedPort)
-  const registrations = new Map()
-  const mountAssignments = new Map()
-  let shuttingDown = false
-  let discovery
-  let pollTimer
-  let ownershipMisses = 0
-  let noLiveSince = Date.now()
-  const servers = []
-  const diagnosticFile = process.env.WT_ARTIFACT_SERVER_TEST_MODE === '1'
-    ? process.env.WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC
-    : null
+class ArtifactService {
+  constructor() {
+    ensureSecureStateDir()
+    this.requestedPort = configuredArtifactPort()
+    this.tailscale = detectTailscale(this.requestedPort)
+    this.registrations = new Map()
+    this.mountAssignments = new Map()
+    this.shuttingDown = false
+    this.discovery = undefined
+    this.pollTimer = undefined
+    this.ownershipMisses = 0
+    this.noLiveSince = Date.now()
+    this.servers = []
+    this.diagnosticFile = process.env.WT_ARTIFACT_SERVER_TEST_MODE === '1'
+      ? process.env.WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC
+      : null
+  }
 
-  const diagnose = (value) => {
-    if (!diagnosticFile) return
-    try { appendFileSync(diagnosticFile, `${JSON.stringify({ at: new Date().toISOString(), ...value })}\n`) } catch {
+  diagnose(value) {
+    if (!this.diagnosticFile) return
+    try { appendFileSync(this.diagnosticFile, `${JSON.stringify({ at: new Date().toISOString(), ...value })}\n`) } catch {
       // Diagnostics must not alter server behavior.
     }
   }
 
-  const liveRoots = () => {
+  liveRoots() {
     const candidates = []
-    for (const [registrationId, registration] of registrations) {
+    for (const [registrationId, registration] of this.registrations) {
       if (!registration.live) continue
       for (const root of registration.roots) candidates.push({ ...root, registrationId, deny: registration.deny })
     }
-    return assignArtifactMounts(candidates, mountAssignments)
+    return assignArtifactMounts(candidates, this.mountAssignments)
   }
 
-  const writeDiscovery = (roots = liveRoots()) => {
-    if (!discovery) return
-    discovery.roots = roots.map((root) => ({ name: root.name, path: root.canonical }))
-    discovery.mounts = [...mountAssignments].map(([canonical, name]) => ({ name, path: canonical }))
-    atomicWriteJson(artifactDiscoveryPath(), discovery)
+  writeDiscovery(roots = this.liveRoots()) {
+    if (!this.discovery) return
+    this.discovery.roots = roots.map((root) => ({ name: root.name, path: root.canonical }))
+    this.discovery.mounts = [...this.mountAssignments].map(([canonical, name]) => ({ name, path: canonical }))
+    atomicWriteJson(artifactDiscoveryPath(), this.discovery)
   }
 
-  const readRegistration = (file) => {
+  readRegistration(file) {
     const registrationPath = path.join(artifactRegistrationsDir(), file)
     const info = statSync(registrationPath)
     // Node reports synthetic permission bits on Windows; 0600 is a POSIX ownership contract.
     if (!info.isFile() || (process.platform !== 'win32' && (info.mode & 0o777) !== 0o600)) throw new Error('registration must be a mode-0600 file')
     if (typeof process.getuid === 'function' && info.uid !== process.getuid()) throw new Error('registration is owned by another uid')
     const value = JSON.parse(readFileSync(registrationPath, 'utf8'))
-    if (!value || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !Array.isArray(value.roots) ||
-      !Array.isArray(value.deny) || !value.deny.every((item) => typeof item === 'string') ||
-      typeof value.startedAt !== 'string' || !Number.isFinite(Date.parse(value.startedAt))) throw new Error('invalid registration')
+    validateRegistration(value)
     const roots = normalizeRoots(value.roots).map((root) => ({
       name: root.name, declared: root.path, canonical: realpathSync(root.path),
     }))
@@ -301,44 +318,63 @@ async function serve() {
     return { pid: value.pid, identity, roots, deny: value.deny, live: false, deadAt: null }
   }
 
-  const scanRegistrations = async () => {
-    if (shuttingDown) return
+  syncRegistrationFiles() {
     const files = new Set(readdirSync(artifactRegistrationsDir()).filter((file) => file.endsWith('.json')))
     let cleanRemoval = false
-    for (const [file, registration] of registrations) {
+    for (const [file, registration] of this.registrations) {
       if (!files.has(file)) {
-        diagnose({ file, pid: registration.pid, filePresent: false, fileMtimeMs: null, decision: 'file-absent-remove' })
+        this.diagnose({ file, pid: registration.pid, filePresent: false, fileMtimeMs: null, decision: 'file-absent-remove' })
         if (registration.live) cleanRemoval = true
-        registrations.delete(file)
+        this.registrations.delete(file)
       }
     }
     for (const file of files) {
-      if (!registrations.has(file)) {
-        try { registrations.set(file, readRegistration(file)) } catch {}
+      if (!this.registrations.has(file)) {
+        try { this.registrations.set(file, this.readRegistration(file)) } catch {}
       }
     }
+    return cleanRemoval
+  }
+
+  registrationEvidence(file) {
+    const registrationPath = path.join(artifactRegistrationsDir(), file)
+    const filePresent = existsSync(registrationPath)
+    let fileMtimeMs = null
+    try { fileMtimeMs = statSync(registrationPath).mtimeMs } catch {
+      // Presence and mtime are diagnostic evidence; the sweep decision remains authoritative.
+    }
+    return { filePresent, fileMtimeMs, classifier: null }
+  }
+
+  expireRegistration(file, registration, now, evidence) {
+    if (now >= registration.deadAt + idleGraceMs()) {
+      this.diagnose({ file, pid: registration.pid, ...evidence, decision: 'gone-remove', deadAt: new Date(registration.deadAt).toISOString() })
+      rmSync(path.join(artifactRegistrationsDir(), file), { force: true })
+      this.registrations.delete(file)
+    } else {
+      this.diagnose({ file, pid: registration.pid, ...evidence, decision: 'gone-wait-grace', deadAt: new Date(registration.deadAt).toISOString() })
+    }
+  }
+
+  async scanRegistrations() {
+    if (this.shuttingDown) return
+    const cleanRemoval = this.syncRegistrationFiles()
     const now = Date.now()
     let liveCount = 0
     let nextDeadline = Infinity
-    for (const [file, registration] of registrations) {
+    for (const [file, registration] of this.registrations) {
       registration.live = false
-      const registrationPath = path.join(artifactRegistrationsDir(), file)
-      const filePresent = existsSync(registrationPath)
-      let fileMtimeMs = null
-      try { fileMtimeMs = statSync(registrationPath).mtimeMs } catch {
-        // Presence and mtime are diagnostic evidence; the sweep decision remains authoritative.
-      }
-      let classifier = null
+      const evidence = this.registrationEvidence(file)
       try {
         const status = registrationPidStatus(registration.pid, {
           expectedIdentity: registration.identity,
-          diagnostic: (value) => { classifier = value },
+          diagnostic: (value) => { evidence.classifier = value },
         })
-        if (status === 'gone') throw Object.assign(new Error('registration process is gone'), { code: 'ESRCH' })
+        requireLiveStatus(status)
         registration.live = true
         registration.deadAt = null
         liveCount += 1
-        diagnose({ file, pid: registration.pid, filePresent, fileMtimeMs, classifier, decision: status === 'unknown' ? 'unknown-keep-live' : 'running-keep-live' })
+        this.diagnose({ file, pid: registration.pid, ...evidence, decision: liveDecision(status) })
       } catch (error) {
         if (error?.code === 'EPERM') {
           registration.live = true
@@ -347,69 +383,88 @@ async function serve() {
         } else {
           registration.deadAt ??= now
           nextDeadline = Math.min(nextDeadline, registration.deadAt + idleGraceMs())
-          if (now >= registration.deadAt + idleGraceMs()) {
-            diagnose({ file, pid: registration.pid, filePresent, fileMtimeMs, classifier, decision: 'gone-remove', deadAt: new Date(registration.deadAt).toISOString() })
-            rmSync(path.join(artifactRegistrationsDir(), file), { force: true })
-            registrations.delete(file)
-          } else {
-            diagnose({ file, pid: registration.pid, filePresent, fileMtimeMs, classifier, decision: 'gone-wait-grace', deadAt: new Date(registration.deadAt).toISOString() })
-          }
+          this.expireRegistration(file, registration, now, evidence)
         }
       }
     }
-    if (liveCount > 0) noLiveSince = null
-    else noLiveSince ??= now
-    writeDiscovery()
-    if (liveCount === 0 && (cleanRemoval || now >= noLiveSince + idleGraceMs() || (nextDeadline !== Infinity && now >= nextDeadline))) await shutdown('idle')
+    if (liveCount > 0) this.noLiveSince = null
+    else this.noLiveSince ??= now
+    this.writeDiscovery()
+    if (this.isIdle(liveCount, cleanRemoval, now, nextDeadline)) await this.shutdown('idle')
   }
 
-  const handler = async (request, response) => {
+  isIdle(liveCount, cleanRemoval, now, nextDeadline) {
+    return liveCount === 0 && (cleanRemoval || now >= this.noLiveSince + idleGraceMs() || (nextDeadline !== Infinity && now >= nextDeadline))
+  }
+
+  requestMethod(request, response) {
+    const { requestedPort, tailscale } = this
     const method = request.method ?? ''
     const host = request.headers.host?.toLowerCase()
     const allowedHosts = new Set([`localhost:${requestedPort}`, `127.0.0.1:${requestedPort}`])
     if (tailscale.ip) { allowedHosts.add(tailscale.ip); allowedHosts.add(`${tailscale.ip}:${requestedPort}`) }
     if (tailscale.dnsName) { allowedHosts.add(tailscale.dnsName.toLowerCase()); allowedHosts.add(`${tailscale.dnsName.toLowerCase()}:${requestedPort}`) }
     if (!host || !allowedHosts.has(host)) {
-      send(response, method, 421, `Misdirected Request: Host "${host ?? '<missing>'}" is not in the allow-list\n`); return
+      send(response, method, 421, `Misdirected Request: Host "${host ?? '<missing>'}" is not in the allow-list\n`); return null
     }
     if (method !== 'GET' && method !== 'HEAD') {
-      send(response, method, 405, 'Method Not Allowed\n', 'text/plain; charset=utf-8', { Allow: 'GET, HEAD' }); return
+      send(response, method, 405, 'Method Not Allowed\n', 'text/plain; charset=utf-8', { Allow: 'GET, HEAD' }); return null
     }
-    let requestUrl
-    try { requestUrl = new URL(request.url ?? '/', `http://localhost:${requestedPort}`) } catch {
-      send(response, method, 400, 'Bad Request\n'); return
-    }
+    return method
+  }
+
+  async handler(request, response) {
+    const method = this.requestMethod(request, response)
+    if (method === null) return
+    const { requestedPort } = this
+    const requestUrl = this.requestUrl(request, response, method)
+    if (requestUrl === null) return
     if (requestUrl.pathname === '/__wt-artifact-server/health') {
       send(response, method, 200, `${JSON.stringify({
         service: ARTIFACT_SERVER_ID, version: ARTIFACT_SERVER_VERSION, pid: process.pid,
         uid: artifactUid(), port: requestedPort,
-        registeredSessions: [...registrations.values()].filter((registration) => registration.live).length,
+        registeredSessions: [...this.registrations.values()].filter((registration) => registration.live).length,
       })}\n`, 'application/json; charset=utf-8')
       return
     }
     const segments = decodeRequestPath(request.url ?? '/')
     if (segments === undefined) { send(response, method, 400, 'Bad Request\n'); return }
     if (segments === null) { send(response, method, 403, 'Forbidden\n'); return }
-    const roots = liveRoots()
+    const roots = this.liveRoots()
     if (segments.length === 0) {
       const links = roots.map((root) => `<li><a href="${encodeURIComponent(root.name)}/">${escapeHtml(root.name)}/</a></li>`).join('')
-      send(response, method, 200, htmlPage('Artifact roots', `<h1>Artifact roots</h1><ul>${links}</ul>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
+      send(response, method, 200, htmlPage(path.posix.sep, `<h1>Artifact roots</h1><ul>${links}</ul>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       return
     }
     const rootRecord = roots.find((root) => root.name === segments[0])
     if (!rootRecord) { send(response, method, 404, 'Not Found\n'); return }
-    const fileSegments = segments.slice(1)
-    if (pathIsDenied([path.basename(rootRecord.canonical), ...fileSegments], rootRecord.deny)) { send(response, method, 403, 'Forbidden\n'); return }
+    const target = this.requestTarget(rootRecord, segments.slice(1), response, method)
+    if (target === null) return
+    return this.serveTarget({ rootRecord, target, segments, response, method })
+  }
+
+  requestUrl(request, response, method) {
+    try { return new URL(request.url ?? '/', `http://localhost:${this.requestedPort}`) } catch {
+      send(response, method, 400, 'Bad Request\n'); return null
+    }
+  }
+
+  requestTarget(rootRecord, fileSegments, response, method) {
+    if (pathIsDenied([path.basename(rootRecord.canonical), ...fileSegments], rootRecord.deny)) { send(response, method, 403, 'Forbidden\n'); return null }
     try {
-      if (realpathSync(rootRecord.declared) !== rootRecord.canonical) { send(response, method, 403, 'Forbidden\n'); return }
-    } catch { send(response, method, 403, 'Forbidden\n'); return }
+      if (realpathSync(rootRecord.declared) !== rootRecord.canonical) { send(response, method, 403, 'Forbidden\n'); return null }
+    } catch { send(response, method, 403, 'Forbidden\n'); return null }
     const lexicalTarget = path.resolve(rootRecord.canonical, ...fileSegments)
-    if (!pathIsUnder(rootRecord.canonical, lexicalTarget)) { send(response, method, 403, 'Forbidden\n'); return }
+    if (!pathIsUnder(rootRecord.canonical, lexicalTarget)) { send(response, method, 403, 'Forbidden\n'); return null }
     let target
-    try { target = realpathSync(lexicalTarget) } catch { send(response, method, 404, 'Not Found\n'); return }
-    if (!pathIsUnder(rootRecord.canonical, target)) { send(response, method, 403, 'Forbidden\n'); return }
+    try { target = realpathSync(lexicalTarget) } catch { send(response, method, 404, 'Not Found\n'); return null }
+    if (!pathIsUnder(rootRecord.canonical, target)) { send(response, method, 403, 'Forbidden\n'); return null }
     const canonicalSegments = path.relative(rootRecord.canonical, target).split(path.sep)
-    if (pathIsDenied([path.basename(rootRecord.canonical), ...canonicalSegments], rootRecord.deny)) { send(response, method, 403, 'Forbidden\n'); return }
+    if (pathIsDenied([path.basename(rootRecord.canonical), ...canonicalSegments], rootRecord.deny)) { send(response, method, 403, 'Forbidden\n'); return null }
+    return target
+  }
+
+  async serveTarget({ rootRecord, target, segments, response, method }) {
     try {
       const info = await stat(target)
       if (info.isDirectory()) {
@@ -418,41 +473,43 @@ async function serve() {
       if (!info.isFile()) { send(response, method, 404, 'Not Found\n'); return }
       const extension = path.extname(target).toLowerCase()
       const file = await readFile(target)
-      if (extension === '.md') send(response, method, 200, renderMarkdown(file.toString('utf8')), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
+      if (extension === '.md') send(response, method, 200, renderMarkdown(file.toString('utf8'), path.basename(target)), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       else if (['.txt', '.log', '.json'].includes(extension)) send(response, method, 200, htmlPage(path.basename(target), `<pre>${escapeHtml(file.toString('utf8'))}</pre>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': richHtml(file) ? RICH_CSP : RAW_CSP })
       else send(response, method, 200, file, fileContentType(target), { 'Content-Security-Policy': RAW_CSP })
     } catch { send(response, method, 500, 'Internal Server Error\n') }
   }
 
-  const listen = (host) => new Promise((resolve, reject) => {
-    const server = createServer((request, response) => {
-      Promise.resolve(handler(request, response)).catch(() => {
-        if (!response.headersSent) send(response, request.method ?? '', 500, 'Internal Server Error\n')
-        else response.end()
+  listen(host) {
+    return new Promise((resolve, reject) => {
+      const server = createServer((request, response) => {
+        Promise.resolve(this.handler(request, response)).catch(() => {
+          if (!response.headersSent) send(response, request.method ?? '', 500, 'Internal Server Error\n')
+          else response.end()
+        })
+      })
+      server.once('error', reject)
+      server.listen(this.requestedPort, host, () => {
+        server.removeListener('error', reject)
+        server.on('error', (error) => process.stderr.write(`wt-artifact-server: ${error.message}\n`))
+        this.servers.push(server)
+        resolve(server)
       })
     })
-    server.once('error', reject)
-    server.listen(requestedPort, host, () => {
-      server.removeListener('error', reject)
-      server.on('error', (error) => process.stderr.write(`wt-artifact-server: ${error.message}\n`))
-      servers.push(server)
-      resolve(server)
-    })
-  })
+  }
 
-  const shutdown = async () => {
-    if (shuttingDown) return
-    shuttingDown = true
-    if (pollTimer) clearInterval(pollTimer)
-    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))))
+  async shutdown() {
+    if (this.shuttingDown) return
+    this.shuttingDown = true
+    if (this.pollTimer) clearInterval(this.pollTimer)
+    await Promise.all(this.servers.map((server) => new Promise((resolve) => server.close(resolve))))
     const current = readArtifactDiscovery()
     if (current?.pid === process.pid) rmSync(artifactDiscoveryPath(), { force: true })
     rmSync(artifactIntentPath(), { force: true })
     process.exit(0)
   }
 
-  const ownsRegistrationState = () => {
+  ownsRegistrationState() {
     try {
       if (!statSync(artifactRegistrationsDir()).isDirectory()) return false
       return readArtifactDiscovery()?.pid === process.pid
@@ -461,33 +518,52 @@ async function serve() {
     }
   }
 
-  const pollRegistrations = async () => {
-    if (!ownsRegistrationState()) {
-      ownershipMisses += 1
-      if (ownershipMisses >= REGISTRATION_OWNERSHIP_MISS_LIMIT) await shutdown('unregistered')
+  async pollRegistrations() {
+    if (!this.ownsRegistrationState()) {
+      this.ownershipMisses += 1
+      if (this.ownershipMisses >= REGISTRATION_OWNERSHIP_MISS_LIMIT) await this.shutdown('unregistered')
       return
     }
-    ownershipMisses = 0
-    await scanRegistrations()
+    this.ownershipMisses = 0
+    await this.scanRegistrations()
   }
 
-  if (!await listenArtifactLoopback(listen, requestedPort)) return
-  await listenArtifactTailnet(listen, tailscale, requestedPort)
-  discovery = {
-    version: ARTIFACT_SERVER_VERSION, pid: process.pid, port: requestedPort,
-    baseUrl: `http://localhost:${requestedPort}`, remoteUrl: tailscale.remoteUrl,
-    tailnetDetection: tailscale.detection, tailnetVia: tailscale.via,
-    roots: [], mounts: [], startedAt: new Date().toISOString(),
+  async start() {
+    const { requestedPort, tailscale } = this
+    const listen = (host) => this.listen(host)
+    if (!await listenArtifactLoopback(listen, requestedPort)) return
+    await listenArtifactTailnet(listen, tailscale, requestedPort)
+    this.discovery = {
+      version: ARTIFACT_SERVER_VERSION, pid: process.pid, port: requestedPort,
+      baseUrl: `http://localhost:${requestedPort}`, remoteUrl: tailscale.remoteUrl,
+      tailnetDetection: tailscale.detection, tailnetVia: tailscale.via,
+      roots: [], mounts: [], startedAt: new Date().toISOString(),
+    }
+    await this.scanRegistrations()
+    this.writeDiscovery()
+    const pollMs = Number(process.env.WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS ?? 2_000)
+    if (!Number.isFinite(pollMs) || pollMs < 10) throw new Error('WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS must be at least 10')
+    this.pollTimer = setInterval(() => { this.pollRegistrations().catch((error) => process.stderr.write(`wt-artifact-server: ${error.message}\n`)) }, pollMs)
+    this.pollTimer.unref()
+    const shutdown = () => this.shutdown()
+    process.once('SIGINT', shutdown)
+    process.once('SIGTERM', shutdown)
   }
-  await scanRegistrations()
-  writeDiscovery()
-  const pollMs = Number(process.env.WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS ?? 2_000)
-  if (!Number.isFinite(pollMs) || pollMs < 10) throw new Error('WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS must be at least 10')
-  pollTimer = setInterval(() => { pollRegistrations().catch((error) => process.stderr.write(`wt-artifact-server: ${error.message}\n`)) }, pollMs)
-  pollTimer.unref()
-  process.once('SIGINT', shutdown)
-  process.once('SIGTERM', shutdown)
 }
+
+async function serve() { return new ArtifactService().start() }
+
+function validateRegistration(value) {
+  if (!value || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !Array.isArray(value.roots) ||
+    !Array.isArray(value.deny) || !value.deny.every((item) => typeof item === 'string') ||
+    typeof value.startedAt !== 'string' || !Number.isFinite(Date.parse(value.startedAt))) throw new Error('invalid registration')
+}
+
+function requireLiveStatus(status) {
+  if (status === 'gone') throw Object.assign(new Error('registration process is gone'), { code: 'ESRCH' })
+}
+
+function liveDecision(status) { return status === 'unknown' ? 'unknown-keep-live' : 'running-keep-live' }
 
 const URL_FLAGS = new Set(['--remote', '--check'])
 
