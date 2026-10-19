@@ -79,6 +79,91 @@ the act has been handed to the host, so no host callback runs between the
 decision and the act. Each waived refusal is logged once for that call, without
 awaiting the log.
 
+## Rules served at sub-agent start
+
+Set `WT_ROD_PRESERVE_RULES` to give chosen agent types chosen rules before
+their first action. A `SubagentStart` command hook places those rules in the
+sub-agent's first context, in exactly the form the engine serves them, so the
+engine counts them as already served in that agent's conversation: the agent's
+first matching action is not refused, and the rule guided it from the start.
+
+Put the list in the project's `.claude/settings.json`, or in
+`.claude/settings.local.json` for a personal, uncommitted choice, in the `env`
+block:
+
+```json
+{ "env": { "WT_ROD_PRESERVE_RULES": "ssh-host-mover=repo-state-check-at-act,outbound-pronouns-at-act;ssh-host-gate=repo-state-check-at-act;ssh-host-reviewer=repo-state-check-at-act" } }
+```
+
+Where the host reads that `env` block, as observed in test sessions run in
+print mode: Claude Code applied a project's `.claude/settings.json` `env` only
+when the session started in the folder holding that `.claude` directory. A
+session started in a subdirectory of it, inside a git repository or not, saw
+neither variable. So start sessions from that folder, or set the variable in a
+settings file such a session does read. The same holds for
+`WT_ROD_NO_REFUSE_AGENT_TYPES`.
+
+The value is `type=rule[,rule...]`, with entries separated by `;`. Agent types
+are trimmed, case-sensitive, and matched exactly; there are no patterns or
+wildcards (`*` matches only a type literally named `*`). Rule names are
+trimmed and get `.md` appended when it is missing. A type listed twice merges
+its rules in first-seen order, duplicates dropped. Entries without `=`, with an
+empty type, or with no rule names are ignored. Each rule resolves the way the
+engine resolves it for this session: the nearest project copy wins over outer
+project copies and over the user copy, project copies are found from the
+directory the session started in, and a copy equal to a loaded static rule is
+not served again. When the sub-agent's own working directory differs from that
+directory, the rule is resolved from both, because the engine may resolve from
+either; it is placed only when both give the same text. A directory the hook
+cannot read counts as empty, as it does for the engine.
+
+The rule text is read from its file at every sub-agent start, so an edit
+applies to the next sub-agent. An agent type that is not listed, an unknown
+type, an empty or absent variable, or a disabled engine gets nothing at all.
+
+The whole injected text is kept within 9,500 characters (about 2,400 tokens),
+because the host replaces a hook context over 10,000 characters with a file
+path and a preview, which the engine could not recognise as served. Rules are
+added in the configured order; a rule that does not fit the remaining space is
+skipped whole, never cut, and a later, smaller rule may still fit. A final line
+names the listed rules that were not placed and why, up to its 600-character
+cap, then `+<K> more`. What happens to each at the act:
+
+| Reason in the note | At the act |
+| --- | --- |
+| `over budget` | Served as usual, refusal included |
+| `contains a system-reminder tag the host rewrites` | Served as usual, refusal included |
+| `differs between the session root and the agent directory` | Served as usual, refusal included |
+| `not found` | The engine has no such file to serve either |
+| `static copy is loaded instead` | The engine does not serve it either; the static copy is already loaded |
+| `unreadable: <reason>` | The engine does not serve that file either |
+
+When a listed type gets no rule at all, that line alone is injected, so the
+miss shows in the agent's transcript. If the hook itself fails, it injects
+nothing and writes one line to stderr, which reaches only the host's debug log;
+the spawn always proceeds.
+
+After a sub-agent's conversation is compacted, the injected copy is gone. What
+follows depends on the host: if it reports that agent's compaction to the
+engine, the rule counts as unserved again and the next matching action is
+refused once. If it does not, the rule is neither in the agent's context nor
+refused until the engine's state for that agent resets. The host injects the
+hook's context again only when the hook runs again for that agent, on a resume.
+
+While the engine is enabled, every SessionStart with a non-empty list prints
+one line such as
+`wt-rules-on-demand: rules served at sub-agent start for: ssh-host-mover (2 rules), ssh-host-gate (1 rule)`,
+capped at 400 characters with `+<K> more`.
+
+How the two agent-type variables combine for one agent type:
+
+| Listed in `WT_ROD_PRESERVE_RULES` | Listed in `WT_ROD_NO_REFUSE_AGENT_TYPES` | What the agent gets |
+| --- | --- | --- |
+| yes | no | Its listed rules before its first action; any other matching rule is refused once, as usual |
+| no | yes | No rule at start; every matching rule arrives with the result, after the act |
+| yes | yes | Its listed rules before its first action; any other matching rule arrives after the act |
+| no | no | The usual behaviour: each matching rule is refused once, then served |
+
 ## Delivery and lifecycle
 
 A separate command hook announces when the host unloads the rules-on-demand

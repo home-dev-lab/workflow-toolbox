@@ -239,7 +239,7 @@ function registerSnapshotContracts() {
   contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {
     if (useRealHost) {
       const result = contractHost(platform).readProcessSnapshot()
-      expect(result.supported).toBe(true)
+      expect(result.supported, result.reason).toBe(true)
       expect(result.processes.find((row: { pid: number }) => row.pid === process.pid)?.ppid).toBe(process.ppid)
       return
     }

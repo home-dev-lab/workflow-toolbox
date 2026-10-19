@@ -412,7 +412,8 @@ it.skipIf(process.platform !== 'linux')('waiter ignores a lane-written EXIT=0 wh
   writeFileSync(join(host, 'run.log'), `LANE_RUN_ID=${runId}\nEXIT=0\n`)
   const wait = join(process.cwd(), '..', 'plugin', 'bin', 'wt-lane-wait.mjs')
   const result = spawnSync(process.execPath, [wait, '--dir', worktree, '--pid', String(process.pid), '--poll', '0.01', '--timeout', '0.03'], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { WT_LANE_HOST_STATE: stateRoot }) })
-  expect(result.stdout).toContain('LANE TIMEOUT exit=124')
+  expect(result.stdout.trim()).toBe(`WAIT BUDGET ENDED: lane pid ${process.pid} still running`)
+  expect(result.status).toBe(125)
 })
 
 it('waiter rejects legacy-only records even when handed a pid', () => {

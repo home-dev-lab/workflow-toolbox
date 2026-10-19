@@ -571,12 +571,14 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
   return state
 }
 
-// `freshConnection` opens a new socket for the request instead of reusing a pooled keep-alive socket of Node's global agent
-// (keep-alive by default since Node 19), which a server that is closing its side can reset under load.
-function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET', options: { freshConnection?: boolean } = {}): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
+// Every request opens its own socket (`agent: false`), never a pooled keep-alive socket of Node's global agent
+// (keep-alive by default since Node 19). Tests kill servers and reuse ports, so a pooled socket can belong to a dead
+// or closing server and the next request on it reads `ECONNRESET` (the suspected cause of the bare `read ECONNRESET`
+// failures on hosted Windows runners; not reproduced locally).
+function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET'): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolvePromise, reject) => {
     const headers = host === undefined ? {} : { Host: host }
-    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined, ...(options.freshConnection ? { agent: false } : {}) }, (response) => {
+    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined, agent: false }, (response) => {
       let body = ''
       response.setEncoding('utf8')
       response.on('data', (chunk) => { body += chunk })
@@ -590,6 +592,175 @@ function rawRequest(port: number, pathname: string, host?: string, connectHost =
 async function health(state: Discovery) {
   const response = await rawRequest(state.port, '/__wt-artifact-server/health', `localhost:${state.port}`)
   return JSON.parse(response.body) as { service: string, version: string, uid: number | string, pid: number, port: number, registeredSessions: number }
+}
+
+// The stand-in must stay silent whatever the runner's NODE_OPTIONS: the CI diagnostic step sets --trace-exit,
+// which makes any node child print its exit stack on stderr.
+function envWithoutNodeOptions() {
+  const env = { ...process.env }
+  delete env.NODE_OPTIONS
+  return env
+}
+
+type Handler = Parameters<typeof createServer>[1]
+async function probeAgainst(handler: Handler, timeout: number, beforeCleanup: () => Promise<void> = async () => {}) {
+  const server = createServer(handler)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  const { port } = server.address() as { port: number }
+  let timer: NodeJS.Timeout | undefined
+  const pending = new Promise<'pending'>((resolve) => { timer = setTimeout(() => resolve('pending'), timeout * 4 + 2_000) })
+  const started = Date.now()
+  try {
+    const result = await Promise.race([probeArtifactServer(port, timeout), pending])
+    const elapsed = Date.now() - started
+    await beforeCleanup()
+    return { result, elapsed }
+  } finally {
+    clearTimeout(timer)
+    server.closeAllConnections()
+    await closeServer(server)
+  }
+}
+
+describe('health probe settles on a broken reply', () => {
+  it('settles as unknown as soon as the server dies after sending headers and part of the body', async () => {
+    const cut: Handler = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' })
+      response.write('{"service":', () => response.socket?.destroy())
+    }
+    const { result, elapsed } = await probeAgainst(cut, 2_000)
+    expect(result).toEqual({ kind: 'unknown' })
+    expect(elapsed, 'the cut reply was only noticed by a timer').toBeLessThan(1_000)
+  })
+
+  it('settles as unknown within its timeout and closes the socket when the server trickles bytes without finishing', async () => {
+    let bytes = 0
+    let serverSawClose = false
+    let closedBeforeCleanup = false
+    const trickle: Handler = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      const tick = setInterval(() => { if (!response.destroyed) response.write(' ', () => { bytes++ }) }, 50)
+      response.on('close', () => { serverSawClose = true; clearInterval(tick) })
+    }
+    // Read the flag before the fixture's own cleanup closes every connection, so only the probe can have set it.
+    const settleWindow = async () => { closedBeforeCleanup = await waitFor(() => serverSawClose ? true : null, 15_000).then(() => true, () => false) }
+    const { result, elapsed } = await probeAgainst(trickle, 300, settleWindow)
+    expect(result).toEqual({ kind: 'unknown' })
+    expect(bytes, 'bytes kept arriving, so the idle timer never fired').toBeGreaterThanOrEqual(3)
+    expect(elapsed, 'the probe outlived its own timeout').toBeLessThan(300 + 500)
+    expect(closedBeforeCleanup, 'the probe left its socket open').toBe(true)
+  })
+})
+
+describe('health probe budget', () => {
+  it('honours the timeout as the whole budget: a complete slow reply reads within it, and unknown past it', async () => {
+    const slow: Handler = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.write('{')
+      setTimeout(() => response.write('"service":"x"'), 120)
+      setTimeout(() => response.end('}'), 240)
+    }
+    expect((await probeAgainst(slow, 1_000)).result).toEqual({ kind: 'foreign' })
+    expect((await probeAgainst(slow, 200)).result).toEqual({ kind: 'unknown' })
+  })
+
+  it('settles as unknown when a connected server never answers', async () => {
+    const { result, elapsed } = await probeAgainst(() => {}, 300)
+    expect(result).toEqual({ kind: 'unknown' })
+    expect(elapsed).toBeLessThan(300 + 500)
+  })
+
+  it('rejects an invalid port at once and leaves no timer that throws or holds the process', () => {
+    const script = "import('./plugin/bin/lib/artifact-server.mjs').then((m) => m.probeArtifactServer(-1, 5000)).then(() => console.log('RESOLVED'), (error) => console.log('REJECTED', error.code))"
+    const started = Date.now()
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: join(fileURLToPath(new URL('.', import.meta.url)), '../../../..'), encoding: 'utf8', timeout: 15_000 })
+    expect(run.stdout.trim()).toBe('REJECTED ERR_SOCKET_BAD_PORT')
+    expect(run.stderr, 'a timer fired after the rejection').not.toMatch(/ReferenceError|before initialization/)
+    expect(run.status).toBe(0)
+    expect(Date.now() - started, 'a 5 s timer kept the process alive').toBeLessThan(4_000)
+  })
+})
+
+describe('test requests and health probes open fresh connections', () => {
+  async function connectionsFor(send: (port: number) => Promise<unknown>) {
+    let connections = 0
+    const server = createServer((_request, response) => response.end('{}'))
+    server.on('connection', () => { connections++ })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as { port: number }
+    try {
+      await send(port)
+      await send(port)
+      return connections
+    } finally {
+      server.closeAllConnections()
+      await closeServer(server)
+    }
+  }
+
+  it('opens a fresh connection for every test request', async () => {
+    expect(await connectionsFor((port) => rawRequest(port, '/')), 'a second request reused a pooled keep-alive socket').toBe(2)
+  })
+
+  it('opens a fresh connection for every health probe', async () => {
+    expect(await connectionsFor((port) => probeArtifactServer(port, 2_000)), 'a second probe reused a pooled keep-alive socket').toBe(2)
+  })
+})
+
+function latePublishedState(stateHome: string): Discovery {
+  const server = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+  children.add(server)
+  if (!server.pid) throw new Error('stand-in server has no pid')
+  writeFileSync(join(stateHome, 'server-processes.log'), `${server.pid}\n`)
+  return {
+    version: 'test', pid: server.pid, port: 48765, baseUrl: 'http://127.0.0.1:48765',
+    remoteUrl: null, roots: [], startedAt: new Date().toISOString(),
+  }
+}
+
+function publishState(stateHome: string, state: Discovery) {
+  mkdirSync(serverStateDir(stateHome), { recursive: true })
+  writeFileSync(statePath(stateHome), JSON.stringify(state))
+}
+
+function waitForMonitorLine(monitor: ChildProcess, line: string): Promise<void> {
+  const output = childOutput(monitor)
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      monitor.stdout?.removeListener('data', onData)
+      monitor.removeListener('exit', onExit)
+      monitor.removeListener('error', onError)
+    }
+    const onData = () => {
+      if (!output.stdout().includes(line)) return
+      cleanup()
+      resolve()
+    }
+    const onExit = () => {
+      cleanup()
+      reject(new Error(`monitor exited before writing ${JSON.stringify(line)}`))
+    }
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+    monitor.stdout?.on('data', onData)
+    monitor.once('exit', onExit)
+    monitor.once('error', onError)
+    onData()
+    if (monitor.exitCode !== null || monitor.signalCode !== null) onExit()
+  })
+}
+
+function waitForMonitorExit(monitor: ChildProcess): Promise<void> {
+  if (monitor.exitCode !== null || monitor.signalCode !== null) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    monitor.once('exit', () => {
+      monitor.removeListener('error', reject)
+      resolve()
+    })
+    monitor.once('error', reject)
+  })
 }
 
 describe('review test infrastructure', () => {
@@ -632,70 +803,16 @@ describe('review test infrastructure', () => {
       .rejects.toThrow(/monitor reported ARTIFACT SERVER NOT STARTED: no available port.*last stdout=.*ARTIFACT SERVER NOT STARTED: no available port.*server-processes=\[\].*last state=null/)
     expect(monitor.exitCode).toBeNull()
   }, MONITORED_SERVER_TEST_BOUND_MS)
+})
 
+describe('review test infrastructure', () => {
   it('rejects an undiscovered server wait when a silent monitor exits', async () => {
     const stateHome = temporaryDir('monitor-silent-exit')
-    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'], env: envWithoutNodeOptions() })
     children.add(monitor)
     await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor exited code=0 signal=null; last stdout="<none>"; last stderr="<none>"; server-processes=\[\]; last state=null/)
   }, MONITORED_SERVER_TEST_BOUND_MS)
-
-  function latePublishedState(stateHome: string): Discovery {
-    const server = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
-    children.add(server)
-    if (!server.pid) throw new Error('stand-in server has no pid')
-    writeFileSync(join(stateHome, 'server-processes.log'), `${server.pid}\n`)
-    return {
-      version: 'test', pid: server.pid, port: 48765, baseUrl: 'http://127.0.0.1:48765',
-      remoteUrl: null, roots: [], startedAt: new Date().toISOString(),
-    }
-  }
-
-  function publishState(stateHome: string, state: Discovery) {
-    mkdirSync(serverStateDir(stateHome), { recursive: true })
-    writeFileSync(statePath(stateHome), JSON.stringify(state))
-  }
-
-  function waitForMonitorLine(monitor: ChildProcess, line: string): Promise<void> {
-    const output = childOutput(monitor)
-    return new Promise((resolve, reject) => {
-      const cleanup = () => {
-        monitor.stdout?.removeListener('data', onData)
-        monitor.removeListener('exit', onExit)
-        monitor.removeListener('error', onError)
-      }
-      const onData = () => {
-        if (!output.stdout().includes(line)) return
-        cleanup()
-        resolve()
-      }
-      const onExit = () => {
-        cleanup()
-        reject(new Error(`monitor exited before writing ${JSON.stringify(line)}`))
-      }
-      const onError = (error: Error) => {
-        cleanup()
-        reject(error)
-      }
-      monitor.stdout?.on('data', onData)
-      monitor.once('exit', onExit)
-      monitor.once('error', onError)
-      onData()
-      if (monitor.exitCode !== null || monitor.signalCode !== null) onExit()
-    })
-  }
-
-  function waitForMonitorExit(monitor: ChildProcess): Promise<void> {
-    if (monitor.exitCode !== null || monitor.signalCode !== null) return Promise.resolve()
-    return new Promise((resolve, reject) => {
-      monitor.once('exit', () => {
-        monitor.removeListener('error', reject)
-        resolve()
-      })
-      monitor.once('error', reject)
-    })
-  }
 
   it('accepts publication by a recorded live server after RETRY STOPPED', async () => {
     const stateHome = temporaryDir('retry-stopped-live-server')
@@ -721,7 +838,9 @@ describe('review test infrastructure', () => {
     await stopChild(server)
     await waiting
   }, MONITORED_SERVER_TEST_BOUND_MS)
+})
 
+describe('review test infrastructure', () => {
   it('accepts publication by a recorded live server after silent monitor exit', async () => {
     const stateHome = temporaryDir('exited-monitor-live-server')
     const state = latePublishedState(stateHome)
@@ -753,7 +872,9 @@ describe('review test infrastructure', () => {
       { timeout: 5_000, windowsHide: true, stdio: 'ignore' },
     ]])
   })
+})
 
+describe('review test infrastructure', () => {
   it('classifies a Windows registration as gone only from conclusive absence evidence', () => {
     expect(registrationPidStatus(123, {
       platform: 'win32', signal: () => {}, inspect: () => null, processExists: () => false,
@@ -788,7 +909,9 @@ describe('review test infrastructure', () => {
       inspect: () => ({ ...identity, startTime: 500 }), processExists: () => true,
     })).toBe('gone')
   })
+})
 
+describe('review test infrastructure', () => {
   it('allows the shared Windows process-read precision for approximate registration starts', () => {
     const identity = { pid: 123, argv: ['node', 'monitor'], startTime: 100, startTimeApproximate: true }
     expect(registrationPidStatus(123, {
@@ -1847,6 +1970,68 @@ describe('owner decision 3: session lifetime and operator controls', () => {
   })
 })
 
+async function startRootIndexProxy(port: number) {
+  // An upstream failure must be ANSWERED, never left as an unhandled rejection: the client below has no timeout, so an
+  // unanswered request only ends at the test timeout (measured 20 s on a hosted Windows run, `read ECONNRESET`), with the
+  // cause unnamed. The upstream request uses a fresh connection, not a pooled keep-alive socket.
+  const proxy = createServer(async (_request, response) => {
+    try {
+      const upstream = await rawRequest(port, '/', `localhost:${port}`, '127.0.0.1', 'GET')
+      response.writeHead(upstream.status, { 'content-type': 'text/html' })
+      response.end(upstream.body)
+    } catch (error) {
+      response.writeHead(502, { 'content-type': 'text/plain' })
+      response.end(`upstream request failed: ${(error as Error).message}`)
+    }
+  })
+  await new Promise<void>((resolve, reject) => {
+    proxy.once('error', reject)
+    proxy.listen(0, '127.0.0.1', resolve)
+  })
+  const proxyAddress = proxy.address()
+  if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy has no TCP port')
+  return { proxy, proxyAddress }
+}
+
+function expectDuplicateRootNameRefused(project: string, reports: string, worktrees: string) {
+  const duplicate = spawnSync(process.execPath, [ENSURE], {
+    cwd: project, encoding: 'utf8', timeout: 3_000,
+    env: baseEnv(temporaryDir('duplicate-state'), {
+      WT_ARTIFACT_SERVER_ROOTS: `same=${reports}${delimiter}same=${worktrees}`,
+    }),
+  })
+  expect(duplicate.status).not.toBe(0)
+  expect(duplicate.stderr).toMatch(/duplicate root name/i)
+}
+
+async function expectFirstProjectLeft(stateHome: string, expected: { projectOne: string, projectTwo: string, firstName: string, secondName: string | undefined }) {
+  const left = await waitForState(stateHome, (state) => state.roots.length === 1 && state.roots[0]?.path === join(expected.projectTwo, '.claude', 'reports'))
+    .catch((error) => { throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`) })
+  expect(left.roots[0]!.name).toBe(expected.secondName)
+  expect(left.mounts).toEqual(expect.arrayContaining([
+    { name: expected.firstName, path: join(expected.projectOne, '.claude', 'reports') },
+    { name: expected.secondName, path: join(expected.projectTwo, '.claude', 'reports') },
+  ]))
+  if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+}
+
+async function expectRejoinedNames(stateHome: string, expected: { projectOne: string, projectTwo: string, firstName: string, secondName: string | undefined }) {
+  const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
+  expect(rejoined.roots.find((root) => root.path === join(expected.projectOne, '.claude', 'reports'))?.name).toBe(expected.firstName)
+  expect(rejoined.roots.find((root) => root.path === join(expected.projectTwo, '.claude', 'reports'))?.name).toBe(expected.secondName)
+}
+
+function twoProjectsWithOneReportEach() {
+  const projectOne = join(temporaryDir('stable-one'), 'project')
+  const projectTwo = join(temporaryDir('stable-two'), 'project')
+  for (const project of [projectOne, projectTwo]) mkdirSync(join(project, '.claude', 'reports'), { recursive: true })
+  const reportOne = join(projectOne, '.claude', 'reports', 'one.txt')
+  const reportTwo = join(projectTwo, '.claude', 'reports', 'two.txt')
+  writeFileSync(reportOne, 'one')
+  writeFileSync(reportTwo, 'two')
+  return { projectOne, projectTwo, reportOne }
+}
+
 describe('review decisions: filesystem roots and URLs', () => {
   it('[V1] extends a colliding short hash instead of dropping a root', () => {
     const assignments = new Map<string, string>()
@@ -1859,7 +2044,9 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(roots.map((root: { name: string }) => root.name)).toEqual(['reports', 'reports-abcdef', 'reports-abcdef2'])
     expect(new Set(roots.map((root: { name: string }) => root.name)).size).toBe(3)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[E-01] registers with owner-only per-session files and exposes no HTTP controls', async () => {
     const project = temporaryDir('multi-project')
     const rootA = temporaryDir('root-a')
@@ -1890,7 +2077,9 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect((await rawRequest(port, '/__wt-artifact-server/deregister?session=x', `localhost:${port}`)).status).toBe(404)
     // Windows worst 14464 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
   }, 37_000)
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('keeps root-index links inside a proxy path while preserving the unprefixed destination', async () => {
     const project = temporaryDir('relative-index-project')
     const root = temporaryDir('relative-index-root')
@@ -1902,26 +2091,7 @@ describe('review decisions: filesystem roots and URLs', () => {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `reports=${root}`,
     }))
     await waitForState(stateHome, (state) => state.roots.length === 1)
-
-    // An upstream failure must be ANSWERED, never left as an unhandled rejection: the client below has no timeout, so an
-    // unanswered request only ends at the test timeout (measured 20 s on a hosted Windows run, `read ECONNRESET`), with the
-    // cause unnamed. The upstream request uses a fresh connection, not a pooled keep-alive socket.
-    const proxy = createServer(async (_request, response) => {
-      try {
-        const upstream = await rawRequest(port, '/', `localhost:${port}`, '127.0.0.1', 'GET', { freshConnection: true })
-        response.writeHead(upstream.status, { 'content-type': 'text/html' })
-        response.end(upstream.body)
-      } catch (error) {
-        response.writeHead(502, { 'content-type': 'text/plain' })
-        response.end(`upstream request failed: ${(error as Error).message}`)
-      }
-    })
-    await new Promise<void>((resolve, reject) => {
-      proxy.once('error', reject)
-      proxy.listen(0, '127.0.0.1', resolve)
-    })
-    const proxyAddress = proxy.address()
-    if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy has no TCP port')
+    const { proxy, proxyAddress } = await startRootIndexProxy(port)
     try {
       const index = await rawRequest(proxyAddress.port, '/serve-mount/', `localhost:${proxyAddress.port}`)
       expect(index.status, index.body).toBe(200)
@@ -1934,7 +2104,9 @@ describe('review decisions: filesystem roots and URLs', () => {
       await closeServer(proxy)
     }
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[A-01] defaults to project-unique reports/worktrees names and chooses the longest URL root', async () => {
     const { project, reports, worktrees } = projectWithRoots('defaults')
     const nestedCwd = join(project, 'packages', 'nested')
@@ -1971,17 +2143,11 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(status.stdout).toContain(`baseUrl: ${state.baseUrl}`)
     expect(status.stdout).toContain('remoteUrl: null')
     expect(status.stdout).toContain(`${prefix}-reports=${reports}`)
-
-    const duplicate = spawnSync(process.execPath, [ENSURE], {
-      cwd: project, encoding: 'utf8', timeout: 3_000,
-      env: baseEnv(temporaryDir('duplicate-state'), {
-        WT_ARTIFACT_SERVER_ROOTS: `same=${reports}${delimiter}same=${worktrees}`,
-      }),
-    })
-    expect(duplicate.status).not.toBe(0)
-    expect(duplicate.stderr).toMatch(/duplicate root name/i)
+    expectDuplicateRootNameRefused(project, reports, worktrees)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[A-01] lets default roots from different projects coexist', async () => {
     const one = projectWithRoots('coexist-one')
     const two = projectWithRoots('coexist-two')
@@ -2002,7 +2168,9 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(state.roots.map((root) => root.name)).toContain(oneName)
     expect(state.roots.map((root) => root.name)).toContain(twoName)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[A-01] adds stable hash suffixes when projects share a basename', async () => {
     const parentOne = temporaryDir('same-name-one')
     const parentTwo = temporaryDir('same-name-two')
@@ -2026,17 +2194,11 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(reportNames).toContain('project-reports')
     expect(reportNames.filter((name) => /^project-reports-[0-9a-f]{6}$/.test(name))).toHaveLength(1)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[V2] keeps first-assigned mount URLs when projects join, leave, and rejoin', async () => {
-    const parentOne = temporaryDir('stable-one')
-    const parentTwo = temporaryDir('stable-two')
-    const projectOne = join(parentOne, 'project')
-    const projectTwo = join(parentTwo, 'project')
-    for (const project of [projectOne, projectTwo]) mkdirSync(join(project, '.claude', 'reports'), { recursive: true })
-    const reportOne = join(projectOne, '.claude', 'reports', 'one.txt')
-    const reportTwo = join(projectTwo, '.claude', 'reports', 'two.txt')
-    writeFileSync(reportOne, 'one')
-    writeFileSync(reportTwo, 'two')
+    const { projectOne, projectTwo, reportOne } = twoProjectsWithOneReportEach()
     const stateHome = temporaryDir('stable-state')
     const reservation = await reservePort()
     const port = reservation.port
@@ -2062,24 +2224,17 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(secondName).not.toBe(firstName)
 
     await requestCleanMonitorStop(monitorOne, shutdownOne)
-    const left = await waitForState(stateHome, (state) => state.roots.length === 1 && state.roots[0]?.path === join(projectTwo, '.claude', 'reports'))
-      .catch((error) => { throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`) })
-    expect(left.roots[0]!.name).toBe(secondName)
-    expect(left.mounts).toEqual(expect.arrayContaining([
-      { name: firstName, path: join(projectOne, '.claude', 'reports') },
-      { name: secondName, path: join(projectTwo, '.claude', 'reports') },
-    ]))
-    if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+    await expectFirstProjectLeft(stateHome, { projectOne, projectTwo, firstName, secondName })
 
     spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
-    const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
-    expect(rejoined.roots.find((root) => root.path === join(projectOne, '.claude', 'reports'))?.name).toBe(firstName)
-    expect(rejoined.roots.find((root) => root.path === join(projectTwo, '.claude', 'reports'))?.name).toBe(secondName)
+    await expectRejoinedNames(stateHome, { projectOne, projectTwo, firstName, secondName })
     expect(artifactUrl(reportOne, { env: baseEnv(stateHome) })).toBe(firstUrl)
     expect((await rawRequest(port, `/${secondName}/two.txt`, `localhost:${port}`)).status).toBe(200)
     await stopChild(monitorTwo)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it.skipIf(process.platform === 'win32')('[E-01] refuses an insecure or foreign-owned state directory [POSIX mode-bit enforcement]', () => {
     const { project } = projectWithRoots('insecure-state')
     const stateHome = temporaryDir('insecure-state-home')

@@ -27,7 +27,8 @@ import { phaseManifest, phaseOpener, phaseRules } from './pilot-phase-session.mj
 import { bindingDecisionsSection } from './lifecycle-dod-dispute.mjs'
 import { assertCleanPilotStart } from './lifecycle-selection.mjs'
 import { resolveLifecycleGates } from './lifecycle-gates.mjs'
-import { createParentWakeManager, validateParentWakeOptions, wakeCommandLine } from './pilot-parent-wake.mjs'
+import { validateParentWakeOptions, wakeCommandLine } from './pilot-parent-wake.mjs'
+import { configuredParentWakes, parentWakeEnvironment, recordParentWakeSummary } from './pilot-parent-wake-launch.mjs'
 import { hostAdapter } from './host/adapter.mjs'
 import { finalizePilotLifecycle, observeBlockedRun } from './pilot-blocked-run.mjs'
 
@@ -71,7 +72,7 @@ const PILOT_VALUE_FLAGS = new Map([
   ['--card', 'card'], ['--card-file', 'cardFile'], ['--dir', 'dir'], ['--profile-env', 'profileEnv'],
   ['--contract', 'contract'], ['--board-contract', 'boardContract'], ['--mailbox', 'mailbox'],
   ['--knowledge-base-index', 'knowledgeBaseIndex'], ['--archive-root', 'archiveRoot'],
-  ['--parent-session', 'parentSession'], ['--parent-mode', 'parentMode'],
+  ['--parent-session', 'parentSession'], ['--parent-mode', 'parentMode'], ['--parent-session-bare-reason', 'parentSessionBareReason'],
 ])
 
 // A piece-test option: the run ends at the boundary leaving this phase. `report` is the end already.
@@ -376,11 +377,11 @@ function parentDecisionChannel({ runId, stateFile, cli, log, root, wake, overrid
     onDecisionRequest: ({ criteria, requestId, deadline }) => {
       registerPilotDecisionRequest(stateFile, { requestId, criteria, deadline })
     },
-    onPublished: ({ file, criteria, requestId }) => {
+    onPublished: ({ file, criteria, requestId, deadline }) => {
       const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
       const answer = command(` --request '${requestId}' --dod <n> --reading <text>`)
       log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes within ${minutes} min (otherwise ${FALLBACK_RULE}):\n${answer}`)
-      wake.start({ runId, requestId, criteria, requestFile: file, command: wakeCommandLine(answer, hostAdapter.platform) })
+      wake.start({ runId, requestId, criteria, deadline, requestFile: file, command: wakeCommandLine(answer, hostAdapter.platform) })
     },
     rollbackDecisionRequest: ({ criteria, requestId }) => unregisterPilotDecisionRequest(stateFile, { criteria, requestId }),
     onBound: (dispute) => {
@@ -822,7 +823,7 @@ function initializePilotConfiguration(context) {
   // One account gate per SDK query: every phase session spawns a CLI that reads the login again.
   const accountGate = (retryUnavailable = false) => createAccountGate({ expectAccount: context.options.expectAccount, launchEnv: env, profileEnv, log, timers: { setTimer, clearTimer }, retryUnavailable })
   const account = accountGate()
-  const effectiveEnv = { ...env, ...profileEnv }
+  const effectiveEnv = parentWakeEnvironment(options, { ...env, ...profileEnv }, dependencies, log)
   const { knowledgeBase, model, modelVariant } = pilotModelSetup({ options, effectiveEnv, env, profileEnv, exists, resolvePilotModels })
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
   // called directly did not — the first real wave died on a `path` of undefined.
@@ -925,9 +926,9 @@ function initializePilotBoard(context) {
 function initializePilotLifecycle(context) {
   const { options, query, effectiveEnv, accountGate, log, dependencies, runId, decisionStateFile, decisionCli,
     decisionStateRoot, defaultDecisionStateRoot, env, lifecycleOptions, routing, executorProfile, profileEnv,
-    knowledgeBase, cardText, rules, boardContract, routeFinding, resolveRoutedFinding, sdkRole, state } = context
+    knowledgeBase, cardText, rules, boardContract, routeFinding, resolveRoutedFinding, sdkRole, state, now } = context
   const abortController = new AbortController()
-  const parentWakes = createParentWakeManager({ parentSession: options.parentSession, parentMode: options.parentMode, query, env: effectiveEnv, accountGate, log, wakeOptions: dependencies.parentWakeOptions })
+  const parentWakes = configuredParentWakes(options, { query, env: effectiveEnv, accountGate, log, now }, dependencies)
   context.timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
   const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, wake: parentWakes, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
@@ -1155,7 +1156,7 @@ function publishPilotSummary(context) {
   summary.phase_sessions = phaseSessions.map((item) => ({ session: item.index, ...Object.fromEntries(PHASE_SESSION_FIELDS.map((field) => [field, item[field] ?? null])) }))
   summary.handoffs = phaseSessions.filter((item) => item.handedOff).length
   summary.account_sessions = accountSessions
-  summary.parent_wakes = parentWakes.receipts
+  recordParentWakeSummary(summary, parentWakes, options)
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)

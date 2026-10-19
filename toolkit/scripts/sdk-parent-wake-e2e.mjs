@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { runPilot } from '../../plugin/bin/lib/pilot-runner-core.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from '../../plugin/bin/lib/sdk-resolution.mjs'
 import { validateParentWakeOptions, assertParentWakeProof } from '../../plugin/bin/lib/pilot-parent-wake.mjs'
+import { createFixtureBoard, fixtureBoardContract } from './lib/sdk-parent-wake-fixture-board.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const USAGE = 'Usage: node toolkit/scripts/sdk-parent-wake-e2e.mjs --parent-session "name [ref]" --parent-mode bypass|prompting [--wait-ms 240000] [--pilot-model sonnet] [--keep-fixture]'
@@ -89,6 +90,7 @@ function runOptions(f, flags) {
   return {
     card: 'wake-fixture', cardFile: f.cardFile, dir: f.dir, archiveRoot: f.root, knowledgeBaseProjectRoot: f.root,
     contract: f.contract, parentSession: flags.parentSession, parentMode: flags.parentMode,
+    boardContract: fixtureBoardContract,
     // Measured on haiku: the three critic rounds end near minute eight, and the report phase needs about two more.
     timeout: Math.ceil(flags.waitMs / 1000) + 600, timeoutExplicit: true,
   }
@@ -100,6 +102,7 @@ function dependencies(f, flags, sdk, resolution) {
     resolvePilotModels: () => ({ sdkPilot: { value: flags.pilotModel, effective: flags.pilotModel } }),
     resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' } }),
     decisionStateRoot: join(f.root, 'decision-state'),
+    board: createFixtureBoard(f.root),
     lifecycleOptions: { sdk, sdkRequire: resolution.require, laneLauncher: f.launcher, laneWaitMs: 30_000, dodDecisions: { waitMs: flags.waitMs, pollMs: 250 } },
     log: (line) => { if (line.startsWith('decision request:') || line.startsWith('parent wake:')) process.stdout.write(`${line}\n`) },
   }

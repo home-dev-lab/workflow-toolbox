@@ -121,6 +121,11 @@ For a complete detached implementation or review, use the `external-lane` skill.
 
 Check adopted scripts with `node plugin/skills/adopt/scripts/install.mjs --set scripts --check --global --fail-on-drift`. This fails for stale, edited, symlinked, or hand-authored shipped-name files and missing canonical targets. SessionStart reports those script states in the active config's `scripts/` directory with reconciliation commands, and reports when an adopted scripts check could not run. A broken preferred installation refuses rather than launching a different copy.
 
+The waiter's `--timeout` is a separate wait budget: it returns `WAIT BUDGET ENDED` with exit 125,
+identifying a verified live worker, a surviving child, or explicitly unknown liveness. It leaves the
+lane running. `LANE DONE exit=<n>` propagates the host-record exit, so always read the outcome text
+alongside the code. See the `external-lane` skill for the full exit-code and process-evidence contract.
+
 ## Configuration
 
 `node plugin/bin/wt-config.mjs` prints every Workflow Toolbox option with its effective value,

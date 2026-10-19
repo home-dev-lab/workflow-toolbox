@@ -17,6 +17,10 @@ import { orderSuiteLockTickets, P0_BYPASS_MAX_GRANTS } from '../../../../plugin/
 import { suiteQueueAdvanced } from '../../../../plugin/bin/lib/suite-lock-progress.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
 import { currentPidNamespace } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
+// @ts-expect-error runtime JavaScript under plugin/
+import * as statusApi from '../../../../plugin/bin/lib/suite-lock-status.mjs'
+// @ts-expect-error runtime JavaScript under plugin/
+import * as priorityApi from '../../../../plugin/bin/lib/suite-lock-priority.mjs'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { baseSuiteLock } from './helpers/base-version-client.js'
 
@@ -34,6 +38,8 @@ const envFor = (root: string, extra: NodeJS.ProcessEnv = {}) => sealedPluginCliE
   WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extra,
 })
 const records = (root: string) => existsSync(join(root, 'queue.d')) ? readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).sort() : []
+// A variable specifier keeps the plugin's untyped runtime JavaScript out of the type check without an expect-error.
+const loadPluginModule = (relative: string) => import(pathToFileURL(join(ROOT, relative)).href)
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor(check: () => boolean) {
   const deadline = Date.now() + 15_000
@@ -431,6 +437,28 @@ describe('unobserved short-holder progress', () => {
   })
 })
 
+describe('lane operator release boundary', () => {
+  // Each case wraps its argument list in a one-element tuple: a bare array row would be spread into separate callback parameters.
+  const releaseArgs: Array<[string[]]> = [[[]], [['--force']], [['--stale-s', '0']]]
+  it.each(releaseArgs)('lane release %j refuses before reading or modifying a lock', async (args) => {
+    const root = temp(); const held = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    const before = readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')
+    try {
+      const result = cli(root, ['release', ...args], { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock') })
+      expect(result.status, result.stderr).toBe(2)
+      expect(result.stderr).toContain('release is not available inside a lane sandbox; the host operator releases the lock')
+      expect(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')).toBe(before)
+    } finally { lock.releaseSuiteLock(held) }
+  })
+  it('lane release refuses even when its masked lock directory cannot be read', () => {
+    const root = temp(); const obstacle = join(root, 'not-directory'); writeFileSync(obstacle, 'untouched')
+    const result = cli(root, ['release', '--force'], { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock'), WT_SUITE_LOCK_DIR: obstacle })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('release is not available inside a lane sandbox; the host operator releases the lock')
+    expect(result.stderr).not.toContain('ENOTDIR'); expect(readFileSync(obstacle, 'utf8')).toBe('untouched')
+  })
+})
+
 describe('declaration and isolated environments', () => {
   it('F6 explicit root retains P0 despite an ambient broker and never connects', async () => {
     const root = temp(); const connect = vi.spyOn(net, 'connect')
@@ -457,11 +485,278 @@ describe('declaration and isolated environments', () => {
   })
   it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
     vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
+    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
     const env = envFor(temp())
     expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
+    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
     expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
   })
 })
+
+describe('light class holder warning timer', () => {
+  registerLightTimerUnitTests()
+  registerLightTimerLockTests()
+  registerLightTimerCleanupTests()
+  registerDirectLightRunTests()
+  registerLightRunLifecycleTests()
+  registerLightRunOlderBrokerTests()
+  registerLightRunStaticLaneTests()
+  registerLightRunStaticBrokerTests()
+})
+
+// The seam of the light-class watcher and the static lane: only a light grant on the EXCLUSIVE mutex is a
+// light lease past its class; a static-lane grant blocks no full suite, so it is never flagged.
+const LIGHT_WARNING = 'wt-suite-lock: light lease past its class:'
+const lightWarnings = (stderr: string) => stderr.split('\n').filter((line) => line.startsWith(LIGHT_WARNING)).length
+const pollingScript = (started: string, finished: string) =>
+  `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'x');const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finished)}))clearInterval(t)},10)`
+
+function watchedRun(root: string, args: string[], env: NodeJS.ProcessEnv) {
+  const child = spawn(process.execPath, [CLI, 'run', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+  let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+  const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+  return { exit, stderr: () => stderr, finish: () => writeFileSync(join(root, 'finish'), 'done') }
+}
+
+async function expectWatchedRun(root: string, run: ReturnType<typeof watchedRun>, grant: { held: string; free: string; warns: boolean }) {
+  try {
+    await waitFor(() => existsSync(join(root, 'started')))
+    // The 1 ms warning timer is armed before the command is spawned, so it has fired once the command runs.
+    if (grant.warns) await waitFor(() => lightWarnings(run.stderr()) === 1); else await pause(200)
+    expect(existsSync(join(root, grant.held, 'holder.json')), `${grant.held} holds the run`).toBe(true)
+    expect(existsSync(join(root, grant.free, 'holder.json')), `${grant.free} stays free`).toBe(false)
+  } finally { run.finish() }
+  expect(await run.exit, run.stderr()).toBe(0)
+  expect(lightWarnings(run.stderr()), `light warnings with ${grant.held} granted`).toBe(grant.warns ? 1 : 0)
+}
+
+const STATIC_LOCK = join('static-lane', 'lock.d')
+function registerLightRunStaticLaneTests() {
+  it.each([
+    { lane: '1', flags: ['--static', '--light'], held: STATIC_LOCK, free: 'lock.d', warns: false },
+    { lane: '0', flags: ['--static'], held: 'lock.d', free: STATIC_LOCK, warns: true },
+  ])('light class run on the direct route with static lane $lane and $flags warns only on the exclusive mutex', async ({ lane, flags, held, free, warns }) => {
+    const root = temp(); const script = pollingScript(join(root, 'started'), join(root, 'finish'))
+    const run = watchedRun(root, [...flags, '--', process.execPath, '-e', script],
+      envFor(root, { WT_SUITE_LOCK_STATIC_LANE: lane, WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }))
+    await expectWatchedRun(root, run, { held, free, warns })
+  })
+}
+
+function registerLightRunStaticBrokerTests() {
+  it.skipIf(process.platform === 'win32').each([
+    { name: 'a static request the host keeps in the main queue', flags: ['--static'], wrapper: false, held: 'lock.d', free: STATIC_LOCK, warns: true },
+    { name: 'a light request the host grants on the static lane', flags: ['--light'], wrapper: true, held: STATIC_LOCK, free: 'lock.d', warns: false },
+  ])('light class run through a broker: $name', async ({ flags, wrapper, held, free, warns }) => {
+    const root = temp(); const address = join(root, 'broker.sock'); const script = pollingScript(join(root, 'started'), join(root, 'finish'))
+    // `node <dir>/scripts/lint-gate.mjs` is wrapper argv the host classifies as static (staticWrapperCommand: the tool must
+    // be the bare word `node`); `node -e` it does not.
+    const lintGate = join(root, 'scripts', 'lint-gate.mjs')
+    mkdirSync(join(root, 'scripts')); writeFileSync(lintGate, script.replace("const fs=require('fs');", "import fs from 'node:fs';"))
+    const broker = createSuiteLockBroker({ env: envFor(root, { WT_SUITE_LOCK_STATIC_LANE: '1' }) }) as net.Server & { releaseAll: () => void }
+    await new Promise<void>((resolve) => broker.listen(address, resolve))
+    try {
+      const run = watchedRun(root, [...flags, '--', ...(wrapper ? ['node', lintGate] : [process.execPath, '-e', script])],
+        envFor(root, { WT_SUITE_LOCK_DIR: join(root, 'masked'), WT_SUITE_LOCK_BROKER: address, WT_SUITE_LOCK_STATIC_LANE: '1', WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }))
+      await expectWatchedRun(root, run, { held, free, warns })
+    } finally { broker.releaseAll(); await new Promise<void>((resolve) => broker.close(() => resolve())) }
+  })
+}
+
+function registerLightTimerUnitTests() {
+  it('light class timer is unrefed, fires once strictly past the bound and sanitises the command', async () => {
+    // @ts-expect-error runtime JavaScript under plugin/
+    const { watchLightSuiteLease } = await import('../../../../plugin/bin/lib/suite-lock-light-hold.mjs')
+    let now = 1000; let callback = () => {}; const unref = vi.fn(); const clear = vi.fn(); const write = vi.fn()
+    const timer = { unref }; const schedule = vi.fn((fn: () => void) => { callback = fn; return timer })
+    const stop = watchLightSuiteLease({ light: true, argv: ['job\n\u001b\u202e'], startedAt: new Date(now).toISOString() },
+      { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '5' }, now: () => now, setTimer: schedule, clearTimer: clear, write })
+    expect(unref).toHaveBeenCalledTimes(1); expect(schedule.mock.calls[0]).toHaveLength(2)
+    now = 6000; callback(); expect(write).not.toHaveBeenCalled()
+    now = 6001; callback(); now = 9000; callback()
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write.mock.calls[0]![0]).toBe('wt-suite-lock: light lease past its class: held 5.0 s above the 5 s bound (job???); the lock is still held, nobody is pre-empted\n')
+    stop(); expect(clear).toHaveBeenCalledWith(timer)
+  })
+}
+
+function registerLightTimerLockTests() {
+  it('light class timer counts from the lease startedAt, not from arming', async () => {
+    const { watchLightSuiteLease } = await loadPluginModule('plugin/bin/lib/suite-lock-light-hold.mjs')
+    let now = 10_000; let callback = () => {}; const write = vi.fn()
+    const schedule = vi.fn((fn: () => void) => { callback = fn; return { unref: vi.fn() } })
+    watchLightSuiteLease({ light: true, argv: ['aged'], startedAt: new Date(now - 4000).toISOString() },
+      { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '5' }, now: () => now, setTimer: schedule, clearTimer: vi.fn(), write })
+    expect((schedule.mock.calls[0] as unknown[])[1], 'first delay is the bound minus the lease age, plus 1 ms').toBe(1001)
+    now = 10_999; callback(); expect(write).not.toHaveBeenCalled()
+    now = 11_001; callback(); expect(write).toHaveBeenCalledTimes(1)
+    expect(write.mock.calls[0]![0]).toContain('held 5.0 s')
+  })
+  it('light class timer survives a stderr whose write throws', async () => {
+    const { watchLightSuiteLease } = await loadPluginModule('plugin/bin/lib/suite-lock-light-hold.mjs')
+    let now = 1000; let callback = () => {}
+    const write = vi.fn(() => { throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }) })
+    watchLightSuiteLease({ light: true, argv: ['x'], startedAt: new Date(now).toISOString() },
+      { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '1' }, now: () => now, setTimer: (fn: () => void) => { callback = fn; return { unref: vi.fn() } }, clearTimer: vi.fn(), write })
+    now = 5000; expect(() => callback()).not.toThrow(); expect(write).toHaveBeenCalledTimes(1)
+  })
+}
+
+function registerLightTimerCleanupTests() {
+  it('light class timer is cleared for a short lease, absent for exclusives and caps long timer delays', async () => {
+    // @ts-expect-error runtime JavaScript under plugin/
+    const { watchLightSuiteLease } = await import('../../../../plugin/bin/lib/suite-lock-light-hold.mjs')
+    vi.useFakeTimers(); const write = vi.fn()
+    const stop = watchLightSuiteLease({ light: true, argv: ['short'] }, { env: {}, write })
+    expect(vi.getTimerCount()).toBe(1); stop(); expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(700_000); expect(write).not.toHaveBeenCalled()
+    watchLightSuiteLease({ light: false, argv: ['exclusive'] }, { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }, write })()
+    expect(vi.getTimerCount()).toBe(0)
+    const schedule = vi.fn(() => ({ unref: vi.fn() }))
+    watchLightSuiteLease({ light: true, argv: ['long'] }, { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '3000000' }, setTimer: schedule, clearTimer: vi.fn(), write })()
+    expect(schedule.mock.calls[0]).toHaveLength(2)
+    expect((schedule.mock.calls[0] as unknown[])[1]).toBe(2_147_483_647)
+  })
+}
+
+function registerDirectLightRunTests() {
+  it.each([true, false])('light class run process warns exactly once while its command still holds the direct lease (light=%s)', async (light) => {
+    const root = temp(); const finished = join(root, 'finish')
+    const script = `const fs=require('fs');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finished)})){clearInterval(timer)}},10)`
+    const child = spawn(process.execPath, [CLI, 'run', ...(light ? ['--light'] : []), '--', process.execPath, '-e', script],
+      { env: envFor(root, { WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+    let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+    try {
+      await waitFor(() => light ? stderr.includes('light lease past its class:') : existsSync(join(root, 'lock.d', 'holder.json')))
+      expect(lock.readSuiteLock({ root }).held).toBe(true)
+    } finally { writeFileSync(finished, 'done') }
+    expect(await exit).toBe(0)
+    expect(stderr.split('\n').filter((line) => line.startsWith('wt-suite-lock: light lease past its class:'))).toHaveLength(light ? 1 : 0)
+    expect(lock.readSuiteLock({ root }).held).toBe(false)
+  })
+}
+
+function registerLightRunLifecycleTests() {
+  it('light class run arms the watcher from the lease start and clears it when the command ends', async () => {
+    const root = temp()
+    for (const [key, value] of Object.entries({ WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK_LIGHT_HOLD_S: '600' })) vi.stubEnv(key, value)
+    const { runSuiteLockCli } = await loadPluginModule('plugin/bin/wt-suite-lock.mjs')
+    const armed = vi.spyOn(globalThis, 'setTimeout'); const cleared = vi.spyOn(globalThis, 'clearTimeout')
+    const code = await runSuiteLockCli(['run', '--light', '--', process.execPath, '-e', ''])
+    expect(code).toBe(0)
+    const watchers = armed.mock.calls.flatMap((call, index) => Number(call[1]) > 598_000 && Number(call[1]) <= 600_001 ? [armed.mock.results[index]!.value] : [])
+    expect(watchers, `watcher armed near the 600 s bound, saw delays ${JSON.stringify(armed.mock.calls.map((call) => call[1]))}`).toHaveLength(1)
+    expect(cleared.mock.calls.map((call) => call[0]), 'the watcher timer is cleared when the command ends').toContain(watchers[0])
+    expect(lock.readSuiteLock({ root }).held).toBe(false)
+  })
+  it('light class run survives a closed stderr and releases the lease only after the command ends', async () => {
+    const root = temp(); const done = join(root, 'done')
+    const [started, go] = [join(root, 'started'), join(root, 'go')]
+    const script = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'x');const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(go)})){clearInterval(t);fs.writeFileSync(${JSON.stringify(done)},'x')}},10)`
+    const child = spawn(process.execPath, [CLI, 'run', '--light', '--', process.execPath, '-e', script],
+      { env: envFor(root, { WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'ignore', 'pipe'] }); children.push(child)
+    child.stderr!.destroy()
+    const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+    // The 1 ms warning timer fires, and its write meets the closed stderr, while the command is still being spawned.
+    await waitFor(() => existsSync(started))
+    expect(existsSync(done), 'the command is still running').toBe(false)
+    expect(lock.readSuiteLock({ root }).held, 'the lease is held while the command runs').toBe(true)
+    writeFileSync(go, 'x')
+    expect(await exit).toBe(0)
+    expect(existsSync(done), 'the run waited for the command').toBe(true)
+    expect(lock.readSuiteLock({ root }).held).toBe(false)
+  })
+}
+
+function registerLightRunOlderBrokerTests() {
+  it('light class run behind an older broker is granted exclusive and arms no watcher', async () => {
+    const root = temp(); const socket = join(root, 'old-broker.sock'); const requests: Array<Record<string, unknown>> = []
+    const server = net.createServer((conn) => {
+      conn.on('data', (chunk) => {
+        const request = JSON.parse(String(chunk).split('\n')[0]!); requests.push(request)
+        if ('light' in request) conn.end('error argv must be an array of strings (only argv and waitS accepted); requested command "unavailable"\n')
+        else conn.write('granted old-lease\n')
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(socket, resolve))
+    try {
+      const script = `setTimeout(()=>{},800)`
+      const child = spawn(process.execPath, [CLI, 'run', '--light', '--', process.execPath, '-e', script],
+        { env: envFor(root, { WT_SUITE_LOCK_BROKER: socket, WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+      let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+      expect(await new Promise<number | null>((resolve) => child.once('exit', resolve))).toBe(0)
+      // The older broker sees the light request, the exclusive retry, then the run's exit line written at release
+      // (the ticket journal's outcome, sent after the grant, never an admission request).
+      await waitFor(() => requests.length >= 3)
+      expect(requests.map((request) => 'exit' in request ? 'exit' : 'light' in request)).toEqual([true, false, 'exit'])
+      expect(stderr).toContain('broker is older')
+      expect(stderr, 'an exclusive grant is never reported as an overdue light lease').not.toContain('light lease past its class:')
+    } finally { server.close() }
+  })
+}
+
+describe('light class status snapshot', () => {
+  registerLightStatusBoundaryTests()
+  registerLightStatusDefaultTests()
+})
+
+function registerLightStatusBoundaryTests() {
+  it.each([599_999, 600_000, 600_001, 3_600_001])('light class status uses the full-precision holder age %i in text and JSON', async (ageMs) => {
+    const root = temp(); const now = Date.parse('2026-01-01T12:00:00Z')
+    const held = await lock.acquireSuiteLock({ root, env: envFor(root), light: true,
+      startedAt: new Date(now - ageMs).toISOString(), argv: ['unsafe\n\u001b\u202e'] })
+    try {
+      const snapshot = lock.readSuiteLockStatus({ root, env: envFor(root), now: () => now })
+      expect(snapshot).toMatchObject({ ageMs, lightPastClass: ageMs > 600_000, lightHoldBoundS: 600 })
+      expect(statusApi.suiteLockStatusJson(snapshot)).toMatchObject({ lightPastClass: ageMs > 600_000, lightHoldBoundS: 600 })
+      const text = statusApi.formatSuiteLockStatus(snapshot, lock.formatSuiteLockHolder(snapshot.holder))
+      expect(text.includes('light lease past its class:')).toBe(ageMs > 600_000)
+      expect(text.includes('long hold:')).toBe(ageMs > 3_600_000)
+      if (ageMs > 600_000) {
+        const line = text.split('\n').find((value: string) => value.startsWith('light lease past its class:'))!
+        expect(line).toContain(`pid ${process.pid}`); expect(line).toContain('held '); expect(line).toContain('unsafe???')
+        expect(line).not.toMatch(/[\x00-\x1f\u202e]/u)
+      }
+      expect(lock.readSuiteLock({ root }).held, 'status is warn-only').toBe(true)
+    } finally { lock.releaseSuiteLock(held) }
+  })
+  it.each([true, false])('light class bound override and zero never flag an exclusive holder (light=%s)', async (light) => {
+    const root = temp(); const now = Date.now()
+    const held = await lock.acquireSuiteLock({ root, env: envFor(root), light, startedAt: new Date(now - 5001).toISOString() })
+    try {
+      for (const bound of ['0', '5', '6']) {
+        const snapshot = lock.readSuiteLockStatus({ root, env: envFor(root, { WT_SUITE_LOCK_LIGHT_HOLD_S: bound }), now: () => now })
+        expect(snapshot).toMatchObject({ lightPastClass: light && Number(bound) < 5.001, lightHoldBoundS: Number(bound) })
+        expect(statusApi.formatSuiteLockStatus(snapshot, '').includes('light lease past its class:')).toBe(light && Number(bound) < 5.001)
+      }
+    } finally { lock.releaseSuiteLock(held) }
+  })
+}
+
+function registerLightStatusDefaultTests() {
+  it('light class status names a dead light holder as stale only, not also past its class', () => {
+    const holder = { pid: 4242, light: true, startedAt: '2026-01-01T00:00:00Z', argv: ['job'] }
+    const current = { held: true, stale: true, holder, ageMs: 700_000, lightPastClass: true, lightHoldBoundS: 600, longHold: false, queue: [] }
+    const text = statusApi.formatSuiteLockStatus(current, 'holder text')
+    expect(text).toContain('stale holder')
+    expect(text).not.toContain('light lease past its class:')
+    expect(statusApi.formatSuiteLockStatus({ ...current, stale: false }, 'holder text')).toContain('light lease past its class:')
+  })
+  it('light class status leaves free and unknown-age holders unflagged', () => {
+    const root = temp()
+    expect(lock.readSuiteLockStatus({ root, env: envFor(root) })).toMatchObject({ lightPastClass: false, lightHoldBoundS: 600 })
+    mkdirSync(join(root, 'lock.d')); writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ light: true, startedAt: 'unknown' }))
+    expect(lock.readSuiteLockStatus({ root, env: envFor(root) })).toMatchObject({ ageMs: null, lightPastClass: false })
+  })
+  it.each(['bad\n\u001b', '-1', 'Infinity', ''])('light class invalid bound %j emits one safe diagnostic and defaults to 600', (value) => {
+    const note = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    expect(priorityApi.suiteLockLightHoldSeconds({ WT_SUITE_LOCK_LIGHT_HOLD_S: value })).toBe(600)
+    expect(note).toHaveBeenCalledTimes(1)
+    expect(String(note.mock.calls[0]![0])).toContain('invalid WT_SUITE_LOCK_LIGHT_HOLD_S')
+    expect(String(note.mock.calls[0]![0]).trim()).not.toMatch(/[\x00-\x1f]/u)
+  })
+}
 
 describe('read-only status snapshot', () => {
   it('F4 malformed holder and ticket argv objects do not invoke JSON-supplied coercion', async () => {

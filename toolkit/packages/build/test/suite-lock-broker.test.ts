@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -167,7 +167,44 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
   registerHoldConfiguration()
   registerMalformedClients()
   registerBrokerDisappearance()
+  registerLightClassStatus()
+  registerLightClassWarning()
 })
+
+function registerLightClassStatus() {
+  it('light class fields survive broker status text and JSON whitelists', async () => {
+    const broker = await startBroker(process.pid, { WT_SUITE_LOCK_LIGHT_HOLD_S: '5' })
+    const root = join(broker.root, 'locks')
+    const held = await acquireSuiteLock({ root, env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }),
+      light: true, startedAt: new Date(Date.now() - 6000).toISOString(), argv: ['short-job'] })
+    const env = sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' })
+    try {
+      const json = spawnSync(process.execPath, [CLI, 'status', '--json'], { env, encoding: 'utf8', timeout: 15_000 })
+      expect(json.status, json.stderr).toBe(0)
+      expect(JSON.parse(json.stdout)).toMatchObject({ lightPastClass: true, lightHoldBoundS: 5, holder: { light: true } })
+      const text = spawnSync(process.execPath, [CLI, 'status'], { env, encoding: 'utf8', timeout: 15_000 })
+      expect(text.status, text.stderr).toBe(0); expect(text.stdout).toContain('light lease past its class:')
+    } finally { releaseSuiteLock(held) }
+  })
+}
+
+function registerLightClassWarning() {
+  it('light class run process warns while its broker lease is still held', async () => {
+    const broker = await startBroker(); const finished = join(broker.root, 'finish')
+    const script = `const fs=require('fs');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finished)})){clearInterval(timer)}},10)`
+    const child = spawn(process.execPath, [CLI, 'run', '--light', '--', process.execPath, '-e', script],
+      { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket,
+        WT_SUITE_LEASE: '', WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+    let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+    try {
+      await waitFor(() => stderr.includes('light lease past its class:'))
+      expect(existsSync(broker.lock)).toBe(true)
+    } finally { writeFileSync(finished, 'done') }
+    expect(await exit).toBe(0); expect(stderr.match(/wt-suite-lock: light lease past its class:/g)).toHaveLength(1)
+    await waitFor(() => !existsSync(broker.lock))
+  })
+}
 
 function registerClientBudgetRenewal() {
   it('renews the client budget only for queue progress while a fake broker grants after five seconds', async () => {
@@ -1015,6 +1052,13 @@ async function brokerQueuedTicket(workerEnv: NodeJS.ProcessEnv, level: number) {
     expect(JSON.parse(readFileSync(broker.lock, 'utf8')).level, 'the holder the broker took for the lane').toBe(level)
     const queue = join(broker.root, 'locks', 'queue.d')
     await waitFor(() => readdirSync(queue).some((name) => name.endsWith('.json')))
+    const statusEnv = sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' })
+    const json = spawnSync(process.execPath, [CLI, 'status', '--json'], { env: statusEnv, encoding: 'utf8', timeout: 15_000 })
+    expect(json.status, json.stderr).toBe(0)
+    expect(JSON.parse(json.stdout)).toMatchObject({ level, queue: [{ level, effectiveLevel: level }] })
+    const text = spawnSync(process.execPath, [CLI, 'status'], { env: statusEnv, encoding: 'utf8', timeout: 15_000 })
+    expect(text.status, text.stderr).toBe(0)
+    expect(text.stdout).toContain(`1. P${level} exclusive`)
     return JSON.parse(readFileSync(join(queue, readdirSync(queue).find((name) => name.endsWith('.json'))!), 'utf8'))
   } finally { first.socket.destroy(); second.socket.destroy() }
 }

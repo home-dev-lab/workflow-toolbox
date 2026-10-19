@@ -24,6 +24,7 @@ import { formatSuiteLockStatus, suiteLockStatusJson } from './lib/suite-lock-sta
 import { suiteLockJournalCli } from './lib/suite-lock-journal.mjs'
 import { staticLaneStatusLines } from './lib/suite-lock-static.mjs'
 import { acquireCliLease, cliInheritedLease, parseSuiteRunOptions } from './lib/suite-lock-cli-options.mjs'
+import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
@@ -32,9 +33,12 @@ const USAGE = `Usage:
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
   --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
   WT_SUITE_LOCK_PRIORITY declares P0, P1 (default), or P2; levels age one step per 30 minutes.
+  A lane's host launcher sets its level with wt-lane --lock-priority P0|P1|P2 or WT_SUITE_LOCK_PRIORITY
+  in the launcher's environment; a sandboxed lane cannot set its own level or run the release subcommand.
   A P1/P2 ticket ages no higher than P1 until ${P0_BYPASS_MAX_GRANTS} declared-P0 admissions have passed it, so a declared P0
   goes before aged tickets; this applies once every queued client runs this version (status names the legacy order otherwise).
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
+  Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
   Release priority is reserved for the main session's release and merge-train gates.`
 
 function parseSeconds(args, name, fallback) {
@@ -75,6 +79,8 @@ async function run(args) {
     return 2
   }
   applyRunPriority(priority)
+  // A reader that exits mid-run must not kill the run: the lease outlives its diagnostics.
+  process.stderr.on('error', () => { /* a diagnostic failure must leave the covered command running */ })
   if (process.env.WT_SUITE_LOCK === '0') {
     process.stderr.write('wt-suite-lock: bypassed because WT_SUITE_LOCK=0\n')
     return spawnCommand(command)
@@ -85,13 +91,33 @@ async function run(args) {
   if (inherited) return spawnCommand(command)
   const lease = await acquireCliLease(acquireSuiteLock, { waitS, staleS, argv: command, light, static: staticRun, priority, onWait: (line) => process.stderr.write(`${line}\n`) })
   if (typeof lease === 'number') return lease
+  return runLeasedCommand(command, lease, { light, staticRun })
+}
+
+async function runLeasedCommand(command, lease, requested) {
+  const stopWarning = watchGrantedLease(lease, requested, command)
   let exit = 1
   try {
     exit = await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease))
     return exit
   } finally {
+    stopWarning()
     releaseSuiteLock(lease, { exit })
   }
+}
+
+// The granted lease, not the request, decides. A static-lane grant never holds the exclusive mutex, so it
+// is never a light lease past its class. A fallback behind an older broker is exclusive (holder.light false).
+// A static request the main queue took instead (static lane off, or a broker host that did not classify the
+// command as static) was asked for as light (acquireJournalLease), so it is watched as light.
+function watchGrantedLease(lease, requested, command) {
+  if (grantedStaticLane(lease)) return () => {}
+  return watchLightSuiteLease({ ...lease.holder, light: lease.holder.light ?? (requested.light || requested.staticRun), argv: command })
+}
+
+// Direct static grants carry staticDomain; a broker's static grant arrives as `granted static:<id>`.
+function grantedStaticLane(lease) {
+  return lease.staticDomain === true || String(lease.holder?.leaseId ?? '').startsWith('static:')
 }
 
 function spawnCommand(command, leaseLost = null, marker = null) {
@@ -150,6 +176,10 @@ async function status(args) {
 }
 
 function release(args) {
+  if (process.env.WT_SUITE_LOCK_BROKER?.trim()) {
+    process.stderr.write('wt-suite-lock: release is not available inside a lane sandbox; the host operator releases the lock\n')
+    return 2
+  }
   const force = args.includes('--force')
   const staleS = parseSeconds(args, '--stale-s', DEFAULT_SUITE_LOCK_STALE_S)
   const unknown = args.filter((arg) => arg !== '--force')
