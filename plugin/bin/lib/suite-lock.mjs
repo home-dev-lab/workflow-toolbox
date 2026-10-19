@@ -534,7 +534,9 @@ async function acquireBrokerSuiteLock(socketPath, options) {
   } catch (error) {
     if (error?.code !== 'WT_SUITE_LOCK_BROKER_OLDER') throw error
     process.stderr.write('wt-suite-lock: the lane broker is older and does not take priority requests; this run queues without priority\n')
-    return requestBrokerSuiteLock(socketPath, { ...options, light: false })
+    const lease = await requestBrokerSuiteLock(socketPath, { ...options, light: false })
+    // The grant is exclusive, whatever was requested: the run's watcher reads this, not the request.
+    return { ...lease, holder: { ...lease.holder, light: false } }
   }
 }
 

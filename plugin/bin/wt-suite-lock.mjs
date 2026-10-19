@@ -20,6 +20,7 @@ import {
 } from './lib/suite-lock.mjs'
 import { parseSuiteLockPriority } from './lib/suite-lock-priority.mjs'
 import { formatSuiteLockStatus, suiteLockStatusJson } from './lib/suite-lock-status.mjs'
+import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--light] [--priority <release|P0|P1|P2>] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
@@ -27,9 +28,12 @@ const USAGE = `Usage:
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
   --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
   WT_SUITE_LOCK_PRIORITY declares P0, P1 (default), or P2; levels age one step per 30 minutes.
+  A lane's host launcher sets its level with wt-lane --lock-priority P0|P1|P2 or WT_SUITE_LOCK_PRIORITY
+  in the launcher's environment; a sandboxed lane cannot set its own level or run the release subcommand.
   A P1/P2 ticket ages no higher than P1 until ${P0_BYPASS_MAX_GRANTS} declared-P0 admissions have passed it, so a declared P0
   goes before aged tickets; this applies once every queued client runs this version (status names the legacy order otherwise).
   Status flags holders above WT_SUITE_LOCK_LONG_HOLD_S (default 3600); it never pre-empts them.
+  Light leases above WT_SUITE_LOCK_LIGHT_HOLD_S (default 600) are flagged in status and once in the run's stderr.
   Release priority is reserved for the main session's release and merge-train gates.`
 
 function parseSeconds(args, name, fallback) {
@@ -62,7 +66,7 @@ function applyRunPriority(priority) {
   process.env.WT_SUITE_LOCK_PRIORITY = priority
 }
 
-async function run(args) {
+function parseRunArguments(args) {
   const separator = args.indexOf('--')
   if (separator < 0 || separator === args.length - 1) throw new Error('run requires -- followed by a command')
   const flags = args.slice(0, separator)
@@ -75,11 +79,18 @@ async function run(args) {
   const priority = parseRunPriority(flags)
   if (priority === 'release' && light) throw new Error('release priority cannot be combined with light')
   if (flags.length > 0) throw new Error(`unknown argument: ${flags[0]}`)
+  return { command, waitS, staleS, light, priority }
+}
+
+async function run(args) {
+  const { command, waitS, staleS, light, priority } = parseRunArguments(args)
   if (priority === 'release' && process.env.WT_SUITE_LOCK_BROKER?.trim()) {
     process.stderr.write('wt-suite-lock: release priority is not available inside a lane sandbox\n')
     return 2
   }
   applyRunPriority(priority)
+  // A reader that exits mid-run must not kill the run: the lease outlives its diagnostics.
+  process.stderr.on('error', () => { /* a diagnostic failure must leave the covered command running */ })
   if (process.env.WT_SUITE_LOCK === '0') {
     process.stderr.write('wt-suite-lock: bypassed because WT_SUITE_LOCK=0\n')
     return spawnCommand(command)
@@ -94,21 +105,36 @@ async function run(args) {
   try {
     lease = await acquireSuiteLock({ waitS, staleS, argv: command, light, priority, onWait: (line) => process.stderr.write(`${line}\n`) })
   } catch (error) {
-    if (error?.code === 'WT_SUITE_LOCK_PRIORITY_REFUSED') {
-      process.stderr.write(`wt-suite-lock: ${error.message}\n`)
-      return 2
-    }
-    if (error?.code === 'WT_SUITE_LOCK_TIMEOUT' || error?.code === 'WT_SUITE_LOCK_UNAVAILABLE') {
-      process.stderr.write(`wt-suite-lock: ${error.message}\n`)
-      return 75
-    }
-    throw error
+    return runLockError(error)
   }
+  const stopWarning = watchGrantedLease(lease, light, command)
   try {
-    return await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease))
+    return await spawnLeasedCommand(command, lease)
   } finally {
+    stopWarning()
     releaseSuiteLock(lease)
   }
+}
+
+// The granted lease, not the request, decides: a fallback behind an older broker is exclusive.
+function watchGrantedLease(lease, requestedLight, command) {
+  return watchLightSuiteLease({ ...lease.holder, light: lease.holder.light ?? requestedLight, argv: command })
+}
+
+function runLockError(error) {
+  if (error?.code === 'WT_SUITE_LOCK_PRIORITY_REFUSED') {
+    process.stderr.write(`wt-suite-lock: ${error.message}\n`)
+    return 2
+  }
+  if (error?.code === 'WT_SUITE_LOCK_TIMEOUT' || error?.code === 'WT_SUITE_LOCK_UNAVAILABLE') {
+    process.stderr.write(`wt-suite-lock: ${error.message}\n`)
+    return 75
+  }
+  throw error
+}
+
+function spawnLeasedCommand(command, lease) {
+  return spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease))
 }
 
 function spawnCommand(command, leaseLost = null, marker = null) {
@@ -166,6 +192,10 @@ async function status(args) {
 }
 
 function release(args) {
+  if (process.env.WT_SUITE_LOCK_BROKER?.trim()) {
+    process.stderr.write('wt-suite-lock: release is not available inside a lane sandbox; the host operator releases the lock\n')
+    return 2
+  }
   const force = args.includes('--force')
   const staleS = parseSeconds(args, '--stale-s', DEFAULT_SUITE_LOCK_STALE_S)
   const unknown = args.filter((arg) => arg !== '--force')

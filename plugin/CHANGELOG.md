@@ -5,6 +5,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Suite-lock status now flags a light holder past its class in text and JSON (`lightPastClass`, `lightHoldBoundS`), with a configurable `WT_SUITE_LOCK_LIGHT_HOLD_S` bound (default 600 seconds). Its owning run writes one stderr warning while the command still runs, on direct and lane-broker routes; notices never pre-empt a holder. Lane priority remains host-owned via `wt-lane --lock-priority` or the launcher's `WT_SUITE_LOCK_PRIORITY`, and sandboxed `release` now refuses explicitly with exit 2.
+
 ## [0.196.1] - 2026-10-18
 
 ### Added
