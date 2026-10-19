@@ -2362,9 +2362,9 @@ ${request.renderClaim(request.claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      // The concurrent-test guard decides lock coverage through these two modules; its known-issues
+      // The concurrent-test guard decides lock coverage through these modules; its known-issues
       // entry states the coverage rules, the record fields and the cross-platform behaviour.
-      sources: ["plugin/bin/wt-concurrent-test-guard-hook.mjs", "plugin/bin/lib/test-run-lock-coverage.mjs", "plugin/bin/lib/host/test-run-lock-host.mjs"],
+      sources: ["plugin/bin/wt-concurrent-test-guard-hook.mjs", "plugin/bin/lib/test-run-lock-coverage.mjs", "plugin/bin/lib/git-bash-path.mjs", "plugin/bin/lib/host/test-run-lock-host.mjs"],
       docs: ["docs/public/known-issues.md"]
     },
     {

@@ -10,6 +10,11 @@ const { integrateLane, parseIntegrateArgs } = await import(process.env.WT_INTEGR
 const roots: string[] = []
 const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
 const HERMETIC = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+// The two tests below that run a whole integration (several git processes each) took 17-20 s on the
+// windows-latest runner against the 20 s default and each went over it on a separate run (34.7 s
+// and at least 20.3 s, where the timeout cut it); on Linux and macOS they take 1-3 s. They share one budget:
+// 90 s is about 2.6x the slowest Windows run of either (34.7 s), and at most 4.4x the 20.3 s lower bound.
+const GIT_HEAVY_TEST_MS = 90_000
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
@@ -110,7 +115,7 @@ function options(f: ReturnType<typeof fixture>, extra: Record<string, unknown> =
       'step 1 preflight: EXIT=0', 'step 2 commit: EXIT=0', 'step 3 merge: EXIT=0',
       'step 4 archive: EXIT=0', 'step 5 pre-remove-check: EXIT=0', 'step 6 remove: EXIT=0',
     ])
-  })
+  }, GIT_HEAVY_TEST_MS)
 
   it('refuses missing reports, missing messages, retention markers, and clean not-ahead claims', async () => {
     const missingReport = fixture(); rmSync(missingReport.report)
@@ -298,7 +303,7 @@ function options(f: ReturnType<typeof fixture>, extra: Record<string, unknown> =
 
     const forced = fixture(); writeFileSync(join(forced.lane, 'change.txt'), 'change\n'); mkdirSync(join(forced.into, 'toolkit'), { recursive: true })
     expect(await integrateLane(options(forced, { force: true, readSuiteLock: () => ({ held: true, holder: { pid: 4444, cwd: join(forced.into, 'toolkit'), startedAt: new Date().toISOString() }, ageMs: 0 }) })), forced.stderr.join('\n')).toBe(0)
-  })
+  }, GIT_HEAVY_TEST_MS)
 
   it('refuses a held suite lock whose cwd cannot be read', async () => {
     const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'change\n')

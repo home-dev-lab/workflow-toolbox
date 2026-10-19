@@ -12,6 +12,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - The delegated arc watcher classifies background notices predating boot or session-process start as `ORPHANED BY RESTART` once across polls and watcher restarts, instead of repeatedly requesting relays to dead agents. WAKE and orphan lines print an absolute-path acknowledgement command in the existing wake scanner; raw-agent acknowledgements persist independently of retry state. Replay accepts explicit restart boundaries, unknown boot evidence is diagnosed, and WAKE clocks now mark UTC. An orphan older than the 24 hour relay ceiling is settled silently (decision recorded, nothing printed; the scanner lists it as stale), the once-only decisions directory is pruned of files older than 7 days at write time, and `--ack` with anything but a raw agent id says `not a raw agent id: <input>`.
+### Fixed
+
+- The concurrent-test guard's lock-coverage check now resolves `cd`, `pnpm -C` and `--dir` targets, and walks up for the Vitest config, in Git Bash path spelling on every host, so a Windows drive-letter working directory or home (`C:\repo`) is read as `/c/repo`; a working directory or home that is not a drive-letter path (a UNC share, a drive-relative path, a bare `C:`) leaves a relative target unresolved, and the journalled run directory is recorded as unresolved. A drive-letter target (`cd C:/x`, `pnpm -C C:/x`) under a Windows working directory or home is likewise left unresolved. The `C:\` to `/c/` rewrite moved into the shared `git-bash-path.mjs` module, used by this check and the critical-path `rm` guard.
+- The lane-wait deadline-outcome test fixture now runs every case under both POSIX and Windows path spellings, so its expectations no longer depend on the host's path module.
 
 ## [0.196.1] - 2026-10-18
 

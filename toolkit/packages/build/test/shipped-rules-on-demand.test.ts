@@ -53,10 +53,10 @@ describe('shipped rules-on-demand', () => {
       const run = spawnSync(process.execPath, NODE_TEST_ARGS, { cwd: plugin, encoding: 'utf8', env: temp.env, maxBuffer: MAX_OUTPUT })
       expect(run.status, nodeTestOutcome(run)).toBe(0)
     } finally { temp.cleanup() }
-  // The plugin's own `node --test` took 67.9 s on the windows-latest runner (run 36971793287) and
-  // 57.0 s on ubuntu-latest and 42.9 s on macos-latest in the same run; 180 s leaves about 2.6x the
-  // slowest measurement.
-  }, 180_000)
+  // The plugin's own `node --test` has grown: on the windows-latest runner it took 129-200 s across
+  // four runs (two over the former 180 s budget), up to 161 s on ubuntu-latest and about 100 s on
+  // macos-latest; 500 s leaves about 2.5x the slowest measurement.
+  }, 500_000)
   it('names the exit code of a test file whose process failed after every subtest passed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rod-exit-reporter-'))
     try {

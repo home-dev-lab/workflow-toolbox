@@ -195,6 +195,7 @@ describe('host primitive shell grammar exemption', () => {
       "const isEscape = (c) => c === '\\\\'",
       "const isRoot = (p) => p === '/'",
     ].join('\n'))
+    writeFileSync(join(root, 'bin', 'lib', 'git-bash-path.mjs'), "export const toBash = (p) => p.replace(/\\\\/g, '/') === '/'\n")
     writeFileSync(join(root, 'bin', 'lib', 'other.mjs'), "const isRoot = (p) => p === '/'\n")
 
     const primitives = scanHostPrimitives(root).findings.map(({ file, primitive }) => `${file} ${primitive}`)

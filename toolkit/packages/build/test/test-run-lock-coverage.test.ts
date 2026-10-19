@@ -47,6 +47,43 @@ describe('parseTestRunStart', () => {
 
 })
 
+describe('parseTestRunStart with Windows host paths', () => {
+  it('reads a Windows drive-letter cwd and home in Git Bash spelling', () => {
+    expect(parseTestRunStart('cd toolkit && pnpm test', 'C:\\repo')).toMatchObject({ kind: 'pnpm-test', dir: '/c/repo/toolkit' })
+    expect(parseTestRunStart('cd ~/p && pnpm test', null, 'C:\\Users\\x')).toMatchObject({ dir: '/c/Users/x/p' })
+    expect(parseTestRunStart('cd /abs && pnpm test', 'C:\\repo')).toMatchObject({ dir: '/abs' })
+  })
+
+  it.each([
+    ['a UNC cwd', 'cd toolkit && pnpm test', '\\\\server\\share\\r', null],
+    ['a device-path cwd', 'cd toolkit && pnpm test', '\\\\?\\C:\\repo', null],
+    ['a drive-relative cwd', 'pnpm -C toolkit test', 'C:repo', null],
+    ['a UNC home', 'cd ~/p && pnpm test', '/repo', '\\\\server\\share\\h'],
+    ['a bare drive cwd', 'cd toolkit && pnpm test', 'C:', null],
+  ])('leaves a relative directory unresolved under %s', (_label, command, cwd, home) => {
+    expect(parseTestRunStart(command, cwd, home)).toMatchObject({ dir: null })
+  })
+})
+
+describe('parseTestRunStart with a drive-letter target', () => {
+  it.each([
+    ['cd C:/x && pnpm test', 'C:\\repo', null],
+    ['pnpm -C C:/x test', 'C:\\repo', null],
+    ['pnpm --dir D:/x test', null, 'C:\\Users\\u'],
+    ['cd C:/x && pnpm test', '\\\\server\\share\\r', null],
+  ])('leaves %s unresolved under the Windows cwd %s or home %s', (command, cwd, home) => {
+    expect(parseTestRunStart(command, cwd, home)).toMatchObject({ dir: null })
+  })
+
+  it('leaves a drive-letter target unresolved when only the home is a Windows path', () => {
+    expect(parseTestRunStart('cd C:/x && pnpm test', '/repo', 'C:\\Users\\u')).toMatchObject({ dir: null })
+  })
+
+  it('keeps today\'s result for a drive-letter target under a POSIX cwd', () => {
+    expect(parseTestRunStart('cd C:/x && pnpm test', '/repo')).toMatchObject({ dir: '/repo/C:/x' })
+  })
+})
+
 describe('parseTestRunStart runner forms and directories', () => {
   it('reads pnpm -C / --dir as the run directory', () => {
     expect(parseTestRunStart('pnpm -C /y test')).toMatchObject({ kind: 'pnpm-test', dir: '/y' })

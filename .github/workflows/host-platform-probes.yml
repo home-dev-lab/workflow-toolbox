@@ -69,6 +69,8 @@ jobs:
         run: node probes/host-platform/detached-grandchild.mjs probes/host-platform/evidence/${{ matrix.os }}/detached-grandchild.json
       - name: Capture POSIX shell pipe behavior
         run: node probes/host-platform/posix-shell-pipe.mjs probes/host-platform/evidence/${{ matrix.os }}/posix-shell-pipe.json
+      - name: Capture Git Bash path spelling
+        run: node probes/host-platform/git-bash-path-spelling.mjs probes/host-platform/evidence/${{ matrix.os }}/git-bash-path-spelling.json
       - name: Upload evidence
         uses: actions/upload-artifact@v4
         with:

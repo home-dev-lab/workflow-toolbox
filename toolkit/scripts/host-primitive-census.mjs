@@ -10,10 +10,10 @@ const FILESYSTEM_MODULES = new Set(['fs', 'fs/promises', 'node:fs', 'node:fs/pro
 const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
-// A parser of Bash command text, and the quoting of commands printed for a POSIX shell: their `/` and
+// A parser of Bash command text, the Git Bash spelling of a Windows path, and the quoting of commands printed for a POSIX shell: their `/` and
 // `\` literals are command text and shell or JSON escapes, whatever the host. Only the separator check
 // is skipped for them; their imports and host calls are counted like any other file's.
-const SHELL_GRAMMAR_FILES = new Set(['bin/lib/rm-critical-path-core.mjs', 'bin/lib/remedy-quote.mjs'])
+const SHELL_GRAMMAR_FILES = new Set(['bin/lib/git-bash-path.mjs', 'bin/lib/rm-critical-path-core.mjs', 'bin/lib/remedy-quote.mjs'])
 
 // Legacy host access is declared per source file and primitive kind. A declaration for
 // plugin/<file> lives at host-primitive-allow-list/<file>.json and contains positive

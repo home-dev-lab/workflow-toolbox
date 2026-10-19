@@ -68,10 +68,10 @@ describe('omitted descriptor history evidence', () => {
   })
 })
 
-type Entry = { os: string; shard?: number }
+type Entry = { os: string; shard?: number; timeout?: number }
 type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; env?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
-  jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number; steps: Step[] } }
+  jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number | string; steps: Step[] } }
 }
 it('cross-OS owner certification has first-parent history and no environment bypass', () => {
   const steps = workflow.jobs.matrix.steps
@@ -139,6 +139,13 @@ function timeoutOf(step: Step, entry: Entry): number {
   if (!choice) throw new Error(`cross-os.yml step "${step.name}": unsupported timeout-minutes \`${String(value)}\` (extend timeoutOf in this test)`)
   return (entry.shard ?? 0) === Number(choice[1]) ? Number(choice[2]) : Number(choice[3])
 }
+// The job's `timeout-minutes` for one entry: a number, or exactly `${{ matrix.timeout || 45 }}` (the entry's `timeout`, else 45).
+function jobTimeoutOf(entry: Entry): number {
+  const value = job['timeout-minutes']
+  if (typeof value === 'number') return value
+  if (value.replace(/\s+/g, ' ') !== '${{ matrix.timeout || 45 }}') throw new Error(`cross-os.yml job: unsupported timeout-minutes \`${value}\` (extend jobTimeoutOf in this test)`)
+  return entry.timeout ?? 45
+}
 // Allowance for checkout, setup-node, corepack and install before the first suite step starts.
 const SETUP_ALLOWANCE_MINUTES = 3
 const isDiagnostic = (step: Step) => (step.name ?? '').startsWith('Diagnose ')
@@ -147,7 +154,7 @@ const isSuiteStep = (step: Step) => /test:shard/.test(step.run ?? '') && step.en
 const windowsTestSteps = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && !isDiagnostic(step) && isSuiteStep(step))
 const runningOn = (step: Step) => windowsEntries().filter((entry) => runsOn(step, entry))
 
-describe('cross-os workflow: Windows is sharded and every gate still runs once', () => {
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 1 of 5)', () => {
   it('the control: the evaluator reads the unsharded Linux suite as Linux-only', () => {
     const linuxSuite = steps.find((step) => /pnpm test(?![:\w-])/.test(step.run ?? ''))
     expect(linuxSuite, 'the Linux suite step').toBeDefined()
@@ -180,7 +187,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     expect(build).toHaveLength(1)
     for (const entry of windowsEntries()) expect(runsOn(build[0] as Step, entry), `Windows shard ${entry.shard} builds`).toBe(true)
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 2 of 5)', () => {
   it('runs the build before every Windows and macOS suite step, on macOS too', () => {
     const buildIndex = steps.findIndex((step) => /build:dist/.test(step.run ?? '') && /cross-repo-typecheck/.test(step.run ?? ''))
     expect(buildIndex, 'build step index').toBeGreaterThanOrEqual(0)
@@ -215,7 +224,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
   it('runs no unsharded `pnpm test` on any step that can run on Windows', () => {
     for (const step of stepsOnWindows()) expect(step.run ?? '', `step "${step.name}"`).not.toMatch(/pnpm test(?![:\w-])/)
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 3 of 5)', () => {
   it('runs each of typecheck, quality, lint, the lifecycle smoke and the Diagnose step on exactly one Windows shard', () => {
     const once: Array<[string, (step: Step) => boolean]> = [
       ['typecheck', (step) => /pnpm typecheck/.test(step.run ?? '')],
@@ -243,11 +254,13 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
       const suite = windowsTestSteps(entry)[0] as Step
       const diagnose = steps.filter((step) => isDiagnostic(step) && runsOn(step, entry))
       const total = SETUP_ALLOWANCE_MINUTES + timeoutOf(suite, entry) + diagnose.reduce((sum, step) => sum + timeoutOf(step, entry), 0)
-      expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(job['timeout-minutes'])
-      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(job['timeout-minutes'])
+      expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(jobTimeoutOf(entry))
+      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(jobTimeoutOf(entry))
     }
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 4 of 5)', () => {
   it('fetches the base-version lock client on every entry before any suite step, since the checkout is shallow', () => {
     const fetchIndex = steps.findIndex((step) => /git fetch\b/.test(step.run ?? '') && /base-version-client\.json/.test(step.run ?? ''))
     expect(fetchIndex, 'a step fetches the commit named in test-support/base-version-client.json').toBeGreaterThanOrEqual(0)
@@ -283,7 +296,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     if (!/^(1|true)$/i.test(process.env.CI ?? '') && shallow.status === 0 && shallow.stdout.trim() === 'true') skip(reason)
     expect(missing, reason).toEqual([])
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 5 of 5)', () => {
   it('keeps historical git archive invocations in the shared descriptor helper across every build test', () => {
     const testRoot = join(root, 'toolkit/packages/build/test')
     const files = readdirSync(testRoot, { recursive: true }).map(String).filter((file) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file))
@@ -297,6 +312,51 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     const names = entries.map((entry) => interpolate(String(upload.with?.name), entry))
     expect(new Set(names).size, names.join(', ')).toBe(entries.length)
     for (const name of names) expect(name).not.toContain('/')
+  })
+})
+
+describe('cross-os workflow: job timeout per matrix entry', () => {
+  it('the control: the job timeout reads a number, `matrix.timeout || 45`, and refuses any other form', () => {
+    const original = job['timeout-minutes']
+    try {
+      job['timeout-minutes'] = '${{ matrix.timeout || 45 }}'
+      expect(jobTimeoutOf({ os: 'windows-latest', timeout: 75 })).toBe(75)
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(45)
+      job['timeout-minutes'] = 60
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(60)
+      job['timeout-minutes'] = '${{ matrix.os }}'
+      expect(() => jobTimeoutOf({ os: 'ubuntu-latest' })).toThrow('unsupported timeout-minutes')
+    } finally {
+      job['timeout-minutes'] = original
+    }
+  })
+
+  it('gives the Windows entries a 75-minute job timeout and keeps 45 for ubuntu and macOS', () => {
+    for (const entry of entries) expect(jobTimeoutOf(entry), `${entry.os} shard ${entry.shard ?? '-'} job timeout`).toBe(entry.os === 'windows-latest' ? 75 : 45)
+  })
+})
+
+describe('cross-os workflow: Windows shard count', () => {
+  it('runs Windows as at least three shards: two were killed at the step timeout while still progressing', () => {
+    expect(windowsEntries().length).toBeGreaterThanOrEqual(3)
+  })
+
+  // Vitest cuts its path-hashed file order into contiguous slices, so with three shards the last slice holds only
+  // files that sat in the old second half, the half measured at over 28 minutes, while the first slice holds only
+  // files from the old first half (about 16 minutes). The non-suite gates therefore belong on shard 1, the lightest.
+  it('runs the non-suite gates and the Diagnose step on exactly one Windows shard, and that shard is shard 1', () => {
+    const extras = steps.filter((step) => isDiagnostic(step) || /pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke|host-adapter\.contract/.test(step.run ?? ''))
+    expect(extras.length, 'non-suite gate steps').toBeGreaterThanOrEqual(6)
+    for (const step of extras) expect(runningOn(step).map((entry) => entry.shard), `"${step.name}" Windows shards`).toEqual([1])
+  })
+
+  it('fits every Windows shard in the job budget with the timeout of every build, suite, Diagnose and gate step it runs', () => {
+    const counted = (step: Step) => /build:dist|test:shard|pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke/.test(step.run ?? '')
+    for (const entry of windowsEntries()) {
+      const caps = steps.filter((step) => runsOn(step, entry) && counted(step)).map((step) => timeoutOf(step, entry))
+      const total = SETUP_ALLOWANCE_MINUTES + caps.reduce((sum, minutes) => sum + minutes, 0)
+      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + ${caps.join('+')}`).toBeLessThanOrEqual(jobTimeoutOf(entry))
+    }
   })
 })
 
