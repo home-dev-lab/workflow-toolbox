@@ -160,6 +160,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
   registerBusyRequestCleanup()
   registerLateRequest()
   registerLeaseLifecycle()
+  registerStaticAdmission()
   registerHoldBound()
   registerCommandTreeStop()
   registerStopGrace()
@@ -775,6 +776,24 @@ function registerLateRequest() {
 
 }
 
+function registerStaticAdmission() {
+  it('grants a static gate beside an exclusive suite, and with the switch off makes it wait', async () => {
+    const on = await startBroker()
+    const suite = connect(on.socket, { argv: ['pnpm', 'test'], waitS: 2 })
+    await suite.waitForReply(granted)
+    const lint = connect(on.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
+    await lint.waitForReply(granted)
+    lint.socket.end(); suite.socket.end()
+    const off = await startBroker(process.pid, { WT_SUITE_LOCK_STATIC_LANE: '0' })
+    const legacy = connect(off.socket, { argv: ['pnpm', 'test'], waitS: 2 })
+    await legacy.waitForReply(granted)
+    const waiting = connect(off.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
+    await waiting.waitForReply((text) => /(?:^|\n)wait [^\n]*\n/.test(text))
+    expect(waiting.text()).not.toContain('granted ')
+    legacy.socket.end(); await waiting.waitForReply(granted); waiting.socket.end()
+  })
+}
+
 function registerLeaseLifecycle() {
   it('holds as the broker, serialises clients, and releases on client end', async () => {
     const broker = await startBroker()
@@ -783,7 +802,7 @@ function registerLeaseLifecycle() {
     const holder = JSON.parse(readFileSync(broker.lock, 'utf8'))
     expect(holder.pid).toBe(broker.child.pid)
     expect(holder.argv.slice(0, 2)).toEqual(['wt-lane-sandbox', 'test-lane'])
-    const second = connect(broker.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
+    const second = connect(broker.socket, { argv: ['pnpm', 'test:blocking'], waitS: 2 })
     await second.waitForReply((text) => /(?:^|\n)wait [^\n]*\n/.test(text))
     expect(second.text()).not.toContain('granted ')
     first.socket.end()
