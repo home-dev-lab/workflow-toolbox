@@ -184,6 +184,7 @@ function collectStatementStart(token, state, home, starts) {
 // `/c/...`; a UNC, device or drive-relative path has no POSIX-absolute spelling, so it is unknown and a
 // relative target resolved against it stays unresolved.
 function shellDirectory(value) {
+  if (typeof value === 'string' && /^[A-Za-z]:$/.test(value)) return null
   const converted = toGitBashPath(value)
   return typeof converted === 'string' && posix.isAbsolute(converted) ? converted : null
 }

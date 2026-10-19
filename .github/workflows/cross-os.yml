@@ -40,12 +40,15 @@ jobs:
           - os: macos-latest
           - os: windows-latest
             shard: 1
+            timeout: 75
           - os: windows-latest
             shard: 2
+            timeout: 75
           - os: windows-latest
             shard: 3
+            timeout: 75
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 75
+    timeout-minutes: ${{ matrix.timeout || 45 }}
     defaults:
       run:
         working-directory: toolkit
@@ -150,7 +153,7 @@ jobs:
       # and it alone carries the non-suite steps: host adapter contract (8 min cap), typecheck, quality, lint and the
       # lifecycle smoke (5 min cap each), and the Diagnose step (8 min cap, `always()`). Worst case on shard 1, every
       # step at its cap: setup 3 + build 8 + contract 8 + suite 28 + Diagnose 8 + 4 x 5 = 75 minutes, so the job
-      # timeout is 75 (it was 45 when the extras were expected to fit beside one suite only). A hung suite still
+      # timeout is 75 for the Windows entries only (`timeout: 75` in the matrix); ubuntu and macOS keep 45. A hung suite still
       # leaves room for the process table and the artifact upload. Shards 2 and 3 carry only setup, build and the
       # suite: 3 + 8 + 28 = 39. The shards run coverage without thresholds so the custom coverage provider's merge and
       # cleanup path stays exercised on Windows.

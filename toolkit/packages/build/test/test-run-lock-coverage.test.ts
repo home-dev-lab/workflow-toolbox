@@ -59,6 +59,7 @@ describe('parseTestRunStart with Windows host paths', () => {
     ['a device-path cwd', 'cd toolkit && pnpm test', '\\\\?\\C:\\repo', null],
     ['a drive-relative cwd', 'pnpm -C toolkit test', 'C:repo', null],
     ['a UNC home', 'cd ~/p && pnpm test', '/repo', '\\\\server\\share\\h'],
+    ['a bare drive cwd', 'cd toolkit && pnpm test', 'C:', null],
   ])('leaves a relative directory unresolved under %s', (_label, command, cwd, home) => {
     expect(parseTestRunStart(command, cwd, home)).toMatchObject({ dir: null })
   })
@@ -72,6 +73,10 @@ describe('parseTestRunStart with a drive-letter target', () => {
     ['cd C:/x && pnpm test', '\\\\server\\share\\r', null],
   ])('leaves %s unresolved under the Windows cwd %s or home %s', (command, cwd, home) => {
     expect(parseTestRunStart(command, cwd, home)).toMatchObject({ dir: null })
+  })
+
+  it('leaves a drive-letter target unresolved when only the home is a Windows path', () => {
+    expect(parseTestRunStart('cd C:/x && pnpm test', '/repo', 'C:\\Users\\u')).toMatchObject({ dir: null })
   })
 
   it('keeps today\'s result for a drive-letter target under a POSIX cwd', () => {

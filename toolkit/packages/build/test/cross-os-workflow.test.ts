@@ -68,10 +68,10 @@ describe('omitted descriptor history evidence', () => {
   })
 })
 
-type Entry = { os: string; shard?: number }
+type Entry = { os: string; shard?: number; timeout?: number }
 type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; env?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
-  jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number; steps: Step[] } }
+  jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number | string; steps: Step[] } }
 }
 it('cross-OS owner certification has first-parent history and no environment bypass', () => {
   const steps = workflow.jobs.matrix.steps
@@ -139,6 +139,13 @@ function timeoutOf(step: Step, entry: Entry): number {
   if (!choice) throw new Error(`cross-os.yml step "${step.name}": unsupported timeout-minutes \`${String(value)}\` (extend timeoutOf in this test)`)
   return (entry.shard ?? 0) === Number(choice[1]) ? Number(choice[2]) : Number(choice[3])
 }
+// The job's `timeout-minutes` for one entry: a number, or exactly `${{ matrix.timeout || 45 }}` (the entry's `timeout`, else 45).
+function jobTimeoutOf(entry: Entry): number {
+  const value = job['timeout-minutes']
+  if (typeof value === 'number') return value
+  if (value.replace(/\s+/g, ' ') !== '${{ matrix.timeout || 45 }}') throw new Error(`cross-os.yml job: unsupported timeout-minutes \`${value}\` (extend jobTimeoutOf in this test)`)
+  return entry.timeout ?? 45
+}
 // Allowance for checkout, setup-node, corepack and install before the first suite step starts.
 const SETUP_ALLOWANCE_MINUTES = 3
 const isDiagnostic = (step: Step) => (step.name ?? '').startsWith('Diagnose ')
@@ -162,6 +169,25 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     expect(() => runsOn({ if: "${{ runner.os == 'Linux' }}" }, { os: 'ubuntu-24.04' })).toThrow('unknown label')
     expect(timeoutOf({ 'timeout-minutes': '${{ matrix.shard == 1 && 28 || 20 }}' }, { os: 'windows-latest', shard: 2 })).toBe(20)
     expect(() => timeoutOf({ 'timeout-minutes': '${{ matrix.os }}' }, noShard)).toThrow('unsupported timeout-minutes')
+  })
+
+  it('the control: the job timeout reads a number, `matrix.timeout || 45`, and refuses any other form', () => {
+    const original = job['timeout-minutes']
+    try {
+      job['timeout-minutes'] = '${{ matrix.timeout || 45 }}'
+      expect(jobTimeoutOf({ os: 'windows-latest', timeout: 75 })).toBe(75)
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(45)
+      job['timeout-minutes'] = 60
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(60)
+      job['timeout-minutes'] = '${{ matrix.os }}'
+      expect(() => jobTimeoutOf({ os: 'ubuntu-latest' })).toThrow('unsupported timeout-minutes')
+    } finally {
+      job['timeout-minutes'] = original
+    }
+  })
+
+  it('gives the Windows entries a 75-minute job timeout and keeps 45 for ubuntu and macOS', () => {
+    for (const entry of entries) expect(jobTimeoutOf(entry), `${entry.os} shard ${entry.shard ?? '-'} job timeout`).toBe(entry.os === 'windows-latest' ? 75 : 45)
   })
 
   it('declares its matrix as include entries only: an `os` list beside them would merge the Windows entries into one combination', () => {
@@ -243,8 +269,8 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
       const suite = windowsTestSteps(entry)[0] as Step
       const diagnose = steps.filter((step) => isDiagnostic(step) && runsOn(step, entry))
       const total = SETUP_ALLOWANCE_MINUTES + timeoutOf(suite, entry) + diagnose.reduce((sum, step) => sum + timeoutOf(step, entry), 0)
-      expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(job['timeout-minutes'])
-      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(job['timeout-minutes'])
+      expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(jobTimeoutOf(entry))
+      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(jobTimeoutOf(entry))
     }
   })
 
@@ -319,7 +345,7 @@ describe('cross-os workflow: Windows shard count', () => {
     for (const entry of windowsEntries()) {
       const caps = steps.filter((step) => runsOn(step, entry) && counted(step)).map((step) => timeoutOf(step, entry))
       const total = SETUP_ALLOWANCE_MINUTES + caps.reduce((sum, minutes) => sum + minutes, 0)
-      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + ${caps.join('+')}`).toBeLessThanOrEqual(job['timeout-minutes'])
+      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + ${caps.join('+')}`).toBeLessThanOrEqual(jobTimeoutOf(entry))
     }
   })
 })
