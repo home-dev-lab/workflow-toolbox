@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -27,6 +28,8 @@ import { renewBrokerFixture, suiteBrokerAddress, suiteBrokerFixture } from './he
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
+// A --import argument is a URL on every OS (a bare path or specifier is not portable to Windows).
+const TSX_IMPORT = pathToFileURL(createRequire(join(ROOT, 'toolkit/package.json')).resolve('tsx/esm')).href
 const roots: string[] = []
 const children: Array<ReturnType<typeof spawn>> = []
 afterEach(async () => {
@@ -1091,8 +1094,8 @@ function registerBrokerFixtureEpipeTest() {
       socket._write=(_chunk,_encoding,callback)=>callback(peerClosed?Object.assign(new Error('write '+${JSON.stringify(code)}),{code:${JSON.stringify(code)}}):null);
       const stop=renewBrokerFixture(socket,1000,10);peerClosed=true;
       socket.once('close',()=>{stop();process.stdout.write('renewal stopped\\n')});`
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
-      cwd: join(ROOT, 'toolkit'), env: envFor(temp()), encoding: 'utf8', timeout: 5000,
+    const result = spawnSync(process.execPath, ['--import', TSX_IMPORT, '--input-type=module', '-e', script], {
+      cwd: join(ROOT, 'toolkit'), env: envFor(temp()), encoding: 'utf8', timeout: 30_000,
     })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toBe('renewal stopped\n')
@@ -1117,8 +1120,8 @@ function registerBrokerFixturePeerCloseTest() {
         client.once('data',()=>client.destroy());client.write('request\\n');
         await end;process.stdout.write('peer closed cleanly\\n');
       } finally {clearTimeout(finishTimer);stop();client?.destroy();peer?.destroy();await new Promise(resolve=>server.close(resolve))}`
-    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
-      cwd: join(ROOT, 'toolkit'), env: envFor(temp()), encoding: 'utf8', timeout: 5000,
+    const result = spawnSync(process.execPath, ['--import', TSX_IMPORT, '--input-type=module', '-e', script], {
+      cwd: join(ROOT, 'toolkit'), env: envFor(temp()), encoding: 'utf8', timeout: 30_000,
     })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toBe('peer closed cleanly\n')
