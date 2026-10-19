@@ -154,7 +154,7 @@ const isSuiteStep = (step: Step) => /test:shard/.test(step.run ?? '') && step.en
 const windowsTestSteps = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && !isDiagnostic(step) && isSuiteStep(step))
 const runningOn = (step: Step) => windowsEntries().filter((entry) => runsOn(step, entry))
 
-describe('cross-os workflow: Windows is sharded and every gate still runs once', () => {
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 1 of 5)', () => {
   it('the control: the evaluator reads the unsharded Linux suite as Linux-only', () => {
     const linuxSuite = steps.find((step) => /pnpm test(?![:\w-])/.test(step.run ?? ''))
     expect(linuxSuite, 'the Linux suite step').toBeDefined()
@@ -169,25 +169,6 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     expect(() => runsOn({ if: "${{ runner.os == 'Linux' }}" }, { os: 'ubuntu-24.04' })).toThrow('unknown label')
     expect(timeoutOf({ 'timeout-minutes': '${{ matrix.shard == 1 && 28 || 20 }}' }, { os: 'windows-latest', shard: 2 })).toBe(20)
     expect(() => timeoutOf({ 'timeout-minutes': '${{ matrix.os }}' }, noShard)).toThrow('unsupported timeout-minutes')
-  })
-
-  it('the control: the job timeout reads a number, `matrix.timeout || 45`, and refuses any other form', () => {
-    const original = job['timeout-minutes']
-    try {
-      job['timeout-minutes'] = '${{ matrix.timeout || 45 }}'
-      expect(jobTimeoutOf({ os: 'windows-latest', timeout: 75 })).toBe(75)
-      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(45)
-      job['timeout-minutes'] = 60
-      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(60)
-      job['timeout-minutes'] = '${{ matrix.os }}'
-      expect(() => jobTimeoutOf({ os: 'ubuntu-latest' })).toThrow('unsupported timeout-minutes')
-    } finally {
-      job['timeout-minutes'] = original
-    }
-  })
-
-  it('gives the Windows entries a 75-minute job timeout and keeps 45 for ubuntu and macOS', () => {
-    for (const entry of entries) expect(jobTimeoutOf(entry), `${entry.os} shard ${entry.shard ?? '-'} job timeout`).toBe(entry.os === 'windows-latest' ? 75 : 45)
   })
 
   it('declares its matrix as include entries only: an `os` list beside them would merge the Windows entries into one combination', () => {
@@ -206,7 +187,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     expect(build).toHaveLength(1)
     for (const entry of windowsEntries()) expect(runsOn(build[0] as Step, entry), `Windows shard ${entry.shard} builds`).toBe(true)
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 2 of 5)', () => {
   it('runs the build before every Windows and macOS suite step, on macOS too', () => {
     const buildIndex = steps.findIndex((step) => /build:dist/.test(step.run ?? '') && /cross-repo-typecheck/.test(step.run ?? ''))
     expect(buildIndex, 'build step index').toBeGreaterThanOrEqual(0)
@@ -241,7 +224,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
   it('runs no unsharded `pnpm test` on any step that can run on Windows', () => {
     for (const step of stepsOnWindows()) expect(step.run ?? '', `step "${step.name}"`).not.toMatch(/pnpm test(?![:\w-])/)
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 3 of 5)', () => {
   it('runs each of typecheck, quality, lint, the lifecycle smoke and the Diagnose step on exactly one Windows shard', () => {
     const once: Array<[string, (step: Step) => boolean]> = [
       ['typecheck', (step) => /pnpm typecheck/.test(step.run ?? '')],
@@ -273,7 +258,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
       expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(jobTimeoutOf(entry))
     }
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 4 of 5)', () => {
   it('fetches the base-version lock client on every entry before any suite step, since the checkout is shallow', () => {
     const fetchIndex = steps.findIndex((step) => /git fetch\b/.test(step.run ?? '') && /base-version-client\.json/.test(step.run ?? ''))
     expect(fetchIndex, 'a step fetches the commit named in test-support/base-version-client.json').toBeGreaterThanOrEqual(0)
@@ -309,7 +296,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     if (!/^(1|true)$/i.test(process.env.CI ?? '') && shallow.status === 0 && shallow.stdout.trim() === 'true') skip(reason)
     expect(missing, reason).toEqual([])
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 5 of 5)', () => {
   it('keeps historical git archive invocations in the shared descriptor helper across every build test', () => {
     const testRoot = join(root, 'toolkit/packages/build/test')
     const files = readdirSync(testRoot, { recursive: true }).map(String).filter((file) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file))
@@ -323,6 +312,27 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     const names = entries.map((entry) => interpolate(String(upload.with?.name), entry))
     expect(new Set(names).size, names.join(', ')).toBe(entries.length)
     for (const name of names) expect(name).not.toContain('/')
+  })
+})
+
+describe('cross-os workflow: job timeout per matrix entry', () => {
+  it('the control: the job timeout reads a number, `matrix.timeout || 45`, and refuses any other form', () => {
+    const original = job['timeout-minutes']
+    try {
+      job['timeout-minutes'] = '${{ matrix.timeout || 45 }}'
+      expect(jobTimeoutOf({ os: 'windows-latest', timeout: 75 })).toBe(75)
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(45)
+      job['timeout-minutes'] = 60
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(60)
+      job['timeout-minutes'] = '${{ matrix.os }}'
+      expect(() => jobTimeoutOf({ os: 'ubuntu-latest' })).toThrow('unsupported timeout-minutes')
+    } finally {
+      job['timeout-minutes'] = original
+    }
+  })
+
+  it('gives the Windows entries a 75-minute job timeout and keeps 45 for ubuntu and macOS', () => {
+    for (const entry of entries) expect(jobTimeoutOf(entry), `${entry.os} shard ${entry.shard ?? '-'} job timeout`).toBe(entry.os === 'windows-latest' ? 75 : 45)
   })
 })
 
