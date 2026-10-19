@@ -7,7 +7,7 @@ const WAITER = process.env.WT_LANE_WAITER_TEST_SOURCE ?? fileURLToPath(new URL('
 const running = { runId: '1-1', state: 'running', workerPid: 42, childPid: 43 }
 const alive = { status: 'running', worker: 'running', child: 'running' }
 
-export const deadlineCases = [
+const baseCases = [
   { title: 'reports the waiter budget ending while the lane worker is alive', record: running,
     verdict: alive, status: 125, output: 'WAIT BUDGET ENDED: lane pid 42 still running\n' },
   { title: 'keeps a recorded lane deadline distinct from a terminal timeout',
@@ -41,16 +41,31 @@ export const deadlineCases = [
     status: 1, output: 'LANE DIED exit=unknown\n' },
 ]
 
+// Every case runs under both path flavours on every OS: the waiter joins host paths with the host `path`
+// module, so the spelling of `log=` follows the flavour injected here, never the machine running the test.
+const FLAVOURS = [
+  { name: 'posix', path: path.posix, host: '/host', log: '/host/run.log' },
+  { name: 'win32', path: path.win32, host: 'C:\\host', log: 'C:\\host\\run.log' },
+]
+
+export const deadlineCases = FLAVOURS.flatMap((flavour) => baseCases.map((scenario) => ({
+  ...scenario,
+  title: `${scenario.title} (${flavour.name} paths)`,
+  flavour,
+  output: scenario.output.replaceAll('/host/run.log', flavour.log),
+})))
+
 export function runDeadlineCase(scenario) {
+  const flavour = scenario.flavour ?? FLAVOURS[0]
   let now = 0
   let stdout = ''
   const process = { argv: ['node', 'waiter', '--dir', '/fixture', '--pid', '42', '--timeout', '0.01'],
     stdout: { write(text) { stdout += text } }, stderr: { write(text) { throw new Error(text) } } }
   const context = {
-    process, path, Int32Array, SharedArrayBuffer,
+    process, path: flavour.path, Int32Array, SharedArrayBuffer,
     Date: { now: () => now }, Atomics: { wait(_array, _index, _value, ms) { now += ms } },
     realpathSync: (value) => value, statSync() { throw new Error('no report') },
-    laneHostDir: () => '/host', laneHostPlatform: scenario.platform ?? 'linux', legacySupervision: () => [],
+    laneHostDir: () => flavour.host, laneHostPlatform: scenario.platform ?? 'linux', legacySupervision: () => [],
     readCurrentSupervisions: () => scenario.record ? [{ record: scenario.record }] : [], classifyLane: () => scenario.verdict ?? alive,
   }
   runInNewContext(readFileSync(WAITER, 'utf8').replace(/^import .*\n/gm, ''), context)

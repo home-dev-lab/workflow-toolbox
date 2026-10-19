@@ -9,9 +9,12 @@
 // read: an unresolved directory, an explicit `--config` or `--root`, or `pnpm -r test` is `unknown`.
 // A watch run takes no lease: `uncovered`.
 
-import path from 'node:path'
+import { posix } from 'node:path'
 import { stripNonCode } from './command-invocation.mjs'
+import { toGitBashPath } from './git-bash-path.mjs'
 
+// The commands parsed here run in a POSIX shell (Git Bash on Windows), so every directory is read and
+// resolved in POSIX spelling with `posix`, never the host's path module.
 const CONFIG_EXTENSIONS = ['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs']
 // Vitest's own search, per directory while walking up: vitest.config.* first, then vite.config.*.
 const CONFIG_NAMES = [...CONFIG_EXTENSIONS.map((ext) => `vitest.config${ext}`), ...CONFIG_EXTENSIONS.map((ext) => `vite.config${ext}`)]
@@ -110,10 +113,16 @@ function expand(value, vars, home) {
   return /[$~]/.test(expanded) || expanded === '' ? null : expanded
 }
 
-function resolveFrom(base, target) {
+// A drive-letter target (`C:/x`) names a Windows directory the POSIX resolution cannot place; it is only read as
+// unknown when the host paths were Windows paths. Under a POSIX cwd it resolves as it always did.
+const DRIVE_TARGET = /^[A-Za-z]:/
+const WINDOWS_HOST_PATH = /^(?:[A-Za-z]:|\\)/
+
+function resolveFrom(base, target, windowsHost) {
   if (target === null) return null
-  if (path.isAbsolute(target)) return path.normalize(target)
-  return base ? path.resolve(base, target) : null
+  if (windowsHost && DRIVE_TARGET.test(target)) return null
+  if (posix.isAbsolute(target)) return posix.normalize(target)
+  return base ? posix.resolve(base, target) : null
 }
 
 function startOf(runner, rest, assigned, state) {
@@ -121,7 +130,7 @@ function startOf(runner, rest, assigned, state) {
   return {
     head: rest.trim(),
     kind: runner.kind,
-    dir: runner.dir === null ? state.dir : resolveFrom(state.dir, expand(runner.dir, state.vars, state.home)),
+    dir: runner.dir === null ? state.dir : resolveFrom(state.dir, expand(runner.dir, state.vars, state.home), state.windowsHost),
     bypass: state.exportedAssignment === 'bypassed' || Object.entries(assigned).some(([name, value]) => assignmentCoverage(name, value) === 'bypassed'),
     assignment: Object.entries(assigned).map(([name, value]) => assignmentCoverage(name, value)).find(Boolean) ?? state.exportedAssignment,
     watch: runner.kind === 'vitest' && (args[0] === 'watch' || args[0] === 'dev' || args.some((arg) => WATCH_FLAGS.has(arg))),
@@ -142,7 +151,7 @@ function applyDirectoryHead(head, state, home) {
   if (/^(?:pushd|popd)(?:\s|$)/.test(head)) { state.dir = null; return true }
   if (/^cd(?:\s|$)/.test(head)) {
     const cd = head.match(/^cd\s+([^\s-]\S*)\s*$/)
-    state.dir = cd ? resolveFrom(state.dir, expand(cd[1], state.vars, home)) : null
+    state.dir = cd ? resolveFrom(state.dir, expand(cd[1], state.vars, home), state.windowsHost) : null
     return true
   }
   return false
@@ -171,6 +180,14 @@ function collectStatementStart(token, state, home, starts) {
   starts.push(startOf(runner, head, assigned, state))
 }
 
+// A host directory in the shell's spelling, or null when it has none: a Windows drive path becomes
+// `/c/...`; a UNC, device or drive-relative path has no POSIX-absolute spelling, so it is unknown and a
+// relative target resolved against it stays unresolved.
+function shellDirectory(value) {
+  const converted = toGitBashPath(value)
+  return typeof converted === 'string' && posix.isAbsolute(converted) ? converted : null
+}
+
 /**
  * Every test-runner start in a Bash command, in order. A version or help query is not a start.
  * `dir` is null when the run's directory cannot be read from the command (a non-literal `cd`, `cd -`,
@@ -179,12 +196,14 @@ function collectStatementStart(token, state, home, starts) {
  */
 export function parseTestRunStarts(command, cwd = null, home = null) {
   if (typeof command !== 'string' || !command) return []
-  const state = { dir: cwd, vars: {}, home, exportedAssignment: null }
+  const shellHome = shellDirectory(home)
+  const windowsHost = [cwd, home].some((value) => typeof value === 'string' && WINDOWS_HOST_PATH.test(value))
+  const state = { dir: shellDirectory(cwd), vars: {}, home: shellHome, windowsHost, exportedAssignment: null }
   const stack = []
   const starts = []
   for (const token of stripNonCode(command.replace(/\bWT_SUITE_LOCK=(['"])0\1/g, 'WT_SUITE_LOCK=0')).replace(/(^|[\s;&|()])#[^\n]*/gm, '$1').split(TOKEN)) {
     if (applyGroupToken(token, state, stack)) continue
-    collectStatementStart(token, state, home, starts)
+    collectStatementStart(token, state, shellHome, starts)
   }
   return starts
 }
@@ -198,7 +217,7 @@ function walkUp(dir, visit) {
   for (let step = 0; step < MAX_WALK; step++) {
     const found = visit(current)
     if (found !== undefined) return found
-    const parent = path.dirname(current)
+    const parent = posix.dirname(current)
     if (parent === current) return null
     current = parent
   }
@@ -208,7 +227,7 @@ function walkUp(dir, visit) {
 function nearestConfig(dir, readText) {
   return walkUp(dir, (current) => {
     for (const name of CONFIG_NAMES) {
-      const text = readText(path.join(current, name))
+      const text = readText(posix.join(current, name))
       if (typeof text === 'string') return text
     }
     return undefined
@@ -219,7 +238,7 @@ function nearestConfig(dir, readText) {
 // the way pnpm does (it runs the script of the package it is in).
 function nearestTestScript(dir, readText) {
   return walkUp(dir, (current) => {
-    const text = readText(path.join(current, 'package.json'))
+    const text = readText(posix.join(current, 'package.json'))
     if (typeof text !== 'string') return undefined
     try {
       const script = JSON.parse(text)?.scripts?.test

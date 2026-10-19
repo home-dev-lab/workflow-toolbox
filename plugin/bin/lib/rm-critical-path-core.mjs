@@ -31,6 +31,8 @@
 // rule the harness adds after the version this was written against. The PermissionRequest half
 // of the hook covers what this prediction misses.
 
+import { toGitBashPath } from './git-bash-path.mjs'
+
 const NAME = '[A-Za-z_][A-Za-z0-9_]*'
 // A variable reference as the first thing in a word: `$D`, `${D}`, `${D-}`, `${D:-}`, `${D:-""}`,
 // `${D:-$E}` — every form that can still expand to empty. `${D:?}` is deliberately absent.
@@ -676,21 +678,8 @@ export function scanRmCriticalPath(command, { cwd = null, home = null, env = {} 
   const text = String(command ?? '')
   if (!/\brm(?:dir)?\b/.test(text)) return []
   const hits = []
-  scanScript(text, { cwd: gitBashPath(cwd), home: gitBashPath(home), env: env ?? {} }, 0, hits)
+  scanScript(text, { cwd: toGitBashPath(cwd), home: toGitBashPath(home), env: env ?? {} }, 0, hits)
   return hits
-}
-
-/**
- * The hook's cwd and home come from the host: on win32 they read `C:\Users\x`. The Bash commands
- * it judges run in Git Bash, which spells the same directory `/c/Users/x`. Comparing the two
- * forms would miss every home or working-directory target, so a drive-letter path is rewritten
- * to the Git Bash form. A POSIX path is returned unchanged.
- */
-function gitBashPath(path) {
-  if (typeof path !== 'string') return path
-  const drive = /^([A-Za-z]):(?:[\\/]|$)/.exec(path)
-  if (!drive) return path
-  return `/${drive[1].toLowerCase()}/${path.slice(2).replace(/\\/g, '/').replace(/^\/+/, '')}`
 }
 
 /** Does `command` invoke rm/rmdir with a target the critical-path check could stop on? A target

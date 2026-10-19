@@ -30,9 +30,10 @@ jobs:
   matrix:
     strategy:
       fail-fast: false
-      # Windows is two PARALLEL jobs (shard 1 and shard 2): the full Windows suite measured 1217-1724 s in
-      # one step over eight runs, which left the 35-minute job with no margin. A job without `shard` has an
-      # empty `matrix.shard`, so the shard conditions below treat ubuntu and macOS as unsharded.
+      # Windows is three PARALLEL jobs (shards 1, 2 and 3): the full Windows suite measured 1217-1724 s in
+      # one step over eight runs, which left the 35-minute job with no margin, and two shards stopped being
+      # enough as the suite grew (see the sharding history above the Windows test step). A job without
+      # `shard` has an empty `matrix.shard`, so the shard conditions below treat ubuntu and macOS as unsharded.
       matrix:
         include:
           - os: ubuntu-latest
@@ -41,8 +42,10 @@ jobs:
             shard: 1
           - os: windows-latest
             shard: 2
+          - os: windows-latest
+            shard: 3
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     defaults:
       run:
         working-directory: toolkit
@@ -86,7 +89,7 @@ jobs:
       # Coverage thresholds are judged on ubuntu only: the Windows shards run coverage WITHOUT thresholds
       # (toolkit/vitest.config.mts leaves them undefined on win32), macOS runs no coverage.
       # `test:shard` does not build; `pnpm test` did (through script-gates.mjs), so every sharded job
-      # (macOS and both Windows shards) builds here. Measured on Windows: ~17 s (build:dist + cross-repo-typecheck).
+      # (macOS and every Windows shard) builds here. Measured on Windows: ~17 s (build:dist + cross-repo-typecheck).
       - name: Build for the sharded suites
         if: ${{ runner.os != 'Linux' }}
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
@@ -95,7 +98,7 @@ jobs:
       # The suite steps below carry `!cancelled()`: a red contract still fails the job, but no longer skips the suite
       # and hides every other failure of that entry.
       - name: Host adapter contract against the REAL platform
-        if: ${{ matrix.shard != 1 }}
+        if: ${{ matrix.shard != 2 && matrix.shard != 3 }}
         shell: bash
         env:
           WT_HOST_CONTRACT_REAL: '1'
@@ -138,13 +141,20 @@ jobs:
       # Windows measured before sharding (eight runs, 2026-09): the full suite step took 1217-1724 s (coverage and
       # build included). First sharded run (cross-os run 36811210122): shard 1 test step 885 s (job 935 s), shard 2
       # test step 642 s (job 978 s). By 2026-10-12 shard 2 took 17m07s-17m38s and on 2026-10-13 (run 38398256468) it
-      # was killed at its 20-minute budget while still progressing, so both shards now get 28 min. Shard 2 also carries the
-      # Diagnose step (8 min, `always()`): setup ~3 min + 28 + 8 = 39 min fits the 45-minute job, so a hung suite still
-      # leaves room for the process table and the artifact upload (shard 1: 3 + 28 = 31). The shards
-      # run coverage without thresholds so the custom coverage provider's merge and cleanup path stays exercised on
-      # Windows. Shard 1 carries nothing else; shard 2 carries the diagnostic step and the typecheck, quality, lint
-      # and smoke steps.
-      - name: Test (Windows shard ${{ matrix.shard }}/2)
+      # was killed at its 20-minute budget while still progressing, so both shards got 28 min. On 2026-10-19 shard 2
+      # was killed again at 28 minutes with about 210 of roughly 250 test files done (shard 1 took 16 minutes), so
+      # Windows is now THREE shards. Vitest orders files by a hash of their path and cuts that order into contiguous
+      # slices, so shard 3/3 holds only files from the old second half (the one killed at 28 minutes: the two
+      # sdk-pilot-lifecycle suites near 500 s each, pilot-runner, quality-changed, wt-lane-integrate), while shard 1/3
+      # holds only files from the old first half (16 minutes). Shard 1 is therefore the lightest slice by measurement,
+      # and it alone carries the non-suite steps: host adapter contract (8 min cap), typecheck, quality, lint and the
+      # lifecycle smoke (5 min cap each), and the Diagnose step (8 min cap, `always()`). Worst case on shard 1, every
+      # step at its cap: setup 3 + build 8 + contract 8 + suite 28 + Diagnose 8 + 4 x 5 = 75 minutes, so the job
+      # timeout is 75 (it was 45 when the extras were expected to fit beside one suite only). A hung suite still
+      # leaves room for the process table and the artifact upload. Shards 2 and 3 carry only setup, build and the
+      # suite: 3 + 8 + 28 = 39. The shards run coverage without thresholds so the custom coverage provider's merge and
+      # cleanup path stays exercised on Windows.
+      - name: Test (Windows shard ${{ matrix.shard }}/3)
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         env:
@@ -152,7 +162,7 @@ jobs:
           WT_VITEST_MAX_WORKERS: 2
         run: |
           New-Item -ItemType Directory -Force ci-diagnostics | Out-Null
-          pnpm test:shard --shard=${{ matrix.shard }}/2 --coverage 2>&1 | Tee-Object ci-diagnostics/vitest-shard-${{ matrix.shard }}-of-2.log
+          pnpm test:shard --shard=${{ matrix.shard }}/3 --coverage 2>&1 | Tee-Object ci-diagnostics/vitest-shard-${{ matrix.shard }}-of-3.log
           exit $LASTEXITCODE
         timeout-minutes: 28
       # Dispatcher step contract: names beginning "Diagnose " are diagnostic and never gate the job;
@@ -163,7 +173,7 @@ jobs:
       # Run that one file alone, one worker, verbose reporter, with Node tracing every exit and uncaught
       # exception, so the artifact carries the fork's last words instead of the pool's silence.
       - name: Diagnose artifact-server fork (Windows)
-        if: ${{ always() && runner.os == 'Windows' && matrix.shard == 2 }}
+        if: ${{ always() && runner.os == 'Windows' && matrix.shard == 1 }}
         continue-on-error: true
         shell: pwsh
         env:
@@ -175,22 +185,22 @@ jobs:
           exit $LASTEXITCODE
         timeout-minutes: 8
       - name: Typecheck
-        if: ${{ matrix.shard != 1 }}
+        if: ${{ matrix.shard != 2 && matrix.shard != 3 }}
         run: pnpm typecheck
         timeout-minutes: 5
       - name: Quality
-        if: ${{ matrix.shard != 1 }}
+        if: ${{ matrix.shard != 2 && matrix.shard != 3 }}
         env:
           # Judge this revision against its first parent, including dispatched merge refs.
           WT_QUALITY_BASE: HEAD^1
         run: pnpm quality
         timeout-minutes: 5
       - name: Lint
-        if: ${{ matrix.shard != 1 }}
+        if: ${{ matrix.shard != 2 && matrix.shard != 3 }}
         run: pnpm lint
         timeout-minutes: 5
       - name: wt-observe lifecycle smoke (native state root, PID identity, portable spawn)
-        if: ${{ matrix.shard != 1 }}
+        if: ${{ matrix.shard != 2 && matrix.shard != 3 }}
         run: node scripts/ci-lifecycle-smoke.mjs
         timeout-minutes: 5
       - name: Runner process table (POSIX)

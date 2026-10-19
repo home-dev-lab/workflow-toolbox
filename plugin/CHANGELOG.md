@@ -5,6 +5,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+
+- The concurrent-test guard's lock-coverage check now resolves `cd`, `pnpm -C` and `--dir` targets, and walks up for the Vitest config, in Git Bash path spelling on every host, so a Windows drive-letter working directory or home (`C:\repo`) is read as `/c/repo`; a UNC or other non-drive working directory leaves a relative directory unresolved and the journalled run directory is recorded as unresolved instead of being resolved against the hook's own directory. The `C:\` to `/c/` rewrite moved into the shared `git-bash-path.mjs` module, used by this check and the critical-path `rm` guard.
+- The lane-wait deadline-outcome test fixture now runs every case under both POSIX and Windows path spellings, so its expectations no longer depend on the host's path module.
+
 ## [0.196.1] - 2026-10-18
 
 ### Added

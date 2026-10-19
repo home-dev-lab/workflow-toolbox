@@ -300,6 +300,30 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
   })
 })
 
+describe('cross-os workflow: Windows shard count', () => {
+  it('runs Windows as at least three shards: two were killed at the step timeout while still progressing', () => {
+    expect(windowsEntries().length).toBeGreaterThanOrEqual(3)
+  })
+
+  // Vitest cuts its path-hashed file order into contiguous slices, so with three shards the last slice holds only
+  // files that sat in the old second half, the half measured at over 28 minutes, while the first slice holds only
+  // files from the old first half (about 16 minutes). The non-suite gates therefore belong on shard 1, the lightest.
+  it('runs the non-suite gates and the Diagnose step on exactly one Windows shard, and that shard is shard 1', () => {
+    const extras = steps.filter((step) => isDiagnostic(step) || /pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke|host-adapter\.contract/.test(step.run ?? ''))
+    expect(extras.length, 'non-suite gate steps').toBeGreaterThanOrEqual(6)
+    for (const step of extras) expect(runningOn(step).map((entry) => entry.shard), `"${step.name}" Windows shards`).toEqual([1])
+  })
+
+  it('fits every Windows shard in the job budget with the timeout of every build, suite, Diagnose and gate step it runs', () => {
+    const counted = (step: Step) => /build:dist|test:shard|pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke/.test(step.run ?? '')
+    for (const entry of windowsEntries()) {
+      const caps = steps.filter((step) => runsOn(step, entry) && counted(step)).map((step) => timeoutOf(step, entry))
+      const total = SETUP_ALLOWANCE_MINUTES + caps.reduce((sum, minutes) => sum + minutes, 0)
+      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + ${caps.join('+')}`).toBeLessThanOrEqual(job['timeout-minutes'])
+    }
+  })
+})
+
 describe('cross-os workflow: one red never hides the suite', () => {
   it('runs every sharded suite step even after an earlier gating step failed, so one red never hides the suite', () => {
     const suites = steps.filter((step) => /test:shard --shard=/.test(step.run ?? ''))
