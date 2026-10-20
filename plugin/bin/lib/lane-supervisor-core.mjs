@@ -5,6 +5,7 @@ import { ensureLaneHostDir, laneHostDir, readWorktreeRegular } from './host/lane
 import { createProcfs, DEFAULT_PROC_ROOT, procfsProcessExists } from './host/procfs.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
 import { signalProcess } from './host/process-signal-boundary.mjs'
+import { scanWorktree } from './host/lane-worktree-scan.mjs'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 500
@@ -506,29 +507,8 @@ function directoryEntries(dir) {
   try { return readdirSync(dir, { withFileTypes: true }) } catch { return null }
 }
 
-export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
-  if (maxEntries < 0) return { at: null, bounded: true, status: 'unknown' }
-  const skipped = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
-  const stack = [root]
-  let latest = 0
-  let latestPath = null
-  let visited = 0
-  while (stack.length) {
-    const dir = stack.pop()
-    const entries = directoryEntries(dir)
-    if (entries === null) continue
-    for (const entry of entries) {
-      if (++visited > maxEntries) return { at: null, bounded: true, status: 'unknown' }
-      if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))) continue
-      const full = path.join(dir, entry.name)
-      try {
-        const stat = statSync(full)
-        if (stat.mtimeMs > latest) { latest = stat.mtimeMs; latestPath = full }
-        if (entry.isDirectory()) stack.push(full)
-      } catch {}
-    }
-  }
-  return { at: latest || null, path: latestPath, bounded: false, status: 'known' }
+export function latestWorktreeWrite(root, options) {
+  return scanWorktree(root, options)
 }
 
 export function appendSupervisorJournal(dataDir, event) {

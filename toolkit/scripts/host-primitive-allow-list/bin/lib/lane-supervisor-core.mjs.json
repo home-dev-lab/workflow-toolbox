@@ -4,7 +4,7 @@
   "process.platform": 7,
   "realpathSync": 5,
   "openSync": 1,
-  "statSync": 4,
+  "statSync": 3,
   "readSync": 1,
   "closeSync": 1,
   "readdirSync": 1,

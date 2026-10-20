@@ -7,7 +7,9 @@ import { exerciseExitedChild, exerciseRealFamily } from './helpers/host-family.j
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { readLinuxProcProcesses } from '../../../../plugin/bin/lib/host/linux.mjs'
+import { readLinuxIdleProcProcesses, readLinuxProcProcesses } from '../../../../plugin/bin/lib/host/linux.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { activityEvidence } from '../../../../plugin/bin/lib/lane-deadline-core.mjs'
 
 const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
 const COMMITTED_EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
@@ -21,7 +23,7 @@ const snapshotSamples = {
   darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, startTime: Date.parse('Tue Nov 14 22:13:20 2023'), startIdentity: Date.parse('Tue Nov 14 22:13:20 2023'), command: '/sbin/launchd' },
   win32: { pid: 4, ppid: 0, elapsedMs: 46_000, startTime: 1_700_000_000_000, startIdentity: 1_700_000_000_000, command: 'System' },
 } as const
-const procStat = (pid: number, command: string, startTicks: number) => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 ${startTicks} 20\n`
+const procStat = (pid: number, command: string, startTicks: number, userTicks = '11', systemTicks = '12') => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 ${userTicks} ${systemTicks} 0 0 15 16 17 18 ${startTicks} 20\n`
 
 function evidenceHost(platform: typeof platforms[number]) {
   return createHostAdapter({
@@ -147,6 +149,16 @@ function registerInjectedSnapshots() {
     expect(listProcesses).toHaveBeenCalledOnce()
     expect(run).not.toHaveBeenCalled()
   })
+
+  it.each(platforms)('names idle evidence unknown when the %s command snapshot has no CPU counters', (platform) => {
+    const outputs = {
+      linux: '1 0 46 /sbin/init\n',
+      darwin: '1 0 Tue Nov 14 22:13:20 2023 05:46 /sbin/launchd\n',
+      win32: '4 0 46000 1700000000000 System\r\n',
+    }
+    const host = createHostAdapter({ platform, invoke: { run: () => ({ status: 0, stdout: outputs[platform], stderr: '', error: null }) } })
+    expect(activityEvidence({ snapshot: host.readProcessSnapshot(), worktree: { status: 'known' }, rootPid: snapshotSamples[platform].pid })).toMatchObject({ status: 'unknown', reason: `process CPU time unavailable for pid ${snapshotSamples[platform].pid}` })
+  })
 }
 
 function registerLinuxIdentityContracts() {
@@ -181,6 +193,29 @@ function registerLinuxIdentityContracts() {
     })).toEqual({ processes: [], unknownPids: [42] })
   })
 }
+
+describe('Linux process CPU counters', () => {
+  const readLinuxProcProcesses = readLinuxIdleProcProcesses
+  it.each([
+    ['11', '12', 23],
+    ['0', '0', 0],
+    ['invalid', '12', null],
+    ['-1', '12', null],
+    ['11', 'Infinity', null],
+  ])('reads user=%s system=%s without inventing a zero', (user, system, cpuTicks) => {
+    let reads = 0
+    const snapshot = readLinuxProcProcesses({
+      readFile: (file: string) => {
+        if (file === '/proc/uptime') return '10 1\n'
+        if (file.endsWith('/stat')) return procStat(42, 'model (worker)', 100, ++reads === 1 ? '0' : user, reads === 1 ? '0' : system)
+        return 'model\0'
+      },
+      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      observedAt: 20_000,
+    })
+    expect(snapshot.processes).toEqual([expect.objectContaining({ pid: 42, startIdentity: 100, command: 'model', cpuTicks })])
+  })
+})
 
 function registerOtherPlatformSnapshots() {
   it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {
