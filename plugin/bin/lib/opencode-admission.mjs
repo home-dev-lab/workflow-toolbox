@@ -23,7 +23,8 @@ export async function requireOpencodeAdmission(options, env, moduleVariable) {
   if (refusal !== null) throw new OpencodeAdmissionRefusal(refusal)
 }
 
-export function requireUnchangedRequest(taskfile, sha256, moduleVariable) {
+export function requireUnchangedRequest(taskfile, sha256, moduleVariable, env = process.env) {
+  if (env[moduleVariable] === undefined) return
   try {
     if (requestDigest(taskfile) === sha256) return
   } catch { /* Missing or unreadable requests also fail closed. */ }

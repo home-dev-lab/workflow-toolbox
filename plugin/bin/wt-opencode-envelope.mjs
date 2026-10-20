@@ -746,7 +746,7 @@ async function main() {
   const eachSources = [opts.eachJson, opts.eachLines].filter((value) => value !== null)
   const generatedMode = eachSources.length > 0
   if (taskModeRefused(opts, reduceMode, eachSources, generatedMode)) return 2
-  opts.dir = canonicalOpencodeDirectory(opts.dir)
+  opts.dir = canonicalOpencodeDirectory(opts.dir, 'WT_OPENCODE_ENVELOPE_ADMISSION')
   if (reduceMode) return reduceManifest(opts)
   const input = readTaskInput(opts, generatedMode, eachSources)
   if (input === null) return 2

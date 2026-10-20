@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-export function canonicalOpencodeDirectory(dir) {
+export function canonicalOpencodeDirectory(dir, moduleVariable, { env = process.env } = {}) {
+  if (env[moduleVariable] === undefined) return path.resolve(dir)
   // The native API follows symlinks before '..', just as the process cwd does.
   return realpathSync.native(dir)
 }
@@ -13,7 +14,7 @@ function requestDirectory(outDir) {
     return mkdtempSync(path.resolve(outDir, 'requests-'))
   } catch (error) {
     if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error
-    return mkdtempSync(path.join(tmpdir(), 'opencode-requests-'))
+    return mkdtempSync(path.resolve(tmpdir(), 'opencode-requests-'))
   }
 }
 

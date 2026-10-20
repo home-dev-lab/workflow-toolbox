@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -286,4 +286,77 @@ it('preserves a verifier refusal and one protocol line when task-copy cleanup th
   expect(result.stdout).toContain('OPENCODE_REFUSED: WT_OPENCODE_VERIFY_ADMISSION: policy refuses')
   expect(result.stderr).toContain('cleanup warning: injected cleanup failure')
   expect(existsSync(f.marker)).toBe(false)
+})
+
+it('launches a changed verifier task on the rate-limit retry when admission is unset', () => {
+  const f = fixture('verifier')
+  writeFileSync(join(f.root, 'retry'), 'yes')
+  writeFileSync(join(f.root, 'change-on-retry'), 'yes')
+  const result = launch(f, undefined)
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  expect(result.stdout).not.toContain('OPENCODE_REFUSED:')
+  const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(calls.map(call => call.task)).toEqual([f.prompts[0], 'changed after admission'])
+  expect(readdirSync(f.repo).filter(name => name.startsWith('.oc-verify-'))).toEqual([])
+})
+
+it('launches envelope requests changed before launch when admission is unset', () => {
+  const f = fixture('fan-out')
+  writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const read = fs.readFileSync;
+    fs.readFileSync = (file, ...args) => {
+      const bytes = read(file, ...args);
+      if (String(file).endsWith('.task.md')) fs.writeFileSync(file, 'changed before launch');
+      return bytes;
+    };
+    syncBuiltinESMExports();`)
+  const result = launch(f, undefined)
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  expect(result.stdout).not.toContain('OPENCODE_REFUSED:')
+  const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(calls.map(call => call.task)).toEqual(f.prompts.map(() => 'changed before launch'))
+})
+
+it.each(['fan-out', 'verifier'] as const)('keeps lexical --dir resolution for %s when admission is unset', mode => {
+  const f = fixture(mode)
+  const elsewhere = join(f.root, 'elsewhere'); mkdirSync(elsewhere)
+  const child = join(elsewhere, 'child'); mkdirSync(child)
+  symlinkSync(child, join(f.repo, 'link'), 'junction')
+  const argument = './repo/link/..'
+  const result = launch(f, undefined, '5000', argument)
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(calls.map(call => call.cwd)).toEqual(f.prompts.map(() => resolve(f.root, argument)))
+  expect(calls.map(call => call.args[call.args.indexOf('--dir') + 1])).toEqual(f.prompts.map(() => resolve(f.root, argument)))
+})
+
+it('returns absolute fallback request paths with a relative TMPDIR after an output permission denial', () => {
+  const f = fixture('fan-out')
+  mkdirSync(join(f.root, 'relative-temp'))
+  const preload = join(f.root, 'fallback-preload.mjs')
+  writeFileSync(preload, `import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const create = fs.mkdtempSync;
+    fs.mkdtempSync = (prefix, ...args) => {
+      if (prefix.startsWith(${JSON.stringify(f.out)})) throw Object.assign(new Error('output denied'), { code: 'EACCES' });
+      return create(prefix, ...args);
+    };
+    syncBuiltinESMExports();`)
+  const module = pathToFileURL(join(ROOT, 'plugin/bin/lib/host/opencode-request-files.mjs')).href
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, '--input-type=module', '-e', `
+    import { renderEnvelopeRequests } from ${JSON.stringify(module)};
+    process.stdout.write(JSON.stringify(renderEnvelopeRequests([{ id: 'task', prompt: 'fallback prompt' }], ${JSON.stringify(f.out)})));`], {
+    cwd: f.root, env: sealedPluginCliEnv(f.root, { TMPDIR: 'relative-temp', TMP: 'relative-temp', TEMP: 'relative-temp' }), encoding: 'utf8', timeout: 15_000,
+  })
+  expect(result.status, result.stderr).toBe(0)
+  const rendered = JSON.parse(result.stdout)
+  expect(isAbsolute(rendered.request)).toBe(true)
+  expect(dirname(rendered.request)).toBe(join(f.root, 'relative-temp'))
+  expect(rendered.taskfiles).toHaveLength(1)
+  for (const { taskfile } of rendered.taskfiles) {
+    expect(isAbsolute(taskfile)).toBe(true)
+    expect(dirname(taskfile)).toBe(rendered.request)
+    expect(readFileSync(taskfile, 'utf8')).toBe('fallback prompt')
+  }
 })

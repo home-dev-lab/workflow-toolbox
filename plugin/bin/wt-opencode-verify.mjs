@@ -138,7 +138,7 @@ function cleanupTaskCopy(taskFile) {
 }
 
 export async function runVerifier(options, dependencies = undefined) {
-  options = { ...options, dir: canonicalOpencodeDirectory(options.dir) }
+  options = { ...options, dir: canonicalOpencodeDirectory(options.dir, 'WT_OPENCODE_VERIFY_ADMISSION', dependencies) }
   const resolved = verifierDependencies(options, dependencies)
   const { spawnFn, binary, readStdin, timeoutSec, env } = resolved
   const preflight = verifierPreflight(options, resolved)
@@ -151,13 +151,13 @@ export async function runVerifier(options, dependencies = undefined) {
     const sha256 = requestDigest(taskFile)
     const refusal = await opencodeAdmission({ repo: options.dir, request: taskFile }, env, 'WT_OPENCODE_VERIFY_ADMISSION')
     if (refusal !== null) return { code: 3, output: `${new OpencodeAdmissionRefusal(refusal).message}\n` }
-    requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION')
+    requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION', env)
     let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec, childEnv, options.dir, credentialNames)
     if (result.code !== 0 && rateLimited(result)) {
       const model = options.fallbackModel || DEFAULT_MODEL
       const fallbackCredentialNames = providerCredentialNames(model)
       const fallbackEnv = opencodeChildEnv(env, fallbackCredentialNames)
-      requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION')
+      requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION', env)
       result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model, taskFile }), timeoutSec, fallbackEnv, options.dir, fallbackCredentialNames)
     }
     return verifierResult(result)
