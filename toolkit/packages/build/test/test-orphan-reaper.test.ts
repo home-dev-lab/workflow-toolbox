@@ -326,3 +326,22 @@ describe.skipIf(process.platform === 'win32')('orphan reaper (Windows has no pro
     expect(reapTagged(tag, { platform: 'linux', procRoot: root }).errors).toEqual([{ pid: 'scan', code: '1 unreadable environ' }])
   })
 })
+
+// The watchdog outlives the Vitest run by design. Started with NODE_V8_COVERAGE it writes its own V8 coverage when it
+// exits, after the coverage provider removed the child-coverage directory, and Node recreates that directory to do so.
+it('launches the watchdog without NODE_V8_COVERAGE, so its late exit cannot recreate a removed coverage directory', () => {
+  const previous = process.env.NODE_V8_COVERAGE
+  process.env.NODE_V8_COVERAGE = join(tmpdir(), 'child-coverage-watchdog-probe')
+  try {
+    let env: NodeJS.ProcessEnv | undefined
+    const child = Object.assign(new EventEmitter(), { unref: () => {} })
+    launchWatchdog(randomUUID(), 'registry', {
+      spawn: (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => { env = options.env; return child },
+    })
+    expect(env).toBeDefined()
+    expect(env?.NODE_V8_COVERAGE).toBeUndefined()
+  } finally {
+    if (previous === undefined) delete process.env.NODE_V8_COVERAGE
+    else process.env.NODE_V8_COVERAGE = previous
+  }
+})

@@ -168,26 +168,6 @@ export function enableChildProcessCoverage(root, env = process.env) {
   return instrument
 }
 
-const lateWriteDirectories = new Set()
-
-function removeLateWrites() {
-  for (const directory of lateWriteDirectories) {
-    try {
-      rmSync(directory, { recursive: true, force: true })
-    } catch {
-      // Cleanup failures must not replace an exit code.
-    }
-  }
-}
-
-// A process that inherited NODE_V8_COVERAGE (a Vitest fork worker among them) writes its own coverage
-// when it stops, and Node recreates the directory to do so: a worker stopped after generateCoverage
-// brings the directory back without an owner record. Remove it once more when this process exits.
-export function removeLateWritesAtExit(directory) {
-  if (lateWriteDirectories.size === 0) process.once('exit', removeLateWrites)
-  lateWriteDirectories.add(directory)
-}
-
 export function disableChildProcessCoverage(instrument) {
   if (instrument.env.NODE_V8_COVERAGE === instrument.directory) {
     if (instrument.previous === undefined) delete instrument.env.NODE_V8_COVERAGE

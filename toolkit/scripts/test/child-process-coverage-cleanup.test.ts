@@ -270,28 +270,6 @@ it('cleans on normal exit even when an earlier exit listener ends the process', 
   assert.equal(existsSync(directory), false, 'an earlier exit listener must not skip coverage cleanup')
 })
 
-// A process that inherited NODE_V8_COVERAGE (a Vitest fork worker) writes its own coverage when it stops,
-// and Node recreates the directory to do so after the run already removed it.
-it('removes at exit a directory recreated by a late coverage writer after the run removed it', () => {
-  const root = scratch()
-  const lifecycleURL = pathToFileURL(resolve(import.meta.dirname, '../child-process-coverage-lifecycle.mjs')).href
-  const source = `import { spawn } from 'node:child_process'; import { once } from 'node:events'; import { existsSync } from 'node:fs'
-    import { disableChildProcessCoverage, enableChildProcessCoverage, removeLateWritesAtExit } from ${JSON.stringify(lifecycleURL)}
-    const instrument = enableChildProcessCoverage(${JSON.stringify(root)})
-    const worker = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => process.exit(0)); process.stdout.write('ready'); setInterval(() => {}, 1000)"], { stdio: ['ignore', 'pipe', 'inherit'] })
-    await once(worker.stdout, 'data')
-    disableChildProcessCoverage(instrument); removeLateWritesAtExit(instrument.directory)
-    worker.kill('SIGTERM'); await once(worker, 'exit')
-    console.log(JSON.stringify({ directory: instrument.directory, recreated: existsSync(instrument.directory) }))`
-  const env = { ...process.env }
-  delete env.NODE_V8_COVERAGE
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', source], { cwd: root, env, encoding: 'utf8', timeout: 20_000 })
-  assert.equal(result.status, 0, result.stderr)
-  const { directory, recreated } = JSON.parse(result.stdout.trim()) as { directory: string, recreated: boolean }
-  assert.equal(recreated, true, 'control: the late writer must have recreated the directory before exit')
-  assert.equal(existsSync(directory), false, 'a directory recreated by a late coverage writer must be removed at exit')
-})
-
 const otherUserPid = (() => {
   try { return process.platform === 'linux' && readFileSync('/proc/1/stat', 'utf8') ? 1 : 0 } catch { return 0 }
 })()
@@ -340,7 +318,6 @@ it('merges real child-only script coverage and never parses the owner record as 
   })
   try {
     assert.equal(await provider.generateCoverage({}), map)
-    assert.ok(process.listeners('exit').some((listener) => listener.name === 'removeLateWrites'), 'generateCoverage must remove late coverage writes again at exit')
     const result = (merged[0] as { result: { url: string, functions: { ranges: { count: number }[] }[] }[] }).result
     assert.equal(merged.length, 1)
     assert.equal(result[0]!.url, pathToFileURL(executable).href)
