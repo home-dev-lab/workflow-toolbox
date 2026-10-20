@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Warn-only guard notices now reach the sub-agent whose command triggered them, as hook additional context (previously dropped for every sub-agent unless a guard opted in); permission decisions still never reach a sub-agent, and the live-config-tree guard's warning follows the same path
 - Artifact server pages no longer all carry the tab title "Markdown artifact". A Markdown page is titled by its first ATX heading (inline markup stripped, headings inside code fences and empty headings skipped, capped at 120 characters), else by its file name; a directory listing leads with the directory's own name (`reports/ — /artifacts/reports/`), and the root index is titled `/`.
 - The delegated arc watcher classifies background notices predating boot or session-process start as `ORPHANED BY RESTART` once across polls and watcher restarts, instead of repeatedly requesting relays to dead agents. WAKE and orphan lines print an absolute-path acknowledgement command in the existing wake scanner; raw-agent acknowledgements persist independently of retry state. Replay accepts explicit restart boundaries, unknown boot evidence is diagnosed, and WAKE clocks now mark UTC. An orphan older than the 24 hour relay ceiling is settled silently (decision recorded, nothing printed; the scanner lists it as stale), the once-only decisions directory is pruned of files older than 7 days at write time, and `--ack` with anything but a raw agent id says `not a raw agent id: <input>`.
 ### Fixed

@@ -150,79 +150,105 @@ function staleDateFixture() {
   }
 }
 
-describe('WT_GUARD_MODE=observe', () => {
-  const cases: Array<{
-    hook: string
-    make: () => { payload: Record<string, unknown>; env?: NodeJS.ProcessEnv }
-    contains?: string
-  }> = [
-    {
-      hook: 'wt-merge-chain-guard-hook.mjs',
-      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git merge branch && pnpm test' } } }),
-      contains: '',
-    },
-    {
-      hook: 'wt-pipestatus-bash-only-guard-hook.mjs',
-      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'true | false; echo "${PIPESTATUS[0]}"' } } }),
-      contains: 'pipestatus guard',
-    },
-    {
-      hook: 'wt-find-newermt-format-guard-hook.mjs',
-      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'find . -newermt "5 minutes ago" | wc -l' } } }),
-      contains: 'find-newermt guard',
-    },
-    {
-      hook: 'wt-git-commit-backtick-guard-hook.mjs',
-      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git commit -m "the default `stretch` applied"' } } }),
-      contains: 'backtick guard',
-    },
-    {
-      hook: 'wt-var-colon-modifier-guard-hook.mjs',
-      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git show "$s:src/db-base.ts"' } } }),
-      contains: 'var-colon guard',
-    },
-    {
-      hook: 'wt-missing-package-script-guard-hook.mjs',
-      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: REPO_ROOT, tool_input: { command: 'pnpm definitely-missing-script' } } }),
-      contains: '',
-    },
-    {
-      hook: 'wt-pgrep-env-dump-guard-hook.mjs',
-      make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'pgrep -af opencode' } } }),
-      contains: 'pgrep-env-dump guard',
-    },
-    {
-      hook: 'wt-plugin-release-record-guard-hook.mjs',
-      make: pluginReleaseRecordFixture,
-      contains: 'release-record guard',
-    },
-    {
-      hook: 'wt-isolated-spawn-report-path-hook.mjs',
-      make: () => ({
-        payload: {
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Agent',
-          tool_input: {
-            isolation: 'worktree',
-            name: 'writer',
-            prompt: 'Write your report to /tmp/outside-tree/report.md before you finish.',
-          },
-        },
-      }),
-      contains: 'ISOLATED SPAWN + AN OUT-OF-TREE WRITE TARGET',
-    },
-    {
-      hook: 'wt-observer-pairing-guard-hook.mjs',
-      make: observerPairingFixture,
-      contains: 'LOST its declared observer',
-    },
-    {
-      hook: 'wt-stale-date-guard-hook.mjs',
-      make: staleDateFixture,
-      contains: 'STALE OPERATIONAL DEADLINE',
-    },
-  ]
+function liveConfigTreeFixture() {
+  const root = mkRoot('live-config-tree')
+  const config = join(root, '.claude')
+  const rules = join(config, 'rules')
+  mkdirSync(join(rules, '.git'), { recursive: true })
+  return {
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: root,
+      tool_input: { command: `git -C ${rules} switch another-branch` } },
+    env: { CLAUDE_CONFIG_DIR: config, WT_LIVE_CONFIG_TREE_GUARD_MODE: 'warn' },
+  }
+}
 
+function registerLiveConfigObserveCases() {
+  it.each([undefined, 'worker'])('live-config warnings are silent in observe mode for agent %j', (agent_id) => {
+    const { payload, env } = liveConfigTreeFixture()
+    const { observe, enforce } = runWarnAndObserve('wt-live-config-tree-guard-hook.mjs', { ...payload, agent_id }, env)
+    expect(observe.status).toBe(0)
+    expect(observe.stdout).toBe('')
+    expect(observe.entries).toEqual([expect.objectContaining({ decision: 'silent', mode: 'observe' })])
+    expect(enforce.status).toBe(0)
+    expect(enforce.stdout).toContain('LIVE CONFIG TREE')
+    expect(enforce.entries).toEqual([expect.objectContaining({ decision: 'warned', mode: 'enforce' })])
+  })
+}
+
+const cases: Array<{
+  hook: string
+  make: () => { payload: Record<string, unknown>; env?: NodeJS.ProcessEnv }
+  contains?: string
+}> = [
+  {
+    hook: 'wt-merge-chain-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git merge branch && pnpm test' } } }),
+    contains: '',
+  },
+  {
+    hook: 'wt-pipestatus-bash-only-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'true | false; echo "${PIPESTATUS[0]}"' } } }),
+    contains: 'pipestatus guard',
+  },
+  {
+    hook: 'wt-find-newermt-format-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'find . -newermt "5 minutes ago" | wc -l' } } }),
+    contains: 'find-newermt guard',
+  },
+  {
+    hook: 'wt-git-commit-backtick-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git commit -m "the default `stretch` applied"' } } }),
+    contains: 'backtick guard',
+  },
+  {
+    hook: 'wt-var-colon-modifier-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git show "$s:src/db-base.ts"' } } }),
+    contains: 'var-colon guard',
+  },
+  {
+    hook: 'wt-missing-package-script-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: REPO_ROOT, tool_input: { command: 'pnpm definitely-missing-script' } } }),
+    contains: '',
+  },
+  {
+    hook: 'wt-pgrep-env-dump-guard-hook.mjs',
+    make: () => ({ payload: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'pgrep -af opencode' } } }),
+    contains: 'pgrep-env-dump guard',
+  },
+  {
+    hook: 'wt-plugin-release-record-guard-hook.mjs',
+    make: pluginReleaseRecordFixture,
+    contains: 'release-record guard',
+  },
+  {
+    hook: 'wt-isolated-spawn-report-path-hook.mjs',
+    make: () => ({
+      payload: {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Agent',
+        tool_input: {
+          isolation: 'worktree',
+          name: 'writer',
+          prompt: 'Write your report to /tmp/outside-tree/report.md before you finish.',
+        },
+      },
+    }),
+    contains: 'ISOLATED SPAWN + AN OUT-OF-TREE WRITE TARGET',
+  },
+  {
+    hook: 'wt-observer-pairing-guard-hook.mjs',
+    make: observerPairingFixture,
+    contains: 'LOST its declared observer',
+  },
+  {
+    hook: 'wt-stale-date-guard-hook.mjs',
+    make: staleDateFixture,
+    contains: 'STALE OPERATIONAL DEADLINE',
+  },
+]
+
+describe('WT_GUARD_MODE=observe', () => {
+  registerLiveConfigObserveCases()
   for (const { hook, make, contains } of cases) {
     it(`${hook} journals mode=observe and emits no guard notice`, () => {
       const { payload, env } = make()

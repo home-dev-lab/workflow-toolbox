@@ -57,9 +57,8 @@
 // unset or overriding effect (`env -u`, a later assignment of the same name), which may still warn;
 // nesting deeper than MAX_DEPTH shells or substitutions.
 //
-// OUTPUT. A scoped exception to the convention that owned hooks stay silent for sub-agents
-// (emitGuardNotice drops output when agent_id is set): this warning exists FOR the sub-agent, the
-// actor bypassing the lock, and fires only on that agent's own act, so it writes
+// OUTPUT. Like emitGuardNotice's default, this warning reaches the triggering sub-agent as
+// context only. It fires only on that agent's own act and writes
 // `hookSpecificOutput.additionalContext` directly. It never writes `permissionDecision`: an `allow`
 // would auto-approve the call, and `deny` is the promoted phase. `WT_GUARD_MODE=observe` mutes the
 // output (the journal records `silent`). Fail-open on any error.
