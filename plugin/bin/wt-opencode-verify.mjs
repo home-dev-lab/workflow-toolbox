@@ -10,6 +10,7 @@ import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
+import { opencodeAdmission, OpencodeAdmissionRefusal } from './lib/opencode-admission.mjs'
 
 export const DEFAULT_MODEL = 'openai/gpt-6-sol'
 export const DEFAULT_TIMEOUT_SEC = 570
@@ -23,6 +24,15 @@ function usage() {
     '  wt-opencode-verify.mjs --dir <workdir> --id <unique-id> [-m <model>] [--fallback-model <model>] [--variant <name>] (--task-file <path> | --stdin)',
     '',
     'Copies the task into the workdir, runs the read-only plan agent with closed stdin, and retries once on a rate limit.',
+    'WT_OPENCODE_VERIFY_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env })',
+    'returns null to admit or a non-empty refusal string. repo is the absolute --dir; request is the absolute task copy.',
+    'Content-free availability/skill preflights run first; admission precedes the first task run and covers its retry.',
+    'WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS is a positive integer up to 2147483647; default 10000 ms.',
+    'Import, admission and clean worker exit share that deadline, including synchronous loops. Policies are trusted code, not sandboxed.',
+    'Hook/configuration failures refuse closed: OPENCODE_REFUSED: <one-line reason>, exit 3, no task spawn; the task copy is cleaned.',
+    'Unset module variable preserves normal execution; an unused timeout override is ignored.',
+    'Exits: 0 = answer, 1 = unavailable/external-directory denial, 2 = usage/setup error; task failure exits propagate (timeout 124).',
+    'Exit 3 with OPENCODE_REFUSED is an admission refusal.',
   ].join('\n')
 }
 
@@ -94,7 +104,11 @@ function externalDirectoryDenial(result) {
   return `${result.stdout}\n${result.stderr}`.match(/[^\n]*external_directory[^\n]*/i)?.[0].trim() ?? null
 }
 
-export async function runVerifier(options, { spawnFn = spawn, binary = resolveBinary(), providerAuthenticated = (bin, childEnv, extraNames) => spawnOpencode(spawnSync, bin, ['providers', 'list'], { cwd: options.dir, encoding: 'utf8', timeout: 30000, env: childEnv }, process.platform, extraNames).status === 0, skillFenceVerifier = verifyOpencodeSkillFence, skillDiscoveryVerifier = verifyEffectiveOpencodeSkillDiscovery, readStdin = () => fs.readFileSync(0, 'utf8'), timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env } = {}) {
+function verifierDependencies(options, { spawnFn = spawn, binary = resolveBinary(), providerAuthenticated = (bin, childEnv, extraNames) => spawnOpencode(spawnSync, bin, ['providers', 'list'], { cwd: options.dir, encoding: 'utf8', timeout: 30000, env: childEnv }, process.platform, extraNames).status === 0, skillFenceVerifier = verifyOpencodeSkillFence, skillDiscoveryVerifier = verifyEffectiveOpencodeSkillDiscovery, readStdin = () => fs.readFileSync(0, 'utf8'), timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env } = {}) {
+  return { spawnFn, binary, providerAuthenticated, skillFenceVerifier, skillDiscoveryVerifier, readStdin, timeoutSec, env }
+}
+
+function verifierPreflight(options, { binary, providerAuthenticated, skillFenceVerifier, skillDiscoveryVerifier, env }) {
   if (!binary) return { code: 1, output: 'OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations' }
   const fence = skillFenceVerifier(binary, { env, platform: process.platform })
   if (!fence.ok) return { code: 1, output: opencodeSkillFenceRefusal(fence.reason) }
@@ -105,10 +119,28 @@ export async function runVerifier(options, { spawnFn = spawn, binary = resolveBi
   if (!providerAuthenticated(binary, childEnv, credentialNames)) {
     return { code: 1, output: 'OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)' }
   }
+  return { childEnv, credentialNames }
+}
+
+function verifierResult(result) {
+  const denial = externalDirectoryDenial(result)
+  if (result.code === 0 && denial) return { code: 1, output: `OPENCODE_EXTERNAL_DIRECTORY: ${denial}` }
+  if (result.code === 0) return { code: 0, output: laneTextFromOutput(result.stdout) ?? result.stdout }
+  return { code: result.code, output: result.stderr || result.stdout || `opencode exited ${result.code}` }
+}
+
+export async function runVerifier(options, dependencies = undefined) {
+  const resolved = verifierDependencies(options, dependencies)
+  const { spawnFn, binary, readStdin, timeoutSec, env } = resolved
+  const preflight = verifierPreflight(options, resolved)
+  if (preflight.code) return preflight
+  const { childEnv, credentialNames } = preflight
   const task = options.stdin ? readStdin() : fs.readFileSync(options.taskFile, 'utf8')
   const taskFile = path.join(path.resolve(options.dir), `.oc-verify-${options.id}-${process.pid}.md`)
   fs.writeFileSync(taskFile, task, 'utf8')
   try {
+    const refusal = await opencodeAdmission({ repo: path.resolve(options.dir), request: taskFile }, env, 'WT_OPENCODE_VERIFY_ADMISSION')
+    if (refusal !== null) return { code: 3, output: `${new OpencodeAdmissionRefusal(refusal).message}\n` }
     let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec, childEnv, options.dir, credentialNames)
     if (result.code !== 0 && rateLimited(result)) {
       const model = options.fallbackModel || DEFAULT_MODEL
@@ -116,10 +148,7 @@ export async function runVerifier(options, { spawnFn = spawn, binary = resolveBi
       const fallbackEnv = opencodeChildEnv(env, fallbackCredentialNames)
       result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model, taskFile }), timeoutSec, fallbackEnv, options.dir, fallbackCredentialNames)
     }
-    const denial = externalDirectoryDenial(result)
-    if (result.code === 0 && denial) return { code: 1, output: `OPENCODE_EXTERNAL_DIRECTORY: ${denial}` }
-    if (result.code === 0) return { code: 0, output: laneTextFromOutput(result.stdout) ?? result.stdout }
-    return { code: result.code, output: result.stderr || result.stdout || `opencode exited ${result.code}` }
+    return verifierResult(result)
   } finally {
     fs.rmSync(taskFile, { force: true })
   }

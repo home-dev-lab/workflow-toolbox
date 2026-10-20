@@ -2,6 +2,14 @@ This reference belongs to the workflow-debugger skill. Its text moved here verba
 
 ## Thin-envelope runs
 
+An `OPENCODE_REFUSED:` line with exit 3 is an admission outcome: no task was spawned and no
+answer was written. Inspect the caller's `WT_OPENCODE_ENVELOPE_ADMISSION` configuration
+(or `WT_OPENCODE_VERIFY_ADMISSION` for the verifier) and its matching `_TIMEOUT_MS` override
+(default 10000 ms). The trusted module sees the absolute repository and rendered requests;
+configuration/import/export/return failures, worker crashes and deadline expiry all refuse
+closed. Content-free availability/skill preflights run before admission. Do not infer a missing
+model answer or bypass the policy; the bridge agent should relay this line verbatim and stop.
+
 `workflow-toolbox:opencode-envelope` is a different lane shape from the heavy wrappers above. The
 script writes its invocation artifacts under the machine state root's (XDG_STATE_HOME or ~/.local/state)
 `wt-envelope/<pid>-<timestamp>-<random>/` (or `WT_ENVELOPE_WORKDIR` when explicitly set),
@@ -38,4 +46,3 @@ per-task logs (`plugin/bin/wt-opencode-envelope.mjs:114-116`,
 If the class fires, name it plainly rather than describing the run as merely "wrong" —
 "the external model was never reached; the wrapper answered in its place" is a
 different, more actionable finding than "the review missed something."
-

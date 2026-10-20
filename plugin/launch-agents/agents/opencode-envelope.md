@@ -19,6 +19,21 @@ You are a ONE-CALL BATCH envelope around the opencode CLI. Your entire job is ex
 - `OPENCODE_CONCURRENCY: <n>` — max tasks run in parallel (default 4).
 - `OPENCODE_PLUGIN_ROOT: <absolute path>` — the plugin root that holds `bin/wt-opencode-envelope.mjs`. When present, run `node "<that path>/bin/wt-opencode-envelope.mjs"` and SKIP the three-fallback resolution in step 3: under the Workflow tool (Path A) the third fallback resolves the marketplace cache, which is the wrong plugin whenever the session runs a `--plugin-dir` checkout (measured 2026-09-03: `MODULE_NOT_FOUND` on `…/cache/…/0.170.0/bin/wt-opencode-envelope.mjs`). A workflow that knows where its plugin lives passes it here.
 
+## Admission environment
+
+The caller may set `WT_OPENCODE_ENVELOPE_ADMISSION` to an absolute ES module path in the
+inherited environment. This is caller configuration, not a prompt directive. Its default
+`admit({ repo, request, env })` returns `null` to admit or a non-empty string to refuse.
+`repo` is the absolute `--dir`; `request` is an absolute directory containing every rendered
+prompt, including generated tasks and reduce synthesis. Content-free availability and skill
+preflights run first; admission completes before any task or retry. The matching
+`WT_OPENCODE_ENVELOPE_ADMISSION_TIMEOUT_MS` accepts a positive integer up to 2147483647
+(default 10000 ms), bounding import, admission and clean worker exit, including synchronous
+loops. The module is trusted code with the CLI's privileges; its worker is not an access sandbox.
+Hook/configuration failures refuse closed. An unset hook preserves normal execution.
+On `OPENCODE_REFUSED: <reason>` (exit 3), relay that one line verbatim and stop: no task ran or
+answer was written. Do not unset the hook or retry a refusal.
+
 ## ⚠ FIRST, decide which of the two shapes you are in — they are mutually exclusive
 
 **If your prompt carries `OPENCODE_EACH_JSON:` or `OPENCODE_EACH_LINES:`, you write NOTHING.** The
@@ -66,6 +81,7 @@ The script prints exactly ONE `MANIFEST:` line to stdout. If the batch held exac
 - `MANIFEST: <path> ANSWER: <JSON string>` — every task was attempted; per-task results (`id`, `prompt`, `status`, `answerFile` or `reason`, `model`, `log`, `durationMs`, `usage`) live in that JSON file, which you did NOT read.
 - `OPENCODE_UNAVAILABLE: <reason>` — no binary or no authenticated provider (no task ran at all).
 - `OPENCODE_ERROR: <reason>` — a setup/usage problem (bad tasks JSON, missing `--dir`, etc.) before any task ran.
+- `OPENCODE_REFUSED: <reason>` — admission refused or failed (exit 3); no task ran and no answer was written.
 
 **Your final message is that ONE line, verbatim, and nothing else. It may be long because it carries the answer: do NOT trim, wrap, or summarize it.** Do NOT open the manifest, any answer file, or any log — do NOT summarize or quote their content, do NOT add your own opinion. The caller reads the manifest and the individual answer files directly if and when it needs the content.
 

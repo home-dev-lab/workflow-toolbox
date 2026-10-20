@@ -426,6 +426,18 @@
 
 ### Thin envelope (`workflow-toolbox:opencode-envelope`)
 
+Both opencode bridges support caller-owned admission modules in their inherited environment:
+`WT_OPENCODE_ENVELOPE_ADMISSION` and `WT_OPENCODE_VERIFY_ADMISSION`, each with a matching
+`_TIMEOUT_MS` override (positive integer up to 2147483647; default 10000 ms). The absolute ES
+module's default `admit({ repo, request, env })` returns `null` or a non-empty refusal string.
+`repo` is the absolute workdir. The envelope's absolute `request` directory holds all rendered
+fan-out/generated/reduce prompts; the verifier supplies its absolute cwd-local task copy.
+Content-free availability/skill preflights precede admission; content-bearing tasks and retries
+follow it. Import, policy execution and clean worker exit share the deadline, including
+synchronous loops. Policies are trusted code, not sandboxed. Hook failures refuse closed with
+one `OPENCODE_REFUSED:` line and exit 3; agents relay the refusal and stop. Unset hooks keep
+normal execution. These variables are caller configuration, not model-routing prompt directives.
+
 This is a DIFFERENT routing option from the heavy wrappers above: route a role to
 `workflow-toolbox:opencode-envelope` when the role only needs the external model's own answer and
 NO Claude-side repo reads or tool work inside the wrapper, because this agent is `model: haiku`,
