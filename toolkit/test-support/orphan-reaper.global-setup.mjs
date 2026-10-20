@@ -9,6 +9,11 @@ import { reapTagged, RUN_TAG_ENV } from './orphan-reaper.mjs'
 export function launchWatchdog(tag, registry, { spawn: launch = spawn, report = (line) => process.stderr.write(line) } = {}) {
   const env = { ...process.env }
   delete env[RUN_TAG_ENV]
+  // The watchdog outlives the run by design: with NODE_V8_COVERAGE it would write its own coverage after the
+  // coverage provider removed the child-coverage directory, and Node would recreate the directory to do so.
+  // Deleting the key is not enough: Node forwards the parent's value to a child whose env lacks it. An empty
+  // value is kept as is and disables coverage in the child.
+  env.NODE_V8_COVERAGE = ''
   const watchdog = launch(process.execPath, [fileURLToPath(new URL('./orphan-reaper.mjs', import.meta.url)), '--watch', String(process.pid), '--tag', tag, '--registry', registry], {
     detached: true,
     cwd: tmpdir(),

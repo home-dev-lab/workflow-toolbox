@@ -225,6 +225,7 @@ export const spawningTestFiles = [
   'packages/debugger/test/observe-entrypoints.test.ts',
   'packages/debugger/test/stop-hook.integration.test.ts',
   'packages/patterns/test/provenance-gate.test.ts',
+  'scripts/test/child-process-coverage-cleanup.test.ts',
   'scripts/test/child-process-coverage.test.ts',
   'scripts/test/citation-marker-check.test.ts',
   'scripts/test/git-ignored-inputs.test.ts',
