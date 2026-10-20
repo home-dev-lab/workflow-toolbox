@@ -2,8 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { extname, join, relative } from 'node:path'
 import ts from 'typescript'
 import { accessName, propertyName, shapes } from './hook-output-shapes.js'
-// @ts-expect-error runtime helper has no declaration file
-import { declaredHookPaths } from '../../../../../plugin/bin/lib/hook-manifest.mjs'
+import { scanManifest } from './hook-output-manifest.js'
+import { serializationHazards } from './hook-output-hazards.js'
 
 export type ContractProof = () => void | Promise<void>
 export interface Justification { reason: string; prove: ContractProof }
@@ -17,7 +17,7 @@ function problem(context: Context, node: ts.Node, message: string) {
   context.result.problems.push(`${context.file}:${line}: ${message}`)
 }
 
-function justified(context: Context, expression: ts.Expression): boolean {
+function justified(context: Context, expression: ts.Node): boolean {
   const key = `${context.file}:${expression.getText(context.source)}`
   const entry = context.exceptions.get(key)
   if (!entry?.reason.trim() || typeof entry.prove !== 'function') return false
@@ -74,6 +74,9 @@ export function scanSource(file: string, text: string, events?: Set<string>, exc
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   const result: ScanResult = { emissions: 0, problems: [], justified: new Set() }
   const context = { file, source, events, exceptions, result }
+  for (const { node, message } of serializationHazards(source, events)) {
+    if (!justified(context, node)) problem(context, node, message)
+  }
   const visit = (node: ts.Node) => {
     if (ts.isPropertyAssignment(node) && propertyName(node.name) === 'hookSpecificOutput') checkEnvelope(context, node.initializer)
     if (ts.isShorthandPropertyAssignment(node) && node.name.text === 'hookSpecificOutput') checkEnvelope(context, node.name)
@@ -121,17 +124,15 @@ function sdkRegistrations(root: string, registrations: Map<string, Set<string>>)
 }
 
 export function scanPlugin(root: string, exceptions: Justifications = new Map()): ScanResult {
-  const registrations = new Map<string, Set<string>>()
-  const result: ScanResult = { emissions: 0, problems: [], justified: new Set() }
-  for (const { rel, event } of declaredHookPaths(join(root, '.claude-plugin/plugin.json')) as { rel: string; event: string }[]) {
-    const file = rel.replace(/^\//, '')
-    register(registrations, file, event)
-    if (!extensions.has(extname(file))) result.problems.push(`${file}: registered hook executable type is unsupported`)
-  }
+  const files = sourceFiles(root).map((absolute) => relative(root, absolute).replaceAll('\\', '/'))
+  const manifest = JSON.parse(readFileSync(join(root, '.claude-plugin/plugin.json'), 'utf8'))
+  const { registrations, result } = scanManifest(manifest, new Set(files), exceptions)
   sdkRegistrations(root, registrations)
-  for (const absolute of sourceFiles(root)) {
-    const file = relative(root, absolute).replaceAll('\\', '/')
-    const scanned = scanSource(file, readFileSync(absolute, 'utf8'), registrations.get(file), exceptions)
+  for (const file of registrations.keys()) {
+    if (!files.includes(file)) result.problems.push(`${file}: registered hook source file is not scanned`)
+  }
+  for (const file of files) {
+    const scanned = scanSource(file, readFileSync(join(root, file), 'utf8'), registrations.get(file), exceptions)
     result.emissions += scanned.emissions
     result.problems.push(...scanned.problems)
     for (const key of scanned.justified) result.justified.add(key)

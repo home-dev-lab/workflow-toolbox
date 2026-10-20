@@ -27,7 +27,7 @@ function scope(node: ts.Node): ts.Node {
   return current
 }
 
-function localDeclaration(node: ts.Identifier): ts.VariableDeclaration | undefined {
+export function localDeclaration(node: ts.Identifier): ts.VariableDeclaration | undefined {
   let current: ts.Node | undefined = node.parent
   while (current) {
     const statements = ts.isBlock(current) || ts.isSourceFile(current) ? current.statements : []
@@ -62,9 +62,20 @@ function definitelyExecuted(write: ts.Node, use: ts.Node): boolean {
   let parent = write.parent
   while (parent && parent !== scope(use)) {
     if (ts.isIfStatement(parent) || ts.isIterationStatement(parent, false) || ts.isConditionalExpression(parent)) return false
+    if (isConditionalEvaluation(parent)) return false
     parent = parent.parent
   }
   return true
+}
+
+const conditionalOperators = new Set([
+  ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken, ts.SyntaxKind.BarBarEqualsToken, ts.SyntaxKind.QuestionQuestionEqualsToken,
+])
+
+function isConditionalEvaluation(node: ts.Node): boolean {
+  if (ts.isBinaryExpression(node) && conditionalOperators.has(node.operatorToken.kind)) return true
+  return ts.isSwitchStatement(node) || ts.isCatchClause(node) || !!(node as ts.CallExpression).questionDotToken
 }
 
 function laterWrites(identifier: ts.Identifier, declaration: ts.VariableDeclaration): ts.BinaryExpression[] {
@@ -99,6 +110,7 @@ function identifierShapes(node: ts.Identifier, depth: number): Shape[] {
 }
 
 function objectShapes(node: ts.ObjectLiteralExpression, depth: number): Shape[] {
+  if (node.properties.some((property) => propertyName(property.name) === 'toJSON')) return unknownShape()
   let result: Shape[] = [{ opaque: false }]
   for (const property of node.properties) {
     if (ts.isSpreadAssignment(property)) {

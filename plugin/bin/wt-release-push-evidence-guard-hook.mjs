@@ -40,8 +40,10 @@ function refuse(input, target, classification, reason, output) {
 function warnUnresolved(input, target, output) {
   const marker = path.join(mainGuardStateDir(), 'release-push-branch-unresolved.warned')
   if (fs.existsSync(marker)) return
-  fs.mkdirSync(path.dirname(marker), { recursive: true })
-  fs.writeFileSync(marker, `${new Date().toISOString()}\n`)
+  try {
+    fs.mkdirSync(path.dirname(marker), { recursive: true })
+    fs.writeFileSync(marker, `${new Date().toISOString()}\n`)
+  } catch { /* Warn-once bookkeeping must not interrupt target decisions. */ }
   const message = `[workflow-toolbox release gate] Could not resolve the release branch for remote '${target.remote || 'unknown'}' and destination '${target.destination || 'unknown'}'; allowing this push. Configure release_branch (WT_RELEASE_BRANCH) if the remote default branch is unavailable.`
   recordGuardEvent({ guard: GUARD, decision: 'warned', class: 'release-branch-unresolved', reason: message, cwd: target.repo, session: input.session_id, agent: input.agent_id })
   output.messages.push(message)
@@ -54,14 +56,18 @@ function main() {
   const command = input.tool_input?.command
   const output = { messages: [], denial: null }
 
-  for (const target of targets) {
-    if (processTarget(input, target, command, output)) break
+  try {
+    for (const target of targets) {
+      if (processTarget(input, target, command, output)) break
+    }
+  } finally {
+    if (output.denial || output.messages.length) {
+      const hookSpecificOutput = output.denial
+        ? { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: output.denial }
+        : { hookEventName: 'PreToolUse', additionalContext: output.messages.join('\n') }
+      emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput } })
+    }
   }
-  if (!output.denial && !output.messages.length) return
-  const hookSpecificOutput = output.denial
-    ? { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: output.denial }
-    : { hookEventName: 'PreToolUse', additionalContext: output.messages.join('\n') }
-  emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput } })
 }
 
 function processTarget(input, target, command, output) {

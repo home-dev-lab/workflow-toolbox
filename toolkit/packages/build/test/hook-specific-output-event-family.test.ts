@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 import { scanPlugin, scanSource, type Justifications } from './helpers/hook-output-scan.js'
+import { scanManifest } from './helpers/hook-output-manifest.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime helper has no declaration file
 import { prepareSdkRole } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
@@ -100,6 +101,22 @@ it.each(RULE_DECISIONS)(
 )
 
 const invalidSources = [
+  ['deleted event', 'function f(){const x = {hookEventName: "PreToolUse"}; delete x.hookEventName; write({hookSpecificOutput: x})}'],
+  ['deleted aliased event', 'function f(){const x = {hookEventName: "PreToolUse"}; const alias = x; delete alias.hookEventName; write({hookSpecificOutput: x})}'],
+  ['wrong direct event assignment', 'function f(){const x = {hookEventName: "PreToolUse"}; x.hookEventName = "Stop"; write({hookSpecificOutput: x})}'],
+  ['wrong aliased event assignment', 'function f(){const x = {hookEventName: "PreToolUse"}; const alias = x; alias.hookEventName = "Stop"; write({hookSpecificOutput: x})}'],
+  ['wrong nested event assignment', 'function f(){const envelope = {hookSpecificOutput: {hookEventName: "PreToolUse"}}; envelope.hookSpecificOutput.hookEventName = "Stop"; write(envelope)}'],
+  ['dynamic aliased event assignment', 'function f(){const x = {hookEventName: "PreToolUse"}; const alias = x; alias.hookEventName = event; write({hookSpecificOutput: x})}'],
+  ['short-circuit and assignment', 'function f(){const x = {}; warn && (x.hookEventName = "PreToolUse"); write({hookSpecificOutput: x})}'],
+  ['short-circuit or assignment', 'function f(){const x = {}; warn || (x.hookEventName = "PreToolUse"); write({hookSpecificOutput: x})}'],
+  ['short-circuit nullish assignment', 'function f(){const x = {}; warn ?? (x.hookEventName = "PreToolUse"); write({hookSpecificOutput: x})}'],
+  ['conditional expression assignment', 'function f(){const x = {}; warn ? (x.hookEventName = "PreToolUse") : null; write({hookSpecificOutput: x})}'],
+  ['envelope serializer', 'write({hookSpecificOutput: {hookEventName: "PreToolUse"}, toJSON(){return {}}})'],
+  ['output serializer', 'write({hookSpecificOutput: {hookEventName: "PreToolUse", toJSON(){return {}}}})'],
+  ['computed envelope key', 'write({["hookSpecificOutput"]: {hookEventName: "PreToolUse"}})'],
+  ['computed concatenated envelope key', 'process.stdout.write(JSON.stringify({["hook" + "SpecificOutput"]: {}}))'],
+  ['computed notice key', 'emitGuardNotice({stdoutJson: {["hookSpecificOutput"]: {hookEventName: "PreToolUse"}}})'],
+  ['computed aliased envelope key', 'const envelope = {["hookSpecificOutput"]: {hookEventName: "PreToolUse"}}; write(envelope)'],
   ['missing field', 'write({hookSpecificOutput: {permissionDecision: "deny"}})'],
   ['unresolved shorthand', 'write({hookSpecificOutput})'],
   ['conditional bad branch', 'write({hookSpecificOutput: warn ? {hookEventName: "PreToolUse"} : {}})'],
@@ -128,8 +145,24 @@ it.each([
   'write({hookSpecificOutput: {...unknown, hookEventName: "PreToolUse"}})',
   'function f(){const hookSpecificOutput = {hookEventName: "PreToolUse"}; write({hookSpecificOutput})}',
   'out["hookSpecificOutput"] = {hookEventName: "PreToolUse"}',
+  'function f(){const output = {}; output.hookEventName = "PreToolUse"; write({hookSpecificOutput: output})}',
+  'function f(){const output = {hookEventName: "PreToolUse"}; const alias = output; alias.hookEventName = "PreToolUse"; write({hookSpecificOutput: output})}',
 ])('scanner accepts supported construction %s', (source) => {
   expect(scanSource('fixture.mjs', source, new Set(['PreToolUse'])).problems).toEqual([])
+})
+
+it('computed serialized keys need an exercised justification', async () => {
+  const property = '["hook" + "SpecificOutput"]: {hookEventName: "PreToolUse"}'
+  const source = `write({${property}})`
+  const key = `fixture.mjs:${property}`
+  const entry = { reason: 'The computed fixture key serializes the registered event.', prove: () => {
+    const output = runScript(scratch(), `process.stdout.write(JSON.stringify({${property}}))`)
+    expect(output.hookSpecificOutput.hookEventName).toBe('PreToolUse')
+  } }
+  const result = scanSource('fixture.mjs', source, new Set(['PreToolUse']), new Map([[key, entry]]))
+  expect(result.problems).toEqual([])
+  expect([...result.justified]).toEqual([key])
+  await entry.prove()
 })
 
 function pluginCopy() {
@@ -159,6 +192,32 @@ it('registration coverage refuses a new unsupported hook executable', () => {
   value.hooks.PreToolUse.push({ hooks: [{ command: 'python "${CLAUDE_PLUGIN_ROOT}/bin/new-hook.py"' }] })
   writeFileSync(manifest, JSON.stringify(value))
   expect(scanPlugin(root, JUSTIFIED).problems).toContain('bin/new-hook.py: registered hook executable type is unsupported')
+})
+
+it.each([
+  `node -e 'process.stdout.write("{}")'`,
+  'node bin/new-hook.mjs',
+  'node "${CLAUDE_PLUGIN_ROOT}/bin/missing-hook.mjs"',
+])('in-memory registration coverage refuses an unscanned command: %s', (command) => {
+  const manifest = { hooks: { PreToolUse: [{ hooks: [{ command }] }] } }
+  const { result } = scanManifest(manifest, new Set())
+  expect(result.problems).toHaveLength(1)
+  expect(result.problems[0]).toContain(command)
+})
+
+it('unresolved registrations require a reason and an executable serialization proof', async () => {
+  const command = `node -e 'process.stdout.write("{}")'`
+  const manifest = { hooks: { PreToolUse: [{ hooks: [{ command }] }] } }
+  const key = `.claude-plugin/plugin.json:PreToolUse:${command}`
+  const proof = { reason: 'The fixture serializes its registered event.', prove: () => {
+    const parsed = runScript(scratch(), 'process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse"}}))')
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse')
+  } }
+  expect(scanManifest(manifest, new Set(), new Map([[key, { ...proof, reason: '' }]])).result.problems).toHaveLength(1)
+  const { result } = scanManifest(manifest, new Set(), new Map([[key, proof]]))
+  expect(result.problems).toEqual([])
+  expect([...result.justified]).toEqual([key])
+  await proof.prove()
 })
 
 it('automatically covers a newly added emitter outside the current guard names', () => {

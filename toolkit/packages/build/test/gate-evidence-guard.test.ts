@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { requiredGateProblems } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 
@@ -328,6 +328,7 @@ describe('wt-gate-evidence-guard-hook probation', () => {
     expect(JSON.parse(run(root).stdout).hookSpecificOutput.permissionDecision).toBe('deny')
     expect(JSON.parse(run(root).stdout).hookSpecificOutput.permissionDecision).toBe('deny')
     const journal = readFileSync(join(states.get(root)!, '2026-W36.ndjson'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(journal).toHaveLength(21)
     expect(journal.slice(0, 19).every((event) => event.decision === 'warned' && event.class === 'gate-evidence-missing')).toBe(true)
     expect(journal.slice(19).every((event) => event.decision === 'blocked' && event.class === 'gate-evidence-missing')).toBe(true)
     expect(run(root, "cat <<'EOF'\ngit commit -m x\nEOF").stdout).toBe('')
@@ -680,4 +681,47 @@ it('release pushes combine unresolved and fresh notices in target order and stil
   expect(messages).toEqual([single, expect.stringContaining('Could not resolve the release branch'), single])
   const repeated = JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput
   expect(repeated.additionalContext).toBe(`${single}\n${single}`)
+})
+
+it('flushes one collected notice before a later target fails open', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  const preload = join(root, 'later-target-error.mjs')
+  writeFileSync(preload, `import fs from 'node:fs';
+    const exists = fs.existsSync; let checks = 0;
+    fs.existsSync = file => {
+      if (String(file).endsWith('release-push-branch-unresolved.warned') && ++checks === 2) throw new Error('later target fixture');
+      return exists(file);
+    };`)
+  const command = 'git push public missing-object:main missing-object:main'
+  const extra = { NODE_OPTIONS: `--import=${JSON.stringify(pathToFileURL(preload).href)}` }
+  const result = runReleasePush(root, command, extra)
+  expect(result.status).toBe(0)
+  expect(result.stderr).toContain('FAILED OPEN - later target fixture')
+  expect(result.stdout, 'the collected warning must survive the later target exception').not.toBe('')
+  expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('Could not resolve the release branch')
+  expect(runReleasePush(root, command, extra).stdout).toBe('')
+})
+
+it('continues to a later refusal when the warn-once state directory is unwritable', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  const dir = join(states.get(root)!, 'wt-main-guard')
+  mkdirSync(dir)
+  chmodSync(dir, 0o500)
+  try {
+    const result = runReleasePush(root, 'git push public missing-object:main :main')
+    expect(result.stderr).toBe('')
+    expect(result.stdout, 'marker bookkeeping must not drop the later refusal').not.toBe('')
+    expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason).toContain('Refused deletion')
+  } finally { chmodSync(dir, 0o700) }
+})
+
+it('collects the warning even when its marker cannot be written', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  writeFileSync(join(states.get(root)!, 'wt-main-guard'), 'not a directory')
+  const result = runReleasePush(root, 'git push public missing-object:main')
+  expect(result.stderr).toBe('')
+  expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('Could not resolve the release branch')
 })
