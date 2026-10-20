@@ -73,10 +73,10 @@ function initSignableRepo(tag: string): string {
   const signingKey = createSigningKey(root, 'fixture-key')
   git(root, ['init', '-q', '-b', 'main'])
   git(root, ['config', 'user.name', 'Test'])
-  git(root, ['config', 'user.email', 'webdoublefx@gmail.com'])
+  git(root, ['config', 'user.email', 'signer@example.invalid'])
   git(root, ['config', 'gpg.format', 'ssh'])
   git(root, ['config', 'user.signingkey', signingKey.keyPath])
-  writeFileSync(join(root, 'allowed_signers'), `webdoublefx@gmail.com ${signingKey.publicKey}\n`)
+  writeFileSync(join(root, 'allowed_signers'), `signer@example.invalid ${signingKey.publicKey}\n`)
   git(root, ['config', 'gpg.ssh.allowedSignersFile', join(root, 'allowed_signers')])
   cpSync(PLUGIN_BIN, join(root, 'plugin', 'bin'), { recursive: true })
   return root
@@ -140,7 +140,7 @@ describe('signatures.yml verification step — trusted PR policy and checker', (
     const attacker = createSigningKey(root)
     git(root, ['config', 'user.signingkey', `${attacker.keyPath}.pub`])
     const tip = commit(root, 'f.txt', 'ab', 'PR signed', true)
-    const attackerPolicy = `webdoublefx@gmail.com ${attacker.publicKey}\n`
+    const attackerPolicy = `other@example.invalid ${attacker.publicKey}\n`
 
     // The PR checkout permits this key, but its replacement trusted policy does not.
     writeFileSync(join(root, 'allowed_signers'), attackerPolicy)
