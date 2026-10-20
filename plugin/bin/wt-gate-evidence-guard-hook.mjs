@@ -43,9 +43,13 @@ function probationFiring() {
   return (row?.total || 0) + 1
 }
 
+function eligible(input) {
+  return input.hook_event_name === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id
+}
+
 function main() {
   const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
-  if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash' || input.agent_id) return
+  if (!eligible(input)) return
   const command = input.tool_input?.command
   if (!invokes(command, GIT_COMMIT)) return
   const cwd = commitCwd(command, input.cwd || process.cwd())
@@ -63,6 +67,10 @@ function main() {
     return
   }
 
+  checkCommitEvidence(input, root, declaration, paths)
+}
+
+function checkCommitEvidence(input, root, declaration, paths) {
   const signature = treeSignature(root)
   const problems = requiredGateProblems(root, declaration, { signature, paths })
   if (!problems.length) {
@@ -70,6 +78,10 @@ function main() {
     return
   }
 
+  emitEvidenceDecision(input, root, problems)
+}
+
+function emitEvidenceDecision(input, root, problems) {
   const firing = probationFiring()
   const cls = problems.some((p) => p.status.startsWith('MISSING')) ? 'gate-evidence-missing' : problems.some((p) => p.status.startsWith('RED')) ? 'gate-evidence-red' : 'gate-evidence-stale'
   const commands = problems.map(({ gate }) => `  (${gate.cwd}) node "${'${CLAUDE_PLUGIN_ROOT}'}/bin/wt-run-gate.mjs" --record ${gate.name} -- ${gate.command}`).join('\n')
@@ -77,9 +89,9 @@ function main() {
   const deny = firing >= 20
   recordGuardEvent({ guard: GUARD, decision: deny ? 'blocked' : 'warned', class: cls, reason: problems.map((p) => `${p.gate.name}:${p.status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id })
   if (deny) {
-    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: message } } })
+    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: message } } })
   } else {
-    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { additionalContext: `${message}\nProbation: ${20 - firing} firing(s) remain before refusal.` } } })
+    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `${message}\nProbation: ${20 - firing} firing(s) remain before refusal.` } } })
   }
 }
 

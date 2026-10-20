@@ -76,6 +76,7 @@ export const spawningTestFiles = [
   'packages/build/test/guard-observe-mode.test.ts',
   'packages/build/test/guard-recurrence-hook.test.ts',
   'packages/build/test/held-processes.test.ts',
+  'packages/build/test/hook-specific-output-event-family.test.ts',
   'packages/build/test/host-adapter.contract.test.ts',
   'packages/build/test/host-procfs-hook-loader.test.ts',
   'packages/build/test/intake-triage.test.ts',
