@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
+import { timeRegex } from '../scripts/regex-timing.mjs';
 import { safeRegex } from '../hooks/evidence.js';
 import { toolInputVerdict, correlateTurn } from '../hooks/declarative-checks.js';
 
@@ -122,13 +123,9 @@ test('unicode non-boundary visits the position inside an astral character', () =
   }
 });
 
-test('timing worker executes capture mode and reports matcher errors', async () => {
-  const workerResult = (source, corpus, operation) => new Promise((resolve) => {
-    const worker = new Worker(new URL('../scripts/regex-timing-worker.mjs', import.meta.url), {
-      workerData: { source, flags: '', corpus, boundMs: 50, operation },
-    });
-    worker.once('message', resolve);
-    worker.once('error', (error) => resolve({ error: error.message }));
+test('timing worker executes capture mode and reports matcher errors', async (t) => {
+  const workerResult = (source, corpus, operation) => timeRegex({ source, flags: '', corpus, boundMs: 50, operation }, {
+    onWorker: (worker) => { t.after(() => worker.terminate()); },
   });
   const value = await workerResult('^'.repeat(8000) + '(b)', ['b'], 'exec');
   assert.notEqual(value, null, 'capture-mode timing must execute the capture path');

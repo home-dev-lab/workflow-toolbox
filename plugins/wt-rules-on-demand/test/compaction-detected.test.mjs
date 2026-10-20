@@ -15,6 +15,8 @@ import { sumContexts, joinContexts } from '../scripts/delivery-join.mjs';
 import { scanTranscript, boundaryRows, parseArgs, consume, identityOf, MAX_LINE_BYTES } from '../scripts/compact-boundary.mjs';
 import { shippedFile } from '../paths.js';
 import { externalTest } from './external-test.mjs';
+import { rescanPlansSettledForSelftest } from '../hooks/hooks.js';
+import { BACKOFF, isBackoff, shiftedNow, gatedClock, drainPlans, backoffReady, waitFor, nextTurn } from './compaction-clock.mjs';
 
 const PUSH = { command: 'git push origin main' };
 // The hooks module has no node:path and joins with '/', which Windows accepts: compare paths separator-blind.
@@ -29,14 +31,23 @@ function realRun(state) {
   return (argv, init = {}) => {
     state.scans++;
     state.runs.push({ argv, init });
-    if (state.hangScans) return new Promise((resolve) => state.hung.push(resolve));
-    return new Promise((resolve) => {
-      execFile(process.execPath, argv.slice(1), { timeout: init.timeoutMs ?? 30_000 }, (error, stdout, stderr) => {
-        if (!error) state.answers.push(JSON.parse(stdout));
-        resolve({ exitCode: exitCodeOf(error), stdout, stderr });
-      });
-    });
+    return state.hangScans ? new Promise((resolve) => state.hung.push(resolve)) : scanChild(state, argv);
   };
+}
+function scanChild(state, argv) {
+  return new Promise((resolve, reject) => {
+    // Failure-only child bound: record the hook's requested timeout above, but let a starved scanner start.
+    // Tests of scan expiry use hangScans and release the injected host deadline instead.
+    execFile(process.execPath, argv.slice(1), { timeout: 60_000 }, async (error, stdout, stderr) => {
+      try {
+        if (!error) state.answers.push(JSON.parse(stdout));
+        const afterAnswer = state.afterAnswer;
+        state.afterAnswer = undefined;
+        await afterAnswer?.();
+        resolve({ exitCode: exitCodeOf(error), stdout, stderr });
+      } catch (failure) { reject(failure); }
+    });
+  });
 }
 const request = (run) => parseArgs(run.argv.slice(2));
 function exitCodeOf(error) {
@@ -69,8 +80,6 @@ const resets = (f, session = 'sample-session') => f.store.snapshot().sessions?.[
 const prompt = (f, text = 'go', next = idle) => f.handlers.get('prompt.submit')(f.$, { cwd: f.project, text }, next);
 const turnEnd = (f) => f.handlers.get('turn.complete')(f.$, { cwd: f.project }, idle);
 const dispatch = (f) => f.handlers.get('session.compact')(f.$, { cwd: f.project }, idle);
-const spinUntil = async (done, limit = 2_000) => { for (let spin = 0; !done() && spin < limit; spin++) await new Promise((resolve) => setImmediate(resolve)); };
-const until = async (done, ms = 5_000) => { const end = Date.now() + ms; while (!done() && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 20)); };
 
 // Serve the rule in main, with a growing live window.
 async function servedOnce(f, state) {
@@ -110,15 +119,21 @@ test('A. an automatic compaction with no token sign is caught at that turn\'s en
   assert.equal(state.scans, scans, 'the reset dropped the old baseline: the next turn\'s lower reading is no sign');
 });
 
-test('A. a boundary written 150 ms after the sign is found by the follow-up scans, before the next prompt', { timeout: 10_000 }, async (t) => {
+// Failure-only safety bound for the real scanner children and teardown; the gate controls every back-off.
+test('A. a boundary written after the sign\'s scan answered is found by the follow-up scans, before the next prompt', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const f = await fixture(t, state, { clock: realClock() });
+  const gate = gatedClock(t);
+  const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   state.tokens = undefined;
-  setTimeout(() => { void compacted(f); }, 150);
+  const asked = gate.backoffs.length, answered = state.answers.length;
+  state.afterAnswer = () => compacted(f);
   assert.equal(served(await f.call({ ...PUSH })), false, 'the row is not written yet');
-  await until(() => resets(f)['compaction-detected'] === 1);
+  assert.equal(state.answers.length, answered + 1, 'the sign\'s scan answered successfully');
+  assert.deepEqual(state.answers.at(-1).boundaries, [], 'the sign\'s own scan found nothing');
+  await drainPlans(gate);
   assert.deepEqual(resets(f), { 'compaction-detected': 1 }, 'a later scan found it, with no event in between');
+  assert.deepEqual(gate.backoffs.slice(asked), BACKOFF.slice(0, 2));
   await prompt(f);
   assert.ok(served(await f.call({ ...PUSH })), 'served again');
 });
@@ -264,13 +279,6 @@ test('B. two compactions with nothing served between: each boundary resets once'
   assert.deepEqual(resets(f), { 'compaction-detected': 2 });
 });
 
-// A monotonic clock the test moves forward: performance.now() plus `shift`.
-function shiftedNow(t) {
-  const real = performance.now.bind(performance), moved = { shift: 0 };
-  t.mock.method(performance, 'now', () => real() + moved.shift);
-  return moved;
-}
-
 test('B. a dispatched session.compact whose boundary never comes stops being expected after the plan\'s lifetime, not at the turn end', async (t) => {
   const state = world();
   const f = await fixture(t, state);
@@ -378,21 +386,9 @@ test('B. a transcript truncated, then written again past the cursor (1029 then 2
   assert.deepEqual(resets(f), { 'compaction-detected': 1 });
 });
 
-const BACKOFF = [100, 200, 400, 800, 1_600, 3_200];
-const isBackoff = (wait) => BACKOFF.includes(wait.ms);
-// Ends every back-off wait of the plans in flight, one at a time, until none is asked for; a scan's own deadline wait
-// is never passed, so each scan answers on its own.
-async function drainPlans(gate) {
-  for (let round = 0; round < 40; round++) {
-    await until(() => gate.waits.some(isBackoff), 500);
-    if (!gate.waits.some(isBackoff)) return;
-    gate.passWhere(isBackoff);
-  }
-}
-
 test('C. no compaction: each turn end scans, a turn scans once mid-turn at most, and a sign\'s plan scans six times then ends', async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   assert.equal(state.scans, 2, 'creating the context notes where the transcript ends; the next call, with a rule served, confirms it once');
@@ -403,7 +399,7 @@ test('C. no compaction: each turn end scans, a turn scans once mid-turn at most,
     if (n % 5 === 4) await turnEnd(f);
   }
   assert.equal(state.scans, 9, 'then each turn end, and the first event of each later turn (a rule is served): one confirming scan');
-  const before = state.scans;
+  const before = state.scans, asked = gate.backoffs.length;
   state.tokens = undefined;
   for (let n = 0; n < 6; n++) await f.call({ ...PUSH });
   for (const tokens of [4_000, 3_000, 2_000]) { state.tokens = tokens; await f.call({ ...PUSH }); }
@@ -412,7 +408,7 @@ test('C. no compaction: each turn end scans, a turn scans once mid-turn at most,
   assert.equal(state.scans - before, 2, 'and the turn end');
   await drainPlans(gate);
   assert.equal(state.scans - before, 8, 'the turn end left the sign\'s plan running: six back-off scans, then it ended');
-  assert.deepEqual(gate.asked.filter((ms) => BACKOFF.includes(ms)), BACKOFF, 'after 0.1, 0.3, 0.7, 1.5, 3.1 and 6.3 s');
+  assert.deepEqual(gate.backoffs.slice(asked), BACKOFF, 'after 0.1, 0.3, 0.7, 1.5, 3.1 and 6.3 s');
   state.tokens = undefined;
   await f.call({ ...PUSH });
   await turnEnd(f);
@@ -423,26 +419,42 @@ test('C. no compaction: each turn end scans, a turn scans once mid-turn at most,
   assert.equal(state.scans - before, 11, 'and once per turn');
   await drainPlans(gate);
   assert.equal(state.scans - before, 17, 'the second sign\'s plan: six scans');
+  assert.deepEqual(gate.backoffs.slice(asked), [...BACKOFF, ...BACKOFF], 'the unfiltered schedule of each plan');
   assert.deepEqual(resets(f), {});
 });
 
-test('C. a plan ends at its lifetime, however many back-offs remain', async (t) => {
+test('C. a plan still scans at 9,999 ms, just before its lifetime', async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
-  const clock = shiftedNow(t);
   await servedOnce(f, state);
   state.tokens = undefined;
   await f.call({ ...PUSH });
   const before = state.scans;
-  await until(() => gate.waits.some(isBackoff));
-  gate.passWhere(isBackoff);
-  await until(() => state.scans > before);
-  assert.equal(state.scans, before + 1, 'the first back-off scanned');
-  await until(() => gate.waits.some(isBackoff));
-  clock.shift = 10_001;
+  await backoffReady(gate);
+  gate.monotonic.shift = 9_999;
   await drainPlans(gate);
+  assert.equal(state.scans, before + 6, 'at 9,999 ms the released back-offs still scan');
+  assert.deepEqual(gate.backoffs, BACKOFF, 'the complete schedule remains live before the lifetime');
+});
+
+test('C. a plan ends at its lifetime, however many back-offs remain', async (t) => {
+  const state = world();
+  const gate = gatedClock(t);
+  const f = await fixture(t, state, { clock: gate.clock });
+  const clock = gate.monotonic;
+  await servedOnce(f, state);
+  state.tokens = undefined;
+  await f.call({ ...PUSH });
+  const before = state.scans;
+  await backoffReady(gate);
+  gate.passWhere(isBackoff);
+  await backoffReady(gate);
+  assert.equal(state.scans, before + 1, 'the first back-off scanned');
+  clock.shift = 10_001;
+  await drainPlans(gate, BACKOFF.slice(1));
   assert.equal(state.scans, before + 1, 'past 10 s the plan scans no more');
+  assert.deepEqual(gate.backoffs, BACKOFF.slice(0, 2), 'lifetime ends the plan at its shorter prefix');
 });
 
 test('D. agent contexts are unaffected, and a sub-agent\'s boundary row resets nothing', async (t) => {
@@ -545,41 +557,16 @@ test('F. copies of one context take the maximum of their reset counts, never the
   assert.deepEqual(joined.resets, { compaction: 1, 'compaction-detected': 2 });
 });
 
-// A host clock whose deadline waits end only when the test passes them; a zero wait (a yield) ends at once.
-function gatedClock() {
-  const waits = [], asked = [];
-  const sleep = (ms, options = {}) => (!ms ? Promise.resolve() : new Promise((resolve, reject) => {
-    const wait = { ms, resolve };
-    waits.push(wait);
-    asked.push(ms);
-    options.signal?.addEventListener('abort', () => {
-      const at = waits.indexOf(wait);
-      if (at >= 0) waits.splice(at, 1);
-      reject(new Error('aborted'));
-    }, { once: true });
-  }));
-  const passWhere = (chosen) => {
-    for (const wait of waits.filter(chosen)) { waits.splice(waits.indexOf(wait), 1); wait.resolve(); }
-  };
-  return { clock: { now: async () => Date.now(), sleep }, waits, asked, pass: () => passWhere(() => true), passWhere };
-}
-function realClock() {
-  const sleep = (ms, options = {}) => new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    options.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('aborted')); }, { once: true });
-  });
-  return { now: async () => Date.now(), sleep };
-}
-
-test('R-B. a scan that never answers is unreadable past its deadline: the call, a later tool call and a prompt go on', { timeout: 10_000 }, async (t) => {
+// All per-test timeouts below are failure-only bounds for real child scans and teardown, never behavioural budgets.
+test('R-B. a scan that never answers is unreadable past its deadline: the call, a later tool call and a prompt go on', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   state.hangScans = true;
   state.tokens = undefined;
   const call = f.call({ ...PUSH });
-  await spinUntil(() => state.hung.length > 0);
+  await waitFor(() => state.hung.length > 0);
   gate.pass();
   assert.equal(served(await call), false, 'past the deadline the transcript counts as unreadable');
   assert.ok(gate.asked.includes(6_000), 'the scan waited for its deadline');
@@ -590,16 +577,16 @@ test('R-B. a scan that never answers is unreadable past its deadline: the call, 
   for (const resolve of state.hung) resolve({ exitCode: 1, stdout: '', stderr: '' });
 });
 
-test('R-B. a history read at prompt.context that never answers: past the deadline the prompt goes on', { timeout: 10_000 }, async (t) => {
+test('R-B. a history read at prompt.context that never answers: past the deadline the prompt goes on', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   const answers = [];
   state.messages = () => new Promise((resolve) => answers.push(resolve));
   let reached = false;
   const done = f.handlers.get('prompt.context')(f.$, { cwd: f.project }, async () => { reached = true; return {}; });
-  await spinUntil(() => answers.length > 0);
+  await waitFor(() => answers.length > 0);
   gate.pass();
   await done;
   assert.ok(reached, 'the prompt went on');
@@ -607,15 +594,15 @@ test('R-B. a history read at prompt.context that never answers: past the deadlin
   for (const resolve of answers) resolve([]);
 });
 
-test('R-B. a usage() past its deadline pauses the mid-turn readings; the next answer resumes them', { timeout: 10_000 }, async (t) => {
+test('R-B. a usage() past its deadline pauses the mid-turn readings; the next answer resumes them', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   const healthy = state.usage, answers = [];
   state.usage = () => new Promise((resolve) => answers.push(resolve));
   const call = f.call({ ...PUSH });
-  await spinUntil(() => answers.length > 0);
+  await waitFor(() => answers.length > 0);
   gate.pass();
   await call;
   state.usage = healthy;
@@ -630,34 +617,37 @@ test('R-B. a usage() past its deadline pauses the mid-turn readings; the next an
   for (const resolve of answers) resolve({});
 });
 
-test('P. a sign, an empty scan, then the turn end, and the boundary written 135 ms later: reset before the next prompt', { timeout: 10_000 }, async (t) => {
+test('P. a sign, an empty scan, then the turn end, and the boundary written afterwards: reset before the next prompt', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const f = await fixture(t, state, { clock: realClock() });
+  const gate = gatedClock(t);
+  const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   state.tokens = undefined;
   assert.equal(served(await f.call({ ...PUSH })), false, 'the row is not written yet');
   await turnEnd(f);
   assert.deepEqual(resets(f), {}, 'the turn end found nothing either');
-  setTimeout(() => { void compacted(f); }, 135);
-  await until(() => resets(f)['compaction-detected'] === 1);
+  await compacted(f);
+  await drainPlans(gate);
+  assert.deepEqual(gate.backoffs, BACKOFF.slice(0, 2));
   assert.deepEqual(resets(f), { 'compaction-detected': 1 }, 'the sign\'s plan outlived the turn end and found it');
   await prompt(f);
   assert.ok(served(await f.call({ ...PUSH })), 'served again');
 });
 
-test('P. session.compact, an empty turn-end scan, then its boundary 135 ms later: one reset, and the next boundary is a compaction of its own', { timeout: 10_000 }, async (t) => {
+test('P. session.compact, an empty turn-end scan, then its boundary: one reset, and the next boundary is a compaction of its own', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const f = await fixture(t, state, { clock: realClock() });
+  const gate = gatedClock(t);
+  const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   await dispatch(f);
   await turnEnd(f);
-  setTimeout(() => { void compacted(f); }, 135);
-  await until(() => state.answers.some((answer) => answer.boundaries.length > 0));
+  await compacted(f);
+  await drainPlans(gate);
   assert.ok(state.answers.some((answer) => answer.boundaries.length > 0), 'the plan read the boundary, with no event after the turn end');
-  await until(() => false, 300);
   assert.deepEqual(resets(f), { compaction: 1 }, 'the plan found the dispatched compaction\'s own boundary');
   const scans = state.scans;
-  await until(() => false, 1_000);
+  await rescanPlansSettledForSelftest();
+  assert.deepEqual(gate.backoffs, BACKOFF.slice(0, 2));
   assert.equal(state.scans, scans, 'served: the plan ended');
   await turnEnd(f);
   assert.deepEqual(resets(f), { compaction: 1 }, 'the next turn end has nothing new');
@@ -688,7 +678,7 @@ test('P. a session that changes (/clear without a prompt.context): the next scan
 
 test('P. a sign that finds a new session starts no re-scan plan: no boundary follows a cleared conversation', async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await writeFile(join(dirname(f.transcript), 'other-session.jsonl'), `${JSON.stringify({ type: 'user', uuid: 'u-other' })}\n`);
   let session = 'sample-session';
@@ -698,20 +688,22 @@ test('P. a sign that finds a new session starts no re-scan plan: no boundary fol
   state.tokens = undefined;
   await f.call({ ...PUSH });
   assert.deepEqual(resets(f, 'other-session'), { 'session-changed': 1 });
-  await spinUntil(() => false, 200);
+  await rescanPlansSettledForSelftest();
   assert.deepEqual(gate.waits.filter(isBackoff), [], 'no back-off asked');
 });
 
-test('P. session.compact while a sign\'s plan runs joins it: the plan also finds a second, later boundary before the turn ends', { timeout: 15_000 }, async (t) => {
+test('P. session.compact while a sign\'s plan runs joins it: the plan also finds a second, later boundary before the turn ends', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const f = await fixture(t, state, { clock: realClock() });
+  const gate = gatedClock(t);
+  const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   state.tokens = undefined;
   await f.call({ ...PUSH });
   await dispatch(f);
-  setTimeout(() => { void compacted(f); }, 135);
-  setTimeout(() => { void compacted(f); }, 1_000);
-  await until(() => resets(f)['compaction-detected'] === 1, 8_000);
+  await compacted(f);
+  state.afterAnswer = () => compacted(f);
+  await drainPlans(gate);
+  assert.deepEqual(gate.backoffs, BACKOFF.slice(0, 3));
   assert.deepEqual(resets(f), { compaction: 1, 'compaction-detected': 1 }, 'the plan waited for both, with no turn end');
 });
 
@@ -765,33 +757,47 @@ test('P. a scan that stopped at its budget: the next scan resumes from the offse
 
 test('P. a scan that never answers plus a concurrent turn end: one child, one deadline, inside the hook budget', { timeout: 30_000 }, async (t) => {
   const state = world();
-  const f = await fixture(t, state, { clock: realClock() });
+  const gate = gatedClock(t);
+  const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   state.hangScans = true;
   state.tokens = undefined;
-  const began = Date.now();
+  const asked = gate.asked.length;
   const call = f.call({ ...PUSH });
-  await spinUntil(() => state.hung.length > 0);
-  await Promise.all([call, turnEnd(f)]);
-  const took = Date.now() - began;
-  assert.equal(state.hung.length, 1, 'the turn end waited on that child, and started none');
-  assert.ok(took < 8_000, `one 6 s deadline, not two: ${took} ms`);
-  for (const resolve of state.hung) resolve({ exitCode: 1, stdout: '', stderr: '' });
+  await waitFor(() => state.hung.length > 0);
+  const end = turnEnd(f);
+  assert.equal(gate.waits.filter((wait) => wait.ms === 6_000 && wait.signaled).length, 1, 'exactly one pending scan deadline');
+  gate.passWhere((wait) => wait.ms === 6_000 && wait.signaled);
+  let completed = false;
+  const done = Promise.all([call, end]).then(() => { completed = true; });
+  try {
+    await waitFor(() => completed || state.hung.length > 1);
+    assert.equal(state.hung.length, 1, 'the turn end waited on that child, and started none');
+    assert.equal(gate.asked.slice(asked).filter((ms) => ms === 6_000).length, 1, 'one 6 s deadline, not two');
+    await done;
+  } finally {
+    for (const resolve of state.hung) resolve({ exitCode: 1, stdout: '', stderr: '' });
+    await done;
+  }
 });
 
 test('P. session.compact while a detection scan runs waits for it: the boundary it finds is the reset, the dispatched one skips', async (t) => {
   const state = world();
   const run = realRun(state);
-  let hold = null, release;
-  const f = await fixture(t, state, { processRun: (argv, init) => (hold ? hold.then(() => run(argv, init)) : run(argv, init)) });
+  let hold = null, release, entered;
+  const started = new Promise((resolve) => { entered = resolve; });
+  const f = await fixture(t, state, { processRun: (argv, init) => {
+    if (!hold) return run(argv, init);
+    entered(); return hold.then(() => run(argv, init));
+  } });
   await servedOnce(f, state);
   await compacted(f);
   hold = new Promise((resolve) => { release = resolve; });
   state.tokens = undefined;
   const call = f.call({ ...PUSH });
-  await spinUntil(() => false, 50);
+  await started;
   const dispatched = dispatch(f);
-  await spinUntil(() => false, 50);
+  await nextTurn();
   hold = null;
   release();
   await Promise.all([call, dispatched]);
@@ -867,13 +873,12 @@ test('H. a tool call that creates the context over a conversation holding the ru
   assert.deepEqual(sessionResets(f), { 'compaction-detected': 1 });
 });
 
-test('P. a boundary written 200 ms after an empty turn-end scan, with no token sign: the next triggering call confirms first, and serves', async (t) => {
+test('P. a boundary written after an empty turn-end scan, with no token sign: the next triggering call confirms first, and serves', async (t) => {
   const state = world();
   const f = await fixture(t, state);
   await servedOnce(f, state);
   state.tokens = 6_000;
   await turnEnd(f);
-  await new Promise((resolve) => setTimeout(resolve, 200));
   await compacted(f);
   state.tokens = 7_000;
   assert.ok(served(await f.call({ ...PUSH })), 'served again');
@@ -901,9 +906,9 @@ test('P. a re-read from 0 stopped by its budget keeps its date filter on the sca
   assert.deepEqual(resets(f), { 'compaction-detected': 1 }, 'past the end of the re-read, a new row counts');
 });
 
-test('P. a session id that never answers while a scan prepares: the check returns at the scan deadline, and a later scan starts', { timeout: 10_000 }, async (t) => {
+test('P. a session id that never answers while a scan prepares: the check returns at the scan deadline, and a later scan starts', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   const healthy = f.$.session.id;
@@ -914,23 +919,22 @@ test('P. a session id that never answers while a scan prepares: the check return
   state.tokens = undefined;
   const scans = state.scans;
   const call = f.call({ ...PUSH });
-  await spinUntil(() => hung.length > 0);
+  await waitFor(() => hung.length > 0);
   gate.passWhere((wait) => wait.ms === 6_000);
-  const returned = await Promise.race([call.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 2_000))]);
-  assert.equal(returned, true, 'the call went on at the scan deadline');
+  await call; // Completion at the released deadline; the test timeout only catches broken behaviour.
   assert.equal(state.scans, scans, 'no child started');
   stuck = false;
   await turnEnd(f);
   assert.equal(state.scans, scans + 1, 'the context was freed: the turn end started a scan');
   for (const resolve of hung) resolve('sample-session');
-  await spinUntil(() => false, 50);
+  await nextTurn();
   assert.equal(state.scans, scans + 1, 'the abandoned preparation never starts its child');
   assert.equal(f.logs.filter((line) => /transcript cannot be read: no answer within 6000 ms/.test(line)).length, 1, f.logs.join('\n'));
 });
 
-test('P. a preparation past its deadline pauses the readings: a live plan\'s later back-offs prepare nothing until the turn end', { timeout: 10_000 }, async (t) => {
+test('P. a preparation past its deadline pauses the readings: a live plan\'s later back-offs prepare nothing until the turn end', { timeout: 60_000 }, async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   const healthy = f.$.session.id;
@@ -939,15 +943,12 @@ test('P. a preparation past its deadline pauses the readings: a live plan\'s lat
   f.$.session.id = () => (stuck && new Error().stack.includes('transcriptPlace') ? new Promise((resolve) => hung.push(resolve)) : healthy());
   const scans = state.scans;
   await dispatch(f);
-  await spinUntil(() => gate.waits.some((wait) => wait.ms === 100));
+  await backoffReady(gate);
   gate.passWhere((wait) => wait.ms === 100);
-  await spinUntil(() => hung.length > 0 && gate.waits.some((wait) => wait.ms === 6_000));
+  await waitFor(() => hung.length > 0 && gate.waits.some((wait) => wait.ms === 6_000));
   gate.passWhere((wait) => wait.ms === 6_000);
-  for (const ms of [200, 400, 800, 1_600, 3_200]) {
-    await spinUntil(() => gate.waits.some((wait) => wait.ms === ms));
-    gate.passWhere((wait) => wait.ms === ms);
-  }
-  await spinUntil(() => false, 200);
+  await drainPlans(gate, BACKOFF.slice(1));
+  assert.deepEqual(gate.backoffs, BACKOFF);
   assert.equal(hung.length, 1, 'one preparation, one deadline: the plan\'s later readings started none');
   stuck = false;
   await turnEnd(f);
@@ -1020,7 +1021,7 @@ test('P. a session change drops a dispatched expectation: the new conversation\'
 
 test('P. a session change ends a live plan: no back-off scan reads on for the old conversation', async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await writeFile(join(dirname(f.transcript), 'other-session.jsonl'), `${JSON.stringify({ type: 'user', uuid: 'u-other' })}\n`);
   let session = 'sample-session';
@@ -1028,13 +1029,14 @@ test('P. a session change ends a live plan: no back-off scan reads on for the ol
   await servedOnce(f, state);
   state.tokens = undefined;
   await f.call({ ...PUSH });
-  await until(() => gate.waits.some(isBackoff));
+  await backoffReady(gate);
   session = 'other-session';
   await turnEnd(f);
   assert.deepEqual(resets(f, 'other-session'), { 'session-changed': 1 });
   const scans = state.scans;
   await drainPlans(gate);
   assert.equal(state.scans, scans, 'the plan ended with the old conversation');
+  assert.deepEqual(gate.backoffs, BACKOFF.slice(0, 1));
 });
 
 test('P. a re-read from 0 counts a boundary dated a few seconds before the previous scan began', async (t) => {
@@ -1053,7 +1055,7 @@ test('P. a re-read from 0 counts a boundary dated a few seconds before the previ
 
 test('P. a plan started after earlier boundaries were found still scans: it waits for its own', async (t) => {
   const state = world();
-  const gate = gatedClock();
+  const gate = gatedClock(t);
   const f = await fixture(t, state, { clock: gate.clock });
   await servedOnce(f, state);
   await compacted(f);
@@ -1066,6 +1068,7 @@ test('P. a plan started after earlier boundaries were found still scans: it wait
   const scans = state.scans;
   await drainPlans(gate);
   assert.equal(state.scans, scans + 6, 'six back-off scans');
+  assert.deepEqual(gate.backoffs, BACKOFF);
 });
 
 test('S. the scanner reads only complete lines past its offset, and restarts on another file', async (t) => {
