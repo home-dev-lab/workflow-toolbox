@@ -133,7 +133,9 @@ describe('signatures.yml verification step — trusted PR policy and checker', (
     expect(yaml).not.toContain('CHECKER=plugin/bin/wt-check-commit-signatures.mjs')
     expect(yaml).not.toContain('gpg.ssh.allowedSignersFile "$GITHUB_WORKSPACE/.github/allowed_signers"')
   })
+})
 
+describe('signatures.yml verification step — trusted allowed-signers policy', () => {
   it('configures Git to use the trusted allowed-signers pathname rather than the PR policy', () => {
     const root = initSignableRepo('trusted-policy')
     const before = commit(root, 'f.txt', 'a', 'base signed', true)
@@ -163,7 +165,9 @@ describe('signatures.yml verification step — trusted PR policy and checker', (
     expect(accepted.code).toBe(0)
     expect(accepted.out).toContain('carry a good signature')
   })
+})
 
+describe('signatures.yml verification step — trusted checker', () => {
   it('runs the trusted checker even when the PR checkout replaces its checker with a no-op', () => {
     const root = initSignableRepo('trusted-checker')
     const before = commit(root, 'f.txt', 'a', 'base signed', true)
