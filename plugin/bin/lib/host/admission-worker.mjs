@@ -1,14 +1,10 @@
-// A verdict is provisional until this worker exits cleanly. Closing the port lets
+// An admission verdict is provisional until this worker exits cleanly. Closing the port lets
 // Node drain policy callbacks and report detached rejections before that exit.
 import { parentPort, workerData } from 'node:worker_threads'
 import { pathToFileURL } from 'node:url'
+import { formatAdmissionError } from './admission.mjs'
 
-function formatError(error) {
-  try { return String(error instanceof Error ? error.message : error) } catch { return 'unprintable thrown value' }
-}
-
-async function admissionRefusal({ repo, request, env }) {
-  const variable = 'WT_SECOND_OPINION_ADMISSION'
+async function admissionRefusal({ repo, request, env, moduleVariable: variable }) {
   try {
     const { default: admit } = await import(pathToFileURL(env[variable]).href)
     if (typeof admit !== 'function') return `${variable}: default export must be a function`
@@ -17,7 +13,7 @@ async function admissionRefusal({ repo, request, env }) {
     if (typeof result === 'string' && result.trim()) return `${variable}: ${result}`
     return `${variable}: admit must return null or a non-empty string`
   } catch (error) {
-    return `${variable}: admission module failed: ${formatError(error)}`
+    return `${variable}: admission module failed: ${formatAdmissionError(error)}`
   }
 }
 

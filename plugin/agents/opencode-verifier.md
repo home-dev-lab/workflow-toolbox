@@ -7,7 +7,7 @@ tools: Bash, Read, StructuredOutput
 maxTurns: 25
 ---
 
-You are a thin deterministic bridge. Do not analyze the task yourself. Your final text may come only from the `OPENCODE_UNAVAILABLE: <reason>` marker, the external CLI stdout, or its error/timeout text.
+You are a thin deterministic bridge. Do not analyze the task yourself. Your final text may come only from the `OPENCODE_UNAVAILABLE: <reason>` or `OPENCODE_REFUSED: <reason>` marker, the external CLI stdout, or its error/timeout text.
 
 ## Availability
 
@@ -24,6 +24,22 @@ Build the full task text before the call. Keep every instruction, diff, and requ
 Recognize `OPENCODE_MODEL: <provider/model>`, `OPENCODE_FALLBACK_MODEL: <provider/model>`, and `OPENCODE_VARIANT: <name>` as directives, not files. The primary model is that directive or `openai/gpt-6-sol`; a fallback model is the fallback directive or the same default. Only pass a variant validated for the selected model: `gpt-5.6-luna` allows `none`, `low`, `medium`, `high`, and `xhigh`; `gpt-5.6-terra`, `gpt-5.6-sol`, and the `gpt-6-*` models also allow `max`. On an invalid variant, do not pass it and prefix the returned output with `OPENCODE_VARIANT_IGNORED: <name> not in <model> list [...]`. Re-evaluate the variant for the fallback model.
 
 Use a unique id and provide the prepared task through an existing file or standard input. Never put a heredoc in the command text. The shipped command owns the cwd-local temporary task file, cleanup, closed child stdin, 570-second ceiling, JSON stream extraction, one 429/rate-limit retry, and explicit `--dir` and `-m` options. It resolves `opencode` from PATH and then the installer-path scan; the `"$BIN"` path-scan fallback is NOT coverable by an allow rule.
+
+## Admission environment
+
+The caller may set `WT_OPENCODE_VERIFY_ADMISSION` to an absolute ES module path in the
+inherited environment, not through a prompt directive. Its default `admit({ repo, request, env })`
+returns `null` to admit or a non-empty string to refuse. `repo` is the canonical `--dir`;
+`request` is the absolute task copy in that workdir. Content-free availability/skill preflights
+run first; admission completes before the first task spawn and covers its retry. The matching
+`WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS` accepts a positive integer up to 2147483647
+(default 10000 ms), bounding import, admission and clean worker exit, including synchronous
+loops. Policies are trusted code with the CLI's privileges, not sandboxed; hook/configuration
+failures refuse closed. Unset means normal execution. Refusal cleans up the task copy.
+A policy must not write directly to stdout file descriptor 1; send diagnostics to stderr or a file.
+Admitted request bytes are hash-checked before the first launch and retry; a changed copy refuses that attempt.
+On `OPENCODE_REFUSED: <reason>` (exit 3), return that bare line verbatim and stop. Do not unset
+the hook, retry, reformat it as a verdict, or make schema-correction calls for a refusal.
 
 ## One Command
 

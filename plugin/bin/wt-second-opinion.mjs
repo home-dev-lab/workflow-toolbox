@@ -5,9 +5,9 @@
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from './lib/host/second-opinion-filesystem.mjs'
 import path from 'node:path'
-import { Worker } from 'node:worker_threads'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
+import { boundedAdmission, formatAdmissionError as formatError } from './lib/host/admission.mjs'
 
 const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.\nWT_SECOND_OPINION_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env }) returns null to admit or a non-empty refusal string (exit 3); configuration or module failures refuse too. Canonical repo/request paths are shared with launch; out must not name the request. Import, admission and clean worker exit have a 10000 ms deadline, overridable with WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS (positive integer, maximum 2147483647); expiry terminates the policy worker, including synchronous loops.'
 
@@ -48,54 +48,6 @@ for (const [signal, listener] of signalListeners) process.once(signal, listener)
 
 function removeSignalListeners() {
   for (const [signal, listener] of signalListeners) process.removeListener(signal, listener)
-}
-
-function formatError(error) {
-  try { return String(error instanceof Error ? error.message : error) } catch { return 'unprintable thrown value' }
-}
-
-async function boundedAdmission(options, env) {
-  const variable = 'WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS'
-  const timeout = Number(env[variable] ?? 10_000)
-  if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 2_147_483_647) {
-    return `WT_SECOND_OPINION_ADMISSION: ${variable} must be a positive integer no greater than 2147483647`
-  }
-  if (!path.isAbsolute(env.WT_SECOND_OPINION_ADMISSION)) return 'WT_SECOND_OPINION_ADMISSION: must name an absolute ES module path'
-  return workerAdmission(options, env, timeout)
-}
-
-async function workerAdmission({ repo, request }, env, timeout) {
-  const deadline = performance.now() + timeout
-  const worker = new Worker(new URL('./lib/second-opinion-admission-worker.mjs', import.meta.url), {
-    workerData: { repo, request, env }, env, execArgv: ['--unhandled-rejections=strict'],
-  })
-  let timer
-  const expired = `WT_SECOND_OPINION_ADMISSION: timed out after ${timeout} ms`
-  try {
-    const refusal = await Promise.race([
-      workerVerdict(worker),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(expired), Math.max(0, deadline - performance.now())) }),
-    ])
-    return performance.now() >= deadline ? expired : refusal
-  } finally {
-    clearTimeout(timer)
-    await worker.terminate()
-  }
-}
-
-function workerVerdict(worker) {
-  return new Promise((resolve) => {
-    let verdict
-    let failure
-    worker.on('message', (message) => { verdict = message })
-    worker.on('error', (error) => { failure = `WT_SECOND_OPINION_ADMISSION: admission worker failed: ${formatError(error)}` })
-    worker.on('exit', (code) => {
-      if (failure) return resolve(failure)
-      if (code !== 0) return resolve(`WT_SECOND_OPINION_ADMISSION: admission worker exited with code ${code}`)
-      if (verdict === null || typeof verdict === 'string') return resolve(verdict)
-      resolve('WT_SECOND_OPINION_ADMISSION: admission worker exited without a verdict')
-    })
-  })
 }
 
 function sameRequestFile(options) {
@@ -182,7 +134,9 @@ async function main() {
 
 async function pendingAdmission(options, env) {
   writeAdmissionRefusal(options.out, 'PENDING: WT_SECOND_OPINION_ADMISSION\n')
-  return boundedAdmission(options, env)
+  return boundedAdmission(options, env, {
+    moduleVariable: 'WT_SECOND_OPINION_ADMISSION', timeoutVariable: 'WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS',
+  })
 }
 
 function finish(code) {

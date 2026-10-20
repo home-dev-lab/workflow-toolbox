@@ -114,6 +114,7 @@ export const spawningTestFiles = [
   'packages/build/test/node-import-flag-url.test.ts',
   'packages/build/test/observer-pairing-check.test.ts',
   'packages/build/test/observer-pairing-guard-hook.test.ts',
+  'packages/build/test/opencode-admission.test.ts',
   'packages/build/test/opencode-envelope-each-source.test.ts',
   'packages/build/test/opencode-envelope-reap.test.ts',
   'packages/build/test/opencode-plugin-root-resolution.test.ts',

@@ -26,6 +26,8 @@ import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRef
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
 import { reapProcessFamily } from './lib/host/process-signal-boundary.mjs'
+import { canonicalOpencodeDirectory, renderEnvelopeRequests } from './lib/host/opencode-request-files.mjs'
+import { OpencodeAdmissionRefusal, requireOpencodeAdmission, requireUnchangedRequest } from './lib/opencode-admission.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-6-luna'
 const DEFAULT_AGENT = 'plan'
@@ -72,8 +74,7 @@ function sumTaskTokens(results) {
   return sawAny ? out : null
 }
 
-function usage() {
-  return [
+const USAGE = [
     'wt-opencode-envelope — run N opencode CLI calls behind exactly ONE Bash call.',
     '',
     'Usage:',
@@ -124,8 +125,23 @@ function usage() {
     '  MANIFEST: <path> ANSWER: <JSON string> — every task attempted; results are in <path>.',
     '  OPENCODE_UNAVAILABLE: <reason> — no binary / no authenticated provider (no task ran).',
     '',
-    'Never prints raw answer text. Exit code: 0 = MANIFEST written, 1 = UNAVAILABLE, 2 = usage/setup error.',
+    'Admission (optional, caller-configured environment):',
+    '  WT_OPENCODE_ENVELOPE_ADMISSION names an absolute ES module path whose default',
+    '  admit({ repo, request, env }) returns null to admit or a non-empty refusal string.',
+    '  repo is the canonical --dir; request is an invocation-unique absolute directory holding every rendered prompt.',
+    '  Content-free availability/skill preflights run first; admitted bytes are hash-checked before each task run and retry.',
+    '  WT_OPENCODE_ENVELOPE_ADMISSION_TIMEOUT_MS: positive integer, maximum 2147483647; default 10000.',
+    '  Import, admission and clean worker exit share that deadline, including synchronous loops.',
+    '  Policies are trusted code, not sandboxed. Hook/configuration failures refuse closed.',
+    '  A policy must not write directly to stdout file descriptor 1; send diagnostics to stderr or a file.',
+    '  OPENCODE_REFUSED: <one-line reason> — exit 3; the refused task attempt is not launched.',
+    '  Unset module variable preserves normal execution; an unused timeout override is ignored.',
+    '',
+    'Never prints raw answer text. Exit code: 0 = MANIFEST written, 1 = UNAVAILABLE, 2 = usage/setup error, 3 = admission refusal.',
   ].join('\n')
+
+function usage() {
+  return USAGE
 }
 
 function parseArgs(argv) {
@@ -327,7 +343,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
   })
 }
 
-async function runTask(task, opts, outDir) {
+async function runTask(task, opts, outDir, { taskfile, sha256 }) {
   const id = task.id
   const model = task.model ?? opts.model
   const fallbackModel = task.fallbackModel ?? opts.fallbackModel
@@ -336,18 +352,22 @@ async function runTask(task, opts, outDir) {
   const timeoutSec = task.timeoutSec ?? opts.timeoutSec
 
   const safeId = String(id).replace(/[^A-Za-z0-9_.-]/g, '_')
-  const taskfile = path.join(outDir, `${safeId}.task.md`)
-  fs.writeFileSync(taskfile, String(task.prompt ?? ''), 'utf8')
 
   let result
   let modelUsed = model
+  requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION')
   result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opencodeChildEnv(undefined, providerCredentialNames(model)) })
 
   if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
     modelUsed = fallbackModel
+    requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION')
     result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opencodeChildEnv(undefined, providerCredentialNames(fallbackModel)) })
   }
 
+  return taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, outDir)
+}
+
+function taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, outDir) {
   const answerFile = path.join(outDir, `${safeId}.answer.txt`)
 
   // Card #1839472753 — the two facts an observability NODE needs beyond "did it answer": how
@@ -422,24 +442,28 @@ function writeReduceManifest(manifestPath, manifest) {
   process.stdout.write(`MANIFEST: ${manifestPath}\n`)
 }
 
-async function reduceManifest(opts) {
+function reduceInputRefused(opts) {
   if (!fs.existsSync(opts.reduce)) {
     process.stdout.write(`OPENCODE_ERROR: manifest file not found: ${opts.reduce}\n`)
-    return 2
+    return true
   }
   if (opts.reducePrompt !== null && opts.reducePromptFile !== null) {
     process.stdout.write('OPENCODE_ERROR: choose exactly one of --reduce-prompt or --reduce-prompt-file\n')
-    return 2
+    return true
   }
   if (opts.reducePrompt === null && opts.reducePromptFile === null) {
     process.stdout.write('OPENCODE_ERROR: reduce mode requires --reduce-prompt or --reduce-prompt-file\n')
-    return 2
+    return true
   }
   if (!Number.isInteger(opts.maxReduceChars) || opts.maxReduceChars < 1) {
     process.stdout.write('OPENCODE_ERROR: --max-reduce-chars must be a positive integer\n')
-    return 2
+    return true
   }
 
+  return false
+}
+
+function readReduceInput(opts) {
   let source
   let template
   try {
@@ -450,11 +474,13 @@ async function reduceManifest(opts) {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     process.stdout.write(`OPENCODE_ERROR: invalid reduce input: ${detail}\n`)
-    return 2
+    return null
   }
 
-  const outDir = invocationOutDir()
-  const manifestPath = path.join(outDir, 'envelope.manifest.json')
+  return { source, template }
+}
+
+function collectReduceAnswers(source, opts) {
   const skippedFailedTaskIds = source.tasks.filter((task) => task?.status !== 'answer').map((task) => String(task?.id))
   const unusableAnswerIds = []
   const cappedAnswerIds = []
@@ -484,6 +510,17 @@ async function reduceManifest(opts) {
   if (cappedAnswerIds.length > 0) {
     process.stderr.write(`wt-opencode-envelope: dropped ${cappedAnswerIds.length} answers because --max-reduce-chars=${opts.maxReduceChars}: ${cappedAnswerIds.join(', ')}\n`)
   }
+  return { skippedFailedTaskIds, unusableAnswerIds, cappedAnswerIds, blocks }
+}
+
+async function reduceManifest(opts) {
+  if (reduceInputRefused(opts)) return 2
+  const input = readReduceInput(opts)
+  if (input === null) return 2
+  const { source, template } = input
+  const outDir = invocationOutDir()
+  const manifestPath = path.join(outDir, 'envelope.manifest.json')
+  const { skippedFailedTaskIds, unusableAnswerIds, cappedAnswerIds, blocks } = collectReduceAnswers(source, opts)
   fs.mkdirSync(outDir, { recursive: true })
   if (blocks.length === 0) {
     fs.writeFileSync(manifestPath, JSON.stringify({
@@ -495,37 +532,15 @@ async function reduceManifest(opts) {
     return 0
   }
 
-  const bin = resolveBinarySync()
-  if (bin === null) {
-    process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
-    return 1
-  }
-  const fence = verifyOpencodeSkillFence(bin, { platform: process.platform })
-  if (!fence.ok) {
-    process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
-    return 1
-  }
-  const credentialNames = providerCredentialNames(opts.model)
-  const childEnv = opencodeChildEnv(undefined, credentialNames)
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform, extraNames: credentialNames })
-  if (!discovery.ok) {
-    process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
-    return 1
-  }
-  if (!providerAuthenticatedSync(bin, opts.dir, childEnv, credentialNames)) {
-    process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
-    return 1
-  }
+  const available = availableOpencode(opts)
+  if (available === null) return 1
+  const { bin, childEnv } = available
   const prompt = applyAnswersTemplate(template, blocks.join('\n'))
-  // ⚠ The id is DERIVED FROM THE SOURCE MANIFEST, never the literal 'reduce'. It names the
-  // answer file, so a fixed id makes two reduces over one --dir write to the same path: the
-  // second silently overwrites the first, and the first manifest keeps reporting
-  // `answered: 1, errored: 0` while naming a file holding another question's answer. Measured
-  // 2026-08-18 on a nested reduce — a shape this mode explicitly supports, since a reduce
-  // manifest satisfies --reduce's own input contract. Deterministic on purpose: re-running the
-  // SAME reduce overwrites its own previous answer instead of accumulating.
+  // Derive the id from the source manifest so nested reductions retain their own answer files.
   const reduceId = `reduce-${crypto.createHash('sha256').update(path.resolve(opts.reduce)).digest('hex').slice(0, 8)}`
-  const result = await runTask({ id: reduceId, prompt }, { ...opts, bin, childEnv }, outDir)
+  const task = { id: reduceId, prompt }
+  const taskfiles = await admitEnvelopeTasks([task], opts, outDir)
+  const result = await runTask(task, { ...opts, bin, childEnv }, outDir, taskfiles[0])
   writeReduceManifest(manifestPath, {
     sourceManifest: path.resolve(opts.reduce), status: 'complete', nothingToDo: false,
     dir: path.resolve(opts.dir), outDir, total: 1, answered: result.status === 'answer' ? 1 : 0,
@@ -535,41 +550,67 @@ async function reduceManifest(opts) {
   return 0
 }
 
-async function main() {
-  const argv = process.argv.slice(2)
-  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
-    process.stdout.write(`${usage()}\n`)
-    return 0
+function availableOpencode(opts) {
+  const bin = resolveBinarySync()
+  if (bin === null) {
+    process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
+    return null
   }
+  const fence = verifyOpencodeSkillFence(bin, { platform: process.platform })
+  if (!fence.ok) {
+    process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
+    return null
+  }
+  const credentialNames = providerCredentialNames(opts.model)
+  const childEnv = opencodeChildEnv(undefined, credentialNames)
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform, extraNames: credentialNames })
+  if (!discovery.ok) {
+    process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
+    return null
+  }
+  if (!providerAuthenticatedSync(bin, opts.dir, childEnv, credentialNames)) {
+    process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
+    return null
+  }
+  return { bin, childEnv }
+}
 
-  const opts = parseArgs(argv)
-  const reduceMode = opts.reduce !== null
-  const eachSources = [opts.eachJson, opts.eachLines].filter((value) => value !== null)
-  const generatedMode = eachSources.length > 0
-  if (opts.dir === null || (!reduceMode && !generatedMode && opts.tasksFile === null)) {
+function missingTaskSource(opts, reduceMode, generatedMode) {
+  return opts.dir === null || (!reduceMode && !generatedMode && opts.tasksFile === null)
+}
+
+function conflictingTaskSources(opts, reduceMode, eachSources, generatedMode) {
+  return eachSources.length > 1 || (generatedMode && opts.tasksFile !== null) || (reduceMode && (generatedMode || opts.tasksFile !== null))
+}
+
+function taskModeRefused(opts, reduceMode, eachSources, generatedMode) {
+  if (missingTaskSource(opts, reduceMode, generatedMode)) {
     process.stderr.write(`${usage()}\n`)
     process.stderr.write(generatedMode
       ? '\nMissing required task source and/or --dir.\n'
       : '\nMissing required <tasks.json> and/or --dir.\n')
-    return 2
+    return true
   }
-  if (eachSources.length > 1 || (generatedMode && opts.tasksFile !== null) || (reduceMode && (generatedMode || opts.tasksFile !== null))) {
+  if (conflictingTaskSources(opts, reduceMode, eachSources, generatedMode)) {
     process.stdout.write('OPENCODE_ERROR: choose exactly one of <tasks.json>, --each-json, --each-lines, or --reduce\n')
-    return 2
+    return true
   }
   if (generatedMode && (opts.promptTemplate === null || opts.idTemplate === null)) {
     process.stdout.write('OPENCODE_ERROR: generated-task mode requires --prompt-template and --id-template\n')
-    return 2
+    return true
   }
   if (!fs.existsSync(opts.dir) || !fs.statSync(opts.dir).isDirectory()) {
     process.stdout.write(`OPENCODE_ERROR: --dir is not a directory: ${opts.dir}\n`)
-    return 2
+    return true
   }
-  if (reduceMode) return reduceManifest(opts)
+  return false
+}
+
+function readTaskInput(opts, generatedMode, eachSources) {
   const sourcePath = generatedMode ? eachSources[0] : opts.tasksFile
   if (!fs.existsSync(sourcePath)) {
     process.stdout.write(`OPENCODE_ERROR: ${generatedMode ? 'source' : 'tasks file'} not found: ${sourcePath}\n`)
-    return 2
+    return null
   }
 
   let tasks
@@ -596,28 +637,36 @@ async function main() {
     process.stdout.write(generatedMode
       ? `OPENCODE_ERROR: invalid task source: ${detail}\n`
       : `OPENCODE_ERROR: tasks file is not valid JSON: ${detail}\n`)
-    return 2
+    return null
   }
+  return { tasks, generation, sourcePath }
+}
+
+function tasksRefused(tasks, generatedMode) {
   if (!Array.isArray(tasks) || (!generatedMode && tasks.length === 0)) {
     process.stdout.write('OPENCODE_ERROR: tasks file must be a non-empty JSON array\n')
-    return 2
+    return true
   }
   const seenIds = new Set()
   for (const t of tasks) {
-    if (typeof t?.id !== 'string' || t.id.length === 0 || typeof t?.prompt !== 'string' || t.prompt.length === 0) {
+    if (invalidTask(t)) {
       process.stdout.write('OPENCODE_ERROR: every task needs a non-empty string "id" and "prompt"\n')
-      return 2
+      return true
     }
     if (seenIds.has(t.id)) {
       process.stdout.write(`OPENCODE_ERROR: duplicate task id: ${t.id}\n`)
-      return 2
+      return true
     }
     seenIds.add(t.id)
   }
+  return false
+}
 
-  const outDir = invocationOutDir()
-  const manifestPath = path.join(outDir, 'envelope.manifest.json')
-  if (generatedMode && tasks.length === 0) {
+function invalidTask(t) {
+  return typeof t?.id !== 'string' || t.id.length === 0 || typeof t?.prompt !== 'string' || t.prompt.length === 0
+}
+
+function writeEmptyGeneratedManifest(opts, generation, sourcePath, outDir, manifestPath) {
     fs.mkdirSync(outDir, { recursive: true })
     const manifest = {
       source: { mode: generation.mode, path: path.resolve(sourcePath), items: generation.sourceCount },
@@ -635,35 +684,10 @@ async function main() {
     }
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
     process.stdout.write(`MANIFEST: ${manifestPath}\n`)
-    return 0
-  }
+}
 
-  const bin = resolveBinarySync()
-  if (bin === null) {
-    process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
-    return 1
-  }
-  const fence = verifyOpencodeSkillFence(bin, { platform: process.platform })
-  if (!fence.ok) {
-    process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
-    return 1
-  }
-  const credentialNames = providerCredentialNames(opts.model)
-  const childEnv = opencodeChildEnv(undefined, credentialNames)
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform, extraNames: credentialNames })
-  if (!discovery.ok) {
-    process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
-    return 1
-  }
-  if (!providerAuthenticatedSync(bin, opts.dir, childEnv, credentialNames)) {
-    process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
-    return 1
-  }
-
-  fs.mkdirSync(outDir, { recursive: true })
-  const results = await runPool(tasks, opts.concurrency, (task) => runTask(task, { ...opts, bin, childEnv }, outDir))
-
-  const manifest = generatedMode ? {
+function batchManifest(opts, generatedMode, { tasks, generation, sourcePath }, outDir, results) {
+  return generatedMode ? {
     source: { mode: generation.mode, path: path.resolve(sourcePath), items: generation.sourceCount },
     maxTasks: opts.maxTasks,
     dropped: generation.dropped,
@@ -688,6 +712,9 @@ async function main() {
     errored: results.filter((r) => r.status === 'error').length,
     tasks: results,
   }
+}
+
+function writeBatchManifest(manifestPath, manifest, results) {
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
   if (results.length === 1 && results[0].status === 'answer') {
     process.stdout.write(`MANIFEST: ${manifestPath} ANSWER: ${JSON.stringify(fs.readFileSync(results[0].answerFile, 'utf8'))}\n`)
@@ -696,12 +723,59 @@ async function main() {
   } else {
     process.stdout.write(`MANIFEST: ${manifestPath}\n`)
   }
+}
+
+function helpRequested(argv) {
+  return argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')
+}
+
+async function admitEnvelopeTasks(tasks, opts, outDir) {
+  const { request, taskfiles } = renderEnvelopeRequests(tasks, outDir)
+  await requireOpencodeAdmission({ repo: opts.dir, request }, process.env, 'WT_OPENCODE_ENVELOPE_ADMISSION')
+  return taskfiles
+}
+
+async function main() {
+  const argv = process.argv.slice(2)
+  if (helpRequested(argv)) {
+    process.stdout.write(`${usage()}\n`)
+    return 0
+  }
+  const opts = parseArgs(argv)
+  const reduceMode = opts.reduce !== null
+  const eachSources = [opts.eachJson, opts.eachLines].filter((value) => value !== null)
+  const generatedMode = eachSources.length > 0
+  if (taskModeRefused(opts, reduceMode, eachSources, generatedMode)) return 2
+  opts.dir = canonicalOpencodeDirectory(opts.dir, 'WT_OPENCODE_ENVELOPE_ADMISSION')
+  if (reduceMode) return reduceManifest(opts)
+  const input = readTaskInput(opts, generatedMode, eachSources)
+  if (input === null) return 2
+  const { tasks, generation, sourcePath } = input
+  if (tasksRefused(tasks, generatedMode)) return 2
+  const outDir = invocationOutDir()
+  const manifestPath = path.join(outDir, 'envelope.manifest.json')
+  if (generatedMode && tasks.length === 0) {
+    writeEmptyGeneratedManifest(opts, generation, sourcePath, outDir, manifestPath)
+    return 0
+  }
+  const available = availableOpencode(opts)
+  if (available === null) return 1
+  const { bin, childEnv } = available
+  fs.mkdirSync(outDir, { recursive: true })
+  const taskfiles = await admitEnvelopeTasks(tasks, opts, outDir)
+  const results = await runPool(tasks, opts.concurrency, (task, index) => runTask(task, { ...opts, bin, childEnv }, outDir, taskfiles[index]))
+  const manifest = batchManifest(opts, generatedMode, input, outDir, results)
+  writeBatchManifest(manifestPath, manifest, results)
   return 0
 }
 
 main()
   .then((code) => process.exit(code))
   .catch((err) => {
+    if (err instanceof OpencodeAdmissionRefusal) {
+      process.stdout.write(`${err.message}\n`)
+      process.exit(3)
+    }
     process.stdout.write(`OPENCODE_ERROR: unexpected failure: ${err instanceof Error ? err.message : String(err)}\n`)
     process.exit(2)
   })
