@@ -14,16 +14,21 @@ import {
   readSuiteLockStatus,
   releaseSuiteLock,
   suiteLeaseMarker,
+  suiteLeaseDomain,
   suiteLockWaitSeconds,
   spawnNeedsShell,
   windowsShimArgumentRefusal,
 } from './lib/suite-lock.mjs'
 import { parseSuiteLockPriority } from './lib/suite-lock-priority.mjs'
 import { formatSuiteLockStatus, suiteLockStatusJson } from './lib/suite-lock-status.mjs'
+import { suiteLockJournalCli } from './lib/suite-lock-journal.mjs'
+import { staticLaneStatusLines } from './lib/suite-lock-static.mjs'
+import { acquireCliLease, cliInheritedLease, parseSuiteRunOptions } from './lib/suite-lock-cli-options.mjs'
 import { watchLightSuiteLease } from './lib/suite-lock-light-hold.mjs'
 
 const USAGE = `Usage:
-  node wt-suite-lock.mjs run [--light] [--priority <release|P0|P1|P2>] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  node wt-suite-lock.mjs run [--light] [--static] [--priority <release|P0|P1|P2>] [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  node wt-suite-lock.mjs journal [--json] [--since <ISO>]
   node wt-suite-lock.mjs status [--json]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]
   --wait-s / WT_SUITE_LOCK_WAIT_S bounds the wait without non-release queue progress; the head waits up to max(--wait-s, --stale-s).
@@ -66,24 +71,9 @@ function applyRunPriority(priority) {
   process.env.WT_SUITE_LOCK_PRIORITY = priority
 }
 
-function parseRunArguments(args) {
-  const separator = args.indexOf('--')
-  if (separator < 0 || separator === args.length - 1) throw new Error('run requires -- followed by a command')
-  const flags = args.slice(0, separator)
-  const command = args.slice(separator + 1)
-  const waitS = parseSeconds(flags, '--wait-s', suiteLockWaitSeconds())
-  const staleS = parseSeconds(flags, '--stale-s', DEFAULT_SUITE_LOCK_STALE_S)
-  const lightIndex = flags.indexOf('--light')
-  const light = lightIndex >= 0
-  if (light) flags.splice(lightIndex, 1)
-  const priority = parseRunPriority(flags)
-  if (priority === 'release' && light) throw new Error('release priority cannot be combined with light')
-  if (flags.length > 0) throw new Error(`unknown argument: ${flags[0]}`)
-  return { command, waitS, staleS, light, priority }
-}
-
 async function run(args) {
-  const { command, waitS, staleS, light, priority } = parseRunArguments(args)
+  const { command, staticRun, waitS, staleS, light, priority } = parseSuiteRunOptions(args,
+    { parseSeconds, parsePriority: parseRunPriority, waitSeconds: suiteLockWaitSeconds, defaultStaleS: DEFAULT_SUITE_LOCK_STALE_S })
   if (priority === 'release' && process.env.WT_SUITE_LOCK_BROKER?.trim()) {
     process.stderr.write('wt-suite-lock: release priority is not available inside a lane sandbox\n')
     return 2
@@ -96,45 +86,38 @@ async function run(args) {
     return spawnCommand(command)
   }
 
-  try { if (await hasSuiteLeaseAsync()) return spawnCommand(command) } catch (error) {
-    if (error?.code !== 'WT_SUITE_LOCK_UNAVAILABLE') throw error
-    process.stderr.write(`wt-suite-lock: ${error.message}\n`)
-    return 75
-  }
-  let lease
+  const inherited = await cliInheritedLease(() => hasSuiteLeaseAsync(process.env, { static: staticRun }))
+  if (inherited === 75) return 75
+  if (inherited) return spawnCommand(command)
+  const lease = await acquireCliLease(acquireSuiteLock, { waitS, staleS, argv: command, light, static: staticRun, priority, onWait: (line) => process.stderr.write(`${line}\n`) })
+  if (typeof lease === 'number') return lease
+  return runLeasedCommand(command, lease, { light, staticRun })
+}
+
+async function runLeasedCommand(command, lease, requested) {
+  const stopWarning = watchGrantedLease(lease, requested, command)
+  let exit = 1
   try {
-    lease = await acquireSuiteLock({ waitS, staleS, argv: command, light, priority, onWait: (line) => process.stderr.write(`${line}\n`) })
-  } catch (error) {
-    return runLockError(error)
-  }
-  const stopWarning = watchGrantedLease(lease, light, command)
-  try {
-    return await spawnLeasedCommand(command, lease)
+    exit = await spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease))
+    return exit
   } finally {
     stopWarning()
-    releaseSuiteLock(lease)
+    releaseSuiteLock(lease, { exit })
   }
 }
 
-// The granted lease, not the request, decides: a fallback behind an older broker is exclusive.
-function watchGrantedLease(lease, requestedLight, command) {
-  return watchLightSuiteLease({ ...lease.holder, light: lease.holder.light ?? requestedLight, argv: command })
+// The granted lease, not the request, decides. A static-lane grant never holds the exclusive mutex, so it
+// is never a light lease past its class. A fallback behind an older broker is exclusive (holder.light false).
+// A static request the main queue took instead (static lane off, or a broker host that did not classify the
+// command as static) was asked for as light (acquireJournalLease), so it is watched as light.
+function watchGrantedLease(lease, requested, command) {
+  if (grantedStaticLane(lease)) return () => {}
+  return watchLightSuiteLease({ ...lease.holder, light: lease.holder.light ?? (requested.light || requested.staticRun), argv: command })
 }
 
-function runLockError(error) {
-  if (error?.code === 'WT_SUITE_LOCK_PRIORITY_REFUSED') {
-    process.stderr.write(`wt-suite-lock: ${error.message}\n`)
-    return 2
-  }
-  if (error?.code === 'WT_SUITE_LOCK_TIMEOUT' || error?.code === 'WT_SUITE_LOCK_UNAVAILABLE') {
-    process.stderr.write(`wt-suite-lock: ${error.message}\n`)
-    return 75
-  }
-  throw error
-}
-
-function spawnLeasedCommand(command, lease) {
-  return spawnCommand(command, lease.broker ? lease.lost : null, suiteLeaseMarker(lease))
+// Direct static grants carry staticDomain; a broker's static grant arrives as `granted static:<id>`.
+function grantedStaticLane(lease) {
+  return lease.staticDomain === true || String(lease.holder?.leaseId ?? '').startsWith('static:')
 }
 
 function spawnCommand(command, leaseLost = null, marker = null) {
@@ -186,8 +169,9 @@ async function status(args) {
   if (unknown.length > 0) throw new Error(`unknown argument: ${unknown[0]}`)
   const viaBroker = Boolean(process.env.WT_SUITE_LOCK_BROKER)
   const current = viaBroker ? await readBrokerSuiteLock(process.env.WT_SUITE_LOCK_BROKER) : readSuiteLockStatus()
-  if (json) process.stdout.write(`${JSON.stringify(suiteLockStatusJson(current))}\n`)
+  if (json) process.stdout.write(`${JSON.stringify({ ...suiteLockStatusJson(current), ...(current.staticLane ? { staticLane: current.staticLane } : {}) })}\n`)
   else process.stdout.write(formatSuiteLockStatus(current, formatSuiteLockHolder(current.holder)))
+  if (!json) process.stdout.write(staticLaneStatusLines(current))
   return 0
 }
 
@@ -219,6 +203,7 @@ export async function runSuiteLockCli(argv = process.argv.slice(2)) {
   if (subcommand === 'run') return run(args)
   if (subcommand === 'status') return status(args)
   if (subcommand === 'release') return release(args)
+  if (subcommand === 'journal') return suiteLockJournalCli(args, suiteLeaseDomain())
   throw new Error(subcommand ? `unknown subcommand: ${subcommand}` : 'missing subcommand')
 }
 

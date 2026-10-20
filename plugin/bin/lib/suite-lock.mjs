@@ -4,13 +4,16 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
-import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
-import { connectSuiteLockBroker, createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
+import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside } from './host/suite-lock-queue.mjs'
+import { connectSuiteLockBroker } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
 import { BOUNDED_P0_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
 import { brokerProgressPlace, isBrokerQueueEvent, suiteQueueAdvanced } from './suite-lock-progress.mjs'
 import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
+import { suiteJournalEvent } from './suite-lock-journal.mjs'
+import { acquireJournalLease, finishBrokerLease, journalHolder, journalWaiterRecord, takeJournalTicket as takeTicket } from './suite-lock-journal-lifecycle.mjs'
+import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
 export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
@@ -81,7 +84,7 @@ export function readSuiteLockStatus(options = {}) {
   }))
   const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root))
   if (current.held) snapshot.stale = holderIsStale(current, options)
-  return snapshot
+  return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
 }
 
 // A holder recorded in ANOTHER PID namespace cannot be judged by its PID number, which is
@@ -317,7 +320,7 @@ function p0QueueFields(root, priority) {
 }
 
 function waiterRecord(options, counter, priority, p0Fields) {
-  return {
+  return journalWaiterRecord({
     pid: process.pid,
     argv: options.argv ?? process.argv,
     cwd: options.cwd ?? process.cwd(),
@@ -330,7 +333,7 @@ function waiterRecord(options, counter, priority, p0Fields) {
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
     startTime: options.startTime ?? processStartTime(process.pid),
-  }
+  }, options, priority)
 }
 
 function describeWait(place, current, record) {
@@ -391,7 +394,7 @@ function pollQueue(state, options) {
   heartbeatTicket(queueDir, ticket, record)
   const place = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
   if (place.ahead === 0) {
-    const holder = { ...record, leaseId: createSuiteLockLeaseId(), startedAt: options.startedAt ?? new Date().toISOString() }
+    const holder = journalHolder(record, options, suiteLockNow(options))
     delete holder.lightGrantsAtQueue // queue-only: what a full suite records to bound how often light runs pass it
     delete holder.lightGrantsGeneration
     delete holder.p0GrantsAtQueue // queue-only: what a P1/P2 ticket records to bound how often declared P0 passes it
@@ -409,8 +412,12 @@ function pollQueue(state, options) {
   // First in line and the holder released between my attempt and this read: try again now.
   if (place.ahead === 0 && !current.held) return { again: true, place }
   // Only the head of the queue reclaims (acquisition also withdraws while reclaim.d exists, see tryTakeLock).
-  if (place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) return { again: true, place }
+  if (headReclaimed(place, current, root, lockDir, options)) return { again: true, place }
   return { place, current }
+}
+
+function headReclaimed(place, current, root, lockDir, options) {
+  return place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)
 }
 
 function acquisitionPriority(options, env) {
@@ -427,7 +434,7 @@ function acquisitionPriority(options, env) {
   return sandboxed && !options.root ? 'P1' : suiteLockPriority({ priority: explicit }, env)
 }
 
-export async function acquireSuiteLock(options = {}) {
+async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
   const priority = acquisitionPriority(options, env)
   throwIfAborted(options.signal)
@@ -520,6 +527,15 @@ export async function acquireSuiteLock(options = {}) {
   }
 }
 
+function inheritStaticLease(options, domain, id) {
+  acquisitionPriority(options, options.env ?? process.env)
+  throwIfAborted(options.signal)
+  return { inherited: true, holder: { leaseId: id }, domain }
+}
+
+const acquireJournalledSuiteLock = (options = {}) => acquireJournalLease(acquireSuiteLock, options, suiteLeaseDomain(options), coveredSuiteLease, inheritStaticLease)
+export { acquireJournalledSuiteLock as acquireSuiteLock }
+
 // A broker from an older release refuses the `light` field with its generic request refusal: retry
 // once without it (the run queues without priority) rather than fail a run only asking for priority.
 // The exact refusal text of a broker from before priority; the current broker's text extends it (and names `light`).
@@ -542,16 +558,11 @@ async function acquireBrokerSuiteLock(socketPath, options) {
 
 // The light runs `pnpm typecheck|lint|quality` (and `-r typecheck`): the one small table lane runners
 // classify by, since a lane calls the runner with a bare command and no flags.
-const LIGHT_SCRIPTS = new Set(['typecheck', 'lint', 'quality'])
 // A lane `vitest run <file>` is NOT in the table on purpose: Vitest filters by substring, so a file-shaped
 // argument does not bound the selection, and the resolved config can enable coverage.
 
 export function lightRunCommand(argv) {
-  if (!Array.isArray(argv)) return false
-  const [tool, ...rest] = argv
-  if (tool !== 'pnpm' && tool !== 'npm') return false
-  if (rest[0] === 'run' || (tool === 'pnpm' && rest[0] === '-r')) rest.shift()
-  return rest.length === 1 && LIGHT_SCRIPTS.has(rest[0])
+  return ['pnpm', 'npm'].includes(argv?.[0]) && staticRunCommand(argv) && !argv.at(-1).includes(':')
 }
 
 function requestBrokerSuiteLock(socketPath, options) {
@@ -650,17 +661,16 @@ function requestBrokerSuiteLock(socketPath, options) {
   })
 }
 
-export function releaseSuiteLock(lease) {
+export function releaseSuiteLock(lease, outcome = { exit: 0 }) {
   if (lease?.inherited) return true
   if (lease?.broker) {
-    lease.markReleased?.()
-    if (!lease.socket.destroyed) lease.socket.end()
-    return true
+    return finishBrokerLease(lease, outcome)
   }
   const current = readSuiteLock({ root: lease.root })
   if (!current.held) return true
   if (!sameInstance(current.holder, lease.holder)) return false
   rmSync(lease.lockDir, REMOVE_WITH_RETRY)
+  suiteJournalEvent(lease.journal, 'release', outcome)
   return true
 }
 
@@ -697,24 +707,35 @@ export function suiteLeaseDomain({ root, env = process.env, home, platform } = {
 
 export function suiteLeaseMarker(lease) {
   const domain = lease.domain ?? (lease.broker ? 'broker:' + lease.broker : lease.root)
-  return `${domain}|${lease.holder.leaseId}`
+  const token = lease.staticDomain ? `static:${lease.holder.leaseId}` : lease.holder.leaseId
+  return `${lease.staticDomain && !lease.broker ? path.dirname(domain) : domain}|${token}`
 }
 
-function coveredSuiteLease(env, domain) {
-  const marker = env.WT_SUITE_LEASE
+function suiteLeaseToken(marker, domain) {
   const prefix = `${domain}|`
   if (typeof marker !== 'string' || !marker.startsWith(prefix)) return null
-  const id = marker.slice(prefix.length)
-  if (!id) return null
-  if (domain.startsWith('broker:')) return id // The connection-owning ancestor stops its tree on loss.
+  const token = marker.slice(prefix.length)
+  const staticToken = token.startsWith('static:')
+  const id = staticToken ? token.slice(7) : token
+  return id ? { token, staticToken, id } : null
+}
+
+function coveredSuiteLease(env, domain, staticRequest) {
+  const parsed = suiteLeaseToken(env.WT_SUITE_LEASE, domain)
+  if (!parsed) return null
+  const { token, staticToken, id } = parsed
+  // The connection-owning ancestor stops its tree on loss. A typed static grant
+  // only covers static children; exclusive work must acquire the main queue.
+  if (domain.startsWith('broker:')) return staticToken && !staticRequest ? null : token
   if (readSuiteLock({ root: domain }).holder?.leaseId === id) return id
+  if (readSuiteLock({ root: staticLeaseRoot(domain) }).holder?.leaseId === id) return staticRequest ? `static:${id}` : null
   const error = new Error(`suite lease ${id} from WT_SUITE_LEASE is no longer held; inspect with wt-suite-lock status`)
   error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
   throw error
 }
 
 export async function hasSuiteLeaseAsync(env = process.env, options = {}) {
-  return Boolean(coveredSuiteLease(env, suiteLeaseDomain({ ...options, env })))
+  return Boolean(coveredSuiteLease(env, suiteLeaseDomain({ ...options, env }), options.static === true && staticLaneEnabled(env)))
 }
 
 export function operatorReleaseSuiteLock(options = {}) {

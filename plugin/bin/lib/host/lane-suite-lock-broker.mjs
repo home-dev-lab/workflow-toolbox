@@ -2,9 +2,10 @@
 import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
 import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
-import { acquireSuiteLock, formatSuiteLockHolder, readSuiteLock, readSuiteLockStatus, releaseSuiteLock } from '../suite-lock.mjs'
+import { formatSuiteLockHolder, readSuiteLock, readSuiteLockStatus } from '../suite-lock.mjs'
 import { suiteLockPriority } from '../suite-lock-priority.mjs'
 import { suiteLockStatusJson } from '../suite-lock-status.mjs'
+import { acquireBrokerJournalLease as acquireSuiteLock, observeBrokerJournalSocket, releaseBrokerJournalLease as releaseSuiteLock } from './suite-lock-broker-journal.mjs'
 
 const REQUEST_LIMIT = 4096
 const REQUEST_TIMEOUT_MS = 5000
@@ -71,17 +72,18 @@ function hostLockOptions(env, priority) {
 }
 
 function replyStatus(socket, options, finish) {
-  socket.end(`status ${JSON.stringify(suiteLockStatusJson(readSuiteLockStatus(options)))}\n`)
+  const snapshot = readSuiteLockStatus(options)
+  socket.end(`status ${JSON.stringify({ ...suiteLockStatusJson(snapshot), ...(snapshot.staticLane ? { staticLane: snapshot.staticLane } : {}) })}\n`)
   finish()
 }
 
 function brokerWaitCallbacks(socket) {
-  return {
+  return observeBrokerJournalSocket(socket, {
     onWait: (line) => { if (!socket.destroyed) socket.write(`wait ${line}\n`) },
     onProgress: ({ ahead, aheadExcludingRelease, total }) => { if (!socket.destroyed) socket.write(`progress ${aheadExcludingRelease} ${total} ${ahead}\n`) },
     onHandover: (holderId, priority) => { if (!socket.destroyed) socket.write(`handover ${holderId}${priority === 'release' ? ' release' : ''}\n`) },
     onRenew: ({ ahead, aheadExcludingRelease, total }) => { if (!socket.destroyed) socket.write(`renew ${aheadExcludingRelease} ${total} ${ahead}\n`) },
-  }
+  })
 }
 
 export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, stopGraceS = DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S, env = process.env, priority } = {}) {
