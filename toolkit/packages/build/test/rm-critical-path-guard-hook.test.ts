@@ -98,6 +98,34 @@ describe('review regression locks — rewrite', () => {
   })
 })
 
+describe('heredoc scan — here-strings and arithmetic shifts open no heredoc', () => {
+  describe.each(["'data'", '"a b"', '$x', '"a <<FAKE b"'])('here-string word %s', (word) => {
+    const refused = 'rm -rf "$UNSET_DIR"/'
+    it('keeps a refused rm visible on the next line', () => {
+      expect(run(refused).denied).toBe(true)
+      expect(run(`cat <<<${word}\n${refused}`).denied).toBe(true)
+    })
+    it('keeps a refused rm visible after an inline semicolon', () => {
+      expect(run(`cat <<<${word}; ${refused}`).denied).toBe(true)
+    })
+    it('still blanks a real heredoc body after a here-string', () => {
+      expect(run(`cat <<<${word} <<EOF\n${refused}\nEOF`).denied).toBe(false)
+    })
+    it('keeps a refused rm visible after the real heredoc terminator', () => {
+      expect(run(`cat <<<${word} <<EOF\n${refused}\nEOF\n${refused}`).denied).toBe(true)
+    })
+  })
+  it.each(['echo $((1<<2))', '((x<<=2))', 'echo $[1<<2]', 'echo $(( (1<<2) + 1 ))'])(
+    'an arithmetic shift in %s opens no heredoc, so a refused rm on the next line stays visible',
+    (arith) => {
+      expect(run(`${arith}\nrm -rf "$UNSET_DIR"/`).denied).toBe(true)
+    },
+  )
+  it('a real heredoc after an arithmetic shift on the same line still blanks its body', () => {
+    expect(run('cat $((1<<2)) <<EOF\nrm -rf "$UNSET_DIR"/\nEOF').denied).toBe(false)
+  })
+})
+
 describe('review regression locks — parser', () => {
   it('F4 recognizes heredocs only outside quotes/comments, with complete delimiters', () => {
     for (const cmd of ['# <<EOF\nrm -f $UNSET/*.log', ': "<<EOF"\nrm -f $UNSET/*.log', 'cat <<EOF-X\nhello\nEOF-X\nrm -f $UNSET/*.log']) {
