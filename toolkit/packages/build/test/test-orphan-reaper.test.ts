@@ -1,7 +1,7 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { EventEmitter, once } from 'node:events'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -329,19 +329,32 @@ describe.skipIf(process.platform === 'win32')('orphan reaper (Windows has no pro
 
 // The watchdog outlives the Vitest run by design. Started with NODE_V8_COVERAGE it writes its own V8 coverage when it
 // exits, after the coverage provider removed the child-coverage directory, and Node recreates that directory to do so.
-it('launches the watchdog without NODE_V8_COVERAGE, so its late exit cannot recreate a removed coverage directory', () => {
+// Node forwards the parent's NODE_V8_COVERAGE to a child whose env lacks the key, so the real spawn is exercised here.
+it('launches the watchdog so that it writes no V8 coverage, despite Node forwarding NODE_V8_COVERAGE to children', async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'wt-watchdog-coverage-'))
+  const probe = join(scratch, 'child-coverage-probe')
   const previous = process.env.NODE_V8_COVERAGE
-  process.env.NODE_V8_COVERAGE = join(tmpdir(), 'child-coverage-watchdog-probe')
+  process.env.NODE_V8_COVERAGE = probe
+  let child: ChildProcess | undefined
   try {
-    let env: NodeJS.ProcessEnv | undefined
-    const child = Object.assign(new EventEmitter(), { unref: () => {} })
     launchWatchdog(randomUUID(), 'registry', {
-      spawn: (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => { env = options.env; return child },
+      spawn: (_command: string, _args: string[], options: SpawnOptions) => {
+        const script = 'process.stdout.write(JSON.stringify(process.env.NODE_V8_COVERAGE ?? null))'
+        child = spawn(process.execPath, ['-e', script], { ...options, detached: false, stdio: ['ignore', 'pipe', 'ignore'] })
+        return child
+      },
     })
-    expect(env).toBeDefined()
-    expect(env?.NODE_V8_COVERAGE).toBeUndefined()
   } finally {
     if (previous === undefined) delete process.env.NODE_V8_COVERAGE
     else process.env.NODE_V8_COVERAGE = previous
+  }
+  let output = ''
+  child?.stdout?.on('data', (chunk) => { output += String(chunk) })
+  if (child) await once(child, 'close')
+  try {
+    expect(output).toBe('""')
+    expect(existsSync(probe), 'the watchdog must not recreate a coverage directory when it exits').toBe(false)
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
   }
 })
