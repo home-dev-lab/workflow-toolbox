@@ -47,19 +47,26 @@ function eligible(input) {
   return input.hook_event_name === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id
 }
 
-function main() {
-  const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
-  if (!eligible(input)) return
+function guardedCommit(input) {
+  if (!eligible(input)) return null
   const command = input.tool_input?.command
-  if (!invokes(command, GIT_COMMIT)) return
+  if (!invokes(command, GIT_COMMIT)) return null
   const cwd = commitCwd(command, input.cwd || process.cwd())
   const root = repoRoot(cwd)
   const declaration = readGateDeclaration(root)
-  if (!declaration) return
+  if (!declaration) return null
   const paths = stagedPaths(root)
-  if (!paths.length || !touchesDeclaredPath(paths, declaration.paths)) return
+  if (!paths.length || !touchesDeclaredPath(paths, declaration.paths)) return null
   const gitDir = git(root, ['rev-parse', '--git-dir'])
-  if (fs.existsSync(path.resolve(root, gitDir, 'MERGE_HEAD'))) return
+  if (fs.existsSync(path.resolve(root, gitDir, 'MERGE_HEAD'))) return null
+  return { command, cwd, root, declaration, paths }
+}
+
+function main() {
+  const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
+  const commit = guardedCommit(input)
+  if (!commit) return
+  const { command, cwd, root, declaration, paths } = commit
 
   const reason = skippedReason(command, cwd)
   if (reason) {

@@ -1,7 +1,7 @@
 import ts from 'typescript'
 
 // A known object with no event is distinct from an opaque spread that may overwrite it.
-export interface Shape { event?: ts.Expression; opaque: boolean }
+export interface Shape { event?: ts.Expression | undefined; opaque: boolean }
 const unknownShape = (): Shape[] => [{ opaque: true }]
 
 export function propertyName(node: ts.Node | undefined): string | undefined {
@@ -47,7 +47,7 @@ function merge(left: Shape, right: Shape): Shape {
   return left
 }
 
-function member(node: ts.Expression): { owner: ts.Expression; key?: string } | undefined {
+function member(node: ts.Expression): { owner: ts.Expression; key?: string | undefined } | undefined {
   if (ts.isPropertyAccessExpression(node)) return { owner: node.expression, key: node.name.text }
   if (ts.isElementAccessExpression(node)) return { owner: node.expression, key: accessName(node.argumentExpression) }
   return undefined

@@ -9,7 +9,7 @@ export type ContractProof = () => void | Promise<void>
 export interface Justification { reason: string; prove: ContractProof }
 export type Justifications = Map<string, Justification>
 export interface ScanResult { emissions: number; problems: string[]; justified: Set<string> }
-interface Context { file: string; source: ts.SourceFile; events?: Set<string>; exceptions: Justifications; result: ScanResult }
+interface Context { file: string; source: ts.SourceFile; events?: Set<string> | undefined; exceptions: Justifications; result: ScanResult }
 const extensions = new Set(['.mjs', '.js', '.cjs'])
 
 function problem(context: Context, node: ts.Node, message: string) {

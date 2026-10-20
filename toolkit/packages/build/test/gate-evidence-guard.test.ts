@@ -694,7 +694,7 @@ it('flushes one collected notice before a later target fails open', () => {
       return exists(file);
     };`)
   const command = 'git push public missing-object:main missing-object:main'
-  const extra = { NODE_OPTIONS: `--import=${JSON.stringify(pathToFileURL(preload).href)}` }
+  const extra = { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` }
   const result = runReleasePush(root, command, extra)
   expect(result.status).toBe(0)
   expect(result.stderr).toContain('FAILED OPEN - later target fixture')
