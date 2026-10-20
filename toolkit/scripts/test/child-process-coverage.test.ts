@@ -35,7 +35,7 @@ describe('child-process coverage instrument', () => {
 
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('42')
-    const entries = readdirSync(instrument.directory).map((file) => JSON.parse(readFileSync(join(instrument.directory, file), 'utf8')))
+    const entries = readdirSync(instrument.directory).filter((file) => file.endsWith('.json')).map((file) => JSON.parse(readFileSync(join(instrument.directory, file), 'utf8')))
     const childScript = entries.flatMap((entry) => entry.result).find((script) => script.url.endsWith('/spawn-only.mjs'))
     expect(childScript?.functions.some((fn) => fn.ranges.some((range) => range.count > 0))).toBe(true)
 

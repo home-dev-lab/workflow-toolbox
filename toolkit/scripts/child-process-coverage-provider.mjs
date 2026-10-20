@@ -1,27 +1,13 @@
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { rmSync } from 'node:fs'
 import { readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import v8CoverageModule from '@vitest/coverage-v8'
 import { V8CoverageProvider } from '@vitest/coverage-v8/dist/provider.js'
 import { COVERAGE_STAMP_NAME, readTreeIdentity, writeCoverageStamp } from './coverage-stamp.mjs'
+import { disableChildProcessCoverage, enableChildProcessCoverage } from './child-process-coverage-lifecycle.mjs'
 
-export function enableChildProcessCoverage(root, env = process.env) {
-  const parent = resolve(root, '.lane')
-  mkdirSync(parent, { recursive: true })
-  const directory = mkdtempSync(resolve(parent, 'child-coverage-'))
-  const previous = env.NODE_V8_COVERAGE
-  env.NODE_V8_COVERAGE = directory
-  return { directory, env, previous }
-}
-
-export function disableChildProcessCoverage(instrument) {
-  if (instrument.env.NODE_V8_COVERAGE === instrument.directory) {
-    if (instrument.previous === undefined) delete instrument.env.NODE_V8_COVERAGE
-    else instrument.env.NODE_V8_COVERAGE = instrument.previous
-  }
-  rmSync(instrument.directory, { recursive: true, force: true })
-}
+export { disableChildProcessCoverage, enableChildProcessCoverage }
 
 async function readIncludedResults(directory, isIncluded) {
   const results = []
