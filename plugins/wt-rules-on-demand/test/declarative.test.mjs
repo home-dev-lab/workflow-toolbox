@@ -97,7 +97,8 @@ test('check-rules measures every trigger and compliance regex against a supplied
   await writeFile(join(dir, 'sample.md'), `---\non-demand:\n  triggers:\n    - kind: bash\n      regex: '^a*a*a*a*c$'\n  compliance:\n    kind: bash-command\n    act-regex: '^a*a*a*a*c$'\n    require-regex: '^a'\n    window: 1\n    on-close: not applicable\n---\nbody`);
   const corpus = join(dir, 'corpus.json');
   await writeFile(corpus, JSON.stringify([{ command: 'a'.repeat(35) + 'b' }, 'a'.repeat(35) + 'b']));
-  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url)), 'check-rules', '--dir', dir, '--corpus', corpus, '--time-bound-ms', '0.000001'], { encoding: 'utf8' });
+  // Failure-only outer bound: three patterns, each with separate 30 s startup and 5 s work backstops.
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url)), 'check-rules', '--dir', dir, '--corpus', corpus, '--time-bound-ms', '0.000001'], { encoding: 'utf8', timeout: 10_000 + 3 * (30_000 + 5_000) });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /slow\s+sample\.md\s+trigger-0-regex\s+[\d.]+/);
   assert.match(result.stdout, /slow\s+sample\.md\s+compliance-act\s+[\d.]+/);
@@ -110,7 +111,8 @@ test('check-rules times capture fields with their actual iterator and reports bu
   await writeFile(join(dir, 'sample.md'), `---\non-demand:\n  triggers:\n    - kind: bash\n      regex: ^Write$\n  compliance:\n    kind: tool-input\n    tool: ^Write$\n    input-field: content\n    match-block-regex: '(?:[a]{1024}){4}(b)'\n    require-input-regex: b\n    window: 1\n    on-close: not applicable\n---\nbody`);
   const corpus = join(dir, 'corpus.json');
   await writeFile(corpus, JSON.stringify(['a'.repeat(16384)]));
-  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url)), 'check-rules', '--dir', dir, '--corpus', corpus, '--time-bound-ms', '500', '--json'], { encoding: 'utf8', timeout: 8000 });
+  // Failure-only outer bound for all four patterns, including their separate startup and work backstops.
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url)), 'check-rules', '--dir', dir, '--corpus', corpus, '--time-bound-ms', '500', '--json'], { encoding: 'utf8', timeout: 10_000 + 4 * (30_000 + 5_000) });
   assert.equal(result.status, 1, result.stderr);
   const rows = JSON.parse(result.stdout);
   assert.match(rows.find((row) => row.patternId === 'compliance-matchBlock')?.reason, /regex iteration work budget exceeded; verdict unresolved/);

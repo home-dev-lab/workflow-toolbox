@@ -88,6 +88,8 @@ const trackedMembers = (surface) => Object.fromEntries(Object.entries(surface).m
   [name, typeof member === 'function' ? tracked(member) : member]));
 
 const SETTLE_LIMIT_MS = 10_000;
+// Plan-clock mocks must never disable the teardown's total bound on churning host calls.
+const teardownNow = performance.now.bind(performance);
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 const expiry = (ms) => {
   let timer;
@@ -106,10 +108,10 @@ function abandonHostOps(limitMs) {
 // microtasks of the first one's settlement, so it is visible by the next turn. A call that never settles fails the
 // teardown after SETTLE_LIMIT_MS of the monotonic clock instead of hanging it.
 export async function settleHostOps(limitMs = SETTLE_LIMIT_MS) {
-  const deadline = performance.now() + limitMs;
+  const deadline = teardownNow() + limitMs;
   for (await nextTurn(); pendingHostOps.size > 0; await nextTurn()) {
-    if (performance.now() >= deadline) abandonHostOps(limitMs);
-    const remaining = deadline - performance.now();
+    if (teardownNow() >= deadline) abandonHostOps(limitMs);
+    const remaining = deadline - teardownNow();
     const timeout = expiry(Math.max(0, remaining));
     try {
       const settled = await Promise.race([Promise.allSettled([...pendingHostOps]).then(() => true), timeout.promise.then(() => false)]);

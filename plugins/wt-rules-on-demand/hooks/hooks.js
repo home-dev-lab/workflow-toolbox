@@ -1423,6 +1423,9 @@ async function boundaryReset($, ctx, fresh) {
 // lives exactly as long.
 const RESCAN_BACKOFF_MS = [100, 200, 400, 800, 1600, 3200];
 const RESCAN_LIFETIME_MS = 10_000;
+const rescanPlansForSelftest = new Set();
+let observeRescanPlansForSelftest = false;
+export const rescanPlansSettledForSelftest = () => Promise.all([...rescanPlansForSelftest]);
 const monotonic = () => (typeof performance === 'undefined' ? Date.now() : performance.now());
 const planLive = (plan) => Boolean(plan) && !plan.ended && monotonic() - plan.startedAt < RESCAN_LIFETIME_MS;
 const planServed = (ctx, plan) => ctx.found - plan.foundAt >= plan.requests;
@@ -1435,7 +1438,11 @@ function requestRescan($, ctx, dispatched) {
   }
   const plan = { requests: 1, foundAt: ctx.found, startedAt: monotonic() };
   ctx.plan = plan;
-  void rescanPlan($, ctx, plan);
+  const pending = rescanPlan($, ctx, plan);
+  if (observeRescanPlansForSelftest && !plan.ended) {
+    plan.pending = pending;
+    rescanPlansForSelftest.add(pending);
+  }
 }
 async function rescanPlan($, ctx, plan) {
   try {
@@ -1444,7 +1451,7 @@ async function rescanPlan($, ctx, plan) {
       if (!rescanWanted(ctx, plan)) return;
       await inQueue(ctx, chainRescan($, ctx, ctx.detecting, plan));
     }
-  } finally { plan.ended = true; }
+  } finally { plan.ended = true; rescanPlansForSelftest.delete(plan.pending); }
 }
 async function chainRescan($, ctx, previous, plan) {
   try { await previous; } catch { /* The earlier event reported its own failure. */ }
@@ -1834,4 +1841,4 @@ async function toolCallWork($, e, next) {
   return step.value;
 }
 
-export function resetForSelftest(keepFlightConfig = false) { resetAgentTypes(); agentTypeSetting = UNREAD; resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; usageMissing = false; usageStalled = false; scanUnavailable = false; scanStalled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }
+export function resetForSelftest(keepFlightConfig = false) { observeRescanPlansForSelftest = true; rescanPlansForSelftest.clear(); resetAgentTypes(); agentTypeSetting = UNREAD; resetFlightRecorder(); flightReady = false; flightPending = false; flightConfig = keepFlightConfig ? flightConfig : null; flightSession = keepFlightConfig ? flightSession : null; flightDisabled = false; usageMissing = false; usageStalled = false; scanUnavailable = false; scanStalled = false; activityWrites.clear(); pendingActivity.clear(); activityProfile = null; activityRetryAt = 0; unsaved.clear(); contexts = new Map(); queue = Promise.resolve(); currentMain = 0; sequence = 0; token = newToken(); logged.clear(); archiveSequence = 0; storeSwept = false; pendingHealth = emptyHealth(); lastHealthFlush = Date.now(); }

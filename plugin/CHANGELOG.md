@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Rules-on-demand's `check-rules` excludes startup from the timing deadline, never reports an already delivered answer as a timeout, and reports a worker that never answers after at least 5 seconds.
 - The delegated arc watcher classifies background notices predating boot or session-process start as `ORPHANED BY RESTART` once across polls and watcher restarts, instead of repeatedly requesting relays to dead agents. WAKE and orphan lines print an absolute-path acknowledgement command in the existing wake scanner; raw-agent acknowledgements persist independently of retry state. Replay accepts explicit restart boundaries, unknown boot evidence is diagnosed, and WAKE clocks now mark UTC. An orphan older than the 24 hour relay ceiling is settled silently (decision recorded, nothing printed; the scanner lists it as stale), the once-only decisions directory is pruned of files older than 7 days at write time, and `--ack` with anything but a raw agent id says `not a raw agent id: <input>`.
 ### Fixed
 

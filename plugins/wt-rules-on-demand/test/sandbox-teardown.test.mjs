@@ -212,6 +212,7 @@ test('settleHostOps leaves no timer behind once the calls have settled', async (
 });
 
 test('a continuous stream of host calls cannot hold the drain past its bound', { timeout: 5_000 }, async (t) => {
+  t.mock.method(performance, 'now', () => 0);
   // Hold expiry races inactive: only the total-deadline check can bound a stream whose calls keep settling.
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let running = true;
