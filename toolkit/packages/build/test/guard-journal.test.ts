@@ -79,59 +79,89 @@ function secretStore(configDir: string, name: string, value: string, token: stri
   return storePath
 }
 
-describe('guard-journal — recordGuardEvent', () => {
-  it('opts subagents into context only, dropping all permission and text output', () => {
+function registerNoticeProjectionCases() {
+  it.each(['a1', 'workflow-worker', ' '])('delivers context only to non-empty agent id %j, dropping permission and text output', (agent_id) => {
     const stdoutJson = { extra: 'drop', hookSpecificOutput: {
       hookEventName: 'PreToolUse', additionalContext: 'context', permissionDecision: 'allow', permissionDecisionReason: 'drop',
     } }
-    const noOptIn = emitNotice({ agent_id: 'a1' }, { stdoutJson })
-    expect(noOptIn.stdout).toBe('')
-    expect(noOptIn.stderr).toBe('RETURN=false')
-    const r = emitNotice({ agent_id: 'a1' }, { reachSubagents: true, stdoutJson, stderrText: 'drop' })
+    const r = emitNotice({ agent_id }, { stdoutJson, stderrText: 'drop' })
     expect(r.stdout).toBe('{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"context"}}')
     expect(r.stderr).toBe('RETURN=true')
   })
 
-  it.each([null, { hookSpecificOutput: {} }, { hookSpecificOutput: { additionalContext: 3 } }])(
-    'subagent opt-in without context is silent: %s', (stdoutJson) => {
-      const r = emitNotice({ agent_id: 'a1' }, { reachSubagents: true, stdoutJson, stderrText: 'drop' })
+  // A Workflow-tool sub-agent is positively identified by the harness label; it receives the notice too.
+  it('delivers context to a positively identified Workflow-tool sub-agent', () => {
+    const payload = { agent_id: 'w1', agent_type: 'workflow-subagent', hook_event_name: 'PreToolUse' }
+    const r = emitNotice(payload, { stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'context' } } })
+    expect(r.stdout).toBe('{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"context"}}')
+    expect(r.stderr).toBe('RETURN=true')
+  })
+
+  it.each([null, { hookSpecificOutput: {} }, { hookSpecificOutput: { additionalContext: 3 } },
+    { systemMessage: '' }, { systemMessage: 3 }, { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'blocked' } }])(
+    'subagent without usable context is silent: %s', (stdoutJson) => {
+      const r = emitNotice({ agent_id: 'a1' }, { stdoutJson, stderrText: 'drop' })
       expect(r.stdout).toBe('')
       expect(r.stderr).toBe('RETURN=false')
     },
   )
 
-  it.each([undefined, true])('subagent deny projection has explicit expected bytes (opt-in %s)', (reachSubagents) => {
-    const r = emitNotice({ agent_id: 'a1' }, { reachSubagents, stdoutJson: { hookSpecificOutput: {
+  it('subagent deny projection delivers context but never deny fields', () => {
+    const r = emitNotice({ agent_id: 'a1' }, { stdoutJson: { hookSpecificOutput: {
       hookEventName: 'PreToolUse', additionalContext: 'context', permissionDecision: 'deny', permissionDecisionReason: 'blocked',
     } }, stderrText: 'drop' })
-    expect(r.stdout).toBe(reachSubagents ? '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"context"}}' : '')
-    expect(r.stderr).toBe(reachSubagents ? 'RETURN=true' : 'RETURN=false')
+    expect(r.stdout).toBe('{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"context"}}')
+    expect(r.stderr).toBe('RETURN=true')
   })
 
-  it.each([undefined, true])('main deny delivery has explicit expected bytes (opt-in %s)', (reachSubagents) => {
-    const r = emitNotice({}, { reachSubagents, stdoutJson: { hookSpecificOutput: {
+  it('main deny delivery has explicit expected bytes', () => {
+    const r = emitNotice({}, { stdoutJson: { hookSpecificOutput: {
       hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'blocked',
     } } })
     expect(r.stdout).toBe('{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"blocked"}}')
     expect(r.stderr).toBe('RETURN=true')
   })
 
-  it.each([{}, { stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'context', permissionDecision: 'allow' } }, stderrText: 'stderr' }])(
-    'main session opt-in preserves bytes: %s', (options) => {
-      const base = emitNotice({}, options)
-      const opted = emitNotice({}, { ...options, reachSubagents: true })
-      expect(opted.stdout).toBe(base.stdout)
-      expect(opted.stderr).toBe(base.stderr)
+}
+
+function registerContextFallbackCases() {
+  it.each([undefined, '', null, false, 7])('main session bytes are unchanged for agent id %j', (agent_id) => {
+    const r = emitNotice({ agent_id }, { stdoutJson: { systemMessage: 'warning' }, stderrText: 'stderr' })
+    expect(r.stdout).toBe('{"systemMessage":"warning"}')
+    expect(r.stderr).toBe('stderrRETURN=true')
+  })
+
+  it.each([
+    [{ systemMessage: 'fallback' }, 'fallback'],
+    [{ hookSpecificOutput: { additionalContext: 3 }, systemMessage: 'fallback' }, 'fallback'],
+    [{ hookSpecificOutput: { additionalContext: 'context' }, systemMessage: 'fallback' }, 'context'],
+    [{ hookSpecificOutput: { additionalContext: '' }, systemMessage: 'fallback' }, ''],
+  ])('projects context with systemMessage fallback: %j', (stdoutJson, additionalContext) => {
+    const r = emitNotice({ agent_id: 'a1', hook_event_name: 'PostToolUse' }, { stdoutJson })
+    expect(r.stdout).toBe(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext } }))
+    expect(r.stderr).toBe('RETURN=true')
+  })
+
+  it.each([['PreToolUse', 'PreToolUse'], ['', ''], [3, 'PostToolUse']])(
+    'uses an explicit string event or the payload event: %j', (hookEventName, expected) => {
+      const r = emitNotice({ agent_id: 'a1', hook_event_name: 'PostToolUse' }, {
+        stdoutJson: { hookSpecificOutput: { hookEventName, additionalContext: 'context' } },
+      })
+      expect(r.stdout).toBe(JSON.stringify({ hookSpecificOutput: { hookEventName: expected, additionalContext: 'context' } }))
+      expect(r.stderr).toBe('RETURN=true')
     },
   )
 
-  it('observe mode suppresses even opted-in subagent context', () => {
-    const r = emitNotice({ agent_id: 'a1' }, { reachSubagents: true, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'context' } } }, 'observe')
+}
+
+function registerNoticeModesAndBlockedRecord() {
+  it.each([{}, { agent_id: 'a1' }])('observe mode suppresses JSON, text and stderr for %j', (payload) => {
+    const r = emitNotice(payload, { stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'context' }, systemMessage: 'fallback' }, stderrText: 'drop' }, 'observe')
     expect(r.stdout).toBe('')
     expect(r.stderr).toBe('RETURN=false')
   })
 
-  it('renders warned notices for the main loop but not a subagent', () => {
+  it('keeps plain text main-only when no JSON context is available', () => {
     const main = emitNotice({})
     const subagent = emitNotice({ agent_id: 'a1' })
     expect(main.status).toBe(0)
@@ -156,6 +186,9 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(typeof entries[0]!.ts).toBe('string')
   })
 
+}
+
+function registerNamedSecretStoreCase() {
   it('RED: replaces a matching candidate using the named secret-guard store before persisting', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'wt-secret-store-test-'))
     const value = ['synthetic', 'token', 'value', '123456789'].join('-')
@@ -170,6 +203,9 @@ describe('guard-journal — recordGuardEvent', () => {
     }
   })
 
+}
+
+function registerEmbeddedSecretCase() {
   it('RED: masks stored secrets embedded in punctuation-delimited journal fields', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'wt-secret-store-test-'))
     const short = 's3cr3t'
@@ -207,6 +243,9 @@ describe('guard-journal — recordGuardEvent', () => {
     }
   })
 
+}
+
+function registerInlineSecretAndWarningCases() {
   it('RED: uses the newest inline secret-guard store before persisting', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'wt-secret-store-test-'))
     const value = ['synthetic', 'token', 'value', '987654321'].join('-')
@@ -242,6 +281,9 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(readAllEntries()[0]!.origin).toBe('test')
   })
 
+}
+
+function registerOriginCases() {
   it('classifies a record whose raw target is outside the native temp root as real', () => {
     record(
       { guard: 'wt-example-guard-hook.mjs', decision: 'blocked', cwd: REPO_ROOT },
@@ -283,6 +325,9 @@ describe('guard-journal — recordGuardEvent', () => {
     }
   })
 
+}
+
+function registerModeAndConcurrentRecordCases() {
   it('classifies as unknown when the selftest marker is present but not the declared value', () => {
     record(
       { guard: 'wt-example-guard-hook.mjs', decision: 'blocked' },
@@ -329,6 +374,9 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(entries.map((e) => e.guard).sort()).toEqual(['wt-guard-a.mjs', 'wt-guard-b.mjs'])
   })
 
+}
+
+function registerRotationAndFailureCases() {
   it('rotates weekly: a forced past week and a forced future week land in DIFFERENT files', () => {
     record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked' }, { WT_GUARD_JOURNAL_NOW: '2024-01-01T00:00:00Z' })
     record({ guard: 'wt-example-guard-hook.mjs', decision: 'blocked' }, { WT_GUARD_JOURNAL_NOW: '2024-07-01T00:00:00Z' })
@@ -362,6 +410,9 @@ describe('guard-journal — recordGuardEvent', () => {
     expect((entries[0]!.reason as string).length).toBeLessThanOrEqual(400)
   })
 
+}
+
+function registerBoundedIdentityCases() {
   it('keeps well-formed bounded evidence and session fields', () => {
     record({
       guard: 'wt-example-guard-hook.mjs',
@@ -380,6 +431,9 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(readAllEntries()[0]).toMatchObject({ agent: 'agent?1', pid: expect.any(Number), ppid: expect.any(Number) })
   })
 
+}
+
+function registerAggregationCase() {
   it('aggregates distinct sessions and counts old-shape entries as unknown', () => {
     mkdirSync(journalDir, { recursive: true })
     writeFileSync(
@@ -404,6 +458,9 @@ describe('guard-journal — recordGuardEvent', () => {
     })
   })
 
+}
+
+function registerHumanScanAndTruncationCases() {
   it('prints firing and distinct-session counts in the human scan line', () => {
     mkdirSync(journalDir, { recursive: true })
     writeFileSync(
@@ -428,6 +485,9 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(readAllEntries()[0]!.evidence).toEqual({ after: 'x'.repeat(24) })
   })
 
+}
+
+function registerEvidenceLimitCases() {
   // Two properties in one case, deliberately: the COMMA survives (it is a guard's own list
   // separator and cannot carry a secret), while the run of spaces around it collapses to a
   // single '?'. An earlier version excluded the comma too, which mangled `pnpm,git` into
@@ -462,4 +522,20 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(readAllEntries()[0]).toMatchObject({ session: 'session-garbage' })
     expect(readAllEntries()[0]).not.toHaveProperty('evidence')
   })
+}
+
+describe('guard-journal — recordGuardEvent', () => {
+  registerNoticeProjectionCases()
+  registerContextFallbackCases()
+  registerNoticeModesAndBlockedRecord()
+  registerNamedSecretStoreCase()
+  registerEmbeddedSecretCase()
+  registerInlineSecretAndWarningCases()
+  registerOriginCases()
+  registerModeAndConcurrentRecordCases()
+  registerRotationAndFailureCases()
+  registerBoundedIdentityCases()
+  registerAggregationCase()
+  registerHumanScanAndTruncationCases()
+  registerEvidenceLimitCases()
 })
