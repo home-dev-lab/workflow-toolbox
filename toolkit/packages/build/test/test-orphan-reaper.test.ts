@@ -1,10 +1,10 @@
-import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { EventEmitter, once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Plain ESM test-support script has no TypeScript declarations.
 import { linuxStartTime, listTaggedPids, onParentDeath, parentGone, parseStatFields, reapRegisteredWorkers, reapTagged, RUN_TAG_ENV } from '../../../test-support/orphan-reaper.mjs'
@@ -329,31 +329,29 @@ describe.skipIf(process.platform === 'win32')('orphan reaper (Windows has no pro
 
 // The watchdog outlives the Vitest run by design. Started with NODE_V8_COVERAGE it writes its own V8 coverage when it
 // exits, after the coverage provider removed the child-coverage directory, and Node recreates that directory to do so.
-// Node forwards the parent's NODE_V8_COVERAGE to a child whose env lacks the key, so the real spawn is exercised here.
-it('launches the watchdog so that it writes no V8 coverage, despite Node forwarding NODE_V8_COVERAGE to children', async () => {
+// Node forwards the parent's NODE_V8_COVERAGE to a child whose env lacks the key, so a real spawn is exercised. It
+// runs in a plain subprocess: test-support/child-process-coverage.setup.ts patches spawn in test workers to inject
+// NODE_V8_COVERAGE into every env, which the global setup (main process) never goes through.
+it('launches the watchdog so that it writes no V8 coverage, despite Node forwarding NODE_V8_COVERAGE to children', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'wt-watchdog-coverage-'))
   const probe = join(scratch, 'child-coverage-probe')
-  const previous = process.env.NODE_V8_COVERAGE
-  process.env.NODE_V8_COVERAGE = probe
-  let child: ChildProcess | undefined
+  const script = `import { spawn } from 'node:child_process'; import { once } from 'node:events'; import { existsSync } from 'node:fs'
+    import { launchWatchdog } from ${JSON.stringify(pathToFileURL(GLOBAL_SETUP).href)}
+    process.env.NODE_V8_COVERAGE = ${JSON.stringify(probe)}
+    const keepAlive = setInterval(() => {}, 1000)
+    let child
+    launchWatchdog('tag', 'registry', { spawn: (command, args, options) => (child = spawn(process.execPath,
+      ['-e', 'process.stdout.write(JSON.stringify(process.env.NODE_V8_COVERAGE ?? null))'],
+      { ...options, detached: false, stdio: ['ignore', 'pipe', 'ignore'] })) })
+    let seen = ''
+    child.stdout.on('data', (chunk) => { seen += chunk })
+    await once(child, 'close')
+    clearInterval(keepAlive)
+    console.log(JSON.stringify({ seen, recreated: existsSync(${JSON.stringify(probe)}) }))`
   try {
-    launchWatchdog(randomUUID(), 'registry', {
-      spawn: (_command: string, _args: string[], options: SpawnOptions) => {
-        const script = 'process.stdout.write(JSON.stringify(process.env.NODE_V8_COVERAGE ?? null))'
-        child = spawn(process.execPath, ['-e', script], { ...options, detached: false, stdio: ['ignore', 'pipe', 'ignore'] })
-        return child
-      },
-    })
-  } finally {
-    if (previous === undefined) delete process.env.NODE_V8_COVERAGE
-    else process.env.NODE_V8_COVERAGE = previous
-  }
-  let output = ''
-  child?.stdout?.on('data', (chunk) => { output += String(chunk) })
-  if (child) await once(child, 'close')
-  try {
-    expect(output).toBe('""')
-    expect(existsSync(probe), 'the watchdog must not recreate a coverage directory when it exits').toBe(false)
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 20_000 })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout.trim())).toEqual({ seen: '""', recreated: false })
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }
