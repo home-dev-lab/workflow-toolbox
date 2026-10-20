@@ -29,13 +29,15 @@ Use a unique id and provide the prepared task through an existing file or standa
 
 The caller may set `WT_OPENCODE_VERIFY_ADMISSION` to an absolute ES module path in the
 inherited environment, not through a prompt directive. Its default `admit({ repo, request, env })`
-returns `null` to admit or a non-empty string to refuse. `repo` is the absolute `--dir`;
+returns `null` to admit or a non-empty string to refuse. `repo` is the canonical `--dir`;
 `request` is the absolute task copy in that workdir. Content-free availability/skill preflights
 run first; admission completes before the first task spawn and covers its retry. The matching
 `WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS` accepts a positive integer up to 2147483647
 (default 10000 ms), bounding import, admission and clean worker exit, including synchronous
 loops. Policies are trusted code with the CLI's privileges, not sandboxed; hook/configuration
 failures refuse closed. Unset means normal execution. Refusal cleans up the task copy.
+A policy must not write directly to stdout file descriptor 1; send diagnostics to stderr or a file.
+Admitted request bytes are hash-checked before the first launch and retry; a changed copy refuses that attempt.
 On `OPENCODE_REFUSED: <reason>` (exit 3), return that bare line verbatim and stop. Do not unset
 the hook, retry, reformat it as a verdict, or make schema-correction calls for a refusal.
 

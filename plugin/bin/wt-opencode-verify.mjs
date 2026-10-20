@@ -10,7 +10,8 @@ import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
-import { opencodeAdmission, OpencodeAdmissionRefusal } from './lib/opencode-admission.mjs'
+import { opencodeAdmission, OpencodeAdmissionRefusal, requireUnchangedRequest } from './lib/opencode-admission.mjs'
+import { canonicalOpencodeDirectory, requestDigest } from './lib/host/opencode-request-files.mjs'
 
 export const DEFAULT_MODEL = 'openai/gpt-6-sol'
 export const DEFAULT_TIMEOUT_SEC = 570
@@ -25,10 +26,11 @@ function usage() {
     '',
     'Copies the task into the workdir, runs the read-only plan agent with closed stdin, and retries once on a rate limit.',
     'WT_OPENCODE_VERIFY_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env })',
-    'returns null to admit or a non-empty refusal string. repo is the absolute --dir; request is the absolute task copy.',
-    'Content-free availability/skill preflights run first; admission precedes the first task run and covers its retry.',
+    'returns null to admit or a non-empty refusal string. repo is the canonical --dir; request is the absolute task copy.',
+    'Content-free availability/skill preflights run first; admitted request bytes are hash-checked before each task run and retry.',
     'WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS is a positive integer up to 2147483647; default 10000 ms.',
     'Import, admission and clean worker exit share that deadline, including synchronous loops. Policies are trusted code, not sandboxed.',
+    'A policy must not write directly to stdout file descriptor 1; send diagnostics to stderr or a file.',
     'Hook/configuration failures refuse closed: OPENCODE_REFUSED: <one-line reason>, exit 3, no task spawn; the task copy is cleaned.',
     'Unset module variable preserves normal execution; an unused timeout override is ignored.',
     'Exits: 0 = answer, 1 = unavailable/external-directory denial, 2 = usage/setup error; task failure exits propagate (timeout 124).',
@@ -129,7 +131,14 @@ function verifierResult(result) {
   return { code: result.code, output: result.stderr || result.stdout || `opencode exited ${result.code}` }
 }
 
+function cleanupTaskCopy(taskFile) {
+  try { fs.rmSync(taskFile, { force: true }) } catch (error) {
+    process.stderr.write(`wt-opencode-verify: cleanup warning: ${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
 export async function runVerifier(options, dependencies = undefined) {
+  options = { ...options, dir: canonicalOpencodeDirectory(options.dir) }
   const resolved = verifierDependencies(options, dependencies)
   const { spawnFn, binary, readStdin, timeoutSec, env } = resolved
   const preflight = verifierPreflight(options, resolved)
@@ -139,18 +148,24 @@ export async function runVerifier(options, dependencies = undefined) {
   const taskFile = path.join(path.resolve(options.dir), `.oc-verify-${options.id}-${process.pid}.md`)
   fs.writeFileSync(taskFile, task, 'utf8')
   try {
-    const refusal = await opencodeAdmission({ repo: path.resolve(options.dir), request: taskFile }, env, 'WT_OPENCODE_VERIFY_ADMISSION')
+    const sha256 = requestDigest(taskFile)
+    const refusal = await opencodeAdmission({ repo: options.dir, request: taskFile }, env, 'WT_OPENCODE_VERIFY_ADMISSION')
     if (refusal !== null) return { code: 3, output: `${new OpencodeAdmissionRefusal(refusal).message}\n` }
+    requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION')
     let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec, childEnv, options.dir, credentialNames)
     if (result.code !== 0 && rateLimited(result)) {
       const model = options.fallbackModel || DEFAULT_MODEL
       const fallbackCredentialNames = providerCredentialNames(model)
       const fallbackEnv = opencodeChildEnv(env, fallbackCredentialNames)
+      requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION')
       result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model, taskFile }), timeoutSec, fallbackEnv, options.dir, fallbackCredentialNames)
     }
     return verifierResult(result)
+  } catch (error) {
+    if (error instanceof OpencodeAdmissionRefusal) return { code: 3, output: `${error.message}\n` }
+    throw error
   } finally {
-    fs.rmSync(taskFile, { force: true })
+    cleanupTaskCopy(taskFile)
   }
 }
 

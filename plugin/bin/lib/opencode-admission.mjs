@@ -1,4 +1,5 @@
 import { boundedAdmission, formatAdmissionError } from './host/admission.mjs'
+import { requestDigest } from './host/opencode-request-files.mjs'
 
 // Keep the bridge protocol separate from second-opinion's file publication protocol.
 
@@ -20,4 +21,11 @@ export class OpencodeAdmissionRefusal extends Error {
 export async function requireOpencodeAdmission(options, env, moduleVariable) {
   const refusal = await opencodeAdmission(options, env, moduleVariable)
   if (refusal !== null) throw new OpencodeAdmissionRefusal(refusal)
+}
+
+export function requireUnchangedRequest(taskfile, sha256, moduleVariable) {
+  try {
+    if (requestDigest(taskfile) === sha256) return
+  } catch { /* Missing or unreadable requests also fail closed. */ }
+  throw new OpencodeAdmissionRefusal(`${moduleVariable}: request changed after admission: ${taskfile}`)
 }

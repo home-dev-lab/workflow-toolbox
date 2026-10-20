@@ -26,8 +26,8 @@ import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRef
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
 import { reapProcessFamily } from './lib/host/process-signal-boundary.mjs'
-import { renderEnvelopeRequests } from './lib/host/opencode-request-files.mjs'
-import { OpencodeAdmissionRefusal, requireOpencodeAdmission } from './lib/opencode-admission.mjs'
+import { canonicalOpencodeDirectory, renderEnvelopeRequests } from './lib/host/opencode-request-files.mjs'
+import { OpencodeAdmissionRefusal, requireOpencodeAdmission, requireUnchangedRequest } from './lib/opencode-admission.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-6-luna'
 const DEFAULT_AGENT = 'plan'
@@ -128,12 +128,13 @@ const USAGE = [
     'Admission (optional, caller-configured environment):',
     '  WT_OPENCODE_ENVELOPE_ADMISSION names an absolute ES module path whose default',
     '  admit({ repo, request, env }) returns null to admit or a non-empty refusal string.',
-    '  repo is the absolute --dir; request is an absolute directory holding every rendered prompt.',
-    '  Content-free availability/skill preflights run first; admission precedes all task runs and retries.',
+    '  repo is the canonical --dir; request is an invocation-unique absolute directory holding every rendered prompt.',
+    '  Content-free availability/skill preflights run first; admitted bytes are hash-checked before each task run and retry.',
     '  WT_OPENCODE_ENVELOPE_ADMISSION_TIMEOUT_MS: positive integer, maximum 2147483647; default 10000.',
     '  Import, admission and clean worker exit share that deadline, including synchronous loops.',
     '  Policies are trusted code, not sandboxed. Hook/configuration failures refuse closed.',
-    '  OPENCODE_REFUSED: <one-line reason> — exit 3, no task spawned or answer written.',
+    '  A policy must not write directly to stdout file descriptor 1; send diagnostics to stderr or a file.',
+    '  OPENCODE_REFUSED: <one-line reason> — exit 3; the refused task attempt is not launched.',
     '  Unset module variable preserves normal execution; an unused timeout override is ignored.',
     '',
     'Never prints raw answer text. Exit code: 0 = MANIFEST written, 1 = UNAVAILABLE, 2 = usage/setup error, 3 = admission refusal.',
@@ -342,7 +343,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
   })
 }
 
-async function runTask(task, opts, outDir, taskfile) {
+async function runTask(task, opts, outDir, { taskfile, sha256 }) {
   const id = task.id
   const model = task.model ?? opts.model
   const fallbackModel = task.fallbackModel ?? opts.fallbackModel
@@ -354,10 +355,12 @@ async function runTask(task, opts, outDir, taskfile) {
 
   let result
   let modelUsed = model
+  requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION')
   result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opencodeChildEnv(undefined, providerCredentialNames(model)) })
 
   if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
     modelUsed = fallbackModel
+    requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION')
     result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opencodeChildEnv(undefined, providerCredentialNames(fallbackModel)) })
   }
 
@@ -728,7 +731,7 @@ function helpRequested(argv) {
 
 async function admitEnvelopeTasks(tasks, opts, outDir) {
   const { request, taskfiles } = renderEnvelopeRequests(tasks, outDir)
-  await requireOpencodeAdmission({ repo: path.resolve(opts.dir), request }, process.env, 'WT_OPENCODE_ENVELOPE_ADMISSION')
+  await requireOpencodeAdmission({ repo: opts.dir, request }, process.env, 'WT_OPENCODE_ENVELOPE_ADMISSION')
   return taskfiles
 }
 
@@ -743,6 +746,7 @@ async function main() {
   const eachSources = [opts.eachJson, opts.eachLines].filter((value) => value !== null)
   const generatedMode = eachSources.length > 0
   if (taskModeRefused(opts, reduceMode, eachSources, generatedMode)) return 2
+  opts.dir = canonicalOpencodeDirectory(opts.dir)
   if (reduceMode) return reduceManifest(opts)
   const input = readTaskInput(opts, generatedMode, eachSources)
   if (input === null) return 2
