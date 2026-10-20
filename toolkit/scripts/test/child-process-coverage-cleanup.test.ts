@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -296,10 +296,14 @@ it('still captures real child V8 output, with metadata outside the JSON populati
   assert.equal(entries.includes('.owner'), false)
 })
 
-it('merges real child-only script coverage and never parses the owner record as V8 output', async () => {
-  const root = scratch()
+it.each([false, true])('merges real child-only script coverage and never parses the owner record as V8 output (symlinked root: %s)', async (linked) => {
+  const target = scratch()
+  const root = linked ? join(scratch(), 'linked-root') : target
+  if (linked) symlinkSync(target, root, process.platform === 'win32' ? 'junction' : 'dir')
   const executable = join(root, 'child-only.mjs')
   writeFileSync(executable, 'console.log(21 * 2)')
+  // Node resolves ESM entrypoint symlinks, including macOS temporary-directory aliases.
+  const canonicalExecutable = realpathSync(executable)
   const instrument = enableChildProcessCoverage(root)
   instruments.push(instrument)
   assert.equal(spawnSync(process.execPath, [executable], { env: process.env }).status, 0)
@@ -308,19 +312,21 @@ it('merges real child-only script coverage and never parses the owner record as 
   const base = Object.getPrototypeOf(Object.getPrototypeOf(provider))
   const original = base.generateCoverage
   const merged: unknown[] = []
+  const included: string[] = []
   const map = { merge: (value: unknown) => merged.push(value) }
   base.generateCoverage = async () => map
   Object.assign(provider, {
     childInstrument: instrument,
     ctx: { logger: { warn: () => assert.fail('owner metadata must not be parsed as coverage') } },
-    isIncluded: (file: string) => file === executable,
+    isIncluded: (file: string) => { included.push(file); return file === canonicalExecutable },
     convertCoverage: async (value: unknown) => value,
   })
   try {
     assert.equal(await provider.generateCoverage({}), map)
+    assert.deepEqual(included, [canonicalExecutable], 'V8 must report the canonical child script path')
+    assert.equal(merged.length, 1, 'the included child script must be merged')
     const result = (merged[0] as { result: { url: string, functions: { ranges: { count: number }[] }[] }[] }).result
-    assert.equal(merged.length, 1)
-    assert.equal(result[0]!.url, pathToFileURL(executable).href)
+    assert.equal(result[0]!.url, pathToFileURL(canonicalExecutable).href)
     assert.ok(result[0]!.functions.some((fn) => fn.ranges.some((range) => range.count > 0)))
     assert.equal(existsSync(instrument.directory), false)
   } finally {
