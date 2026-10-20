@@ -32,19 +32,19 @@ function resolutionText(resolved, remote) {
   return `Release branch '${resolved.name}' was resolved from ${resolved.source}.${refresh}`
 }
 
-function refuse(input, target, classification, reason) {
+function refuse(input, target, classification, reason, output) {
   recordGuardEvent({ guard: GUARD, decision: 'blocked', class: classification, reason, cwd: target.repo, session: input.session_id, agent: input.agent_id })
-  emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } })
+  output.denial = reason
 }
 
-function warnUnresolved(input, target) {
+function warnUnresolved(input, target, output) {
   const marker = path.join(mainGuardStateDir(), 'release-push-branch-unresolved.warned')
   if (fs.existsSync(marker)) return
   fs.mkdirSync(path.dirname(marker), { recursive: true })
   fs.writeFileSync(marker, `${new Date().toISOString()}\n`)
   const message = `[workflow-toolbox release gate] Could not resolve the release branch for remote '${target.remote || 'unknown'}' and destination '${target.destination || 'unknown'}'; allowing this push. Configure release_branch (WT_RELEASE_BRANCH) if the remote default branch is unavailable.`
   recordGuardEvent({ guard: GUARD, decision: 'warned', class: 'release-branch-unresolved', reason: message, cwd: target.repo, session: input.session_id, agent: input.agent_id })
-  emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: message } } })
+  output.messages.push(message)
 }
 
 function main() {
@@ -52,56 +52,62 @@ function main() {
   const targets = derivePushTargets(input)
   if (!targets.length) return
   const command = input.tool_input?.command
+  const output = { messages: [], denial: null }
 
   for (const target of targets) {
-    if (processTarget(input, target, command)) return
+    if (processTarget(input, target, command, output)) break
   }
+  if (!output.denial && !output.messages.length) return
+  const hookSpecificOutput = output.denial
+    ? { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: output.denial }
+    : { hookEventName: 'PreToolUse', additionalContext: output.messages.join('\n') }
+  emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput } })
 }
 
-function processTarget(input, target, command) {
+function processTarget(input, target, command, output) {
   if (!target.remote) {
-    warnUnresolved(input, target)
+    warnUnresolved(input, target, output)
     return false
   }
   const resolved = releaseBranch(target.repo, target.remote)
   if (target.unsafeForm) {
     if (!resolved) {
-      warnUnresolved(input, target)
+      warnUnresolved(input, target, output)
       return false
     }
-    refuse(input, target, 'release-push-unsafe-form', `[workflow-toolbox release gate] Refused ${target.unsafeForm} because it can update release branch '${resolved.name}' without naming the exact pushed object. ${resolutionText(resolved, target.remote)}`)
+    refuse(input, target, 'release-push-unsafe-form', `[workflow-toolbox release gate] Refused ${target.unsafeForm} because it can update release branch '${resolved.name}' without naming the exact pushed object. ${resolutionText(resolved, target.remote)}`, output)
     return true
   }
   if (!target.destination) {
-    warnUnresolved(input, target)
+    warnUnresolved(input, target, output)
     return false
   }
-  if (otherBranch(input, target, resolved)) return false
+  if (otherBranch(input, target, resolved, output)) return false
   const releaseResolution = resolved || { name: target.destination, source: 'literal main/master fallback' }
   const resolution = resolutionText(releaseResolution, target.remote)
-  return processReleaseTarget(input, target, command, resolution)
+  return processReleaseTarget(input, target, command, resolution, output)
 }
 
-function otherBranch(input, target, resolved) {
+function otherBranch(input, target, resolved, output) {
   const fallbackRelease = target.destination === 'main' || target.destination === 'master'
   if (resolved ? target.destination !== resolved.name : !fallbackRelease) {
-    if (!resolved && !fallbackRelease) warnUnresolved(input, target)
+    if (!resolved && !fallbackRelease) warnUnresolved(input, target, output)
     return true
   }
   return false
 }
 
-function processReleaseTarget(input, target, command, resolution) {
+function processReleaseTarget(input, target, command, resolution, output) {
   if (!target.standalone) {
-    refuse(input, target, 'release-push-compound-command', `[workflow-toolbox release gate] Refused: a release push must be the whole Bash command, not share it with another shell segment. ${resolution}`)
+    refuse(input, target, 'release-push-compound-command', `[workflow-toolbox release gate] Refused: a release push must be the whole Bash command, not share it with another shell segment. ${resolution}`, output)
     return true
   }
   if (target.deletion) {
-    refuse(input, target, 'release-push-deletion', `[workflow-toolbox release gate] Refused deletion of release branch '${target.destination}'. ${resolution} The main guard independently refuses remote deletion; the two guards compose.`)
+    refuse(input, target, 'release-push-deletion', `[workflow-toolbox release gate] Refused deletion of release branch '${target.destination}'. ${resolution} The main guard independently refuses remote deletion; the two guards compose.`, output)
     return true
   }
   if (!target.source) {
-    warnUnresolved(input, target)
+    warnUnresolved(input, target, output)
     return false
   }
 
@@ -109,23 +115,23 @@ function processReleaseTarget(input, target, command, resolution) {
   const declaration = readGateDeclaration(root)
   if (!declaration) {
     const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination}: no .wt-gates.json declaration. ${resolution}`
-    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: message } } })
+    output.messages.push(message)
     return false
   }
-  return checkReleaseEvidence(input, target, command, root, resolution, declaration)
+  return checkReleaseEvidence(input, target, command, root, resolution, declaration, output)
 }
 
-function checkReleaseEvidence(input, target, command, root, resolution, declaration) {
+function checkReleaseEvidence(input, target, command, root, resolution, declaration, output) {
   const pushedCommit = gitString(target.repo, ['rev-parse', `${target.source}^{commit}`])
   if (!pushedCommit) {
-    warnUnresolved(input, target)
+    warnUnresolved(input, target, output)
     return false
   }
   const problems = requiredGateProblems(root, declaration, { pushedCommit })
   if (!problems.length) {
     const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination} at ${pushedCommit}: gate evidence is fresh. ${resolution}`
     recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'release-gate-evidence-fresh', reason: resolution, cwd: root, session: input.session_id, agent: input.agent_id })
-    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: message } } })
+    output.messages.push(message)
     return false
   }
 
@@ -134,15 +140,15 @@ function checkReleaseEvidence(input, target, command, root, resolution, declarat
   if (overrideReason) {
     const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination} by consuming one-time override: ${overrideReason}. ${resolution}`
     recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'release-gate-evidence-override', reason: overrideReason, cwd: root, session: input.session_id, agent: input.agent_id })
-    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: message } } })
+    output.messages.push(message)
     return true
   }
 
-  refuseStaleEvidence(input, target, { command, root, pushedCommit, resolution, problems, allowanceMiss })
+  refuseStaleEvidence(input, target, { command, root, pushedCommit, resolution, problems, allowanceMiss }, output)
   return true
 }
 
-function refuseStaleEvidence(input, target, { command, root, pushedCommit, resolution, problems, allowanceMiss }) {
+function refuseStaleEvidence(input, target, { command, root, pushedCommit, resolution, problems, allowanceMiss }, output) {
   const refresh = problems.map(({ gate }) => `  (${gate.cwd}) node "${'${CLAUDE_PLUGIN_ROOT}'}/bin/wt-run-gate.mjs" --record ${gate.name} -- ${gate.command}`).join('\n')
   const problemLines = problems.map(({ gate, status }) => `- ${gate.name}: ${status}`).join('\n')
   const legacyRefresh = problems.some(({ status }) => status.includes('predates version 2'))
@@ -153,7 +159,7 @@ function refuseStaleEvidence(input, target, { command, root, pushedCommit, resol
   const allowanceMissSuffix = allowanceMiss ? ' ' + allowanceMiss : ''
   const reason = `Gate evidence is required before pushing ${target.remote}/${target.destination} at ${pushedCommit}. ${resolution}\n${problemLines}${legacyRefresh}\nRun:\n${refresh}\nThe release path does not accept a gates: skipped trailer. If a gate cannot run, write ${overrideExample} to ${overrideFile} and retry; the exact-command override requires a non-empty reason and is consumed once.${allowanceMissSuffix}`
   recordGuardEvent({ guard: GUARD, decision: 'blocked', class: 'release-gate-evidence-stale', reason: problems.map(({ gate, status }) => `${gate.name}:${status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id })
-  emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } })
+  output.denial = reason
 }
 
 runFailOpenHook(GUARD, main)

@@ -642,10 +642,42 @@ describe('wt-release-push-evidence-guard-hook eligibility', () => {
       timeout: 5,
     }))
   })
-// Reproduction of the separately routed multi-envelope defect: fixing it makes this lock fail.
-it.fails('release pushes with repeated release refspecs must serialize one JSON document', () => {
+it('release pushes with repeated release refspecs must serialize one JSON document', () => {
   const root = repo(false)
   configureReleaseRemote(root)
   const result = runReleasePush(root, 'git push public HEAD:main HEAD:main')
-  expect(JSON.parse(result.stdout).hookSpecificOutput.hookEventName).toBe('PreToolUse')
+  expect(result).toMatchObject({ status: 0, stderr: '' })
+  const single = JSON.parse(runReleasePush(root).stdout).hookSpecificOutput.additionalContext
+  expect(JSON.parse(result.stdout)).toEqual({
+    hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `${single}\n${single}` },
+  })
+})
+
+it.each([
+  [false, 'HEAD:main :main', "Refused deletion of release branch 'main'"],
+  [true, 'missing-object:main HEAD:main', 'test: MISSING'],
+] as const)('release pushes discard earlier notices when a later target is refused (%s, %s)', (declared, refspecs, reason) => {
+  const root = repo(declared)
+  configureReleaseRemote(root)
+  const result = runReleasePush(root, `git push public ${refspecs}`)
+  expect(result).toMatchObject({ status: 0, stderr: '' })
+  const output = JSON.parse(result.stdout).hookSpecificOutput
+  expect(output).toEqual({
+    hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining(reason),
+  })
+})
+
+it('release pushes combine unresolved and fresh notices in target order and still warn only once', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  record(root)
+  const command = 'git push public HEAD:main missing-object:main HEAD:main'
+  const single = JSON.parse(runReleasePush(root).stdout).hookSpecificOutput.additionalContext
+  const output = JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput
+  const messages = output.additionalContext.split('\n')
+  expect(output.hookEventName).toBe('PreToolUse')
+  expect(output.permissionDecision).toBeUndefined()
+  expect(messages).toEqual([single, expect.stringContaining('Could not resolve the release branch'), single])
+  const repeated = JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput
+  expect(repeated.additionalContext).toBe(`${single}\n${single}`)
 })
