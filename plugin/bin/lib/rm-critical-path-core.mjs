@@ -65,94 +65,41 @@ export function blankHeredocBodies(text) {
   return heredocSource(text).text
 }
 
-function skipHereStringWord(line, start) {
-  // Consume one quote-aware word, leaving separators and subsequent redirects visible.
-  const match = /^[ \t]*(?:\\.|"(?:\\.|[^"\\])*"|'[^']*'|[^\s;|&<>()"'\\])*/u.exec(line.slice(start))
-  return start + match[0].length - 1
+// Deliberately a small language, not a partial Bash parser: one standalone, leading
+// cat (optionally writing a literal path) or git commit -F - with one terminal redirect.
+const CERTAIN_HEREDOC = /^[ \t]*(?:cat(?:[ \t]+>[ \t]*[A-Za-z0-9_./-]+)?|git[ \t]+commit[ \t]+-F[ \t]+-)[ \t]+<<(-?)[ \t]*(?:([A-Za-z0-9_]+)|'([A-Za-z0-9_]+)'|"([A-Za-z0-9_]+)")[ \t]*$/
+const SIMPLE_ARGUMENT = String.raw`(?:[A-Za-z0-9_./*+-]+|\$${NAME}[A-Za-z0-9_./*+-]*|"\$${NAME}"[A-Za-z0-9_./*+-]*)`
+const SIMPLE_COMMAND = new RegExp(String.raw`^[ \t]*([A-Za-z0-9_./+-]+)(?:[ \t]+${SIMPLE_ARGUMENT})*[ \t]*$`)
+const COMPOUND_WORDS = new Set([
+  'case', 'coproc', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function',
+  'if', 'in', 'select', 'then', 'time', 'until', 'while',
+])
+
+function certainFollowingCommand(line) {
+  if (/^[ \t]*$/.test(line)) return true
+  const match = SIMPLE_COMMAND.exec(line)
+  return match !== null && !COMPOUND_WORDS.has(match[1])
 }
 
-function skipArithmetic(line, start) {
-  // `$((…))`, `((…))` and `$[…]`: a `<<` inside is a shift, never a heredoc. Returns the closing index.
-  const open = line[start]
-  const close = open === '[' ? ']' : ')'
-  let depth = 0
-  for (let k = start; k < line.length; k += 1) {
-    if (line[k] === open) depth += 1
-    else if (line[k] === close && --depth === 0) return k
-  }
-  return line.length - 1
-}
-
-/** Index of the last character of a span where `<<` opens no heredoc (here-string, arithmetic), or -1. */
-function skipNonHeredocSpan(line, i) {
-  if (line.startsWith('<<<', i)) return skipHereStringWord(line, i + 3)
-  if (line.startsWith('$((', i) || line.startsWith('$[', i)) return skipArithmetic(line, i + 1)
-  if (line.startsWith('((', i)) return skipArithmetic(line, i)
-  return -1
-}
-
+/** Authorise blanking only after classifying the WHOLE input. Any uncertainty returns
+ * the original bytes, including bodies tentatively identified before a later bad line.
+ * No escapes, CR, backticks or expansions other than plain $NAME are admitted anywhere;
+ * this also excludes executable substitutions in otherwise expanding heredoc bodies. */
 function heredocSource(text) {
-  const lines = String(text ?? '').split('\n')
-  const pending = []
-  const nested = []
-  let offset = 0
-  const out = lines.map((line) => {
-    const start = offset
-    offset += line.length + 1
-    if (pending.length) return heredocBodyLine(line, start, pending, nested)
-    scanHeredocOpeners(line, pending)
-    return line
-  })
-  return { text: out.join('\n'), nested }
-}
-
-/** Blanks one line of the open heredoc body, closing it on its delimiter; an expanding body's substitutions are kept. */
-function heredocBodyLine(line, start, pending, nested) {
-  const first = pending[0]
-  const probe = first.tabs ? line.replace(/^\t+/, '') : line
-  if (probe === first.delim) pending.shift()
-  else if (!first.quoted) {
-    for (const sub of parseStatements(line).nested) nested.push({ ...sub, start: start + sub.start, reparsed: true })
+  const src = String(text ?? '')
+  const unchanged = { text: src, nested: [] }
+  if (/[\r\\`]/.test(src) || /\$(?![A-Za-z_])/.test(src)) return unchanged
+  const lines = src.split('\n')
+  const opener = CERTAIN_HEREDOC.exec(lines[0])
+  if (!opener) return unchanged
+  const delimiter = opener[2] ?? opener[3] ?? opener[4]
+  const end = lines.findIndex((line, i) => i > 0 &&
+    (opener[1] ? line.replace(/^\t+/, '') : line) === delimiter)
+  if (end < 0 || !lines.slice(end + 1).every(certainFollowingCommand)) return unchanged
+  return {
+    text: lines.map((line, i) => i > 0 && i < end ? ' '.repeat(line.length) : line).join('\n'),
+    nested: [],
   }
-  return ' '.repeat(line.length)
-}
-
-/** Registers the heredocs a command line opens, outside quotes, comments, here-strings and arithmetic. */
-function scanHeredocOpeners(line, pending) {
-  let quote = null
-  for (let i = 0; i < line.length; i += 1) {
-    const c = line[i]
-    if (c === '\\') { i += 1; continue }
-    if (quote) {
-      if (c === quote) quote = null
-      continue
-    }
-    if (isCommentStart(line, i)) break
-    if (c === '"' || c === "'") { quote = c; continue }
-    const skipped = skipNonHeredocSpan(line, i)
-    // The cursor skips a span, or the delimiter word of a registered heredoc, after consuming it.
-    // eslint-disable-next-line sonarjs/updated-loop-counter
-    if (skipped >= 0) i = skipped
-    // eslint-disable-next-line sonarjs/updated-loop-counter
-    else if (line.startsWith('<<', i)) i = registerHeredoc(line, i, pending)
-  }
-}
-
-function isCommentStart(line, i) {
-  return line[i] === '#' && (i === 0 || /\s/.test(line[i - 1]))
-}
-
-/** Records the heredoc whose `<<` starts at `i`; returns the index of the delimiter's last character, or `i` when none. */
-function registerHeredoc(line, i, pending) {
-  let j = i + 2
-  const tabs = line[j] === '-'
-  if (tabs) j += 1
-  while (line[j] === ' ' || line[j] === '\t') j += 1
-  const match = /^(?:\\.|[^\s;|&<>])+/u.exec(line.slice(j))
-  if (!match) return i
-  const raw = match[0]
-  pending.push({ delim: shellUnquote(raw), tabs, quoted: /["'\\]/.test(raw) })
-  return j + raw.length - 1
 }
 
 /** Splits a command into statements and words, quote-aware. Command substitutions, backtick spans

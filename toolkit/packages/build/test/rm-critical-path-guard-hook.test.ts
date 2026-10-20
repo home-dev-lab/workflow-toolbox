@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest'
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-rm-critical-path-guard-hook.mjs')
 const CORE = join(REPO_ROOT, 'plugin/bin/lib/rm-critical-path-core.mjs')
-const { describeRemedy, scanRmCriticalPath } = await import(pathToFileURL(CORE).href) as {
+const { blankHeredocBodies, describeRemedy, scanRmCriticalPath } = await import(pathToFileURL(CORE).href) as {
+  blankHeredocBodies: (command: string) => string
   describeRemedy: (command: string, hits: unknown[]) => { rewritten: string | null; lines: string[] }
   scanRmCriticalPath: (command: string, context: { cwd: string; home?: string }) => unknown[]
 }
@@ -60,6 +61,30 @@ function rewrite(command: string) {
   return result
 }
 
+const HEREDOC_RM = 'rm -rf "$UNSET_DIR"/'
+const AFTER_HEREDOC_RM = 'rm -rf "$UNSET_DIR"/*'
+
+function expectBodyThenCommand(command: string) {
+  const result = run(command)
+  expect(result.status).toBe(0)
+  expect(result.denied).toBe(false)
+  const withCommand = `${command}\n${AFTER_HEREDOC_RM}`
+  const hits = scanRmCriticalPath(withCommand, { cwd: '/work/project' }) as { target: string }[]
+  expect(hits.map((hit) => hit.target)).toEqual(['"$UNSET_DIR"/*'])
+  expect(run(withCommand).denied).toBe(true)
+}
+
+function expectCheckedThenCommand(command: string) {
+  expect(blankHeredocBodies(command)).toBe(command)
+  const result = run(command)
+  expect(result.status).toBe(0)
+  expect(result.denied).toBe(true)
+  const withCommand = `${command}\n${AFTER_HEREDOC_RM}`
+  const hits = scanRmCriticalPath(withCommand, { cwd: '/work/project' }) as { target: string }[]
+  expect(hits.map((hit) => hit.target)).toEqual(['"$UNSET_DIR"/', '"$UNSET_DIR"/*'])
+  expect(run(withCommand).denied).toBe(true)
+}
+
 describe('review regression locks — rewrite', () => {
   it('F1 declines nested defaults, escapes, single quotes and second expansions', () => {
     for (const target of ['${D:-${E}}/*.log', '"${D:-${E}}"/*.log', '${D-foo}/*.log', "'$D'/*.log", '$D/$X', '$D/\\*.log']) {
@@ -105,14 +130,16 @@ describe('heredoc scan — here-strings and arithmetic shifts open no heredoc', 
       expect(run(refused).denied).toBe(true)
       expect(run(`cat <<<${word}\n${refused}`).denied).toBe(true)
     })
-    it('keeps a refused rm visible after an inline semicolon', () => {
+    it('keeps a refused rm visible after an inline semicolon and checks the out-of-subset body', () => {
       expect(run(`cat <<<${word}; ${refused}`).denied).toBe(true)
+      // Also exercise the newline boundary: inline-only detection predates this fix.
+      expectCheckedThenCommand(`cat <<<${word}; cat <<EOF\n${refused}\nEOF`)
     })
-    it('still blanks a real heredoc body after a here-string', () => {
-      expect(run(`cat <<<${word} <<EOF\n${refused}\nEOF`).denied).toBe(false)
+    it('checks a real heredoc body after an out-of-subset here-string', () => {
+      expectCheckedThenCommand(`cat <<<${word} <<EOF\n${refused}\nEOF`)
     })
     it('keeps a refused rm visible after the real heredoc terminator', () => {
-      expect(run(`cat <<<${word} <<EOF\n${refused}\nEOF\n${refused}`).denied).toBe(true)
+      expectCheckedThenCommand(`cat <<<${word} <<EOF\n${refused}\nEOF`)
     })
   })
   it.each(['echo $((1<<2))', '((x<<=2))', 'echo $[1<<2]', 'echo $(( (1<<2) + 1 ))'])(
@@ -121,8 +148,152 @@ describe('heredoc scan — here-strings and arithmetic shifts open no heredoc', 
       expect(run(`${arith}\nrm -rf "$UNSET_DIR"/`).denied).toBe(true)
     },
   )
-  it('a real heredoc after an arithmetic shift on the same line still blanks its body', () => {
-    expect(run('cat $((1<<2)) <<EOF\nrm -rf "$UNSET_DIR"/\nEOF').denied).toBe(false)
+  it('a real heredoc after an out-of-subset arithmetic shift checks its body', () => {
+    expectCheckedThenCommand(`cat $((1<<2)) <<EOF\n${HEREDOC_RM}\nEOF`)
+  })
+})
+
+describe('heredoc scan — round-2 span regressions', () => {
+  it.each([
+    ['F1 quoted closing parentheses in nested arithmetic substitution', "echo $(( $(: ')))<<FAKE'; echo 1) ))"],
+    ['F2-a legacy arithmetic here-string word', 'cat <<<$[1<<2]'],
+    ['F2-b parameter expansion here-string word', 'cat <<<${x:-<<FAKE}'],
+    ['F2-c nested quotes in a here-string substitution', 'cat <<<"$(printf \'%s\' "<<FAKE")"'],
+    ['F3-a multiline arithmetic', 'echo $((\n1<<2\n))'],
+    ['F3-b multiline here-string quote', 'cat <<<"data\n<<FAKE\n"'],
+  ])('%s keeps the following command visible', (_name, opener) => {
+    expect(run(`${opener}\n${HEREDOC_RM}`).denied).toBe(true)
+  })
+
+  it.each([
+    ['F4 quoted opening parenthesis in nested arithmetic substitution', "echo $(( $(: '('; echo 1) )) <<EOF", ''],
+    ['F5-a adjacent nested subshells', '((cat) <<EOF', '\n)'],
+    ['F5-b adjacent nested subshells in command substitution', 'echo $((cat) <<EOF', '\n)'],
+    ['I4 spaced nested subshells', '( (cat) <<EOF', '\n)'],
+    ['I4 matched double parentheses are arithmetic', '((1<<2)) <<EOF', ''],
+    ['I4 matched double parentheses in expansion are arithmetic', 'echo $((1<<2)) <<EOF', ''],
+    ['I4 matched variable double parentheses are arithmetic', '((cat)) <<EOF', ''],
+  ])('%s checks the out-of-subset heredoc body', (_name, opener, close) => {
+    expectCheckedThenCommand(`${opener}\n${HEREDOC_RM}\nEOF${close}`)
+  })
+
+  it('I2 concatenated here-string segments check the out-of-subset heredoc body', () => {
+    expectCheckedThenCommand(`cat <<<pre"\${x:-<<FAKE}"$[1<<2]'suffix' <<EOF\n${HEREDOC_RM}\nEOF`)
+  })
+})
+
+describe('heredoc scan — multiline and conservative boundaries', () => {
+  it.each([
+    ['single quote', ": 'data\n<<FAKE\n'"],
+    ['double quote', ': "data\n<<FAKE\n"'],
+    ['ANSI-C quote', ": $'data\n<<FAKE\n'"],
+    ['backtick', ': `printf \'%s\' "\n<<FAKE\n"`'],
+    ['command substitution', ': $(printf \'%s\' "\n<<FAKE\n")'],
+    ['parameter expansion', ': ${x:-\n<<FAKE\n}'],
+    ['legacy arithmetic', ': $[\n1<<2\n]'],
+    ['arithmetic command', '((\n1<<2\n))'],
+  ])('multiline %s keeps commands and out-of-subset bodies checked', (_name, span) => {
+    expect(run(`${span}\n${HEREDOC_RM}`).denied).toBe(true)
+    expectCheckedThenCommand(`${span} <<EOF\n${HEREDOC_RM}\nEOF`)
+  })
+
+  it.each([
+    ['quote', ": '\n<<FAKE"],
+    ['arithmetic', ': $((\n1<<2'],
+    ['parameter', ': ${x:-\n<<FAKE'],
+    ['substitution', ': $(printf x\n<<FAKE'],
+  ])('I5 unclosed %s never blanks later lines', (_name, span) => {
+    // Public blanking entry point exposes the conservative fallback even on invalid shell input.
+    expect(blankHeredocBodies(`${span}\n${HEREDOC_RM}`)).toBe(`${span}\n${HEREDOC_RM}`)
+  })
+
+})
+
+describe('heredoc scan — unclassified spans retain source', () => {
+  it.each([
+    ['pending delimiter before an unclosed span', 'cat <<EOF "unterminated\n<<FAKE'],
+    ['heredoc inside command substitution', ': $(cat <<EOF\nx\nEOF\n) <<LATER'],
+    ['case inside command substitution', ': $(case x in x) :;; esac) <<LATER'],
+    ['expanded delimiter', 'cat <<${x:-EOF}'],
+  ])('I5 %s cannot authorise later blanking', (_name, opener) => {
+    const command = `${opener}\n${HEREDOC_RM}\nLATER\n${AFTER_HEREDOC_RM}`
+    expect(blankHeredocBodies(command)).toBe(command)
+  })
+})
+
+describe('heredoc scan — round-3 Astra r2b fail-closed inputs', () => {
+  it.each([
+    ['A01 continued arithmetic closing', `echo $((1<<2)\\\n)\n${HEREDOC_RM}`],
+    ['A02 comment after operator', `:;# <<FAKE\n${HEREDOC_RM}`],
+    ['A03 comment in substitution', `: $(# ) <<FAKE\n:)\n${HEREDOC_RM}`],
+    ['A04 escaped space before hash', `: \\ # <<EOF\n${HEREDOC_RM}\nEOF`],
+    ['A05 continued here-string operator', `cat <<\\\n<"<<FAKE"\n${HEREDOC_RM}`],
+    ['A06 continued heredoc operator', `cat <\\\n<EOF\n${HEREDOC_RM}\nEOF`],
+    ['A07 continued command after opener', `cat <<EOF \\\n; ${HEREDOC_RM}\nbody\nEOF`],
+    ['A08 continued delimiter word', `cat <<E\\\nOF\nbody\nEOF\n${HEREDOC_RM}`],
+    ['A09 continued terminator', `cat <<EOF\nEO\\\nF\n${HEREDOC_RM}`],
+    ['A10 continued body before delimiter', `cat <<EOF\nx\\\nEOF\n${HEREDOC_RM}\nEOF`],
+    ['A11 double-quoted delimiter escape', `cat <<"E\\OF"\nbody\nE\\OF\n${HEREDOC_RM}`],
+    ['A12 premature unescaped terminator', `cat <<"E\\OF"\nEOF\n${HEREDOC_RM}\nE\\OF`],
+    ['A13 dollar-double-quoted delimiter', `cat <<$"EOF"\nbody\nEOF\n${HEREDOC_RM}`],
+    ['A14 tab-bearing quoted delimiter', `cat <<-'\tEOF'\nbody\n\tEOF\n${HEREDOC_RM}`],
+    ['A15 carriage return in delimiter', `cat <<EOF\r\nbody\nEOF\r\n${HEREDOC_RM}`],
+    ['A16 arithmetic array subscript', `a[1<<2]=x\n${HEREDOC_RM}`],
+  ])('%s retains every source line', (_name, command) => {
+    expect(blankHeredocBodies(command)).toBe(command)
+    expect(run(command).denied).toBe(true)
+  })
+})
+
+describe('heredoc scan — round-3 Astra nested boundaries', () => {
+  it.each([
+    ['A17 backtick quote nesting', `: \`# '\n:\` <<EOF\n${HEREDOC_RM}\nEOF`],
+    ['A18 substitution with here-string', `: $(cat <<<data) <<EOF\n${HEREDOC_RM}\nEOF`],
+    ['A19 showcase suffix', `: $(printf showcase) <<EOF\n${HEREDOC_RM}\nEOF`],
+    ['A20 nested arithmetic disproof', `: "$((:) <<EOF\n${HEREDOC_RM}\nEOF\n)" <<LATER\n${HEREDOC_RM}\nLATER`],
+    ['A21 expansion-shaped delimiter', `cat <<\${x:-EOF}\n${HEREDOC_RM}\n\${x:-EOF}`],
+    ['A22 ANSI-C delimiter', `cat <<$'EOF'\n${HEREDOC_RM}\nEOF`],
+    ['A23 single-quoted expansion-shaped delimiter', `cat <<'\${x:-EOF}'\n${HEREDOC_RM}\n\${x:-EOF}`],
+    ['A24 single-quoted substitution in expanding body', `cat <<EOF\n'\$(${HEREDOC_RM})'\nEOF`],
+    ['A25 multiline substitution in expanding body', `cat <<EOF\n$(\n${HEREDOC_RM}\n)\nEOF`],
+  ])('%s retains every source line', (_name, command) => {
+    expect(blankHeredocBodies(command)).toBe(command)
+  })
+})
+
+describe('heredoc scan — round-3 certain subset', () => {
+  it.each([
+    ['plain', 'cat <<EOF', 'EOF'],
+    ['single quoted', "cat <<'EOF'", 'EOF'],
+    ['double quoted', 'cat <<"EOF"', 'EOF'],
+    ['numeric', 'cat <<123', '123'],
+    ['tab stripped', 'cat <<-EOF', '\tEOF'],
+    ['quoted tab stripped', "cat <<-'EOF'", '\tEOF'],
+    ['literal output', "cat > /tmp/notes.md <<'EOF'", 'EOF'],
+    ['commit message', "git commit -F - <<'EOF'", 'EOF'],
+  ])('%s skips only the certain body', (_name, opener, terminator) => {
+    const command = `${opener}\n${HEREDOC_RM}\n${terminator}`
+    expect(blankHeredocBodies(command).split('\n')[1]).toBe(' '.repeat(HEREDOC_RM.length))
+    expectBodyThenCommand(command)
+  })
+})
+
+describe('heredoc scan — round-3 whole-input uncertainty', () => {
+  it.each([
+    ['unterminated body', `cat <<EOF\n${HEREDOC_RM}`],
+    ['late unbalanced quote', `cat <<EOF\n${HEREDOC_RM}\nEOF\n: "`],
+    ['late unknown compound', `cat <<EOF\n${HEREDOC_RM}\nEOF\nif true; then :; fi`],
+    ['late unterminated heredoc', `cat <<EOF\n${HEREDOC_RM}\nEOF\ncat <<LATER`],
+    ['late here-string', `cat <<EOF\n${HEREDOC_RM}\nEOF\ncat <<<data`],
+    ['late CR', `cat <<EOF\n${HEREDOC_RM}\nEOF\ntrue\r`],
+    ['late continuation', `cat <<EOF\n${HEREDOC_RM}\nEOF\ntrue \\\n`],
+    ['multiple redirects', `cat <<EOF <<LATER\n${HEREDOC_RM}\nEOF\nx\nLATER`],
+    ['delimiter concatenation', `cat <<E"OF"\n${HEREDOC_RM}\nEOF`],
+    ['operator in quoted word', `: "<<EOF"\n${HEREDOC_RM}\nEOF`],
+    ['unsupported interpreter', `bash <<EOF\n${HEREDOC_RM}\nEOF`],
+    ['later reserved word', `cat <<EOF\n${HEREDOC_RM}\nEOF\nwhile true`],
+  ])('%s retains the entire input', (_name, command) => {
+    expect(blankHeredocBodies(command)).toBe(command)
   })
 })
 
