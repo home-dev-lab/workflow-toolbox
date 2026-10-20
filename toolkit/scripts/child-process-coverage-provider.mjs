@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import v8CoverageModule from '@vitest/coverage-v8'
 import { V8CoverageProvider } from '@vitest/coverage-v8/dist/provider.js'
 import { COVERAGE_STAMP_NAME, readTreeIdentity, writeCoverageStamp } from './coverage-stamp.mjs'
-import { disableChildProcessCoverage, enableChildProcessCoverage } from './child-process-coverage-lifecycle.mjs'
+import { disableChildProcessCoverage, enableChildProcessCoverage, removeLateWritesAtExit } from './child-process-coverage-lifecycle.mjs'
 
 export { disableChildProcessCoverage, enableChildProcessCoverage }
 
@@ -121,6 +121,7 @@ class ChildProcessCoverageProvider extends V8CoverageProvider {
       return coverageMap
     } finally {
       disableChildProcessCoverage(this.childInstrument)
+      removeLateWritesAtExit(this.childInstrument.directory)
     }
   }
 }
