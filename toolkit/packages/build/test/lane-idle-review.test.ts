@@ -366,24 +366,28 @@ describe('kernel threads in idle ancestry', () => {
 })
 
 // NTFS file ids exceed Number.MAX_SAFE_INTEGER, so the number form collapses distinct files.
+// Child paths are built with path.join, as the scanner builds them, so the fixture holds on Windows too.
+const W = '/w'
+const RUN = join(W, 'run.log')
+const OUT = join(W, 'out.txt')
 const ntfsBase = 2n ** 53n + 2n
-const exactIno: Record<string, bigint> = { '/w': ntfsBase, '/w/run.log': ntfsBase + 1n, '/w/out.txt': ntfsBase + 2n }
+const exactIno: Record<string, bigint> = { [W]: ntfsBase, [RUN]: ntfsBase + 1n, [OUT]: ntfsBase + 2n }
 type Swap = Record<string, string>
 function fakeStat(exact: boolean, mtimes: Record<string, number>, swap: Swap = {}) {
   return (file: string, options?: { bigint?: boolean }) => {
     // `swap` makes a number-form read observe another file; the exact form always sees its own path.
     const seen = options?.bigint ? file : swap[file] ?? file
-    const directory = seen === '/w'
+    const directory = seen === W
     const time = mtimes[seen] ?? 1
     const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
     if (options?.bigint && exact) return { ...kind, dev: 7n, ino: exactIno[seen]!, mode: BigInt(directory ? 0o40755 : 0o100644), size: 1n, mtimeNs: BigInt(time) * 1_000_000n, ctimeNs: BigInt(time) * 1_000_000n }
     return { ...kind, dev: 7, ino: Number(exactIno[seen]!), mode: directory ? 0o40755 : 0o100644, size: 1, mtimeMs: time, ctimeMs: time }
   }
 }
-const identityDirectory = (dir: string) => dir === '/w' ? ['run.log', 'out.txt'].map((name) => ({ name })) : []
+const identityDirectory = (dir: string) => dir === W ? ['run.log', 'out.txt'].map((name) => ({ name })) : []
 const identityScan = (exact: boolean, mtimes: Record<string, number> = {}, swap: Swap = {}) => {
   const readStat = fakeStat(exact, mtimes, swap)
-  return idleScan('/w', { readDirectory: identityDirectory, readStat, readTargetStat: readStat, excludedFiles: ['/w/run.log'] })
+  return idleScan(W, { readDirectory: identityDirectory, readStat, readTargetStat: readStat, excludedFiles: [RUN] })
 }
 
 function recordingStat(calls: string[]) {
@@ -393,11 +397,11 @@ function recordingStat(calls: string[]) {
 
 describe('idle filesystem identity beyond 2^53', () => {
   it('keeps the scan known with exact bigint identities and still excludes supervisor files', () => {
-    expect(Number(exactIno['/w/run.log']!), 'the fixture must collapse in number form').toBe(Number(exactIno['/w/out.txt']!))
+    expect(Number(exactIno[RUN]!), 'the fixture must collapse in number form').toBe(Number(exactIno[OUT]!))
     const before = identityScan(true)
     expect(before).toMatchObject({ status: 'known' })
-    expect(identityScan(true, { '/w/run.log': 99 }).fingerprint, 'an excluded log write is not activity').toBe(before.fingerprint)
-    expect(identityScan(true, { '/w/out.txt': 99 }).fingerprint, 'a lane file write is activity').not.toBe(before.fingerprint)
+    expect(identityScan(true, { [RUN]: 99 }).fingerprint, 'an excluded log write is not activity').toBe(before.fingerprint)
+    expect(identityScan(true, { [OUT]: 99 }).fingerprint, 'a lane file write is activity').not.toBe(before.fingerprint)
   })
 
   it('stays unknown when no exact identity can be read', () => {
@@ -408,14 +412,14 @@ describe('idle filesystem identity beyond 2^53', () => {
     // A second read could observe another file than the first, whatever fields it compares.
     const lstatCalls: string[] = []
     const statCalls: string[] = []
-    const scan = idleScan('/w', { readDirectory: identityDirectory, readStat: recordingStat(lstatCalls), readTargetStat: recordingStat(statCalls), excludedFiles: ['/w/run.log'] })
+    const scan = idleScan(W, { readDirectory: identityDirectory, readStat: recordingStat(lstatCalls), readTargetStat: recordingStat(statCalls), excludedFiles: [RUN] })
     expect(scan).toMatchObject({ status: 'known' })
-    expect(lstatCalls.sort()).toEqual(['/w', '/w/out.txt', '/w/run.log'])
-    expect(statCalls).toEqual(['/w/run.log'])
+    expect(lstatCalls.sort()).toEqual([W, OUT, RUN].sort())
+    expect(statCalls).toEqual([RUN])
   })
 
   it('ignores a number-form read that observes another file', () => {
-    const before = identityScan(true, { '/w/out.txt': 20 })
-    expect(identityScan(true, { '/w/out.txt': 20 }, { '/w/run.log': '/w/out.txt', '/w/out.txt': '/w/run.log' })).toEqual(before)
+    const before = identityScan(true, { [OUT]: 20 })
+    expect(identityScan(true, { [OUT]: 20 }, { [RUN]: OUT, [OUT]: RUN })).toEqual(before)
   })
 })

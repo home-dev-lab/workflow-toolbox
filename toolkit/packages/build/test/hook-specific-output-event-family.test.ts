@@ -187,7 +187,8 @@ it('family lock catches one removed event on a disposable plugin copy', () => {
   writeFileSync(file, original)
   expect(readFileSync(file, 'utf8')).toBe(original)
   expect(scanPlugin(root, JUSTIFIED).problems).toEqual([])
-})
+  // Three whole-plugin scans plus a copy: about 27 s on a Windows runner, past the 20 s default.
+}, 90_000)
 
 it('registration coverage refuses a new unsupported hook executable', () => {
   const root = pluginCopy()
