@@ -30,7 +30,7 @@ function usage() {
     'Content-free availability/skill preflights run first; admitted request bytes are hash-checked before each task run and retry.',
     'WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS is a positive integer up to 2147483647; default 10000 ms.',
     'Import, admission and clean worker exit share that deadline, including synchronous loops. Policies are trusted code, not sandboxed.',
-    'A policy must not write directly to stdout file descriptor 1; send diagnostics to stderr or a file.',
+    'Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.',
     'Hook/configuration failures refuse closed: OPENCODE_REFUSED: <one-line reason>, exit 3, no task spawn; the task copy is cleaned.',
     'Unset module variable preserves normal execution; an unused timeout override is ignored.',
     'Exits: 0 = answer, 1 = unavailable/external-directory denial, 2 = usage/setup error; task failure exits propagate (timeout 124).',

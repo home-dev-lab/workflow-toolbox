@@ -133,7 +133,7 @@ const USAGE = [
     '  WT_OPENCODE_ENVELOPE_ADMISSION_TIMEOUT_MS: positive integer, maximum 2147483647; default 10000.',
     '  Import, admission and clean worker exit share that deadline, including synchronous loops.',
     '  Policies are trusted code, not sandboxed. Hook/configuration failures refuse closed.',
-    '  A policy must not write directly to stdout file descriptor 1; send diagnostics to stderr or a file.',
+    '  Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.',
     '  OPENCODE_REFUSED: <one-line reason> — exit 3; the refused task attempt is not launched.',
     '  Unset module variable preserves normal execution; an unused timeout override is ignored.',
     '',
