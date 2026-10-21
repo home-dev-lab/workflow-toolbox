@@ -36,6 +36,43 @@ describe('brief gate section', () => {
     expect(briefGateSectionRefusal(`## Gates\nRun ${command}\n`)).toBeNull()
   })
 
+  it.each(
+    (BRIEF_GATE_RUNNABLES as readonly string[]).filter((command) => /^pnpm [a-z]/.test(command) && !command.startsWith('pnpm exec ')),
+  )('accepts the pnpm run form of %s', (command: string) => {
+    const runForm = command.replace(/^pnpm /, 'pnpm run ')
+    expect(briefGateSectionRefusal(`## Gates\nRun ${runForm}\n`)).toBeNull()
+    expect(briefGateSectionRefusal(`## Gates\nRun \`${runForm.replace(' run ', '  run\t')}\`\n`)).toBeNull()
+  })
+
+  it.each([
+    'pnpm run quality:static',
+    'pnpm run typecheck',
+    'pnpm exec vitest run tests/mcp-capture',
+    'pnpm\texec  vitest\trun tests/mcp-capture',
+  ])('accepts the context-mode rule gate line %j on its own', (line) => {
+    expect(briefGateSectionRefusal(`## Gates\n- ${line}\n`)).toBeNull()
+  })
+
+  it('accepts the reported brief whose Gates list only pnpm run and pnpm exec vitest forms', () => {
+    const brief = '# Brief\n\n## Gates\nRun by exit code each:\n- pnpm run quality:static\n- pnpm run typecheck\n- pnpm exec vitest run tests/mcp-capture\n'
+    expect(briefGateSectionRefusal(brief, { brief: 'brief.md' })).toBeNull()
+  })
+
+  it.each([
+    '## Gates\npnpm run build',
+    '## Gates\npnpm run',
+    '## Gates\npnpm exec tsc --noEmit',
+    '## Gates\npnpm runtypecheck',
+    '## Notes\npnpm run typecheck\n## Gates\nNothing runnable.',
+    '## Notes\npnpm exec vitest run x\n## Gates\nNothing runnable.',
+    '## Gates\npnpm run exec vitest run tests/mcp-capture',
+    '## Gates\npnpm exec vitest --help',
+    '## Gates\npnpm exec vitest --version',
+    '## Gates\npnpm exec vitest-not-a-runner',
+  ])('still refuses a Gates section with no recognised runnable: %j', (text) => {
+    expect(briefGateSectionRefusal(text)).toContain('has no gate section')
+  })
+
   it.each(['## gAtEs — queue', '##\tGates', '## Gates — keep the lock queue short'])('accepts heading spelling %s', (heading) => {
     expect(briefGateSectionRefusal(`${heading}\r\n### Checks\r\npnpm test\r\n`)).toBeNull()
   })
@@ -61,6 +98,7 @@ describe('brief gate section', () => {
     expect(refusal).toMatch(/^wt-lane: Refused: brief brief.md has no gate section/)
     expect(refusal).toContain('## Gates\nRun detached, by exit code each:')
     for (const command of BRIEF_GATE_RUNNABLES) expect(refusal).toContain(command)
+    expect(refusal).toContain('each pnpm script also as pnpm run <script>')
     expect(refusal).toContain('--owner pilot; --role critic|review|refutation; --no-gate-section <reason>')
     expect(refusal).not.toContain('private brief body')
   })
@@ -85,6 +123,17 @@ it('refuses at the CLI before creating any lane state', () => {
   expect(existsSync(join(f.dir, '.lane'))).toBe(false)
   expect(existsSync(join(f.dir, '.lane', 'brief-snapshots'))).toBe(false)
   expect(existsSync(laneHostDir(f.dir))).toBe(false)
+})
+
+it('admits at the CLI a brief whose Gates use only pnpm run and pnpm exec vitest', () => {
+  const f = fixture()
+  writeFileSync(f.brief, '# Work\n## Gates\n- pnpm run quality:static\n- pnpm run typecheck\n- pnpm exec vitest run tests/mcp-capture\n')
+  const env = sealedPluginCliEnv(f.root, { WT_LANE_MIN_AVAILABLE_MIB: '0' })
+  const result = spawnSync(process.execPath, [launcher, ...f.args], { encoding: 'utf8', env })
+  expect(result.error).toBeUndefined()
+  expect(result.status, 'admitted past the gate check, then stopped by the sealed environment').toBe(1)
+  expect(result.stderr).not.toContain('has no gate section')
+  expect(readFileSync(join(laneHostDir(f.dir, { env }), 'run.log'), 'utf8')).toMatch(/BRIEF_SHA256=[a-f0-9]{64}\n/)
 })
 
 it.each(['', ' \t ', undefined])('rejects an empty opt-out reason at argument parsing: %j', (reason) => {
