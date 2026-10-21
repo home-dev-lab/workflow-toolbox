@@ -176,19 +176,17 @@ function pluginCopy() {
   return root
 }
 
+// One whole-plugin scan: the clean plugin is already proven by the test above, and the copy is disposable.
 it('family lock catches one removed event on a disposable plugin copy', () => {
   const root = pluginCopy()
   const file = join(root, 'bin/wt-version-guard-hook.mjs')
   const original = readFileSync(file, 'utf8')
-  expect(scanPlugin(root, JUSTIFIED).problems).toEqual([])
-  writeFileSync(file, original.replace("hookEventName: 'PreToolUse', ", ''))
+  const mutated = original.replace("hookEventName: 'PreToolUse', ", '')
+  expect(mutated, 'the fixture edit must remove one event').not.toBe(original)
+  writeFileSync(file, mutated)
   const result = scanPlugin(root, JUSTIFIED)
   expect(result.problems).toEqual([expect.stringMatching(/bin\/wt-version-guard-hook\.mjs:\d+: hookSpecificOutput requires a provable hookEventName/)])
-  writeFileSync(file, original)
-  expect(readFileSync(file, 'utf8')).toBe(original)
-  expect(scanPlugin(root, JUSTIFIED).problems).toEqual([])
-  // Three whole-plugin scans plus a copy: about 27 s on a Windows runner, past the 20 s default.
-}, 90_000)
+})
 
 it('registration coverage refuses a new unsupported hook executable', () => {
   const root = pluginCopy()
