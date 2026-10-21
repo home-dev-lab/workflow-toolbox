@@ -152,6 +152,13 @@ function registerContextFallbackCases() {
     },
   )
 
+  // An envelope without a string event is invalid hook output, so the subagent gets nothing rather than it.
+  it.each([{ agent_id: 'a1' }, { agent_id: 'a1', hook_event_name: 3 }])('stays silent when no string event is known: %j', (payload) => {
+    const r = emitNotice(payload, { stdoutJson: { hookSpecificOutput: { additionalContext: 'context' }, systemMessage: 'fallback' } })
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('RETURN=false')
+  })
+
 }
 
 function registerNoticeModesAndBlockedRecord() {

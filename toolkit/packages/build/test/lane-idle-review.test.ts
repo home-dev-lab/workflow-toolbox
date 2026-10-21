@@ -334,3 +334,92 @@ describe('idle review counterexamples', () => {
     } finally { deadline.clear(); h.cleanup() }
   })
 })
+
+describe('kernel threads in idle ancestry', () => {
+  it('accepts a PPID 0 row only when the kernel flags it as a kernel thread', () => {
+    const processes = [{ pid: 1, ppid: 0, cpuTicks: 0 }, { pid: 2, ppid: 0, cpuTicks: 0, kernelThread: true }, { pid: 4, ppid: 1, cpuTicks: 0 }]
+    const input = { snapshot: { processes }, rootPid: 4, worktree: { status: 'known' } }
+    expect(activityEvidence(input)).toMatchObject({ status: 'known', descendants: [] })
+    processes[1] = { pid: 2, ppid: 0, cpuTicks: 0, kernelThread: false }
+    expect(activityEvidence(input)).toMatchObject({ status: 'unknown', reason: 'process snapshot contains unreadable ancestry' })
+  })
+
+  it('reads the kernel-thread flag from /proc stat on a full Linux host', () => {
+    // kthreadd is PID 2 with PPID 0 and PF_KTHREAD (0x00200000); a namespace-foreign process lacks the flag.
+    const rows: Record<string, { ppid: string; flags: string }> = { 1: { ppid: '0', flags: '4194560' }, 2: { ppid: '0', flags: '2129984' }, 4: { ppid: '1', flags: '4194304' } }
+    const snapshot = readLinuxProcProcesses({
+      readLink: () => String(process.pid),
+      readDirectory: () => Object.keys(rows).map((name) => ({ name, isDirectory: () => true })),
+      observedAt: 20_000,
+      readFile: (file: string) => {
+        if (file === '/proc/uptime') return '10 1\n'
+        if (file.endsWith('/cmdline')) return ''
+        const pid = file.split('/')[2]!
+        const fields = ['S', rows[pid]!.ppid, '0', '0', '0', '0', rows[pid]!.flags, ...Array<string>(13).fill('0')]
+        fields[19] = '100'
+        return `${pid} (kthreadd) ${fields.join(' ')}\n`
+      },
+    })
+    expect(snapshot.processes.map((row: { pid: number; kernelThread: boolean }) => [row.pid, row.kernelThread])).toEqual([[1, false], [2, true], [4, false]])
+    expect(activityEvidence({ snapshot, rootPid: 4, worktree: { status: 'known' } })).toMatchObject({ status: 'known' })
+  })
+})
+
+// NTFS file ids exceed Number.MAX_SAFE_INTEGER, so the number form collapses distinct files.
+// Child paths are built with path.join, as the scanner builds them, so the fixture holds on Windows too.
+const W = '/w'
+const RUN = join(W, 'run.log')
+const OUT = join(W, 'out.txt')
+const ntfsBase = 2n ** 53n + 2n
+const exactIno: Record<string, bigint> = { [W]: ntfsBase, [RUN]: ntfsBase + 1n, [OUT]: ntfsBase + 2n }
+type Swap = Record<string, string>
+function fakeStat(exact: boolean, mtimes: Record<string, number>, swap: Swap = {}) {
+  return (file: string, options?: { bigint?: boolean }) => {
+    // `swap` makes a number-form read observe another file; the exact form always sees its own path.
+    const seen = options?.bigint ? file : swap[file] ?? file
+    const directory = seen === W
+    const time = mtimes[seen] ?? 1
+    const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
+    if (options?.bigint && exact) return { ...kind, dev: 7n, ino: exactIno[seen]!, mode: BigInt(directory ? 0o40755 : 0o100644), size: 1n, mtimeNs: BigInt(time) * 1_000_000n, ctimeNs: BigInt(time) * 1_000_000n }
+    return { ...kind, dev: 7, ino: Number(exactIno[seen]!), mode: directory ? 0o40755 : 0o100644, size: 1, mtimeMs: time, ctimeMs: time }
+  }
+}
+const identityDirectory = (dir: string) => dir === W ? ['run.log', 'out.txt'].map((name) => ({ name })) : []
+const identityScan = (exact: boolean, mtimes: Record<string, number> = {}, swap: Swap = {}) => {
+  const readStat = fakeStat(exact, mtimes, swap)
+  return idleScan(W, { readDirectory: identityDirectory, readStat, readTargetStat: readStat, excludedFiles: [RUN] })
+}
+
+function recordingStat(calls: string[]) {
+  const readStat = fakeStat(true, {})
+  return (file: string, options?: { bigint?: boolean }) => { calls.push(`${file}${options?.bigint ? '' : ' (number form)'}`); return readStat(file, options) }
+}
+
+describe('idle filesystem identity beyond 2^53', () => {
+  it('keeps the scan known with exact bigint identities and still excludes supervisor files', () => {
+    expect(Number(exactIno[RUN]!), 'the fixture must collapse in number form').toBe(Number(exactIno[OUT]!))
+    const before = identityScan(true)
+    expect(before).toMatchObject({ status: 'known' })
+    expect(identityScan(true, { [RUN]: 99 }).fingerprint, 'an excluded log write is not activity').toBe(before.fingerprint)
+    expect(identityScan(true, { [OUT]: 99 }).fingerprint, 'a lane file write is activity').not.toBe(before.fingerprint)
+  })
+
+  it('stays unknown when no exact identity can be read', () => {
+    expect(identityScan(false)).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
+  })
+
+  it('reads each idle path once, in exact form, for identity and metadata together', () => {
+    // A second read could observe another file than the first, whatever fields it compares.
+    const lstatCalls: string[] = []
+    const statCalls: string[] = []
+    const scan = idleScan(W, { readDirectory: identityDirectory, readStat: recordingStat(lstatCalls), readTargetStat: recordingStat(statCalls), excludedFiles: [RUN] })
+    expect(scan).toMatchObject({ status: 'known' })
+    expect(lstatCalls.sort()).toEqual([W, OUT, RUN].sort())
+    expect(statCalls).toEqual([RUN])
+  })
+
+  it('ignores a number-form read that observes another file', () => {
+    const before = identityScan(true, { [OUT]: 20 })
+    expect(identityScan(true, { [OUT]: 20 }, { [RUN]: OUT, [OUT]: RUN })).toEqual(before)
+  })
+})

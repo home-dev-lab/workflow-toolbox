@@ -75,7 +75,8 @@ function modeInput(root: string, mode: Mode, alternate = false) {
 }
 
 function fixture(mode: Mode, source = 'export default () => null', alternate = false) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-admission-')))
+  // The admission hands the policy realpathSync.native(dir); on Windows only the native form expands 8.3 aliases.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'opencode-admission-')))
   roots.push(root)
   const repo = join(root, 'repo'); mkdirSync(repo)
   const module = join(root, 'policy # space.mjs'); writeFileSync(module, source)

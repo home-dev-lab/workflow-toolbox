@@ -17,21 +17,20 @@ function recordEntry(scan, full, stat) {
   scan.entries.push(JSON.stringify([full, stat.mtimeMs, stat.ctimeMs, stat.size, stat.ino, stat.mode]))
 }
 
-function identity(stat) {
-  if (!Number.isSafeInteger(stat.dev) || !Number.isSafeInteger(stat.ino) || stat.ino <= 0) throw new Error('filesystem identity unavailable')
-  return `${stat.dev}:${stat.ino}`
-}
-
-function metadata(stat) {
-  return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs]
+// One exact read per path gives identity and metadata together: NTFS file ids exceed 2^53, and a
+// second read could observe another file than the first.
+function observation(stat) {
+  if (typeof stat?.ino !== 'bigint' || stat.ino <= 0n) throw new Error('filesystem identity unavailable')
+  const metadata = [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].map(String)
+  return { identity: `${stat.dev}:${stat.ino}`, mtimeMs: Number(stat.mtimeNs) / 1e6, metadata }
 }
 
 function recordIdleEntry(scan, full, stat, readTargetStat) {
-  const linkIdentity = identity(stat)
-  const target = stat.isSymbolicLink() ? readTargetStat(full) : stat
-  if (scan.excluded.has(linkIdentity) || scan.excluded.has(identity(target))) return
+  const own = observation(stat)
+  const target = stat.isSymbolicLink() ? observation(readTargetStat(full, { bigint: true })) : own
+  if (scan.excluded.has(own.identity) || scan.excluded.has(target.identity)) return
   if (target.mtimeMs > scan.latest) { scan.latest = target.mtimeMs; scan.latestPath = full }
-  scan.entries.push(JSON.stringify([full, metadata(stat), metadata(target)]))
+  scan.entries.push(JSON.stringify([full, own.metadata, target.metadata]))
   if (stat.isDirectory()) scan.stack.push(full)
 }
 
@@ -65,10 +64,11 @@ export function scanIdleWorktree(root, { maxEntries = 4000, readDirectory = read
   if (maxEntries < 0) return unknown(true)
   const scan = { stack: [], entries: [], latest: 0, latestPath: null, excluded: new Set() }
   try {
-    scan.excluded = new Set(excludedFiles.map((file) => identity(readTargetStat(file))))
+    scan.excluded = new Set(excludedFiles.map((file) => observation(readTargetStat(file, { bigint: true })).identity))
+    const readExact = (file) => readStat(file, { bigint: true })
     const record = (state, full, stat) => recordIdleEntry(state, full, stat, readTargetStat)
-    recordIdleRoot(scan, root, readStat, record)
-    if (!collectEntries(root, scan, maxEntries, readDirectory, readStat, record, () => false)) return unknown(true)
+    recordIdleRoot(scan, root, readExact, record)
+    if (!collectEntries(root, scan, maxEntries, readDirectory, readExact, record, () => false)) return unknown(true)
   } catch (error) { return { ...unknown(), reason: `idle filesystem read failed: ${error.message}` } }
   return scanResult(scan)
 }

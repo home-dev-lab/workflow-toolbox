@@ -34,10 +34,14 @@ function moduleUrl(file: string) { return JSON.stringify(pathToFileURL(join(PLUG
 function proveJournalProjection() {
   const root = scratch()
   const parsed = runScript(root, `import { emitGuardNotice } from ${moduleUrl('bin/lib/guard-journal.mjs')};
-    emitGuardNotice({payload: {agent_id: 'child'}, reachSubagents: true, stdoutJson: {
+    emitGuardNotice({payload: {agent_id: 'child', hook_event_name: 'PostToolUse'}, stdoutJson: {
       hookSpecificOutput: {hookEventName: 'PreToolUse', additionalContext: 'fixture', permissionDecision: 'deny'}
     }});`)
   expect(parsed).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'fixture' } })
+  // The systemMessage route has no envelope event: the registered input event is the one serialized.
+  const fallback = runScript(root, `import { emitGuardNotice } from ${moduleUrl('bin/lib/guard-journal.mjs')};
+    emitGuardNotice({payload: {agent_id: 'child', hook_event_name: 'PostToolUse'}, stdoutJson: {systemMessage: 'fixture'}});`)
+  expect(fallback).toEqual({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'fixture' } })
 }
 
 function proveAdoptEvents() {
@@ -70,8 +74,8 @@ async function proveSdkFallback() {
 }
 
 const JUSTIFIED: Justifications = new Map([
-  ['bin/lib/guard-journal.mjs:output.hookEventName', {
-    reason: 'Subagent projection copies the event from the statically checked caller envelope; serialized opt-in route exercised here.', prove: proveJournalProjection,
+  ['bin/lib/guard-journal.mjs:subagentEvent', {
+    reason: 'Subagent projection copies the caller envelope event, else the registered input event, and emits nothing without a string event; both serialized routes are exercised here.', prove: proveJournalProjection,
   }],
   ['bin/wt-adopt-check-hook.mjs:event', {
     reason: 'resolveEvent selects SessionStart or PostToolUse; both real hook output routes are parsed here.', prove: proveAdoptEvents,
@@ -172,17 +176,16 @@ function pluginCopy() {
   return root
 }
 
+// One whole-plugin scan: the clean plugin is already proven by the test above, and the copy is disposable.
 it('family lock catches one removed event on a disposable plugin copy', () => {
   const root = pluginCopy()
   const file = join(root, 'bin/wt-version-guard-hook.mjs')
   const original = readFileSync(file, 'utf8')
-  expect(scanPlugin(root, JUSTIFIED).problems).toEqual([])
-  writeFileSync(file, original.replace("hookEventName: 'PreToolUse', ", ''))
+  const mutated = original.replace("hookEventName: 'PreToolUse', ", '')
+  expect(mutated, 'the fixture edit must remove one event').not.toBe(original)
+  writeFileSync(file, mutated)
   const result = scanPlugin(root, JUSTIFIED)
   expect(result.problems).toEqual([expect.stringMatching(/bin\/wt-version-guard-hook\.mjs:\d+: hookSpecificOutput requires a provable hookEventName/)])
-  writeFileSync(file, original)
-  expect(readFileSync(file, 'utf8')).toBe(original)
-  expect(scanPlugin(root, JUSTIFIED).problems).toEqual([])
 })
 
 it('registration coverage refuses a new unsupported hook executable', () => {
