@@ -63,7 +63,6 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/plugin-release-record-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync('git', args, {", 'case uses an explicit hermetic release environment and controlled hook payload'],
   ["packages/build/test/plugin-release-record-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case uses an explicit hermetic release environment and controlled hook payload'],
   ["packages/build/test/plugin-version-alignment.test.ts:inherited-env-to-child:const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...HERMETIC } })", 'case reads only repository manifests supplied by cwd'],
-  ["packages/build/test/plugin-version-alignment.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [HOOK], {", 'case reads only repository manifests supplied by cwd'],
   ["packages/build/test/propagation-reminder-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins hook payload and suite journal; no plugin-location lookup occurs'],
   ["packages/build/test/propagation-reminder-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {#2", 'case runs a controlled fixture child, not a plugin CLI'],
   ["packages/build/test/queue-gate-marker-expiry.test.ts:inherited-env-to-child:const run = spawnSync(process.execPath, ['--input-type=module', '--eval', program], {", 'case pins marker root and time; no plugin-location lookup occurs'],

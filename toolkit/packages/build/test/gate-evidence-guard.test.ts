@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { requiredGateProblems } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 
@@ -68,30 +68,32 @@ function env(root: string) {
     ...process.env,
     ...HERMETIC,
     CLAUDE_CONFIG_DIR: join(root, '.claude'),
-    CLAUDE_PLUGIN_DATA: undefined,
+    CLAUDE_PLUGIN_DATA: join(states.get(root)!, 'plugin-data'),
     XDG_STATE_HOME: states.get(root),
     WT_GUARD_JOURNAL_DIR: states.get(root),
     WT_GUARD_JOURNAL_NOW: '2026-09-06T01:00:00.000Z',
   }
 }
 
-function run(root: string, command = 'git commit -m x', extraEnv: NodeJS.ProcessEnv = {}) {
+function run(root: string, command = 'git commit -m x', extraEnv: NodeJS.ProcessEnv = {}, payload: Record<string, unknown> | string = {}) {
   const result = spawnSync(process.execPath, [HOOK], {
     cwd: root,
     encoding: 'utf8',
     env: { ...env(root), ...extraEnv },
-    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command } }),
+    input: typeof payload === 'string' ? payload : JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command }, ...payload }),
   })
+  if (result.stdout) expect(JSON.parse(result.stdout).hookSpecificOutput.hookEventName).toBe('PreToolUse')
   return { stdout: result.stdout, stderr: result.stderr, status: result.status }
 }
 
-function runReleasePush(root: string, command = 'git push public HEAD:main', extraEnv: NodeJS.ProcessEnv = {}) {
+function runReleasePush(root: string, command = 'git push public HEAD:main', extraEnv: NodeJS.ProcessEnv = {}, payload: Record<string, unknown> | string = {}) {
   const result = spawnSync(process.execPath, [RELEASE_PUSH_HOOK], {
     cwd: root,
     encoding: 'utf8',
     env: { ...env(root), ...extraEnv },
-    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command } }),
+    input: typeof payload === 'string' ? payload : JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command }, ...payload }),
   })
+  if (result.stdout) expect(JSON.parse(result.stdout).hookSpecificOutput.hookEventName).toBe('PreToolUse')
   return { stdout: result.stdout, stderr: result.stderr, status: result.status }
 }
 
@@ -115,7 +117,6 @@ function recordFile(root: string) {
   return join(states.get(root)!, 'wt-gate-records', repoId, 'test.json')
 }
 
-describe('wt-gate-evidence-guard-hook', () => {
   it('is silent without a declaration or when staged files are outside declared paths', () => {
     const undeclared = repo(false)
     write(undeclared, 'plugin/thing.mjs', '// changed\n')
@@ -314,12 +315,22 @@ describe('wt-gate-evidence-guard-hook', () => {
     expect(journal).toContain('heredoc reason')
   })
 
+describe('wt-gate-evidence-guard-hook probation', () => {
   it('refuses on the twentieth firing and ignores prose heredocs mentioning git commit', () => {
     const root = repo()
     write(root, 'plugin/thing.mjs', '// changed\n')
     git(root, 'add', 'plugin/thing.mjs')
-    for (let i = 0; i < 19; i++) expect(run(root).stdout).toContain('additionalContext')
-    expect(run(root).stdout).toContain('"deny"')
+    for (let i = 0; i < 19; i++) {
+      const output = JSON.parse(run(root).stdout).hookSpecificOutput
+      expect(output.additionalContext).toContain(`Probation: ${19 - i} firing(s) remain before refusal.`)
+      expect(output.permissionDecision).toBeUndefined()
+    }
+    expect(JSON.parse(run(root).stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(JSON.parse(run(root).stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+    const journal = readFileSync(join(states.get(root)!, '2026-W36.ndjson'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(journal).toHaveLength(21)
+    expect(journal.slice(0, 19).every((event) => event.decision === 'warned' && event.class === 'gate-evidence-missing')).toBe(true)
+    expect(journal.slice(19).every((event) => event.decision === 'blocked' && event.class === 'gate-evidence-missing')).toBe(true)
     expect(run(root, "cat <<'EOF'\ngit commit -m x\nEOF").stdout).toBe('')
   })
 
@@ -328,9 +339,109 @@ describe('wt-gate-evidence-guard-hook', () => {
     record(root, 9)
     expect(JSON.parse(readFileSync(recordFile(root), 'utf8'))).toMatchObject({ exit: 9, name: 'test', tree: expect.any(String) })
   })
+
+})
+
+describe('wt-gate-evidence-guard-hook seeded denial', () => {
+  it('emits a schema-valid denial from isolated seeded probation state', () => {
+    const root = repo()
+    write(root, 'plugin/thing.mjs', '// changed\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    const entry = { guard: 'wt-gate-evidence-guard-hook.mjs', decision: 'warned', class: 'gate-evidence-missing', origin: 'test' }
+    writeFileSync(join(states.get(root)!, '2026-W36.ndjson'), Array.from({ length: 19 }, () => JSON.stringify(entry)).join('\n') + '\n')
+    const result = run(root)
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    const output = JSON.parse(result.stdout).hookSpecificOutput
+    expect(output.permissionDecision).toBe('deny')
+    expect(output.permissionDecisionReason).toContain('test: MISSING')
+  })
+
+})
+
+describe('wt-gate-evidence-guard-hook eligibility', () => {
+  it('preserves no-stage and merge exemptions, eligibility, observe mode and fail-open', () => {
+    const root = repo()
+    expect(run(root).stdout).toBe('')
+    write(root, 'plugin/thing.mjs', '// changed\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    for (const payload of [{ tool_name: 'Read' }, { hook_event_name: 'PostToolUse' }, { agent_id: 'child' }, { tool_input: {} }]) {
+      expect(run(root, undefined, {}, payload).stdout).toBe('')
+    }
+    expect(run(root, 'git status').stdout).toBe('')
+    expect(run(root, undefined, { WT_GUARD_MODE: 'observe' }).stdout).toBe('')
+    const invalid = run(root, undefined, {}, '{')
+    expect(invalid).toMatchObject({ status: 0, stdout: '' })
+    expect(invalid.stderr).toContain('FAILED OPEN')
+    write(root, '.git/MERGE_HEAD', git(root, 'rev-parse', 'HEAD'))
+    expect(run(root).stdout).toBe('')
+  })
 })
 
 describe('wt-release-push-evidence-guard-hook', () => {
+  it('allows a release push without a gate declaration', () => {
+    const root = repo(false)
+    configureReleaseRemote(root)
+    const output = JSON.parse(runReleasePush(root).stdout).hookSpecificOutput
+    expect(output.additionalContext).toContain('no .wt-gates.json declaration')
+    expect(output.permissionDecision).toBeUndefined()
+  })
+
+})
+
+describe('wt-release-push-evidence-guard-hook unresolved branches', () => {
+  it.each(['git push', 'git push public HEAD:feature', 'git push public missing-object:main'])('warns once for unresolved push %s', (command) => {
+    const root = repo()
+    git(root, 'remote', 'add', 'public', root)
+    const output = JSON.parse(runReleasePush(root, command, { WT_RELEASE_BRANCH: '' }).stdout).hookSpecificOutput
+    expect(output.additionalContext).toContain('Could not resolve the release branch')
+    expect(output.permissionDecision).toBeUndefined()
+    expect(runReleasePush(root, command, { WT_RELEASE_BRANCH: '' }).stdout).toBe('')
+  })
+
+})
+
+describe('wt-release-push-evidence-guard-hook literal fallback', () => {
+  it.each(['main', 'master'])('uses literal %s fallback and refuses missing/red evidence without a skipped-trailer exemption', (branch) => {
+    const root = repo()
+    git(root, 'remote', 'add', 'public', root)
+    const command = `git push public HEAD:${branch}`
+    const missing = JSON.parse(runReleasePush(root, command, { WT_RELEASE_BRANCH: '' }).stdout).hookSpecificOutput
+    expect(missing.permissionDecision).toBe('deny')
+    expect(missing.permissionDecisionReason).toContain('literal main/master fallback')
+    expect(missing.permissionDecisionReason).toContain('test: MISSING')
+    expect(missing.permissionDecisionReason).toContain('does not accept a gates: skipped trailer')
+    record(root, 7)
+    const red = JSON.parse(runReleasePush(root, command, { WT_RELEASE_BRANCH: '' }).stdout).hookSpecificOutput
+    expect(red.permissionDecision).toBe('deny')
+    expect(red.permissionDecisionReason).toContain('test: RED (exit 7)')
+  })
+
+})
+
+describe('wt-release-push-evidence-guard-hook eligibility', () => {
+  it('preserves eligibility, observe mode, fail-open, and exact-command overrides', () => {
+    const root = repo()
+    configureReleaseRemote(root)
+    for (const payload of [{ tool_name: 'Read' }, { hook_event_name: 'PostToolUse' }, { agent_id: 'child' }, { tool_input: {} }]) {
+      expect(runReleasePush(root, undefined, {}, payload).stdout).toBe('')
+    }
+    expect(runReleasePush(root, 'git status').stdout).toBe('')
+    expect(runReleasePush(root, undefined, { WT_GUARD_MODE: 'observe' }).stdout).toBe('')
+    const invalid = runReleasePush(root, undefined, {}, '{')
+    expect(invalid).toMatchObject({ status: 0, stdout: '' })
+    expect(invalid.stderr).toContain('FAILED OPEN')
+    const stateDir = join(states.get(root)!, 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const allowance = join(stateDir, 'allow-once.json')
+    writeFileSync(allowance, JSON.stringify({ command: 'git push public HEAD:main', reason: 'fixture outage' }))
+    expect(JSON.parse(runReleasePush(root, 'git push public "HEAD:main"').stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(existsSync(allowance)).toBe(true)
+    expect(JSON.parse(runReleasePush(root).stdout).hookSpecificOutput.additionalContext).toContain('fixture outage')
+  })
+
+})
+
   it('refuses evidence that predates HEAD and names the stale gate and exact refresh command', () => {
     const root = repo()
     configureReleaseRemote(root)
@@ -532,4 +643,85 @@ describe('wt-release-push-evidence-guard-hook', () => {
       timeout: 5,
     }))
   })
+it('release pushes with repeated release refspecs must serialize one JSON document', () => {
+  const root = repo(false)
+  configureReleaseRemote(root)
+  const result = runReleasePush(root, 'git push public HEAD:main HEAD:main')
+  expect(result).toMatchObject({ status: 0, stderr: '' })
+  const single = JSON.parse(runReleasePush(root).stdout).hookSpecificOutput.additionalContext
+  expect(JSON.parse(result.stdout)).toEqual({
+    hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `${single}\n${single}` },
+  })
+})
+
+it.each([
+  [false, 'HEAD:main :main', "Refused deletion of release branch 'main'"],
+  [true, 'missing-object:main HEAD:main', 'test: MISSING'],
+] as const)('release pushes discard earlier notices when a later target is refused (%s, %s)', (declared, refspecs, reason) => {
+  const root = repo(declared)
+  configureReleaseRemote(root)
+  const result = runReleasePush(root, `git push public ${refspecs}`)
+  expect(result).toMatchObject({ status: 0, stderr: '' })
+  const output = JSON.parse(result.stdout).hookSpecificOutput
+  expect(output).toEqual({
+    hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining(reason),
+  })
+})
+
+it('release pushes combine unresolved and fresh notices in target order and still warn only once', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  record(root)
+  const command = 'git push public HEAD:main missing-object:main HEAD:main'
+  const single = JSON.parse(runReleasePush(root).stdout).hookSpecificOutput.additionalContext
+  const output = JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput
+  const messages = output.additionalContext.split('\n')
+  expect(output.hookEventName).toBe('PreToolUse')
+  expect(output.permissionDecision).toBeUndefined()
+  expect(messages).toEqual([single, expect.stringContaining('Could not resolve the release branch'), single])
+  const repeated = JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput
+  expect(repeated.additionalContext).toBe(`${single}\n${single}`)
+})
+
+it('flushes one collected notice before a later target fails open', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  const preload = join(root, 'later-target-error.mjs')
+  writeFileSync(preload, `import fs from 'node:fs';
+    const exists = fs.existsSync; let checks = 0;
+    fs.existsSync = file => {
+      if (String(file).endsWith('release-push-branch-unresolved.warned') && ++checks === 2) throw new Error('later target fixture');
+      return exists(file);
+    };`)
+  const command = 'git push public missing-object:main missing-object:main'
+  const extra = { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` }
+  const result = runReleasePush(root, command, extra)
+  expect(result.status).toBe(0)
+  expect(result.stderr).toContain('FAILED OPEN - later target fixture')
+  expect(result.stdout, 'the collected warning must survive the later target exception').not.toBe('')
+  expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('Could not resolve the release branch')
+  expect(runReleasePush(root, command, extra).stdout).toBe('')
+})
+
+it('continues to a later refusal when the warn-once state directory is unwritable', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  const dir = join(states.get(root)!, 'wt-main-guard')
+  mkdirSync(dir)
+  chmodSync(dir, 0o500)
+  try {
+    const result = runReleasePush(root, 'git push public missing-object:main :main')
+    expect(result.stderr).toBe('')
+    expect(result.stdout, 'marker bookkeeping must not drop the later refusal').not.toBe('')
+    expect(JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason).toContain('Refused deletion')
+  } finally { chmodSync(dir, 0o700) }
+})
+
+it('collects the warning even when its marker cannot be written', () => {
+  const root = repo()
+  configureReleaseRemote(root)
+  writeFileSync(join(states.get(root)!, 'wt-main-guard'), 'not a directory')
+  const result = runReleasePush(root, 'git push public missing-object:main')
+  expect(result.stderr).toBe('')
+  expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('Could not resolve the release branch')
 })

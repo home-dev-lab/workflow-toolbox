@@ -43,19 +43,30 @@ function probationFiring() {
   return (row?.total || 0) + 1
 }
 
-function main() {
-  const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
-  if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash' || input.agent_id) return
+function eligible(input) {
+  return input.hook_event_name === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id
+}
+
+function guardedCommit(input) {
+  if (!eligible(input)) return null
   const command = input.tool_input?.command
-  if (!invokes(command, GIT_COMMIT)) return
+  if (!invokes(command, GIT_COMMIT)) return null
   const cwd = commitCwd(command, input.cwd || process.cwd())
   const root = repoRoot(cwd)
   const declaration = readGateDeclaration(root)
-  if (!declaration) return
+  if (!declaration) return null
   const paths = stagedPaths(root)
-  if (!paths.length || !touchesDeclaredPath(paths, declaration.paths)) return
+  if (!paths.length || !touchesDeclaredPath(paths, declaration.paths)) return null
   const gitDir = git(root, ['rev-parse', '--git-dir'])
-  if (fs.existsSync(path.resolve(root, gitDir, 'MERGE_HEAD'))) return
+  if (fs.existsSync(path.resolve(root, gitDir, 'MERGE_HEAD'))) return null
+  return { command, cwd, root, declaration, paths }
+}
+
+function main() {
+  const input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}')
+  const commit = guardedCommit(input)
+  if (!commit) return
+  const { command, cwd, root, declaration, paths } = commit
 
   const reason = skippedReason(command, cwd)
   if (reason) {
@@ -63,6 +74,10 @@ function main() {
     return
   }
 
+  checkCommitEvidence(input, root, declaration, paths)
+}
+
+function checkCommitEvidence(input, root, declaration, paths) {
   const signature = treeSignature(root)
   const problems = requiredGateProblems(root, declaration, { signature, paths })
   if (!problems.length) {
@@ -70,6 +85,10 @@ function main() {
     return
   }
 
+  emitEvidenceDecision(input, root, problems)
+}
+
+function emitEvidenceDecision(input, root, problems) {
   const firing = probationFiring()
   const cls = problems.some((p) => p.status.startsWith('MISSING')) ? 'gate-evidence-missing' : problems.some((p) => p.status.startsWith('RED')) ? 'gate-evidence-red' : 'gate-evidence-stale'
   const commands = problems.map(({ gate }) => `  (${gate.cwd}) node "${'${CLAUDE_PLUGIN_ROOT}'}/bin/wt-run-gate.mjs" --record ${gate.name} -- ${gate.command}`).join('\n')
@@ -77,9 +96,9 @@ function main() {
   const deny = firing >= 20
   recordGuardEvent({ guard: GUARD, decision: deny ? 'blocked' : 'warned', class: cls, reason: problems.map((p) => `${p.gate.name}:${p.status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id })
   if (deny) {
-    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: message } } })
+    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: message } } })
   } else {
-    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { additionalContext: `${message}\nProbation: ${20 - firing} firing(s) remain before refusal.` } } })
+    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `${message}\nProbation: ${20 - firing} firing(s) remain before refusal.` } } })
   }
 }
 
