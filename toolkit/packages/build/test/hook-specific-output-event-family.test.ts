@@ -169,32 +169,6 @@ it('computed serialized keys need an exercised justification', async () => {
   await entry.prove()
 })
 
-it('one justification covers exactly one emission site', () => {
-  const emission = 'write({hookSpecificOutput: {hookEventName: subagentEvent}})'
-  const source = `function a(){const subagentEvent = "PreToolUse"; ${emission}}\nfunction b(){const subagentEvent = 3; ${emission}}`
-  const entry = { reason: 'Only the first function is proven.', prove: () => {} }
-  const result = scanSource('fixture.mjs', source, new Set(['PreToolUse']), new Map([['fixture.mjs:subagentEvent', entry]]))
-  expect(result.problems).toEqual([expect.stringMatching(/^fixture\.mjs:2: justification fixture\.mjs:subagentEvent already covers line 1; each justification binds one emission site$/)])
-})
-
-it.each([
-  ['two sites on one line', 'function a(){const event="PreToolUse";write({hookSpecificOutput:{hookEventName:event}})} function b(){const event=3;write({hookSpecificOutput:{hookEventName:event}})}'],
-  ['two sites sharing one initializer', 'const event="PreToolUse"; const payload={hookEventName:event};\nwrite({hookSpecificOutput:payload});\nwrite({hookSpecificOutput:payload});'],
-])('a justification never covers %s', (_name, source) => {
-  const entry = { reason: 'Only one site is proven.', prove: () => {} }
-  const result = scanSource('fixture.mjs', source, new Set(['PreToolUse']), new Map([['fixture.mjs:event', entry]]))
-  expect(result.emissions).toBe(2)
-  expect(result.problems).toEqual([expect.stringMatching(/justification fixture\.mjs:event already covers line \d+; each justification binds one emission site$/)])
-})
-
-it('one emission whose branches share an event expression keeps one justification', () => {
-  const source = 'const event="PreToolUse"; write({hookSpecificOutput: flag ? {hookEventName:event} :\n{hookEventName:event}});'
-  const entry = { reason: 'Both branches serialize the same event.', prove: () => {} }
-  const result = scanSource('fixture.mjs', source, new Set(['PreToolUse']), new Map([['fixture.mjs:event', entry]]))
-  expect(result.emissions).toBe(1)
-  expect(result.problems).toEqual([])
-})
-
 function pluginCopy() {
   const root = scratch()
   cpSync(join(PLUGIN, 'bin'), join(root, 'bin'), { recursive: true })

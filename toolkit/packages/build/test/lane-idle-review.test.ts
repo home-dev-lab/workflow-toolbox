@@ -371,7 +371,8 @@ const exactIno: Record<string, bigint> = { '/w': ntfsBase, '/w/run.log': ntfsBas
 type Swap = Record<string, string>
 function fakeStat(exact: boolean, mtimes: Record<string, number>, swap: Swap = {}) {
   return (file: string, options?: { bigint?: boolean }) => {
-    const seen = options?.bigint ? swap[file] ?? file : file
+    // `swap` makes a number-form read observe another file; the exact form always sees its own path.
+    const seen = options?.bigint ? file : swap[file] ?? file
     const directory = seen === '/w'
     const time = mtimes[seen] ?? 1
     const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
@@ -385,16 +386,9 @@ const identityScan = (exact: boolean, mtimes: Record<string, number> = {}, swap:
   return idleScan('/w', { readDirectory: identityDirectory, readStat, readTargetStat: readStat, excludedFiles: ['/w/run.log'] })
 }
 
-// The supervisor log's exact re-read lands on out.txt, equal in every field but `differ`.
-function retargetedStat(differ: Record<string, bigint>) {
-  return (file: string, options?: { bigint?: boolean }) => {
-    const directory = file === '/w'
-    const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
-    const mode = directory ? 0o40755 : 0o100644
-    if (!options?.bigint) return { ...kind, dev: 7, ino: Number(exactIno[file]!), mode, size: 1, mtimeMs: 1, ctimeMs: 1 }
-    const seen = file === '/w/run.log' ? '/w/out.txt' : file
-    return { ...kind, dev: 7n, ino: exactIno[seen]!, mode: BigInt(mode), size: 1n, mtimeNs: 1_000_000n, ctimeNs: 1_000_000n, ...(seen === file ? {} : differ) }
-  }
+function recordingStat(calls: string[]) {
+  const readStat = fakeStat(true, {})
+  return (file: string, options?: { bigint?: boolean }) => { calls.push(`${file}${options?.bigint ? '' : ' (number form)'}`); return readStat(file, options) }
 }
 
 describe('idle filesystem identity beyond 2^53', () => {
@@ -410,17 +404,18 @@ describe('idle filesystem identity beyond 2^53', () => {
     expect(identityScan(false)).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
   })
 
-  it('refuses an exact re-read that observes a different file than the first stat', () => {
-    // A supervisor path retargeted between the two reads must not exclude the lane's own file.
-    expect(identityScan(true, { '/w/out.txt': 20 }, { '/w/run.log': '/w/out.txt' })).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
-    expect(identityScan(true, { '/w/out.txt': 20 }, { '/w/out.txt': '/w/run.log' })).toMatchObject({ status: 'unknown' })
+  it('reads each idle path once, in exact form, for identity and metadata together', () => {
+    // A second read could observe another file than the first, whatever fields it compares.
+    const lstatCalls: string[] = []
+    const statCalls: string[] = []
+    const scan = idleScan('/w', { readDirectory: identityDirectory, readStat: recordingStat(lstatCalls), readTargetStat: recordingStat(statCalls), excludedFiles: ['/w/run.log'] })
+    expect(scan).toMatchObject({ status: 'known' })
+    expect(lstatCalls.sort()).toEqual(['/w', '/w/out.txt', '/w/run.log'])
+    expect(statCalls).toEqual(['/w/run.log'])
   })
 
-  it('refuses a re-read whose ctime matches but whose mode or mtime differs', () => {
-    // Exact ids that round to one number and equal ctimes still name two files when another field differs.
-    for (const differ of [{ mtimeNs: 5_000_000n }, { mode: 0o100600n }]) {
-      const readStat = retargetedStat(differ)
-      expect(idleScan('/w', { readDirectory: identityDirectory, readStat, readTargetStat: readStat, excludedFiles: ['/w/run.log'] }), JSON.stringify(differ, (_k, v) => typeof v === 'bigint' ? String(v) : v)).toMatchObject({ status: 'unknown' })
-    }
+  it('ignores a number-form read that observes another file', () => {
+    const before = identityScan(true, { '/w/out.txt': 20 })
+    expect(identityScan(true, { '/w/out.txt': 20 }, { '/w/run.log': '/w/out.txt', '/w/out.txt': '/w/run.log' })).toEqual(before)
   })
 })
