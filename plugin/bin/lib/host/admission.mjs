@@ -25,7 +25,8 @@ async function processAdmission({ repo, request }, env, timeout, moduleVariable,
   })
   // Drain both pipes without forwarding: even writeSync(1/2) stays off the CLI protocol.
   child.stdout.resume(); child.stderr.resume()
-  const exited = new Promise((resolve) => child.once('close', resolve))
+  // `close` also waits for inherited pipes held by descendants; only reap our direct child.
+  const exited = new Promise((resolve) => { child.once('exit', resolve); child.once('error', resolve) })
   const verdict = processVerdict(child, moduleVariable)
   const expired = `${moduleVariable}: timed out after ${timeout} ms`
   let timer
@@ -39,6 +40,7 @@ async function processAdmission({ repo, request }, env, timeout, moduleVariable,
   } finally {
     clearTimeout(timer)
     child.kill('SIGKILL')
+    child.stdout.destroy(); child.stderr.destroy()
     await exited
   }
 }
@@ -49,7 +51,7 @@ function processVerdict(child, variable) {
     let failure
     child.on('message', (message) => { verdict = message.refusal; failure = message.error })
     child.on('error', reject)
-    child.on('close', (code) => {
+    child.on('exit', (code) => {
       if (failure) return reject(new Error(failure))
       if (code !== 0) return resolve(`${variable}: admission worker exited with code ${code}`)
       if (verdict === null || typeof verdict === 'string') return resolve(verdict)

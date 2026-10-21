@@ -31,6 +31,7 @@ preflights run first; admission completes before any task or retry. The matching
 (default 10000 ms), bounding import, admission and clean worker exit, including synchronous
 loops. The module is trusted code with the CLI's privileges; its worker is not an access sandbox.
 Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.
+Processes a policy detaches are not stopped.
 Hook/configuration failures refuse closed. An unset hook preserves normal execution.
 Admitted request bytes are hash-checked before every launch, including retries; a changed request refuses that attempt.
 On `OPENCODE_REFUSED: <reason>` (exit 3), relay that one line verbatim and stop.

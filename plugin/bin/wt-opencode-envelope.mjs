@@ -134,6 +134,7 @@ const USAGE = [
     '  Import, admission and clean worker exit share that deadline, including synchronous loops.',
     '  Policies are trusted code, not sandboxed. Hook/configuration failures refuse closed.',
     '  Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.',
+    '  Processes a policy detaches are not stopped.',
     '  OPENCODE_REFUSED: <one-line reason> — exit 3; the refused task attempt is not launched.',
     '  Unset module variable preserves normal execution; an unused timeout override is ignored.',
     '',

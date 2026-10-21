@@ -37,6 +37,7 @@ run first; admission completes before the first task spawn and covers its retry.
 loops. Policies are trusted code with the CLI's privileges, not sandboxed; hook/configuration
 failures refuse closed. Unset means normal execution. Refusal cleans up the task copy.
 Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.
+Processes a policy detaches are not stopped.
 Admitted request bytes are hash-checked before the first launch and retry; a changed copy refuses that attempt.
 On `OPENCODE_REFUSED: <reason>` (exit 3), return that bare line verbatim and stop. Do not unset
 the hook, retry, reformat it as a verdict, or make schema-correction calls for a refusal.

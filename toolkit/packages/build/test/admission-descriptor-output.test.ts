@@ -95,3 +95,43 @@ describe.each(launchers)('admission descriptor isolation: %s', launcher => {
     }
   })
 })
+
+function inheritedPipePolicy(f: ReturnType<typeof fixture>, descriptor: number, pending: boolean) {
+  const pidFile = join(f.root, 'pipe-holder.pid')
+  writeFileSync(f.policy, `import { spawn } from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    export default () => {
+      const helper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 2000)'], {
+        stdio: ['ignore', ${descriptor === 1 ? "'inherit'" : "'ignore'"}, ${descriptor === 2 ? "'inherit'" : "'ignore'"}],
+      });
+      writeFileSync(${JSON.stringify(pidFile)}, String(helper.pid)); helper.unref();
+      return ${pending ? 'new Promise(() => {})' : "'policy refuses'"};
+    }`)
+  return pidFile
+}
+
+describe.each([1, 2])('admission inherited descriptor %i', descriptor => {
+  it.each([true, false])('bounds the whole call while a descendant holds the pipe (pending=%s)', async pending => {
+    const f = fixture('envelope', descriptor)
+    const pidFile = inheritedPipePolicy(f, descriptor, pending)
+    const { boundedAdmission } = await import(pathToFileURL(join(PLUGIN, 'bin/lib/host/admission.mjs')).href)
+    const timeout = 300
+    const timeoutVariable = `${f.variable}_TIMEOUT_MS`
+    const env = sealedPluginCliEnv(f.root, { [f.variable]: f.policy, [timeoutVariable]: String(timeout) })
+    try {
+      const start = performance.now()
+      const refusal = await boundedAdmission({ repo: f.repo, request: {} }, env, {
+        moduleVariable: f.variable, timeoutVariable, silent: true,
+      })
+      const elapsed = performance.now() - start
+      expect(existsSync(pidFile), 'the descendant must actually start before the deadline').toBe(true)
+      expect(refusal).toBe(`${f.variable}: ${pending ? `timed out after ${timeout} ms` : 'policy refuses'}`)
+      expect(elapsed).toBeLessThan(timeout + 400)
+    } finally {
+      // Only the test owns/reaps the helper; the admission runner does not supervise descendants.
+      if (existsSync(pidFile)) {
+        try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch { /* already exited */ }
+      }
+    }
+  })
+})

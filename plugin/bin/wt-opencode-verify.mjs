@@ -31,6 +31,7 @@ function usage() {
     'WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS is a positive integer up to 2147483647; default 10000 ms.',
     'Import, admission and clean worker exit share that deadline, including synchronous loops. Policies are trusted code, not sandboxed.',
     'Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.',
+    'Processes a policy detaches are not stopped.',
     'Hook/configuration failures refuse closed: OPENCODE_REFUSED: <one-line reason>, exit 3, no task spawn; the task copy is cleaned.',
     'Unset module variable preserves normal execution; an unused timeout override is ignored.',
     'Exits: 0 = answer, 1 = unavailable/external-directory denial, 2 = usage/setup error; task failure exits propagate (timeout 124).',
