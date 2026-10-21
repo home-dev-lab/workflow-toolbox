@@ -19,7 +19,7 @@ afterEach(() => {
   }
 })
 
-describe('brief gate section', () => {
+describe('brief gate section: missing and runnable', () => {
   it.each([
     '# Brief\npnpm test',
     '## Gates\nRemember to check things.',
@@ -52,7 +52,9 @@ describe('brief gate section', () => {
   ])('accepts the context-mode rule gate line %j on its own', (line) => {
     expect(briefGateSectionRefusal(`## Gates\n- ${line}\n`)).toBeNull()
   })
+})
 
+describe('brief gate section: pnpm forms and spelling', () => {
   it('accepts the reported brief whose Gates list only pnpm run and pnpm exec vitest forms', () => {
     const brief = '# Brief\n\n## Gates\nRun by exit code each:\n- pnpm run quality:static\n- pnpm run typecheck\n- pnpm exec vitest run tests/mcp-capture\n'
     expect(briefGateSectionRefusal(brief, { brief: 'brief.md' })).toBeNull()
@@ -84,7 +86,9 @@ describe('brief gate section', () => {
   it('accepts Gates after another section', () => {
     expect(briefGateSectionRefusal('## Implementation\nWrite code.\n## Gates\npnpm test')).toBeNull()
   })
+})
 
+describe('brief gate section: exemptions and refusal text', () => {
   it.each([{ owner: 'pilot' }, { role: 'critic' }, { role: 'review' }, { role: 'refutation' }, { noGateSectionReason: 'research only' }])('exempts %j', (options) => {
     expect(briefGateSectionRefusal('# Read only', options)).toBeNull()
   })
