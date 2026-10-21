@@ -1,6 +1,11 @@
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync } from 'node:fs'
 import { deadlineLine } from '../lane-deadline-core.mjs'
-import { createIdleWatch } from './lane-idle-worker.mjs'
+import { createBaseIdleWatch, createIdleWatch } from './lane-idle-worker.mjs'
+import { hostAdapter } from './adapter.mjs'
+import { readLinuxIdleProcProcesses } from './linux.mjs'
+import { scanDeadlineWorktree, scanIdleWorktree } from './lane-worktree-scan.mjs'
+import { latestWorktreeWrite } from '../lane-supervisor-core.mjs'
+import path from 'node:path'
 
 function laneEvent(ctx) {
   return { pid: ctx.child.pid, argv: ctx.modules.argvSummary(['opencode', ...ctx.args]), worktree: ctx.opts.dir, owner: ctx.opts.owner }
@@ -59,7 +64,7 @@ function enterDecision(ctx, reason = 'timeout-bound', extra = {}) {
   clearTimeout(ctx.graceTimer)
   const timeoutAt = ctx.timeoutAt ?? new Date().toISOString()
   const verdict = ctx.idle.refresh()
-  const activity = ctx.modules.latestWorktreeWrite(ctx.opts.dir)
+  const activity = ctx.deadlineWrite(ctx.opts.dir)
   const evidence = { lastWriteAt: activity.status === 'known' && activity.at ? new Date(activity.at).toISOString() : 'unknown', activityStatus: activity.status, activityBounded: activity.bounded, logTail: ctx.modules.readLogTail(ctx.opts.log), process: ctx.modules.processEvidenceStatus(ctx.child.pid) }
   ctx.idleDefault = verdict.warn
   const defaultDecision = !ctx.idleDefault && ctx.extensionCount < ctx.opts.maxExtensions ? 'extend' : 'abandon'
@@ -101,16 +106,49 @@ function ownerDecision(ctx) {
 }
 
 export function createLaneDeadline(options) {
-  const ctx = { ...options, extensionCount: 0, timeoutAt: options.firstTimeoutAt }
+  const ctx = { ...options, extensionCount: 0, timeoutAt: options.firstTimeoutAt, deadlineWrite: deadlineWriter(options.modules) }
   const clear = () => {
     clearTimeout(ctx.timer)
     clearTimeout(ctx.graceTimer)
     clearInterval(ctx.decisions)
     ctx.idle.clear()
   }
-  ctx.idle = createIdleWatch({ ...options, latestWrite: (dir) => ctx.modules.latestWorktreeWrite(dir), readSnapshot: () => ctx.modules.hostAdapter.readProcessSnapshot(), stop: () => abandonLane(ctx, 'idle', null, ['TERMINATION=idle']) })
+  const watchOptions = { ...options, latestWrite: ctx.deadlineWrite, readSnapshot: () => ctx.modules.hostAdapter.readProcessSnapshot(), stop: () => abandonLane(ctx, 'idle', null, ['TERMINATION=idle']) }
+  ctx.idle = ctx.opts.idleTimeout > 0 ? idleDeadlineWatch(watchOptions) : createBaseIdleWatch(watchOptions)
   armTimeout(ctx, ctx.opts.timeout)
   ctx.decisions = setInterval(() => ownerDecision(ctx), 100)
   ctx.decisions.unref()
   return { clear }
+}
+
+function idleDeadlineWatch(options) {
+  const watch = createIdleWatch({ ...options, latestDeadlineWrite: options.latestWrite, latestIdleWrite: (dir) => scanIdleWorktree(dir, { excludedFiles: supervisorFiles(options) }), readIdleSnapshot: () => idleSnapshot(options.modules) })
+  return { ...watch, refresh: watch.refreshDeadline }
+}
+
+function idleSnapshot(modules) {
+  if (modules.hostAdapter !== hostAdapter || hostAdapter.platform !== 'linux') return modules.hostAdapter.readProcessSnapshot()
+  return readLinuxIdleProcProcesses({ readFile: readFileSync, readDirectory: readdirSync, observedAt: Date.now() })
+}
+
+function deadlineWriter(modules) {
+  // Preserve the injected scanner seam; the installed scanner always uses the base channel.
+  return modules.latestWorktreeWrite === latestWorktreeWrite ? scanDeadlineWorktree : modules.latestWorktreeWrite
+}
+
+function supervisorFiles(options) {
+  const files = [options.opts.log, ...usageReceiptFiles(options.opts.log), ...(options.supervisorFiles ?? []), ...(options.receiptFiles ?? [])]
+  if (options.decisionFile?.endsWith('.decision.json')) {
+    files.push(options.decisionFile.replace(/\.decision\.json$/, '.json'))
+    files.push(path.dirname(options.decisionFile))
+    files.push(path.join(path.dirname(options.decisionFile), 'current.json'))
+  }
+  return files
+}
+
+function usageReceiptFiles(log) {
+  const dir = path.dirname(log)
+  const names = new Set([`${path.basename(log)}.usage.json`, `${path.basename(log)}.usage.json.launch.json`])
+  // Positively establish absent optional receipts by listing; a failed listing is unknown.
+  return readdirSync(dir).filter((name) => names.has(name)).map((name) => path.join(dir, name))
 }
