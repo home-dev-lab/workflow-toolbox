@@ -67,7 +67,10 @@ export function blankHeredocBodies(text) {
 
 // Deliberately a small language, not a partial Bash parser: one standalone, leading
 // cat (optionally writing a literal path) or git commit -F - with one terminal redirect.
-const CERTAIN_HEREDOC = /^[ \t]*(?:cat(?:[ \t]+>[ \t]*[A-Za-z0-9_./-]+)?|git[ \t]+commit[ \t]+-F[ \t]+-)[ \t]+<<(-?)[ \t]*(?:([A-Za-z0-9_]+)|'([A-Za-z0-9_]+)'|"([A-Za-z0-9_]+)")[ \t]*$/
+const HEREDOC_CAT_COMMAND = String.raw`cat(?:[ \t]+>[ \t]*[A-Za-z0-9_./-]+)?`
+const HEREDOC_COMMAND_PREFIX = String.raw`(?:${HEREDOC_CAT_COMMAND}|git[ \t]+commit[ \t]+-F[ \t]+-)`
+const HEREDOC_DELIMITER_WORD = String.raw`(?:(\w+)|'(\w+)'|"(\w+)")`
+const CERTAIN_HEREDOC = new RegExp(String.raw`^[ \t]*${HEREDOC_COMMAND_PREFIX}[ \t]+<<(-?)[ \t]*${HEREDOC_DELIMITER_WORD}[ \t]*$`)
 const SIMPLE_ARGUMENT = String.raw`(?:[A-Za-z0-9_./*+-]+|\$${NAME}[A-Za-z0-9_./*+-]*|"\$${NAME}"[A-Za-z0-9_./*+-]*)`
 const SIMPLE_COMMAND = new RegExp(String.raw`^[ \t]*([A-Za-z0-9_./+-]+)(?:[ \t]+${SIMPLE_ARGUMENT})*[ \t]*$`)
 const COMPOUND_WORDS = new Set([
