@@ -52,10 +52,18 @@ const ATTACH_REMOVED = '--attach was removed: compose the extra text into the br
 
 export const BRIEF_GATE_RUNNABLES = Object.freeze([
   'gate-chain.sh', 'run-quality.mjs', 'pnpm test', 'pnpm typecheck', 'pnpm lint',
-  'pnpm quality', 'node --test', '.selftest.mjs', '.test.mjs', '.test.ts',
+  'pnpm quality', 'pnpm exec vitest run', 'node --test', '.selftest.mjs', '.test.mjs', '.test.ts',
 ])
+// `pnpm run <script>` runs the same script as `pnpm <script>`, so a gate line is matched with `run` folded away.
+// A script named `exec` is not folded: `pnpm run exec vitest` runs that script, not the pnpm exec command.
+const PNPM_RUN_FORM = /\bpnpm run (?!exec\b)/g
 const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
 const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
+
+function isRunnableGateLine(line) {
+  const folded = line.replace(/\s+/g, ' ').replace(PNPM_RUN_FORM, 'pnpm ')
+  return BRIEF_GATE_RUNNABLES.some((command) => folded.includes(command))
+}
 
 function hasBriefGateSection(text) {
   let inGates = false
@@ -64,7 +72,7 @@ function hasBriefGateSection(text) {
       inGates = /^##\s+Gates\b/i.test(line)
       continue
     }
-    if (inGates && BRIEF_GATE_RUNNABLES.some((command) => line.includes(command))) return true
+    if (inGates && isRunnableGateLine(line)) return true
   }
   return false
 }
@@ -72,7 +80,7 @@ function hasBriefGateSection(text) {
 export function briefGateSectionRefusal(text, { owner, role, noGateSectionReason, brief = '<path>' } = {}) {
   if (owner === 'pilot' || ['critic', 'review', 'refutation'].includes(role) || noGateSectionReason?.trim()) return null
   if (hasBriefGateSection(text)) return null
-  return `wt-lane: Refused: brief ${brief} has no gate section. Add these lines with the repository's gate command:\n## Gates\nRun detached, by exit code each: bash <gate-chain.sh> --dir <worktree>/toolkit --out <log-dir> --stamp <stamp> -- typecheck lint quality test\nRecognised runnable gates: ${BRIEF_GATE_RUNNABLES.join(', ')}.\nExemptions: ${GATE_SECTION_EXEMPTIONS}.`
+  return `wt-lane: Refused: brief ${brief} has no gate section. Add these lines with the repository's gate command:\n## Gates\nRun detached, by exit code each: bash <gate-chain.sh> --dir <worktree>/toolkit --out <log-dir> --stamp <stamp> -- typecheck lint quality test\nRecognised runnable gates: ${BRIEF_GATE_RUNNABLES.join(', ')} (each pnpm script also as pnpm run <script>).\nExemptions: ${GATE_SECTION_EXEMPTIONS}.`
 }
 
 function laneGateSectionChoiceError(out) {
