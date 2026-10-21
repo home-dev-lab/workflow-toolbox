@@ -63,6 +63,7 @@ test('native worktree scanner: symlinks do not sample external state', { skip: p
 
 test('Linux family signal includes minor faults from automatically reaped forks', () => {
   const read = (faults) => readLinuxProcProcesses({
+    readLink: () => String(process.pid),
     observedAt: 20_000,
     readDirectory: () => [{ name: '4', isDirectory: () => true }],
     readFile: (file) => {
@@ -82,6 +83,7 @@ test('Linux family signal includes minor faults from automatically reaped forks'
 function procInput(parent) {
   let reads = 0
   return {
+    readLink: () => String(process.pid),
     observedAt: 20_000,
     readDirectory: () => [{ name: '5', isDirectory: () => true }],
     readFile: (file) => {
@@ -152,6 +154,7 @@ test('idle union observes churn in directories excluded from the deadline scan',
 for (const [pid, parent, unknownPids, status] of [[1, '0', [], 'known'], [1, '-1', [], 'unknown'], [5, '0', [], 'unknown'], [1, '0', [6], 'unknown']]) {
   test(`idle namespace ancestry: pid=${pid} parent=${parent} unreadable=${unknownPids.join(',') || 'none'} is ${status}`, () => {
     const snapshot = readLinuxProcProcesses({
+      readLink: () => String(process.pid),
       observedAt: 20_000,
       readDirectory: () => [String(pid), '4'].map((name) => ({ name, isDirectory: () => true })),
       readFile: (file) => {

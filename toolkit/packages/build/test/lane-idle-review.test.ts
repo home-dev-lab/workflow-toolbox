@@ -14,15 +14,16 @@ const scanner = await import(new URL('host/lane-worktree-scan.mjs', lib).href)
 // Fall back only for the pre-fix red run, so the exact old scanner is exercised.
 const idleScan = scanner.scanIdleWorktree ?? scanner.scanWorktree
 
-function procSnapshot(childUser = '0', childSystem = '0', parent = '4') {
+function procSnapshot(childUser = '0', childSystem = '0', parent = '4', { readLink = () => String(process.pid), state = 'S' } = {}) {
   return readLinuxProcProcesses({
+    readLink,
     readDirectory: () => ['4', '5'].map((name) => ({ name, isDirectory: () => true })),
     observedAt: 20_000,
     readFile: (file: string) => {
       if (file === '/proc/uptime') return '10 1\n'
       if (file.endsWith('/cmdline')) return 'model\0'
       const pid = file.split('/')[2]
-      const fields = ['S', pid === '4' ? '1' : parent, ...Array<string>(18).fill('0')]
+      const fields = [pid === '4' ? 'S' : state, pid === '4' ? '1' : parent, ...Array<string>(18).fill('0')]
       fields[13] = pid === '4' ? childUser : '0'
       fields[14] = pid === '4' ? childSystem : '0'
       fields[19] = '100'
@@ -50,6 +51,73 @@ function harness(idleTimeout = 8, snapshot = procSnapshot('0', '0', '1')) {
   const cleanup = () => { watch.clear(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }) }
   return { root, worktree, log, stop, writeState, readSnapshot, latestWrite, watch, options, cleanup }
 }
+
+describe('idle proc namespace validation', () => {
+  it.each(['mismatch', 'unreadable', 'malformed'])('names %s proc self evidence unknown and never stops', (kind) => {
+    const readLink = vi.fn(() => {
+      if (kind === 'unreadable') throw Object.assign(new Error('no proc'), { code: 'ENOENT' })
+      return kind === 'mismatch' ? String(process.pid + 1) : 'not-a-pid'
+    })
+    const snapshot = procSnapshot('0', '0', '1', { readLink })
+    const h = harness(8, snapshot)
+    try {
+      vi.advanceTimersByTime(20_000)
+      expect(h.writeState.mock.lastCall?.[0].idle).toMatchObject({ status: 'unknown', reason: expect.stringContaining('/proc PID namespace mismatch') })
+      expect(h.stop).not.toHaveBeenCalled()
+      expect(readFileSync(h.log, 'utf8')).not.toMatch(/LANE_IDLE_(WARN|STOP)/)
+      expect(readLink).toHaveBeenCalledWith('/proc/self')
+    } finally { h.cleanup() }
+  })
+
+  it('keeps matching proc self evidence known and stops a silent descendant-free lane', () => {
+    const readLink = vi.fn(() => String(process.pid))
+    const snapshot = procSnapshot('0', '0', '1', { readLink })
+    expect(snapshot).toEqual(procSnapshot('0', '0', '1'))
+    expect(activityEvidence({ snapshot, rootPid: 4, worktree: { status: 'known' } }).status).toBe('known')
+    const h = harness(8, snapshot)
+    try {
+      vi.advanceTimersByTime(8000)
+      expect(h.stop).toHaveBeenCalledTimes(1)
+      expect(readFileSync(h.log, 'utf8')).toContain('LANE_IDLE_STOP silentSeconds=8')
+      expect(readLink).toHaveBeenCalledWith('/proc/self')
+    } finally { h.cleanup() }
+  })
+
+  it('accepts PID 1 PPID 0 in CPU evidence without exempting other missing parents', () => {
+    const processes = [{ pid: 1, ppid: 0, cpuTicks: 0 }, { pid: 4, ppid: 1, cpuTicks: 0 }]
+    const input = { snapshot: { processes }, rootPid: 4, worktree: { status: 'known' } }
+    expect(activityEvidence(input)).toMatchObject({ status: 'known', descendants: [], cpuTimes: [{ pid: 4, cpuTicks: 0 }] })
+    processes[0] = { pid: 5, ppid: 0, cpuTicks: 0 }
+    expect(activityEvidence(input)).toMatchObject({ status: 'unknown', reason: 'process snapshot contains unreadable ancestry' })
+  })
+})
+
+describe('idle living descendant states', () => {
+  it.each(['Z', 'X'])('stops with only a %s descendant while the deadline still counts its presence', (state) => {
+    const snapshot = procSnapshot('0', '0', '4', { state })
+    expect(snapshot.processes.find((row: { pid: number }) => row.pid === 5)).toMatchObject({ state })
+    const input = { snapshot, rootPid: 4, worktree: { status: 'known' } }
+    expect(activityEvidence({ ...input, requireCpu: false })).toMatchObject({ status: 'known', descendants: [5] })
+    const h = harness(8, snapshot)
+    try {
+      vi.advanceTimersByTime(8000)
+      expect(h.stop).toHaveBeenCalledTimes(1)
+      expect(readFileSync(h.log, 'utf8')).toContain('LANE_IDLE_WARN silentSeconds=4')
+      expect(readFileSync(h.log, 'utf8')).toContain('LANE_IDLE_STOP silentSeconds=8')
+      expect(activityEvidence(input)).toMatchObject({ status: 'known', descendants: [] })
+    } finally { h.cleanup() }
+  })
+
+  it('keeps a living sleeping descendant protected with unchanged CPU counters', () => {
+    const h = harness(8, procSnapshot())
+    try {
+      vi.advanceTimersByTime(24_000)
+      expect(h.writeState.mock.lastCall?.[0].idle.status).toBe('known')
+      expect(h.stop).not.toHaveBeenCalled()
+      expect(readFileSync(h.log, 'utf8')).not.toMatch(/LANE_IDLE_(WARN|STOP)/)
+    } finally { h.cleanup() }
+  })
+})
 
 describe('idle review counterexamples', () => {
   it('counts CPU of reaped children between samples as progress', () => {

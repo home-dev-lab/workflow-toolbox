@@ -62,7 +62,7 @@ function processActivity(snapshot, rootPid, requireCpu) {
 function familyActivity(snapshot, rows, rootPid, requireCpu) {
   const usable = rows.filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid ?? row.parentPid))
   if (!usable.some((row) => row.pid === rootPid)) return { status: 'unknown', reason: snapshot?.reason ?? 'process snapshot missing child' }
-  const descendants = liveDescendants(usable, rootPid)
+  const descendants = liveDescendants(requireCpu ? usable.filter((row) => row.state !== 'Z' && row.state !== 'X') : usable, rootPid)
   // Deadline defaults consume presence only; opt-in idle evidence also validates counters.
   if (!requireCpu) return { status: 'known', descendants }
   if (usable.length !== rows.length) return { status: 'unknown', reason: 'process snapshot contains unreadable ancestry' }

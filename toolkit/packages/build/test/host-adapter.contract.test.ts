@@ -205,6 +205,7 @@ describe('Linux process CPU counters', () => {
   ])('reads user=%s system=%s without inventing a zero', (user, system, cpuTicks) => {
     let reads = 0
     const snapshot = readLinuxProcProcesses({
+      readLink: () => String(process.pid),
       readFile: (file: string) => {
         if (file === '/proc/uptime') return '10 1\n'
         if (file.endsWith('/stat')) return procStat(42, 'model (worker)', 100, ++reads === 1 ? '0' : user, reads === 1 ? '0' : system)

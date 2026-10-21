@@ -1,5 +1,6 @@
 import * as posix from './posix.mjs'
 import { join } from 'node:path'
+import { readlinkSync } from 'node:fs'
 
 export const { endProcessFamily, forceEndProcessFamily, parseProcessRelationships, processRelationshipOperation, processSnapshotOperation, readProcessRelationships, resolveCanonicalPath } = posix
 
@@ -31,14 +32,25 @@ function readLinuxProcProcess(entry, pid, readFile, observedAt, uptime) {
   if (!/^\d+$/.test(secondFields[1]) || !Number.isSafeInteger(ppid)) return null
   const command = commandLine || firstStat.slice(firstStat.indexOf('(') + 1, firstStat.lastIndexOf(')'))
   const startedAt = observedAt - Math.max(0, uptime - startTicks / 100) * 1000
-  return { pid, ppid, elapsedMs: Math.max(0, observedAt - startedAt), startTime: startedAt, startIdentity: startTicks, command, cpuTicks: processCpuTicks(secondFields), activityTicks: processCpuTicks(secondFields, [7, 8, 9, 10]) }
+  return { pid, ppid, state: secondFields[0], elapsedMs: Math.max(0, observedAt - startedAt), startTime: startedAt, startIdentity: startTicks, command, cpuTicks: processCpuTicks(secondFields), activityTicks: processCpuTicks(secondFields, [7, 8, 9, 10]) }
 }
 
 function unknownProcessRead(error) {
   return error?.code !== 'ENOENT' && error?.code !== 'ESRCH'
 }
 
-export function readLinuxIdleProcProcesses({ readFile, readDirectory, observedAt }) {
+function idleProcNamespaceReason(readLink) {
+  try {
+    const self = readLink('/proc/self')
+    if (self !== String(process.pid)) return `/proc PID namespace mismatch: self=${JSON.stringify(self)} supervisor=${process.pid}`
+    return null
+  } catch { return '/proc PID namespace mismatch or unavailable: cannot read /proc/self' }
+}
+
+export function readLinuxIdleProcProcesses({ readFile, readDirectory, observedAt, readLink = readlinkSync }) {
+  // Inherited /proc mounts can number our child as an unrelated process. Fail closed for idle only.
+  const reason = idleProcNamespaceReason(readLink)
+  if (reason) return { supported: false, reason, processes: [], unknownPids: [] }
   let uptime
   try { uptime = Number(readFile('/proc/uptime', 'utf8').split(/\s+/)[0]) } catch { return null }
   const processes = []
