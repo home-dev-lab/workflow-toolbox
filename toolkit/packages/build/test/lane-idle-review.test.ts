@@ -365,42 +365,62 @@ describe('kernel threads in idle ancestry', () => {
   })
 })
 
-describe('idle filesystem identity beyond 2^53', () => {
-  // NTFS file ids exceed Number.MAX_SAFE_INTEGER, so the number form collapses distinct files.
-  const base = 2n ** 53n + 2n
-  const exactIno: Record<string, bigint> = { '/w': base, '/w/run.log': base + 1n, '/w/out.txt': base + 2n }
-  type Swap = Record<string, string>
-  function fakeStat(exact: boolean, mtimes: Record<string, number>, swap: Swap = {}) {
-    return (file: string, options?: { bigint?: boolean }) => {
-      const seen = options?.bigint ? swap[file] ?? file : file
-      const directory = seen === '/w'
-      const time = mtimes[seen] ?? 1
-      const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
-      if (options?.bigint && exact) return { ...kind, dev: 7n, ino: exactIno[seen]!, mode: BigInt(directory ? 0o40755 : 0o100644), size: 1n, mtimeNs: BigInt(time) * 1_000_000n, ctimeNs: BigInt(time) * 1_000_000n }
-      return { ...kind, dev: 7, ino: Number(exactIno[seen]!), mode: directory ? 0o40755 : 0o100644, size: 1, mtimeMs: time, ctimeMs: time }
-    }
+// NTFS file ids exceed Number.MAX_SAFE_INTEGER, so the number form collapses distinct files.
+const ntfsBase = 2n ** 53n + 2n
+const exactIno: Record<string, bigint> = { '/w': ntfsBase, '/w/run.log': ntfsBase + 1n, '/w/out.txt': ntfsBase + 2n }
+type Swap = Record<string, string>
+function fakeStat(exact: boolean, mtimes: Record<string, number>, swap: Swap = {}) {
+  return (file: string, options?: { bigint?: boolean }) => {
+    const seen = options?.bigint ? swap[file] ?? file : file
+    const directory = seen === '/w'
+    const time = mtimes[seen] ?? 1
+    const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
+    if (options?.bigint && exact) return { ...kind, dev: 7n, ino: exactIno[seen]!, mode: BigInt(directory ? 0o40755 : 0o100644), size: 1n, mtimeNs: BigInt(time) * 1_000_000n, ctimeNs: BigInt(time) * 1_000_000n }
+    return { ...kind, dev: 7, ino: Number(exactIno[seen]!), mode: directory ? 0o40755 : 0o100644, size: 1, mtimeMs: time, ctimeMs: time }
   }
-  const readDirectory = (dir: string) => dir === '/w' ? ['run.log', 'out.txt'].map((name) => ({ name })) : []
-  const scan = (exact: boolean, mtimes: Record<string, number> = {}, swap: Swap = {}) => {
-    const readStat = fakeStat(exact, mtimes, swap)
-    return idleScan('/w', { readDirectory, readStat, readTargetStat: readStat, excludedFiles: ['/w/run.log'] })
-  }
+}
+const identityDirectory = (dir: string) => dir === '/w' ? ['run.log', 'out.txt'].map((name) => ({ name })) : []
+const identityScan = (exact: boolean, mtimes: Record<string, number> = {}, swap: Swap = {}) => {
+  const readStat = fakeStat(exact, mtimes, swap)
+  return idleScan('/w', { readDirectory: identityDirectory, readStat, readTargetStat: readStat, excludedFiles: ['/w/run.log'] })
+}
 
+// The supervisor log's exact re-read lands on out.txt, equal in every field but `differ`.
+function retargetedStat(differ: Record<string, bigint>) {
+  return (file: string, options?: { bigint?: boolean }) => {
+    const directory = file === '/w'
+    const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
+    const mode = directory ? 0o40755 : 0o100644
+    if (!options?.bigint) return { ...kind, dev: 7, ino: Number(exactIno[file]!), mode, size: 1, mtimeMs: 1, ctimeMs: 1 }
+    const seen = file === '/w/run.log' ? '/w/out.txt' : file
+    return { ...kind, dev: 7n, ino: exactIno[seen]!, mode: BigInt(mode), size: 1n, mtimeNs: 1_000_000n, ctimeNs: 1_000_000n, ...(seen === file ? {} : differ) }
+  }
+}
+
+describe('idle filesystem identity beyond 2^53', () => {
   it('keeps the scan known with exact bigint identities and still excludes supervisor files', () => {
     expect(Number(exactIno['/w/run.log']!), 'the fixture must collapse in number form').toBe(Number(exactIno['/w/out.txt']!))
-    const before = scan(true)
+    const before = identityScan(true)
     expect(before).toMatchObject({ status: 'known' })
-    expect(scan(true, { '/w/run.log': 99 }).fingerprint, 'an excluded log write is not activity').toBe(before.fingerprint)
-    expect(scan(true, { '/w/out.txt': 99 }).fingerprint, 'a lane file write is activity').not.toBe(before.fingerprint)
+    expect(identityScan(true, { '/w/run.log': 99 }).fingerprint, 'an excluded log write is not activity').toBe(before.fingerprint)
+    expect(identityScan(true, { '/w/out.txt': 99 }).fingerprint, 'a lane file write is activity').not.toBe(before.fingerprint)
   })
 
   it('stays unknown when no exact identity can be read', () => {
-    expect(scan(false)).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
+    expect(identityScan(false)).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
   })
 
   it('refuses an exact re-read that observes a different file than the first stat', () => {
     // A supervisor path retargeted between the two reads must not exclude the lane's own file.
-    expect(scan(true, { '/w/out.txt': 20 }, { '/w/run.log': '/w/out.txt' })).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
-    expect(scan(true, { '/w/out.txt': 20 }, { '/w/out.txt': '/w/run.log' })).toMatchObject({ status: 'unknown' })
+    expect(identityScan(true, { '/w/out.txt': 20 }, { '/w/run.log': '/w/out.txt' })).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
+    expect(identityScan(true, { '/w/out.txt': 20 }, { '/w/out.txt': '/w/run.log' })).toMatchObject({ status: 'unknown' })
+  })
+
+  it('refuses a re-read whose ctime matches but whose mode or mtime differs', () => {
+    // Exact ids that round to one number and equal ctimes still name two files when another field differs.
+    for (const differ of [{ mtimeNs: 5_000_000n }, { mode: 0o100600n }]) {
+      const readStat = retargetedStat(differ)
+      expect(idleScan('/w', { readDirectory: identityDirectory, readStat, readTargetStat: readStat, excludedFiles: ['/w/run.log'] }), JSON.stringify(differ, (_k, v) => typeof v === 'bigint' ? String(v) : v)).toMatchObject({ status: 'unknown' })
+    }
   })
 })

@@ -29,7 +29,12 @@ function identity(stat, readExact) {
 function sameObservation(stat, exact) {
   if (typeof exact?.dev !== 'bigint' || typeof exact.ino !== 'bigint' || exact.ino <= 0n) return false
   if (Number(exact.dev) !== stat.dev || Number(exact.ino) !== stat.ino || Number(exact.size) !== stat.size) return false
-  return typeof exact.ctimeNs === 'bigint' && Math.abs(Number(exact.ctimeNs) / 1e6 - stat.ctimeMs) < 0.01
+  return Number(exact.mode) === stat.mode && sameTime(exact.ctimeNs, stat.ctimeMs) && sameTime(exact.mtimeNs, stat.mtimeMs)
+}
+
+// Both conversions lose under 0.0003 ms near today's epoch; 0.01 ms keeps a wide margin.
+function sameTime(ns, ms) {
+  return typeof ns === 'bigint' && Math.abs(Number(ns) / 1e6 - ms) < 0.01
 }
 
 function metadata(stat) {

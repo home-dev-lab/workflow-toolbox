@@ -9,7 +9,7 @@ export type ContractProof = () => void | Promise<void>
 export interface Justification { reason: string; prove: ContractProof }
 export type Justifications = Map<string, Justification>
 export interface ScanResult { emissions: number; problems: string[]; justified: Set<string> }
-interface Context { file: string; source: ts.SourceFile; events?: Set<string> | undefined; exceptions: Justifications; result: ScanResult; sites: Map<string, number> }
+interface Context { file: string; source: ts.SourceFile; events?: Set<string> | undefined; exceptions: Justifications; result: ScanResult; sites: Map<string, ts.Node> }
 const extensions = new Set(['.mjs', '.js', '.cjs'])
 
 function lineOf(context: Context, node: ts.Node): number {
@@ -20,17 +20,17 @@ function problem(context: Context, node: ts.Node, message: string) {
   context.result.problems.push(`${context.file}:${lineOf(context, node)}: ${message}`)
 }
 
-// A justification is proven for one site; the same expression text elsewhere needs its own entry.
-function justified(context: Context, expression: ts.Node): boolean {
+// A justification is proven for one emission site; the same expression text at another site needs its own entry.
+function justified(context: Context, expression: ts.Node, site: ts.Node = expression): boolean {
   const key = `${context.file}:${expression.getText(context.source)}`
   const entry = context.exceptions.get(key)
   if (!entry?.reason.trim() || typeof entry.prove !== 'function') return false
-  const line = lineOf(context, expression), first = context.sites.get(key)
-  if (first !== undefined && first !== line) {
-    problem(context, expression, `justification ${key} already covers line ${first}; each justification binds one emission site`)
+  const first = context.sites.get(key)
+  if (first !== undefined && first !== site) {
+    problem(context, site, `justification ${key} already covers line ${lineOf(context, first)}; each justification binds one emission site`)
     return true
   }
-  context.sites.set(key, line)
+  context.sites.set(key, site)
   context.result.justified.add(key)
   return true
 }
@@ -39,10 +39,10 @@ function checkEnvelope(context: Context, value: ts.Expression) {
   context.result.emissions++
   for (const shape of shapes(value)) {
     if (!shape.event) {
-      if (!justified(context, value)) problem(context, value, 'hookSpecificOutput requires a provable hookEventName after overriding spreads')
+      if (!justified(context, value, value)) problem(context, value, 'hookSpecificOutput requires a provable hookEventName after overriding spreads')
     } else if (ts.isStringLiteralLike(shape.event)) {
       if (context.events && !context.events.has(shape.event.text)) problem(context, shape.event, `hookEventName ${shape.event.text} is not a registered event`)
-    } else if (!justified(context, shape.event)) {
+    } else if (!justified(context, shape.event, value)) {
       problem(context, shape.event, 'non-literal hookEventName requires a reason and serialized-output contract proof')
     }
   }
@@ -83,7 +83,7 @@ function assignmentValue(node: ts.BinaryExpression): ts.Expression | undefined {
 export function scanSource(file: string, text: string, events?: Set<string>, exceptions: Justifications = new Map()): ScanResult {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   const result: ScanResult = { emissions: 0, problems: [], justified: new Set() }
-  const context = { file, source, events, exceptions, result, sites: new Map<string, number>() }
+  const context = { file, source, events, exceptions, result, sites: new Map<string, ts.Node>() }
   for (const { node, message } of serializationHazards(source, events)) {
     if (!justified(context, node)) problem(context, node, message)
   }
