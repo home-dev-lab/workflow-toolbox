@@ -9,18 +9,28 @@ export type ContractProof = () => void | Promise<void>
 export interface Justification { reason: string; prove: ContractProof }
 export type Justifications = Map<string, Justification>
 export interface ScanResult { emissions: number; problems: string[]; justified: Set<string> }
-interface Context { file: string; source: ts.SourceFile; events?: Set<string> | undefined; exceptions: Justifications; result: ScanResult }
+interface Context { file: string; source: ts.SourceFile; events?: Set<string> | undefined; exceptions: Justifications; result: ScanResult; sites: Map<string, number> }
 const extensions = new Set(['.mjs', '.js', '.cjs'])
 
-function problem(context: Context, node: ts.Node, message: string) {
-  const line = context.source.getLineAndCharacterOfPosition(node.getStart(context.source)).line + 1
-  context.result.problems.push(`${context.file}:${line}: ${message}`)
+function lineOf(context: Context, node: ts.Node): number {
+  return context.source.getLineAndCharacterOfPosition(node.getStart(context.source)).line + 1
 }
 
+function problem(context: Context, node: ts.Node, message: string) {
+  context.result.problems.push(`${context.file}:${lineOf(context, node)}: ${message}`)
+}
+
+// A justification is proven for one site; the same expression text elsewhere needs its own entry.
 function justified(context: Context, expression: ts.Node): boolean {
   const key = `${context.file}:${expression.getText(context.source)}`
   const entry = context.exceptions.get(key)
   if (!entry?.reason.trim() || typeof entry.prove !== 'function') return false
+  const line = lineOf(context, expression), first = context.sites.get(key)
+  if (first !== undefined && first !== line) {
+    problem(context, expression, `justification ${key} already covers line ${first}; each justification binds one emission site`)
+    return true
+  }
+  context.sites.set(key, line)
   context.result.justified.add(key)
   return true
 }
@@ -73,7 +83,7 @@ function assignmentValue(node: ts.BinaryExpression): ts.Expression | undefined {
 export function scanSource(file: string, text: string, events?: Set<string>, exceptions: Justifications = new Map()): ScanResult {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS)
   const result: ScanResult = { emissions: 0, problems: [], justified: new Set() }
-  const context = { file, source, events, exceptions, result }
+  const context = { file, source, events, exceptions, result, sites: new Map<string, number>() }
   for (const { node, message } of serializationHazards(source, events)) {
     if (!justified(context, node)) problem(context, node, message)
   }

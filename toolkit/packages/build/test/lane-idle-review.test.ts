@@ -334,3 +334,73 @@ describe('idle review counterexamples', () => {
     } finally { deadline.clear(); h.cleanup() }
   })
 })
+
+describe('kernel threads in idle ancestry', () => {
+  it('accepts a PPID 0 row only when the kernel flags it as a kernel thread', () => {
+    const processes = [{ pid: 1, ppid: 0, cpuTicks: 0 }, { pid: 2, ppid: 0, cpuTicks: 0, kernelThread: true }, { pid: 4, ppid: 1, cpuTicks: 0 }]
+    const input = { snapshot: { processes }, rootPid: 4, worktree: { status: 'known' } }
+    expect(activityEvidence(input)).toMatchObject({ status: 'known', descendants: [] })
+    processes[1] = { pid: 2, ppid: 0, cpuTicks: 0, kernelThread: false }
+    expect(activityEvidence(input)).toMatchObject({ status: 'unknown', reason: 'process snapshot contains unreadable ancestry' })
+  })
+
+  it('reads the kernel-thread flag from /proc stat on a full Linux host', () => {
+    // kthreadd is PID 2 with PPID 0 and PF_KTHREAD (0x00200000); a namespace-foreign process lacks the flag.
+    const rows: Record<string, { ppid: string; flags: string }> = { 1: { ppid: '0', flags: '4194560' }, 2: { ppid: '0', flags: '2129984' }, 4: { ppid: '1', flags: '4194304' } }
+    const snapshot = readLinuxProcProcesses({
+      readLink: () => String(process.pid),
+      readDirectory: () => Object.keys(rows).map((name) => ({ name, isDirectory: () => true })),
+      observedAt: 20_000,
+      readFile: (file: string) => {
+        if (file === '/proc/uptime') return '10 1\n'
+        if (file.endsWith('/cmdline')) return ''
+        const pid = file.split('/')[2]!
+        const fields = ['S', rows[pid]!.ppid, '0', '0', '0', '0', rows[pid]!.flags, ...Array<string>(13).fill('0')]
+        fields[19] = '100'
+        return `${pid} (kthreadd) ${fields.join(' ')}\n`
+      },
+    })
+    expect(snapshot.processes.map((row: { pid: number; kernelThread: boolean }) => [row.pid, row.kernelThread])).toEqual([[1, false], [2, true], [4, false]])
+    expect(activityEvidence({ snapshot, rootPid: 4, worktree: { status: 'known' } })).toMatchObject({ status: 'known' })
+  })
+})
+
+describe('idle filesystem identity beyond 2^53', () => {
+  // NTFS file ids exceed Number.MAX_SAFE_INTEGER, so the number form collapses distinct files.
+  const base = 2n ** 53n + 2n
+  const exactIno: Record<string, bigint> = { '/w': base, '/w/run.log': base + 1n, '/w/out.txt': base + 2n }
+  type Swap = Record<string, string>
+  function fakeStat(exact: boolean, mtimes: Record<string, number>, swap: Swap = {}) {
+    return (file: string, options?: { bigint?: boolean }) => {
+      const seen = options?.bigint ? swap[file] ?? file : file
+      const directory = seen === '/w'
+      const time = mtimes[seen] ?? 1
+      const kind = { isDirectory: () => directory, isSymbolicLink: () => false }
+      if (options?.bigint && exact) return { ...kind, dev: 7n, ino: exactIno[seen]!, mode: BigInt(directory ? 0o40755 : 0o100644), size: 1n, mtimeNs: BigInt(time) * 1_000_000n, ctimeNs: BigInt(time) * 1_000_000n }
+      return { ...kind, dev: 7, ino: Number(exactIno[seen]!), mode: directory ? 0o40755 : 0o100644, size: 1, mtimeMs: time, ctimeMs: time }
+    }
+  }
+  const readDirectory = (dir: string) => dir === '/w' ? ['run.log', 'out.txt'].map((name) => ({ name })) : []
+  const scan = (exact: boolean, mtimes: Record<string, number> = {}, swap: Swap = {}) => {
+    const readStat = fakeStat(exact, mtimes, swap)
+    return idleScan('/w', { readDirectory, readStat, readTargetStat: readStat, excludedFiles: ['/w/run.log'] })
+  }
+
+  it('keeps the scan known with exact bigint identities and still excludes supervisor files', () => {
+    expect(Number(exactIno['/w/run.log']!), 'the fixture must collapse in number form').toBe(Number(exactIno['/w/out.txt']!))
+    const before = scan(true)
+    expect(before).toMatchObject({ status: 'known' })
+    expect(scan(true, { '/w/run.log': 99 }).fingerprint, 'an excluded log write is not activity').toBe(before.fingerprint)
+    expect(scan(true, { '/w/out.txt': 99 }).fingerprint, 'a lane file write is activity').not.toBe(before.fingerprint)
+  })
+
+  it('stays unknown when no exact identity can be read', () => {
+    expect(scan(false)).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
+  })
+
+  it('refuses an exact re-read that observes a different file than the first stat', () => {
+    // A supervisor path retargeted between the two reads must not exclude the lane's own file.
+    expect(scan(true, { '/w/out.txt': 20 }, { '/w/run.log': '/w/out.txt' })).toMatchObject({ status: 'unknown', reason: 'idle filesystem read failed: filesystem identity unavailable' })
+    expect(scan(true, { '/w/out.txt': 20 }, { '/w/out.txt': '/w/run.log' })).toMatchObject({ status: 'unknown' })
+  })
+})

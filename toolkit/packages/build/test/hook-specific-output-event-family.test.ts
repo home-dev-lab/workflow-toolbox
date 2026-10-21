@@ -34,10 +34,14 @@ function moduleUrl(file: string) { return JSON.stringify(pathToFileURL(join(PLUG
 function proveJournalProjection() {
   const root = scratch()
   const parsed = runScript(root, `import { emitGuardNotice } from ${moduleUrl('bin/lib/guard-journal.mjs')};
-    emitGuardNotice({payload: {agent_id: 'child'}, reachSubagents: true, stdoutJson: {
+    emitGuardNotice({payload: {agent_id: 'child', hook_event_name: 'PostToolUse'}, stdoutJson: {
       hookSpecificOutput: {hookEventName: 'PreToolUse', additionalContext: 'fixture', permissionDecision: 'deny'}
     }});`)
   expect(parsed).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'fixture' } })
+  // The systemMessage route has no envelope event: the registered input event is the one serialized.
+  const fallback = runScript(root, `import { emitGuardNotice } from ${moduleUrl('bin/lib/guard-journal.mjs')};
+    emitGuardNotice({payload: {agent_id: 'child', hook_event_name: 'PostToolUse'}, stdoutJson: {systemMessage: 'fixture'}});`)
+  expect(fallback).toEqual({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'fixture' } })
 }
 
 function proveAdoptEvents() {
@@ -70,8 +74,8 @@ async function proveSdkFallback() {
 }
 
 const JUSTIFIED: Justifications = new Map([
-  ['bin/lib/guard-journal.mjs:output.hookEventName', {
-    reason: 'Subagent projection copies the event from the statically checked caller envelope; serialized opt-in route exercised here.', prove: proveJournalProjection,
+  ['bin/lib/guard-journal.mjs:subagentEvent', {
+    reason: 'Subagent projection copies the caller envelope event, else the registered input event, and emits nothing without a string event; both serialized routes are exercised here.', prove: proveJournalProjection,
   }],
   ['bin/wt-adopt-check-hook.mjs:event', {
     reason: 'resolveEvent selects SessionStart or PostToolUse; both real hook output routes are parsed here.', prove: proveAdoptEvents,
@@ -163,6 +167,14 @@ it('computed serialized keys need an exercised justification', async () => {
   expect(result.problems).toEqual([])
   expect([...result.justified]).toEqual([key])
   await entry.prove()
+})
+
+it('one justification covers exactly one emission site', () => {
+  const emission = 'write({hookSpecificOutput: {hookEventName: subagentEvent}})'
+  const source = `function a(){const subagentEvent = "PreToolUse"; ${emission}}\nfunction b(){const subagentEvent = 3; ${emission}}`
+  const entry = { reason: 'Only the first function is proven.', prove: () => {} }
+  const result = scanSource('fixture.mjs', source, new Set(['PreToolUse']), new Map([['fixture.mjs:subagentEvent', entry]]))
+  expect(result.problems).toEqual([expect.stringMatching(/^fixture\.mjs:2: justification fixture\.mjs:subagentEvent already covers line 1; each justification binds one emission site$/)])
 })
 
 function pluginCopy() {

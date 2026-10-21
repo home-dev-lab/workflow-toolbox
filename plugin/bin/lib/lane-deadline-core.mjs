@@ -77,8 +77,8 @@ function validatedCpuEvidence(snapshot, usable, family) {
 }
 
 function isNamespaceInit(row) {
-  // PID 1 legitimately has no visible parent; other nonpositive parents remain unknown.
-  return row.pid === 1 && (row.ppid ?? row.parentPid) === 0
+  // PID 1 and kernel threads (kthreadd) legitimately have no visible parent; other nonpositive parents remain unknown.
+  return (row.pid === 1 || row.kernelThread === true) && (row.ppid ?? row.parentPid) === 0
 }
 
 function processCpuEvidence(snapshot, family) {

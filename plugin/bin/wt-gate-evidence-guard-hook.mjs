@@ -44,10 +44,12 @@ function probationFiring() {
 }
 
 function eligible(input) {
-  return input.hook_event_name === 'PreToolUse' && input.tool_name === 'Bash' && !input.agent_id
+  return input.hook_event_name === 'PreToolUse' && input.tool_name === 'Bash'
 }
 
 function guardedCommit(input) {
+  // Subagent commits stay unevaluated; keep this a visible guard-level return.
+  if (input.agent_id) return null
   if (!eligible(input)) return null
   const command = input.tool_input?.command
   if (!invokes(command, GIT_COMMIT)) return null

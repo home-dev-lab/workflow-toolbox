@@ -17,19 +17,31 @@ function recordEntry(scan, full, stat) {
   scan.entries.push(JSON.stringify([full, stat.mtimeMs, stat.ctimeMs, stat.size, stat.ino, stat.mode]))
 }
 
-function identity(stat) {
-  if (!Number.isSafeInteger(stat.dev) || !Number.isSafeInteger(stat.ino) || stat.ino <= 0) throw new Error('filesystem identity unavailable')
-  return `${stat.dev}:${stat.ino}`
+// NTFS file ids exceed 2^53, where the number form collapses distinct files: re-read them exactly.
+function identity(stat, readExact) {
+  if (Number.isSafeInteger(stat.dev) && Number.isSafeInteger(stat.ino) && stat.ino > 0) return `${stat.dev}:${stat.ino}`
+  const exact = readExact()
+  if (!sameObservation(stat, exact)) throw new Error('filesystem identity unavailable')
+  return `${exact.dev}:${exact.ino}`
+}
+
+// The exact re-read must describe the file the first stat saw; a retargeted path is refused.
+function sameObservation(stat, exact) {
+  if (typeof exact?.dev !== 'bigint' || typeof exact.ino !== 'bigint' || exact.ino <= 0n) return false
+  if (Number(exact.dev) !== stat.dev || Number(exact.ino) !== stat.ino || Number(exact.size) !== stat.size) return false
+  return typeof exact.ctimeNs === 'bigint' && Math.abs(Number(exact.ctimeNs) / 1e6 - stat.ctimeMs) < 0.01
 }
 
 function metadata(stat) {
   return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs]
 }
 
-function recordIdleEntry(scan, full, stat, readTargetStat) {
-  const linkIdentity = identity(stat)
-  const target = stat.isSymbolicLink() ? readTargetStat(full) : stat
-  if (scan.excluded.has(linkIdentity) || scan.excluded.has(identity(target))) return
+function recordIdleEntry(scan, full, stat, readTargetStat, readStat) {
+  const link = stat.isSymbolicLink()
+  const linkIdentity = identity(stat, () => readStat(full, { bigint: true }))
+  const target = link ? readTargetStat(full) : stat
+  const targetIdentity = link ? identity(target, () => readTargetStat(full, { bigint: true })) : linkIdentity
+  if (scan.excluded.has(linkIdentity) || scan.excluded.has(targetIdentity)) return
   if (target.mtimeMs > scan.latest) { scan.latest = target.mtimeMs; scan.latestPath = full }
   scan.entries.push(JSON.stringify([full, metadata(stat), metadata(target)]))
   if (stat.isDirectory()) scan.stack.push(full)
@@ -65,8 +77,8 @@ export function scanIdleWorktree(root, { maxEntries = 4000, readDirectory = read
   if (maxEntries < 0) return unknown(true)
   const scan = { stack: [], entries: [], latest: 0, latestPath: null, excluded: new Set() }
   try {
-    scan.excluded = new Set(excludedFiles.map((file) => identity(readTargetStat(file))))
-    const record = (state, full, stat) => recordIdleEntry(state, full, stat, readTargetStat)
+    scan.excluded = new Set(excludedFiles.map((file) => identity(readTargetStat(file), () => readTargetStat(file, { bigint: true }))))
+    const record = (state, full, stat) => recordIdleEntry(state, full, stat, readTargetStat, readStat)
     recordIdleRoot(scan, root, readStat, record)
     if (!collectEntries(root, scan, maxEntries, readDirectory, readStat, record, () => false)) return unknown(true)
   } catch (error) { return { ...unknown(), reason: `idle filesystem read failed: ${error.message}` } }

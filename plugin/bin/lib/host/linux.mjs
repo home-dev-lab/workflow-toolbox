@@ -1,6 +1,11 @@
 import * as posix from './posix.mjs'
-import { join } from 'node:path'
+import { posix as posixPath } from 'node:path'
 import { readlinkSync } from 'node:fs'
+
+// /proc paths are POSIX on every host; a host separator would make injected readers miss them.
+const { join } = posixPath
+// PF_KTHREAD from include/linux/sched.h: set by the kernel on kernel threads only.
+const PF_KTHREAD = 0x00200000
 
 export const { endProcessFamily, forceEndProcessFamily, parseProcessRelationships, processRelationshipOperation, processSnapshotOperation, readProcessRelationships, resolveCanonicalPath } = posix
 
@@ -32,7 +37,11 @@ function readLinuxProcProcess(entry, pid, readFile, observedAt, uptime) {
   if (!/^\d+$/.test(secondFields[1]) || !Number.isSafeInteger(ppid)) return null
   const command = commandLine || firstStat.slice(firstStat.indexOf('(') + 1, firstStat.lastIndexOf(')'))
   const startedAt = observedAt - Math.max(0, uptime - startTicks / 100) * 1000
-  return { pid, ppid, state: secondFields[0], elapsedMs: Math.max(0, observedAt - startedAt), startTime: startedAt, startIdentity: startTicks, command, cpuTicks: processCpuTicks(secondFields), activityTicks: processCpuTicks(secondFields, [7, 8, 9, 10]) }
+  return { pid, ppid, state: secondFields[0], elapsedMs: Math.max(0, observedAt - startedAt), startTime: startedAt, startIdentity: startTicks, command, cpuTicks: processCpuTicks(secondFields), activityTicks: processCpuTicks(secondFields, [7, 8, 9, 10]), kernelThread: kernelThread(secondFields[6]) }
+}
+
+function kernelThread(flags) {
+  return /^\d+$/.test(flags ?? '') && (Number(flags) & PF_KTHREAD) !== 0
 }
 
 function unknownProcessRead(error) {

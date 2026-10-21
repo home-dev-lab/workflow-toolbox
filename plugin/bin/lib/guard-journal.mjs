@@ -263,8 +263,16 @@ function subagentNotice(stdoutJson, payload) {
   const additionalContext = typeof output?.additionalContext === 'string' ? output.additionalContext
     : typeof stdoutJson?.systemMessage === 'string' && stdoutJson.systemMessage ? stdoutJson.systemMessage : null
   if (additionalContext === null) return null
-  const hookEventName = typeof output?.hookEventName === 'string' ? output.hookEventName : payload.hook_event_name
-  return { hookSpecificOutput: { hookEventName, additionalContext } }
+  const subagentEvent = noticeEvent(output, payload)
+  // An envelope without its event is invalid hook output: deliver nothing rather than that.
+  if (subagentEvent === null) return null
+  return { hookSpecificOutput: { hookEventName: subagentEvent, additionalContext } }
+}
+
+// The guard's own event, else the triggering one; null when neither is a string.
+function noticeEvent(output, payload) {
+  const event = typeof output?.hookEventName === 'string' ? output.hookEventName : payload.hook_event_name
+  return typeof event === 'string' ? event : null
 }
 
 /** Names of precision rules that matched but did not change the decision (measured before they may). */
