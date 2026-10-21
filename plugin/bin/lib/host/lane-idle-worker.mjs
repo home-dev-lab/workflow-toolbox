@@ -92,7 +92,7 @@ function refreshIdle(ctx) {
   refreshDeadlineActivity(ctx, evidence, nowMs)
   const changed = activityChanged(ctx, evidence)
   // Unknown time cannot establish continuous silence; recovery starts a fresh known window.
-  if (changed || (ctx.baseTimeoutMode && evidence.descendants?.length) || evidence.status === 'unknown' || ctx.status === 'unknown') {
+  if (changed || ((ctx.baseTimeoutMode || ctx.opts.idleTimeout > 0) && evidence.descendants?.length) || evidence.status === 'unknown' || ctx.status === 'unknown') {
     ctx.lastActivityMs = nowMs
     ctx.lastActivityWallMs = Date.now()
     ctx.warned = false

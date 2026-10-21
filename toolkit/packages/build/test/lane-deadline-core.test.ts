@@ -102,7 +102,7 @@ describe('idle activity sampling', () => {
 })
 
 describe('process CPU progress', () => {
-  it.each([0, 2])('warns for stalled sandbox descendants with idleTimeout=%s', (idleTimeout) => {
+  it.each([0, 2])('protects stalled sandbox descendants when enforcing idleTimeout=%s', (idleTimeout) => {
     const h = idleHarness(createIdleWatch, idleTimeout)
     try {
       h.readSnapshot.mockReturnValue({ processes: [
@@ -112,10 +112,10 @@ describe('process CPU progress', () => {
       ] })
       h.watch.refresh()
       vi.advanceTimersByTime(1000)
-      expect(readFileSync(h.log, 'utf8'), 'stalled descendants must not suppress the idle warning').toContain('LANE_IDLE_WARN silentSeconds=1')
+      expect(readFileSync(h.log, 'utf8').includes('LANE_IDLE_WARN silentSeconds=1')).toBe(!idleTimeout)
       vi.advanceTimersByTime(1000)
-      expect(h.stop).toHaveBeenCalledTimes(idleTimeout ? 1 : 0)
-      expect(readFileSync(h.log, 'utf8').includes('LANE_IDLE_STOP silentSeconds=2')).toBe(Boolean(idleTimeout))
+      expect(h.stop).not.toHaveBeenCalled()
+      expect(readFileSync(h.log, 'utf8')).not.toContain('LANE_IDLE_STOP')
     } finally { h.cleanup() }
   })
 
@@ -132,6 +132,12 @@ describe('process CPU progress', () => {
       h.readSnapshot.mockReturnValue({ processes: [{ pid: 4, ppid: 1, cpuTicks: 10_000 }, { pid: 5, ppid: 4, cpuTicks: 0 }, { pid: 6, ppid: 5, cpuTicks: 10_000 }] })
       h.watch.refresh()
       vi.advanceTimersByTime(2000)
+      expect(h.stop).not.toHaveBeenCalled()
+      h.readSnapshot.mockReturnValue({ processes: [{ pid: 4, ppid: 1, cpuTicks: 10_000 }] })
+      h.watch.refresh()
+      vi.advanceTimersByTime(1750)
+      expect(h.stop).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(250)
       expect(h.stop).toHaveBeenCalledTimes(1)
     } finally { h.cleanup() }
   })
@@ -150,6 +156,12 @@ describe('unknown process CPU evidence', () => {
       vi.advanceTimersByTime(250)
       expect(h.watch.refresh().silentSeconds).toBe(0)
       vi.advanceTimersByTime(2000)
+      expect(h.stop).not.toHaveBeenCalled()
+      h.readSnapshot.mockReturnValue({ processes: [{ pid: 4, ppid: 1, cpuTicks: 0 }] })
+      h.watch.refresh()
+      vi.advanceTimersByTime(1750)
+      expect(h.stop).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(250)
       expect(h.stop).toHaveBeenCalledTimes(1)
     } finally { h.cleanup() }
   })
@@ -182,11 +194,17 @@ describe('CPU progress across process churn', () => {
     } finally { h.cleanup() }
   })
 
-  it('ignores unrelated CPU work and zero-CPU descendant presence', () => {
+  it('protects zero-CPU descendants while ignoring unrelated CPU work after they exit', () => {
     const h = idleHarness()
     try {
       h.readSnapshot.mockImplementation(() => ({ processes: [{ pid: 4, ppid: 1, cpuTicks: 0 }, { pid: 5, ppid: 4, cpuTicks: 0 }, { pid: 9, ppid: 1, cpuTicks: performance.now() }] }))
       vi.advanceTimersByTime(2000)
+      expect(h.stop).not.toHaveBeenCalled()
+      expect(readFileSync(h.log, 'utf8')).not.toMatch(/LANE_IDLE_(WARN|STOP)/)
+      h.readSnapshot.mockImplementation(() => ({ processes: [{ pid: 4, ppid: 1, cpuTicks: 0 }, { pid: 9, ppid: 1, cpuTicks: performance.now() }] }))
+      vi.advanceTimersByTime(1750)
+      expect(h.stop).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(250)
       expect(h.stop).toHaveBeenCalledTimes(1)
     } finally { h.cleanup() }
   })

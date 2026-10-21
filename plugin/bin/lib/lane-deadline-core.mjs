@@ -63,7 +63,7 @@ function familyActivity(snapshot, rows, rootPid, requireCpu) {
   const usable = rows.filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid ?? row.parentPid))
   if (!usable.some((row) => row.pid === rootPid)) return { status: 'unknown', reason: snapshot?.reason ?? 'process snapshot missing child' }
   const descendants = liveDescendants(usable, rootPid)
-  // Deadline defaults retain their presence-based policy; idle enforcement requires progress.
+  // Deadline defaults consume presence only; opt-in idle evidence also validates counters.
   if (!requireCpu) return { status: 'known', descendants }
   if (usable.length !== rows.length) return { status: 'unknown', reason: 'process snapshot contains unreadable ancestry' }
   const family = new Set([rootPid, ...descendants])
@@ -72,8 +72,13 @@ function familyActivity(snapshot, rows, rootPid, requireCpu) {
 
 function validatedCpuEvidence(snapshot, usable, family) {
   const evidence = processCpuEvidence(snapshot, usable.filter((row) => family.has(row.pid)))
-  if (evidence.status === 'known' && usable.some((row) => (row.ppid ?? row.parentPid) <= 0)) return { status: 'unknown', reason: 'process snapshot contains unreadable ancestry' }
+  if (evidence.status === 'known' && usable.some((row) => !isNamespaceInit(row) && (row.ppid ?? row.parentPid) <= 0)) return { status: 'unknown', reason: 'process snapshot contains unreadable ancestry' }
   return evidence
+}
+
+function isNamespaceInit(row) {
+  // PID 1 legitimately has no visible parent; other nonpositive parents remain unknown.
+  return row.pid === 1 && (row.ppid ?? row.parentPid) === 0
 }
 
 function processCpuEvidence(snapshot, family) {

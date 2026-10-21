@@ -7,6 +7,7 @@ const lib = process.env.WT_IDLE_REVIEW_LIB ?? new URL('../../../../plugin/bin/li
 const { scanWorktree } = await import(new URL('host/lane-worktree-scan.mjs', lib))
 const { scanIdleWorktree = scanWorktree } = await import(new URL('host/lane-worktree-scan.mjs', lib))
 const { readLinuxIdleProcProcesses: readLinuxProcProcesses, readLinuxProcProcesses: readBaseProcesses } = await import(new URL('host/linux.mjs', lib))
+const { activityEvidence } = await import(new URL('lane-deadline-core.mjs', lib))
 
 test('native worktree scanner: missing and incomplete trees are unknown', () => {
   const root = mkdtempSync(join(tmpdir(), 'lane-worktree-native-'))
@@ -147,3 +148,22 @@ test('idle union observes churn in directories excluded from the deadline scan',
     assert.notEqual(scanIdleWorktree(root).fingerprint, before.fingerprint)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+for (const [pid, parent, unknownPids, status] of [[1, '0', [], 'known'], [1, '-1', [], 'unknown'], [5, '0', [], 'unknown'], [1, '0', [6], 'unknown']]) {
+  test(`idle namespace ancestry: pid=${pid} parent=${parent} unreadable=${unknownPids.join(',') || 'none'} is ${status}`, () => {
+    const snapshot = readLinuxProcProcesses({
+      observedAt: 20_000,
+      readDirectory: () => [String(pid), '4'].map((name) => ({ name, isDirectory: () => true })),
+      readFile: (file) => {
+        if (file === '/proc/uptime') return '10 1'
+        if (file.endsWith('/cmdline')) return 'worker\0'
+        const id = Number(file.split('/')[2])
+        const fields = ['S', id === pid ? parent : '1', ...Array(18).fill('0')]
+        fields[19] = '100'
+        return `${id} (worker) ${fields.join(' ')}`
+      },
+    })
+    snapshot.unknownPids.push(...unknownPids)
+    assert.equal(activityEvidence({ snapshot, rootPid: 4, worktree: { status: 'known' } }).status, status)
+  })
+}

@@ -31,7 +31,7 @@ function procSnapshot(childUser = '0', childSystem = '0', parent = '4') {
   })
 }
 
-function harness(idleTimeout = 8) {
+function harness(idleTimeout = 8, snapshot = procSnapshot('0', '0', '1')) {
   vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
   vi.setSystemTime(0)
   const root = mkdtempSync(join(tmpdir(), 'lane-idle-review-'))
@@ -42,7 +42,8 @@ function harness(idleTimeout = 8) {
   const stop = vi.fn()
   const writeState = vi.fn()
   const latestWrite = vi.fn(() => latestWorktreeWrite(worktree))
-  const readSnapshot = vi.fn(() => procSnapshot())
+  // Silent filesystem controls have no lane descendant; presence cases supply their family.
+  const readSnapshot = vi.fn(() => snapshot)
   const opts = { dir: worktree, log, idleWindow: 4, idleTimeout, timeout: 2, decisionGrace: 5, maxExtensions: 3 }
   const options = { opts, childPid: 4, launchedAtMs: 0, monotonicNow: () => performance.now(), readSnapshot, latestWrite, stop, writeState, appendLine: (line: string) => { appendFileSync(log, `${line}\n`); return true } }
   const watch = createIdleWatch(options)
@@ -60,6 +61,11 @@ describe('idle review counterexamples', () => {
       expect(h.stop).not.toHaveBeenCalled()
       h.readSnapshot.mockReturnValue(procSnapshot('20000', '10000'))
       vi.advanceTimersByTime(8000)
+      expect(h.stop).not.toHaveBeenCalled()
+      h.readSnapshot.mockReturnValue(procSnapshot('20000', '10000', '1'))
+      vi.advanceTimersByTime(7750)
+      expect(h.stop).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(250)
       expect(h.stop).toHaveBeenCalledTimes(1)
     } finally { h.cleanup() }
   })
@@ -244,7 +250,7 @@ describe('idle review counterexamples', () => {
   })
 
   it('preserves timeout extensions for a stalled descendant with idle enforcement off', () => {
-    const h = harness(0)
+    const h = harness(0, procSnapshot())
     h.watch.clear()
     const endGroup = vi.fn()
     let state: Record<string, unknown> = { runId: 'test-run', extensions: [] }
