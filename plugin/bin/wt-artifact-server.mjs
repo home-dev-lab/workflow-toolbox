@@ -35,7 +35,7 @@ import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
-import { signalProcess } from './lib/host/process-signal-boundary.mjs'
+import { retainProcessOwner, signalProcess } from './lib/host/process-signal-boundary.mjs'
 
 const HELP = `wt-artifact-server - serve registered artifacts through local or tailnet URLs
 
@@ -591,6 +591,22 @@ async function stopRunning(action, force) {
   const state = readArtifactDiscovery()
   if (!state) return { ok: true, message: 'artifact server: stopped' }
   const probe = await probeArtifactServer(state.port)
+  const refusal = artifactStopHealthRefusal(state, probe, force) ?? artifactStopProcessRefusal(state, force)
+  if (refusal) return refusal
+  atomicWriteJson(artifactIntentPath(), { pid: state.pid, action })
+  try { signalProcess(state.pid, 'SIGTERM') } catch (error) {
+    return { ok: false, message: `artifact server: failed to signal verified PID ${state.pid}: ${error.message}` }
+  }
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const current = await probeArtifactServer(state.port, 200)
+    if (confirmedArtifactServerStopped(state, current)) return { ok: true, message: `artifact server: ${action === 'restart' ? 'stopped for restart' : 'stopped'}` , port: state.port }
+  }
+  return { ok: false, message: `artifact server: verified PID ${state.pid} did not stop` }
+}
+
+function artifactStopHealthRefusal(state, probe, force) {
   if (probe.kind !== 'ours' || probe.health.pid !== state.pid || probe.health.port !== state.port) {
     return { ok: false, message: 'artifact server: refusing to signal because state and health identity mismatch' }
   }
@@ -600,6 +616,9 @@ async function stopRunning(action, force) {
   if (!force && probe.health.registeredSessions > 0) {
     return { ok: false, message: `artifact server: refusing with ${probe.health.registeredSessions} registered session(s); use --force` }
   }
+}
+
+function artifactStopProcessRefusal(state, force) {
   if (process.platform === 'linux') {
     let commandLine = ''
     try { commandLine = hostProcfs.readCommandLine(state.pid, 'utf8') } catch {}
@@ -609,17 +628,13 @@ async function stopRunning(action, force) {
   } else if (!force) {
     return { ok: false, message: 'artifact server: process identity check is weaker on this platform; use --force' }
   }
-  atomicWriteJson(artifactIntentPath(), { pid: state.pid, action })
-  try { signalProcess(state.pid, 'SIGTERM') } catch (error) {
-    return { ok: false, message: `artifact server: failed to signal verified PID ${state.pid}: ${error.message}` }
-  }
-  const deadline = Date.now() + 3_000
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    const current = await probeArtifactServer(state.port, 200)
-    if (current.kind !== 'ours' || current.health.pid !== state.pid) return { ok: true, message: `artifact server: ${action === 'restart' ? 'stopped for restart' : 'stopped'}` , port: state.port }
-  }
-  return { ok: false, message: `artifact server: verified PID ${state.pid} did not stop` }
+}
+
+function confirmedArtifactServerStopped(state, probe) {
+  // An unreadable health reply is not exit evidence; the host retains unknown PIDs.
+  return probe.kind === 'free' ||
+    (probe.kind === 'ours' && probe.health.pid !== state.pid) ||
+    !retainProcessOwner(state.pid)
 }
 
 function spawnServer(port) {

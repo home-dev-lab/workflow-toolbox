@@ -622,6 +622,53 @@ async function probeAgainst(handler: Handler, timeout: number, beforeCleanup: ()
   }
 }
 
+function pausedStopPreload(stateHome: string, pid: number) {
+  const preload = join(stateHome, 'pause-on-term.cjs')
+  const spawns = join(stateHome, 'replacement-spawns.log')
+  writeFileSync(preload, `
+const { appendFileSync } = require('node:fs')
+const childProcess = require('node:child_process')
+const { syncBuiltinESMExports } = require('node:module')
+const kill = process.kill.bind(process)
+process.kill = (pid, signal) => kill(pid, pid === ${pid} && signal === 'SIGTERM' ? 'SIGSTOP' : signal)
+const spawn = childProcess.spawn
+childProcess.spawn = (...args) => {
+  appendFileSync(${JSON.stringify(spawns)}, 'spawn\\n')
+  return spawn(...args)
+}
+syncBuiltinESMExports()
+`)
+  return { preload, spawns }
+}
+
+describe('artifact stop confirmation with a real paused process', () => {
+  it.skipIf(process.platform === 'win32').each(['stop', 'restart'])('%s refuses a timed-out health reply while the verified PID lives', async (command) => {
+    const stateHome = temporaryDir('paused-stop-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    const server = spawn(process.execPath, [SERVER, 'serve'], { env, stdio: 'ignore' })
+    children.add(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    const { preload, spawns } = pausedStopPreload(stateHome, state.pid)
+    try {
+      const result = await runCli([command, '--force'], { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}` })
+      expect(pidAlive(state.pid)).toBe(true)
+      expect((await probeArtifactServer(state.port, 200)).kind).toBe('unknown')
+      expect(result.stdout, 'a live paused server must not be reported stopped').toBe('')
+      expect(result.stderr).toBe(`artifact server: verified PID ${state.pid} did not stop\n`)
+      expect(result.code).toBe(1)
+      expect(existsSync(spawns), 'restart must not spawn while the verified PID lives').toBe(false)
+    } finally {
+      process.kill(state.pid, 'SIGCONT')
+      const stopped = await runCli(['stop', '--force'], env)
+      expect(stopped.code, stopped.stderr).toBe(0)
+      expect(stopped.stdout).toBe('artifact server: stopped\n')
+      await waitFor(() => pidAlive(state.pid) ? null : true)
+    }
+  }, 30_000)
+})
+
 describe('health probe settles on a broken reply', () => {
   it('settles as unknown as soon as the server dies after sending headers and part of the body', async () => {
     const cut: Handler = (_request, response) => {
