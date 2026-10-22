@@ -16,6 +16,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Artifact server stop/restart now waits for host-confirmed process exit even after its listener closes or another endpoint answers. Restart rejects malformed health PIDs, and a verified process disappearing before SIGTERM counts as an already-completed stop.
 - A sub-agent guard notice now always carries a string hook event name (the guard's own, else the triggering event); when neither is a string it delivers nothing instead of an invalid envelope. The gate-evidence guard keeps its sub-agent skip as a visible guard-level return.
 - Opt-in idle enforcement now works on a full Linux host, where the kernel's `kthreadd` (PID 2, PPID 0, kernel-thread flag) previously made idle evidence unknown. The idle scan now reads each path once in exact form for both identity and metadata, so Windows file ids beyond 2^53 no longer collapse, and the Linux `/proc` readers build POSIX paths on every host. Outside Linux, idle evidence stays named unknown and the lane is never idle-stopped.
 - Admission policies now run inside a child process with piped, discarded stdout/stderr, so direct writes to descriptors 1 and 2 cannot corrupt either opencode bridge's one-line refusal. The shared runner preserves second-opinion's refusal-file protocol and worker failure handling; the deadline terminates the child and its worker even during synchronous loops. Send policy diagnostics to a file.

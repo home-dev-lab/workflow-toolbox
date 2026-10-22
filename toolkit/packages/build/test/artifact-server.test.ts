@@ -669,6 +669,61 @@ describe('artifact stop confirmation with a real paused process', () => {
   }, 30_000)
 })
 
+function drainingResponsePreload(stateHome: string) {
+  const preload = join(stateHome, 'draining-response.cjs')
+  writeFileSync(preload, `
+const { Server } = require('node:http')
+const emit = Server.prototype.emit
+Server.prototype.emit = function (event, ...args) {
+  if (event === 'request' && args[0].url === '/drain') {
+    args[1].writeHead(200)
+    args[1].write('unfinished response')
+    return true
+  }
+  return emit.call(this, event, ...args)
+}
+`)
+  return preload
+}
+
+async function holdDrainingResponse(port: number) {
+  const request = httpRequest({ host: '127.0.0.1', port, path: '/drain', agent: false })
+  await new Promise<void>((resolve, reject) => {
+    request.once('response', (response) => { response.resume(); resolve() })
+    request.once('error', reject)
+    request.end()
+  })
+  return request
+}
+
+describe('artifact stop confirmation with a real draining response', () => {
+  it.skipIf(process.platform === 'win32').each(['stop', 'restart'])('%s refuses a closed listener until the old process exits', async (command) => {
+    const stateHome = temporaryDir('draining-stop-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    const preload = drainingResponsePreload(stateHome)
+    const server = spawn(process.execPath, [SERVER, 'serve'], {
+      env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}` }, stdio: 'ignore',
+    })
+    children.add(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    const request = await holdDrainingResponse(state.port)
+    try {
+      const result = await runCli([command, '--force'], env)
+      expect((await probeArtifactServer(state.port, 200)).kind).toBe('free')
+      expect(pidAlive(state.pid), 'the old process must still be draining').toBe(true)
+      expect(result.code, 'a closed listener is not process-exit evidence').toBe(1)
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toBe(`artifact server: verified PID ${state.pid} did not stop\n`)
+      expect(readState(stateHome)?.pid).toBe(state.pid)
+    } finally {
+      request.destroy()
+      await waitFor(() => pidAlive(state.pid) ? null : true)
+    }
+  }, 30_000)
+})
+
 describe('health probe settles on a broken reply', () => {
   it('settles as unknown as soon as the server dies after sending headers and part of the body', async () => {
     const cut: Handler = (_request, response) => {

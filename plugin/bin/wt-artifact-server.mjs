@@ -595,13 +595,15 @@ async function stopRunning(action, force) {
   if (refusal) return refusal
   atomicWriteJson(artifactIntentPath(), { pid: state.pid, action })
   try { signalProcess(state.pid, 'SIGTERM') } catch (error) {
+    if (error.code === 'ESRCH') return artifactStoppedResult(state, action)
     return { ok: false, message: `artifact server: failed to signal verified PID ${state.pid}: ${error.message}` }
   }
   const deadline = Date.now() + 3_000
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50))
-    const current = await probeArtifactServer(state.port, 200)
-    if (confirmedArtifactServerStopped(state, current)) return { ok: true, message: `artifact server: ${action === 'restart' ? 'stopped for restart' : 'stopped'}` , port: state.port }
+    // Listener closure and replacement health say nothing about draining connections.
+    // Only host-confirmed absence authorizes success or a replacement process.
+    if (!retainProcessOwner(state.pid)) return artifactStoppedResult(state, action)
   }
   return { ok: false, message: `artifact server: verified PID ${state.pid} did not stop` }
 }
@@ -630,11 +632,8 @@ function artifactStopProcessRefusal(state, force) {
   }
 }
 
-function confirmedArtifactServerStopped(state, probe) {
-  // An unreadable health reply is not exit evidence; the host retains unknown PIDs.
-  return probe.kind === 'free' ||
-    (probe.kind === 'ours' && probe.health.pid !== state.pid) ||
-    !retainProcessOwner(state.pid)
+function artifactStoppedResult(state, action) {
+  return { ok: true, message: `artifact server: ${action === 'restart' ? 'stopped for restart' : 'stopped'}`, port: state.port }
 }
 
 function spawnServer(port) {
@@ -657,7 +656,7 @@ async function controlCommand(command, force) {
   const deadline = Date.now() + 5_000
   while (Date.now() < deadline) {
     const probe = await probeArtifactServer(port, 200)
-    if (probe.kind === 'ours') return { ok: true, message: `artifact server: restarted on ${port}` }
+    if (probe.kind === 'ours' && Number.isSafeInteger(probe.health.pid) && probe.health.pid > 0) return { ok: true, message: `artifact server: restarted on ${port}` }
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
   return { ok: false, message: `artifact server: restart failed on ${port}` }
