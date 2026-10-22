@@ -38,6 +38,16 @@ function evidenceHost(platform: typeof platforms[number]) {
 
 const contractHost = (platform: typeof platforms[number]) => useRealHost ? createHostAdapter({ platform }) : evidenceHost(platform)
 
+// The product bounds a Windows process read at 5 s (plugin/bin/lib/host/win32.mjs); a cold runner can exceed it once.
+// The real-host contract retries a timed-out read, never any other failure.
+const REAL_READ_ATTEMPTS = 3
+const timedOut = (read: { supported: boolean, reason?: string }) => !read.supported && /\bETIMEDOUT$/.test(read.reason ?? '')
+function readWithTimeoutRetry<T extends { supported: boolean, reason?: string }>(read: () => T, attempts = REAL_READ_ATTEMPTS): T {
+  let result = read()
+  for (let attempt = 1; attempt < attempts && timedOut(result); attempt++) result = read()
+  return result
+}
+
 let assertions = 0
 let namedSkips = 0
 const skippedPlatforms = new Set<string>()
@@ -272,9 +282,24 @@ function registerSnapshotContracts() {
     expect(host.readProcessSnapshot()).toEqual({ supported: false, processes: [], reason: `process discovery failed: ${command} ${cause}` })
   })
 
+  it('retries a timed-out real-host read and never a different failure', () => {
+    const timeout = { supported: false, reason: 'process discovery failed: powershell.exe ETIMEDOUT' }
+    const ok = { supported: true }
+    const slowOnce = vi.fn().mockReturnValueOnce(timeout).mockReturnValue(ok)
+    expect(readWithTimeoutRetry(slowOnce)).toBe(ok)
+    expect(slowOnce).toHaveBeenCalledTimes(2)
+    const refused = { supported: false, reason: 'process discovery failed: powershell.exe exited 1' }
+    const other = vi.fn().mockReturnValue(refused)
+    expect(readWithTimeoutRetry(other)).toBe(refused)
+    expect(other).toHaveBeenCalledTimes(1)
+    const always = vi.fn().mockReturnValue(timeout)
+    expect(readWithTimeoutRetry(always)).toBe(timeout)
+    expect(always).toHaveBeenCalledTimes(REAL_READ_ATTEMPTS)
+  })
+
   contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {
     if (useRealHost) {
-      const result = contractHost(platform).readProcessSnapshot()
+      const result = readWithTimeoutRetry(() => contractHost(platform).readProcessSnapshot())
       expect(result.supported, result.reason).toBe(true)
       expect(result.processes.find((row: { pid: number }) => row.pid === process.pid)?.ppid).toBe(process.ppid)
       return
