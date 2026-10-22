@@ -44,6 +44,9 @@ and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one p
 - **docs** — retired. The shipped rules no longer point at rationale files, so this set installs
   nothing and `--set docs` exits with that explanation. A `<config-dir>/docs/wt/` copy adopted
   earlier is left untouched and may be deleted.
+- **ssh-sign-retry** — optional, standalone Node wrapper for intermittent SSH-agent signing
+  failures. Requires an explicit `--set ssh-sign-retry`; `--set all` excludes it. See
+  [SSH signing retry](references/ssh-sign-retry.md) for installation, Git scope, and platform status.
 
 A third kind of agent needs no adoption: the plugin's
 `agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
@@ -189,8 +192,8 @@ Open [references/detecting-and-refreshing-stale-copies.md](references/detecting-
 
 ## Non-goals
 
-- It never writes without an explicit user request, and never touches anything but the managed
-  files in the chosen set's dir.
+- It never writes without an explicit user request. It writes the chosen managed files and the
+  documented settings prerequisites; the explicit SSH retry set can also set an absent Git signer.
 - It does not install the workflow-authoring doctrine (in `workflow-toolbox:workflow-composer`).
 - It is not how you compose a pilot wave — that is the `workflow-toolbox:pilot-wave` skill,
   which PROPOSES the agent-copy install (via this skill) at the moment a spawn would otherwise
