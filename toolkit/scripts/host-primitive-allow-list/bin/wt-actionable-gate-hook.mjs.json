@@ -4,7 +4,7 @@
   "os import": 1,
   "readFileSync": 3,
   "homedir": 1,
-  "existsSync": 1,
+  "existsSync": 2,
   "readdirSync": 1,
   "statSync": 2,
   "execFileSync": 1,

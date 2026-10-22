@@ -1,16 +1,17 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep, win32 } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import {
+import { afterEach, describe, expect, it, type TestContext } from 'vitest'
+const {
   checkHostPrimitives,
   formatHostPrimitiveRefusal,
   hostPrimitiveCounts,
   hostDeclarationFile,
   loadHostPrimitiveAllowList,
   scanHostPrimitives,
+  sourceFiles,
   updateHostPrimitiveDeclaration,
-} from '../host-primitive-census.mjs'
+} = await import(process.env.WT_HOST_CENSUS_MODULE ?? '../host-primitive-census.mjs') as typeof import('../host-primitive-census.mjs')
 
 const TOOLKIT_ROOT = resolve(import.meta.dirname, '../..')
 const PLUGIN_ROOT = resolve(TOOLKIT_ROOT, '../plugin')
@@ -21,6 +22,25 @@ function fixturePlugin(): string {
   temporaryDirectories.push(root)
   mkdirSync(join(root, 'bin', 'lib', 'host'), { recursive: true })
   return root
+}
+
+function fixtureLink(context: TestContext, target: string, path: string, type: 'file' | 'dir'): void {
+  try {
+    symlinkSync(target, path, type)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'ENOSYS'].includes(code ?? '')) {
+      context.skip(`Windows cannot create ${type} symlinks (${code}); enable Developer Mode or grant symlink privileges`)
+    }
+    throw error
+  }
+}
+
+function expectUndeclared(root: string, file: string, primitives: string[]): void {
+  const result = checkHostPrimitives(root, new Map())
+  expect(result.findings.filter((finding) => finding.file === file).map(({ primitive }) => primitive).sort()).toEqual([...primitives].sort())
+  expect(result.exceeded).toBe(true)
+  expect(formatHostPrimitiveRefusal(result)).toContain(file)
 }
 
 afterEach(() => {
@@ -239,6 +259,165 @@ describe('host primitive source discovery', () => {
     ]))
   })
 
+})
+
+describe('host primitive element access', () => {
+  it.each([
+    ['import nodeFs from "node:fs"; nodeFs["readFileSync"]("x")', ['fs import', 'readFileSync']],
+    ['import nodeFs from "node:fs"; nodeFs["promises"].readFile("x")', ['fs import', 'readFile']],
+    ['import nodeFs from "node:fs"; nodeFs.promises["readFile"]("x")', ['fs import', 'readFile']],
+    ['require("node:fs")["readFileSync"]("x")', ['fs require', 'readFileSync']],
+    ['process["kill"](1); process["platform"]', ['process.kill', 'process.platform']],
+    ['import child from "node:child_process"; child["execFile"]("tool")', ['child_process import', 'execFile']],
+  ])('refuses string-key access: %s', (source, primitives) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'element.mjs'), source as string)
+    expectUndeclared(root, 'element.mjs', primitives as string[])
+  })
+})
+
+describe('host primitive dynamic import bindings', () => {
+  it.each([
+    ['const fs = await import("node:fs"); fs.readFileSync("x")', ['fs import', 'readFileSync']],
+    ['const fs = (await import("fs")); fs.readFileSync("x")', ['fs import', 'readFileSync']],
+    ['const { readFileSync: read } = await import("node:fs"); read("x")', ['fs import', 'readFileSync']],
+    ['const { "readFileSync": read } = await import("node:fs"); read("x")', ['fs import', 'readFileSync']],
+    ['const child = await import("node:child_process"); child.exec("tool")', ['child_process import', 'exec']],
+    ['const os = await import("node:os"); os.tmpdir()', ['os import', 'tmpdir']],
+    ['const fs = await import("node:fs/promises"); fs.readFile("x")', ['fs/promises import', 'readFile']],
+  ])('refuses imported host calls: %s', (source, primitives) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'dynamic.mjs'), source as string)
+    expectUndeclared(root, 'dynamic.mjs', primitives as string[])
+  })
+})
+
+describe('host primitive bindings used as values', () => {
+  it.each([
+    ['import { existsSync } from "node:fs"; f(dir, existsSync)', ['fs import', 'existsSync']],
+    ['import { existsSync as exists } from "node:fs"; f(dir, exists)', ['fs import', 'existsSync']],
+    ['const { existsSync } = require("node:fs"); f(dir, existsSync)', ['fs require', 'existsSync']],
+    ['const { existsSync } = await import("node:fs"); f(dir, existsSync)', ['fs import', 'existsSync']],
+    ['import { existsSync } from "node:fs"; const api = { existsSync }; const copy = existsSync', ['fs import', 'existsSync', 'existsSync']],
+    ['import { existsSync } from "node:fs"; existsSync("x"); f(existsSync); obj.existsSync; const x = { existsSync: true }', ['fs import', 'existsSync', 'existsSync']],
+  ])('counts references without counting binding names: %s', (source, primitives) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'value.mjs'), source as string)
+    expectUndeclared(root, 'value.mjs', primitives as string[])
+  })
+})
+
+describe('host primitive shebang source discovery', () => {
+  it.each(['#!/usr/bin/env node\n', '#!/usr/bin/env node\r\n', '#!/usr/bin/node\n', '#!/usr/bin/env -S node --no-warnings\r\n'])(
+    'refuses an extensionless Node script with shebang %j', (shebang) => {
+      const root = fixturePlugin()
+      writeFileSync(join(root, 'bin', 'helper'), Buffer.from(`${shebang}process.kill(1)\n`))
+      expectUndeclared(root, 'bin/helper', ['process.kill'])
+    },
+  )
+
+  it('does not treat shell scripts or ordinary extensionless data as Node source', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'shell'), '#!/bin/sh\nprocess.kill(1)')
+    writeFileSync(join(root, 'data'), 'process.kill(1)')
+    expect(scanHostPrimitives(root)).toEqual({ perimeterFiles: 0, findings: [] })
+  })
+})
+
+describe('host primitive symlink file discovery', () => {
+  it('scans a linked executable under its real target exactly once', (context) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'payload.txt'), 'process.kill(1)')
+    fixtureLink(context, join(root, 'payload.txt'), join(root, 'a-link.mjs'), 'file')
+    fixtureLink(context, join(root, 'payload.txt'), join(root, 'b-link.mjs'), 'file')
+    expectUndeclared(root, 'payload.txt', ['process.kill'])
+    expect(scanHostPrimitives(root).perimeterFiles).toBe(1)
+  })
+
+  it('deduplicates a linked source and its ordinary source path', (context) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'z-target.mjs'), 'process.kill(1)')
+    fixtureLink(context, join(root, 'z-target.mjs'), join(root, 'a-link.mjs'), 'file')
+    expectUndeclared(root, 'z-target.mjs', ['process.kill'])
+    expect(scanHostPrimitives(root).perimeterFiles).toBe(1)
+  })
+})
+
+describe('host primitive symlink directory discovery', () => {
+  it('canonicalizes a linked scan root and terminates directory cycles', (context) => {
+    const root = fixturePlugin()
+    const holder = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'helper.mjs'), 'process.kill(1)')
+    fixtureLink(context, root, join(root, 'bin', 'cycle'), 'dir')
+    fixtureLink(context, root, join(holder, 'linked-root'), 'dir')
+    expect(sourceFiles(join(holder, 'linked-root'))).toEqual([join(realpathSync(root), 'bin', 'helper.mjs')])
+    expectUndeclared(join(holder, 'linked-root'), 'bin/helper.mjs', ['process.kill'])
+    expect(scanHostPrimitives(join(holder, 'linked-root')).perimeterFiles).toBe(1)
+  })
+
+  it('deduplicates directory aliases without escaping the scanned root', (context) => {
+    const root = fixturePlugin()
+    const outside = fixturePlugin()
+    writeFileSync(join(root, 'bin', 'helper.mjs'), 'process.kill(1)')
+    writeFileSync(join(outside, 'escape.mjs'), 'process.kill(2)')
+    fixtureLink(context, join(root, 'bin'), join(root, 'a-bin'), 'dir')
+    fixtureLink(context, outside, join(root, 'external'), 'dir')
+    fixtureLink(context, join(outside, 'escape.mjs'), join(root, 'escape.mjs'), 'file')
+    expectUndeclared(root, 'bin/helper.mjs', ['process.kill'])
+    expect(scanHostPrimitives(root).perimeterFiles).toBe(1)
+  })
+})
+
+describe('host primitive symlink boundaries', () => {
+  it('accepts real-target declarations when the scanned root is a directory link', (context) => {
+    const root = fixturePlugin()
+    const holder = fixturePlugin()
+    const declarations = fixturePlugin()
+    writeFileSync(join(root, 'helper.mjs'), 'process.kill(1)')
+    writeFileSync(join(declarations, 'helper.mjs.json'), '{"process.kill":1}')
+    fixtureLink(context, root, join(holder, 'linked-root'), 'dir')
+    const result = checkHostPrimitives(join(holder, 'linked-root'), loadHostPrimitiveAllowList(declarations))
+    expect(result.violations).toEqual([])
+    expect(result.exceeded).toBe(false)
+  })
+
+  it('does not bypass adapter or generated-source exemptions through a link', (context) => {
+    const root = fixturePlugin()
+    const adapter = join(root, 'bin', 'lib', 'host', 'adapter.mjs')
+    const generated = join(root, 'bin', 'wt-observe.mjs')
+    writeFileSync(adapter, 'process.kill(1)')
+    writeFileSync(generated, 'process.kill(2)')
+    fixtureLink(context, adapter, join(root, 'adapter.mjs'), 'file')
+    fixtureLink(context, generated, join(root, 'generated.mjs'), 'file')
+    expect(scanHostPrimitives(root)).toEqual({ perimeterFiles: 0, findings: [] })
+  })
+
+  it('ignores dangling links', (context) => {
+    const root = fixturePlugin()
+    fixtureLink(context, join(root, 'missing.mjs'), join(root, 'dangling.mjs'), 'file')
+    expect(scanHostPrimitives(root)).toEqual({ perimeterFiles: 0, findings: [] })
+  })
+})
+
+describe('relative module URL separator exemption', () => {
+  it.each(['./lib/x.mjs', '../lib/x.mjs'])(
+    'does not count relative module URL %s', (url) => {
+      const root = fixturePlugin()
+      writeFileSync(join(root, 'url.mjs'), `new URL(${JSON.stringify(url)}, import.meta.url)`)
+      expect(checkHostPrimitives(root, new Map())).toMatchObject({ count: 0, exceeded: false })
+    },
+  )
+
+  it.each([
+    'const path = "./lib/x.mjs"', 'new URL("./lib/x.mjs", base)',
+    'new OtherURL("./lib/x.mjs", import.meta.url)', 'new URL("/root/x.mjs", import.meta.url)',
+    'new URL("C:\\\\lib\\\\x.mjs", import.meta.url)', 'const separator = "/"',
+    'new URL("./lib/x.mjs", import.meta.url, extra)',
+  ])('still counts other separator literal: %s', (source) => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'path.mjs'), source)
+    expectUndeclared(root, 'path.mjs', ['hard-coded path separator'])
+  })
 })
 
 describe('shipped host primitive declarations and quality gate', () => {

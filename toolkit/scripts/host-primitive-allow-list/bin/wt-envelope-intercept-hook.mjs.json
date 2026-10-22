@@ -7,5 +7,6 @@
   "process.platform": 4,
   "homedir": 1,
   "writeFileSync": 2,
+  "spawnSync": 1,
   "rmSync": 1
 }

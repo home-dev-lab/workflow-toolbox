@@ -6,6 +6,7 @@
   "mkdtempSync": 1,
   "tmpdir": 1,
   "writeFileSync": 1,
+  "spawnSync": 1,
   "readFileSync": 1,
   "rmSync": 1
 }

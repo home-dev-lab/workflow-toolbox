@@ -4,9 +4,11 @@
   "writeFileSync": 1,
   "renameSync": 1,
   "rmSync": 5,
+  "availableParallelism": 1,
   "process.platform": 1,
+  "readFileSync": 2,
+  "loadavg": 1,
   "homedir": 1,
-  "readFileSync": 1,
   "readdirSync": 1,
   "mkdirSync": 3
 }

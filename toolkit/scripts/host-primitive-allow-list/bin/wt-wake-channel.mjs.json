@@ -6,5 +6,6 @@
   "readdirSync": 1,
   "readFileSync": 1,
   "renameSync": 1,
+  "realpathSync": 1,
   "watch": 1
 }
