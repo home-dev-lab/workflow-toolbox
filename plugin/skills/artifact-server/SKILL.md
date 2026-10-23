@@ -104,8 +104,13 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" restart
 
 `stop` and `restart` refuse while sessions are registered, and fail closed if the uid, count, or
 process identity cannot be verified. Add `--force` to override the registration refusal. On Linux,
-the state PID's `/proc/<pid>/cmdline` must contain `wt-artifact-server.mjs`; other platforms have a
-weaker identity check and require `--force`. These controls are CLI-only and are not agent tools.
+the command line must contain `wt-artifact-server.mjs`, listener launch evidence must match discovery,
+and the boot ID and process start ticks must match the recorded birth identity immediately before
+signalling. Missing discovery is unknown, and restart refuses to spawn. Unavailable birth identity
+(currently including macOS and Windows) refuses even with `--force`; older servers without a recorded
+birth identity require manual shutdown. Concurrent stop/restart commands share a `control.d` claim;
+after a controller crashes, confirm no control command remains and remove that empty directory before
+retrying. These controls are CLI-only and are not agent tools.
 
 ## Tailscale
 

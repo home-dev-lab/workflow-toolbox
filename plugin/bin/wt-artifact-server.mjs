@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
@@ -34,6 +35,8 @@ import {
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
+import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { retainProcessOwner, signalProcess } from './lib/host/process-signal-boundary.mjs'
 
@@ -264,6 +267,7 @@ class ArtifactService {
   constructor() {
     ensureSecureStateDir()
     this.requestedPort = configuredArtifactPort()
+    this.startToken = process.env.WT_ARTIFACT_SERVER_START_TOKEN ?? randomUUID()
     this.tailscale = detectTailscale(this.requestedPort)
     this.registrations = new Map()
     this.mountAssignments = new Map()
@@ -422,7 +426,7 @@ class ArtifactService {
     if (requestUrl.pathname === '/__wt-artifact-server/health') {
       send(response, method, 200, `${JSON.stringify({
         service: ARTIFACT_SERVER_ID, version: ARTIFACT_SERVER_VERSION, pid: process.pid,
-        uid: artifactUid(), port: requestedPort,
+        uid: artifactUid(), port: requestedPort, startToken: this.startToken,
         registeredSessions: [...this.registrations.values()].filter((registration) => registration.live).length,
       })}\n`, 'application/json; charset=utf-8')
       return
@@ -535,6 +539,7 @@ class ArtifactService {
     await listenArtifactTailnet(listen, tailscale, requestedPort)
     this.discovery = {
       version: ARTIFACT_SERVER_VERSION, pid: process.pid, port: requestedPort,
+      processIdentity: hostAdapter.readProcessIdentity(process.pid), startToken: this.startToken,
       baseUrl: `http://localhost:${requestedPort}`, remoteUrl: tailscale.remoteUrl,
       tailnetDetection: tailscale.detection, tailnetVia: tailscale.via,
       roots: [], mounts: [], startedAt: new Date().toISOString(),
@@ -589,11 +594,13 @@ async function urlCommand(args) {
 
 async function stopRunning(action, force) {
   const state = readArtifactDiscovery()
-  if (!state) return { ok: true, message: 'artifact server: stopped' }
+  if (!state) return { ok: false, message: 'artifact server: unknown, nothing stopped (discovery unavailable)' }
   const probe = await probeArtifactServer(state.port)
-  const refusal = artifactStopHealthRefusal(state, probe, force) ?? artifactStopProcessRefusal(state, force)
+  const refusal = artifactStopHealthRefusal(state, probe, force) ?? artifactStopProcessRefusal(state)
   if (refusal) return refusal
   atomicWriteJson(artifactIntentPath(), { pid: state.pid, action })
+  // POSIX numeric-PID signals still have a race between this identity re-read and kernel delivery.
+  if (!artifactStopIdentityMatches(state)) return artifactStopIdentityRefusal()
   try { signalProcess(state.pid, 'SIGTERM') } catch (error) {
     if (error.code === 'ESRCH') return artifactStoppedResult(state, action)
     return { ok: false, message: `artifact server: failed to signal verified PID ${state.pid}: ${error.message}` }
@@ -602,16 +609,34 @@ async function stopRunning(action, force) {
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50))
     // Listener closure and replacement health say nothing about draining connections.
-    // Only host-confirmed absence authorizes success or a replacement process.
-    if (!retainProcessOwner(state.pid)) return artifactStoppedResult(state, action)
+    // Only host-confirmed exit (including an unreaped zombie) authorizes replacement.
+    if (!retainProcessOwner(state.pid, hostAdapter.readProcessExecutionState)) return artifactStoppedResult(state, action)
   }
   return { ok: false, message: `artifact server: verified PID ${state.pid} did not stop` }
 }
 
+function artifactStopIdentityRefusal() {
+  return { ok: false, message: "artifact server: could not verify the server's identity; nothing was stopped" }
+}
+
+function artifactStopIdentityMatches(state) {
+  try {
+    const actual = hostAdapter.readProcessIdentity(state.pid)
+    const recorded = state.processIdentity
+    return actual.status === 'known' && recorded?.status === 'known' &&
+      actual.pid === state.pid && recorded.pid === state.pid &&
+      typeof recorded.startIdentity === 'string' && recorded.startIdentity.length > 0 &&
+      actual.startIdentity === recorded.startIdentity
+  } catch { return false }
+}
+
+function artifactStopHealthMatches(state, probe) {
+  return probe.kind === 'ours' && probe.health.pid === state.pid && probe.health.port === state.port &&
+    typeof state.startToken === 'string' && state.startToken.length > 0 && probe.health.startToken === state.startToken
+}
+
 function artifactStopHealthRefusal(state, probe, force) {
-  if (probe.kind !== 'ours' || probe.health.pid !== state.pid || probe.health.port !== state.port) {
-    return { ok: false, message: 'artifact server: refusing to signal because state and health identity mismatch' }
-  }
+  if (!artifactStopHealthMatches(state, probe)) return artifactStopIdentityRefusal()
   if (!Number.isInteger(probe.health.registeredSessions) || probe.health.registeredSessions < 0) {
     return { ok: false, message: 'artifact server: refusing because registered session count cannot be measured' }
   }
@@ -620,15 +645,13 @@ function artifactStopHealthRefusal(state, probe, force) {
   }
 }
 
-function artifactStopProcessRefusal(state, force) {
+function artifactStopProcessRefusal(state) {
   if (process.platform === 'linux') {
     let commandLine = ''
     try { commandLine = hostProcfs.readCommandLine(state.pid, 'utf8') } catch {}
     if (!commandLine.includes('wt-artifact-server.mjs')) {
-      return { ok: false, message: 'artifact server: refusing because PID command identity does not match wt-artifact-server.mjs' }
+      return artifactStopIdentityRefusal()
     }
-  } else if (!force) {
-    return { ok: false, message: 'artifact server: process identity check is weaker on this platform; use --force' }
   }
 }
 
@@ -638,25 +661,43 @@ function artifactStoppedResult(state, action) {
 
 function spawnServer(port) {
   const script = fileURLToPath(import.meta.url)
+  const token = randomUUID()
   const child = spawn(process.execPath, [script, 'serve'], {
     // Shared, long-lived: run from the state directory it owns, never the caller's cwd (see the ensure).
     cwd: ensureSecureStateDir(),
-    detached: true, windowsHide: true, stdio: 'ignore', env: { ...process.env, WT_ARTIFACT_SERVER_PORT: String(port) },
+    detached: true, windowsHide: true, stdio: 'ignore',
+    env: { ...process.env, WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_START_TOKEN: token },
   })
+  const replacement = { child, token, failed: false }
+  child.once('error', () => { replacement.failed = true })
   child.unref()
+  return replacement
+}
+
+function artifactReplacementReady(probe, { child, token, failed }, port) {
+  if (failed || child.exitCode !== null || child.signalCode !== null) return false
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) return false
+  return probe.kind === 'ours' && probe.health.pid === child.pid &&
+    probe.health.port === port && probe.health.startToken === token
 }
 
 async function controlCommand(command, force) {
+  const release = acquireArtifactControlClaim(ensureSecureStateDir())
+  if (!release) return { ok: false, message: 'artifact server: another stop/restart may be active; nothing was stopped (control.d claim unavailable)' }
+  try { return await controlWhileClaimed(command, force) } finally { release() }
+}
+
+async function controlWhileClaimed(command, force) {
   if (command === 'stop') return stopRunning('stop', force)
   const old = readArtifactDiscovery()
   const stopped = await stopRunning('restart', force)
   if (!stopped.ok) return stopped
   const port = stopped.port ?? old?.port ?? configuredArtifactPort()
-  spawnServer(port)
+  const replacement = spawnServer(port)
   const deadline = Date.now() + 5_000
   while (Date.now() < deadline) {
     const probe = await probeArtifactServer(port, 200)
-    if (probe.kind === 'ours' && Number.isSafeInteger(probe.health.pid) && probe.health.pid > 0) return { ok: true, message: `artifact server: restarted on ${port}` }
+    if (artifactReplacementReady(probe, replacement, port)) return { ok: true, message: `artifact server: restarted on ${port}` }
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
   return { ok: false, message: `artifact server: restart failed on ${port}` }

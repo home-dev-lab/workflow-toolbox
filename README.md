@@ -372,6 +372,17 @@ what happened and whether resuming is safe.
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
 | `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config on explicit request; existing proven-unedited stale copies refresh at SessionStart. Each copy is fingerprinted so a later `--check` detects drift. | Automatically when you ask, or `/workflow-toolbox:adopt` |
 
+Artifact server `stop`/`restart` require discovery and matching listener launch evidence,
+then re-read the recorded PID's birth identity immediately before signalling; uncertainty
+means nothing is signalled and restart refuses to launch a replacement. Linux birth identity
+uses the boot ID and process start ticks; unavailable birth identity (currently including
+macOS and Windows) refuses even with `--force`, which only overrides registered-session policy.
+Servers started before birth identity was recorded also require manual shutdown.
+POSIX numeric-PID signals retain a race between the final identity re-read and kernel delivery.
+Concurrent control commands share an atomic `control.d` claim through replacement readiness;
+after a controller crashes, confirm no control command remains and run
+`rmdir <artifact-state-dir>/control.d` before retrying.
+
 ### Bundled rules & the delegation ladder
 
 The plugin bundles cross-cutting **rule files** in `plugin/rules/`: the

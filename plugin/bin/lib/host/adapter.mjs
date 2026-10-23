@@ -7,7 +7,8 @@ import * as darwin from './darwin.mjs'
 import * as linux from './linux.mjs'
 import * as posix from './posix.mjs'
 import * as win32 from './win32.mjs'
-import { readProcessGroupLiveness, readProcessLiveness, sendProcessSignal } from './process-signals.mjs'
+import { readProcessExecutionState, readProcessGroupLiveness, readProcessLiveness, sendProcessSignal } from './process-signals.mjs'
+import { readProcessIdentity } from './process-identity.mjs'
 
 const implementations = { aix: posix, darwin, freebsd: posix, linux, sunos: posix, win32 }
 const evidenceLabels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows-latest' }
@@ -17,7 +18,7 @@ export function createHostAdapter({ platform = process.platform, invoke, evidenc
   if (!implementation && unavailableFallback) return unavailableAdapter(platform, `host adapter unavailable on ${platform}`)
   if (!implementation) throw new Error(`host adapter unavailable on ${platform}`)
   const captured = evidenceRoot ? readEvidence(platform, evidenceRoot, mutate) : null
-  const invocation = captured ? evidenceInvocation(implementation, captured) : invoke ?? realInvocation()
+  const invocation = adapterInvocation(implementation, captured, invoke)
   const adapter = {
     platform,
     readProcessRelationships: () => implementation.readProcessRelationships(invocation),
@@ -27,12 +28,18 @@ export function createHostAdapter({ platform = process.platform, invoke, evidenc
     endProcessFamily: (pid) => implementation.endProcessFamily(invocation, pid),
     forceEndProcessFamily: (pid) => implementation.forceEndProcessFamily(invocation, pid),
     readProcessLiveness: (pid) => readProcessLiveness(invocation, pid),
+    readProcessExecutionState: (pid) => readProcessExecutionState(platform, invocation, pid),
+    readProcessIdentity: (pid) => readProcessIdentity(platform, invocation, pid),
     sendProcessSignal: (pid, signal) => sendProcessSignal(invocation, pid, signal),
     readProcessGroupLiveness: (pid) => readProcessGroupLiveness(platform, invocation, pid),
     createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env),
   }
   if (!captured) return adapter
   return { ...adapter, evidence: () => evidenceSummary(platform, captured) }
+}
+
+function adapterInvocation(implementation, captured, invoke) {
+  return captured ? evidenceInvocation(implementation, captured) : invoke ?? realInvocation()
 }
 
 // A busy host's process table (`ps`, or the PowerShell snapshot) can exceed the 1 MiB child-output default;
@@ -77,7 +84,8 @@ function realInvocation() {
 function unavailableAdapter(platform, reason) {
   const unavailable = () => { throw new Error(reason) }
   const adapter = { available: false, platform, reason, readAvailableMemory: () => ({ mib: null, source: `available memory on ${platform}`, reason: 'unsupported platform' }), readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }), forceEndProcessFamily: () => ({ status: 'unavailable', reason }) }
-  adapter.readProcessLiveness = adapter.readProcessGroupLiveness = () => ({ status: 'unknown', reason })
+  adapter.readProcessExecutionState = adapter.readProcessLiveness = adapter.readProcessGroupLiveness = () => ({ status: 'unknown', reason })
+  adapter.readProcessIdentity = () => ({ status: 'unknown', reason })
   adapter.sendProcessSignal = () => ({ status: 'unknown', reason })
   return { ...adapter, createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env) }
 }
