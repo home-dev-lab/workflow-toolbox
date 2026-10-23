@@ -33,6 +33,7 @@ export const spawningTestFiles = [
   'packages/build/test/adopt-installer.test.ts',
   'packages/build/test/adopt-migrate-dry-run.test.ts',
   'packages/build/test/adopt-script-shims.test.ts',
+  'packages/build/test/adopt-ssh-sign-retry.test.ts',
   'packages/build/test/adopted-wt-lane-consent-parity.test.ts',
   'packages/build/test/agent-definition-guard-unresolved.test.ts',
   'packages/build/test/agent-definitions.test.ts',

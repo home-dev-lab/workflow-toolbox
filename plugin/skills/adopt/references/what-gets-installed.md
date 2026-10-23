@@ -2,6 +2,13 @@ This reference belongs to the adopt skill. Its text moved here verbatim from tha
 
 ## What gets installed
 
+**Optional `ssh-sign-retry` → `.claude/scripts/` (or `<config dir>/scripts/` with `--global`):**
+
+- `wt-ssh-sign-retry.mjs`, a standalone Node program with an adopt banner and fingerprint.
+  Only `--set ssh-sign-retry` opts in; `--set all` excludes it. The install step can set an
+  absent `gpg.ssh.program` in the selected Git scope. Existing values are reported and
+  preserved. See [SSH signing retry](ssh-sign-retry.md) for the runtime contract.
+
 **rules → `.claude/rules/`:**
 
 - Every `*.md` in the plugin's `rules/` bundle (its single source) except `README.md`,
@@ -28,4 +35,3 @@ This reference belongs to the adopt skill. Its text moved here verbatim from tha
 The rule set is the plugin's shipped, project-agnostic guardrails (pure directives — no
 environment-specific narrative); the workflow-authoring doctrine lives in the
 `workflow-toolbox:workflow-composer` skill and is not re-installed here.
-

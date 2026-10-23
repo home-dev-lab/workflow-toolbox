@@ -44,6 +44,9 @@ and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one p
 - **docs** — retired. The shipped rules no longer point at rationale files, so this set installs
   nothing and `--set docs` exits with that explanation. A `<config-dir>/docs/wt/` copy adopted
   earlier is left untouched and may be deleted.
+- **ssh-sign-retry** — optional, standalone Node wrapper for intermittent SSH-agent signing
+  failures. Requires an explicit `--set ssh-sign-retry`; `--set all` excludes it. See
+  [SSH signing retry](references/ssh-sign-retry.md) for installation, Git scope, and platform status.
 
 A third kind of agent needs no adoption: the plugin's
 `agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
@@ -63,27 +66,7 @@ user-initiated act.
 
 ## Account-level environment prerequisites
 
-`adopt` also checks the active config profile's `settings.json` `env` block and, on
-`--install`, adds ONLY the plugin prerequisites whose keys are ABSENT there:
-
-- `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` — required for the pilot/orchestrator/executor chain.
-  Without it, the remote spawn-depth ceiling can drop below the three nested levels the suite
-  uses, and the executor lane can die silently.
-- `CLAUDE_CODE_EXPERIMENTAL_OBSERVER_AGENTS` — required ONLY when adopting the pilot agents
-  set. Without it, Claude Code silently ignores an adopted pilot's `observer:` field, so the
-  watchdog never attaches.
-
-Safety contract for settings writes:
-
-- `--check` names missing keys by NAME only. It never prints env values.
-- A present key is left intact even when it differs from the managed default.
-- The tool writes only the active `CLAUDE_CONFIG_DIR` profile's `settings.json`; if the user
-  keeps several profiles, tell them to rerun under each one.
-- Before writing an existing settings file, the tool creates a backup, then re-reads the file
-  and verifies that no root key or pre-existing env key was lost.
-- Traceability is out-of-band: the tool records only the keys it inserted in a profile-local
-  sidecar under the `workflow-toolbox/` subdir, because `settings.json` itself must stay strict
-  JSON with no banner.
+Open [references/environment-prerequisites.md](references/environment-prerequisites.md) before checking or installing account-level settings.
 
 ## The contract (do not violate)
 
@@ -189,8 +172,8 @@ Open [references/detecting-and-refreshing-stale-copies.md](references/detecting-
 
 ## Non-goals
 
-- It never writes without an explicit user request, and never touches anything but the managed
-  files in the chosen set's dir.
+- It never writes without an explicit user request. It writes the chosen managed files and the
+  documented settings prerequisites; the explicit SSH retry set can also set an absent Git signer.
 - It does not install the workflow-authoring doctrine (in `workflow-toolbox:workflow-composer`).
 - It is not how you compose a pilot wave — that is the `workflow-toolbox:pilot-wave` skill,
   which PROPOSES the agent-copy install (via this skill) at the moment a spawn would otherwise
