@@ -3,7 +3,7 @@ import { createServer, request as httpRequest, type Server } from 'node:http'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { artifactUrl, assignArtifactMounts, atomicWriteJson, chooseRemoteUrl, deriveArtifactPort, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
@@ -43,6 +43,8 @@ const PAUSED_HOLDER_COMPLETION_BOUND_MS = PAUSED_CLAIM_HOLD_MS + FALLBACK_DISCOV
 const PAUSED_HOLDER_TEST_BOUND_MS = OLD_CLAIM_STALE_BOUND_MS + CLAIM_OBSERVATION_MARGIN_MS + CONTENDER_OBSERVATION_MS + PAUSED_HOLDER_COMPLETION_BOUND_MS + FALLBACK_DISCOVERY_MARGIN_MS
 // Hosted Windows completed the six-monitor race but retained a process handle beyond the old 2 s removal window.
 const WINDOWS_TEMP_REMOVE_RETRIES = { maxRetries: 100, retryDelay: 100 }
+// Linux can exercise all adapter branches with real processes; other hosts exercise their native refusal.
+const CONTROL_PLATFORMS = process.platform === 'linux' ? ['linux', 'darwin', 'win32'] : [process.platform]
 
 function temporaryDir(tag: string) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))
@@ -621,6 +623,162 @@ async function probeAgainst(handler: Handler, timeout: number, beforeCleanup: ()
     await closeServer(server)
   }
 }
+
+function pausedStopPreload(stateHome: string, pid: number) {
+  const preload = join(stateHome, 'pause-on-term.cjs')
+  const spawns = join(stateHome, 'replacement-spawns.log')
+  writeFileSync(preload, `
+const { appendFileSync } = require('node:fs')
+const childProcess = require('node:child_process')
+const { syncBuiltinESMExports } = require('node:module')
+const kill = process.kill.bind(process)
+process.kill = (pid, signal) => kill(pid, pid === ${pid} && signal === 'SIGTERM' ? 'SIGSTOP' : signal)
+const spawn = childProcess.spawn
+childProcess.spawn = (...args) => {
+  appendFileSync(${JSON.stringify(spawns)}, 'spawn\\n')
+  return spawn(...args)
+}
+syncBuiltinESMExports()
+`)
+  return { preload, spawns }
+}
+
+function controlPlatformEnv(stateHome: string, env: NodeJS.ProcessEnv, platform: string) {
+  const preload = join(stateHome, 'control-platform.mjs')
+  const spawns = join(stateHome, 'control-spawns.log')
+  const identities = join(stateHome, 'control-identities.jsonl')
+  const adapterUrl = new URL('../../../../plugin/bin/lib/host/adapter.mjs', import.meta.url).href
+  writeFileSync(preload, `
+import { appendFileSync } from 'node:fs'
+import childProcess from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+import { createHostAdapter, hostAdapter } from ${JSON.stringify(adapterUrl)}
+Object.assign(hostAdapter, createHostAdapter({ platform: ${JSON.stringify(platform)} }))
+const identity = hostAdapter.readProcessIdentity
+hostAdapter.readProcessIdentity = (pid) => {
+  const result = identity(pid)
+  appendFileSync(${JSON.stringify(identities)}, JSON.stringify(result) + '\\n')
+  return result
+}
+const spawn = childProcess.spawn
+childProcess.spawn = (...args) => {
+  appendFileSync(${JSON.stringify(spawns)}, 'spawn\\n')
+  return spawn(...args)
+}
+syncBuiltinESMExports()
+`)
+  return { env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}` }, spawns, identities }
+}
+
+function expectIdentityRefusal(result: Awaited<ReturnType<typeof runCli>>, control: ReturnType<typeof controlPlatformEnv>, platform: string) {
+  expect(result.code).toBe(1)
+  expect(result.stdout).toBe('')
+  expect(result.stderr).toBe("artifact server: could not verify the server's identity; nothing was stopped\n")
+  expect(jsonReceipts(control.identities).at(-1)).toEqual({ status: 'unknown', reason: `PROCESS_IDENTITY_UNAVAILABLE on ${platform}` })
+  expect(spawnReceipts(control.spawns), 'identity refusal must not spawn a second server').toHaveLength(0)
+}
+
+describe.each(CONTROL_PLATFORMS)('artifact stop confirmation with a real paused process (%s adapter)', (platform) => {
+  it.each(['stop', 'restart'])('%s respects platform identity availability while the original PID lives', async (command) => {
+    const stateHome = temporaryDir('paused-stop-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    const server = spawn(process.execPath, [SERVER, 'serve'], { env, stdio: 'ignore' })
+    children.add(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    const { preload, spawns } = pausedStopPreload(stateHome, state.pid)
+    const control = controlPlatformEnv(stateHome, env, platform)
+    try {
+      const result = await runCli([command, '--force'], { ...control.env, NODE_OPTIONS: `${control.env.NODE_OPTIONS} --require=${JSON.stringify(preload)}` })
+      expect(pidAlive(state.pid)).toBe(true)
+      if (platform !== 'linux') {
+        expectIdentityRefusal(result, control, platform)
+        expect((await health(state)).pid).toBe(state.pid)
+        expect(readState(stateHome)?.pid).toBe(state.pid)
+        return
+      }
+      expect((await probeArtifactServer(state.port, 200)).kind).toBe('unknown')
+      expect(result.stdout, 'a live paused server must not be reported stopped').toBe('')
+      expect(result.stderr).toBe(`artifact server: verified PID ${state.pid} did not stop\n`)
+      expect(result.code).toBe(1)
+      expect(existsSync(spawns), 'restart must not spawn while the verified PID lives').toBe(false)
+    } finally {
+      if (platform === 'linux') {
+        process.kill(state.pid, 'SIGCONT')
+        const stopped = await runCli(['stop', '--force'], control.env)
+        expect(stopped.code, stopped.stderr).toBe(0)
+        expect(stopped.stdout).toBe('artifact server: stopped\n')
+        await waitFor(() => pidAlive(state.pid) ? null : true)
+      } else await stopChild(server)
+    }
+  }, 30_000)
+})
+
+function drainingResponsePreload(stateHome: string) {
+  const preload = join(stateHome, 'draining-response.cjs')
+  writeFileSync(preload, `
+const { Server } = require('node:http')
+const emit = Server.prototype.emit
+Server.prototype.emit = function (event, ...args) {
+  if (event === 'request' && args[0].url === '/drain') {
+    args[1].writeHead(200)
+    args[1].write('unfinished response')
+    return true
+  }
+  return emit.call(this, event, ...args)
+}
+`)
+  return preload
+}
+
+async function holdDrainingResponse(port: number) {
+  const request = httpRequest({ host: '127.0.0.1', port, path: '/drain', agent: false })
+  await new Promise<void>((resolve, reject) => {
+    request.once('response', (response) => { response.resume(); resolve() })
+    request.once('error', reject)
+    request.end()
+  })
+  return request
+}
+
+describe.each(CONTROL_PLATFORMS)('artifact stop confirmation with a real draining response (%s adapter)', (platform) => {
+  it.each(['stop', 'restart'])('%s respects platform identity availability while the original response drains', async (command) => {
+    const stateHome = temporaryDir('draining-stop-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    const preload = drainingResponsePreload(stateHome)
+    const server = spawn(process.execPath, [SERVER, 'serve'], {
+      env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}` }, stdio: 'ignore',
+    })
+    children.add(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    const request = await holdDrainingResponse(state.port)
+    const control = controlPlatformEnv(stateHome, env, platform)
+    try {
+      const result = await runCli([command, '--force'], control.env)
+      if (platform !== 'linux') {
+        expectIdentityRefusal(result, control, platform)
+        expect((await health(state)).pid).toBe(state.pid)
+        expect(pidAlive(state.pid)).toBe(true)
+        expect(readState(stateHome)?.pid).toBe(state.pid)
+        return
+      }
+      expect((await probeArtifactServer(state.port, 200)).kind).toBe('free')
+      expect(pidAlive(state.pid), 'the old process must still be draining').toBe(true)
+      expect(result.code, 'a closed listener is not process-exit evidence').toBe(1)
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toBe(`artifact server: verified PID ${state.pid} did not stop\n`)
+      expect(readState(stateHome)?.pid).toBe(state.pid)
+      expect(spawnReceipts(control.spawns), 'a draining process must not get a replacement').toHaveLength(0)
+    } finally {
+      request.destroy()
+      if (platform === 'linux') await waitFor(() => pidAlive(state.pid) ? null : true)
+      else await stopChild(server)
+    }
+  }, 30_000)
+})
 
 describe('health probe settles on a broken reply', () => {
   it('settles as unknown as soon as the server dies after sending headers and part of the body', async () => {
@@ -1840,6 +1998,30 @@ describe('owner decision 2: discovery and one instance', () => {
   }, 40_000)
 })
 
+async function expectForcedControls(stateHome: string, first: Discovery, project: string, control: ReturnType<typeof controlPlatformEnv>, platform: string) {
+  const restarted = await runCli(['restart', '--force'], control.env, project)
+  if (platform !== 'linux') {
+    expectIdentityRefusal(restarted, control, platform)
+    expectIdentityRefusal(await runCli(['stop', '--force'], control.env), control, platform)
+    expect(pidAlive(first.pid)).toBe(true)
+    expect(readState(stateHome)?.pid).toBe(first.pid)
+    expect((await health(first)).pid).toBe(first.pid)
+    return
+  }
+  expect(restarted.code, restarted.stderr).toBe(0)
+  expect(restarted.stdout).toBe(`artifact server: restarted on ${first.port}\n`)
+  const second = await waitForState(stateHome, (state) => state.pid !== first.pid)
+  expect(second.pid).not.toBe(first.pid)
+  expect(pidAlive(first.pid)).toBe(false)
+  expect(spawnReceipts(control.spawns), 'successful restart launches exactly one replacement').toHaveLength(1)
+  const restartedServer = inspectProcess(second.pid, { captureCwd: true, spawnSync: spawnSync.bind(null) }) as ProcessIdentity | null
+  expect(restartedServer?.cwd).toBe(realpathSync(serverStateDir(stateHome)))
+  const stopped = await runCli(['stop', '--force'], control.env)
+  expect(stopped.code, stopped.stderr).toBe(0)
+  expect(stopped.stdout).toBe('artifact server: stopped\n')
+  await waitFor(() => pidAlive(second.pid) ? null : true)
+}
+
 describe('owner decision 3: session lifetime and operator controls', () => {
   it('reports EADDRINUSE on a taken port and serves successfully once that port is free', async () => {
     const stateHome = temporaryDir('serve-port-collision')
@@ -1868,7 +2050,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     expect(server.exitCode).toBe(process.platform === 'win32' ? 1 : 0)
     expect(output.stderr()).toBe('')
   }, 20_000)
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('reports EADDRINUSE for a second serve without disrupting the live artifact server', async () => {
     const stateHome = temporaryDir('serve-existing-server')
     const reservation = await reservePort()
@@ -1885,7 +2069,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     expect(readState(stateHome)).toEqual(state)
     expect((await health(state)).pid).toBe(server.pid)
   }, 20_000)
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('tolerates a transient discovery miss and uses a bounded removal retry while the server stops', async () => {
     const stateHome = temporaryDir('removed-state-home')
     const reservation = await reservePort()
@@ -1911,7 +2097,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
 
     await waitFor(() => pidAlive(server.pid!) ? null : true, 500)
   })
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('[V3-idle-registration][V3-last-deregistration] keeps an idle registered session alive past grace and stops immediately after clean removal', async () => {
     const { project } = projectWithRoots('clean-stop')
     const stateHome = temporaryDir('clean-stop-state')
@@ -1927,7 +2115,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     await stopChild(monitor)
     await waitFor(() => pidAlive(state.pid) ? null : true, 300)
   })
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('[V3-dead-pid-grace] removes a dead registration and stops after grace', async () => {
     const { project } = projectWithRoots('dead-stop')
     const stateHome = temporaryDir('dead-stop-state')
@@ -1946,7 +2136,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     })
     expect(readdirSync(registrationsPath(stateHome)), `sweep diagnostic=${sweepDiagnostic(stateHome)}`).toHaveLength(0)
   })
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('restarts a lost server while its session registration remains live', async () => {
     const { project } = projectWithRoots('lost-server-restart')
     const stateHome = temporaryDir('lost-server-restart-state')
@@ -1983,7 +2175,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
       return registration.pid === monitor.pid
     })).toBe(true)
   }, 15_000)
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('reports one bounded retry stop when a lost server cannot restart', async () => {
     const { project } = projectWithRoots('lost-server-bounded')
     const stateHome = temporaryDir('lost-server-bounded-state')
@@ -2021,8 +2215,10 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     }
     // Windows worst 13936 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 18000 ms).
   }, 35_000)
+})
 
-  it('[V3-stop-refused][V3-force] refuses stop/restart with registrations and allows both with --force', async () => {
+describe('owner decision 3: session lifetime and operator controls', () => {
+  it.each(CONTROL_PLATFORMS)('[V3-stop-refused][V3-force] respects registrations and platform identity availability (%s adapter)', async (platform) => {
     const { project } = projectWithRoots('controls')
     const stateHome = temporaryDir('controls-state')
     const reservation = await reservePort()
@@ -2032,27 +2228,16 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     const monitor = spawnEnsure(project, env)
     const first = await waitForState(stateHome)
     await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
+    const control = controlPlatformEnv(stateHome, env, platform)
 
     for (const command of ['stop', 'restart']) {
-      const refused = spawnSync(process.execPath, [SERVER, command], { encoding: 'utf8', env })
-      expect(refused.status, command).not.toBe(0)
+      const refused = await runCli([command], control.env)
+      expect(refused.code, command).not.toBe(0)
       expect(refused.stderr, command).toMatch(/registered session/i)
       expect(pidAlive(first.pid)).toBe(true)
     }
 
-    const restarted = spawnSync(process.execPath, [SERVER, 'restart', '--force'], { cwd: project, encoding: 'utf8', env, timeout: 5_000 })
-    expect(restarted.status).toBe(0)
-    const second = await waitForState(stateHome, (state) => state.pid !== first.pid)
-    expect(second.pid).not.toBe(first.pid)
-    // The restarted server must not inherit the operator's cwd either (process cwd is unreadable on Windows).
-    if (process.platform !== 'win32') {
-      const restartedServer = inspectProcess(second.pid, { captureCwd: true, spawnSync: spawnSync.bind(null) }) as ProcessIdentity | null
-      expect(restartedServer?.cwd).toBe(realpathSync(serverStateDir(stateHome)))
-    }
-
-    const stopped = spawnSync(process.execPath, [SERVER, 'stop', '--force'], { encoding: 'utf8', env, timeout: 5_000 })
-    expect(stopped.status).toBe(0)
-    await waitFor(() => pidAlive(second.pid) ? null : true)
+    await expectForcedControls(stateHome, first, project, control, platform)
     await stopChild(monitor)
   })
 })
