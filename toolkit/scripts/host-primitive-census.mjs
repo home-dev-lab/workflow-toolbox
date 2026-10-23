@@ -8,6 +8,8 @@ const DEFAULT_PLUGIN_ROOT = resolve(import.meta.dirname, '../../plugin')
 const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process'])
 const FILESYSTEM_MODULES = new Set(['fs', 'fs/promises', 'node:fs', 'node:fs/promises'])
 const OS_MODULES = new Set(['os', 'node:os'])
+const PROCESS_MODULES = new Set(['process', 'node:process'])
+const REQUIRE_FACTORY_MODULES = new Set(['module', 'node:module'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 // A parser of Bash command text, the Git Bash spelling of a Windows path, and the quoting of commands printed for a POSIX shell: their `/` and
@@ -87,13 +89,65 @@ function sourceEntry(path, root) {
   }
 }
 
+function consumeShebangQuote(state, character) {
+  if (state.escaped) {
+    state.word += character
+    state.escaped = false
+  } else if (character === '\\' && state.quote !== "'") state.escaped = true
+  else if (state.quote) {
+    if (character === state.quote) state.quote = ''
+    else state.word += character
+  } else if (character === '"' || character === "'") state.quote = character
+  else return false
+  return true
+}
+
+function shebangWords(command) {
+  const words = []
+  const state = { word: '', quote: '', escaped: false }
+  for (const character of command) {
+    if (consumeShebangQuote(state, character)) continue
+    if (/\s/.test(character)) {
+      if (state.word) words.push(state.word)
+      state.word = ''
+    } else state.word += character
+  }
+  return state.quote || state.escaped ? [] : [...words, state.word].filter(Boolean)
+}
+
+function envInterpreter(words) {
+  while (words.length) {
+    const word = words.shift()
+    if (word === '-S' || word === '--split-string') continue
+    if (word.startsWith('--split-string=')) return envInterpreter([...shebangWords(word.slice(15)), ...words])
+    if (word.startsWith('-S')) return envInterpreter([...shebangWords(word.slice(2)), ...words])
+    if (['-u', '--unset', '-C', '--chdir', '-a', '--argv0'].includes(word)) {
+      words.shift()
+      continue
+    }
+    if (word.startsWith('-') || /^[A-Za-z_]\w*=/.test(word)) continue
+    return word
+  }
+  return undefined
+}
+
+function isNodeShebang(shebang) {
+  // The kernel's direct interpreter path is not shell text. Only env's command
+  // words need quote handling; unmatched quotes in direct Node arguments are literal.
+  const command = shebang.slice(2).trimStart().split(/\s/, 1)[0]
+  const executable = command.split(/[\/\\]/).at(-1)
+  const interpreter = executable === 'env'
+    ? envInterpreter(shebangWords(shebang.slice(2)).slice(1))?.split(/[\/\\]/).at(-1) : executable
+  return interpreter === 'node' || interpreter === 'node.exe'
+}
+
 function isExecutableSource(path) {
   if (EXECUTABLE_EXTENSIONS.has(extname(path))) return true
   const bytes = readFileSync(path)
   if (bytes[0] !== 35 || bytes[1] !== 33) return false
   const newline = bytes.indexOf(10)
   const shebang = bytes.subarray(0, newline === -1 ? bytes.length : newline).toString('utf8')
-  return /^#![^\r\n]*(?:[\/\\]|\s)node(?:[ \t\r]|$)/.test(shebang)
+  return isNodeShebang(shebang)
 }
 
 export function sourceFiles(root) {
@@ -131,70 +185,183 @@ export function sourceFiles(root) {
   return walk(root)
 }
 
-function requiredModule(node) {
-  if (!ts.isCallExpression(node) || node.arguments.length !== 1 || !ts.isIdentifier(node.expression)
-    || node.expression.text !== 'require' || !ts.isStringLiteral(node.arguments[0])) return null
-  return HOST_MODULES.has(node.arguments[0].text) ? node.arguments[0].text : null
+// Normalize transparent syntax at every expression boundary, rather than teaching
+// each loader, receiver, callee and computed key its own parenthesis spellings.
+function unwrapExpression(node) {
+  while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node)
+    || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)
+    || ts.isSatisfiesExpression(node) || ts.isPartiallyEmittedExpression(node)) node = node.expression
+  return node
 }
 
-function importedModule(node) {
-  if (!ts.isCallExpression(node) || node.expression.kind !== ts.SyntaxKind.ImportKeyword
-    || node.arguments.length !== 1 || !ts.isStringLiteral(node.arguments[0])) return null
-  return HOST_MODULES.has(node.arguments[0].text) ? node.arguments[0].text : null
+function literalExpressionText(node) {
+  return node && literalText(unwrapExpression(node))
 }
 
-function loadedModule(node) {
-  while (ts.isAwaitExpression(node) || ts.isParenthesizedExpression(node)) node = node.expression
-  return requiredModule(node) ?? importedModule(node)
+function isNodeImport(symbol, moduleNames, names) {
+  return symbol?.declarations?.some((declaration) => {
+    let statement = declaration
+    while (statement && !ts.isImportDeclaration(statement)) statement = statement.parent
+    if (!statement || !moduleNames.has(statement.moduleSpecifier.text)) return false
+    const name = ts.isImportSpecifier(declaration) ? declaration.propertyName?.text ?? declaration.name.text
+      : ts.isNamespaceImport(declaration) ? '*' : 'default'
+    return names.includes(name)
+  }) ?? false
 }
 
-function recordHostImport(statement, direct, namespaces) {
+function isNodeNamespace(symbol, moduleNames, checker) {
+  if (isNodeImport(symbol, moduleNames, ['default', '*'])) return true
+  return symbol?.declarations?.some((declaration) => ts.isVariableDeclaration(declaration)
+    && ts.isIdentifier(declaration.name) && declaration.initializer
+    && loadedModule(declaration.initializer, checker, moduleNames)) ?? false
+}
+
+function isNodeRequireFactory(node, checker) {
+  node = unwrapExpression(node)
+  const member = accessName(node) === 'createRequire'
+  const receiver = member ? unwrapExpression(node.expression) : node
+  if (!ts.isIdentifier(receiver)) return false
+  return isNodeImport(bindingSymbol(checker, receiver), REQUIRE_FACTORY_MODULES, member ? ['default', '*'] : ['createRequire'])
+}
+
+function isNodeRequireBinding(symbol, checker) {
+  return symbol.declarations?.some((declaration) => {
+    if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) return false
+    const initializer = unwrapExpression(declaration.initializer)
+    if (!ts.isCallExpression(initializer)) return false
+    return isNodeRequireFactory(initializer.expression, checker)
+  }) ?? false
+}
+
+function isGlobalIdentifier(node, name, checker) {
+  node = unwrapExpression(node)
+  if (!ts.isIdentifier(node) || node.text !== name) return false
+  const symbol = bindingSymbol(checker, node)
+  // The JS binder synthesizes CommonJS require symbols without declarations.
+  // Actual lexical shadows always carry their source declarations.
+  if (!symbol?.declarations?.length) return true
+  if (name === 'process') return isNodeNamespace(symbol, PROCESS_MODULES, checker)
+  return name === 'require' && isNodeRequireBinding(symbol, checker)
+}
+
+function requiredModule(node, checker, moduleNames = HOST_MODULES) {
+  if (!ts.isCallExpression(node) || node.arguments.length !== 1
+    || !isGlobalIdentifier(node.expression, 'require', checker)) return null
+  const name = literalExpressionText(node.arguments[0])
+  return moduleNames.has(name) ? name : null
+}
+
+function importedModule(node, moduleNames = HOST_MODULES) {
+  if (!ts.isCallExpression(node) || node.expression.kind !== ts.SyntaxKind.ImportKeyword) return null
+  const name = literalExpressionText(node.arguments[0])
+  return moduleNames.has(name) ? name : null
+}
+
+function loadedModule(node, checker, moduleNames = HOST_MODULES) {
+  let awaited = false
+  node = unwrapExpression(node)
+  while (ts.isAwaitExpression(node)) {
+    awaited = true
+    node = unwrapExpression(node.expression)
+  }
+  return requiredModule(node, checker, moduleNames) ?? (awaited ? importedModule(node, moduleNames) : null)
+}
+
+function bindingSymbol(checker, node) {
+  if (ts.isShorthandPropertyAssignment(node.parent)) return checker.getShorthandAssignmentValueSymbol(node.parent)
+  return checker.getSymbolAtLocation(node)
+}
+
+function recordHostImport(statement, direct, namespaces, checker) {
   if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)
     && HOST_MODULES.has(statement.moduleSpecifier.text)) {
     const bindings = statement.importClause?.namedBindings
-    if (statement.importClause?.name) namespaces.add(statement.importClause.name.text)
-    recordImportBindings(bindings, direct, namespaces)
+    if (statement.importClause?.name) namespaces.add(bindingSymbol(checker, statement.importClause.name))
+    recordImportBindings(bindings, direct, namespaces, checker)
     return true
   }
   return false
 }
 
-function recordImportBindings(bindings, direct, namespaces) {
+function recordImportBindings(bindings, direct, namespaces, checker) {
   if (bindings && ts.isNamedImports(bindings)) {
     for (const element of bindings.elements) {
-      direct.set(element.name.text, element.propertyName?.text ?? element.name.text)
+      direct.set(bindingSymbol(checker, element.name), element.propertyName?.text ?? element.name.text)
     }
-  } else if (bindings && ts.isNamespaceImport(bindings)) namespaces.add(bindings.name.text)
+  } else if (bindings && ts.isNamespaceImport(bindings)) namespaces.add(bindingSymbol(checker, bindings.name))
 }
 
-function recordHostVariable(declaration, direct, namespaces) {
-  const moduleName = declaration.initializer && loadedModule(declaration.initializer)
-  if (!moduleName) return
-  if (ts.isIdentifier(declaration.name)) namespaces.add(declaration.name.text)
-  if (ts.isObjectBindingPattern(declaration.name)) {
-    for (const element of declaration.name.elements) {
-      if (!ts.isIdentifier(element.name)) continue
-      const imported = element.propertyName?.text ?? element.name.text
-      direct.set(element.name.text, imported)
+function bindingPrimitive(element) {
+  if (!element.propertyName) return element.name.text
+  return ts.isComputedPropertyName(element.propertyName) ? literalExpressionText(element.propertyName.expression) : element.propertyName.text
+}
+
+function isNamespacePattern(element) {
+  const primitive = bindingPrimitive(element)
+  return element.dotDotDotToken || primitive === undefined || primitive === 'promises' || primitive === 'default'
+}
+
+function recordHostPrototype(pattern, direct, namespaces, checker) {
+  if (!ts.isObjectBindingPattern(pattern)) return
+  for (const element of pattern.elements) {
+    if (bindingPrimitive(element) === 'prototype') {
+      recordHostPattern(element.name, direct, namespaces, checker)
     }
+  }
+}
+
+function recordHostPattern(pattern, direct, namespaces, checker) {
+  if (ts.isIdentifier(pattern)) namespaces.add(bindingSymbol(checker, pattern))
+  if (!ts.isObjectBindingPattern(pattern)) return
+  for (const element of pattern.elements) {
+    if (element.dotDotDotToken || !ts.isIdentifier(element.name)) {
+      // Nested namespaces and exported prototypes retain host identity. Other
+      // primitive properties (for example readFileSync.name) remain metadata.
+      if (isNamespacePattern(element)) {
+        recordHostPattern(element.name, direct, namespaces, checker)
+      }
+      else recordHostPrototype(element.name, direct, namespaces, checker)
+    }
+    else {
+      const primitive = bindingPrimitive(element)
+      if (primitive !== undefined) direct.set(bindingSymbol(checker, element.name), primitive)
+    }
+  }
+}
+
+function recordHostVariable(declaration, direct, namespaces, checker) {
+  if (declaration.initializer && loadedModule(declaration.initializer, checker)) {
+    recordHostPattern(declaration.name, direct, namespaces, checker)
   }
 }
 
 function hostBindings(sourceFile) {
+  // Bind only this parsed file: lexical symbols distinguish shadowing without resolving
+  // host imports, loading libraries, or reading other source files.
+  const options = { allowJs: true, allowNonTsExtensions: true, noLib: true, noResolve: true, types: [] }
+  const program = ts.createProgram([sourceFile.fileName], options, {
+    ...ts.createCompilerHost(options),
+    getSourceFile: () => sourceFile,
+  })
+  assertParseable(sourceFile, program.getSyntacticDiagnostics(sourceFile))
+  const checker = program.getTypeChecker()
   const direct = new Map()
   const namespaces = new Set()
-  for (const statement of sourceFile.statements) {
-    if (recordHostImport(statement, direct, namespaces)) continue
-    if (!ts.isVariableStatement(statement)) continue
-    for (const declaration of statement.declarationList.declarations) recordHostVariable(declaration, direct, namespaces)
+  const visit = (node) => {
+    recordHostImport(node, direct, namespaces, checker)
+    if (ts.isVariableDeclaration(node)) recordHostVariable(node, direct, namespaces, checker)
+    ts.forEachChild(node, visit)
   }
-  return { direct, namespaces }
+  visit(sourceFile)
+  return { direct, namespaces, checker }
 }
 
-function rootIdentifier(node) {
-  let current = node
-  while (accessName(current) !== undefined) current = current.expression
-  return ts.isIdentifier(current) ? current.text : null
+function accessRoot(node) {
+  let current = unwrapExpression(node)
+  while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    current = unwrapExpression(current.expression)
+  }
+  return current
 }
 
 function literalText(node) {
@@ -204,7 +371,7 @@ function literalText(node) {
 
 function accessName(node) {
   if (ts.isPropertyAccessExpression(node)) return node.name.text
-  if (ts.isElementAccessExpression(node)) return literalText(node.argumentExpression)
+  if (ts.isElementAccessExpression(node)) return literalExpressionText(node.argumentExpression)
   return undefined
 }
 
@@ -236,21 +403,22 @@ function isValueReference(node) {
 }
 
 function collectHostCall(node, bindings, add) {
-  const required = requiredModule(node)
+  const required = requiredModule(node, bindings.checker)
   const imported = importedModule(node)
   if (required) add(node, `${required.replace('node:', '')} require`)
   if (imported) add(node, `${imported.replace('node:', '')} import`)
-  const name = accessName(node.expression)
+  const callee = unwrapExpression(node.expression)
+  const name = accessName(callee)
   if (name !== undefined) {
-    const root = rootIdentifier(node.expression)
-    if (root && bindings.namespaces.has(root)) add(node, name)
-    if (loadedModule(node.expression.expression)) add(node, name)
+    const root = accessRoot(callee.expression)
+    const namespace = ts.isIdentifier(root) && bindings.namespaces.has(bindingSymbol(bindings.checker, root))
+    if (namespace || loadedModule(root, bindings.checker)) add(node, name)
   }
 }
 
-function collectProcessAccess(node, add) {
+function collectProcessAccess(node, checker, add) {
   const name = accessName(node)
-  if (name !== undefined && ts.isIdentifier(node.expression) && node.expression.text === 'process') {
+  if (name !== undefined && isGlobalIdentifier(node.expression, 'process', checker)) {
     if (name === 'platform' || name === 'kill') add(node, `process.${name}`)
   }
 }
@@ -260,8 +428,20 @@ function collectHostAccess(node, bindings, add) {
     add(node, `${node.moduleSpecifier.text.replace('node:', '')} import`)
   }
   if (ts.isCallExpression(node)) collectHostCall(node, bindings, add)
-  collectProcessAccess(node, add)
-  if (ts.isIdentifier(node) && bindings.direct.has(node.text) && isValueReference(node)) add(node, bindings.direct.get(node.text))
+  collectProcessAccess(node, bindings.checker, add)
+  if (ts.isIdentifier(node) && isValueReference(node)) {
+    const primitive = bindings.direct.get(bindingSymbol(bindings.checker, node))
+    if (primitive !== undefined) add(node, primitive)
+  }
+}
+
+function assertParseable(sourceFile, diagnostics) {
+  const diagnostic = diagnostics[0]
+  if (diagnostic) {
+    const { line, character } = sourceFile.getLineAndCharacterOfPosition(diagnostic.start ?? 0)
+    const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')
+    throw new Error(`Unparseable host source: ${sourceFile.fileName}:${line + 1}:${character + 1}: ${message}`)
+  }
 }
 
 function scanFile(path, root) {
