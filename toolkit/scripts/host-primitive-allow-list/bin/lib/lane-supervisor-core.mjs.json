@@ -3,6 +3,7 @@
   "child_process import": 1,
   "process.platform": 7,
   "realpathSync": 5,
+  "spawnSync": 3,
   "openSync": 1,
   "statSync": 3,
   "readSync": 1,

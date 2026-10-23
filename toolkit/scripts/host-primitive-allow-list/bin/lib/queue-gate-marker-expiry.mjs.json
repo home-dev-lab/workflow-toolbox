@@ -2,5 +2,6 @@
   "fs import": 1,
   "readFileSync": 1,
   "existsSync": 1,
+  "unlinkSync": 1,
   "readdirSync": 1
 }
