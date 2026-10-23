@@ -12,6 +12,7 @@ const SEAL_KEYS = ['NPM_CONFIG_PREFIX', 'HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG
 // Every accepted ambient read is named by its exact statement text (file, signal, source line text).
 // Adding or rewriting one requires a fresh decision; moving it does not. No file-wide exemption.
 export const ambientStateAllowList = new Map([
+  ["scripts/test/host-primitive-census.test.ts:real-home-directory:writeFileSync(join(root, 'bin', 'helper'), '#!/usr/bin/env node\\nimport { homedir } from \"node:os\"; homedir(); unrelated()')", 'homedir() is fixture source text written to a temp file for the census to scan; the test never calls it'],
   ["packages/build/test/adopt-installer.test.ts:short-negative-output-match:expect(out).not.toContain('=3')", 'assertion is over controlled fixture output, not ambient process output'],
   ["packages/build/test/adopt-installer.test.ts:short-negative-output-match:expect(out).not.toContain('=1')", 'assertion is over controlled fixture output, not ambient process output'],
   ["packages/build/test/adopt-installer.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [script, ...args, '--dir', dir], { encoding: 'utf8', env: { ...process.env, ...env } })", 'case supplies installer-specific fixture state; omitted ambient keys cannot affect the asserted path'],
