@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error plugin runtime module
 import { analyseTranscript, analyseSession, createModelTracker, modelWarnings, classifyProviderRefusal } from '../../../../plugin/bin/lib/model-fallback-core.mjs'
 // @ts-expect-error host module
@@ -14,6 +14,15 @@ const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-model-fallback-chec
 const hook = fileURLToPath(new URL('../../../../plugin/bin/wt-model-fallback-hook.mjs', import.meta.url))
 const parent = join(root, 'parent.jsonl')
 const agent = join(root, 'agent-test.jsonl')
+// The hook writes a parent-transcript cache. Every hook this file spawns inherits these, set by the
+// test itself before any test runs: its own state, config and cache dirs, never the owner's.
+const isolated = mkdtempSync(join(tmpdir(), 'wt-fallback-hook-env-'))
+beforeAll(() => {
+  vi.stubEnv('XDG_STATE_HOME', join(isolated, 'xdg'))
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(isolated, 'config'))
+  vi.stubEnv('WT_MODEL_FALLBACK_CACHE_DIR', join(isolated, 'cache'))
+})
+afterAll(() => { vi.unstubAllEnvs(); rmSync(isolated, { recursive: true, force: true }) })
 
 describe('model fallback observations', () => {
   const from = 'claude-opus-5-5'; const to = 'claude-opus-4-8'

@@ -69,6 +69,7 @@ function makeSandbox(tag: string): Sandbox {
       WT_ENVELOPE_INTERCEPT_TEST_STDOUT: 'selftest envelope answer',
       WT_ENVELOPE_INTERCEPT_TEST_MODEL: 'openai/gpt-5.4',
       WT_ACTIONABLE_GATE_DIR: join(stateDir, 'actionable-gate'),
+      WT_MODEL_FALLBACK_CACHE_DIR: join(stateDir, 'model-fallback-cache'),
       DWT_WORKFLOW_LOG_DIR: join(stateDir, 'workflow-logs'),
     },
   }
