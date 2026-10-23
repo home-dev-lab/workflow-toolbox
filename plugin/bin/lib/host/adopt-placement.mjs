@@ -1,10 +1,16 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 // Refresh publication and discovery share the installer's existing host seam. Keep the
 // native filesystem receiver intact, including injected failures used by publication locks.
 export const adoptRefreshHost = { fs, spawnSync }
+
+// Git configuration can outlive both a worktree and a Claude config profile.
+export function sshSignRetryDirectory() {
+  return path.join(os.homedir(), '.workflow-toolbox', 'ssh-sign-retry')
+}
 
 const ON_DEMAND_NAME = 'rules-on-demand'
 

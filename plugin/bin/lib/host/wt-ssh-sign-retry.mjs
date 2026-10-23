@@ -7,26 +7,102 @@ import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const AGENT_FAILURES = ['No private key found', 'communication with agent failed', 'agent refused', 'agent not present']
-const ATTEMPTS = 3
+const ATTEMPTS = 2
 const RETRY_MS = 1000
+
+function wrapperCopy(candidate) {
+  let fd
+  try {
+    fd = fs.openSync(candidate, 'r')
+    const prefix = Buffer.alloc(1024)
+    const size = fs.readSync(fd, prefix, 0, prefix.length, 0)
+    // Stable across installed banners, distinct copies, and older adopted versions.
+    return prefix.subarray(0, size).includes('// Standalone adopted program: no plugin installation or neighbouring modules needed.')
+  } catch (error) {
+    // Execute-only native programs are valid; a Node wrapper would need read access.
+    if (error.code === 'EACCES') return false
+    throw error
+  } finally { if (fd !== undefined) fs.closeSync(fd) }
+}
 
 function executableOtherThanSelf(candidate, self) {
   try {
     const stat = fs.statSync(candidate, { bigint: true })
     if (!stat.isFile() || (stat.dev === self.dev && stat.ino === self.ino)) return false
     fs.accessSync(candidate, fs.constants.X_OK)
-    return true
+    return !wrapperCopy(candidate)
   } catch { return false }
+}
+
+function keygenNames() {
+  if (process.platform !== 'win32') return ['ssh-keygen']
+  return (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').toLowerCase().split(';').filter(Boolean).map((extension) => `ssh-keygen${extension}`)
+}
+
+function executablePath() {
+  if (process.env.PATH !== undefined) return process.env.PATH
+  if (process.platform === 'win32') return `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32`
+  return '/usr/bin:/bin'
+}
+
+function keygenCandidate(directory, name) {
+  if (process.platform === 'win32') return path.resolve(directory.replace(/^"|"$/g, ''), name)
+  // Concatenate before native traversal: path.resolve/join normalize link/.. too early.
+  let prefix = directory
+  if (!path.isAbsolute(directory)) prefix = directory ? `${process.cwd()}/${directory}` : process.cwd()
+  return `${prefix}/${name}`
 }
 
 function resolveKeygen() {
   const self = fs.statSync(fileURLToPath(import.meta.url), { bigint: true })
-  const name = process.platform === 'win32' ? 'ssh-keygen.exe' : 'ssh-keygen'
-  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
-    const candidate = path.resolve(directory.replace(/^"|"$/g, ''), name)
-    if (executableOtherThanSelf(candidate, self)) return candidate
+  for (const directory of executablePath().split(path.delimiter)) {
+    for (const name of keygenNames()) {
+      const candidate = keygenCandidate(directory, name)
+      if (!executableOtherThanSelf(candidate, self)) continue
+      if (process.platform === 'win32' && !['.exe', '.com'].includes(path.extname(candidate))) throw new Error(`unsupported Windows command shim: ${candidate}; put native OpenSSH before this directory on PATH`)
+      // Pass the natively resolved file to interpreters too; Node normalizes script argv.
+      return process.platform === 'win32' ? candidate : fs.realpathSync.native(candidate)
+    }
   }
-  throw new Error(`${name} not found on PATH (the retry wrapper itself is excluded)`)
+  throw new Error('ssh-keygen not found on PATH (the retry wrapper itself is excluded)')
+}
+
+function signingOption(arg, next) {
+  for (let offset = 1; offset < arg.length; offset++) {
+    const option = arg[offset]
+    if ('qvU'.includes(option)) continue
+    if (!'YfnO'.includes(option)) return null
+    const attached = arg.slice(offset + 1)
+    const value = attached || next
+    if (value === undefined) return null
+    return { option, value, consumed: attached ? 0 : 1 }
+  }
+  return { consumed: 0 }
+}
+
+function stdinOperands(args) {
+  // Replaying named files can repeat .sig writes and overwrite/confirmation prompts.
+  return args.length <= 1 && args.every((word) => word === '-')
+}
+
+function signingArguments(args) {
+  let operation
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (arg === '--') return operation === 'sign' && stdinOperands(args.slice(index + 1))
+    if (arg === '-' || !arg.startsWith('-')) {
+      return operation === 'sign' && stdinOperands(args.slice(index))
+    }
+    // Deliberately conservative: unknown/mixed modes are always pass-through.
+    const parsed = signingOption(arg, args[index + 1])
+    if (!parsed) return false
+    index += parsed.consumed
+    if (parsed.option === 'Y') {
+      if (operation !== undefined) return false
+      operation = parsed.value
+    }
+  }
+  return operation === 'sign'
 }
 
 function mirrorExit(code, signal) {
@@ -52,26 +128,42 @@ function passThrough(executable, args) {
   })
 }
 
+function forwardInput(child, input) {
+  const record = (bytes) => input.push(Buffer.from(bytes))
+  child.stdin.write(Buffer.concat(input))
+  if (process.stdin.readableEnded) child.stdin.end()
+  else {
+    process.stdin.on('data', record)
+    process.stdin.pipe(child.stdin)
+  }
+  return () => {
+    process.stdin.unpipe(child.stdin)
+    process.stdin.removeListener('data', record)
+    process.stdin.pause()
+    child.stdin.destroy()
+  }
+}
+
 function signAttempt(executable, args, input) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { stdio: ['pipe', 'pipe', 'pipe'] })
     const stdout = [], stderr = []
     child.stdout.on('data', (bytes) => stdout.push(bytes))
-    child.stderr.on('data', (bytes) => stderr.push(bytes))
+    child.stderr.on('data', (bytes) => { stderr.push(bytes); process.stderr.write(bytes) })
     child.stdin.on('error', (error) => { if (error.code !== 'EPIPE') reject(error) })
     child.once('error', reject)
-    child.once('close', (code, signal) => resolve({ code, signal, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) }))
-    child.stdin.end(input)
+    const detach = forwardInput(child, input)
+    child.once('close', (code, signal) => {
+      detach()
+      resolve({ code, signal, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) })
+    })
   })
 }
 
 async function sign(executable, args) {
-  const chunks = []
-  for await (const chunk of process.stdin) chunks.push(chunk)
-  const input = Buffer.concat(chunks)
+  const input = []
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     const result = await signAttempt(executable, args, input)
-    process.stderr.write(result.stderr)
     const reason = AGENT_FAILURES.find((text) => result.stderr.includes(text))
     if (result.code === 0 || result.signal || !reason || attempt === ATTEMPTS) {
       // Failed stdout is withheld even at exhaustion: it cannot become a signature.
@@ -93,9 +185,7 @@ function invokedDirectly() {
 async function main() {
   const executable = resolveKeygen()
   const args = process.argv.slice(2)
-  const operation = args.indexOf('-Y')
-  const signing = operation !== -1 && args[operation + 1] === 'sign' && args.lastIndexOf('-Y') === operation
-  if (signing) await sign(executable, args)
+  if (signingArguments(args)) await sign(executable, args)
   else passThrough(executable, args)
 }
 

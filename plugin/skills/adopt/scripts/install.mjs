@@ -73,7 +73,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent, sshSignRetryDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
 import { renderScriptShim, resolveAdoptedScript } from '../../../bin/lib/host/adopted-script-shim.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
@@ -1034,6 +1034,8 @@ function adoptedFiles(set, dir, root) {
 }
 
 function existingAdoptionCandidates(name, set, root) {
+  // The shared signer must not rediscover a disposable project/config-profile copy.
+  if (name === 'ssh-sign-retry') return []
   const candidates = new Map()
   const add = (level, dir, placement = 'static') => {
     const resolved = path.resolve(dir)
@@ -2254,6 +2256,10 @@ function publishManagedItem(target, text, classification, args) {
   return writeManagedFile(target, text, args.refreshOnly ? classification.raw : undefined)
 }
 
+function managedWriteOutcome(args, verb) {
+  return args.set === 'ssh-sign-retry' ? 'PREPARED' : verb
+}
+
 function writeManagedItem(set, dir, item, args, version, root, planned) {
   const { target, classification, triggers } = planned
   if (!targetUnchanged(target, classification, set)) {
@@ -2284,7 +2290,8 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
   const versions = classification.installedVer ? `v${classification.installedVer} -> v${version}` : `none -> v${version}`
   const headReport = triggers && (args.force || decisionRendersHead(planned)) && triggers.state !== 'current'
     ? ' · on-demand triggers refreshed from shipped spec' : triggerClause(triggers, item, dir)
-  process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})${headReport}\n`)
+  const outcome = managedWriteOutcome(args, verb)
+  process.stdout.write(`  ${item.file}: ${outcome} ${versions} -> ${target} (journal ${journalPath(dir)})${headReport}\n`)
 }
 
 function decisionRendersHead(planned) {
@@ -2999,6 +3006,7 @@ function executeMigration(dir, args) {
 }
 
 function commandTargetDir(args, set, globalRoot) {
+  if (set === SETS['ssh-sign-retry'] && !args.dir) return sshSignRetryDirectory()
   return path.resolve(
     args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
   )
@@ -3119,6 +3127,7 @@ function managedSetGroups(set, fallbackDir, resolution, root) {
 // config dir IS the '.claude' layer already, so `globalSubdir` (its own field, NOT derived from
 // defaultDir's basename — see the SETS comment above) is appended instead.
 function managedSetFallbackDir(set, args, globalRoot) {
+  if (set === SETS['ssh-sign-retry'] && !args.dir) return sshSignRetryDirectory()
   return path.resolve(args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)))
 }
 
