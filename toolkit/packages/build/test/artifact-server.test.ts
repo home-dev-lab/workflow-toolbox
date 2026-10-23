@@ -667,7 +667,7 @@ childProcess.spawn = (...args) => {
 }
 syncBuiltinESMExports()
 `)
-  return { env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${JSON.stringify(pathToFileURL(preload).href)}` }, spawns, identities }
+  return { env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}` }, spawns, identities }
 }
 
 function expectIdentityRefusal(result: Awaited<ReturnType<typeof runCli>>, control: ReturnType<typeof controlPlatformEnv>, platform: string) {
