@@ -25,11 +25,39 @@ function pruneEntry(dir, name, cutoff) {
   } catch { /* a concurrent writer may have renamed or removed it */ }
 }
 
+const ENTRY_CHUNK = 64 * 1024
+const tooLarge = () => new Error('cache entry larger than the read bound')
+
+// Entry-file primitives, kept on one object so the bounded read below can be observed on its real path.
+export const entryFs = {
+  open: (file) => openSync(file, 'r'),
+  size: (fd) => fstatSync(fd).size,
+  read: (fd, buffer, offset, length) => readSync(fd, buffer, offset, length, null),
+  close: (fd) => closeSync(fd),
+}
+
+// The size is checked on the descriptor that is read, and at most limit + 1 bytes are ever read from
+// it: an entry replaced or grown after its size was measured is refused, never read whole.
+function readBounded(fd, limit) {
+  if (entryFs.size(fd) > limit) throw tooLarge()
+  const chunks = []
+  let total = 0
+  for (;;) {
+    const want = Math.min(ENTRY_CHUNK, limit + 1 - total)
+    const chunk = Buffer.alloc(want)
+    const count = entryFs.read(fd, chunk, 0, want)
+    if (count <= 0) return Buffer.concat(chunks, total).toString('utf8')
+    chunks.push(chunk.subarray(0, count))
+    total += count
+    if (total > limit) throw tooLarge()
+  }
+}
+
 export const cacheFiles = {
-  // Refuses a file larger than limit before reading its content.
+  // One descriptor for the whole read; refuses a file larger than limit without reading past limit + 1 bytes.
   read(file, limit = Infinity) {
-    if (statSync(file).size > limit) throw new Error('cache entry larger than the read bound')
-    return readFileSync(file, 'utf8')
+    const fd = entryFs.open(file)
+    try { return readBounded(fd, limit) } finally { entryFs.close(fd) }
   },
   // Whole-entry replacement: a reader sees the previous entry or the new one, never a mix.
   writeAtomic(file, text) {

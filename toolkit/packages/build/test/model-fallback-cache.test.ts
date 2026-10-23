@@ -12,7 +12,7 @@ import { analyseTranscript, createModelTracker } from '../../../../plugin/bin/li
 // @ts-expect-error plugin runtime module
 import { scanFile, scanRange } from '../../../../plugin/bin/lib/model-fallback-scan.mjs'
 // @ts-expect-error host module
-import { transcriptIo } from '../../../../plugin/bin/lib/host/model-fallback-cache-files.mjs'
+import { entryFs, transcriptIo } from '../../../../plugin/bin/lib/host/model-fallback-cache-files.mjs'
 
 type Io = { open(file: string): number; read(fd: number, buffer: Buffer, offset: number, length: number, position: number): number }
 type Stats = { hit: boolean; start: number; end: number; committedEnd: number; written: boolean; fallbacks: number }
@@ -331,6 +331,7 @@ const primedEntry = () => { const box = sandbox(); largeParent(box.file); cached
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex')
 const editEntry = (entryPath: string, edit: (entry: Record<string, unknown>) => void) => { const entry = JSON.parse(readFileSync(entryPath, 'utf8')); edit(entry); writeFileSync(entryPath, JSON.stringify(entry)) }
 const fullScan = (file: string) => normal(analyseTranscript(file, { targetsOnly: true }))
+const bytesRead = (read: { mock: { results: { value: unknown }[] } }) => read.mock.results.reduce((sum, result) => sum + (typeof result.value === 'number' ? result.value : 0), 0)
 
 describe('fix round 1: damaged entries are misses', () => {
   it('F1 an entry whose snapshot is missing, null, false or carries malformed events is a miss', () => {
@@ -348,7 +349,8 @@ describe('fix round 1: damaged entries are misses', () => {
     const bytes = readFileSync(box.file)
     editEntry(box.entryPath, (entry) => {
       const offset = (entry.offset as number) - 5
-      Object.assign(entry, { offset, headHash: sha(bytes.subarray(0, 4096)), tailHash: sha(bytes.subarray(offset - 4096, offset)), snapshot: { ...(entry.snapshot as object), fallbacks: [] } })
+      const snapshot = { ...(entry.snapshot as object), fallbacks: [] }
+      Object.assign(entry, { offset, headHash: sha(bytes.subarray(0, 4096)), tailHash: sha(bytes.subarray(offset - 4096, offset)), snapshot, snapshotHash: sha(Buffer.from(JSON.stringify(snapshot))) })
     })
     expect(normal(cachedTargets(box.file, { stateDir: box.state }))).toEqual(fullScan(box.file))
   })
@@ -389,16 +391,18 @@ describe('fix round 1: read path', () => {
 })
 
 describe('fix round 1: entry size, reporting and version', () => {
-  it('F5 an entry file larger than the write bound is never parsed', () => {
+  it('F5 an entry file larger than the write bound is never read, let alone parsed', () => {
     const box = primedEntry()
     const padded = `${readFileSync(box.entryPath, 'utf8')}${' '.repeat(4 * 1024 * 1024)}`
     writeFileSync(box.entryPath, padded)
     const parse = vi.spyOn(JSON, 'parse')
+    const read = vi.spyOn(entryFs, 'read')
     const stats: Stats[] = []
     try {
       expect(normal(cachedTargets(box.file, { stateDir: box.state, onStats: (s: Stats) => stats.push(s) }))).toEqual(fullScan(box.file))
       expect(parse.mock.calls.some(([text]) => text === padded)).toBe(false)
-    } finally { parse.mockRestore() }
+      expect(bytesRead(read)).toBe(0)
+    } finally { parse.mockRestore(); read.mockRestore() }
     expect(stats[0]).toMatchObject({ hit: false })
   })
 
@@ -409,13 +413,54 @@ describe('fix round 1: entry size, reporting and version', () => {
 
   it('F7 the entry version is derived from every logic module, byte for byte', () => {
     const sources = (LOGIC_MODULES as URL[]).map((url) => readFileSync(fileURLToPath(url)))
-    expect(entryVersion()).toBe(versionOf(sources))
-    const versions = new Set([versionOf(sources)])
-    for (const i of sources.keys()) {
-      const flipped = sources.map((bytes, j) => j === i ? Buffer.concat([bytes.subarray(0, 0), Buffer.from([bytes[0]! ^ 1]), bytes.subarray(1)]) : bytes)
+    // Expected digest derived here, not by the helper under test: sha256 of the per-module sha256s, one per line.
+    const expected = sha(Buffer.from(sources.map((bytes) => sha(bytes)).join('\n')))
+    expect(entryVersion()).toBe(expected)
+    expect(versionOf(sources)).toBe(expected)
+    const versions = new Set([expected])
+    // One flipped byte at the start, the middle and the end of each module: every one changes the version.
+    for (const i of sources.keys()) for (const at of [0, sources[i]!.length >> 1, sources[i]!.length - 1]) {
+      const flipped = sources.map((bytes, j) => { if (j !== i) return bytes; const copy = Buffer.from(bytes); copy[at] = copy[at]! ^ 1; return copy })
       versions.add(versionOf(flipped))
     }
-    expect(versions.size).toBe(sources.length + 1)
+    expect(versions.size).toBe(3 * sources.length + 1)
     expect(sources.length).toBeGreaterThanOrEqual(4)
+  })
+})
+
+// Fix round 2. A snapshot whose shape is valid can still disagree with the transcript; an entry can grow after its size is read.
+describe('fix round 2: snapshot integrity and bounded entry read', () => {
+  it('G1 a snapshot edited after it was written is a miss, even when its shape stays valid', () => {
+    const box = sandbox()
+    writeFileSync(box.file, `${JSON.stringify(structured(1))}\n`)
+    cachedTargets(box.file, { stateDir: box.state })
+    const entryPath = entryPathFor(box.state, box.file)
+    editEntry(entryPath, (entry) => { for (const event of (entry.snapshot as { fallbacks: Record<string, unknown>[] }).fallbacks) delete event.source })
+    appendFileSync(box.file, `${JSON.stringify(structured(2))}\n`)
+    expect(fullScan(box.file).fallbacks).toHaveLength(2)
+    expect(normal(cachedTargets(box.file, { stateDir: box.state }))).toEqual(fullScan(box.file))
+    const emptied = primedEntry()
+    editEntry(emptied.entryPath, (entry) => { (entry.snapshot as { fallbacks: unknown[] }).fallbacks = [] })
+    expect(fullScan(emptied.file).fallbacks).toHaveLength(3)
+    expect(normal(cachedTargets(emptied.file, { stateDir: emptied.state }))).toEqual(fullScan(emptied.file))
+  })
+
+  it('G2 an entry larger than its measured size is refused after bound + 1 bytes from one descriptor, never parsed', () => {
+    const box = primedEntry()
+    const bound = 4 * 1024 * 1024
+    writeFileSync(box.entryPath, `${readFileSync(box.entryPath, 'utf8')}${' '.repeat(bound)}`)
+    const size = vi.spyOn(entryFs, 'size').mockReturnValue(100)
+    const open = vi.spyOn(entryFs, 'open')
+    const read = vi.spyOn(entryFs, 'read')
+    const parse = vi.spyOn(JSON, 'parse')
+    const stats: Stats[] = []
+    try {
+      const answer = normal(cachedTargets(box.file, { stateDir: box.state, onStats: (s: Stats) => stats.push(s) }))
+      expect(parse.mock.calls.some(([text]) => typeof text === 'string' && text.length > bound)).toBe(false)
+      expect(bytesRead(read)).toBe(bound + 1)
+      expect(open).toHaveBeenCalledTimes(1)
+      expect(answer).toEqual(fullScan(box.file))
+    } finally { size.mockRestore(); open.mockRestore(); read.mockRestore(); parse.mockRestore() }
+    expect(stats[0]).toMatchObject({ hit: false })
   })
 })

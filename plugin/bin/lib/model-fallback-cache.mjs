@@ -2,8 +2,8 @@
 // targets-only scan would give; the cache only decides how many bytes are read to reach it.
 //
 // One entry per transcript: the tracker snapshot after every complete line before `offset`, plus the
-// file identity (dev, ino) and two hashes (the first WINDOW bytes, and the WINDOW bytes before
-// `offset`). A call validates the entry against the current file, scans only [offset, size), and
+// file identity (dev, ino), two hashes (the first WINDOW bytes, and the WINDOW bytes before `offset`),
+// and the hash of the serialized snapshot. A call validates the entry against the current file, scans only [offset, size), and
 // writes a whole new entry atomically. Anything that does not validate is a miss: a full scan from 0.
 //
 // Residual, by design: an in-place rewrite that keeps the inode and the size (or grows the file) and
@@ -65,9 +65,12 @@ function readExact(io, fd, position, length) {
 const sameFile = (entry, file, stat) => entry.path === resolve(file) && entry.dev === stat.dev && entry.ino === stat.ino
 const offsetFits = (entry, stat) => Number.isSafeInteger(entry.offset) && entry.offset > 0 && entry.offset <= stat.size
 const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+// The snapshot text was written as JSON.stringify output, so parsing and re-serializing it gives the
+// same bytes; any edit to it since, even one that keeps a valid shape, changes the hash.
+const snapshotIntact = (entry) => typeof entry.snapshotHash === 'string' && sha256(JSON.stringify(entry.snapshot)) === entry.snapshotHash
 // A missing or non-object snapshot is a miss: never a fresh tracker resumed at the stored offset.
 const entryApplies = (entry, file, stat, version) => isRecord(entry) && isRecord(entry.snapshot) && entry.version === version
-  && sameFile(entry, file, stat) && offsetFits(entry, stat)
+  && snapshotIntact(entry) && sameFile(entry, file, stat) && offsetFits(entry, stat)
 // The offset must sit just after a newline; the window ending there is already in memory.
 const endsLine = (recent) => recent[recent.length - 1] === 10
 
@@ -96,7 +99,7 @@ function headHash(prior, scan) {
 
 function saveEntry(file, stat, prior, scan, committed, context) {
   if (scan.committedEnd === prior.offset) return false
-  const identity = { version: context.version, path: resolve(file), dev: stat.dev, ino: stat.ino, offset: scan.committedEnd, headHash: headHash(prior, scan), tailHash: sha256(scan.window) }
+  const identity = { version: context.version, path: resolve(file), dev: stat.dev, ino: stat.ino, offset: scan.committedEnd, headHash: headHash(prior, scan), tailHash: sha256(scan.window), snapshotHash: sha256(committed) }
   const text = `${JSON.stringify(identity).slice(0, -1)},"snapshot":${committed}}`
   try {
     // An oversized entry would be re-read on every call: keep none, so the next call scans from 0.
