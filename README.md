@@ -128,6 +128,10 @@ alongside the code. See the `external-lane` skill for the full exit-code and pro
 
 ## Configuration
 
+Linux lane suite-lock brokers can use an [operator-configured offload command](docs/public/suite-lock-offload.md)
+when the local queue is long. It is disabled by default; the reference covers host configuration,
+the versioned command protocol, fallback behavior, and result provenance.
+
 `node plugin/bin/wt-config.mjs` prints every Workflow Toolbox option with its effective value,
 source, and manifest default; `--json` emits the same report for automation. Plugin options win
 over their documented environment fallbacks. Executor-lane consent additionally honors the
