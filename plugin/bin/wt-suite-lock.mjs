@@ -89,8 +89,9 @@ async function run(args) {
   const inherited = await cliInheritedLease(() => hasSuiteLeaseAsync(process.env, { static: staticRun }))
   if (inherited === 75) return 75
   if (inherited) return spawnCommand(command)
-  const lease = await acquireCliLease(acquireSuiteLock, { waitS, staleS, argv: command, light, static: staticRun, priority, onWait: (line) => process.stderr.write(`${line}\n`) })
+  const lease = await acquireCliLease(acquireSuiteLock, { waitS, staleS, argv: command, light, static: staticRun, priority, offload: true, onOffloadLog: (chunk) => process.stdout.write(chunk), onWait: (line) => process.stderr.write(`${line}\n`) })
   if (typeof lease === 'number') return lease
+  if (lease.offloaded) { process.stderr.write(`wt-suite-lock: offloaded; archive ${lease.offloaded.archive}\n`); return lease.offloaded.exit }
   return runLeasedCommand(command, lease, { light, staticRun })
 }
 

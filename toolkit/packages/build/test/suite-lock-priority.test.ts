@@ -4,7 +4,7 @@ import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { baseSuiteLock } from './helpers/base-version-client.js'
 import { POSIX_STALENESS } from './helpers/suite-lock-platform.js'
 // @ts-expect-error runtime JavaScript under plugin/
@@ -629,20 +629,24 @@ function suspendedOrdinary(root: string, options: Record<string, unknown> = {}) 
 describe('direct release-holder watchdog renewal', () => {
   it.each([{ label: 'timestamp', waitS: 2, staleS: 2, beforeMs: 1_400, holdMs: 1_000 },
     { label: 'holder priority budget', waitS: 0.4, staleS: 2, beforeMs: 150, holdMs: 800 }])('A5g renews the first observed release holder: $label', async ({ waitS, staleS, beforeMs, holdMs }) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
     const root = tempRoot(); const ticket = suspendedOrdinary(root)
     const progress: Array<{ aheadExcludingRelease: number }> = []; const handovers: string[] = []
     const pending = acquireSuiteLock({ root, waitS, staleS, pollMs: 10,
       onProgress: (place: { aheadExcludingRelease: number }) => progress.push(place),
       onHandover: (id: string) => handovers.push(id),
     }).then((lease: { holder: unknown }) => { releaseSuiteLock(lease); return { acquired: true } }, (error: { code?: string }) => ({ error }))
-    await waitFor(() => progress.some((place) => place.aheadExcludingRelease === 1))
-    await new Promise((resolve) => setTimeout(resolve, beforeMs))
-    const release = await acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', pollMs: 10 })
-    await waitFor(() => handovers.includes(release.holder.leaseId))
-    await new Promise((resolve) => setTimeout(resolve, holdMs))
-    releaseSuiteLock(release); removeTicket(join(root, 'queue.d'), ticket)
-    expect(await pending, 'first observed release must renew the timestamp and preserve its hold budget').toEqual({ acquired: true })
-    expect(handovers).toEqual([release.holder.leaseId])
+    try {
+      await vi.waitFor(() => expect(progress.some((place) => place.aheadExcludingRelease === 1)).toBe(true), { interval: 10 })
+      await vi.advanceTimersByTimeAsync(beforeMs)
+      const release = await acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', pollMs: 10 })
+      await vi.waitFor(() => expect(handovers).toContain(release.holder.leaseId), { interval: 10 })
+      await vi.advanceTimersByTimeAsync(holdMs)
+      releaseSuiteLock(release); removeTicket(join(root, 'queue.d'), ticket)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(await pending, 'first observed release must renew the timestamp and preserve its hold budget').toEqual({ acquired: true })
+      expect(handovers).toEqual([release.holder.leaseId])
+    } finally { vi.useRealTimers() }
   }, 10_000)
 
 })

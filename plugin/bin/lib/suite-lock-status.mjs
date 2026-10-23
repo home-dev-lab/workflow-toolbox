@@ -105,5 +105,6 @@ export function suiteLockStatusJson(current) {
   const { held, holder, stale, ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order, levelOrder, queue } = current
   const status = current.legacyStatus ?? (Array.isArray(queue) ? null : OLDER_BROKER_QUEUE)
   return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order,
-    ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}) }
+    ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}),
+    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}) }
 }

@@ -307,6 +307,38 @@ function plan(overrides: Record<string, unknown> = {}): SandboxPlan {
   return sandbox.resolveLaneSandbox({ ...base, ...overrides })
 }
 
+describe('suite broker launch authority', () => {
+  it('binds each broker and its lane to a fresh launch capability', () => {
+    const tokens: string[] = []
+    for (let i = 0; i < 2; i++) {
+      const fs = fakeFs(); let brokerToken: string | undefined
+      const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+        if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerToken = options.env?.WT_SUITE_LOCK_LANE_TOKEN
+        return listening(fs)(command, args)
+      }
+      const p = plan({ fs, spawnFn, env: { HOME, PATH: '/usr/bin', WT_SUITE_LOCK_LANE_TOKEN: 'caller-chosen' } })
+      try {
+        expect(brokerToken).toMatch(/^[a-f0-9]{64}$/)
+        const args = p.wrap('/bin/true', [])[1]
+        const index = args.indexOf('WT_SUITE_LOCK_LANE_TOKEN')
+        expect(index).toBeGreaterThan(0); expect(args[index + 1]).toBe(brokerToken)
+        tokens.push(brokerToken!)
+      } finally { p.dispose() }
+    }
+    expect(tokens[0]).not.toBe(tokens[1])
+  })
+  it('passes the host launch worktree as root independently of client arguments', () => {
+    const fs = fakeFs()
+    const spawned: Array<{ command: string, args: string[] }> = []
+    const p = plan({ fs, spawnFn: listening(fs, spawned), args: ['run', '--', '--root', '/untrusted'] })
+    try {
+      const broker = spawned.find((entry) => entry.args[0]?.endsWith('lane-suite-lock-broker.mjs'))!
+      expect(broker.args[broker.args.indexOf('--root') + 1]).toBe('/work/tree')
+      expect(broker.args).not.toContain('/untrusted')
+    } finally { p.dispose() }
+  })
+})
+
 describe('lane sandbox caller argument and notice regressions', () => {
   it.each([
     ['inline', ['run', '--', '--dir=/']],

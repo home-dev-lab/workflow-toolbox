@@ -9,7 +9,9 @@ import { connectSuiteLockBroker } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
 import { BOUNDED_P0_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
-import { brokerProgressPlace, isBrokerQueueEvent, suiteQueueAdvanced } from './suite-lock-progress.mjs'
+import { observeSuiteQueuePlace, suiteQueueAdvanced } from './suite-lock-progress.mjs'
+import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
+import { requestBrokerLease } from './suite-lock-broker-client.mjs'
 import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
 import { suiteJournalEvent } from './suite-lock-journal.mjs'
 import { acquireJournalLease, finishBrokerLease, journalHolder, journalWaiterRecord, takeJournalTicket as takeTicket } from './suite-lock-journal-lifecycle.mjs'
@@ -215,8 +217,8 @@ function queuePlace(queueDir, mine, mineRecord, counter, options) {
   const ordered = orderSuiteLockTickets(live, counter, now, readP0Counter(path.dirname(queueDir))).tickets
   const preceding = ordered.slice(0, ordered.findIndex((ticket) => ticket.number === mine))
   const ahead = preceding.length
-  return { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
-    admissions: readAdmissionCounter(path.dirname(queueDir)) }
+  return observeSuiteQueuePlace(options, { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
+    admissions: readAdmissionCounter(path.dirname(queueDir)) })
 }
 
 // true: acquired. false: the lock is held. 'reclaim': a reclaimer is in flight, so the acquisition is
@@ -544,13 +546,14 @@ const OLDER_BROKER_REFUSAL = 'error argv must be an array of strings (only argv 
 const isOlderBrokerRefusal = (line) => line === OLDER_BROKER_REFUSAL || line.startsWith(`${OLDER_BROKER_REFUSAL};`)
 
 async function acquireBrokerSuiteLock(socketPath, options) {
-  if (options.light !== true) return requestBrokerSuiteLock(socketPath, options)
+  options = await negotiateSuiteOffload(socketPath, options, readBrokerSuiteLock)
+  if (options.light !== true && !options.offloadRequest) return requestBrokerSuiteLock(socketPath, options)
   try {
     return await requestBrokerSuiteLock(socketPath, options)
   } catch (error) {
     if (error?.code !== 'WT_SUITE_LOCK_BROKER_OLDER') throw error
-    process.stderr.write('wt-suite-lock: the lane broker is older and does not take priority requests; this run queues without priority\n')
-    const lease = await requestBrokerSuiteLock(socketPath, { ...options, light: false })
+    process.stderr.write(options.offloadRequest ? 'wt-suite-lock: the lane broker is older and does not take offload requests; this run queues locally\n' : 'wt-suite-lock: the lane broker is older and does not take priority requests; this run queues without priority\n')
+    const lease = await requestBrokerSuiteLock(socketPath, { ...options, light: false, offloadRequest: undefined })
     // The grant is exclusive, whatever was requested: the run's watcher reads this, not the request.
     return { ...lease, holder: { ...lease.holder, light: false } }
   }
@@ -566,99 +569,8 @@ export function lightRunCommand(argv) {
 }
 
 function requestBrokerSuiteLock(socketPath, options) {
-  const waitS = positiveSeconds(options.waitS ?? suiteLockWaitSeconds(options.env), '--wait-s')
-  throwIfAborted(options.signal)
-  return new Promise((resolve, reject) => {
-    const socket = connectSuiteLockBroker(socketPath)
-    let buffer = ''
-    let settled = false
-    let granted = false
-    let released = false
-    let resolveLost
-    let timer
-    let bestAhead = Infinity
-    let lastHolderId = null
-    let holderPriority
-    let notifyHandover = false
-    // Resolves with the REASON the granted lease was lost: the broker's own error text (its hold bound)
-    // when one arrives after the grant, 'broker gone' when the socket closes. The first reason wins.
-    // After a hold bound the socket stays OPEN: the broker releases the lock when it closes, which the
-    // holder does (releaseSuiteLock) only once its command tree has stopped.
-    const lost = new Promise((done) => { resolveLost = done })
-    const lose = (reason) => { if (!released) resolveLost(reason) }
-    const fail = (error) => {
-      socket.destroy()
-      if (settled) {
-        lose('broker gone')
-        return
-      }
-      settled = true
-      clearTimeout(timer)
-      options.signal?.removeEventListener?.('abort', abort)
-      reject(error)
-    }
-    // The broker enforces the no-progress budget; the client allows a transport/response margin
-    // so a zero-wait refusal still carries the broker's named holder rather than a blind timer.
-    const restartTimer = (seconds) => {
-      clearTimeout(timer)
-      timer = setTimeout(() => {
-        const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}: holder unknown; inspect with wt-suite-lock status`)
-        timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
-        fail(timeout)
-      }, seconds * 1000 + 2000)
-    }
-    restartTimer(waitS)
-    const abort = () => fail(abortError())
-    options.signal?.addEventListener?.('abort', abort, { once: true })
-    socket.once('connect', () => { if (!settled) socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS, ...(options.light === true ? { light: true } : {}) })}\n`) })
-    socket.on('data', (chunk) => {
-      buffer += String(chunk)
-      while (buffer.includes('\n')) {
-        const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
-        if (settled && !granted) { socket.destroy(); return }
-        if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
-        else if (isBrokerQueueEvent(line)) {
-          // Only the host's service-evidence renewal may renew at an unchanged/worse place.
-          const renewed = line.startsWith('renew ')
-          const place = brokerProgressPlace(line.slice(line.indexOf(' ') + 1))
-          if (!settled && place && (place.aheadExcludingRelease < bestAhead || notifyHandover || renewed)) {
-            const improved = place.aheadExcludingRelease < bestAhead
-            if (improved) bestAhead = place.aheadExcludingRelease
-            if (improved || renewed) restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
-            notifyHandover = false
-            options.onProgress?.(place)
-          }
-        }
-        else if (line.startsWith('handover ')) {
-          const [holderId, priority] = line.slice(9).split(' ')
-          if (!settled && /^[A-Za-z0-9-]{1,128}$/.test(holderId)) {
-            holderPriority = priority
-            if (holderId !== lastHolderId && (lastHolderId || priority === 'release')) {
-              restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
-              notifyHandover = Boolean(lastHolderId)
-            }
-            lastHolderId = holderId
-          }
-        }
-        else if (line.startsWith('error ') && granted) lose(line.slice(6))
-        else if (line.startsWith('error ')) {
-          const error = new Error(`suite lock broker ${socketPath}: ${line.slice(6)}; inspect with wt-suite-lock status`)
-          if (line.includes('timed out waiting')) error.code = 'WT_SUITE_LOCK_TIMEOUT'
-          else if (options.light === true && isOlderBrokerRefusal(line)) error.code = 'WT_SUITE_LOCK_BROKER_OLDER'
-          // A saturated broker refuses a request it cannot queue: a named refusal, like a timeout (exit 75).
-          else if (line.startsWith('error busy: ')) error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
-          fail(error)
-        }
-        else if (line.startsWith('granted ') && !settled) {
-          settled = true; granted = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
-          resolve({ broker: socketPath, socket, holder: { leaseId: line.slice(8) }, lost, markReleased: () => { released = true } })
-        }
-      }
-    })
-    socket.once('error', (error) => fail(new Error(`suite lock broker ${socketPath}: ${error.message}`)))
-    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else lose('broker gone') })
-    if (options.signal?.aborted) fail(abortError())
-  })
+  return requestBrokerLease(socketPath, options, { positiveSeconds, suiteLockWaitSeconds, throwIfAborted, abortError,
+    waiterBudget, isOlderBrokerRefusal, staleS: DEFAULT_SUITE_LOCK_STALE_S })
 }
 
 export function releaseSuiteLock(lease, outcome = { exit: 0 }) {
