@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -101,20 +101,7 @@ function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutM
   return result
 }
 
-function fixture(transformSource?: (source: string) => string, install = true) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-adopted-lane-consent-'))
-  roots.push(root)
-  const config = join(root, 'config')
-  const project = join(root, 'project')
-  const pluginRoot = join(root, 'plugin')
-  const bin = join(root, 'bin')
-  const installed = join(root, 'scripts', 'wt-lane.mjs')
-  mkdirSync(join(config, 'plugins'), { recursive: true })
-  mkdirSync(join(project, '.claude'), { recursive: true })
-  mkdirSync(join(pluginRoot, 'bin', 'lib'), { recursive: true })
-  mkdirSync(join(pluginRoot, 'hooks'), { recursive: true })
-  mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
-  mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
+function writeFakeOpencode(bin: string) {
   mkdirSync(bin)
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
@@ -133,6 +120,13 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
 else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPTED_SEEN_LOCK, String(process.env.WT_SUITE_LOCK_CMD ?? 'unset'))
 `)
   chmodSync(join(bin, 'opencode'), 0o755)
+}
+
+function copyPluginFiles(pluginRoot: string, transformSource?: (source: string) => string) {
+  mkdirSync(join(pluginRoot, 'bin', 'lib'), { recursive: true })
+  mkdirSync(join(pluginRoot, 'hooks'), { recursive: true })
+  mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
+  mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'workflow-toolbox', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
   for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'frontmatter.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-deadline-core.mjs', 'lane-integrate.mjs', 'remedy-quote.mjs', 'resolved-binary.mjs']) {
@@ -149,7 +143,21 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock.cmd'), join(pluginRoot, 'bin', 'wt-suite-lock.cmd'))
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock-run.mjs'), join(pluginRoot, 'bin', 'wt-suite-lock-run.mjs'))
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock-run.cmd'), join(pluginRoot, 'bin', 'wt-suite-lock-run.cmd'))
-  for (const file of ['suite-lock.mjs', 'artifact-server.mjs']) cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
+  for (const file of readdirSync(join(REPO_ROOT, 'plugin', 'bin', 'lib')).filter((name) => /^(suite-lock.*|artifact-server)\.mjs$/.test(name))) cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
+}
+
+function fixture(transformSource?: (source: string) => string, install = true) {
+  const root = mkdtempSync(join(tmpdir(), 'wt-adopted-lane-consent-'))
+  roots.push(root)
+  const config = join(root, 'config')
+  const project = join(root, 'project')
+  const pluginRoot = join(root, 'plugin')
+  const bin = join(root, 'bin')
+  const installed = join(root, 'scripts', 'wt-lane.mjs')
+  mkdirSync(join(config, 'plugins'), { recursive: true })
+  mkdirSync(join(project, '.claude'), { recursive: true })
+  writeFakeOpencode(bin)
+  copyPluginFiles(pluginRoot, transformSource)
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
     plugins: { 'workflow-toolbox@fixture': [{ scope: 'user', installPath: pluginRoot, version: '0.0.0' }] },
