@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
@@ -23,9 +23,15 @@ function put(dir: string, file: string, text: string) {
   return path
 }
 
-function repo() {
-  const dir = mkdtempSync(join(tmpdir(), 'git-ignored-inputs-'))
-  directories.push(dir)
+function repo(linkedParent = false) {
+  const parent = mkdtempSync(join(tmpdir(), 'git-ignored-inputs-'))
+  directories.push(parent)
+  let dir = parent
+  if (linkedParent) {
+    mkdirSync(join(parent, 'real'))
+    symlinkSync(join(parent, 'real'), join(parent, 'linked'), 'junction')
+    dir = mkdtempSync(join(parent, 'linked', 'repo-'))
+  }
   execFileSync('git', ['init', dir], { stdio: 'pipe' })
   put(dir, 'tracked.mjs', 'export {}\n')
   execFileSync('git', ['-C', dir, 'add', '.'])
@@ -38,7 +44,7 @@ afterEach(() => {
   for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
-describe('git-ignored quality inputs', () => {
+function registerGitListingTests() {
   it('lists only ignored inputs including nested host rules, without dependencies', () => {
     const dir = repo()
     put(dir, '.gitignore', 'generated/\nnode_modules/\ntracked.mjs\n')
@@ -80,7 +86,9 @@ describe('git-ignored quality inputs', () => {
     expect(listGitIgnoredPaths(root, { run }).paths).toEqual(['a/keep/'])
     expect(run).toHaveBeenCalledWith('git', ['-C', root, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], expect.objectContaining({ encoding: 'utf8', env: expect.objectContaining({ LC_ALL: 'C' }) }))
   })
+}
 
+function registerIgnorePatternTests() {
   it('never returns an empty regex alternation', () => {
     expect(pathsRegexSource([], root, toolkit)).toBeNull()
   })
@@ -108,7 +116,9 @@ describe('git-ignored quality inputs', () => {
     })
     expect(eslintGitIgnores(root, { list: () => ({ paths: [] }) })).toEqual({ basePath: root, ignores: [] })
   })
+}
 
+function registerEslintInputTests() {
   it.each(['.', 'toolkit'])('ESLint keeps the tracked same-spelling control from cwd %s', async (cwd) => {
     const dir = repo()
     const control = put(dir, 'toolkit/plugin/generated.mjs', 'export {}')
@@ -131,28 +141,32 @@ describe('git-ignored quality inputs', () => {
     expect(source.includes('function ' + 'hostFixture(')).toBe(false)
     expect(source.includes('mkdtempSync(' + 'join(root,')).toBe(false)
   })
+}
 
-  it('census skips ignored directories and individual files but counts the control', () => {
-    const dir = repo()
+function registerCensusInputTests() {
+  it.each([false, true])('census skips ignored directories and individual files but counts the control (linked parent: %s)', (linkedParent) => {
+    const dir = repo(linkedParent)
     put(dir, 'hidden/.gitignore', '*\n')
     put(dir, 'hidden/x.mjs', "import fs from 'node:fs'\n")
     put(dir, '.gitignore', 'ignored.mjs\n')
     put(dir, 'ignored.mjs', "import fs from 'node:fs'\n")
     const control = put(dir, 'visible/x.mjs', "import fs from 'node:fs'\n")
-    expect(sourceFiles(dir).sort()).toEqual([join(dir, 'tracked.mjs'), control].sort())
+    expect(sourceFiles(dir).sort()).toEqual([join(dir, 'tracked.mjs'), control].map((path) => realpathSync(path)).sort())
     expect(scanHostPrimitives(dir).findings).toEqual([{ file: 'visible/x.mjs', line: 1, primitive: 'fs import' }])
   })
 
-  it.skipIf(process.platform === 'win32')('census preserves literal POSIX backslashes in ignored names', () => {
-    const dir = repo()
+  it.skipIf(process.platform === 'win32').each([false, true])('census preserves literal POSIX backslashes in ignored names (linked parent: %s)', (linkedParent) => {
+    const dir = repo(linkedParent)
     put(dir, '.gitignore', 'literal\\\\name.mjs\n')
-    const ignored = put(dir, 'literal\\name.mjs', "import fs from 'node:fs'\n")
-    put(dir, 'control.mjs', "import fs from 'node:fs'\n")
+    put(dir, 'literal\\name.mjs', "import fs from 'node:fs'\n")
+    const control = put(dir, 'control.mjs', "import fs from 'node:fs'\n")
     expect(listGitIgnoredPaths(dir).paths).toContain('literal\\name.mjs')
-    expect(sourceFiles(dir)).not.toContain(ignored)
+    expect(sourceFiles(dir).sort()).toEqual([join(dir, 'tracked.mjs'), control].map((path) => realpathSync(path)).sort())
     expect(scanHostPrimitives(dir).findings).toEqual([{ file: 'control.mjs', line: 1, primitive: 'fs import' }])
   })
+}
 
+function registerKnipInputTests() {
   it('knip excludes ignored inputs at entry and project selection in each workspace', () => {
     const config = { workspaces: {
       '.': { entry: ['plugin/bin/*.mjs'], project: ['plugin/**/*.mjs'] },
@@ -182,7 +196,9 @@ describe('git-ignored quality inputs', () => {
     expect(knipModule.default).toEqual(knipConfigWithIgnored(original, listGitIgnoredPaths(root).paths))
     expect(knipModule.default).not.toHaveProperty('ignore')
   })
+}
 
+function registerDependencyCruiserInputTests() {
   it('dependency-cruiser regex skips ignored temporary inputs and keeps the control', () => {
     const dir = repo()
     put(dir, '.gitignore', 'plugin/generated/\n')
@@ -207,5 +223,13 @@ describe('git-ignored quality inputs', () => {
       expect(config.options).not.toHaveProperty('exclude')
     }
   })
+}
 
+describe('git-ignored quality inputs', () => {
+  registerGitListingTests()
+  registerIgnorePatternTests()
+  registerEslintInputTests()
+  registerCensusInputTests()
+  registerKnipInputTests()
+  registerDependencyCruiserInputTests()
 })
