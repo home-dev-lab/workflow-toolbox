@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,7 +15,8 @@ const fakeIt = process.platform === 'win32' ? it.skip : it
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'wt-ssh-retry-'))
+  // Hooks must match native canonical targets, including temp symlinks and Windows short names.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-ssh-retry-')))
   roots.push(root)
   const bin = join(root, 'fake bin')
   mkdirSync(bin)
@@ -39,6 +40,9 @@ function fixture() {
 
 type Fixture = ReturnType<typeof fixture>
 type State = { failures: number; message: string; calls: { args: string[]; input: string }[] }
+function commandPath(file: string) {
+  return process.platform === 'win32' ? file.replaceAll('\\', '/') : file
+}
 function state(f: Fixture): State { return JSON.parse(readFileSync(f.state, 'utf8')) as State }
 function scenario(f: Fixture, failures: number, message = 'No private key found for public key') {
   writeFileSync(f.state, JSON.stringify({ failures, message, calls: [] }))
@@ -194,8 +198,8 @@ function hideLookupMarker(f: Fixture) {
     expect(readFileSync(f.target, 'utf8')).toMatch(/^#![^\n]+\n\/\/ installed from workflow-toolbox v.*content sha256:/)
     const configured = git(f, ['config', '--global', '--get', 'gpg.ssh.program'])
     expect(configured.status).toBe(0)
-    expect(configured.stdout).toContain(f.target.replaceAll('\\', '/'))
-    expect(configured.stdout).toContain(process.execPath.replaceAll('\\', '/'))
+    expect(configured.stdout).toContain(commandPath(f.target))
+    expect(configured.stdout).toContain(commandPath(process.execPath))
     expect(adopt(f, ['--set', 'ssh-sign-retry', '--check', '--global']).stdout).toContain('UP-TO-DATE')
   })
 
@@ -427,7 +431,7 @@ it.each(['after-check', 'before-write'] as const)('review: concurrent signer %s 
     expect(result.stdout).toContain('PRESENT (left alone)')
   } else {
     expect(race.stderr).toContain('could not lock config file')
-    expect(values[0]).toContain(f.target)
+    expect(values[0]).toContain(commandPath(f.target))
   }
   expect(existsSync(`${f.env.GIT_CONFIG_GLOBAL}.lock`)).toBe(false)
 })
@@ -465,19 +469,22 @@ fakeIt('r3: removing the adopting linked worktree preserves the shared signer', 
   expect(command).toContain(join(f.env.HOME!, '.workflow-toolbox', 'ssh-sign-retry').replaceAll('\\', '/'))
 })
 
-it.each(['trailing space ', 'embedded\nnewline'])('r3: preserves global config filename %j', (name) => {
-  const f = fixture()
-  f.env.GIT_CONFIG_GLOBAL = join(f.root, name)
-  const result = adopt(f)
-  expect(result.status, result.stdout + result.stderr).toBe(0)
-  expect(git(f, ['config', '--global', '--get', 'gpg.ssh.program']).status).toBe(0)
-  expect(existsSync(f.env.GIT_CONFIG_GLOBAL)).toBe(true)
-  expect(existsSync(f.env.GIT_CONFIG_GLOBAL.trimEnd())).toBe(!name.endsWith(' '))
-})
+for (const name of ['trailing space ', 'embedded\nnewline', 'embedded space', "apostrophe's config"]) {
+  const unsupported = process.platform === 'win32' && (name.endsWith(' ') || name.includes('\n'))
+  it.skipIf(unsupported)(`r3: preserves global config filename ${JSON.stringify(name)}`, () => { // Win32 filenames cannot contain newlines or end in spaces.
+    const f = fixture()
+    f.env.GIT_CONFIG_GLOBAL = join(f.root, name)
+    const result = adopt(f)
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(git(f, ['config', '--global', '--get', 'gpg.ssh.program']).status).toBe(0)
+    expect(existsSync(f.env.GIT_CONFIG_GLOBAL)).toBe(true)
+    expect(existsSync(f.env.GIT_CONFIG_GLOBAL.trimEnd())).toBe(!name.endsWith(' '))
+  })
+}
 
-it('r3: preserves newlines in repository config paths', () => {
+it('r3: preserves whitespace in repository config paths', () => {
   const f = fixture()
-  f.root = join(f.root, 'repository\nname ')
+  f.root = join(f.root, process.platform === 'win32' ? 'repository name' : 'repository\nname ')
   mkdirSync(f.root)
   expect(git(f, ['init', '--quiet']).status).toBe(0)
   const result = adopt(f, ['--set', 'ssh-sign-retry', '--install'])
@@ -500,7 +507,7 @@ cp.spawnSync = function(command, args, options) {
 }
 
 function assertEffectiveRaceResult(f: Fixture, kind: string, result: ReturnType<typeof adopt>) {
-  expect(git(f, ['config', '--get', 'gpg.ssh.program']).stdout).toContain(kind === 'worktree' ? 'company signer' : f.target)
+  expect(git(f, ['config', '--get', 'gpg.ssh.program']).stdout).toContain(kind === 'worktree' ? 'company signer' : commandPath(f.target))
   expect(result.stdout).toContain(kind === 'worktree' ? 'REFUSED' : 'gpg.ssh.program WROTE')
   if (kind === 'worktree') expect(git(f, ['config', '--local', '--get', 'gpg.ssh.program']).status).toBe(1)
 }
@@ -508,7 +515,8 @@ function assertEffectiveRaceResult(f: Fixture, kind: string, result: ReturnType<
 it.each(['include', 'relative include', 'home include', 'conditional include', 'nested include', 'missing include', 'system', 'worktree'])('r5: leaves concurrent %s files unlocked and checks the effective signer', (kind) => {
   const f = fixture()
   expect(git(f, ['init', '--quiet']).status).toBe(0)
-  let file = join(f.root, 'included\nconfig ')
+  const includeName = process.platform === 'win32' ? 'included config' : 'included\nconfig '
+  let file = join(f.root, includeName)
   if (kind === 'system') {
     f.env.GIT_CONFIG_NOSYSTEM = undefined
     f.env.GIT_CONFIG_SYSTEM = file
@@ -521,7 +529,7 @@ it.each(['include', 'relative include', 'home include', 'conditional include', '
       mkdirSync(f.env.HOME!, { recursive: true })
       file = join(f.env.HOME!, 'signing.inc')
     }
-    const value = kind === 'relative include' ? '../included\nconfig ' : file
+    const value = kind === 'relative include' ? `../${includeName}` : file
     const key = kind === 'conditional include' ? 'includeIf.gitdir:**/.git.path' : 'include.path'
     expect(git(f, ['config', '--local', key, kind === 'home include' ? '~/signing.inc' : value]).status).toBe(0)
     if (kind !== 'missing include') writeFileSync(file, '')
@@ -590,15 +598,15 @@ it('r3: legacy project copies are not implicitly selected for the shared signer'
   const result = adopt(f, ['--set', 'ssh-sign-retry', '--install'])
   expect(result.status, result.stdout + result.stderr).toBe(0)
   expect(existsSync(f.target)).toBe(true)
-  expect(git(f, ['config', '--local', '--get', 'gpg.ssh.program']).stdout).toContain(f.target)
+  expect(git(f, ['config', '--local', '--get', 'gpg.ssh.program']).stdout).toContain(commandPath(f.target))
 })
 
-it.each(['home', 'xdg'])('r3: implicit %s global config preserves newline-containing paths', (location) => {
+it.each(['home', 'xdg'])('r3: implicit %s global config preserves whitespace-containing paths', (location) => {
   const f = fixture()
   f.env.GIT_CONFIG_GLOBAL = undefined
-  f.env.HOME = join(f.root, 'home\nname ')
+  f.env.HOME = join(f.root, process.platform === 'win32' ? 'home name' : 'home\nname ')
   f.env.USERPROFILE = f.env.HOME
-  f.env.XDG_CONFIG_HOME = join(f.root, 'xdg\nname ')
+  f.env.XDG_CONFIG_HOME = join(f.root, process.platform === 'win32' ? 'xdg name' : 'xdg\nname ')
   const file = location === 'home' ? join(f.env.HOME, '.gitconfig') : join(f.env.XDG_CONFIG_HOME, 'git/config')
   mkdirSync(join(file, '..'), { recursive: true })
   writeFileSync(file, '')
@@ -624,7 +632,7 @@ fakeIt.each(['empty', 'missing'])('r5: a symlink/.. %s include remains outside t
   expect(result.status, result.stdout + result.stderr).toBe(0)
   const race = JSON.parse(readFileSync(join(f.root, 'graph-race.json'), 'utf8')) as { status: number; stderr: string }
   expect(race.status, 'included files are not locked').toBe(0)
-  expect(git(f, ['config', '--get-all', 'gpg.ssh.program']).stdout).toContain(f.target)
+  expect(git(f, ['config', '--get-all', 'gpg.ssh.program']).stdout).toContain(commandPath(f.target))
   expect(existsSync(join(f.root, 'cfg/signer.inc'))).toBe(false)
   expect(existsSync(`${file}.lock`)).toBe(false)
 })
@@ -749,6 +757,7 @@ it.each(INVALID_CONFIG_CASES)('r6: refuses a non-UTF-8 %s after publication (%s,
 it('r6: refuses a non-UTF-8 signer colliding with the intended command', () => {
   const { f, included, config } = refusalFixture()
   f.env.HOME = join(f.root, 'home-�')
+  f.env.USERPROFILE = f.env.HOME
   const before = readFileSync(config)
   afterPublication(f, `const bytes = fs.readFileSync(to), index = bytes.indexOf(Buffer.from('�')); if (index < 0) throw Error('missing replacement-character fixture'); fs.writeFileSync(${JSON.stringify(included)}, Buffer.concat([bytes.subarray(0, index), Buffer.from([255]), bytes.subarray(index + 3)]));`)
   const result = adopt(f)
@@ -782,7 +791,7 @@ it('r6: a valid UTF-8 leading BOM is part of signing-key identity', () => {
   expect(readFileSync(config)).toEqual(before)
 })
 
-fakeIt.each([0o2640, 0o7640])('r6: rollback restores special mode %i despite a restrictive umask', (mode) => {
+it.skipIf(process.platform === 'win32').each([0o2640, 0o7640])('r6: rollback restores special mode %i despite a restrictive umask', (mode) => { // Windows chmod has no POSIX special mode bits.
   const { f, included, config } = refusalFixture()
   chmodSync(config, mode)
   const before = readFileSync(config)
@@ -949,7 +958,7 @@ it.each(['gpg.ssh.program', 'user.signingkey'])('r5: effective %s reads use comm
   if (key === 'gpg.ssh.program') expect(existsSync(f.env.GIT_CONFIG_GLOBAL!)).toBe(false)
   else {
     f.env.GIT_CONFIG = undefined
-    expect(git(f, ['config', '--global', '--get', 'gpg.ssh.program']).stdout).toContain(f.target)
+    expect(git(f, ['config', '--global', '--get', 'gpg.ssh.program']).stdout).toContain(commandPath(f.target))
   }
   expect(readFileSync(hidden, 'utf8')).toBe('')
 })
