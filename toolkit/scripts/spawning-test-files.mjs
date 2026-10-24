@@ -110,6 +110,7 @@ export const spawningTestFiles = [
   'packages/build/test/merge-chain-guard-hook.test.ts',
   'packages/build/test/merge-target-guard-hook.test.ts',
   'packages/build/test/missing-package-script-guard-hook.test.ts',
+  'packages/build/test/model-fallback-cache.test.ts',
   'packages/build/test/model-fallback.test.ts',
   'packages/build/test/no-committed-conflict-markers.test.ts',
   'packages/build/test/no-progress-md-on-shipped-surfaces.test.ts',
