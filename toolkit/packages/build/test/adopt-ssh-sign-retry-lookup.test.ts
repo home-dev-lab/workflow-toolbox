@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import { expect, it } from 'vitest'
 
 const SOURCE = fileURLToPath(new URL('../../../../plugin/bin/lib/host/wt-ssh-sign-retry.mjs', import.meta.url))
+const POSIX_CWD = '/lookup-workdir'
 
 function lookup(files: string[], env: Record<string, string>, platform = 'linux', readable = true, eligibility = 'executable') {
   // Evaluate the actual standalone resolver with a synthetic filesystem, never native OpenSSH.
@@ -28,7 +29,8 @@ function lookup(files: string[], env: Record<string, string>, platform = 'linux'
   }
   const resolve = runInNewContext(`${code}\nresolveKeygen`, {
     fs: filesystem, path: platform === 'win32' ? path.win32 : path.posix, Buffer,
-    process: { platform, env, cwd: () => process.cwd() }, fileURLToPath: () => '/wrapper', wrapperUrl: 'file:///wrapper',
+    // Keep simulated path semantics independent of the OS running this test.
+    process: { platform, env, cwd: () => platform === 'win32' ? 'C:\\lookup-workdir' : POSIX_CWD }, fileURLToPath: () => '/wrapper', wrapperUrl: 'file:///wrapper',
   }) as () => string
   return resolve()
 }
@@ -38,7 +40,7 @@ it('review: unset POSIX PATH uses the executable lookup default', () => {
 })
 
 it('review: an explicitly empty PATH still searches the current directory', () => {
-  const file = path.posix.resolve('ssh-keygen')
+  const file = path.posix.resolve(POSIX_CWD, 'ssh-keygen')
   expect(lookup([file], { PATH: '' })).toBe(file)
 })
 
@@ -63,7 +65,7 @@ it.each(['.COM;.EXE', '.EXE;.COM'])('review: Windows honors PATHEXT order %s wit
 })
 
 it.each(['/opt/team"', '"/opt/team'])('r3: POSIX PATH preserves literal quotes in %s', (directory) => {
-  const intended = path.posix.resolve(directory, 'ssh-keygen')
+  const intended = path.posix.resolve(POSIX_CWD, directory, 'ssh-keygen')
   expect(lookup([intended, '/opt/team/ssh-keygen'], { PATH: directory })).toBe(intended)
 })
 
