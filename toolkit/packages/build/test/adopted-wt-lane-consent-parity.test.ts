@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -149,7 +149,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock.cmd'), join(pluginRoot, 'bin', 'wt-suite-lock.cmd'))
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock-run.mjs'), join(pluginRoot, 'bin', 'wt-suite-lock-run.mjs'))
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock-run.cmd'), join(pluginRoot, 'bin', 'wt-suite-lock-run.cmd'))
-  for (const file of ['suite-lock.mjs', 'artifact-server.mjs']) cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
+  for (const file of readdirSync(join(REPO_ROOT, 'plugin', 'bin', 'lib')).filter((name) => /^(suite-lock.*|artifact-server)\.mjs$/.test(name))) cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
     plugins: { 'workflow-toolbox@fixture': [{ scope: 'user', installPath: pluginRoot, version: '0.0.0' }] },
