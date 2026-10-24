@@ -3,6 +3,7 @@ import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSyn
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 // @ts-expect-error JS quality scanner
 import { scanHostPrimitives } from '../../../scripts/host-primitive-census.mjs'
 // @ts-expect-error JS scheduling policy
@@ -10,13 +11,43 @@ import { spawningTestFiles } from '../../../scripts/spawning-test-files.mjs'
 // @ts-expect-error host adapter is a JS module
 import { commandIO } from '../../../../plugin/bin/lib/host/command-io.mjs'
 // @ts-expect-error JS plugin entrypoint
-import { dispatch } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
+import { dispatch as liveDispatch } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
 // @ts-expect-error JS plugin module
-import { ciBranchFor, matchesHostPath, verdictFromEvidence } from '../../../../plugin/bin/lib/crossos-verdict.mjs'
+import { ciBranchFor, matchesHostPath, verdictFromEvidence as liveVerdictFromEvidence } from '../../../../plugin/bin/lib/crossos-verdict.mjs'
 
 const root = resolve(import.meta.dirname, '../../../..')
 const fixtureDir = join(import.meta.dirname, 'fixtures/crossos-dispatch')
 const temporary: string[] = []
+const historicalJobs = ['ubuntu-latest', 'windows-latest', 'macos-latest'].map((os) => `matrix (${os})`)
+const historicalWindowsJobs = ['matrix (ubuntu-latest)', 'matrix (macos-latest)', 'matrix (windows-latest, 1)', 'matrix (windows-latest, 2)']
+// Supply the independently fixed roster of the two historical pure-test fixtures.
+// Current-roster regressions call the real verdict directly in crossos-evidence.test.ts.
+function verdictFromEvidence(run: unknown, sha: string) {
+  const evidence = run as { jobs?: { name?: string }[] } | null | undefined
+  const jobs = evidence?.jobs
+  const sharded = Array.isArray(jobs) && jobs.some((job) => job.name?.startsWith('matrix (windows-latest,'))
+  return liveVerdictFromEvidence(run && typeof run === 'object' ? { ...run, expectedJobs: sharded ? historicalWindowsJobs : historicalJobs } : run, sha)
+}
+// The historical scenarios below predate the current matrix. Adapt their gh view
+// fixture to REST pages while retaining each scenario's injected job outcomes.
+async function dispatch(argv: string[], options: { io?: typeof commandIO; print: (line: string) => void }) {
+  const io = options.io ?? commandIO
+  let lastJobs: Record<string, unknown>[] = []
+  let displayFailed = false
+  const print = (line: string) => {
+    if (io.failEarlyPrintOnce && !displayFailed && line.startsWith('EARLY JOB ')) { displayFailed = true; throw new Error('display unavailable') }
+    options.print(line)
+  }
+  return liveDispatch(argv, { ...options, print, io: { ...io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program === 'gh' && args[0] === 'api' && args[1]?.includes('/actions/runs/')) {
+      const jobs = lastJobs.map((job, index) => ({ ...job, id: job.databaseId ?? index + 1, completed_at: job.completedAt }))
+      return { status: 0, stdout: JSON.stringify({ total_count: jobs.length, jobs }), stderr: '' }
+    }
+    const result = io.run(program, args, opts)
+    if (program === 'gh' && args[1] === 'view' && !args.includes('--job') && result.status === 0) lastJobs = JSON.parse(result.stdout).jobs ?? []
+    return result
+  } } })
+}
 const sealedHome = mkdtempSync(join(tmpdir(), 'crossos-seal-'))
 const env = { ...process.env, HOME: sealedHome, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ALLOW_PROTOCOL: 'file', GIT_TERMINAL_PROMPT: '0' }
 afterAll(() => rmSync(sealedHome, { recursive: true, force: true }))
@@ -40,7 +71,9 @@ function scratchDir() {
 function authPathOf(dir: string) {
   return join(git(dir, 'rev-parse', '--absolute-git-dir'), 'wt-push-authorized.json')
 }
-function fixture() {
+function fixture(workflowSource = JSON.stringify({ jobs: { matrix: { strategy: {
+  matrix: { include: ['ubuntu-latest', 'windows-latest', 'macos-latest'].map((os) => ({ os })) },
+} } } })) {
   const dir = scratchDir()
   git(dir, 'init', '-q', '-b', 'main')
   git(dir, 'config', 'user.name', 'Fixture')
@@ -48,6 +81,8 @@ function fixture() {
   git(dir, 'config', 'commit.gpgsign', 'false')
   mkdirSync(join(dir, '.github'))
   copyFileSync(join(root, '.github/cross-os-host-layer.json'), join(dir, '.github/cross-os-host-layer.json'))
+  mkdirSync(join(dir, '.github/workflows'))
+  writeFileSync(join(dir, '.github/workflows/cross-os.yml'), workflowSource)
   writeFileSync(join(dir, 'README.md'), 'base')
   git(dir, 'add', '.')
   git(dir, 'commit', '-qm', 'base')
@@ -235,15 +270,15 @@ function expectWindowsMixedDraft(draft: string) {
 }
 function failingEarlyReportIo(fake: Fake) {
   let polls = 0
-  return { ...fake.io, writeText(path: string, text: string, exclusive?: boolean) {
+  return { ...fake.io, failEarlyPrintOnce: true, writeText(path: string, text: string, exclusive?: boolean) {
     if (path.endsWith('.ubuntu.card.md')) throw new Error('disk full')
     return commandIO.writeText(path, text, exclusive)
   }, run(program: string, args: string[], opts: { cwd: string }) {
     const result = fake.io.run(program, args, opts)
     if (program !== 'gh' || args[1] !== 'view' || args.includes('--job')) return result
     const run = JSON.parse(result.stdout)
-    // A malformed first poll throws inside the early report; the run itself carries on.
-    if (polls++ === 0) return { ...result, stdout: JSON.stringify({ ...run, status: 'in_progress', conclusion: '', jobs: [null] }) }
+    // A first in-progress poll lets the test inject a display failure in the early report.
+    if (polls++ === 0) return { ...result, stdout: JSON.stringify({ ...run, status: 'in_progress', conclusion: '' }) }
     // Ubuntu, the first OS reported, fails too, and its early draft cannot be written.
     run.jobs = run.jobs.map((job: { name: string }) => (job.name.includes('ubuntu') ? { ...job, conclusion: 'failure' } : job))
     return { ...result, stdout: JSON.stringify(run) }
@@ -269,7 +304,7 @@ function timedOutBranchIo(fake: Fake, auth: string) {
     return commandIO.push(args, cwd)
   }, run(program: string, args: string[], opts: { cwd: string }) {
     const result = fake.io.run(program, args, opts)
-    if (state.pending && program === 'gh' && args[1] === 'view' && !args.includes('--job')) return { ...result, stdout: JSON.stringify({ status: 'in_progress', conclusion: '', jobs: [] }) }
+    if (state.pending && program === 'gh' && args[1] === 'view' && !args.includes('--job')) return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), status: 'in_progress', conclusion: '', jobs: [] }) }
     return result
   } }
   return { io, authAtDelete, state }
@@ -879,4 +914,46 @@ describe('green only from positive evidence', () => {
     // Stored evidence for another commit is foreign even when everything else is perfect.
     expect(verdictFromEvidence({ ...positive(), headSha: 'c'.repeat(40), headBranch: ciBranchFor('c'.repeat(40)) }, sha).verdict).toBe('unchecked')
   })
+})
+
+function pagedWorkflowScenario(defect: string) {
+  const source = parse(readFileSync(join(root, '.github/workflows/cross-os.yml'), 'utf8')) as { jobs: Record<string, unknown> }
+  const names = ['matrix (ubuntu-latest, 1)', 'matrix (ubuntu-latest, 2)', 'matrix (ubuntu-latest, 3)',
+    'matrix (macos-latest)', 'matrix (windows-latest, 1, 75)', 'matrix (windows-latest, 2, 75)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage']
+  if (defect === 'paginated') {
+    for (let index = 1; index <= 100; index++) {
+      names.push(`extra-${index}`)
+      source.jobs[`extra-${index}`] = { 'runs-on': 'ubuntu-latest', steps: [{ run: 'true' }] }
+    }
+  }
+  const f = fixture(JSON.stringify(source))
+  const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+  writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'cross-os.yml' }))
+  // Working-tree edits must not supply the roster of an already dispatched SHA.
+  writeFileSync(join(f.dir, '.github/workflows/cross-os.yml'), 'jobs: {}')
+  const selected = names.filter((name) => defect === 'all Ubuntu' ? !name.startsWith('matrix (ubuntu') : name !== defect)
+  const jobs = selected.map((name, index) => ({ id: index + 1, name, conclusion: 'success' }))
+  const fake = fakeGh(f)
+  const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program !== 'gh' || args[0] !== 'api') return fake.io.run(program, args, opts)
+    if (defect === 'legacy gh' && args.includes('--slurp')) return { status: 1, stdout: '', stderr: 'unknown flag: --slurp' }
+    const page = Number(new URL(args[1]!, 'https://api.github.com/').searchParams.get('page'))
+    expect(args).toEqual(['api', `repos/owner/repo/actions/runs/23/jobs?filter=latest&per_page=100&page=${page}`])
+    const listed = defect === 'partial page' ? jobs.slice(0, 3) : jobs.slice((page - 1) * 100, page * 100)
+    return { status: 0, stdout: JSON.stringify({ total_count: jobs.length, jobs: listed }), stderr: '' }
+  } }
+  return { f, io }
+}
+
+describe('live dispatcher roster and paginated jobs', () => {
+  it.each(['none', 'matrix (ubuntu-latest, 2)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage', 'all Ubuntu', 'partial page', 'legacy gh', 'paginated'])(
+    'reads the dispatched SHA and every jobs page: %s', async (defect) => {
+      const { f, io } = pagedWorkflowScenario(defect)
+      const out = output()
+      const code = await liveDispatch(['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs], { io, print: out.print })
+      const green = ['none', 'legacy gh', 'paginated'].includes(defect)
+      expect(code, out.lines.join('\n')).toBe(green ? 0 : defect === 'partial page' ? 2 : 1)
+      if (defect === 'partial page') expect(out.lines.join('\n')).toContain('Incomplete jobs listing: expected')
+      else expect(out.lines.join('\n')).toContain(green ? 'RESULT: green' : 'MATRIX INCOMPLETE: missing job')
+    })
 })

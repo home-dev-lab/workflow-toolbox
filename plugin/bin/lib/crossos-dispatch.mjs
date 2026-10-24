@@ -1,5 +1,6 @@
 import { commandIO } from './host/command-io.mjs'
 import { EVIDENCE_FIELDS, ciBranchFor, matchesHostPath, verdictFromEvidence } from './crossos-verdict.mjs'
+import { JOBS_PER_PAGE, readJobPages, workflowJobNames } from './crossos-evidence.mjs'
 import { isAbsolute } from 'node:path'
 
 const LIST = '.github/cross-os-host-layer.json'
@@ -246,7 +247,15 @@ function runList(ctx, branch) {
 }
 
 function freshEvidence(ctx, runId) {
-  return gh(ctx, 'run', 'view', String(runId), '-R', ctx.slug, '--json', EVIDENCE_FIELDS)
+  const run = gh(ctx, 'run', 'view', String(runId), '-R', ctx.slug, '--json', EVIDENCE_FIELDS)
+  // Leave malformed identity evidence to the verdict's existing mismatch checks.
+  if (!COMMIT_ID.test(run.headSha)) return run
+  const source = git(ctx, 'show', `${run.headSha}:.github/workflows/${ctx.args.workflow}`)
+  run.expectedJobs = workflowJobNames(source)
+  // Fetch each REST page with version-independent gh arguments, then validate the
+  // complete count and unique identities before judging the run.
+  run.jobs = readJobPages((page) => gh(ctx, 'api', `repos/${ctx.slug}/actions/runs/${runId}/jobs?filter=latest&per_page=${JOBS_PER_PAGE}&page=${page}`))
+  return run
 }
 
 async function discoverRun(ctx, record) {
