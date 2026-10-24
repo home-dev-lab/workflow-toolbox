@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, 
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { ESLint } from 'eslint'
 import { describe, expect, it } from 'vitest'
 
@@ -23,6 +23,94 @@ const { minimatch } = createRequire(require.resolve('eslint'))('minimatch') as {
   minimatch: (path: string, glob: string, options: { dot: boolean }) => boolean
 }
 type Pass = { name: string; gate: string; cwd: string; targets: string[] }
+type GateResult = { status: number | null; signal?: string; error?: { message: string } }
+
+function runDiagnosticGate(script: string, kind: string[], result: GateResult, failedAt = 0, areaErrors = 0) {
+  const target = join(ROOT, 'toolkit/scripts', script)
+  const setup = script === 'quality-root-gate.mjs' ? `
+    await import(${JSON.stringify(pathToFileURL(join(ROOT, 'toolkit/scripts/lint-scope.mjs')).href)});
+    const {ESLint} = await import('eslint');
+    ESLint.prototype.lintFiles = async () => [{warningCount:30,errorCount:${areaErrors}}];
+    ESLint.prototype.loadFormatter = async () => ({format:()=>''});
+  ` : ''
+  const bootstrap = `
+    import cp from 'node:child_process';
+    import {syncBuiltinESMExports} from 'node:module';
+    ${setup}
+    let count=0;
+    cp.spawnSync=(command,args)=>{
+      process.stdout.write('STAGE='+JSON.stringify([command,...args])+'\\n');
+      return count++ === ${failedAt} ? ${JSON.stringify(result)} : {status:0};
+    };
+    syncBuiltinESMExports();
+    process.argv=[process.execPath,${JSON.stringify(target)},...${JSON.stringify(kind)}];
+    await import(${JSON.stringify(pathToFileURL(target).href)});
+  `
+  return spawnSync(process.execPath, ['--input-type=module', '-e', bootstrap], {
+    cwd: join(ROOT, 'toolkit'), encoding: 'utf8', timeout: 20_000,
+  })
+}
+
+const QUALITY_STAGES = ['scripts/skill-size-check.mjs', 'quality:lint', 'quality:changed', 'quality:host', 'quality:dup', 'quality:dead', 'quality:deps']
+
+describe('quality failure diagnostics', () => {
+  it.each(QUALITY_STAGES)('names the failing quality stage %s and stops there', (stage) => {
+    const index = QUALITY_STAGES.indexOf(stage)
+    const result = runDiagnosticGate('script-gates.mjs', ['quality'], { status: 7 }, index)
+    expect(result.status, result.stderr).toBe(7)
+    expect(result.stderr.trim().split('\n').at(-1)).toContain(`${stage} (exit code 7)`)
+    expect(result.stdout.trim().split('\n')).toHaveLength(index + 1)
+  })
+
+  it.each([
+    { result: { status: null, error: { message: 'fixture command unavailable' } }, code: 2, reason: 'spawn error: fixture command unavailable' },
+    { result: { status: null, signal: 'SIGTERM' }, code: 1, reason: 'signal SIGTERM' },
+    { result: { status: null }, code: 1, reason: 'no exit status' },
+  ])('names the stage and reason for abnormal termination: $reason', ({ result: outcome, code, reason }) => {
+    const result = runDiagnosticGate('script-gates.mjs', ['quality'], outcome, 1)
+    expect(result.status, result.stderr).toBe(code)
+    expect(result.stderr.trim().split('\n').at(-1)).toContain(`quality:lint (${reason})`)
+    expect(result.stdout.trim().split('\n')).toHaveLength(2)
+  })
+
+  it('keeps all seven successful stages green without a failure message', () => {
+    const result = runDiagnosticGate('script-gates.mjs', ['quality'], { status: 0 })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout.trim().split('\n')).toHaveLength(7)
+  })
+})
+
+describe('lint ratchet failure diagnostics', () => {
+  it('summarizes the failed ratchet after printing the warning-only areas', () => {
+    const result = runDiagnosticGate('quality-root-gate.mjs', ['lint'], { status: 1 })
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stdout).toContain('warn-only; a follow-up sets its ratchet')
+    expect(result.stderr.trim().split('\n').at(-1)).toBe('quality:lint failed: ratchet (exit code 1; max-warnings 685)')
+  })
+
+  it('names correctness errors in every warn-first area', () => {
+    const result = runDiagnosticGate('quality-root-gate.mjs', ['lint'], { status: 0 }, 0, 1)
+    expect(result.status, result.stderr).toBe(1)
+    for (const pass of scope.GATE_PASSES.filter((pass: Pass & { warnOnly?: boolean }) => pass.warnOnly)) {
+      expect(result.stderr).toContain(`${pass.name} (1 errors)`)
+    }
+  })
+
+  it('keeps area warnings advisory when the ratchet passes', () => {
+    const result = runDiagnosticGate('quality-root-gate.mjs', ['lint'], { status: 0 })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('30 warnings, 0 errors')
+    expect(result.stderr).toBe('')
+  })
+
+  it('keeps run-ID validation within the warning ratchet', async () => {
+    const eslint = new ESLint({ cwd: ROOT, overrideConfigFile: join(ROOT, 'toolkit/eslint.config.mjs') })
+    const results = await eslint.lintFiles(['plugin/bin/lib/crossos-dispatch.mjs'])
+    const warnings = results.flatMap((result) => result.messages).filter((message) => message.ruleId === 'sonarjs/concise-regex')
+    expect(warnings, 'run-ID digit class must not consume a ratcheted warning').toEqual([])
+  })
+})
 
 describe('review locks for effective gate scope', () => {
   it('requires both target selection and ESLint configuration on the real tree', async () => {

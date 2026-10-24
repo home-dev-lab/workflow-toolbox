@@ -7,7 +7,7 @@ const RESULTS = { 0: 'green', 1: 'red', 2: 'error', 3: 'mismatch', 4: 'timeout',
 const failure = (message, code = 2) => Object.assign(new Error(message), { code })
 const lines = (text) => text.trim().split('\n').filter(Boolean)
 // Every run ID and commit read from storage or from gh output is checked before any gh or git argv uses it.
-const RUN_ID = /^[1-9][0-9]*$/
+const RUN_ID = /^[1-9]\d*$/
 const COMMIT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 const validRunId = (id) => RUN_ID.test(String(id))
 
