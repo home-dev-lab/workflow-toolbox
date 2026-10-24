@@ -81,6 +81,9 @@ async function runCoverageScope(ctx) {
 class ChildProcessCoverageProvider extends V8CoverageProvider {
   initialize(ctx) {
     super.initialize(ctx)
+    // Custom providers do not receive Vitest's CLI threshold overrides. A partial shard
+    // cannot judge whole-suite floors; an unsharded blob merge retains the configured floors.
+    if (ctx.config.shard?.count > 1) this.options.thresholds = undefined
     this.childInstrument = enableChildProcessCoverage(ctx.config.root)
     this.treeAtStart = readTreeIdentity(ctx.config.root)
     // A path that writes reports without cleaning first (`--merge-reports`, coverage.clean=false)
