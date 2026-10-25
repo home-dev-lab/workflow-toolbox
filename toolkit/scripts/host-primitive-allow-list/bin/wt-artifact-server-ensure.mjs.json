@@ -2,7 +2,6 @@
   "child_process import": 1,
   "fs import": 1,
   "appendFileSync": 1,
-  "hard-coded path separator": 1,
   "spawn": 1,
   "readdirSync": 1,
   "readFileSync": 1,

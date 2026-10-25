@@ -12,5 +12,5 @@
   "mkdirSync": 2,
   "writeFileSync": 2,
   "execFileSync": 1,
-  "existsSync": 1
+  "existsSync": 2
 }

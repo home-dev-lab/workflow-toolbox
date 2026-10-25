@@ -38,19 +38,23 @@ async function main(gate) {
   if (gate !== 'lint') throw new Error('usage: quality-root-gate.mjs lint|dead')
   let failed = 0
   const areaResults = []
+  const failures = []
   for (const pass of GATE_PASSES.filter((pass) => pass.gate === 'quality')) {
     if (pass.warnOnly) {
       const result = await runAreaPass(pass)
       areaResults.push(result)
       process.stdout.write(result.output)
       process.stdout.write(`${result.line}\n`)
+      if (result.errors > 0) failures.push(`${pass.name} (${result.errors} errors)`)
     } else {
       const status = run(['toolkit/node_modules/eslint/bin/eslint.js', '--config', 'toolkit/eslint.config.mjs',
         ...pass.targets, '--max-warnings', String(pass.maxWarnings)])
       failed = failed || status
+      if (status !== 0) failures.push(`${pass.name} (exit code ${status}; max-warnings ${pass.maxWarnings})`)
     }
   }
   process.exitCode = qualityExitCode(failed, areaResults)
+  if (process.exitCode) process.stderr.write(`quality:lint failed: ${failures.join('; ')}\n`)
 }
 
 if (isInvokedDirectly(import.meta.url)) {

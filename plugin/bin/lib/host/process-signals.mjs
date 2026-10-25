@@ -28,6 +28,28 @@ export function readProcessLiveness(invoke, pid) {
   return liveness(sendProcessSignal(invoke, pid, 0))
 }
 
+// Existence includes unreaped zombies. Keep that contract for ownership callers;
+// shutdown confirmation separately asks whether execution has actually ended.
+export function readProcessExecutionState(platform, invoke, pid) {
+  const result = readProcessLiveness(invoke, pid)
+  if (result.status !== 'alive') return result
+  if (platform !== 'linux') return { status: 'unknown', reason: `PROCESS_STATE_UNAVAILABLE on ${platform}` }
+  return linuxExecutionState(invoke, pid)
+}
+
+function linuxExecutionState(invoke, pid) {
+  try {
+    const stat = invoke.read(`/proc/${pid}/stat`)
+    if (stat.status !== 'read') return { status: 'unknown', reason: `PROCESS_STATE_UNAVAILABLE: ${stat.reason}` }
+    const state = stat.value.slice(stat.value.lastIndexOf(')') + 1).match(/^ ([RSDZTtXxKWPI]) /)?.[1]
+    if (!stat.value.startsWith(`${pid} (`) || !state) return { status: 'unknown', reason: 'PROCESS_STATE_INVALID' }
+    if (state === 'Z' || state === 'X' || state === 'x') return { status: 'gone' }
+    return { status: 'alive' }
+  } catch (error) {
+    return { status: 'unknown', reason: `PROCESS_STATE_UNAVAILABLE: ${signalFailure(error).reason}` }
+  }
+}
+
 export function readProcessGroupLiveness(platform, invoke, pid) {
   if (platform === 'win32') return { status: 'unknown', reason: 'POSIX process groups are unavailable on win32' }
   if (!validPid(pid)) return { status: 'unknown', reason: 'EINVAL' }

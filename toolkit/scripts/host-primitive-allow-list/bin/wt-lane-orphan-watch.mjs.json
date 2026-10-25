@@ -1,9 +1,9 @@
 {
   "fs import": 1,
-  "hard-coded path separator": 5,
   "readFileSync": 3,
   "readdirSync": 1,
   "realpathSync": 1,
+  "hard-coded path separator": 3,
   "appendFileSync": 1,
   "existsSync": 1
 }

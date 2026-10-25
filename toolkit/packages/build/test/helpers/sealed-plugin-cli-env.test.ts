@@ -1,6 +1,8 @@
 import { delimiter, join } from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { sealedPluginCliEnv } from './sealed-plugin-cli-env.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { sealedPluginCliEnv, withoutOpencodeAdmission } from './sealed-plugin-cli-env.js'
+
+afterEach(() => { vi.unstubAllEnvs() })
 
 describe('sealedPluginCliEnv', () => {
   it('isolates plugin state while preserving executable lookup on POSIX', () => {
@@ -37,4 +39,31 @@ describe('sealedPluginCliEnv', () => {
     expect(env.USERPROFILE).toBe(join('C:\\fixture', 'home'))
     expect(env.CLAUDE_PLUGIN_DATA).toBeUndefined()
   })
+})
+
+describe.each(['linux', 'win32'] as const)('admission isolation on %s', (platform) => {
+  it.each([
+    'WT_OPENCODE_ENVELOPE_ADMISSION',
+    'WT_OPENCODE_ENVELOPE_ADMISSION_TIMEOUT_MS',
+    'WT_OPENCODE_VERIFY_ADMISSION',
+    'WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS',
+  ])('drops ambient %s while preserving an explicit admission fixture', (variable) => {
+    vi.stubEnv(variable, 'ambient-admission-value')
+    expect(sealedPluginCliEnv('/fixture', {}, platform)[variable]).toBeUndefined()
+    expect(process.env[variable]).toBe('ambient-admission-value')
+    expect(sealedPluginCliEnv('/fixture', { [variable]: 'explicit-fixture-value' }, platform)[variable]).toBe('explicit-fixture-value')
+  })
+})
+
+it('scrubs case variants without mutating the source or dropping unrelated environment keys', () => {
+  const inherited = Object.freeze({
+    wt_opencode_envelope_admission: 'ambient-policy',
+    Wt_Opencode_Verify_Admission_Timeout_Ms: '1',
+    WT_OPENCODE_ENVELOPE_ADMISSION_TIMEOUT_MS: '2',
+    WT_OPENCODE_VERIFY_ADMISSION: 'other-policy',
+    Path: 'fixture-bin',
+    WT_OPENCODE_OTHER_SETTING: 'preserved',
+  })
+  expect(withoutOpencodeAdmission(inherited)).toEqual({ Path: 'fixture-bin', WT_OPENCODE_OTHER_SETTING: 'preserved' })
+  expect(Object.keys(inherited)).toHaveLength(6)
 })

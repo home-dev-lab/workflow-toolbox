@@ -1,5 +1,4 @@
 {
   "fs import": 1,
-  "hard-coded path separator": 1,
   "readFileSync": 1
 }

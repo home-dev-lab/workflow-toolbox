@@ -4,10 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import os, { tmpdir } from 'node:os'
 import { join, sep } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime launcher helper
 import { spawnOpencode } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 // @ts-expect-error runtime host helper
 import { defaultOpenCodeDb } from '../../../../plugin/bin/lib/host/opencode-session-store.mjs'
+
+isolateOpencodeAdmission()
 
 const fake = vi.hoisted(() => ({ sandbox: {} as Record<string, unknown> }))
 vi.mock('../../../../plugin/bin/lib/host/lane-sandbox.mjs', async importOriginal => ({

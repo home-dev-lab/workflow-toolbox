@@ -10,8 +10,16 @@ const stages = kind === 'quality'
     ? [['pnpm', 'build:dist'], [process.execPath, 'scripts/cross-repo-typecheck.mjs'], [...(variant === '--blocking' ? [process.execPath, 'scripts/release-blocking-tests.mjs'] : ['vitest', 'run', '--coverage']), ...rest]]
     : null
 if (!stages || (kind === 'quality' && rest.length)) throw new Error('usage: script-gates.mjs quality|test [--blocking] [args...]')
+function failureReason(result) {
+  if (result.error) return `spawn error: ${result.error.message}`
+  if (result.signal) return `signal ${result.signal}`
+  return result.status == null ? 'no exit status' : `exit code ${result.status}`
+}
 for (const [command, ...args] of stages) {
   const result = spawnSync(command, args, { stdio: 'inherit', shell: spawnNeedsShell(command) })
-  if (result.error) { process.stderr.write(`${result.error.message}\n`); process.exitCode = 2; break }
-  if (result.status !== 0) { process.exitCode = result.status ?? 1; break }
+  if (result.error || result.status !== 0) {
+    process.stderr.write(`${kind} failed: ${[command, ...args].join(' ')} (${failureReason(result)})\n`)
+    process.exitCode = result.error ? 2 : result.status ?? 1
+    break
+  }
 }

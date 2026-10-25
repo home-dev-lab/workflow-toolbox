@@ -27,7 +27,8 @@ import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
 import { reapProcessFamily } from './lib/host/process-signal-boundary.mjs'
 import { canonicalOpencodeDirectory, renderEnvelopeRequests } from './lib/host/opencode-request-files.mjs'
-import { OpencodeAdmissionRefusal, requireOpencodeAdmission, requireUnchangedRequest } from './lib/opencode-admission.mjs'
+import { freezeOpencodeSnapshot, OpencodeAdmissionRefusal, opencodeSnapshot, requireOpencodeAdmission, requireUnchangedRequest, resolveOpencodeAdmission } from './lib/opencode-admission.mjs'
+import { absoluteSnapshotSpelling, snapshotEnvironment, watchSnapshotProcess } from './lib/host/admission-snapshot.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-6-luna'
 const DEFAULT_AGENT = 'plan'
@@ -128,7 +129,7 @@ const USAGE = [
     'Admission (optional, caller-configured environment):',
     '  WT_OPENCODE_ENVELOPE_ADMISSION names an absolute ES module path whose default',
     '  admit({ repo, request, env }) returns null to admit or a non-empty refusal string.',
-    '  repo is the canonical --dir; request is an invocation-unique absolute directory holding every rendered prompt.',
+    '  repo is the execution snapshot; request is an invocation-unique absolute directory holding every rendered prompt.',
     '  Content-free availability/skill preflights run first; admitted bytes are hash-checked before each task run and retry.',
     '  WT_OPENCODE_ENVELOPE_ADMISSION_TIMEOUT_MS: positive integer, maximum 2147483647; default 10000.',
     '  Import, admission and clean worker exit share that deadline, including synchronous loops.',
@@ -136,7 +137,13 @@ const USAGE = [
     '  Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.',
     '  Processes a policy detaches are not stopped.',
     '  OPENCODE_REFUSED: <one-line reason> — exit 3; the refused task attempt is not launched.',
-    '  Unset module variable preserves normal execution; an unused timeout override is ignored.',
+    '  Env defined (including empty) wins; otherwise profile plugin option opencode_envelope_admission is used.',
+    '  Invalid/unreadable settings or conflicting/non-string options refuse. Neither source present preserves normal execution.',
+    '  Admission scans one private snapshot shared by the batch, with rewritten prompt paths and no .git at any level.',
+    '  Only absolute repo paths are rewritten on component boundaries; relative paths stay relative to the snapshot cwd.',
+    '  Inputs are read-only before admission; runtime scratch is separate. Windows directories remain writable; same-user chmod is possible.',
+    '  Escaping symlinks and special files refuse. Cleanup waits for all tasks to settle; SIGKILL can leave temporary state.',
+    '  An unused timeout override is ignored; snapshot copying is outside the admission deadline.',
     '',
     'Never prints raw answer text. Exit code: 0 = MANIFEST written, 1 = UNAVAILABLE, 2 = usage/setup error, 3 = admission refusal.',
   ].join('\n')
@@ -273,20 +280,30 @@ function reapGroup(pid) {
  * permission prompt never silently hangs the process, an explicit `--dir` (never the inherited
  * cwd), and a timeout with an `EXIT=<code>` marker appended to the SAME log after the process
  * exits (never a separate, reusable path — every invocation gets its own unique stream file). */
-function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSec, taskId, childEnv }) {
+function taskTimer(child, signal, callback, delay) {
+  watchSnapshotProcess(child, signal, (process) => reapGroup(process.pid))
+  return setTimeout(callback, delay)
+}
+
+function taskRunArgs(taskfile, dir, model, variant, agentMode) {
+  const args = [
+    'run',
+    'Follow the instructions in the attached file and output ONLY what it asks for. Do not add commentary.',
+    '--agent',
+    agentMode,
+    '--model',
+    model,
+  ]
+  if (typeof variant === 'string' && variant.length > 0) args.push('--variant', variant)
+  args.push('--auto', '--dir', dir, '--format', 'json', '-f', taskfile)
+  return args
+}
+
+function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSec, taskId, childEnv, signal }) {
   return new Promise((resolve) => {
     const startedAt = Date.now()
     const streamFile = uniqueStreamFile(taskId)
-    const args = [
-      'run',
-      'Follow the instructions in the attached file and output ONLY what it asks for. Do not add commentary.',
-      '--agent',
-      agentMode,
-      '--model',
-      model,
-    ]
-    if (typeof variant === 'string' && variant.length > 0) args.push('--variant', variant)
-    args.push('--auto', '--dir', dir, '--format', 'json', '-f', taskfile)
+    const args = taskRunArgs(taskfile, dir, model, variant, agentMode)
 
     // ⚠ On POSIX, `detached: true` puts the call in its OWN process group, and that is load-bearing
     // rather than cosmetic. Measured 2026-08-18 against the previous shape (plain spawn + `child.kill`),
@@ -313,7 +330,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
     // "not measurable here", never 0 — a zero is a measurement and would read as "nothing leaked"
     // on a platform where we cannot look. See reapGroup().
     let reaped = null
-    const timer = setTimeout(() => {
+    const timer = taskTimer(child, signal, () => {
       timedOut = true
       reaped = reapGroup(child.pid)
     }, timeoutSec * 1000)
@@ -356,13 +373,13 @@ async function runTask(task, opts, outDir, { taskfile, sha256 }) {
 
   let result
   let modelUsed = model
-  requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION')
-  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opencodeChildEnv(undefined, providerCredentialNames(model)) })
+  requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION', opts.admission, opts.signal)
+  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opencodeChildEnv(snapshotEnvironment(opts.snapshot, process.env), providerCredentialNames(model)), signal: opts.signal })
 
   if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
     modelUsed = fallbackModel
-    requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION')
-    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opencodeChildEnv(undefined, providerCredentialNames(fallbackModel)) })
+    requireUnchangedRequest(taskfile, sha256, 'WT_OPENCODE_ENVELOPE_ADMISSION', opts.admission, opts.signal)
+    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opencodeChildEnv(snapshotEnvironment(opts.snapshot, process.env), providerCredentialNames(fallbackModel)), signal: opts.signal })
   }
 
   return taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, outDir)
@@ -407,7 +424,7 @@ function taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, 
 
 /** Bounded-concurrency pool: at most `limit` tasks run at once. Async only (network-bound CLI
  * calls) — never spawns more processes than `limit` regardless of how many tasks are queued. */
-async function runPool(tasks, limit, worker) {
+async function runPool(tasks, limit, worker, settle = false) {
   const results = new Array(tasks.length)
   let next = 0
   async function lane() {
@@ -418,7 +435,13 @@ async function runPool(tasks, limit, worker) {
     }
   }
   const lanes = Array.from({ length: Math.min(limit, tasks.length) }, () => lane())
-  await Promise.all(lanes)
+  if (!settle) {
+    await Promise.all(lanes)
+    return results
+  }
+  const settled = await Promise.allSettled(lanes)
+  const failed = settled.find((result) => result.status === 'rejected')
+  if (failed) throw failed.reason
   return results
 }
 
@@ -731,8 +754,15 @@ function helpRequested(argv) {
 }
 
 async function admitEnvelopeTasks(tasks, opts, outDir) {
-  const { request, taskfiles } = renderEnvelopeRequests(tasks, outDir)
-  await requireOpencodeAdmission({ repo: opts.dir, request }, process.env, 'WT_OPENCODE_ENVELOPE_ADMISSION')
+  if (opts.admission) {
+    opts.snapshot = opencodeSnapshot(opts.dir, [absoluteSnapshotSpelling(opts.dirSpelling)], 'WT_OPENCODE_ENVELOPE_ADMISSION')
+    opts.dir = opts.snapshot.repo
+    opts.signal = opts.snapshot.signal
+    for (const task of tasks) task.prompt = opts.snapshot.rewrite(task.prompt)
+  }
+  const { request, taskfiles } = renderEnvelopeRequests(tasks, opts.snapshot?.root ?? outDir, { allowFallback: !opts.admission })
+  freezeOpencodeSnapshot(opts.snapshot)
+  await requireOpencodeAdmission({ repo: opts.dir, request, signal: opts.signal }, process.env, 'WT_OPENCODE_ENVELOPE_ADMISSION', opts.admission)
   return taskfiles
 }
 
@@ -743,11 +773,17 @@ async function main() {
     return 0
   }
   const opts = parseArgs(argv)
+  opts.admission = resolveOpencodeAdmission('WT_OPENCODE_ENVELOPE_ADMISSION', process.env)
+  try { return await executeEnvelope(opts) } finally { opts.snapshot?.dispose() }
+}
+
+async function executeEnvelope(opts) {
   const reduceMode = opts.reduce !== null
   const eachSources = [opts.eachJson, opts.eachLines].filter((value) => value !== null)
   const generatedMode = eachSources.length > 0
   if (taskModeRefused(opts, reduceMode, eachSources, generatedMode)) return 2
-  opts.dir = canonicalOpencodeDirectory(opts.dir, 'WT_OPENCODE_ENVELOPE_ADMISSION')
+  opts.dirSpelling = opts.dir
+  opts.originalRepo = opts.dir = canonicalOpencodeDirectory(opts.dir, opts.admission)
   if (reduceMode) return reduceManifest(opts)
   const input = readTaskInput(opts, generatedMode, eachSources)
   if (input === null) return 2
@@ -764,7 +800,7 @@ async function main() {
   const { bin, childEnv } = available
   fs.mkdirSync(outDir, { recursive: true })
   const taskfiles = await admitEnvelopeTasks(tasks, opts, outDir)
-  const results = await runPool(tasks, opts.concurrency, (task, index) => runTask(task, { ...opts, bin, childEnv }, outDir, taskfiles[index]))
+  const results = await runPool(tasks, opts.concurrency, (task, index) => runTask(task, { ...opts, bin, childEnv }, outDir, taskfiles[index]), Boolean(opts.snapshot))
   const manifest = batchManifest(opts, generatedMode, input, outDir, results)
   writeBatchManifest(manifestPath, manifest, results)
   return 0

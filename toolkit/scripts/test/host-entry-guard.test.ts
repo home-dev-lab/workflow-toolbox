@@ -5,6 +5,9 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { isInvokedDirectly } from '../../../plugin/bin/lib/host/entry-guard.mjs'
+import { isolateOpencodeAdmission } from '../../packages/build/test/helpers/sealed-plugin-cli-env.js'
+
+isolateOpencodeAdmission()
 
 const roots: string[] = []
 const PLUGIN_ROOT = join(import.meta.dirname, '../../../plugin')

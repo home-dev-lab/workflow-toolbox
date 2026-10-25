@@ -1,4 +1,4 @@
-# Cross-OS validation matrix: the full test
+# Cross-OS validation matrix: the sharded test
 # suite + the wt-observe lifecycle smoke on real Windows/macOS/Linux runners.
 #
 # Cost discipline (CI minutes are finite; win runners cost x2, mac x10):
@@ -33,10 +33,19 @@ jobs:
       # Windows is three PARALLEL jobs (shards 1, 2 and 3): the full Windows suite measured 1217-1724 s in
       # one step over eight runs, which left the 35-minute job with no margin, and two shards stopped being
       # enough as the suite grew (see the sharding history above the Windows test step). A job without
-      # `shard` has an empty `matrix.shard`, so the shard conditions below treat ubuntu and macOS as unsharded.
+      # `shard` has an empty `matrix.shard`, so the shard conditions below treat macOS as unsharded.
+      # Ubuntu also uses three parallel jobs. From 1782.44 s unsharded, allowing the full 300 s
+      # coverage conversion on EACH shard projects (1782.44 - 300)/3 + 300 = 794.15 s before file-count growth,
+      # leaving 47.06% headroom under a 25-minute step (below the old 30-minute limit).
+      # Confirm actual balance on hosted runners; path hashing balances file counts, not elapsed time.
       matrix:
         include:
           - os: ubuntu-latest
+            shard: 1
+          - os: ubuntu-latest
+            shard: 2
+          - os: ubuntu-latest
+            shard: 3
           - os: macos-latest
           - os: windows-latest
             shard: 1
@@ -80,23 +89,37 @@ jobs:
         timeout-minutes: 6
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
       # streaming log is captured with tee; an explicit `shell: bash` runs `bash -eo pipefail` (the unspecified default is `bash -e`, whose pipeline exit is tee's), pwsh re-raises $LASTEXITCODE.
-      - name: Test (POSIX)
-        shell: bash
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          mkdir -p ci-diagnostics
-          pnpm test 2>&1 | tee ci-diagnostics/vitest.log
-        timeout-minutes: 30
       # The macOS probe runs the suite in two halves so that one half's log survives a frozen runner.
       # Coverage is off here on purpose: thresholds judged on half a suite would be red by construction.
-      # Coverage thresholds are judged on ubuntu only: the Windows shards run coverage WITHOUT thresholds
+      # Coverage thresholds are judged on the Ubuntu union below: Windows shards run coverage WITHOUT thresholds
       # (toolkit/vitest.config.mts leaves them undefined on win32), macOS runs no coverage.
-      # `test:shard` does not build; `pnpm test` did (through script-gates.mjs), so every sharded job
-      # (macOS and every Windows shard) builds here. Measured on Windows: ~17 s (build:dist + cross-repo-typecheck).
+      # `test:shard` does not build, so every job builds here. Measured on Windows: ~17 s.
       - name: Build for the sharded suites
-        if: ${{ runner.os != 'Linux' }}
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
         timeout-minutes: 8
+      # Partial coverage cannot judge whole-suite thresholds. Blob reports retain converted child-process
+      # coverage; the dependent Ubuntu coverage job checks the actual file union and enforces the ratchets.
+      - name: Test (Ubuntu shard ${{ matrix.shard }}/3)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          mkdir -p ci-diagnostics
+          pnpm test:shard --shard=${{ matrix.shard }}/3 --coverage \
+            --reporter=default --reporter=blob --reporter=json \
+            --outputFile.blob=ci-coverage/blob-${{ matrix.shard }}.json \
+            --outputFile.json=ci-diagnostics/ubuntu-shard-${{ matrix.shard }}.json \
+            2>&1 | tee ci-diagnostics/vitest-shard-${{ matrix.shard }}-of-3.log
+        timeout-minutes: 25
+      - name: Upload Ubuntu coverage shard
+        if: ${{ always() && runner.os == 'Linux' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-coverage-shard-${{ matrix.shard }}
+          path: |
+            toolkit/ci-coverage/
+            toolkit/ci-diagnostics/ubuntu-shard-*.json
+          if-no-files-found: error
+        timeout-minutes: 5
       # Replay checks the parsers; this contract also checks native invocation and process lifetime.
       # The suite steps below carry `!cancelled()`: a red contract still fails the job, but no longer skips the suite
       # and hides every other failure of that entry.
@@ -153,7 +176,7 @@ jobs:
       # and it alone carries the non-suite steps: host adapter contract (8 min cap), typecheck, quality, lint and the
       # lifecycle smoke (5 min cap each), and the Diagnose step (8 min cap, `always()`). Worst case on shard 1, every
       # step at its cap: setup 3 + build 8 + contract 8 + suite 28 + Diagnose 8 + 4 x 5 = 75 minutes, so the job
-      # timeout is 75 for the Windows entries only (`timeout: 75` in the matrix); ubuntu and macOS keep 45. A hung suite still
+      # timeout is 75 for the Windows entries only (`timeout: 75` in the matrix); Ubuntu and macOS keep 45. A hung suite still
       # leaves room for the process table and the artifact upload. Shards 2 and 3 carry only setup, build and the
       # suite: 3 + 8 + 28 = 39. The shards run coverage without thresholds so the custom coverage provider's merge and
       # cleanup path stays exercised on Windows.
@@ -227,3 +250,32 @@ jobs:
           path: toolkit/ci-diagnostics/
           if-no-files-found: warn
         timeout-minutes: 5
+
+  ubuntu-coverage:
+    needs: matrix
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: toolkit
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ubuntu-coverage-shard-*
+          path: toolkit/
+          merge-multiple: true
+      - name: Check Ubuntu shard union and coverage inputs
+        run: node scripts/check-posix-shards.mjs ci-diagnostics ci-coverage
+      # Blobs already hold converted Istanbul maps, including child coverage. Load the built-in
+      # merger natively instead of reloading the custom collector through replayed module graphs.
+      - name: Enforce coverage thresholds over the Ubuntu union
+        run: pnpm exec vitest --merge-reports=ci-coverage --coverage --coverage.provider=v8
+        timeout-minutes: 8
