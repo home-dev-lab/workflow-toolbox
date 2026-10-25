@@ -87,6 +87,7 @@ function fixture(workflowSource = JSON.stringify({ jobs: { matrix: { strategy: {
   git(dir, 'add', '.')
   git(dir, 'commit', '-qm', 'base')
   const base = git(dir, 'rev-parse', 'HEAD')
+  git(dir, 'branch', 'develop', base)
   mkdirSync(join(dir, 'plugin/bin'), { recursive: true })
   writeFileSync(join(dir, 'plugin/bin/host.mjs'), 'host')
   git(dir, 'add', '.')
@@ -164,6 +165,100 @@ function narrowedRangeIO(fake: ReturnType<typeof fakeGh>, base: string) {
   } }
   return { io, state }
 }
+
+// New ancestry scenarios stay entirely local, including the non-dry-run refusal path.
+function localOnlyIO() {
+  return { ...commandIO, run(program: string, args: string[], opts: { cwd: string }) {
+    expect(program, 'ancestry checks must not call gh').toBe('git')
+    expect(['fetch', 'push', 'ls-remote']).not.toContain(args[0])
+    const result = spawnSync(program, args, { ...opts, env, encoding: 'utf8' })
+    return { status: result.status ?? 2, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+  }, push() { throw new Error('ancestry scenarios must not push') } }
+}
+const developCommands = [['decide'], ['run'], ['run', '--dry-run']].map((argv) => ({ command: argv.join(' '), argv }))
+function advanceDevelop(f: ReturnType<typeof fixture>, from: string) {
+  git(f.dir, 'checkout', '-q', '--detach', from)
+  git(f.dir, 'commit', '--allow-empty', '-qm', 'advance develop')
+  const tip = git(f.dir, 'rev-parse', 'HEAD')
+  git(f.dir, 'branch', '-f', 'develop', tip)
+  return tip
+}
+
+describe('cross-OS develop ancestry refusal', () => {
+  const cases = developCommands.flatMap((command) => ['host behind', 'docs behind', 'diverged'].map((history) => ({ ...command, history })))
+  it.each(cases)('$command refuses $history before dispatch or skip', async ({ argv, history }) => {
+    const f = fixture(); const out = output()
+    const tip = advanceDevelop(f, history === 'diverged' ? f.base : f.docs)
+    const sha = history === 'docs behind' ? f.docs : f.host
+    const code = await liveDispatch([...argv, '--merge', sha, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print })
+    expect(code, 'stale commit must be refused before deciding or dispatching').toBe(2)
+    const text = out.lines.join('\n')
+    expect(text).toContain(`does not contain current local develop tip ${tip}`)
+    expect(text).toContain('git worktree add --detach <dir> develop')
+    expect(text).toContain('git -C <dir> merge --no-ff <branch>')
+    expect(text).toContain('run --repo <dir> --merge HEAD')
+    expect(out.lines.at(-1)).toBe('RESULT: error')
+    expect(out.lines.some((line) => line.startsWith('DECISION:'))).toBe(false)
+    expect(existsSync(join(f.dir, '.git/wt-crossos'))).toBe(false)
+  })
+  it.each(developCommands)('$command refuses a missing local develop even with a tag and remote refs', async ({ argv }) => {
+    const f = fixture(); const out = output()
+    git(f.dir, 'branch', '-D', 'develop')
+    git(f.dir, 'tag', 'develop', f.base)
+    git(f.dir, 'update-ref', 'refs/remotes/origin/develop', f.base)
+    git(f.dir, 'update-ref', 'refs/remotes/public/develop', f.base)
+    const code = await liveDispatch([...argv, '--merge', f.docs, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print })
+    expect(code, 'missing local develop must refuse').toBe(2)
+    expect(out.lines.join('\n')).toContain('cannot resolve local develop ref refs/heads/develop')
+    expect(out.lines.join('\n')).toContain('git branch develop <current-develop-tip>')
+    expect(out.lines.at(-1)).toBe('RESULT: error')
+    expect(existsSync(join(f.dir, '.git/wt-crossos'))).toBe(false)
+  })
+})
+
+describe('cross-OS develop ancestry acceptance', () => {
+  it.each(developCommands.flatMap((command) => ['equal', 'ancestor', 'second parent'].map((history) => ({ ...command, history }))))(
+    '$command accepts develop as $history and keeps docs skip behavior', async ({ argv, history }) => {
+      const f = fixture(); const out = output()
+      let sha = f.docs
+      if (history === 'equal') git(f.dir, 'branch', '-f', 'develop', sha)
+      if (history === 'second parent') {
+        advanceDevelop(f, f.base)
+        git(f.dir, 'checkout', '-q', '--detach', f.docs)
+        git(f.dir, 'merge', '--no-ff', '-qm', 'preview merge', 'develop')
+        sha = git(f.dir, 'rev-parse', 'HEAD')
+      }
+      const code = await liveDispatch([...argv, '--merge', sha, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print })
+      expect(code, out.lines.join('\n')).toBe(0)
+      expect(out.lines.at(-1)).toBe('RESULT: skip')
+    })
+  it('keeps the host dry-run when a preview merge contains the current develop tip', async () => {
+    const f = fixture(); const out = output()
+    advanceDevelop(f, f.base)
+    git(f.dir, 'checkout', '-q', '--detach', 'develop')
+    git(f.dir, 'merge', '--no-ff', '-qm', 'preview merge', f.host)
+    const sha = git(f.dir, 'rev-parse', 'HEAD')
+    git(f.dir, 'update-ref', 'refs/remotes/public/main', f.base)
+    expect(await liveDispatch(['run', '--dry-run', '--merge', sha, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print }), out.lines.join('\n')).toBe(0)
+    expect(out.lines.join('\n')).toContain(`DECISION: run merge=${sha}`)
+    expect(out.lines.at(-1)).toBe('RESULT: dry-run')
+    expect(existsSync(join(f.dir, '.git/wt-crossos'))).toBe(false)
+  })
+})
+
+describe('cross-OS develop ancestry Git errors', () => {
+  it('refuses an ancestry check error rather than treating it as an ancestor or a stale tip', async () => {
+    const f = fixture(); const out = output(); const local = localOnlyIO()
+    const io = { ...local, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'git' && args[0] === 'merge-base') return { status: 128, stdout: '', stderr: 'history unavailable' }
+      return local.run(program, args, opts)
+    } }
+    expect(await liveDispatch(['decide', '--merge', f.docs, '--repo', f.dir], { io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain('cannot verify develop ancestry')
+    expect(out.lines.join('\n')).toContain('history unavailable; repair local Git history and retry')
+    expect(out.lines.some((line) => line.startsWith('DECISION:'))).toBe(false)
+  })
+})
 
 describe('option-like child-process values', () => {
   const flags = ['--merge', '--ref', '--base', '--remote', '--workflow', '--repo-slug']

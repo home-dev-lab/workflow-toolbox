@@ -64,8 +64,25 @@ function checked(io, cwd, program, args) {
 }
 const git = (ctx, ...args) => checked(ctx.io, ctx.cwd, 'git', args)
 const gh = (ctx, ...args) => JSON.parse(checked(ctx.io, ctx.cwd, 'gh', args))
-const shaOf = (ctx, ref) => git(ctx, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`)
+const shaOf = (ctx, ref) => checkDevelopAncestry(ctx, git(ctx, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`))
 const recordPath = (ctx, sha) => ctx.io.join(ctx.store, `${sha}.json`)
+
+function checkDevelopAncestry(ctx, sha) {
+  // Historical collection/release evidence remains valid after develop advances.
+  if (!['decide', 'run'].includes(ctx.args.command)) return sha
+  let develop
+  try { develop = git(ctx, 'rev-parse', '--verify', '--end-of-options', 'refs/heads/develop^{commit}') }
+  catch { throw failure('cannot resolve local develop ref refs/heads/develop; restore it with: git branch develop <current-develop-tip>; then retry with a preview merge') }
+  const result = ctx.io.run('git', ['merge-base', '--is-ancestor', develop, sha], { cwd: ctx.cwd })
+  if (result.status === 0) return sha
+  if (result.status !== 1) throw failure(`cannot verify develop ancestry for ${sha}: git merge-base --is-ancestor failed (${result.status}): ${result.stderr.trim()}; repair local Git history and retry`)
+  throw failure(`commit ${sha} does not contain current local develop tip ${develop}; refusing ${ctx.args.command}.
+Build a preview merge containing develop and the feature branch, then dispatch that merge:
+git worktree add --detach <dir> develop
+git -C <dir> merge --no-ff <branch>
+node plugin/bin/wt-crossos-dispatch.mjs run --repo <dir> --merge HEAD`)
+}
+
 function reportSuccessfulDiagnostics(ctx, jobs) {
   for (const job of jobs) {
     let log
