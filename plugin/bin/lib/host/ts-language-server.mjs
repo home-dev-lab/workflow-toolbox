@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawnTsProcess as spawn } from './ts-process.mjs'
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'

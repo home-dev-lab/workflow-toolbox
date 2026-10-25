@@ -426,7 +426,7 @@ it.each(kinds)('preserves live execution when settings contain no matching admis
   expect(existsSync(join(f.root, 'snapshot-root'))).toBe(false)
 })
 
-it.each(kinds)('rewrites the absolute caller spelling without collapsing symlink/.. for %s', kind => {
+it.each(kinds)('honors native symlink/.. resolution before rewriting the absolute caller spelling for %s', kind => {
   const f = fixture(kind)
   mkdirSync(join(f.repo, 'child'))
   symlinkSync(join(f.repo, 'child'), join(f.root, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
@@ -435,7 +435,16 @@ it.each(kinds)('rewrites the absolute caller spelling without collapsing symlink
   const prompt = `Read ${f.root}${sep}${dir}/source.txt`
   writeFileSync(f.input, prompt)
   writeFileSync(join(f.root, 'tasks.json'), JSON.stringify([{ id: 'spelling', prompt }]))
-  expect(launch(f, f.module).status).toBe(0)
+  // Windows collapses junction/.. to the lexical parent, not the target's parent.
+  // That selects the fixture root, whose temp directory cannot host its own snapshot.
+  expect(realpathSync.native(`${f.root}${sep}${dir}`)).toBe(process.platform === 'win32' ? f.root : f.repo)
+  if (process.platform === 'win32') {
+    expectRefused(f, 'snapshot parent lies inside source repository', f.module)
+    expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
+    return
+  }
+  const result = launch(f, f.module)
+  expect(result.status, result.stdout + result.stderr).toBe(0)
   for (const call of calls(f)) {
     expect(call.task).toContain(`${call.cwd}/source.txt`)
     expect(call.task).not.toContain('/link/..')
@@ -505,14 +514,17 @@ it.each(kinds)('refuses the unresolved chained symlink escape before starting %s
 })
 
 describe.each(kinds)('strict profile regressions: %s', kind => {
-  it.each(['CLAUDE_CONFIG_DIR', 'HOME'])('resolves symlink/.. filesystem semantics for %s', variable => {
+  it.each(['CLAUDE_CONFIG_DIR', 'HOME'])('resolves platform-native symlink/.. filesystem semantics for %s', variable => {
     const f = fixture(kind, 'return "synthetic profile refuses"')
     const profile = join(f.root, 'profile')
     mkdirSync(join(profile, 'child'), { recursive: true })
     symlinkSync(join(profile, 'child'), join(f.root, 'profile-link'), process.platform === 'win32' ? 'junction' : 'dir')
-    f.config = variable === 'HOME' ? join(profile, '.claude') : profile
+    // POSIX follows the link before '..'; Windows normalizes '..' before the junction.
+    const selected = process.platform === 'win32' ? f.root : profile
+    f.config = variable === 'HOME' ? join(selected, '.claude') : selected
     mkdirSync(f.config, { recursive: true }); settings(f)
     const spelling = `${join(f.root, 'profile-link')}${sep}..`
+    expect(realpathSync.native(spelling)).toBe(selected)
     expectRefused(f, 'synthetic profile refuses', undefined, { CLAUDE_CONFIG_DIR: undefined, [variable]: spelling })
   })
 
@@ -612,7 +624,7 @@ it.each(kinds)('preserves quoted sibling paths while rewriting repository compon
   }
 })
 
-it('validates the second-opinion repository after native symlink/.. resolution', () => {
+it('validates or rejects the second-opinion repository after platform-native symlink/.. resolution', () => {
   const f = fixture('second-opinion')
   const elsewhere = join(f.root, 'elsewhere'); mkdirSync(elsewhere)
   const native = join(f.root, 'native'); mkdirSync(join(native, 'child'), { recursive: true })
@@ -621,6 +633,16 @@ it('validates the second-opinion repository after native symlink/.. resolution',
   symlinkSync(join(native, 'child'), join(elsewhere, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
   f.args[f.args.indexOf('--repo') + 1] = `${join(elsewhere, 'link')}${sep}..${sep}repo`
   const result = launch(f, f.module)
+  if (process.platform === 'win32') {
+    // The lexical destination is elsewhere/repo, which does not exist. Native
+    // Windows resolution must not silently substitute the POSIX native/repo.
+    expect(existsSync(join(elsewhere, 'repo'))).toBe(false)
+    expect(result.status, result.stdout + result.stderr).toBe(2)
+    expect(result.stdout + result.stderr).toContain('--repo is not a directory:')
+    expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
+    expect(existsSync(f.marker)).toBe(false)
+    return
+  }
   expect(result.status, result.stdout + result.stderr).toBe(0)
   expect(calls(f)).toHaveLength(1)
   expect(calls(f)[0].source).toBe('admitted content')

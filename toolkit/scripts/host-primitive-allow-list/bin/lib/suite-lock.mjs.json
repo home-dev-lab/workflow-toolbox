@@ -1,8 +1,6 @@
 {
   "fs import": 1,
-  "os import": 1,
-  "homedir": 1,
-  "process.platform": 4,
+  "process.platform": 3,
   "readFileSync": 1,
   "statSync": 2,
   "mkdirSync": 3,
