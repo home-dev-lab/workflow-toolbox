@@ -8,8 +8,15 @@ import path from 'node:path'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { boundedAdmission, formatAdmissionError as formatError } from './lib/host/admission.mjs'
+import { resolveAdmissionModule } from './lib/host/admission-options.mjs'
+import { withSecondOpinionSnapshot } from './lib/host/second-opinion-snapshot.mjs'
+import { requestDigest } from './lib/host/opencode-request-files.mjs'
+import { requireUnchangedRequest } from './lib/opencode-admission.mjs'
+import { snapshotEnvironment } from './lib/host/admission-snapshot.mjs'
 
 const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]\nLinux sandbox refuses a named file the reviewer cannot read (exit 2); a named directory it cannot read is reported and the review runs.\nWT_SECOND_OPINION_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env }) returns null to admit or a non-empty refusal string (exit 3); configuration or module failures refuse too. Canonical repo/request paths are shared with launch; out must not name the request. Import, admission and clean worker exit have a 10000 ms deadline, overridable with WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS (positive integer, maximum 2147483647); expiry terminates the policy worker, including synchronous loops.'
+
+const admissionUsage = '\nWhen WT_SECOND_OPINION_ADMISSION is undefined, second_opinion_admission in the profile settings.json plugin options is used. A defined env value wins, including empty (which refuses). Invalid/unreadable settings or conflicting/non-string admission options refuse. With admission active, the request and repo are copied to a private snapshot and .git is excluded at every level. Absolute repo paths in the rendered prompt are rewritten on component boundaries; relative paths stay relative. Inputs become read-only before scanning, with separate writable runtime scratch (Windows directories remain writable; same-user chmod is possible). External symlinks and special files refuse; normal terminal paths remove the snapshot. With neither configuration source present, execution is unchanged.'
 
 function parseArgs(argv) {
   const options = { effort: 'medium', route: 'auto', repo: process.cwd() }
@@ -31,7 +38,10 @@ function validateArgs(options) {
   if (!['auto', 'astra', 'opus'].includes(options.route)) return { ...options, error: '--route must be auto, astra, or opus' }
   options.request = path.resolve(options.request)
   options.out = path.resolve(options.out)
-  options.repo = path.resolve(options.repo)
+  options.repoSpelling = options.repo
+  try { options.repo = realpathSync.native(options.repo) } catch {
+    return { ...options, error: `--repo is not a directory: ${options.repo}` }
+  }
   if (!existsSync(options.request) || !statSync(options.request).isFile()) return { ...options, error: `--request is not a file: ${options.request}` }
   if (!existsSync(options.repo) || !statSync(options.repo).isDirectory()) return { ...options, error: `--repo is not a directory: ${options.repo}` }
   return options
@@ -78,7 +88,7 @@ function replaceAdmissionOutput(temporary, out) {
 }
 
 function writeAdmissionRefusal(out, text) {
-  try { writeFileSync(out, text); return } catch {}
+  try { writeFileSync(out, text); return } catch { /* Fall back to atomic replacement when direct publication is denied. */ }
   const temporary = `${out}.refusal-${randomUUID()}`
   let descriptor
   let created = false
@@ -106,11 +116,12 @@ function refuseAdmission(out, refusal) {
 async function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
-    process.stdout.write(`${usage}\n`)
+    process.stdout.write(`${usage}${admissionUsage}\n`)
     return 0
   }
   const env = process.env
-  if (env.WT_SECOND_OPINION_ADMISSION !== undefined && outputNamesRequest(options, process.argv.slice(2))) {
+  const admission = secondOpinionAdmission(options, env)
+  if (admission && outputNamesRequest(options, process.argv.slice(2))) {
     admissionPending = true
     process.stderr.write('wt-second-opinion: WT_SECOND_OPINION_ADMISSION: --out and --request name the same file\n')
     return 3
@@ -121,21 +132,45 @@ async function main() {
     return 2
   }
   outputPath = options.out
-  if (env.WT_SECOND_OPINION_ADMISSION !== undefined) {
+  if (admission) {
     admissionPending = true
-    options.repo = realpathSync(options.repo)
+    options.repo = realpathSync.native(options.repoSpelling)
     options.request = realpathSync(options.request)
-    const refusal = await pendingAdmission(options, env)
-    if (refusal !== null) return refuseAdmission(options.out, refusal)
-    admissionPending = false
+    return pendingAdmission(options, env, admission)
   }
-  return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter), env)
+  return dispatchSecondOpinion(options, env)
 }
 
-async function pendingAdmission(options, env) {
+function secondOpinionAdmission(options, env) {
+  try { return resolveAdmissionModule('WT_SECOND_OPINION_ADMISSION', env) } catch (error) {
+    admissionPending = true
+    if (!outputNamesRequest(options, process.argv.slice(2))) outputPath = options.out
+    throw error
+  }
+}
+
+function dispatchSecondOpinion(options, env) {
+  return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter), snapshotEnvironment(options.snapshot, env))
+}
+
+async function pendingAdmission(options, env, admission) {
   writeAdmissionRefusal(options.out, 'PENDING: WT_SECOND_OPINION_ADMISSION\n')
-  return boundedAdmission(options, env, {
-    moduleVariable: 'WT_SECOND_OPINION_ADMISSION', timeoutVariable: 'WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS',
+  return withSecondOpinionSnapshot(options, async (runOptions) => {
+    const signal = runOptions.snapshot.signal
+    const abort = () => abortController.abort(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    try {
+      const sha256 = requestDigest(runOptions.request)
+      const refusal = await boundedAdmission(runOptions, env, {
+        moduleVariable: 'WT_SECOND_OPINION_ADMISSION', timeoutVariable: 'WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS', admission, signal: abortController.signal,
+      })
+      if (refusal !== null) return refuseAdmission(options.out, refusal)
+      requireUnchangedRequest(runOptions.request, sha256, 'WT_SECOND_OPINION_ADMISSION', admission, abortController.signal)
+      admissionPending = false
+      return await dispatchSecondOpinion(runOptions, env)
+    } finally {
+      signal.removeEventListener('abort', abort)
+    }
   })
 }
 
@@ -154,7 +189,7 @@ function legacyFailure(error) {
         appendFileSync(outputPath, `REFUSED: second-opinion failed: ${message.replace(/\r?\n/g, ' ')}\nEXIT=1\n`)
       }
     } catch {
-      try { writeFileSync(outputPath, `REFUSED: second-opinion failed: ${message.replace(/\r?\n/g, ' ')}\nEXIT=1\n`) } catch {}
+      try { writeFileSync(outputPath, `REFUSED: second-opinion failed: ${message.replace(/\r?\n/g, ' ')}\nEXIT=1\n`) } catch { /* Stderr still reports the failure when output publication is unavailable. */ }
     }
   }
   process.stderr.write(`wt-second-opinion: ${message}\n`)

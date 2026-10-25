@@ -8,6 +8,7 @@ import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
@@ -16,6 +17,8 @@ import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../.
 // allow-list / refusal / git-overlay / private-home construction with a fake filesystem (portable);
 // the real half runs real bwrap children — filesystem, network, PID namespace — and skips, naming
 // why, where no working bubblewrap exists (CI macOS/Windows).
+
+isolateOpencodeAdmission()
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')

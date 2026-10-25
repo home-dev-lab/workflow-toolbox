@@ -3,9 +3,9 @@
 import { formatAdmissionError, workerAdmission } from './admission.mjs'
 import { isInvokedDirectly } from './entry-guard.mjs'
 
-async function run({ options, env, timeout, moduleVariable, silent }) {
+async function run({ options, env, timeout, moduleVariable, silent, admission }) {
   let message
-  try { message = { refusal: await workerAdmission(options, env, timeout, moduleVariable, silent) } }
+  try { message = { refusal: await workerAdmission(options, env, timeout, moduleVariable, silent, admission) } }
   catch (error) { message = { error: formatAdmissionError(error) } }
   if (process.connected) process.send(message, () => process.disconnect())
 }
