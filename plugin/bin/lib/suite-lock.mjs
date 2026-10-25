@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import path from 'node:path'
-import { artifactStateDir, pidAlive } from './artifact-server.mjs'
+import { pidAlive } from './artifact-server.mjs'
+import { suiteLockDir } from './host/suite-lock-dir.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
 import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside } from './host/suite-lock-queue.mjs'
@@ -56,13 +56,6 @@ function positiveSeconds(value, name) {
   const number = Number(value)
   if (!Number.isFinite(number) || number < 0) throw new Error(`${name} must be a non-negative number of seconds`)
   return number
-}
-
-function suiteLockDir(env = process.env, home = homedir(), platform = process.platform) {
-  if (typeof env.WT_SUITE_LOCK_DIR === 'string' && env.WT_SUITE_LOCK_DIR.length > 0) {
-    return path.resolve(env.WT_SUITE_LOCK_DIR)
-  }
-  return path.join(path.dirname(artifactStateDir(env, home, platform)), 'wt-suite-lock')
 }
 
 export function readSuiteLock(options = {}) {
