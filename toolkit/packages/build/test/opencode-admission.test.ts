@@ -245,16 +245,29 @@ it.each(modes)('refuses a changed %s request before the rate-limit fallback retr
   expect(readdirSync(f.repo).filter(name => name.startsWith('.oc-verify-'))).toEqual([])
 })
 
-it.each(modes)('uses the same filesystem directory for %s policy and launch through symlink/..', mode => {
+it.each(modes)('honors platform-native symlink/.. resolution before %s policy and launch', mode => {
   const f = fixture(mode, recordingPolicy)
   const elsewhere = join(f.root, 'elsewhere'); mkdirSync(elsewhere)
   const child = join(elsewhere, 'child'); mkdirSync(child)
   symlinkSync(child, join(f.repo, 'link'), 'junction')
+  const native = realpathSync.native(`${f.repo}/link/..`)
+  expect(native).toBe(process.platform === 'win32' ? f.repo : elsewhere)
   const result = launch(f, f.module, '5000', './repo/link/..')
-  expect(result.status, result.stderr).toBe(0)
+  if (process.platform === 'win32') {
+    // Windows selects repo, whose absolute junction escapes the snapshot. POSIX
+    // selects elsewhere, which contains only the real child directory.
+    expect(result.status, result.stdout + result.stderr).toBe(3)
+    expect(result.stdout).toContain('OPENCODE_REFUSED:')
+    expect(result.stdout).toContain('symlink escapes snapshot')
+    expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
+    expect(existsSync(f.marker)).toBe(false)
+    return
+  }
+  // Keep Node warnings visible, but include the refusal protocol on stdout too.
+  expect(result.status, result.stdout + result.stderr).toBe(0)
   const seen = JSON.parse(readFileSync(join(f.root, 'seen.json'), 'utf8'))
   const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
-  expect(seen.repo).not.toBe(realpathSync.native(join(f.root, 'repo/link') + '/..'))
+  expect(seen.repo).not.toBe(native)
   expect(calls.every(call => call.cwd === seen.repo)).toBe(true)
   expect(calls.every(call => call.args[call.args.indexOf('--dir') + 1] === seen.repo)).toBe(true)
 })
