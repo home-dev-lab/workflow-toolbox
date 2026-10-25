@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { accessSync, chmodSync, closeSync, constants, cpSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { EventEmitter } from 'node:events'
-import { tmpdir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -36,6 +36,7 @@ interface SandboxModule {
   probeRequestPaths: (paths: string[], options: { wrap: (bin: string, args: string[]) => [string, string[]], execPath: string, env: Record<string, string | undefined> }) => Record<string, string | null>
 }
 interface SuiteLockModule {
+  suiteLeaseDomain: (options: Record<string, unknown>) => string
   readSuiteLock: (options: Record<string, unknown>) => { root: string }
   acquireSuiteLock: (options: Record<string, unknown>) => Promise<{ root: string }>
   operatorReleaseSuiteLock: (options: Record<string, unknown>) => { released: boolean, reason?: string }
@@ -301,11 +302,61 @@ function listening(fs: FakeFs, spawned?: Array<{ command: string, args: string[]
   }
 }
 
-function plan(overrides: Record<string, unknown> = {}): SandboxPlan {
+function plan(overrides: Record<string, unknown> = {}, pinFixtureLock = true): SandboxPlan {
   const fs = (overrides.fs as FakeFs | undefined) ?? fakeFs()
   const base = { profile: 'opencode', bin: '/opt/opencode/bin/opencode', args: ['run', 'x'], cwd: '/work/tree', env: { HOME, PATH: '/usr/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }
-  return sandbox.resolveLaneSandbox({ ...base, ...overrides })
+  // Existing fake plans explicitly own their fixture lock; real-home regressions opt out below.
+  let env = (overrides.env ?? base.env) as NodeJS.ProcessEnv
+  if (pinFixtureLock && !env.WT_SUITE_LOCK_DIR) {
+    const state = posix.isAbsolute(env.XDG_STATE_HOME ?? '') ? env.XDG_STATE_HOME! : posix.join(env.HOME || '/nonexistent', '.local', 'state')
+    env = { ...env, WT_SUITE_LOCK_DIR: posix.join(state, 'wt-suite-lock') }
+  }
+  return sandbox.resolveLaneSandbox({ ...base, ...overrides, env })
 }
+
+it.skipIf(process.platform !== 'linux').each([
+  {},
+  { XDG_STATE_HOME: '/shared-state' },
+  { WT_SUITE_LOCK_DIR: '/shared-lock' },
+  { XDG_STATE_HOME: '/other-state', WT_SUITE_LOCK_DIR: '/shared-lock' },
+])('pins the broker and read-only mask to the real host lock with caller HOME: %j', (overrides) => {
+  const fs = fakeFs()
+  const env = { HOME: '/private-home', PATH: '/usr/bin', ...overrides }
+  const expected = suiteLock.suiteLeaseDomain({ env: overrides, home: userInfo().homedir, platform: 'linux' })
+  let brokerRoot: string | undefined
+  const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+    if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerRoot = options.env?.WT_SUITE_LOCK_DIR
+    return listening(fs)(command, args)
+  }
+  const p = plan({ fs, env, spawnFn }, false)
+  try {
+    expect(brokerRoot, 'broker must acquire the real host lock').toBe(expected)
+    const args = p.wrap('/bin/true', [])[1]
+    const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+    expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), expected])
+    expect(flat(args, '--bind-try')).not.toContain(expected)
+    expect(args[args.indexOf('WT_SUITE_LOCK_BROKER') + 1]).toMatch(/\/lock\/broker\.sock$/)
+  } finally { p.dispose() }
+})
+
+it.skipIf(process.platform !== 'linux')('ignores relative XDG state and launches with the account lock root', () => {
+  const fs = fakeFs()
+  const expected = suiteLock.suiteLeaseDomain({ env: {}, home: userInfo().homedir, platform: 'linux' })
+  let brokerRoot: string | undefined
+  const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+    if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerRoot = options.env?.WT_SUITE_LOCK_DIR
+    return listening(fs)(command, args)
+  }
+  const p = plan({ fs, env: { HOME: '/private-home', PATH: '/usr/bin', XDG_STATE_HOME: 'state' }, spawnFn }, false)
+  try {
+    expect(p.kind).toBe('bwrap')
+    expect(brokerRoot).toBe(expected)
+    const args = p.wrap('/bin/true', [])[1]
+    const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+    expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), expected])
+    expect(flat(args, '--bind-try')).not.toContain(expected)
+  } finally { p.dispose() }
+})
 
 describe('suite broker launch authority', () => {
   it('binds each broker and its lane to a fresh launch capability', () => {
@@ -659,7 +710,7 @@ describe('lane sandbox plan — availability and pass-through', () => {
   })
 })
 
-describe('lane sandbox plan — filesystem allow-list', () => {
+function registerSocketMaskTests() {
   it.skipIf(!BWRAP_WORKS)('masks sockets under aliased directory sources and single-socket binds (requires usable root-owned bwrap)', async () => {
     const root = tempRoot('socket-alias'); const home = join(root, 'home'); const work = join(root, 'work'); const source = join(root, 'source'); const alias = join(root, 'alias'); const run = join(root, 'run')
     for (const dir of [home, work, source, run]) mkdirSync(dir)
@@ -691,6 +742,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(spawnSync('/usr/bin/bwrap', args, { timeout: 10_000 }).status).toBe(0)
     } finally { p.dispose() }
   })
+}
+
+function registerConfigSymlinkTests() {
   it.skipIf(process.platform === 'win32')('rejects a real global-config symlink into the worktree and never binds its {file:} key (POSIX planner)', () => {
     const root = tempRoot('config-target'); const home = join(root, 'home'); const work = join(root, 'work'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
@@ -718,6 +772,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(p.egressHosts).not.toContain('attacker.example')
     } finally { p.dispose() }
   })
+}
+
+function registerWritableConfigTests() {
   it('does not trust a symlinked global config or its {file:} reference in a lane tree', () => {
     const config = `${HOME}/.config/opencode`
     const target = '/work/tree/provider.json'
@@ -740,6 +797,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     p.dispose()
   })
 
+}
+
+function registerLateOverlayTests() {
   it('refuses an egress log whose lexical parent is lane-writable even if it resolves outside', () => {
     const fs = fakeFs({}, [HOME, '/work/tree', '/work/tree/logs', '/safe'], { '/work/tree/logs': '/safe' })
     expect(() => plan({ fs, optionEnv: { WT_LANE_EGRESS_LOG: '/work/tree/logs/egress.jsonl' } })).toThrow(/refusing WT_LANE_EGRESS_LOG/)
@@ -776,6 +836,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     }
   })
 
+}
+
+function registerExecutableOverlayTests() {
   it('refuses a kept executable link whose target cannot be mounted instead of silently changing PATH priority', () => {
     const link = `${HOME}/.local/bin/codex`
     const target = `${HOME}/codex`
@@ -806,6 +869,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(ro).not.toContain('/srv/Tools')
   })
 
+}
+
+function registerBindSpellingTests() {
   it('accepts an ordinary non-overlapping bind after unconditional case folding', () => {
     const bin = '/srv/Tools/cli'
     const [, args] = plan({ bin, fs: fakeFs({ [bin]: 'cli' }, [HOME, '/work/tree', '/srv/Tools', '/data/other']), paths: { writable: ['/data/other'] } }).wrap(bin, [])
@@ -832,6 +898,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     p.dispose()
   })
 
+}
+
+function registerDroppedBindTests() {
   it('reports a dropped OpenCode -f path named by the caller without refusing the launch', () => {
     const p = plan({ args: ['run', '-f', HOME], fs: fakeFs({}, [HOME, '/work/tree']) })
     try {
@@ -873,6 +942,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     } finally { p.dispose() }
   })
 
+}
+
+function registerCodexPathTests() {
   it('writes one stderr notice for dropped caller-named binds on a sandboxed OpenCode plan', () => {
     const p = plan({ paths: { readable: [HOME, HOME] }, fs: fakeFs({}, [HOME, '/work/tree']) })
     const lines: string[] = []
@@ -909,6 +981,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(args[args.indexOf('PATH') + 1]).toBe('/run/wt-lane/bin:/usr/local/bin:/usr/bin')
   })
 
+}
+
+function registerCodexExecutableTests() {
   it('skips a nonexecutable first hit and selects only an executable realpath', () => {
     const first = '/opt/first/codex'; const second = '/opt/second/codex'
     const fs = fakeFs({ [first]: 'no exec', [second]: 'selected' }, [HOME, '/work/tree', '/opt/first', '/opt/second'])
@@ -936,6 +1011,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/good/bin:/usr/bin' }, fs })).toThrow(/realpath is covered by a later bind or is not mounted/)
   })
 
+}
+
+function registerToolchainMountTests() {
   it('recreates a symlinked executable inside the sandbox so its real directory and sibling helper are visible', () => {
     const invoked = '/links/tool'
     const real = '/real/bin/tool'
@@ -967,6 +1045,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(args.slice(args.indexOf('--') + 1)).toContain('/opt/opencode/bin/opencode')
   })
 
+}
+
+function registerPrivateOpenCodeTests() {
   it('gives OpenCode a PRIVATE per-run data/cache/state and never binds the shared cache/share writable (M1)', () => {
     const share = `${HOME}/.local/share/opencode`; const cache = `${HOME}/.cache/opencode`; const state = `${HOME}/.local/state/opencode`
     const fs = fakeFs({ [`${share}/auth.json`]: 'secret-token', [`${cache}/models.json`]: '{}' }, [share, cache, state, `${cache}/packages`, `${cache}/bin`])
@@ -990,13 +1071,22 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(ro).not.toContain(`${HOME}/missing`)
   })
 
+}
+
+function registerSuiteBrokerTests() {
   // Linux-only by nature: it compares the plan's POSIX bind with suite-lock.mjs's own resolution, which
   // uses the HOST's native path module (backslashes on Windows, where no plan is ever built).
   it.skipIf(process.platform !== 'linux')('routes suite locks through a host broker and masks the machine-wide lock root read-only', () => {
     const fs = fakeFs()
-    const p = plan({ fs })
+    let brokerRoot: string | undefined
+    const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerRoot = options.env?.WT_SUITE_LOCK_DIR
+      return listening(fs)(command, args)
+    }
+    const p = plan({ fs, spawnFn }, false)
     const [, args] = p.wrap('opencode', [])
-    const lockRoot = suiteLock.readSuiteLock({ env: {}, home: HOME, platform: 'linux' }).root
+    const lockRoot = suiteLock.readSuiteLock({ env: {}, home: userInfo().homedir, platform: 'linux' }).root
+    expect(brokerRoot).toBe(lockRoot)
     expect(flat(args, '--bind-try')).not.toContain(lockRoot)
     expect(args.slice(args.indexOf('WT_SUITE_LOCK_BROKER') - 1, args.indexOf('WT_SUITE_LOCK_BROKER') + 2)).toEqual(['--setenv', 'WT_SUITE_LOCK_BROKER', expect.stringMatching(/\/lock\/broker\.sock$/)])
     const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
@@ -1011,6 +1101,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     }
   })
 
+}
+
+function registerSuiteRunnerTests() {
   it('resolves the suite-lock runner a lane runs to the plugin bin/ file that exists, and refuses when it is absent', () => {
     const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
     expect(sandbox.suiteLockCli()).toBe(cli)
@@ -1048,6 +1141,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     }
   })
 
+}
+
+function registerExtraBindTests() {
   it('adds operator paths and refuses, by name, the root, home, and its ancestors', () => {
     const p = plan({ optionEnv: { WT_LANE_SANDBOX_READ: `~/.config/extra${delimiter}/${delimiter}relative`, WT_LANE_SANDBOX_WRITE: `/scratch${delimiter}${HOME}` }, fs: fakeFs({}, [HOME, '/work/tree', `${HOME}/.config/extra`, '/scratch']) })
     const [, args] = p.wrap('opencode', [])
@@ -1068,6 +1164,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries ${extras.slice(0, 3).join(', ')}`)
   })
 
+}
+
+function registerHostStateNoticeTests() {
   it.skipIf(process.platform === 'win32' || sandbox.insideChildUserNamespace() === true)('reports a caller-named writable ancestor of aliased host state while keeping an allowed caller bind (skipped on Windows and inside a child user namespace, where the host-state override is ignored)', () => {
     const env = { HOME: '/home/owner', PATH: '/usr/bin', WT_LANE_HOST_STATE: '/alias/missing', XDG_CONFIG_HOME: '/state' }
     const fs = fakeFs({}, ['/home/owner', '/work/tree', '/state', '/state/opencode', '/data/other'], { '/alias': '/state' })
@@ -1090,6 +1189,24 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     sandbox.announceUnsandboxedLane(plan(), (t) => lines.push(t))
     expect(lines).toEqual([`workflow-toolbox: ${none.line}\n`])
   })
+}
+
+describe('lane sandbox plan — filesystem allow-list', () => {
+  registerSocketMaskTests()
+  registerConfigSymlinkTests()
+  registerWritableConfigTests()
+  registerLateOverlayTests()
+  registerExecutableOverlayTests()
+  registerBindSpellingTests()
+  registerDroppedBindTests()
+  registerCodexPathTests()
+  registerCodexExecutableTests()
+  registerToolchainMountTests()
+  registerPrivateOpenCodeTests()
+  registerSuiteBrokerTests()
+  registerSuiteRunnerTests()
+  registerExtraBindTests()
+  registerHostStateNoticeTests()
 })
 
 describe('lane sandbox plan — git pointers (H1/H2)', () => {

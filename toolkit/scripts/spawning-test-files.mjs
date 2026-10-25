@@ -199,6 +199,7 @@ export const spawningTestFiles = [
   'packages/build/test/suite-lock-broker.test.ts',
   'packages/build/test/suite-lock-bypass-guard-hook.test.ts',
   'packages/build/test/suite-lock-exclusive.test.ts',
+  'packages/build/test/suite-lock-home.test.ts',
   'packages/build/test/suite-lock-journal.test.ts',
   'packages/build/test/suite-lock-levels.test.ts',
   'packages/build/test/suite-lock-offload.test.ts',

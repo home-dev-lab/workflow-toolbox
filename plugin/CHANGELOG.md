@@ -21,6 +21,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Suite locks resolve their default home from the OS account, so HOME and USERPROFILE isolation keeps the shared machine queue. Sandbox brokers and Windows writable-path preflight use the same resolver, absolute state-root overrides retain priority, invalid relative XDG state roots are ignored, and unavailable account homes fail with a named error.
 - Artifact server stop/restart re-read recorded process birth identity immediately before signalling, refuse ambiguous listener identity or unavailable discovery without claiming a stop, and serialize concurrent controllers through replacement readiness. Unavailable birth identity refuses even with `--force`.
 - Artifact server shutdown recognizes exited, unreaped Linux processes; unavailable execution-state evidence remains explicitly unknown. Restart readiness now matches the spawned child's PID, port and unique launch token, and rejects a failed or exited replacement.
 - Artifact server stop/restart now waits for host-confirmed process exit even after its listener closes or another endpoint answers. Restart rejects malformed health PIDs, and a verified process disappearing before SIGTERM counts as an already-completed stop.
