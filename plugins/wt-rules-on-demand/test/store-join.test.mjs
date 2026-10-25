@@ -8,7 +8,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, HOST_FILE_LIMIT, sandboxRoot } from './store-host-fake.mjs';
+import { hostStore, hookFixture, atLimitStore, readerTotals, realFs, HOST_FILE_LIMIT, HOST_STORE_LIMIT, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_BUDGETS, STORE_ARCHIVE, ARCHIVE_PART_BYTES, archiveTexts, jsonLength } from '../hooks/store-budget.js';
 import { sumSessions, sumServed, mergeSessions, archivedSegments } from '../scripts/delivery-join.mjs';
 import { withArchivedSessions } from '../scripts/store-archives.mjs';
@@ -268,6 +268,16 @@ test('J5: one context larger than an archive part is split into parts of one seg
 });
 
 // J6 -------------------------------------------------------------------------------------------------------------------
+
+test('the full-store fixture fits the host limit independently of the temporary-path identity length', () => {
+  for (const length of [6, 100, 160, 500]) {
+    const identity = `user:/${'x'.repeat(length)}/rules:sample.md`;
+    const store = atLimitStore(identity);
+    assert.equal(JSON.stringify(store).length, HOST_STORE_LIMIT);
+    assert.ok(Object.keys(store.sessions['sample-session'].contexts).length > 100);
+    assert.ok(store['compliance-verdicts-jsonl'].includes(identity));
+  }
+});
 
 test('J6: archives that fail forever on a full store cost one act a small bounded number of store and archive attempts', async (t) => {
   const root = await sandbox(t, 'rod-j6-');
