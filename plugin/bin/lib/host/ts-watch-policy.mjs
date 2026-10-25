@@ -2,7 +2,7 @@ import filesystem from 'node:fs'
 import { on } from 'node:events'
 
 export const DEFAULT_NATIVE_WATCH_BUDGET = 64
-export const TYPESCRIPT_POLL_INTERVAL_MS = 500
+const TYPESCRIPT_POLL_INTERVAL_MS = 500
 
 function setting(value, fallback, minimum) {
   const number = Number(value)
