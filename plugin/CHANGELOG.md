@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Admission opts out for a missing settings file only after native resolution proves that its profile directory exists. Missing or undecidable profiles, including intermediate dangling symlinks, refuse with a repair remedy. Quoted sibling repository paths retain their original spelling, and second-opinion validates repository symlink/`..` paths natively before launch.
+
 ### Added
 
 - Linux lane suite-lock brokers support an opt-in operator-configured offload command for exclusive requests behind a configured queue threshold. Capability negotiation preserves older clients and brokers; framed logs and request-bound completion relay the reported exit while fallback retains the local ticket. Local acquisition and client disconnect cancel the offload process group. See the public suite-lock offload reference for configuration and protocol details.
@@ -21,6 +23,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Admission snapshots check every remaining byte occurrence of each live repository spelling, independent of formatting or escaping. Only native proof of a longer existing outside-repository sibling permits it to remain; sibling symlinks back into the repository refuse rather than becoming invalid snapshot paths.
+- Admission snapshot hardening refuses every unresolved symlink, preserves native symlink/`..` profile-directory resolution, validates settings container shapes, and rewrites angle-bracket repository references without rewriting comma-suffixed sibling names. Snapshot termination handlers survive repeated signals, handle POSIX SIGQUIT, and bound model shutdown before cleanup. Windows directory read-only limitations and SIGKILL leftovers remain documented.
+- Second-opinion, opencode envelope and opencode verifier resolve admission once per invocation: a defined environment value wins (including empty values, which refuse), otherwise the matching profile plugin option supplies the module. Invalid/unreadable settings, conflicting entries and non-string admission values refuse with a repair remedy; absent configuration preserves existing execution. Configured calls scan and execute against a private repository snapshot, excluding `.git` at every level. Absolute repository paths are rewritten on component boundaries; relative paths stay relative to the snapshot cwd. Inputs become read-only before admission (Windows directories remain writable), with separate writable scratch; same-user chmod remains possible. Escaping symlinks, special files and copy errors refuse; cleanup restores permissions and waits for every envelope task to settle. Timeout overrides remain environment-only, and snapshot copying is outside the policy deadline.
 - Artifact server stop/restart re-read recorded process birth identity immediately before signalling, refuse ambiguous listener identity or unavailable discovery without claiming a stop, and serialize concurrent controllers through replacement readiness. Unavailable birth identity refuses even with `--force`.
 - Artifact server shutdown recognizes exited, unreaped Linux processes; unavailable execution-state evidence remains explicitly unknown. Restart readiness now matches the spawned child's PID, port and unique launch token, and rejects a failed or exited replacement.
 - Artifact server stop/restart now waits for host-confirmed process exit even after its listener closes or another endpoint answers. Restart rejects malformed health PIDs, and a verified process disappearing before SIGTERM counts as an already-completed stop.

@@ -74,7 +74,7 @@ printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
   const home = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-home-'))); roots.push(home)
   writeFileSync(path.join(home, '.zprofile'), `export OPENCODE_CONFIG=${path.join(root, 'shell-startup-unsafe.json')}\n`)
   const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: hermeticPath([binDir]), WT_RECORD: record, WT_LANE_SANDBOX_WRITE: recordDir, WT_IDENTITY_MARKER: 'same', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_RECORD,WT_IDENTITY_MARKER', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), OPENAI_API_KEY: 'openai-key', GOOGLE_GENERATIVE_AI_API_KEY: 'google-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource', XDG_STATE_HOME: path.join(home, '.local/state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
-  return { root, bin, record, recordDir, env }
+  return { root, bin, record, recordDir, env: { ...env, CLAUDE_CONFIG_DIR: home, WT_OPENCODE_ENVELOPE_ADMISSION: undefined } }
 }
 
 describe('all toolbox-owned OpenCode launch paths', () => {

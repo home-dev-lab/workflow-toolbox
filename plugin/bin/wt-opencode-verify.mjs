@@ -10,8 +10,9 @@ import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
-import { opencodeAdmission, OpencodeAdmissionRefusal, requireUnchangedRequest } from './lib/opencode-admission.mjs'
+import { freezeOpencodeSnapshot, opencodeAdmission, OpencodeAdmissionRefusal, opencodeSnapshot, requireUnchangedRequest, resolveOpencodeAdmission } from './lib/opencode-admission.mjs'
 import { canonicalOpencodeDirectory, requestDigest } from './lib/host/opencode-request-files.mjs'
+import { absoluteSnapshotSpelling, snapshotEnvironment, watchSnapshotProcess } from './lib/host/admission-snapshot.mjs'
 
 export const DEFAULT_MODEL = 'openai/gpt-6-sol'
 export const DEFAULT_TIMEOUT_SEC = 570
@@ -26,14 +27,20 @@ function usage() {
     '',
     'Copies the task into the workdir, runs the read-only plan agent with closed stdin, and retries once on a rate limit.',
     'WT_OPENCODE_VERIFY_ADMISSION optionally names an absolute ES module path: default admit({ repo, request, env })',
-    'returns null to admit or a non-empty refusal string. repo is the canonical --dir; request is the absolute task copy.',
+    'returns null to admit or a non-empty refusal string. repo is the execution snapshot; request is its absolute task copy.',
     'Content-free availability/skill preflights run first; admitted request bytes are hash-checked before each task run and retry.',
     'WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS is a positive integer up to 2147483647; default 10000 ms.',
     'Import, admission and clean worker exit share that deadline, including synchronous loops. Policies are trusted code, not sandboxed.',
     'Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.',
     'Processes a policy detaches are not stopped.',
     'Hook/configuration failures refuse closed: OPENCODE_REFUSED: <one-line reason>, exit 3, no task spawn; the task copy is cleaned.',
-    'Unset module variable preserves normal execution; an unused timeout override is ignored.',
+    'Env defined (including empty) wins; otherwise profile plugin option opencode_verify_admission is used.',
+    'Invalid/unreadable settings or conflicting/non-string options refuse. Neither source present preserves normal execution.',
+    'Admission scans a private snapshot with rewritten task paths and no .git at any level; external symlinks and special files refuse.',
+    'Only absolute repo paths are rewritten on component boundaries; relative paths stay relative to the snapshot cwd.',
+    'Inputs are read-only before admission; runtime scratch is separate. Windows directories remain writable; same-user chmod is possible.',
+    'Normal terminal paths clean up the snapshot; SIGKILL can leave temporary state. Copying is outside the admission deadline.',
+    'An unused timeout override is ignored.',
     'Exits: 0 = answer, 1 = unavailable/external-directory denial, 2 = usage/setup error; task failure exits propagate (timeout 124).',
     'Exit 3 with OPENCODE_REFUSED is an admission refusal.',
   ].join('\n')
@@ -82,9 +89,10 @@ function resolveBinary() {
   return null
 }
 
-function runOnce(spawnFn, bin, args, timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env, cwd, extraNames = []) {
+function runOnce(spawnFn, bin, args, timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env, cwd, { extraNames = [], signal } = {}) {
   return new Promise((resolve) => {
     const child = spawnOpencode(spawnFn, bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env, cwd }, process.platform, extraNames)
+    watchSnapshotProcess(child, signal)
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -138,35 +146,69 @@ function cleanupTaskCopy(taskFile) {
   }
 }
 
-export async function runVerifier(options, dependencies = undefined) {
-  options = { ...options, dir: canonicalOpencodeDirectory(options.dir, 'WT_OPENCODE_VERIFY_ADMISSION', dependencies) }
-  const resolved = verifierDependencies(options, dependencies)
-  const { spawnFn, binary, readStdin, timeoutSec, env } = resolved
-  const preflight = verifierPreflight(options, resolved)
-  if (preflight.code) return preflight
-  const { childEnv, credentialNames } = preflight
-  const task = options.stdin ? readStdin() : fs.readFileSync(options.taskFile, 'utf8')
-  const taskFile = path.join(path.resolve(options.dir), `.oc-verify-${options.id}-${process.pid}.md`)
+function verifierTaskPath(options) {
+  const id = options.admission ? String(options.id).replace(/[^A-Za-z0-9_.-]/g, '_') : options.id
+  return path.join(path.resolve(options.dir), `.oc-verify-${id}-${process.pid}.md`)
+}
+
+async function runVerifierTask(options, resolved, preflight, task) {
+  const { spawnFn, binary, timeoutSec, env } = resolved
+  const { credentialNames } = preflight
+  const childEnv = snapshotEnvironment(options.snapshot, preflight.childEnv)
+  const taskFile = verifierTaskPath(options)
   fs.writeFileSync(taskFile, task, 'utf8')
   try {
     const sha256 = requestDigest(taskFile)
-    const refusal = await opencodeAdmission({ repo: options.dir, request: taskFile }, env, 'WT_OPENCODE_VERIFY_ADMISSION')
+    freezeOpencodeSnapshot(options.snapshot)
+    const refusal = await opencodeAdmission({ repo: options.dir, request: taskFile, signal: options.signal }, env, 'WT_OPENCODE_VERIFY_ADMISSION', options.admission)
     if (refusal !== null) return { code: 3, output: `${new OpencodeAdmissionRefusal(refusal).message}\n` }
-    requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION', env)
-    let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec, childEnv, options.dir, credentialNames)
+    requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION', options.admission, options.signal)
+    let result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, taskFile }), timeoutSec, childEnv, options.dir, { extraNames: credentialNames, signal: options.signal })
     if (result.code !== 0 && rateLimited(result)) {
       const model = options.fallbackModel || DEFAULT_MODEL
       const fallbackCredentialNames = providerCredentialNames(model)
-      const fallbackEnv = opencodeChildEnv(env, fallbackCredentialNames)
-      requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION', env)
-      result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model, taskFile }), timeoutSec, fallbackEnv, options.dir, fallbackCredentialNames)
+      const fallbackEnv = opencodeChildEnv(snapshotEnvironment(options.snapshot, env), fallbackCredentialNames)
+      requireUnchangedRequest(taskFile, sha256, 'WT_OPENCODE_VERIFY_ADMISSION', options.admission, options.signal)
+      result = await runOnce(spawnFn, binary, buildRunArgs({ ...options, model, taskFile }), timeoutSec, fallbackEnv, options.dir, { extraNames: fallbackCredentialNames, signal: options.signal })
     }
     return verifierResult(result)
   } catch (error) {
     if (error instanceof OpencodeAdmissionRefusal) return { code: 3, output: `${error.message}\n` }
     throw error
   } finally {
-    cleanupTaskCopy(taskFile)
+    if (!options.snapshot) cleanupTaskCopy(taskFile)
+  }
+}
+
+function prepareVerifier(options, dependencies, dirInput) {
+  const env = dependencies?.env ?? process.env
+  const admission = resolveOpencodeAdmission('WT_OPENCODE_VERIFY_ADMISSION', env)
+  const dir = options.dir = canonicalOpencodeDirectory(dirInput, admission)
+  const resolved = verifierDependencies(options, dependencies)
+  return { admission, dir, resolved, preflight: verifierPreflight(options, resolved) }
+}
+
+function executionVerifierOptions(options, dir, admission, snapshot) {
+  return { ...options, originalRepo: dir, dir: snapshot?.repo ?? dir, admission, snapshot, signal: snapshot?.signal }
+}
+
+export async function runVerifier(options, dependencies = undefined) {
+  let snapshot
+  try {
+    const cloned = { ...options }
+    const dirSpelling = options.dir
+    const { admission, dir, resolved, preflight } = prepareVerifier(cloned, dependencies, dirSpelling)
+    options = cloned
+    if (preflight.code) return preflight
+    const { readStdin } = resolved
+    const task = options.stdin ? readStdin() : fs.readFileSync(options.taskFile, 'utf8')
+    if (admission) snapshot = opencodeSnapshot(dir, [absoluteSnapshotSpelling(dirSpelling)], 'WT_OPENCODE_VERIFY_ADMISSION')
+    return await runVerifierTask(executionVerifierOptions(options, dir, admission, snapshot), resolved, preflight, snapshot ? snapshot.rewrite(task) : task)
+  } catch (error) {
+    if (error instanceof OpencodeAdmissionRefusal) return { code: 3, output: `${error.message}\n` }
+    throw error
+  } finally {
+    snapshot?.dispose()
   }
 }
 

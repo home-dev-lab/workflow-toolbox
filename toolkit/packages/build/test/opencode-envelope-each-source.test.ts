@@ -19,6 +19,8 @@ const previousExtraEnv = process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
 // the sandbox itself is locked in lane-sandbox.test.ts.
 beforeEach(() => {
   vi.stubEnv('WT_LANE_SANDBOX', 'off')
+  vi.stubEnv('CLAUDE_CONFIG_DIR', makeRoot())
+  vi.stubEnv('WT_OPENCODE_ENVELOPE_ADMISSION', undefined)
   process.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_FAKE_CONCURRENCY_LOG,WT_FAKE_PROMPT_CAPTURE,WT_FAKE_MODEL_CAPTURE,WT_FAKE_EXIT_CODE,WT_FAKE_ANSWER'
 })
 
@@ -32,6 +34,7 @@ afterEach(() => {
 function makeRoot() {
   const root = mkdtempSync(join(tmpdir(), 'wt-opencode-envelope-each-'))
   roots.push(root)
+  mkdirSync(join(root, 'config'))
   return root
 }
 

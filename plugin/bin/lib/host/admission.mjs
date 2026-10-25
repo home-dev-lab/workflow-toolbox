@@ -3,21 +3,33 @@
 import { fork } from 'node:child_process'
 import path from 'node:path'
 import { Worker } from 'node:worker_threads'
+import { resolveAdmissionModule } from './admission-options.mjs'
 
 export function formatAdmissionError(error) {
   try { return String(error instanceof Error ? error.message : error) } catch { return 'unprintable thrown value' }
 }
 
-export async function boundedAdmission(options, env, { moduleVariable, timeoutVariable, silent = false }) {
+export async function boundedAdmission(options, env, { moduleVariable, timeoutVariable, silent = false, admission = resolveAdmissionModule(moduleVariable, env), signal = options.signal }) {
   const timeout = Number(env[timeoutVariable] ?? 10_000)
   if (!Number.isInteger(timeout) || timeout <= 0 || timeout > 2_147_483_647) {
     return `${moduleVariable}: ${timeoutVariable} must be a positive integer no greater than 2147483647`
   }
-  if (!path.isAbsolute(env[moduleVariable])) return `${moduleVariable}: must name an absolute ES module path`
-  return processAdmission(options, env, timeout, moduleVariable, silent)
+  if (!admission) return null
+  if (!path.isAbsolute(admission.path)) return `${moduleVariable}: must name an absolute ES module path`
+  return processAdmission(options, env, timeout, moduleVariable, silent, admission, signal)
 }
 
-async function processAdmission({ repo, request }, env, timeout, moduleVariable, silent) {
+function admissionCancellation(signal, variable) {
+  let abort
+  const promise = new Promise((resolve) => {
+    abort = () => resolve(`${variable}: interrupted during admission`)
+    if (signal?.aborted) abort()
+    else signal?.addEventListener('abort', abort, { once: true })
+  })
+  return { promise, dispose: () => signal?.removeEventListener('abort', abort) }
+}
+
+async function processAdmission({ repo, request }, env, timeout, moduleVariable, silent, admission, signal) {
   const deadline = performance.now() + timeout
   const child = fork(new URL('./admission-process.mjs', import.meta.url), [], {
     env, execArgv: ['--unhandled-rejections=strict'], serialization: 'advanced',
@@ -29,15 +41,18 @@ async function processAdmission({ repo, request }, env, timeout, moduleVariable,
   const exited = new Promise((resolve) => { child.once('exit', resolve); child.once('error', resolve) })
   const verdict = processVerdict(child, moduleVariable)
   const expired = `${moduleVariable}: timed out after ${timeout} ms`
+  const cancellation = admissionCancellation(signal, moduleVariable)
   let timer
   try {
-    child.send({ options: { repo, request }, env, timeout, moduleVariable, silent })
+    child.send({ options: { repo, request }, env, timeout, moduleVariable, silent, admission })
     const refusal = await Promise.race([
       verdict,
+      cancellation.promise,
       new Promise((resolve) => { timer = setTimeout(() => resolve(expired), Math.max(0, deadline - performance.now())) }),
     ])
     return performance.now() >= deadline ? expired : refusal
   } finally {
+    cancellation.dispose()
     clearTimeout(timer)
     child.kill('SIGKILL')
     child.stdout.destroy(); child.stderr.destroy()
@@ -60,10 +75,10 @@ function processVerdict(child, variable) {
   })
 }
 
-export async function workerAdmission({ repo, request }, env, timeout, moduleVariable, silent) {
+export async function workerAdmission({ repo, request }, env, timeout, moduleVariable, silent, admission) {
   const deadline = performance.now() + timeout
   const worker = new Worker(new URL('./admission-worker.mjs', import.meta.url), {
-    workerData: { repo, request, env, moduleVariable }, env, execArgv: ['--unhandled-rejections=strict'],
+    workerData: { repo, request, env, moduleVariable, admission }, env, execArgv: ['--unhandled-rejections=strict'],
     ...(silent ? { stdout: true, stderr: true } : {}),
   })
   if (silent) { worker.stdout.resume(); worker.stderr.resume() }
