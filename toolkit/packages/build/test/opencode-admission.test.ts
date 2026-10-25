@@ -510,6 +510,22 @@ function stopRecordedChildren(f: Fixture) {
   }
 }
 
+function recordedChildAlive(pid: number) {
+  // Probe only fixture-recorded PIDs; Linux zombies have exited even before init reaps them.
+  try { process.kill(pid, 0) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
+    throw error
+  }
+  if (process.platform !== 'linux') return true
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z'
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+}
+
 function assertDrainedRefusal(f: Fixture, hang: boolean) {
   const result = launch(f, f.module)
   expect(result.status, result.stdout + result.stderr).toBe(3)
@@ -523,8 +539,7 @@ function assertDrainedRefusal(f: Fixture, hang: boolean) {
   const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
   expect(calls.filter(call => !call.descendant).map(call => call.task).sort()).toEqual([...f.prompts].sort())
   if (process.platform !== 'win32') for (const { pid } of calls) {
-    const ps = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' })
-    expect(ps.stdout.trim() === '' || ps.stdout.trim().startsWith('Z'), `child ${pid} must not survive refusal`).toBe(true)
+    expect(recordedChildAlive(pid), `child ${pid} must not survive refusal`).toBe(false)
   }
 }
 

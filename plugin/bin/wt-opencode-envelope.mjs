@@ -431,7 +431,7 @@ function taskAnswer(task, { id, model, modelUsed, timeoutSec, safeId, result }, 
 
 /** Bounded-concurrency pool: at most `limit` tasks run at once. Async only (network-bound CLI
  * calls) — never spawns more processes than `limit` regardless of how many tasks are queued. */
-async function runPool(tasks, limit, worker) {
+async function runPool(tasks, limit, worker, settle = false) {
   const results = new Array(tasks.length)
   const pool = new AbortController()
   let next = 0
@@ -446,8 +446,9 @@ async function runPool(tasks, limit, worker) {
     }
   }
   const lanes = Array.from({ length: Math.min(limit, tasks.length) }, () => lane())
-  // Keep snapshot lifetime, child timeouts and family reaping alive until every lane settles.
-  await Promise.allSettled(lanes)
+  // Admission keeps snapshot lifetime, child timeouts and family reaping alive until every lane settles.
+  if (settle) await Promise.allSettled(lanes)
+  else await Promise.all(lanes)
   // The controller retains the first failure; settled results are ordered by lane.
   pool.signal.throwIfAborted()
   return results
@@ -810,7 +811,7 @@ async function executeEnvelope(opts) {
   fs.mkdirSync(outDir, { recursive: true })
   requireWritableEnvelopeOutput(outDir)
   const taskfiles = await admitEnvelopeTasks(tasks, opts, outDir)
-  const results = await runPool(tasks, opts.concurrency, (task, index, pool) => runTask(task, { ...opts, bin, childEnv, pool }, outDir, taskfiles[index]))
+  const results = await runPool(tasks, opts.concurrency, (task, index, pool) => runTask(task, { ...opts, bin, childEnv, pool }, outDir, taskfiles[index]), Boolean(opts.admission))
   const manifest = batchManifest(opts, generatedMode, input, outDir, results)
   writeBatchManifest(manifestPath, manifest, results)
   return 0
