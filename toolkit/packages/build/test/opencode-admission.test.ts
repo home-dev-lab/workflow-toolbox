@@ -368,3 +368,178 @@ it('returns absolute fallback request paths with a relative TMPDIR after an outp
     expect(readFileSync(taskfile, 'utf8')).toBe('fallback prompt')
   }
 })
+
+function fallbackFixture(mode: Mode, denyOutput = false) {
+  const f = fixture(mode)
+  mkdirSync(join(f.root, 'relative-temp'))
+  writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import fs from 'node:fs';
+    import path from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    process.env.TMPDIR = process.env.TMP = process.env.TEMP = 'relative-temp';
+    const create = fs.mkdtempSync;
+    const write = fs.writeFileSync;
+    fs.mkdtempSync = (prefix, ...args) => {
+      if (prefix === ${JSON.stringify(join(f.out, 'requests-'))}) throw Object.assign(new Error('output denied'), { code: 'EACCES' });
+      const directory = create(prefix, ...args);
+      if (path.basename(prefix) === 'opencode-requests-') write(${JSON.stringify(join(f.root, 'fallback-created'))}, directory);
+      return directory;
+    };
+    fs.writeFileSync = (file, ...args) => {
+      if (${denyOutput} && path.dirname(String(file)) === ${JSON.stringify(f.out)}) throw Object.assign(new Error('output denied'), { code: 'EACCES' });
+      return write(file, ...args);
+    };
+    syncBuiltinESMExports();`)
+  return f
+}
+
+describe.each(['fan-out', 'generated', 'reduce'] as const)('envelope output lifecycle: %s', mode => {
+  it('cleans fallback request directories after unconfigured execution', () => {
+    const f = fallbackFixture(mode)
+    const result = launch(f, undefined)
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    const request = readFileSync(join(f.root, 'fallback-created'), 'utf8')
+    expect(dirname(request)).toBe(join(f.root, 'relative-temp'))
+    expect(existsSync(request), 'temporary fallback request directory must be removed').toBe(false)
+    expect(readdirSync(join(f.root, 'relative-temp'))).toEqual([])
+  })
+  it.each([false, true])('fails unwritable output before any model call with admission=%s', configured => {
+    const f = fallbackFixture(mode, true)
+    const result = launch(f, configured ? f.module : undefined)
+    expect(existsSync(f.marker), 'no model call may precede output writeability validation').toBe(false)
+    expect(result.status, result.stdout + result.stderr).toBe(2)
+    expect(result.stdout).toContain('output directory is not writable')
+    expect(result.stdout).not.toContain('envelope.manifest.json')
+    expect(readdirSync(join(f.root, 'relative-temp'))).toEqual([])
+  })
+})
+
+function failFallbackRender(f: Fixture) {
+  const preload = join(f.root, 'cleanup-preload.mjs')
+  writeFileSync(preload, readFileSync(preload, 'utf8') + `
+    const renderWrite = fs.writeFileSync;
+    fs.writeFileSync = (file, ...args) => {
+      if (String(file).endsWith('1-task-1.task.md')) throw new Error('task copy denied');
+      return renderWrite(file, ...args);
+    };
+    syncBuiltinESMExports();`)
+}
+
+it('cleans a fallback request directory when rendering a task copy fails', () => {
+  const f = fallbackFixture('fan-out')
+  failFallbackRender(f)
+  const result = launch(f, undefined)
+  expect(result.status, result.stdout + result.stderr).toBe(2)
+  expect(result.stdout).toContain('task copy denied')
+  expect(existsSync(f.marker)).toBe(false)
+  expect(existsSync(readFileSync(join(f.root, 'fallback-created'), 'utf8'))).toBe(false)
+})
+
+it('preserves the original setup error when fallback cleanup throws', () => {
+  const f = fallbackFixture('fan-out')
+  failFallbackRender(f)
+  const preload = join(f.root, 'cleanup-preload.mjs')
+  writeFileSync(preload, readFileSync(preload, 'utf8') + `
+    const remove = fs.rmSync;
+    fs.rmSync = (file, options) => {
+      if (path.basename(String(file)).startsWith('opencode-requests-')) throw new Error('injected cleanup failure');
+      return remove(file, options);
+    };
+    syncBuiltinESMExports();`)
+  const result = launch(f, undefined)
+  expect(result.status, result.stdout + result.stderr).toBe(2)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain('task copy denied')
+  expect(result.stderr).toContain('request cleanup warning: injected cleanup failure')
+})
+
+function parallelFixture(hang: boolean) {
+  const f = fixture('fan-out', recordingPolicy)
+  f.args.push('--concurrency', '2', '--timeout-sec', '1')
+  writeFileSync(join(f.root, 'input.json'), JSON.stringify([...f.prompts, 'queued task', 'another queued task'].map((prompt, i) => ({ id: `task-${i}`, prompt }))))
+  writeFileSync(join(f.root, 'fake-opencode.mjs'), `import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+    import { spawn } from 'node:child_process';
+    const args = process.argv.slice(2);
+    if (args[0] !== 'run') process.exit(0);
+    const file = args[args.indexOf('-f') + 1];
+    const task = readFileSync(file, 'utf8');
+    const record = data => appendFileSync(${JSON.stringify(f.marker)}, JSON.stringify(data) + '\\n');
+    record({ pid: process.pid, task });
+    if (task === 'first rendered task') {
+      while (!existsSync(${JSON.stringify(join(f.root, 'sibling.ready'))})) await new Promise(r => setTimeout(r, 10));
+      chmodSync(file, 0o600); writeFileSync(file, 'changed after admission');
+      process.stderr.write('429 rate limit'); process.exit(1);
+    }
+    if (task === 'second rendered task') {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      record({ pid: child.pid, descendant: true });
+      writeFileSync(${JSON.stringify(join(f.root, 'sibling.ready'))}, 'yes');
+      if (${hang}) await new Promise(() => { setInterval(() => {}, 1000) });
+      await new Promise(r => setTimeout(r, 300));
+      writeFileSync(${JSON.stringify(join(f.root, 'sibling.done'))}, 'yes');
+    }
+    console.log(JSON.stringify({ part: { type: 'text', text: 'SEALED ANSWER' } })); process.exit(0);`)
+  return f
+}
+
+function stopRecordedChildren(f: Fixture) {
+  if (!existsSync(f.marker)) return
+  for (const line of readFileSync(f.marker, 'utf8').trim().split('\n')) {
+    const { pid } = JSON.parse(line)
+    if (process.platform !== 'win32') { try { process.kill(-pid, 'SIGKILL') } catch { /* Already reaped. */ } }
+    try { process.kill(pid, 'SIGKILL') } catch { /* Already reaped. */ }
+  }
+}
+
+function assertDrainedRefusal(f: Fixture, hang: boolean) {
+  const result = launch(f, f.module)
+  expect(result.status, result.stdout + result.stderr).toBe(3)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain('OPENCODE_REFUSED: WT_OPENCODE_ENVELOPE_ADMISSION: request changed after admission')
+  const streamDir = join(f.root, 'state', 'wt-observe', 'external-lane-streams')
+  const streams = existsSync(streamDir) ? readdirSync(streamDir).filter(name => name.includes('task-1-')) : []
+  expect(streams, 'running sibling must close before the refusal exits').toHaveLength(1)
+  expect(readFileSync(join(streamDir, streams[0]!), 'utf8')).toContain(`EXIT=${hang ? 124 : 0}`)
+  expect(existsSync(join(f.root, 'sibling.done'))).toBe(!hang)
+  const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(calls.filter(call => !call.descendant).map(call => call.task).sort()).toEqual([...f.prompts].sort())
+  if (process.platform !== 'win32') for (const { pid } of calls) {
+    const ps = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' })
+    expect(ps.stdout.trim() === '' || ps.stdout.trim().startsWith('Z'), `child ${pid} must not survive refusal`).toBe(true)
+  }
+}
+
+it.each([false, true])('drains running siblings and descendants on integrity refusal, timeout=%s', hang => {
+  const f = parallelFixture(hang)
+  try { assertDrainedRefusal(f, hang) } finally { stopRecordedChildren(f) }
+})
+
+it('does not launch siblings after an immediate first-task integrity refusal', () => {
+  const source = recordingPolicy.replace('return null;', `const file = join(request, readdirSync(request)[0]); chmodSync(file, 0o600); writeFileSync(file, 'changed after admission'); return null;`)
+  const f = fixture('fan-out', source)
+  writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import cp from 'node:child_process';
+    import { writeFileSync } from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const spawn = cp.spawn;
+    cp.spawn = (...args) => { writeFileSync(${JSON.stringify(f.marker)}, 'spawned'); return spawn(...args); };
+    syncBuiltinESMExports();`)
+  const result = launch(f, f.module)
+  expect(result.status, result.stdout + result.stderr).toBe(3)
+  expect(result.stdout).toContain('OPENCODE_REFUSED:')
+  expect(existsSync(f.marker), 'siblings must not launch after a synchronous integrity refusal').toBe(false)
+})
+
+it('does not retry a rate-limited running sibling after another task refuses', () => {
+  const f = parallelFixture(false)
+  const binary = join(f.root, 'fake-opencode.mjs')
+  writeFileSync(binary, readFileSync(binary, 'utf8').replace(
+    `writeFileSync(${JSON.stringify(join(f.root, 'sibling.done'))}, 'yes');`,
+    `writeFileSync(${JSON.stringify(join(f.root, 'sibling.done'))}, 'yes'); process.stderr.write('429 rate limit'); process.exit(1);`,
+  ))
+  try {
+    const result = launch(f, f.module)
+    expect(result.status, result.stdout + result.stderr).toBe(3)
+    expect(result.stdout).toContain('request changed after admission')
+    const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+    expect(calls.filter(call => !call.descendant).map(call => call.task).sort()).toEqual([...f.prompts].sort())
+  } finally { stopRecordedChildren(f) }
+})
