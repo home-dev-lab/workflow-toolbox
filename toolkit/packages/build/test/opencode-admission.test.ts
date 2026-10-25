@@ -516,7 +516,12 @@ function recordedChildAlive(pid: number) {
     if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false
     throw error
   }
-  if (process.platform !== 'linux') return true
+  if (process.platform !== 'linux') {
+    // macOS has no /proc: a zombie still answers signal 0, so read its state from ps.
+    const ps = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' })
+    const stat = ps.stdout.trim()
+    return stat !== '' && !stat.startsWith('Z')
+  }
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z'
