@@ -7,10 +7,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error The plugin's standalone executable has no declaration surface.
 import { runVerifier } from '../../../../plugin/bin/wt-opencode-verify.mjs'
 import { hermeticPath } from './helpers/hermetic-path.js'
-import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { isolateOpencodeAdmission, sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+
+isolateOpencodeAdmission()
 
 const laneContext = laneSandboxContext()
 function missingTrustedBwrap(): string | null {
