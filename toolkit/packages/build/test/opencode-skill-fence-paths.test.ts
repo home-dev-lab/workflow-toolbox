@@ -6,9 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { runObserverLane } from '../../../../plugin/bin/lib/observer-lane.mjs'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+
+isolateOpencodeAdmission()
 
 const laneContext = laneSandboxContext()
 function missingTrustedBwrap(): string | null {
