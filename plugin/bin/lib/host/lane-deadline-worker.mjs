@@ -27,7 +27,7 @@ function extendLane(ctx, source, seconds, extra = {}, beforeArm = () => {}) {
   const at = new Date().toISOString(), duration = seconds() * 1000, deadlineAtMs = ctx.monotonicNow() + duration, timeoutAt = new Date(Date.now() + duration).toISOString(), count = ctx.extensionCount + 1
   ctx.writeState({ state: 'running', decision: 'extend', decisionSource: source, decidedAt: at, extensionCount: count, timeoutAt, decisionTransitionDueAt: new Date(Date.now() + duration + ctx.transitionBoundMs).toISOString(), queueWait: null, queueWaitBound: null, timeoutProtection: null, unattendedMaxSeconds: unattendedMaxSeconds(ctx.opts), ...extra, extensions: [...(ctx.current().extensions ?? []), { at, source, timeoutAt }] })
   ctx.extensionCount = count; ctx.deadlineAtMs = deadlineAtMs; ctx.timeoutAt = timeoutAt; ctx.monotonicAt = ctx.monotonicNow(); ctx.phase = 'running'
-  ctx.queueSample = { queuedMs: ctx.queue?.queuedMs ?? 0, at: ctx.monotonicAt, creditedMs: 0 }
+  ctx.queueSample = { queuedMs: Number.isFinite(ctx.queue?.queuedMs) ? ctx.queue.queuedMs : null, at: ctx.monotonicAt, creditedMs: 0 }
   ctx.idleStopRequested = false
   ctx.timeoutProtected = false; ctx.protectionReason = null
   beforeArm()

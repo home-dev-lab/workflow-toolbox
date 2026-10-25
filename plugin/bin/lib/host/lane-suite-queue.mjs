@@ -101,6 +101,8 @@ function confirmedQueueMs(ctx, queue, monotonic) {
   // Cap cumulatively from arming, not per reply interval: transport latency must
   // not discard confirmed time. Missing evidence alone still grants no credit.
   const sample = ctx.queueSample
+  // An unobserved extension cannot distinguish pre-arm history; anchor on recovery.
+  if (sample.queuedMs === null) sample.queuedMs = queue.queuedMs
   const total = Math.min(Math.max(0, monotonic - sample.at), Math.max(0, queue.queuedMs - sample.queuedMs))
   const credit = Math.max(0, total - sample.creditedMs)
   sample.creditedMs += credit

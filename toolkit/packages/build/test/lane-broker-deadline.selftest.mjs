@@ -455,10 +455,10 @@ function serialReplyFixture(t) {
       pending.set(kind, reply); peak = Math.max(peak, pending.size)
     } else relay.emit('message', reply)
   }
-  h = harness(t, { maxExtensions: 1, idleTimeout: 2.05, idleWindow: 0.1, child: { pid: 4, laneSandbox: { suiteBroker: relay } }, terminalHandler: () => {
+  h = harness(t, { maxExtensions: 1, idleTimeout: 2.05, idleWindow: 0.1, child: { pid: 4, laneSandbox: { suiteBroker: relay } }, terminalHandler: (code, outcome) => {
     let fenced = false
     try { broker.trackQueueRequest().done() } catch { fenced = true }
-    signals.push({ fenced, extensions: h.current().extensionCount })
+    signals.push({ fenced, extensions: h.current().extensionCount, code, outcome, at: Date.now() })
   } })
   h.modules.hostAdapter.readProcessSnapshot = () => ({ processes: [{ pid: 4, ppid: 2, cpuTicks: 0 }] })
   broker = createSuiteLockBroker({ runId: '1-1', env: { WT_SUITE_LOCK_DIR: h.lock } })
@@ -467,18 +467,31 @@ function serialReplyFixture(t) {
 }
 
 const replyOrders = [['queue', 'timeout', 'cancel'], ['queue', 'cancel', 'timeout'], ['timeout', 'queue', 'cancel'], ['timeout', 'cancel', 'queue'], ['cancel', 'queue', 'timeout'], ['cancel', 'timeout', 'queue']]
+async function deliverSerialReplies(f, order) {
+  for (let pass = 0; pass < 3; pass++) for (const kind of order) {
+    if (f.pending.has(kind)) f.deliver(kind)
+    for (let n = 0; n < 32; n++) await Promise.resolve()
+  }
+}
+
 for (const order of replyOrders) test(`verdict: serial idle and extension replies ${order.join('-')}`, async (t) => {
   const f = serialReplyFixture(t)
   f.h.publish({ requestId: 'serial-owner', preemptive: true, extendSeconds: 10 })
   await f.h.tick(2075)
   assert.ok(f.pending.has('queue'), 'owner extension must be waiting for its queue reply when idle requests a stop')
-  for (let pass = 0; pass < 3; pass++) for (const kind of order) {
-    if (f.pending.has(kind)) f.deliver(kind)
-    for (let n = 0; n < 32; n++) await Promise.resolve()
-  }
+  assert.match(fs.readFileSync(f.h.log, 'utf8'), /LANE_IDLE_STOP/, 'idle intent must occur while the owner queue reply is pending')
+  await deliverSerialReplies(f, order)
   assert.ok(f.signals.every((signal) => signal.fenced && !signal.extensions), 'a lane must never be signalled under a cancelled admission fence or after committing this extension')
   assert.equal(f.peak(), 1, 'idle callbacks must not start broker IPC beside an in-flight tick')
   assert.ok(f.signals.length === 1 || f.h.current().extensionCount === 1, 'the serial path must make one decision')
+  await f.h.tick(50)
+  await deliverSerialReplies(f, order)
+  assert.equal(f.signals.length, 1, 'idle stop must terminate by 2125 ms even when the owner extension wins first')
+  assert.equal(f.signals[0].outcome.terminal.decisionSource, 'idle', 'termination must consume idle intent independently of the timeout budget')
+  assert.deepEqual(f.signals[0].outcome.receiptLines, ['TERMINATION=idle'])
+  assert.equal(f.signals[0].code, 126)
+  assert.ok(f.signals[0].fenced && f.signals[0].at <= 102_125, 'idle termination must hold admission fenced at its own deadline')
+  assert.equal(f.peak(), 1)
 })
 
 test('pause: delayed queue replies credit cumulative time rather than receipt intervals', async (t) => {
@@ -497,6 +510,64 @@ test('pause: delayed queue replies credit cumulative time rather than receipt in
   assert.equal(h.current().state, 'running')
   await h.tick(1)
   assert.equal(h.current().state, 'decision-needed', 'cumulative credit must not refill the budget')
+})
+
+test('pause: cumulative queue credit cannot exceed monotonic time since arming', async (t) => {
+  const h = harness(t, { monotonic: true })
+  h.evidence(() => ({ runId: '1-1', status: 'queued', since: 100_000, observedAt: Date.now(), queuedMs: 10_000 }))
+  await h.tick(100)
+  assert.equal(h.current().remainingTimeoutMs, 2000, 'a counter ahead of elapsed time must not credit more than 100 monotonic milliseconds')
+  assert.equal(h.current().timeoutAt, new Date(102_100).toISOString())
+})
+
+test('pause: an extension during missing observations cannot credit historical queue time again', async (t) => {
+  const terminatedAt = []
+  const { laneHardBoundAt } = await import(new URL('lane-supervisor-core.mjs', new URL('../', base)))
+  const h = harness(t, { monotonic: true, maxExtensions: 1, terminalHandler: () => terminatedAt.push(Date.now() - 100_000) })
+  const broker = createSuiteLockBroker({ runId: '1-1', env: { WT_SUITE_LOCK_DIR: h.lock } })
+  t.after(() => broker.close())
+  h.writeState({ timeoutSeconds: 2, decisionGraceSeconds: 1, maxExtensions: 1 })
+  const request = broker.trackQueueRequest()
+  request.waiting()
+  h.authority(() => broker.decideTimeout('1-1'))
+  h.evidence(() => broker.queueState('1-1'))
+  for (let n = 0; n < 10; n++) { await h.tick(1000); request.waiting() }
+  request.done()
+  await h.tick(1999)
+  h.evidence(new Error('fixture observation unavailable at extension commitment'))
+  h.publish({ requestId: 'nonqueued-extension', preemptive: true, extendSeconds: 2 })
+  await h.tick(1)
+  assert.equal(h.current().extensionCount, 1)
+  assert.equal(h.current().timeoutAt, new Date(114_000).toISOString())
+  const bound = laneHardBoundAt(h.current()) - 100_000
+  assert.equal(bound, 15_000, 'the committed nonqueued extension must publish a finite timeout-plus-grace bound')
+  h.evidence(() => broker.queueState('1-1'))
+  await h.tick(13_000)
+  assert.deepEqual(terminatedAt, [15_000], 'historical queue time must not delay extension termination from 15000 ms to 25000 ms')
+  assert.ok(terminatedAt[0] <= bound, 'termination must honor the finite bound published at extension commitment')
+})
+
+test('pause: recovered extension counters still credit subsequent queueing', async (t) => {
+  const h = harness(t, { monotonic: true, maxExtensions: 1 })
+  const broker = createSuiteLockBroker({ runId: '1-1', env: { WT_SUITE_LOCK_DIR: h.lock } })
+  t.after(() => broker.close())
+  h.authority(() => broker.decideTimeout('1-1'))
+  h.publish({ requestId: 'recover-then-queue', preemptive: true, extendSeconds: 2 })
+  await h.tick(2000)
+  assert.equal(h.current().extensionCount, 1)
+  const request = broker.trackQueueRequest()
+  request.waiting()
+  h.evidence(() => broker.queueState('1-1'))
+  await h.tick(1000)
+  request.done()
+  await h.tick(100)
+  assert.equal(h.current().remainingTimeoutMs, 1800, 'recovery must anchor the first 100 ms and credit the next 900 ms exactly once')
+  await h.tick(1799)
+  assert.equal(h.current().state, 'running')
+  await h.tick(1)
+  assert.equal(h.current().state, 'decision-needed', 'recovered accounting must preserve the remaining extension budget')
+  await h.tick(1000)
+  assert.equal(h.terminal.length, 1)
 })
 
 test('pause: a missing cumulative counter cannot grant wall-clock credit', async (t) => {
@@ -542,11 +613,16 @@ test('verdict: repeated idle callbacks share one in-flight broker decision', asy
       setTimeout(() => { pending--; relay.emit('message', { requestId: message.requestId, verdict: { terminate: true } }) }, 150)
     } else relay.emit('message', { requestId: message.requestId, queue: { runId: '1-1', status: 'running', since: Date.now(), observedAt: Date.now() } })
   }
-  const h = harness(t, { child: { pid: 4, laneSandbox: { suiteBroker: relay } }, idleTimeout: 0.2, idleWindow: 0.1 })
+  const terminatedAt = []
+  const h = harness(t, { child: { pid: 4, laneSandbox: { suiteBroker: relay } }, idleTimeout: 0.2, idleWindow: 0.1, terminalHandler: (...args) => { terminatedAt.push(Date.now()); h.terminal.push(args) } })
   h.modules.hostAdapter.readProcessSnapshot = () => ({ processes: [{ pid: 4, ppid: 2, cpuTicks: 0 }] })
-  await h.tick(3500)
+  await h.tick(500)
+  assert.match(fs.readFileSync(h.log, 'utf8'), /LANE_IDLE_STOP/, 'repeated idle callbacks must actually request termination')
+  assert.equal(h.terminal.length, 1, 'idle termination must finish by 500 ms, before the ordinary timeout-plus-grace deadline')
   assert.equal(peak, 1, 'idle and deadline callbacks must serialize broker termination reservations')
-  assert.equal(h.terminal.length, 1)
+  assert.equal(h.terminal[0][1].terminal.decisionSource, 'idle')
+  assert.deepEqual(h.terminal[0][1].receiptLines, ['TERMINATION=idle'])
+  assert.ok(terminatedAt[0] <= 100_500, 'delayed broker authorization must still honor the idle deadline')
 })
 
 test('verdict: grant after protected grace keeps the published hard bound queue-dependent', async (t) => {
