@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -63,21 +63,23 @@ test('an agentic run never works inside the plugin that launched it', async (t) 
   assert.equal(record.dir.startsWith(join(root, 'deep-search')), true, `dir was ${record.dir}`);
 });
 
-// ⚠ This lock is NOT proven RED, deliberately, and the reason is the defect itself: making it fail
-// means letting `start` detach a worker, which launches a real `opencode run` on the subscription
-// quota. A proof that spends the thing the lock exists to stop is not worth its evidence. What IS
-// verified is the green direction, on the real CLI: no opencode process appears.
+// Seal the CLI's spawn boundary: a removed no-worker guard is observable without launching a worker.
+// Ambient process-table snapshots can change because of unrelated sessions on any platform.
 test('start does not spawn a worker when the no-worker seam is set', async (t) => {
   const root = await stateRoot(t);
-  const before = spawnSync('bash', ['-lc', 'ps -eo args | grep -c "[o]pencode run" || true'], { encoding: 'utf8' }).stdout.trim();
+  const audit = join(root, 'spawn-attempts');
+  const seal = join(root, 'deny-spawn.cjs');
+  await writeFile(seal, `const cp = require('node:child_process'), fs = require('node:fs');
+cp.spawn = () => { fs.appendFileSync(${JSON.stringify(audit)}, 'spawn attempted\\n'); throw Error('test forbids worker spawn'); };
+require('node:module').syncBuiltinESMExports();`);
   const result = spawnSync(
     process.execPath,
     [cli, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
-    { env: { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1', EXA_API_KEY: 'fixture-provider-key' }, encoding: 'utf8' },
+    { env: { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1', EXA_API_KEY: 'fixture-provider-key', NODE_OPTIONS: `--require=${JSON.stringify(seal)}` }, encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
-  const after = spawnSync('bash', ['-lc', 'ps -eo args | grep -c "[o]pencode run" || true'], { encoding: 'utf8' }).stdout.trim();
-  assert.equal(after, before, 'starting a run under the no-worker seam must launch no opencode process');
+  const attempts = await readFile(audit, 'utf8').catch((error) => { if (error.code === 'ENOENT') return ''; throw error; });
+  assert.equal(attempts, '', 'starting a run under the no-worker seam must attempt no child spawn');
 });
 
 test('the Exa failure that opened the availability door is recorded', async () => {

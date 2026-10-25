@@ -5,10 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { externalModelEnv, providerCredentialNames } from '../../../../plugin/bin/lib/external-model-env.mjs'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
+
+isolateOpencodeAdmission()
 
 const FENCE_MODULE = new URL('../../../../plugin/bin/lib/opencode-skill-fence.mjs', import.meta.url).href
 

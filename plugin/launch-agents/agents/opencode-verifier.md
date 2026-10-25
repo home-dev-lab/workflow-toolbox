@@ -35,12 +35,44 @@ run first; admission completes before the first task spawn and covers its retry.
 `WT_OPENCODE_VERIFY_ADMISSION_TIMEOUT_MS` accepts a positive integer up to 2147483647
 (default 10000 ms), bounding import, admission and clean worker exit, including synchronous
 loops. Policies are trusted code with the CLI's privileges, not sandboxed; hook/configuration
-failures refuse closed. Unset means normal execution. Refusal cleans up the task copy.
+failures refuse closed. Refusal cleans up the task copy.
 Policy stdout/stderr, including direct descriptor writes, are discarded; send diagnostics to a file.
 Processes a policy detaches are not stopped.
 Admitted request bytes are hash-checked before the first launch and retry; a changed copy refuses that attempt.
 On `OPENCODE_REFUSED: <reason>` (exit 3), return that bare line verbatim and stop. Do not unset
 the hook, retry, reformat it as a verdict, or make schema-correction calls for a refusal.
+
+If the environment variable is undefined, the CLI uses
+`pluginConfigs["workflow-toolbox@…"].options.opencode_verify_admission` from the
+profile's `settings.json` (`CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, with the OS
+home as the final home fallback). A defined env value wins, including an empty
+value, which refuses. An absent option preserves unconfigured execution. An absent
+settings file does so only inside a natively resolved, existing profile directory;
+missing or undecidable profiles (including dangling links at any depth) refuse.
+Unreadable/invalid settings, conflicting entries and non-string values refuse
+with the file and remedy. Resolution happens once; the timeout remains env-only.
+
+Profile directories resolve natively, including symlink/`..` spellings. The settings
+root and present configuration containers must be objects; malformed containers refuse.
+
+Configured admission copies the repo into a private per-run snapshot, rewrites
+absolute repository paths on path-component boundaries, and writes the verifier
+task copy there **before** scanning. Every remaining live repository spelling
+refuses regardless of formatting, unless native lookup proves a longer existing
+sibling path resolves outside the repository. Such siblings stay unchanged;
+sibling symlinks back into the repository refuse. Relative paths stay relative to the snapshot
+cwd. Files become read-only (0444) before admission, and POSIX directories become
+non-writable (0555), with an owner-only outer run container (0500); Windows
+directories remain writable. Separate per-run scratch
+stays writable; output artifacts retain their configured locations outside the
+snapshot. A same-user process can restore write permissions; this is not a read
+sandbox. The model uses the snapshot cwd and admitted task copy.
+`.git` files/directories are excluded at every level: no git history or metadata
+is available. Escaping or unresolved symlinks and sockets/FIFOs/devices refuse. Copying is outside
+the policy deadline and may be slow for large trees. Success, refusal, errors and
+handled termination remove the snapshot; SIGKILL can leave temporary state. Snapshot
+handlers remain installed for repeated SIGINT/SIGTERM and POSIX SIGHUP/SIGQUIT.
+Model termination escalates after a one-second grace period if needed.
 
 ## One Command
 

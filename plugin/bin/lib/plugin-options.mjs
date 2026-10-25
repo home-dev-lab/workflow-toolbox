@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { resolveConsent } from './lane-consent-check-core.mjs'
 import { DEFAULT_LANE_MODELS, EXECUTOR_DEFAULTS, EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
+import { ADMISSION_OPTIONS, resolveAdmissionModule } from './host/admission-options.mjs'
 
 const PLUGIN_CONFIG_PREFIX = 'workflow-toolbox@'
 
@@ -18,6 +19,9 @@ const DEFINITIONS = Object.freeze({
   artifact_server_deny: { envKey: 'WT_ARTIFACT_SERVER_DENY', type: 'string', defaultValue: '' },
   planka_mcp_url: { envKey: 'WT_PLANKA_MCP_URL', type: 'string', defaultValue: '' },
   second_opinion_fable_max_pct: { envKey: 'WT_SECOND_OPINION_FABLE_MAX_PCT', type: 'number', defaultValue: 90 },
+  second_opinion_admission: { envKey: 'WT_SECOND_OPINION_ADMISSION', type: 'string', defaultValue: null },
+  opencode_envelope_admission: { envKey: 'WT_OPENCODE_ENVELOPE_ADMISSION', type: 'string', defaultValue: null },
+  opencode_verify_admission: { envKey: 'WT_OPENCODE_VERIFY_ADMISSION', type: 'string', defaultValue: null },
   lane_orphan_cleanup: { envKey: 'WT_LANE_ORPHAN_CLEANUP', type: 'string', defaultValue: 'observe' },
   lane_stall_minutes: { envKey: 'WT_LANE_STALL_MINUTES', type: 'number', defaultValue: 10 },
   release_branch: { envKey: 'WT_RELEASE_BRANCH', type: 'string', defaultValue: '' },
@@ -103,6 +107,7 @@ function envValue(definition, env) {
 export function resolveWorkflowToolboxOption(key, { env = process.env } = {}) {
   const definition = DEFINITIONS[key]
   if (!definition) throw new Error(`unknown workflow-toolbox plugin option: ${key}`)
+  if (ADMISSION_OPTIONS[definition.envKey]) return admissionResolution(definition, env)
   const option = readWorkflowToolboxPluginOption(key, { env })
   if (option.present && (!key.endsWith('_model') || hasModelPluginValue(option))) return { value: option.value, source: 'plugin option' }
   const fallback = envValue(definition, env)
@@ -159,6 +164,17 @@ const EXECUTOR_VARIANT_DESCRIPTIONS = Object.fromEntries(
   ]),
 )
 
+function admissionResolution(definition, env) {
+  const resolved = resolveAdmissionModule(definition.envKey, env)
+  return { value: resolved?.path ?? null, source: resolved?.source ?? 'default' }
+}
+
+function describedOption(option, definition, env, settings) {
+  return ADMISSION_OPTIONS[definition.envKey]
+    ? admissionResolution(definition, env)
+    : describedResolution(option, definition, env, settings)
+}
+
 function describedResolution(option, definition, env, settings) {
   const plugin = pluginOption(settings, option, definition.type)
   const modelOption = option.endsWith('_model')
@@ -182,7 +198,7 @@ export function describeWorkflowToolboxOptions({ env = process.env, projectDir =
     if (!definition) throw new Error(`manifest option has no workflow-toolbox definition: ${option}`)
     const resolved = option === 'executor_lane_consent'
       ? consentRow(projectDir, env)
-      : describedResolution(option, definition, env, settings)
+      : describedOption(option, definition, env, settings)
     return {
       option,
       title: schema.title,

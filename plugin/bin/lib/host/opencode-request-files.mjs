@@ -3,16 +3,17 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
-export function canonicalOpencodeDirectory(dir, moduleVariable, { env = process.env } = {}) {
-  if (env[moduleVariable] === undefined) return path.resolve(dir)
+export function canonicalOpencodeDirectory(dir, admission) {
+  if (!admission) return path.resolve(dir)
   // The native API follows symlinks before '..', just as the process cwd does.
   return realpathSync.native(dir)
 }
 
-function requestDirectory(outDir) {
+function requestDirectory(outDir, allowFallback) {
   try {
     return mkdtempSync(path.resolve(outDir, 'requests-'))
   } catch (error) {
+    if (!allowFallback) throw error
     if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error
     return mkdtempSync(path.resolve(tmpdir(), 'opencode-requests-'))
   }
@@ -22,9 +23,9 @@ export function requestDigest(taskfile) {
   return createHash('sha256').update(readFileSync(taskfile)).digest('hex')
 }
 
-export function renderEnvelopeRequests(tasks, outDir) {
+export function renderEnvelopeRequests(tasks, outDir, { allowFallback = true } = {}) {
   // Numeric prefixes keep distinct ids with the same sanitized spelling distinct.
-  const request = requestDirectory(outDir)
+  const request = requestDirectory(outDir, allowFallback)
   const taskfiles = tasks.map((task, index) => {
     const safeId = String(task.id).replace(/[^A-Za-z0-9_.-]/g, '_')
     const taskfile = path.join(request, `${index}-${safeId}.task.md`)

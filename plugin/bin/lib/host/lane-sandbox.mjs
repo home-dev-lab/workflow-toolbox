@@ -12,6 +12,7 @@ import { processStartTime } from './pid-namespace.mjs'
 import { sandboxExtraPaths } from './sandbox-extra-paths.mjs'
 import { laneHostStateRoot } from './lane-host-dir.mjs'
 import { isWindowsDriveMount } from './windows-drive-mount.mjs'
+import { suiteLockDir } from './suite-lock-dir.mjs'
 
 // External lanes (opencode, codex) run as the owner with a shell. The environment allow-list keeps
 // secrets out of their ENVIRONMENT; this sandbox keeps them out of their FILESYSTEM, process table
@@ -360,12 +361,6 @@ const PROFILES = {
   },
 }
 
-// The machine-wide suite lock (lib/suite-lock.mjs, Linux default location) serialises every test
-// suite on the host, a lane's included; it is shared read-write so a lane waits like anyone else.
-const suiteLockDir = (env) => typeof env.WT_SUITE_LOCK_DIR === 'string' && env.WT_SUITE_LOCK_DIR.length > 0
-  ? path.resolve(env.WT_SUITE_LOCK_DIR)
-  : path.join(xdg(env, 'XDG_STATE_HOME', '.local/state'), 'wt-suite-lock')
-
 /**
  * The suite-lock runner a lane's WT_SUITE_LOCK_CMD runs, as a host-native path: it ships in the plugin's
  * bin/, beside the lib/ this module lives in, so a launcher anywhere (the plugin's own, or an adopted
@@ -693,12 +688,15 @@ function effectiveWritableRoots({ workdir, selected, git, paths, extras, runtime
 
 // The Linux planner deliberately uses POSIX paths. On Windows no bwrap plan is built, but the
 // launcher's host-output preflight still needs the corresponding native writable locations.
+function windowsHostState(env, homeDir) {
+  return win32.isAbsolute(env.WT_LANE_HOST_STATE ?? '') ? env.WT_LANE_HOST_STATE : win32.join(env.LOCALAPPDATA || win32.join(homeDir, 'AppData', 'Local'), 'wt-lane-host')
+}
+
 function windowsWritableRoots({ cwd, args, profile, env, optionEnv, paths, readonlyCwd, fs }) {
   const homeDir = env.USERPROFILE || env.HOME || os.homedir()
   const base = win32.resolve(cwd)
   const xdgDir = (name, fallback) => win32.isAbsolute(env[name] ?? '') ? env[name] : win32.join(homeDir, fallback)
-  const state = win32.isAbsolute(env.XDG_STATE_HOME ?? '') ? env.XDG_STATE_HOME : env.LOCALAPPDATA || win32.join(homeDir, 'AppData', 'Local')
-  const hostState = win32.isAbsolute(env.WT_LANE_HOST_STATE ?? '') ? env.WT_LANE_HOST_STATE : win32.join(env.LOCALAPPDATA || win32.join(homeDir, 'AppData', 'Local'), 'wt-lane-host')
+  const hostState = windowsHostState(env, homeDir)
   const forbidden = (item) => {
     const target = canonicalPath(item, fs, win32)
     const homeReal = canonicalPath(homeDir, fs, win32)
@@ -719,7 +717,7 @@ function windowsWritableRoots({ cwd, args, profile, env, optionEnv, paths, reado
   const git = { writable: dotGit ? [win32.resolve(base, dotGit.slice('gitdir:'.length).trim())] : [] }
   const extras = { writable: String(optionEnv[LANE_SANDBOX_WRITE_ENV] ?? '').split(win32.delimiter).filter(Boolean).map((item) => item.startsWith('~/') ? win32.join(homeDir, item.slice(2)) : item).filter((item) => win32.isAbsolute(item)) }
   const runtimeDir = win32.isAbsolute(os.tmpdir()) ? win32.join(os.tmpdir(), 'wt-lane-sandbox-preflight') : null
-  const roots = effectiveWritableRoots({ workdir: [base], selected, git, env, paths, extras, runtimeDir, readonlyCwd, suiteLock: win32.join(state, 'wt-suite-lock') })
+  const roots = effectiveWritableRoots({ workdir: [base], selected, git, env, paths, extras, runtimeDir, readonlyCwd, suiteLock: suiteLockDir(env, undefined, 'win32', win32) })
   return roots.filter((item) => item && win32.isAbsolute(item) && !forbidden(item))
 }
 
@@ -1036,7 +1034,7 @@ function initializeSandboxTree(state) {
   const git = workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
   for (const overlay of git.overlaysRo) fs.ensureFile(overlay)
 
-  const lockRoot = suiteLockDir(env)
+  const lockRoot = suiteLockDir(env, undefined, 'linux', path)
   const lockDir = path.join(runtimeDir, 'lock')
   const lockEmpty = path.join(runtimeDir, 'lock-empty')
   fs.ensureDir(lockDir)

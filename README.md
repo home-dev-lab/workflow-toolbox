@@ -459,6 +459,28 @@ between the installed and current plugin versions so the user sees what shipped 
 that span: recent entries plus an honest count of omitted ones, and an explicit
 "no record" outcome when the installed version predates the oldest recorded heading.
 
+### Optional SSH signing retry
+
+`node plugin/skills/adopt/scripts/install.mjs --set ssh-sign-retry --install --global`
+installs a persistent per-user Node wrapper and configures an absent `gpg.ssh.program`.
+Omit `--global` inside a repository for repository-local configuration. Only stdin
+signing with a matched agent failure is retried, **once** (two attempts total, one
+second apart). Existing signers are preserved; `--set all` excludes this opt-in.
+
+Adoption locks only the config file it writes. After publication it uses Git, in the
+commit's configuration context, to check the intended effective signer and unchanged
+signing-key configuration. Invalid UTF-8 Git values explicitly refuse adoption before
+they can compare equal through lossy decoding. A mismatch restores the original file's
+identity, bytes, full mode, owner and ACLs using a retained hard link, and reports refusal
+without `WROTE`. A concurrent writer to an included config file during adoption is
+detected by this postcondition check only if it lands before the check and changes the
+effective values; after it, that is the user's own configuration change. Crash-stale
+locks require manual recovery, and an exit status of zero alone does not establish
+installation. Key file contents are not pinned between attempts. See the
+[adoption contract](plugin/skills/adopt/references/ssh-sign-retry.md) for diagnostic
+matches, legacy worktree migration, recovery and platform status. Linux fake-binary
+execution is tested; native Windows/macOS and real-agent signing remain unverified.
+
 ## The toolkit
 
 `toolkit/` is a pnpm workspace of three core packages:

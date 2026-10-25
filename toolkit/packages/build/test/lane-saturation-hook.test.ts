@@ -8,13 +8,17 @@
 // commands becomes noise within a day and takes its real case with it.
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { LANE_PROCESS_NAMES, countLaneProcessesReal, evaluateLaneCall } from '../../../../plugin/bin/lib/wt-lane-saturation-core.mjs'
+// @ts-expect-error runtime .mjs host boundary
+import { inspectLaneLockWait } from '../../../../plugin/bin/lib/host/lane-lock-wait.mjs'
+// @ts-expect-error runtime .mjs host boundary
+import { currentPidNamespace, processStartTime } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-saturation-hook.mjs')
@@ -63,6 +67,171 @@ afterEach(() => {
   // value, are never silently discarded by this file.
   if (ORIGINAL_ENFORCE_MODE === undefined) delete process.env.WT_LANE_ENFORCE_MODE
   else process.env.WT_LANE_ENFORCE_MODE = ORIGINAL_ENFORCE_MODE
+})
+
+type WaitRow = {
+  pid: number; ppid: number; startTime: number; namespace: string
+  state: string; threads: number; children: number[]; wchan: string; hasSockets: boolean
+}
+
+function waitFixture() {
+  const row = (pid: number, ppid: number, children: number[], threads = 1): WaitRow => ({
+    pid, ppid, children, threads, startTime: pid * 10, namespace: 'pid:[1]', state: 'S', wchan: 'do_wait', hasSockets: false,
+  })
+  const rows = new Map([[10, row(10, 1, [20])], [20, row(20, 10, [30])], [30, row(30, 20, [], 5)], [40, row(40, 1, [])]])
+  const identity = (pid: number) => ({ pid, startTime: pid * 10, pidNamespace: 'pid:[1]' })
+  const lock = { held: true, root: '/fixture/lock', holder: identity(40),
+    tickets: [{ number: 7, ageMs: 10, holder: identity(30) }] }
+  const readProcess = (pid: number) => {
+    const found = rows.get(pid)
+    if (!found) throw new Error('process missing')
+    return structuredClone(found)
+  }
+  const options = { platform: 'linux', readProcess, readLock: () => structuredClone(lock) }
+  return { rows, lock, options, inspect: () => inspectLaneLockWait(10, options) }
+}
+
+const oneLane = () => ({ status: 0, stdout: '10\n' })
+
+it('discounts only positively proved synchronous lock waiters from the bound', () => {
+  const result = countLaneProcessesReal(['opencode'], null, { pgrep: oneLane, inspectLockWait: waitFixture().inspect })
+  expect(result).toMatchObject({ state: 'ok', liveCount: 1, count: 0, pids: [], excludedCount: 1,
+    excluded: [{ pid: 10, reason: 'synchronous child-wait chain to suite-lock pid 30, ticket 7' }] })
+  expect(evaluateLaneCall({ tool_input: { command: 'opencode run x' } }, {
+    countLaneProcesses: () => result, boundFromEnv: () => ({ bound: 1, source: 'test' }),
+  }).silent).toBe(true)
+})
+
+it.each([
+  ['event-loop lane', (f: ReturnType<typeof waitFixture>) => { f.rows.get(10)!.wchan = 'do_epoll_wait' }],
+  ['working lane', (f: ReturnType<typeof waitFixture>) => { f.rows.get(10)!.state = 'R' }],
+  ['concurrent model thread', (f: ReturnType<typeof waitFixture>) => { f.rows.get(10)!.threads = 2 }],
+  ['in-flight model socket', (f: ReturnType<typeof waitFixture>) => { f.rows.get(10)!.hasSockets = true }],
+  ['parallel tool branch', (f: ReturnType<typeof waitFixture>) => { f.rows.get(20)!.children.push(50) }],
+  ['detached waiter', (f: ReturnType<typeof waitFixture>) => { f.rows.get(30)!.ppid = 1 }],
+  ['running covered command', (f: ReturnType<typeof waitFixture>) => { f.rows.get(30)!.children.push(50) }],
+  ['free lock', (f: ReturnType<typeof waitFixture>) => { f.lock.held = false }],
+  ['already granted', (f: ReturnType<typeof waitFixture>) => { f.lock.holder = { ...f.lock.tickets[0]!.holder } }],
+  ['missing ticket', (f: ReturnType<typeof waitFixture>) => { f.lock.tickets = [] }],
+  ['stale ticket', (f: ReturnType<typeof waitFixture>) => { f.lock.tickets[0]!.ageMs = 30_000 }],
+  ['future heartbeat', (f: ReturnType<typeof waitFixture>) => { f.lock.tickets[0]!.ageMs = -1 }],
+  ['reused waiter pid', (f: ReturnType<typeof waitFixture>) => { f.lock.tickets[0]!.holder.startTime += 1 }],
+  ['foreign namespace', (f: ReturnType<typeof waitFixture>) => { f.lock.tickets[0]!.holder.pidNamespace = 'pid:[2]' }],
+  ['reused holder pid', (f: ReturnType<typeof waitFixture>) => { f.lock.holder.startTime += 1 }],
+  ['dead holder', (f: ReturnType<typeof waitFixture>) => { f.rows.delete(40) }],
+  ['ancestry cycle', (f: ReturnType<typeof waitFixture>) => { f.rows.get(20)!.children = [10] }],
+])('keeps a lane counted with ambiguous evidence: %s', (_name, mutate) => {
+  const fixture = waitFixture()
+  mutate(fixture)
+  const result = countLaneProcessesReal(['opencode'], null, { pgrep: oneLane, inspectLockWait: fixture.inspect })
+  expect(result, _name).toMatchObject({ state: 'ok', count: 1, liveCount: 1, excludedCount: 0 })
+})
+
+it.each(['darwin', 'win32', 'freebsd'])('retains lanes on %s without attempting Linux host primitives', (platform) => {
+  const evidence = inspectLaneLockWait(10, { platform, readProcess: () => { throw new Error('must not read /proc') } })
+  expect(evidence).toEqual({ state: 'unknown', reason: `lock-wait evidence unavailable on ${platform}` })
+  expect(countLaneProcessesReal(['opencode'], null, { pgrep: oneLane, inspectLockWait: () => evidence }).count).toBe(1)
+})
+
+it.each([undefined, null, {}, { state: 'waiting' }, { state: 'waiting', reason: ' ' }, { state: 'unknown', reason: 'unreadable' }])(
+  'retains a lane when the detector returns incomplete evidence: %j', (evidence) => {
+    expect(countLaneProcessesReal(['opencode'], null, { pgrep: oneLane, inspectLockWait: () => evidence }))
+      .toMatchObject({ state: 'ok', count: 1, excludedCount: 0 })
+  },
+)
+
+it('retains a lane when a host reader or detector throws', () => {
+  const evidence = inspectLaneLockWait(10, { platform: 'linux', readProcess: () => { throw new Error('EACCES') } })
+  expect(evidence).toEqual({ state: 'unknown', reason: 'lock-wait evidence unreadable (EACCES)' })
+  expect(countLaneProcessesReal(['opencode'], null, { pgrep: oneLane, inspectLockWait: () => { throw new Error('broken detector') } }))
+    .toMatchObject({ state: 'ok', count: 1, excludedCount: 0 })
+})
+
+it.each(['grant', 'root PID reuse'])('rejects %s between the two evidence reads', (change) => {
+  const fixture = waitFixture()
+  let reads = 0
+  const readLock = () => {
+    reads += 1
+    if (reads === 1 && change === 'root PID reuse') fixture.rows.get(10)!.startTime += 1
+    if (reads === 2 && change === 'grant') fixture.lock.tickets = []
+    return structuredClone(fixture.lock)
+  }
+  expect(inspectLaneLockWait(10, { ...fixture.options, readLock })).toEqual({
+    state: 'unknown', reason: 'lock-wait evidence changed during inspection',
+  })
+})
+
+it('reports counted lanes and excluded waiters in the refusal arithmetic', () => {
+  const result = evaluateLaneCall({ tool_input: { command: 'codex exec x' } }, {
+    countLaneProcesses: () => ({ state: 'ok', count: 2, liveCount: 5, excludedCount: 3 }),
+    boundFromEnv: () => ({ bound: 2, source: 'test' }), env: {},
+  })
+  expect(result.deny).toBe(true)
+  expect(result.message).toContain('2 call(s) counted, 3 excluded as lock waiters; this one would make 3, bound 2')
+})
+
+it.each([
+  [{ error: new Error('ENOENT') }, 'pgrep is unavailable (ENOENT)'],
+  [{ status: 2, stdout: '' }, 'pgrep exited 2 for "opencode"'],
+  [{ status: 0, stdout: 'bad' }, 'pgrep returned a malformed pid for "opencode"'],
+])('preserves named pgrep measurement failures without discounting anything: %j', (response, reason) => {
+  const result = countLaneProcessesReal(['opencode'], null, { pgrep: () => response,
+    inspectLockWait: () => { throw new Error('must not inspect after a pgrep failure') } })
+  expect(result).toEqual({ state: 'unknown', reason })
+  const verdict = evaluateLaneCall({ tool_input: { command: 'opencode run x' } }, { countLaneProcesses: () => result })
+  expect(verdict.deny).toBe(false)
+  expect(verdict.message).toContain('NOT MEASURED')
+})
+
+async function awaitWaitVerdict(pid: number, state: string) {
+  const deadline = Date.now() + 10_000
+  let evidence
+  while (Date.now() < deadline) {
+    evidence = inspectLaneLockWait(pid)
+    if (evidence.state === state) return evidence
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`wait evidence did not reach ${state}: ${JSON.stringify(evidence)}`)
+}
+
+function spawnSealedWaiter(root: string) {
+  const fake = join(root, 'opencode')
+  // Unconditional network seal: this is a copied shell, never a model CLI, even under mutation.
+  copyFileSync('/bin/sh', fake)
+  chmodSync(fake, 0o755)
+  mkdirSync(join(root, 'lock.d'))
+  writeFileSync(join(root, 'lock.d/holder.json'), JSON.stringify({ pid: process.pid,
+    startTime: processStartTime(process.pid), pidNamespace: currentPidNamespace(), startedAt: new Date().toISOString() }))
+  const script = '"$1" "$2" run --wait-s 20 -- "$1" -e "process.exit(0)"; sleep 30; exit 0'
+  const env = { ...process.env, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LOCK: '1', WT_SUITE_LEASE: '' }
+  const child = spawn(fake, ['-c', script, 'sealed-waiter', process.execPath, join(REPO_ROOT, 'plugin/bin/wt-suite-lock.mjs')], { env, stdio: 'ignore', detached: true })
+  if (!child.pid) throw new Error('waiter has no pid')
+  return child
+}
+
+async function stopSealedWaiter(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const exited = childExit(child)
+  if (child.pid) {
+    process.kill(-child.pid, 'SIGTERM')
+  }
+  await exited
+}
+
+it.skipIf(process.platform !== 'linux')('real queued suite waiter is excluded, then counted again when its command runs', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'wt-lane-lock-wait-'))
+  roots.push(root)
+  const child = spawnSealedWaiter(root)
+  try {
+    await awaitWaitVerdict(child.pid!, 'waiting')
+    const queued = countLaneProcessesReal(['opencode'], [child.pid])
+    expect(queued).toMatchObject({ state: 'ok', count: 0, liveCount: 1, excludedCount: 1 })
+    rmSync(join(root, 'lock.d'), { recursive: true })
+    await awaitWaitVerdict(child.pid!, 'unknown')
+    expect(countLaneProcessesReal(['opencode'], [child.pid])).toMatchObject({ state: 'ok', count: 1, excludedCount: 0 })
+  } finally {
+    await stopSealedWaiter(child)
+  }
 })
 
 describe('wt-lane-saturation-hook.mjs', () => {
