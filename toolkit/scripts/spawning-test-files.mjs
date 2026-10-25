@@ -24,6 +24,7 @@ export const spawningTestFiles = [
   'packages/build/test/actionability-gate.test.ts',
   'packages/build/test/actionability-planka-producer.test.ts',
   'packages/build/test/admission-descriptor-output.test.ts',
+  'packages/build/test/admission-snapshot.test.ts',
   'packages/build/test/adopt-agents-overlap.test.ts',
   'packages/build/test/adopt-audit-overlap.test.ts',
   'packages/build/test/adopt-changelog-span-cli.test.ts',

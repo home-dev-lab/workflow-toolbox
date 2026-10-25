@@ -4,19 +4,39 @@ import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { sealedSecondOpinionSdk } from './helpers/sealed-second-opinion-provider.js'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const CLI = process.env.WT_SECOND_OPINION_TEST_CLI ?? join(ROOT, 'plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
+function executionEnvironment(repo: string, env: Record<string, string>) {
+  const scratch = join(dirname(repo), 'runtime')
+  return { ...env, TMPDIR: scratch, TMP: scratch, TEMP: scratch }
+}
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) {
+    restoreFixtureScratch(root)
+    rmSync(root, { recursive: true, force: true })
+  }
 })
+
+function restoreFixtureScratch(file: string) {
+  if (!existsSync(file)) return
+  const stat = lstatSync(file)
+  if (stat.isSymbolicLink()) return
+  // Deliberate SIGKILL tests can leave a frozen snapshot inside this fixture's temp directory.
+  chmodSync(file, stat.isDirectory() ? 0o700 : 0o600)
+  if (stat.isDirectory()) for (const name of readdirSync(file)) restoreFixtureScratch(join(file, name))
+}
 
 function fixture(source = 'export default () => null', temporaryRoot = tmpdir()) {
   const root = realpathSync(mkdtempSync(join(temporaryRoot, 'admission-test-')))
   roots.push(root)
   const repo = join(root, 'repo')
   mkdirSync(repo)
+  mkdirSync(join(root, 'temp'))
+  mkdirSync(join(root, 'config'))
   const request = join(repo, 'request.md')
   writeFileSync(request, 'Review this repository.')
   const module = join(root, 'policy # space.mjs')
@@ -40,7 +60,8 @@ function fixture(source = 'export default () => null', temporaryRoot = tmpdir())
 // Only deadline tests use 100 ms: normal admission includes worker startup,
 // module import and callback drain, which are slower on cold or busy CI hosts.
 function launch(f: ReturnType<typeof fixture>, admission: string | undefined, relative = false, omitRepo = false, extra: string[] = [], timeout = 10_000, admissionTimeout = 5000) {
-  const env = { ...process.env }
+  const env = sealedPluginCliEnv(f.root)
+  Object.assign(env, { CLAUDE_CONFIG_DIR: join(f.root, 'config'), TMPDIR: join(f.root, 'temp'), TMP: join(f.root, 'temp'), TEMP: join(f.root, 'temp') })
   env.WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS = String(admissionTimeout)
   delete env.WT_SECOND_OPINION_ADMISSION
   if (admission !== undefined) env.WT_SECOND_OPINION_ADMISSION = admission
@@ -63,6 +84,20 @@ function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: 
   expect(output.endsWith('\nEXIT=3\n')).toBe(true)
 }
 
+function useRealCore(f: ReturnType<typeof fixture>) {
+  const binary = join(f.root, 'sealed-provider.mjs')
+  writeFileSync(binary, `import fs from 'node:fs';
+    const request = process.argv[process.argv.indexOf('--prompt') + 1];
+    const repo = process.cwd();
+    fs.writeFileSync(process.env.TMPDIR + '/provider-scratch', 'writable');
+    fs.writeFileSync(${JSON.stringify(f.marker)}, JSON.stringify({ repo, request, env: process.env }));
+    process.stdout.write('SEALED ANSWER');`)
+  writeFileSync(f.loader, `export async function load(url, context, next) {
+    if (url.endsWith('/lib/sdk-resolution.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(sealedSecondOpinionSdk(binary))} };
+    return next(url, context);
+  }`)
+}
+
 describe('second-opinion fixture canonicalization', () => {
   it('canonicalizes fixture paths beneath a symlinked temporary directory', () => {
     const parent = realpathSync(mkdtempSync(join(tmpdir(), 'admission-parent-')))
@@ -76,11 +111,32 @@ describe('second-opinion fixture canonicalization', () => {
     expect(launch(f, undefined).status).toBe(0)
     const baseline = JSON.parse(readFileSync(f.marker, 'utf8'))
     expect(launch(f, f.module).status).toBe(0)
-    expect(JSON.parse(readFileSync(f.marker, 'utf8'))).toEqual({
-      ...baseline, env: { ...baseline.env, WT_SECOND_OPINION_ADMISSION: f.module },
-    })
+    const admitted = JSON.parse(readFileSync(f.marker, 'utf8'))
+    expect(admitted.env).toEqual(executionEnvironment(admitted.repo, { ...baseline.env, WT_SECOND_OPINION_ADMISSION: f.module }))
+    expect(admitted.repo).not.toBe(baseline.repo)
+    expect(admitted.request).not.toBe(baseline.request)
   })
 })
+
+const snapshotExecutionScratchLock = () => {
+  const f = fixture(`import { writeFileSync } from 'node:fs';
+      export default () => { writeFileSync(new URL('./called', import.meta.url), 'called'); return null }`)
+  useRealCore(f)
+  writeFileSync(f.request, `Read ${f.repo}/request.md`)
+  const unsetResult = launch(f, undefined, false, false, ['--route', 'opus'])
+  expect(unsetResult.status, unsetResult.stderr).toBe(0)
+  const baseline = JSON.parse(readFileSync(f.marker, 'utf8'))
+  const admittedResult = launch(f, f.module, false, false, ['--route', 'opus'])
+  expect(admittedResult.status, admittedResult.stderr).toBe(0)
+  expect(readFileSync(join(f.root, 'called'), 'utf8')).toBe('called')
+  const admitted = JSON.parse(readFileSync(f.marker, 'utf8'))
+  expect(admitted.repo).not.toBe(baseline.repo)
+  expect(admitted.request).not.toBe(baseline.request)
+  expect(admitted.request).toContain(`${admitted.repo}/request.md`)
+  expect(admitted.request).not.toContain(f.repo)
+  expect(existsSync(join(dirname(admitted.repo), 'runtime'))).toBe(false)
+  expect(admitted.env).toEqual(executionEnvironment(admitted.repo, { ...baseline.env, WT_SECOND_OPINION_ADMISSION: f.module }))
+}
 
 describe('second-opinion CLI admission', () => {
   it('admits a valid policy with delayed import rather than testing worker startup speed', () => {
@@ -95,20 +151,7 @@ describe('second-opinion CLI admission', () => {
     expectRefusal(f, f.module, 'policy refuses this repository')
   })
 
-  it('admits with the same repo, request and environment as the unset path', () => {
-    const f = fixture(`import { writeFileSync } from 'node:fs';
-      export default () => { writeFileSync(new URL('./called', import.meta.url), 'called'); return null }`)
-    const unsetResult = launch(f, undefined)
-    expect(unsetResult.status, unsetResult.stderr).toBe(0)
-    const baseline = JSON.parse(readFileSync(f.marker, 'utf8'))
-    const admittedResult = launch(f, f.module)
-    expect(admittedResult.status, admittedResult.stderr).toBe(0)
-    expect(readFileSync(join(f.root, 'called'), 'utf8')).toBe('called')
-    const admitted = JSON.parse(readFileSync(f.marker, 'utf8'))
-    expect(admitted.repo).toBe(baseline.repo)
-    expect(admitted.request).toBe(baseline.request)
-    expect(admitted.env).toEqual({ ...baseline.env, WT_SECOND_OPINION_ADMISSION: f.module })
-  })
+  it('admits with snapshot paths and separate execution scratch', snapshotExecutionScratchLock)
 
   it.each([false, true])('passes launch paths and env for relative args (omit repo=%s)', (omitRepo) => {
     const f = fixture(`import { writeFileSync } from 'node:fs';
@@ -117,9 +160,9 @@ describe('second-opinion CLI admission', () => {
     expect(result.status, result.stderr).toBe(0)
     const input = JSON.parse(readFileSync(join(f.root, 'input.json'), 'utf8'))
     const launched = JSON.parse(readFileSync(f.marker, 'utf8'))
-    expect(input).toEqual(launched)
-    expect(input.repo).toBe(f.repo)
-    expect(input.request).toBe(f.request)
+    expect({ ...input, env: executionEnvironment(input.repo, input.env) }).toEqual(launched)
+    expect(input.repo).not.toBe(f.repo)
+    expect(input.request).not.toBe(f.request)
   })
 
 })
@@ -424,9 +467,9 @@ describe('second-opinion admission file identity', () => {
     f.request = join(f.root, 'request-link')
     expect(launch(f, f.module).status).toBe(0)
     const input = JSON.parse(readFileSync(join(f.root, 'input.json'), 'utf8'))
-    expect(input).toEqual(JSON.parse(readFileSync(f.marker, 'utf8')))
-    expect(input.repo).toBe(canonicalRepo)
-    expect(input.request).toBe(canonicalRequest)
+    expect({ ...input, env: executionEnvironment(input.repo, input.env) }).toEqual(JSON.parse(readFileSync(f.marker, 'utf8')))
+    expect(input.repo).not.toBe(canonicalRepo)
+    expect(input.request).not.toBe(canonicalRequest)
   })
 })
 

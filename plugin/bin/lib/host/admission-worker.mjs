@@ -4,9 +4,9 @@ import { parentPort, workerData } from 'node:worker_threads'
 import { pathToFileURL } from 'node:url'
 import { formatAdmissionError } from './admission.mjs'
 
-async function admissionRefusal({ repo, request, env, moduleVariable: variable }) {
+async function admissionRefusal({ repo, request, env, moduleVariable: variable, admission }) {
   try {
-    const { default: admit } = await import(pathToFileURL(env[variable]).href)
+    const { default: admit } = await import(pathToFileURL(admission.path).href)
     if (typeof admit !== 'function') return `${variable}: default export must be a function`
     const result = await admit({ repo, request, env })
     if (result === null) return null

@@ -119,6 +119,24 @@
       "required": false,
       "description": "Retained so existing settings remain valid; ignored now that the Claude second-opinion route uses Opus instead of Fable."
     },
+    "second_opinion_admission": {
+      "type": "string",
+      "title": "Second-opinion admission module",
+      "required": false,
+      "description": "Absolute trusted admission ES module path. WT_SECOND_OPINION_ADMISSION overrides this option, including an empty value (which refuses). Configured reviews run on a private snapshot without .git metadata."
+    },
+    "opencode_envelope_admission": {
+      "type": "string",
+      "title": "OpenCode envelope admission module",
+      "required": false,
+      "description": "Absolute trusted admission ES module path. WT_OPENCODE_ENVELOPE_ADMISSION overrides this option, including an empty value (which refuses). The batch shares one private snapshot without .git metadata."
+    },
+    "opencode_verify_admission": {
+      "type": "string",
+      "title": "OpenCode verifier admission module",
+      "required": false,
+      "description": "Absolute trusted admission ES module path. WT_OPENCODE_VERIFY_ADMISSION overrides this option, including an empty value (which refuses). Configured verification runs on a private snapshot without .git metadata."
+    },
     "lane_orphan_cleanup": {
       "type": "string",
       "title": "Attributed lane orphan cleanup mode",

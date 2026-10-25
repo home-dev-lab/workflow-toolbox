@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -69,6 +69,7 @@ afterEach(async () => {
 function makeStubRoot() {
   const root = mkdtempSync(join(tmpdir(), 'wt-opencode-envelope-reap-'))
   roots.push(root)
+  mkdirSync(join(root, 'config'))
   const bin = join(root, 'bin')
   const pidFile = join(root, 'fixture.pids')
   const recorder = join(root, 'record-identity.mjs')
@@ -122,7 +123,7 @@ describe('wt-opencode-envelope reaps the process group of a stopped call', () =>
     const run = spawnSync(
       process.execPath,
       [SCRIPT, join(root, 'tasks.json'), '--dir', root, '--timeout-sec', '3'],
-      { encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` } },
+      { encoding: 'utf8', timeout: 30_000, env: { ...process.env, CLAUDE_CONFIG_DIR: join(root, 'config'), WT_OPENCODE_ENVELOPE_ADMISSION: undefined, PATH: `${bin}:${process.env.PATH ?? ''}` } },
     )
     const elapsedMs = Date.now() - started
 
