@@ -226,14 +226,17 @@ function send(response, method, statusCode, body, contentType = 'text/plain; cha
 const GENERATED_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
 const RICH_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+const ANNOTATABLE_CSP = "default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 const REGISTRATION_OWNERSHIP_MISS_LIMIT = 3
 
 function fileContentType(file) {
   return CONTENT_TYPES.get(path.extname(file).toLowerCase()) ?? 'application/octet-stream'
 }
 
-function richHtml(file) {
-  return /^\s*<!--\s*wt-artifact-server:\s*rich\s*-->/i.test(file.toString('utf8', 0, 256))
+function htmlCsp(file) {
+  const mode = /^\s*<!--\s*wt-artifact-server:\s*(rich|annotatable)\s*-->/i.exec(file.toString('utf8', 0, 256))?.[1].toLowerCase()
+  if (mode === 'rich') return RICH_CSP
+  return mode === 'annotatable' ? ANNOTATABLE_CSP : RAW_CSP
 }
 
 async function directoryPage(root, target, urlSegments) {
@@ -479,7 +482,7 @@ class ArtifactService {
       const file = await readFile(target)
       if (extension === '.md') send(response, method, 200, renderMarkdown(file.toString('utf8'), path.basename(target)), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       else if (['.txt', '.log', '.json'].includes(extension)) send(response, method, 200, htmlPage(path.basename(target), `<pre>${escapeHtml(file.toString('utf8'))}</pre>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
-      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': richHtml(file) ? RICH_CSP : RAW_CSP })
+      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': htmlCsp(file) })
       else send(response, method, 200, file, fileContentType(target), { 'Content-Security-Policy': RAW_CSP })
     } catch { send(response, method, 500, 'Internal Server Error\n') }
   }
