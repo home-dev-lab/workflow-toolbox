@@ -16,9 +16,13 @@ if (!isMainThread && workerData?.artifactTailnetPort) {
   parentPort.postMessage(detectTailscale(workerData.artifactTailnetPort))
 }
 
+export function normalizeTailnetHost(host) {
+  return typeof host === 'string' ? host.toLowerCase().replace(/\.ts\.net\.(?=:\d+$|$)/, '.ts.net') : undefined
+}
+
 function tailnetHost(host) {
   if (typeof host !== 'string') return false
-  const hostname = host.toLowerCase().split(':', 1)[0]
+  const hostname = normalizeTailnetHost(host).split(':', 1)[0]
   if (/^[a-z0-9.-]+\.ts\.net$/.test(hostname)) return true
   const octets = hostname.split('.').map(Number)
   return octets.length === 4 && octets.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) &&

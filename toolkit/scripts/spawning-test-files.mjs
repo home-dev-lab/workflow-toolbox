@@ -39,6 +39,7 @@ export const spawningTestFiles = [
   'packages/build/test/agent-definition-guard-unresolved.test.ts',
   'packages/build/test/agent-definitions.test.ts',
   'packages/build/test/artifact-server-context-hook.test.ts',
+  'packages/build/test/artifact-server-tailnet.test.mjs',
   'packages/build/test/artifact-server.test.ts',
   'packages/build/test/autonomy-arm.test.ts',
   'packages/build/test/autonomy-watch.test.ts',
@@ -255,7 +256,7 @@ function testFilesUnder(directory) {
   return entries.flatMap((entry) => {
     const path = resolve(directory, entry.name)
     if (entry.isDirectory()) return testFilesUnder(path)
-    return entry.isFile() && entry.name.endsWith('.test.ts') ? [path] : []
+    return entry.isFile() && /\.test\.(ts|mjs)$/.test(entry.name) ? [path] : []
   })
 }
 

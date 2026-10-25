@@ -185,6 +185,38 @@ test('an in-flight detection is not duplicated after the minute throttle elapses
   assert.equal(await retry(state, PORT, DNS), state, 'completion must release the in-flight guard')
 })
 
+test('a rejected detection releases the in-flight slot without bypassing the minute throttle', async () => {
+  const { createTailnetRetry } = await import('../../../../plugin/bin/lib/artifact-tailnet.mjs')
+  const state = { dnsName: null, detection: { status: 'unavailable' } }
+  for (const synchronous of [false, true]) {
+    let clock = 0
+    let attempts = 0
+    const failure = new Error('fixture worker rejection')
+    const retry = createTailnetRetry({ now: () => clock, detect: () => {
+      if (++attempts > 1) return state
+      if (synchronous) throw failure
+      return Promise.reject(failure)
+    } })
+    await assert.rejects(retry(state, PORT, DNS), failure)
+    clock = 59999
+    assert.equal(retry(state, PORT, DNS), null, 'rejection must still charge the minute throttle')
+    clock = 60000
+    assert.equal(await retry(state, PORT, DNS), state, 'rejection must release the in-flight slot for the next eligible attempt')
+    assert.equal(attempts, 2)
+  }
+})
+
+test('a fully qualified tailnet Host triggers recovery with or without a port', async () => {
+  const { createTailnetRetry } = await import('../../../../plugin/bin/lib/artifact-tailnet.mjs')
+  const state = { dnsName: null, detection: { status: 'unavailable' } }
+  for (const host of [`${DNS}.`, `${DNS.toUpperCase()}.:${PORT}`]) {
+    let attempts = 0
+    const retry = createTailnetRetry({ detect: () => { attempts++; return state } })
+    assert.equal(await retry(state, PORT, host), state, 'a trailing DNS root dot must not prevent recovery')
+    assert.equal(attempts, 1)
+  }
+})
+
 async function freePort() {
   const server = createServer()
   server.listen(0, '127.0.0.1')
@@ -230,16 +262,18 @@ net.Server.prototype.listen = function (...args) {
   queueMicrotask(() => this.emit('error', Object.assign(new Error('fixture unowned address'), { code: 'EADDRNOTAVAIL' })))
   return this
 }
-if (${Boolean(pathResolution)}) {
-  const run = cp.execFileSync
-  cp.execFileSync = (command, args, options) => {
-    if (command !== 'tailscale' || !fs.existsSync(dir + '/resolved')) {
-      throw Object.assign(new Error('fixture absent binary'), { code: 'ENOENT' })
-    }
-    return run(process.execPath, args, options)
+// Unconditional seal: no mutation of detection may execute an installed host binary.
+const run = cp.execFileSync
+cp.execFileSync = (command, args, options) => {
+  const allowed = ${Boolean(pathResolution)}
+    ? command === 'tailscale' && fs.existsSync(dir + '/resolved')
+    : command === process.execPath
+  if (!allowed || !['ip', 'status', 'serve'].includes(args[0])) {
+    throw Object.assign(new Error('fixture absent binary'), { code: 'ENOENT' })
   }
-  syncBuiltinESMExports()
+  return run(process.execPath, args, options)
 }
+syncBuiltinESMExports()
 `)
   return file
 }
@@ -318,6 +352,53 @@ test('first tailnet Host retries failed startup detection and publishes recovere
   })
   assert.equal(await get(server.port, 'evil.example'), 421)
   assert.equal(await get(server.port, 'evil.ts.net'), 421, 'a tailnet-shaped Host is not automatically trusted')
+})
+
+test('fully qualified tailnet Hosts recover and admit only the detected hostname and port', async (context) => {
+  const server = await fixture(context)
+  writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.1')")
+  const dotted = `${DNS.toUpperCase()}.:${server.port}`
+  assert.equal(await get(server.port, dotted), 421)
+  const recovered = await waitFor(() => server.read()?.tailnetDetection.status === 'available', 3000).catch(() => false)
+  assert.ok(recovered, 'a fully qualified Host must trigger recovery after unavailable startup detection')
+  for (const host of [dotted, `${DNS}.`, DNS, `${DNS}:${server.port}`]) {
+    assert.equal(await get(server.port, host), 200, 'the detected hostname must admit its trailing-dot spelling')
+  }
+  for (const host of ['evil.ts.net.', `${DNS}.:1`, `${DNS}..`, `${DNS}.evil.example`]) {
+    assert.equal(await get(server.port, host), 421, 'normalization must preserve hostname and port admission boundaries')
+  }
+})
+
+test('a SIGTERM-ignoring command times out and releases recovery for a later successful attempt', async (context) => {
+  const server = await fixture(context)
+  writeFileSync(path.join(server.dir, 'ip'), `
+const fs = require('node:fs')
+process.on('SIGTERM', () => {})
+fs.writeFileSync('started', String(process.pid))
+const timer = setInterval(() => {
+  if (!fs.existsSync('release')) return
+  clearInterval(timer)
+  console.log('127.0.0.1')
+}, 10)
+setTimeout(() => process.exit(0), 15000).unref()
+`)
+  try {
+    assert.equal(await get(server.port, DNS), 421)
+    await waitFor(() => existsSync(path.join(server.dir, 'started')))
+    assert.equal(await get(server.port, `localhost:${server.port}`, '/__wt-artifact-server/health'), 200)
+    const timedOut = await waitFor(() => /timeout=5000ms/.test(server.read()?.tailnetDetection.reason), 6500).catch(() => false)
+    assert.ok(timedOut, 'a SIGTERM-ignoring command must settle within its timeout budget')
+    assert.match(server.read().tailnetDetection.reason, /signal=SIGKILL/)
+    writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.1')")
+    writeFileSync(path.join(server.dir, 'clock'), '60001')
+    await get(server.port, DNS)
+    await waitFor(() => server.read()?.tailnetDetection.status === 'available')
+    assert.equal(await get(server.port, DNS), 200, 'the timed-out command must not retain the recovery slot')
+  } finally {
+    // Independent cleanup also releases the old implementation and timeout-guard mutations.
+    writeFileSync(path.join(server.dir, 'release'), '')
+    await waitFor(() => server.read()?.tailnetDetection.status === 'available' || /timeout=5000ms/.test(server.read()?.tailnetDetection.reason))
+  }
 })
 
 const PREVIOUS_RESULTS = [

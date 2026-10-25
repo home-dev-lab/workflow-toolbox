@@ -2667,7 +2667,7 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor })
     expect(state.tailnetDetection).toEqual({
       status: 'unavailable',
-      reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGTERM, code=ETIMEDOUT, timeout=5000ms/),
+      reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGKILL, code=ETIMEDOUT, timeout=5000ms/),
     })
   }, MONITORED_SERVER_TEST_BOUND_MS)
 

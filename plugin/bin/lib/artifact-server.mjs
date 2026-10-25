@@ -315,7 +315,8 @@ const TAILSCALE_COMMAND_TIMEOUT_MS = 5_000
 const UNAVAILABLE_TAILNET = Object.freeze({ ip: null, dnsName: null, remoteUrl: null })
 
 function runTailscaleCommand(command, args, timeout = TAILSCALE_COMMAND_TIMEOUT_MS) {
-  return execFileSync(command, args, { encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'ignore'] })
+  // execFileSync waits for the child to exit after timeout; SIGTERM can be ignored.
+  return execFileSync(command, args, { encoding: 'utf8', timeout, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'ignore'] })
 }
 
 function tailscaleFailureReason(error, elapsedMs) {

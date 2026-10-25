@@ -34,7 +34,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
-import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus } from './lib/artifact-tailnet.mjs'
+import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus, normalizeTailnetHost } from './lib/artifact-tailnet.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
@@ -424,7 +424,7 @@ class ArtifactService {
     })
     const { requestedPort, tailscale } = this
     const method = request.method ?? ''
-    const host = request.headers.host?.toLowerCase()
+    const host = normalizeTailnetHost(request.headers.host)
     const allowedHosts = new Set([`localhost:${requestedPort}`, `127.0.0.1:${requestedPort}`])
     if (tailscale.ip) { allowedHosts.add(tailscale.ip); allowedHosts.add(`${tailscale.ip}:${requestedPort}`) }
     if (tailscale.dnsName) { allowedHosts.add(tailscale.dnsName.toLowerCase()); allowedHosts.add(`${tailscale.dnsName.toLowerCase()}:${requestedPort}`) }
