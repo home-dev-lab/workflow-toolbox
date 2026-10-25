@@ -402,7 +402,8 @@ function readTailscaleDnsName(command, run) {
   if (read.error) return { dnsName: null, error: read.error }
   try {
     const name = JSON.parse(read.output)?.Self?.DNSName
-    return typeof name === 'string' ? { dnsName: name.replace(/\.$/, ''), error: null } : { dnsName: null, error: 'tailscale status --json (no DNS name)' }
+    const dnsName = typeof name === 'string' ? name.trim().replace(/\.$/, '') : null
+    return dnsName ? { dnsName, error: null } : { dnsName: null, error: 'tailscale status --json (no DNS name)' }
   } catch {
     return { dnsName: null, error: 'tailscale status --json (unparsable output)' }
   }
@@ -424,6 +425,10 @@ function detectionFromAddress({ command, via, ipOutput }, port, run) {
   const dns = readTailscaleDnsName(command, run)
   const route = readTailscaleServeRoute(command, run, dns, port)
   const choice = chooseRemoteUrl({ ...route, ip, port, via })
+  if (!dns.dnsName && choice.status === 'available') {
+    choice.status = 'unavailable'
+    choice.reason = `tailnet IPv4 detected, but hostname unavailable: ${dns.error}`
+  }
   return { ip, dnsName: dns.dnsName, remoteUrl: choice.remoteUrl, serveUrl: route.httpsUrl, via, binary: command, detection: { status: choice.status, reason: choice.reason } }
 }
 

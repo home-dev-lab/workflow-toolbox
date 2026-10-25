@@ -34,7 +34,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
-import { createTailnetRetry, formatTailnetStatus } from './lib/artifact-tailnet.mjs'
+import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus } from './lib/artifact-tailnet.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
@@ -270,7 +270,7 @@ class ArtifactService {
     this.requestedPort = configuredArtifactPort()
     this.startToken = process.env.WT_ARTIFACT_SERVER_START_TOKEN ?? randomUUID()
     this.tailscale = detectTailscale(this.requestedPort)
-    this.retryTailnet = createTailnetRetry({ detect: detectTailscale })
+    this.retryTailnet = createTailnetRetry({ detect: detectTailnetInWorker })
     this.registrations = new Map()
     this.mountAssignments = new Map()
     this.shuttingDown = false
@@ -405,8 +405,10 @@ class ArtifactService {
 
   async refreshTailnet(host) {
     if (!this.discovery) return
-    const recovered = this.retryTailnet(this.tailscale, this.requestedPort, host)
-    if (!recovered) return
+    const pending = this.retryTailnet(this.tailscale, this.requestedPort, host)
+    if (!pending) return
+    const recovered = await pending
+    if (this.shuttingDown) return
     this.tailscale = recovered
     await listenArtifactTailnet((address) => this.listen(address), recovered, this.requestedPort)
     Object.assign(this.discovery, {
@@ -417,7 +419,9 @@ class ArtifactService {
   }
 
   async requestMethod(request, response) {
-    await this.refreshTailnet(request.headers.host)
+    this.refreshTailnet(request.headers.host).catch((error) => {
+      process.stderr.write(`wt-artifact-server: tailnet recovery failed: ${error.message}\n`)
+    })
     const { requestedPort, tailscale } = this
     const method = request.method ?? ''
     const host = request.headers.host?.toLowerCase()
@@ -501,6 +505,8 @@ class ArtifactService {
   }
 
   listen(host) {
+    const existing = this.servers.find((server) => server.address()?.address === host)
+    if (existing) return Promise.resolve(existing)
     return new Promise((resolve, reject) => {
       const server = createServer((request, response) => {
         Promise.resolve(this.handler(request, response)).catch(() => {

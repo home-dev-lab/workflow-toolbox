@@ -6,7 +6,7 @@ import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, atomicWriteJson, chooseRemoteUrl, deriveArtifactPort, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, atomicWriteJson, chooseRemoteUrl, deriveArtifactPort, detectTailscale, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
@@ -2541,6 +2541,19 @@ it('locks PATH-independent tailnet resolution, status and recovery', async () =>
   const output = childOutput(child)
   const code = await new Promise((resolve) => child.once('close', resolve))
   expect(code, `${output.stdout()}\n${output.stderr()}`).toBe(0)
+})
+
+it.each(['', '  ', '.', undefined])('reports the missing hostname in a native partial result (%j)', (dnsName) => {
+  const result = detectTailscale(48001, (_command: string, args: string[]) => {
+    if (args[0] === 'ip') return '100.64.0.1\n'
+    if (args[0] === 'status') return JSON.stringify({ Self: { DNSName: dnsName } })
+    return 'No serve config'
+  }, { platform: 'linux', wsl: false, env: {} })
+  expect(result.ip).toBe('100.64.0.1')
+  expect(result.dnsName).toBeNull()
+  expect(result.remoteUrl).toBe('http://100.64.0.1:48001')
+  expect(result.detection.status, 'an IP-only result must not claim hostname availability').toBe('unavailable')
+  expect(result.detection.reason).toMatch(/hostname unavailable.*no DNS name/)
 })
 
 describe('owner decision 5: Tailscale access', () => {

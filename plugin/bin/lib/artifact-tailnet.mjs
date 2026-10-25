@@ -1,3 +1,21 @@
+import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads'
+
+// Reuse the synchronous resolver off the listener thread, including its bounded diagnostic commands.
+// Each retry owns one short-lived worker; startup still detects before accepting connections.
+export function detectTailnetInWorker(port) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(import.meta.url), { workerData: { artifactTailnetPort: port } })
+    worker.once('message', resolve)
+    worker.once('error', reject)
+    worker.once('exit', (code) => reject(new Error(`tailnet detection worker exited without a result (${code})`)))
+  })
+}
+
+if (!isMainThread && workerData?.artifactTailnetPort) {
+  const { detectTailscale } = await import(new URL('./artifact-server.mjs', import.meta.url))
+  parentPort.postMessage(detectTailscale(workerData.artifactTailnetPort))
+}
+
 function tailnetHost(host) {
   if (typeof host !== 'string') return false
   const hostname = host.toLowerCase().split(':', 1)[0]
@@ -11,12 +29,14 @@ function tailnetHost(host) {
 // detection, so failed attempts and concurrent requests cannot exceed one per minute.
 export function createTailnetRetry({ detect, now = Date.now }) {
   let nextAttempt = -Infinity
+  let inFlight = false
   return (tailscale, port, host) => {
-    if (tailscale.detection?.status !== 'unavailable' || !tailnetHost(host)) return null
+    if (tailscale.dnsName || inFlight || !tailnetHost(host)) return null
     const at = now()
     if (at < nextAttempt) return null
     nextAttempt = at + 60_000
-    return detect(port)
+    inFlight = true
+    return Promise.resolve().then(() => detect(port)).finally(() => { inFlight = false })
   }
 }
 
@@ -26,7 +46,7 @@ export function formatTailnetStatus(state) {
   const tailnet = detection ? `${detection.status}${reason}` : 'unknown (server predates tailnet detection status)'
   const via = typeof state.tailnetVia === 'string' ? state.tailnetVia : 'unknown'
   const binary = state.tailnetBinary ?? 'unknown'
-  const routeKnown = state.tailnetServeUrl || state.remoteUrl
+  const routeKnown = state.tailnetServeUrl || /^https:\/\//.test(state.remoteUrl)
   const warning = detection?.status === 'unavailable' && routeKnown
     ? '\nremote links will fail (421): a Tailscale Serve route targets this port, but tailnet Host detection is unavailable'
     : ''

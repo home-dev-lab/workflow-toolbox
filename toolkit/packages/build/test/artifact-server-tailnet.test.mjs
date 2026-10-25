@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -114,12 +114,19 @@ test('the real resolver checks an existing standard-install file', async (contex
   context.after(() => rmSync(dir, { recursive: true, force: true }))
   mkdirSync(path.join(dir, 'Tailscale'))
   const command = path.join(dir, 'Tailscale', 'tailscale.exe')
-  writeFileSync(command, '')
   // Use the real platform's path spelling for this filesystem test.
-  const result = runArtifactBinary('tailscale', ['ip', '-4'], (candidate) => candidate === command ? '127.0.0.1' : absent(), {
+  const options = {
     platform: 'win32', env: { ProgramFiles: dir }, wsl: false, windowsPath: path,
-  })
+  }
+  const calls = []
+  const run = (candidate) => { calls.push(candidate); return candidate === command ? '127.0.0.1' : absent() }
+  assert.throws(() => runArtifactBinary('tailscale', ['ip', '-4'], run, options),
+    { code: 'ENOENT' }, 'a missing standard-install file must not be executed')
+  assert.deepEqual(calls, ['tailscale', 'tailscale.exe'])
+  writeFileSync(command, '')
+  const result = runArtifactBinary('tailscale', ['ip', '-4'], run, options)
   assert.equal(result.command, command)
+  assert.equal(calls.at(-1), command, 'the existing standard-install file must be executed')
 })
 
 test('failed detection retries immediately, then at most once per minute', async () => {
@@ -131,13 +138,14 @@ test('failed detection retries immediately, then at most once per minute', async
   assert.equal(retry(unavailable, PORT, undefined), null)
   assert.equal(retry(unavailable, PORT, 'evil.example'), null)
   assert.equal(retry(unavailable, PORT, `localhost:${PORT}`), null)
-  assert.equal(retry(unavailable, PORT, DNS), unavailable)
+  assert.equal(await retry(unavailable, PORT, DNS), unavailable)
   for (clock = 1; clock < 60000; clock += 1000) assert.equal(retry(unavailable, PORT, DNS), null)
   clock = 60000
-  assert.equal(retry(unavailable, PORT, `100.64.0.1:${PORT}`), unavailable)
+  assert.equal(await retry(unavailable, PORT, `100.64.0.1:${PORT}`), unavailable)
   assert.equal(attempts, 2)
-  assert.equal(retry({ detection: { status: 'available' } }, PORT, DNS), null)
-  assert.equal(retry({ detection: { status: 'no-tailnet' } }, PORT, DNS), null)
+  clock = 120000
+  assert.equal(retry({ dnsName: DNS, detection: { status: 'available' } }, PORT, DNS), null)
+  assert.equal(await retry({ detection: { status: 'no-tailnet' } }, PORT, DNS), unavailable)
 })
 
 test('status distinguishes unknown detection from unavailable detection without a known route', async () => {
@@ -146,6 +154,35 @@ test('status distinguishes unknown detection from unavailable detection without 
   const status = formatTailnetStatus({ tailnetDetection: { status: 'unavailable', reason: 'fixture unavailable' } })
   assert.match(status, /unavailable \(fixture unavailable\)/)
   assert.doesNotMatch(status, /will fail/)
+})
+
+test('status identifies a missing hostname without denying a usable native IP link', async () => {
+  const { formatTailnetStatus } = await import('../../../../plugin/bin/lib/artifact-tailnet.mjs')
+  const status = formatTailnetStatus({
+    tailnetDetection: { status: 'unavailable', reason: 'tailnet hostname unavailable: fixture' },
+    remoteUrl: `http://100.64.0.1:${PORT}`, tailnetVia: 'native',
+  })
+  assert.match(status, /hostname unavailable/)
+  assert.doesNotMatch(status, /remote links will fail/, 'a detected native IP link does not depend on hostname admission')
+})
+
+test('an in-flight detection is not duplicated after the minute throttle elapses', async () => {
+  const { createTailnetRetry } = await import('../../../../plugin/bin/lib/artifact-tailnet.mjs')
+  let clock = 0
+  let attempts = 0
+  let release
+  const pending = new Promise((resolve) => { release = resolve })
+  const retry = createTailnetRetry({ now: () => clock, detect: () => { attempts++; return pending } })
+  const state = { dnsName: null, detection: { status: 'unavailable' } }
+  const first = retry(state, PORT, DNS)
+  await Promise.resolve()
+  clock = 60001
+  const concurrent = retry(state, PORT, DNS)
+  release(state)
+  await first
+  assert.equal(concurrent, null, 'one in-flight attempt must cover concurrent requests even after one minute')
+  assert.equal(attempts, 1)
+  assert.equal(await retry(state, PORT, DNS), state, 'completion must release the in-flight guard')
 })
 
 async function freePort() {
@@ -157,14 +194,14 @@ async function freePort() {
   return port
 }
 
-async function waitFor(read) {
-  const deadline = Date.now() + 15000
+async function waitFor(read, timeout = 15000) {
+  const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
     const result = read()
     if (result) return result
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
-  throw new Error('fixture did not become ready within 15 seconds')
+  throw new Error(`fixture did not become ready within ${timeout} ms`)
 }
 
 function cli(args, env, cwd) {
@@ -176,13 +213,46 @@ function cli(args, env, cwd) {
   return once(child, 'close').then(([code]) => ({ code, stdout, stderr }))
 }
 
-async function fixture(context) {
+function fixturePreload(dir, pathResolution) {
+  const file = path.join(dir, 'preload.cjs')
+  writeFileSync(file, `
+const fs = require('node:fs')
+const net = require('node:net')
+const cp = require('node:child_process')
+const { syncBuiltinESMExports } = require('node:module')
+const dir = ${JSON.stringify(dir)}
+const now = Date.now
+Date.now = () => now() + Number(fs.readFileSync(dir + '/clock', 'utf8'))
+const listen = net.Server.prototype.listen
+net.Server.prototype.listen = function (...args) {
+  if (args[1] !== '192.0.2.1') return listen.apply(this, args)
+  fs.appendFileSync(dir + '/listeners', args[1] + '\\n')
+  queueMicrotask(() => this.emit('error', Object.assign(new Error('fixture unowned address'), { code: 'EADDRNOTAVAIL' })))
+  return this
+}
+if (${Boolean(pathResolution)}) {
+  const run = cp.execFileSync
+  cp.execFileSync = (command, args, options) => {
+    if (command !== 'tailscale' || !fs.existsSync(dir + '/resolved')) {
+      throw Object.assign(new Error('fixture absent binary'), { code: 'ENOENT' })
+    }
+    return run(process.execPath, args, options)
+  }
+  syncBuiltinESMExports()
+}
+`)
+  return file
+}
+
+async function fixture(context, { pathResolution = false } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'wt-tailnet-'))
   const port = await freePort()
   const env = {
     ...process.env, XDG_STATE_HOME: dir, WT_ARTIFACT_SERVER_PORT: String(port),
-    WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath, WT_ARTIFACT_SERVER_IDLE_GRACE_S: '600',
+    WT_ARTIFACT_SERVER_TAILSCALE_BINARY: pathResolution ? '' : process.execPath, WT_ARTIFACT_SERVER_IDLE_GRACE_S: '600',
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(fixturePreload(dir, pathResolution))}`,
   }
+  writeFileSync(path.join(dir, 'clock'), '0')
   writeFileSync(path.join(dir, 'ip'), 'process.exitCode = 1\n')
   writeFileSync(path.join(dir, 'status'), `console.log(JSON.stringify({Self:{DNSName:'${DNS}.'}}))`)
   writeFileSync(path.join(dir, 'serve'), `console.log('https://${DNS}\\n|-- /artifacts proxy http://127.0.0.1:${port}\\n')`)
@@ -201,9 +271,9 @@ async function fixture(context) {
   return { dir, port, env, stateFile, read }
 }
 
-function get(port, host) {
+function get(port, host, pathname = '/', connectHost = '127.0.0.1') {
   return new Promise((resolve, reject) => {
-    const req = request({ host: '127.0.0.1', port, path: '/', headers: { Host: host }, agent: false }, (response) => {
+    const req = request({ host: connectHost, port, path: pathname, headers: { Host: host }, agent: false }, (response) => {
       response.resume()
       response.once('end', () => resolve(response.statusCode))
     })
@@ -221,15 +291,107 @@ test('status names unavailable detection and a known route that will fail with 4
 })
 
 test('first tailnet Host retries failed startup detection and publishes recovered state', async (context) => {
-  const server = await fixture(context)
+  const server = await fixture(context, { pathResolution: true })
   assert.equal(server.read().tailnetDetection.status, 'unavailable')
-  writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.1')\n")
+  assert.equal(server.read().tailnetBinary, null)
+  writeFileSync(path.join(server.dir, 'ip'), "console.log('192.0.2.1')\n")
+  writeFileSync(path.join(server.dir, 'resolved'), '')
   assert.equal(await get(server.port, 'evil.example'), 421)
   assert.equal(server.read().tailnetDetection.status, 'unavailable', 'unrelated hosts must not trigger recovery')
-  assert.equal(await get(server.port, DNS), 200, 'first tailnet Host must recover without restarting')
-  const state = server.read()
+  await get(server.port, DNS)
+  const state = await waitFor(() => server.read()?.tailnetDetection.status === 'available' && server.read())
+  assert.equal(await get(server.port, DNS), 200, 'the next tailnet Host must recover without restarting')
   assert.equal(state.tailnetDetection.status, 'available')
   assert.equal(state.remoteUrl, `https://${DNS}/artifacts`)
+  const listeners = existsSync(path.join(server.dir, 'listeners')) ? readFileSync(path.join(server.dir, 'listeners'), 'utf8').trim().split('\n') : []
+  await context.test('recovery listener wiring', () => {
+    assert.deepEqual(listeners, ['192.0.2.1'], 'recovery must attempt the detected non-loopback listener')
+  })
+  await context.test('recovery execution side persistence', () => {
+    assert.equal(state.tailnetVia, 'native', 'recovery must publish its execution side')
+  })
+  await context.test('recovery binary persistence', () => {
+    assert.equal(state.tailnetBinary, 'tailscale', 'recovery must publish its resolved binary')
+  })
+  await context.test('recovery Serve route persistence', () => {
+    assert.equal(state.tailnetServeUrl, `https://${DNS}/artifacts`, 'recovery must publish its Serve route')
+  })
   assert.equal(await get(server.port, 'evil.example'), 421)
   assert.equal(await get(server.port, 'evil.ts.net'), 421, 'a tailnet-shaped Host is not automatically trusted')
 })
+
+const PREVIOUS_RESULTS = [
+  ['partial', "console.log('127.0.0.1')", 'process.exitCode = 2', (state) => state.remoteUrl?.startsWith('http://127.0.0.1:')],
+  ['no-tailnet', '', null, (state) => state.tailnetDetection.status === 'no-tailnet'],
+  ['error', 'process.exitCode = 2', null, (state) => /exit=2/.test(state.tailnetDetection.reason)],
+]
+
+test('repeated partial recovery reuses the bound native tailnet listener', { skip: process.platform !== 'linux' }, async (context) => {
+  const server = await fixture(context)
+  const remoteUrl = `http://127.0.0.2:${server.port}`
+  writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.2')")
+  writeFileSync(path.join(server.dir, 'status'), 'process.exitCode = 2')
+  writeFileSync(path.join(server.dir, 'serve'), "console.log('No serve config')")
+  assert.equal(await get(server.port, DNS), 421)
+  const partial = await waitFor(() => server.read()?.remoteUrl === remoteUrl && server.read())
+  assert.equal(await get(server.port, `127.0.0.2:${server.port}`, '/', '127.0.0.2'), 200, 'the first recovery must really bind the additional address listener')
+  writeFileSync(path.join(server.dir, 'status'), `console.log(JSON.stringify({Self:{DNSName:'${DNS}.'}}))`)
+  writeFileSync(path.join(server.dir, 'clock'), '60001')
+  await get(server.port, DNS)
+  const recovered = await waitFor(() => server.read()?.tailnetDetection.reason !== partial.tailnetDetection.reason && server.read())
+  assert.equal(recovered.remoteUrl, remoteUrl, 'recovering the hostname must retain the already-listening native IP URL')
+  assert.equal(recovered.tailnetDetection.status, 'available')
+  assert.equal(await get(server.port, DNS), 200)
+})
+
+for (const [shape, ip, status, matches] of PREVIOUS_RESULTS) {
+  test(`a ${shape} result remains retryable after the minute throttle and later admits the Host`, async (context) => {
+    const server = await fixture(context)
+    writeFileSync(path.join(server.dir, 'ip'), ip)
+    if (status) writeFileSync(path.join(server.dir, 'status'), status)
+    assert.equal(await get(server.port, DNS), 421)
+    await waitFor(() => matches(server.read()))
+    writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.1')")
+    writeFileSync(path.join(server.dir, 'status'), `console.log(JSON.stringify({Self:{DNSName:'${DNS}.'}}))`)
+    assert.equal(await get(server.port, DNS), 421, 'the minute throttle must survive an unsuccessful attempt')
+    writeFileSync(path.join(server.dir, 'clock'), '60001')
+    await get(server.port, DNS)
+    const recovered = await waitFor(() => server.read()?.tailnetDetection.status === 'available' && server.read()?.tailnetServeUrl, 3000).catch(() => null)
+    assert.ok(recovered, `${shape} results must remain eligible for a retry after one minute`)
+    assert.equal(await get(server.port, DNS), 200, `${shape} recovery must admit the next matching Host`)
+  })
+}
+
+for (const command of ['ip', 'status', 'serve']) {
+  test(`local health completes while request recovery waits for the ${command} detection command`, async (context) => {
+    const server = await fixture(context)
+    writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.1')")
+    const output = readFileSync(path.join(server.dir, command), 'utf8')
+    writeFileSync(path.join(server.dir, command), `
+const fs = require('node:fs')
+fs.appendFileSync('started', 'attempt\\n')
+const timer = setInterval(() => {
+  if (!fs.existsSync('release')) return
+  clearInterval(timer)
+  ${output}
+}, 10)
+`)
+    const triggering = get(server.port, DNS)
+    await waitFor(() => existsSync(path.join(server.dir, 'started')))
+    let timer
+    try {
+      const local = get(server.port, `localhost:${server.port}`, '/__wt-artifact-server/health')
+      const result = await Promise.race([local, new Promise((resolve) => { timer = setTimeout(() => resolve('blocked'), 1000) })])
+      assert.equal(result, 200, 'a local health request must complete before the detection command is released')
+      writeFileSync(path.join(server.dir, 'clock'), '60001')
+      assert.equal(await get(server.port, DNS), 421, 'concurrent triggering requests use the current admission decision')
+      assert.equal(readFileSync(path.join(server.dir, 'started'), 'utf8'), 'attempt\n', 'concurrent requests must share one in-flight attempt even past the throttle')
+    } finally {
+      clearTimeout(timer)
+      writeFileSync(path.join(server.dir, 'release'), '')
+      await triggering
+      await waitFor(() => server.read()?.tailnetDetection.status === 'available')
+    }
+    assert.equal(await get(server.port, DNS), 200)
+  })
+}
