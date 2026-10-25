@@ -413,6 +413,13 @@ describe.each(['fan-out', 'generated', 'reduce'] as const)('envelope output life
   })
 })
 
+it.each([false, true])('removes output writability probes after successful execution with admission=%s', configured => {
+  const f = fixture('fan-out')
+  const result = launch(f, configured ? f.module : undefined)
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  expect(readdirSync(f.out).filter(name => name.startsWith('.write-probe-')), 'output writability probes must be removed').toEqual([])
+})
+
 function failFallbackRender(f: Fixture) {
   const preload = join(f.root, 'cleanup-preload.mjs')
   writeFileSync(preload, readFileSync(preload, 'utf8') + `
@@ -542,4 +549,66 @@ it('does not retry a rate-limited running sibling after another task refuses', (
     const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
     expect(calls.filter(call => !call.descendant).map(call => call.task).sort()).toEqual([...f.prompts].sort())
   } finally { stopRecordedChildren(f) }
+})
+
+function recordOrderedFailures(f: Fixture) {
+  writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const abort = AbortController.prototype.abort;
+    AbortController.prototype.abort = function(reason) {
+      const result = abort.call(this, reason);
+      if (reason?.message?.includes('request changed after admission') || reason?.message?.includes('.answer.txt'))
+        fs.writeFileSync(${JSON.stringify(join(f.root, 'first-error'))}, 'yes');
+      return result;
+    };
+    const write = fs.writeFileSync;
+    fs.writeFileSync = (file, ...args) => {
+      try { return write(file, ...args); } catch (error) {
+        if (String(file) === ${JSON.stringify(join(f.out, 'task-0.answer.txt'))}) write(${JSON.stringify(join(f.root, 'late-write'))}, error.code);
+        throw error;
+      }
+    };
+    syncBuiltinESMExports();`)
+}
+
+function orderedFailureFixture(firstFailure: 'refusal' | 'write') {
+  const f = fixture('fan-out')
+  f.args.push('--concurrency', '2', '--timeout-sec', '5')
+  mkdirSync(join(f.out, 'task-0.answer.txt'), { recursive: true })
+  if (firstFailure === 'write') mkdirSync(join(f.out, 'task-1.answer.txt'))
+  recordOrderedFailures(f)
+  writeFileSync(join(f.root, 'fake-opencode.mjs'), `import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+    const args = process.argv.slice(2);
+    if (args[0] !== 'run') process.exit(0);
+    const file = args[args.indexOf('-f') + 1];
+    const task = readFileSync(file, 'utf8');
+    appendFileSync(${JSON.stringify(f.marker)}, JSON.stringify({ task }) + '\\n');
+    const wait = async marker => { while (!existsSync(marker)) await new Promise(r => setTimeout(r, 10)); };
+    if (task === 'first rendered task') {
+      writeFileSync(${JSON.stringify(join(f.root, 'sibling.ready'))}, 'yes');
+      await wait(${JSON.stringify(join(f.root, 'first-error'))});
+    } else {
+      await wait(${JSON.stringify(join(f.root, 'sibling.ready'))});
+      if (${firstFailure === 'refusal'}) {
+        chmodSync(file, 0o600); writeFileSync(file, 'changed after admission');
+        process.stderr.write('429 rate limit'); process.exit(1);
+      }
+    }
+    console.log(JSON.stringify({ part: { type: 'text', text: 'SEALED ANSWER' } }));`)
+  return f
+}
+
+it.each(['refusal', 'write'] as const)('preserves the first %s failure when an earlier lane fails later', firstFailure => {
+  const f = orderedFailureFixture(firstFailure)
+  const result = launch(f, f.module)
+  expect(readFileSync(join(f.root, 'late-write'), 'utf8'), 'the earlier lane must fail only after the first pool abort').toBe('EISDIR')
+  expect(result.status, result.stdout + result.stderr).toBe(firstFailure === 'refusal' ? 3 : 2)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain(firstFailure === 'refusal'
+    ? 'OPENCODE_REFUSED: WT_OPENCODE_ENVELOPE_ADMISSION: request changed after admission'
+    : 'OPENCODE_ERROR: unexpected failure:')
+  if (firstFailure === 'write') expect(result.stdout).toContain('task-1.answer.txt')
+  expect(result.stdout).not.toContain('task-0.answer.txt')
+  const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  expect(calls.map(call => call.task).sort()).toEqual([...f.prompts].sort())
 })

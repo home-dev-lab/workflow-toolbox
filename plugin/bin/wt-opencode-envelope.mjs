@@ -447,9 +447,9 @@ async function runPool(tasks, limit, worker) {
   }
   const lanes = Array.from({ length: Math.min(limit, tasks.length) }, () => lane())
   // Keep snapshot lifetime, child timeouts and family reaping alive until every lane settles.
-  const settled = await Promise.allSettled(lanes)
-  const failed = settled.find((result) => result.status === 'rejected')
-  if (failed) throw failed.reason
+  await Promise.allSettled(lanes)
+  // The controller retains the first failure; settled results are ordered by lane.
+  pool.signal.throwIfAborted()
   return results
 }
 
