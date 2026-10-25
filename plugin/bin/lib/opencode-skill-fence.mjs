@@ -85,11 +85,15 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
   }
   // Tear the network bridge down: after a synchronous spawn it has already returned; after an
   // asynchronous spawn, when the child closes. A ChildProcess exposes `on`; a spawnSync result does not.
+  finishSpawnSetup(child, sandbox, usageOptions)
+  return child
+}
+
+function finishSpawnSetup(child, sandbox, usageOptions) {
   if (child && typeof child.on === 'function') child.once('close', () => finishOpencodeUsage(sandbox, usageOptions))
   else finishOpencodeUsage(sandbox, usageOptions)
   // Non-enumerable: callers that serialise or compare a spawnSync result see it unchanged.
-  if (child && typeof child === 'object') Object.defineProperty(child, 'laneSandbox', { value: { kind: sandbox.kind, line: sandbox.line }, enumerable: false })
-  return child
+  if (child && typeof child === 'object') Object.defineProperty(child, 'laneSandbox', { value: { kind: sandbox.kind, line: sandbox.line, suiteBroker: sandbox.suiteBroker }, enumerable: false })
 }
 
 export function opencodeSkillFenceRefusal(reason) {
