@@ -34,6 +34,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
+import { createTailnetRetry, formatTailnetStatus } from './lib/artifact-tailnet.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
@@ -269,6 +270,7 @@ class ArtifactService {
     this.requestedPort = configuredArtifactPort()
     this.startToken = process.env.WT_ARTIFACT_SERVER_START_TOKEN ?? randomUUID()
     this.tailscale = detectTailscale(this.requestedPort)
+    this.retryTailnet = createTailnetRetry({ detect: detectTailscale })
     this.registrations = new Map()
     this.mountAssignments = new Map()
     this.shuttingDown = false
@@ -401,7 +403,21 @@ class ArtifactService {
     return liveCount === 0 && (cleanRemoval || now >= this.noLiveSince + idleGraceMs() || (nextDeadline !== Infinity && now >= nextDeadline))
   }
 
-  requestMethod(request, response) {
+  async refreshTailnet(host) {
+    if (!this.discovery) return
+    const recovered = this.retryTailnet(this.tailscale, this.requestedPort, host)
+    if (!recovered) return
+    this.tailscale = recovered
+    await listenArtifactTailnet((address) => this.listen(address), recovered, this.requestedPort)
+    Object.assign(this.discovery, {
+      remoteUrl: recovered.remoteUrl, tailnetDetection: recovered.detection, tailnetVia: recovered.via,
+      tailnetBinary: recovered.binary, tailnetServeUrl: recovered.serveUrl,
+    })
+    this.writeDiscovery()
+  }
+
+  async requestMethod(request, response) {
+    await this.refreshTailnet(request.headers.host)
     const { requestedPort, tailscale } = this
     const method = request.method ?? ''
     const host = request.headers.host?.toLowerCase()
@@ -418,7 +434,7 @@ class ArtifactService {
   }
 
   async handler(request, response) {
-    const method = this.requestMethod(request, response)
+    const method = await this.requestMethod(request, response)
     if (method === null) return
     const { requestedPort } = this
     const requestUrl = this.requestUrl(request, response, method)
@@ -542,6 +558,7 @@ class ArtifactService {
       processIdentity: hostAdapter.readProcessIdentity(process.pid), startToken: this.startToken,
       baseUrl: `http://localhost:${requestedPort}`, remoteUrl: tailscale.remoteUrl,
       tailnetDetection: tailscale.detection, tailnetVia: tailscale.via,
+      tailnetBinary: tailscale.binary, tailnetServeUrl: tailscale.serveUrl,
       roots: [], mounts: [], startedAt: new Date().toISOString(),
     }
     await this.scanRegistrations()
@@ -709,12 +726,7 @@ async function statusCommand() {
   const probe = await probeArtifactServer(state.port)
   if (probe.kind !== 'ours' || probe.health.pid !== state.pid) return 'artifact server: stopped (stale state)'
   const roots = state.roots.map((root) => `${root.name}=${root.path}`).join(', ') || '(none)'
-  const detection = state.tailnetDetection
-  const detectionReason = detection?.reason ? ` (${detection.reason})` : ''
-  const tailnet = detection ? `${detection.status}${detectionReason}` : 'unknown (server predates tailnet detection status)'
-  // A state written before the field existed says nothing about the route: unknown, never native.
-  const via = typeof state.tailnetVia === 'string' ? state.tailnetVia : 'unknown'
-  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\ntailnetDetection: ${tailnet}\ntailnetVia: ${via}\nroots: ${roots}`
+  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\n${formatTailnetStatus(state)}\nroots: ${roots}`
 }
 
 const argv = process.argv.slice(2)

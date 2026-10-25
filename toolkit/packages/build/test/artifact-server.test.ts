@@ -317,11 +317,26 @@ function readState(stateHome: string): Discovery | null {
 
 function baseEnv(stateHome: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const bin = temporaryDir('tailscale-default-absent')
+  const preload = join(bin, 'no-host-standard-installs.cjs')
+  writeFileSync(preload, `
+const fs = require('node:fs')
+const { syncBuiltinESMExports } = require('node:module')
+const exists = fs.existsSync
+const hostInstalls = new Set([
+  '/mnt/c/Program Files/Tailscale/tailscale.exe',
+  '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+])
+fs.existsSync = (file) => hostInstalls.has(String(file)) ? false : exists(file)
+syncBuiltinESMExports()
+`)
   return {
     ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: stateHome,
     WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
+    // Interop fixtures replace PATH and must declare WSL independently of the real host.
+    WSL_DISTRO_NAME: extra.PATH ? 'fixture' : process.env.WSL_DISTRO_NAME,
     WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1',
     WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1', ...extra,
+    NODE_OPTIONS: `${extra.NODE_OPTIONS ?? process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}`,
   }
 }
 
@@ -2517,6 +2532,15 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(result.status).not.toBe(0)
     expect(result.stderr).toMatch(/state directory.*writable|secure/i)
   })
+})
+
+it('locks PATH-independent tailnet resolution, status and recovery', async () => {
+  const file = fileURLToPath(new URL('./artifact-server-tailnet.test.mjs', import.meta.url))
+  const child = spawn(process.execPath, ['--test', file], { stdio: ['ignore', 'pipe', 'pipe'] })
+  children.add(child)
+  const output = childOutput(child)
+  const code = await new Promise((resolve) => child.once('close', resolve))
+  expect(code, `${output.stdout()}\n${output.stderr()}`).toBe(0)
 })
 
 describe('owner decision 5: Tailscale access', () => {
