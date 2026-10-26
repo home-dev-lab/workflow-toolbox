@@ -34,6 +34,9 @@ const STOP_DETACHED_WAIT_MS = 10_000
 // One monitor and up to four spawned servers (initial attempt plus three retries) stop sequentially.
 const MONITORED_SERVER_TEARDOWN_BOUND_MS = STOP_CHILD_WAIT_MS + 4 * STOP_DETACHED_WAIT_MS + FALLBACK_DISCOVERY_MARGIN_MS
 const MONITORED_SERVER_TEST_BOUND_MS = MONITORED_SERVER_STARTUP_CAP_MS + MONITORED_SERVER_TEARDOWN_BOUND_MS
+// The selftest includes three deliberate 5 s command timeouts; its worst isolated run was ~21 s.
+// A 75 s bound exceeds three times the full-precision measured total plus 12 s of startup/cleanup margin.
+const TAILNET_SELFTEST_BOUND_MS = 75_000
 const FALLBACK_DISCOVERY_BOUND_MS = CANDIDATE_PROBE_MS * FALLBACK_CANDIDATES + FALLBACK_READINESS_MS + FALLBACK_DISCOVERY_MARGIN_MS
 const PAUSED_CLAIM_HOLD_MS = 7_000
 const OLD_CLAIM_STALE_BOUND_MS = 3_000
@@ -2535,13 +2538,13 @@ describe('review decisions: filesystem roots and URLs', () => {
 })
 
 it('locks PATH-independent tailnet resolution, status and recovery', async () => {
-  const file = fileURLToPath(new URL('./artifact-server-tailnet.test.mjs', import.meta.url))
+  const file = fileURLToPath(new URL('./artifact-server-tailnet.selftest.mjs', import.meta.url))
   const child = spawn(process.execPath, ['--test', file], { stdio: ['ignore', 'pipe', 'pipe'] })
   children.add(child)
   const output = childOutput(child)
   const code = await new Promise((resolve) => child.once('close', resolve))
   expect(code, `${output.stdout()}\n${output.stderr()}`).toBe(0)
-})
+}, TAILNET_SELFTEST_BOUND_MS)
 
 it.each(['', '  ', '.', undefined])('reports the missing hostname in a native partial result (%j)', (dnsName) => {
   const result = detectTailscale(48001, (_command: string, args: string[]) => {
@@ -2556,32 +2559,32 @@ it.each(['', '  ', '.', undefined])('reports the missing hostname in a native pa
   expect(result.detection.reason).toMatch(/hostname unavailable.*no DNS name/)
 })
 
-describe('owner decision 5: Tailscale access', () => {
-  function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent', cwd: string) {
-    const bin = temporaryDir(`tailscale-${mode}`)
-    const serveStatus = mode === 'https'
-      ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-      : mode === 'https-path'
-        ? 'https://host.tailnet.ts.net\n|-- /reports proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-        : mode === 'https-port'
-          ? 'https://host.tailnet.ts.net:8443\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-          : mode === 'hijack'
-            ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:9999\nhttps://other.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-            : 'No serve config'
-    // execFileSync cannot directly execute a Windows .cmd file. Every case pins Node as the real
-    // executable and places its command scripts in the fixture cwd, preserving the Tailscale argv.
-    // A spawned server runs from its state directory, so server-level cases pass that directory.
-    mkdirSync(cwd, { recursive: true, mode: 0o700 })
-    const failed = 'process.exitCode = 1\n'
-    writeFileSync(join(cwd, 'ip'), mode === 'absent' ? failed : mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')\n")
-    writeFileSync(join(cwd, 'status'), mode === 'absent' ? failed : "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
-    writeFileSync(join(cwd, 'serve'), mode === 'absent' ? failed : `process.stdout.write(\`${serveStatus}\`)\n`)
-    return {
-      bin: realpathSync(bin),
-      env: { WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath },
-    }
+function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent', cwd: string) {
+  const bin = temporaryDir(`tailscale-${mode}`)
+  const serveStatus = mode === 'https'
+    ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+    : mode === 'https-path'
+      ? 'https://host.tailnet.ts.net\n|-- /reports proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+      : mode === 'https-port'
+        ? 'https://host.tailnet.ts.net:8443\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+        : mode === 'hijack'
+          ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:9999\nhttps://other.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+          : 'No serve config'
+  // execFileSync cannot directly execute a Windows .cmd file. Every case pins Node as the real
+  // executable and places its command scripts in the fixture cwd, preserving the Tailscale argv.
+  // A spawned server runs from its state directory, so server-level cases pass that directory.
+  mkdirSync(cwd, { recursive: true, mode: 0o700 })
+  const failed = 'process.exitCode = 1\n'
+  writeFileSync(join(cwd, 'ip'), mode === 'absent' ? failed : mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')\n")
+  writeFileSync(join(cwd, 'status'), mode === 'absent' ? failed : "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
+  writeFileSync(join(cwd, 'serve'), mode === 'absent' ? failed : `process.stdout.write(\`${serveStatus}\`)\n`)
+  return {
+    bin: realpathSync(bin),
+    env: { WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath },
   }
+}
 
+describe('owner decision 5: Tailscale access', () => {
   it('parses the URL token from the captured Tailscale Serve header', () => {
     const served = [
       'https://desktop-ug8o6r2.tailc54ed8.ts.net (tailnet only)',
@@ -2594,7 +2597,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(parseTailscaleServeUrl('https://% invalid\n|-- / proxy http://127.0.0.1:48375', 'desktop-ug8o6r2.tailc54ed8.ts.net', 48375))
       .toBeNull()
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('runs every Tailscale fixture through a real executable', () => {
     const cwd = temporaryDir('tailscale-windows-executable')
     const { env } = tailscaleStub('present', cwd)
@@ -2605,7 +2610,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(result.status).toBe(0)
     expect(result.stdout.trim()).toBe('127.0.0.1')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('[B-02] accepts MagicDNS, rejects an evil Host, and reports the tailnet URL', async () => {
     const { project } = projectWithRoots('tailscale')
     const stateHome = temporaryDir('tailscale-state')
@@ -2630,7 +2637,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(refused.body).not.toContain('host.tailnet.ts.net')
     expect(refused.body).not.toContain('127.0.0.1')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('[B-02] sets remoteUrl to null when the stubbed tailscale binary is absent', async () => {
     const { project } = projectWithRoots('no-tailscale')
     const stateHome = temporaryDir('no-tailscale-state')
@@ -2648,7 +2657,9 @@ describe('owner decision 5: Tailscale access', () => {
     const status = await runCli(['status'], baseEnv(stateHome))
     expect(status.stdout).toMatch(/tailnetDetection: unavailable.*configured tailscale binary failed.*exit=1/i)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports the configured Tailscale timeout and measured elapsed time', async () => {
     const { project } = projectWithRoots('tailscale-timeout')
     const stateHome = temporaryDir('tailscale-timeout-state')
@@ -2670,7 +2681,9 @@ describe('owner decision 5: Tailscale access', () => {
       reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGKILL, code=ETIMEDOUT, timeout=5000ms/),
     })
   }, MONITORED_SERVER_TEST_BOUND_MS)
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('distinguishes a successful no-tailnet result from a failed lookup', async () => {
     const { project } = projectWithRoots('no-tailnet-result')
     const stateHome = temporaryDir('no-tailnet-result-state')
@@ -2683,7 +2696,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.remoteUrl).toBeNull()
     expect(state.tailnetDetection).toEqual({ status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('[B-02] uses the HTTPS MagicDNS URL only when the stub reports a matching Serve proxy', async () => {
     const { project, reports } = projectWithRoots('tailscale-https')
     const artifact = join(reports, 'phone.md')
@@ -2704,7 +2719,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(remote.status).toBe(0)
     expect(remote.stdout.trim()).toBe(`https://host.tailnet.ts.net/${basename(project)}-reports/phone.md`)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('includes a path-mounted Serve mapping in the HTTPS artifact URL', async () => {
     const { project } = projectWithRoots('tailscale-https-path')
     const stateHome = temporaryDir('tailscale-https-path-state')
@@ -2717,7 +2734,9 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/reports')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('preserves a non-default HTTPS port from the Serve mapping', async () => {
     const { project } = projectWithRoots('tailscale-https-port')
     const stateHome = temporaryDir('tailscale-https-port-state')
@@ -2730,7 +2749,9 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net:8443')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('does not claim a MagicDNS name whose mapping belongs to another service', async () => {
     const { project } = projectWithRoots('tailscale-hijack')
     const stateHome = temporaryDir('tailscale-hijack-state')
@@ -2743,43 +2764,45 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.1:${reservation.port}`)
   })
+})
 
-  // A Windows tailscale.exe reached from WSL, as shell stubs: `serve` prints `serveStatus`, `powershell.exe` resolves
-  // the executable and answers an Invoke-WebRequest check with `checkLine`, recording its arguments in `ps-args`.
-  // `failing` names one tailscale subcommand (`serve status`, `status --json`) that exits 1 instead of answering.
-  function wslInteropStub(serveStatus: string, checkLine = 'STATUS=200', failing = '') {
-    const bin = temporaryDir('tailscale-wsl-bin')
-    const windowsTailscale = join(bin, 'windows-tailscale.exe')
-    writeFileSync(windowsTailscale, `#!/bin/sh\nif [ "$1 $2" = "${failing}" ]; then exit 1; fi\nif [ "$1 $2" = "ip -4" ]; then printf "127.0.0.2\\n"; exit 0; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then printf '%s' "${serveStatus}"; exit 0; fi\nexit 1\n`)
-    writeFileSync(join(bin, 'powershell.exe'), `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done > ${JSON.stringify(join(bin, 'ps-args'))}\ncase "$*" in *Invoke-WebRequest*) printf '%s\\r\\n' ${JSON.stringify(checkLine)} ;; *) printf "C:\\\\Resolved\\\\tailscale.exe\\r\\n" ;; esac\n`)
-    writeFileSync(join(bin, 'wslpath'), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(windowsTailscale)}\n`)
-    for (const file of readdirSync(bin)) chmodSync(join(bin, file), 0o755)
-    return bin
+// A Windows tailscale.exe reached from WSL, as shell stubs: `serve` prints `serveStatus`, `powershell.exe` resolves
+// the executable and answers an Invoke-WebRequest check with `checkLine`, recording its arguments in `ps-args`.
+// `failing` names one tailscale subcommand (`serve status`, `status --json`) that exits 1 instead of answering.
+function wslInteropStub(serveStatus: string, checkLine = 'STATUS=200', failing = '') {
+  const bin = temporaryDir('tailscale-wsl-bin')
+  const windowsTailscale = join(bin, 'windows-tailscale.exe')
+  writeFileSync(windowsTailscale, `#!/bin/sh\nif [ "$1 $2" = "${failing}" ]; then exit 1; fi\nif [ "$1 $2" = "ip -4" ]; then printf "127.0.0.2\\n"; exit 0; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then printf '%s' "${serveStatus}"; exit 0; fi\nexit 1\n`)
+  writeFileSync(join(bin, 'powershell.exe'), `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done > ${JSON.stringify(join(bin, 'ps-args'))}\ncase "$*" in *Invoke-WebRequest*) printf '%s\\r\\n' ${JSON.stringify(checkLine)} ;; *) printf "C:\\\\Resolved\\\\tailscale.exe\\r\\n" ;; esac\n`)
+  writeFileSync(join(bin, 'wslpath'), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(windowsTailscale)}\n`)
+  for (const file of readdirSync(bin)) chmodSync(join(bin, file), 0o755)
+  return bin
+}
+
+// `configured` pins the Windows executable directly (as `Tailscale.EXE`) instead of resolving it through PowerShell.
+async function startWslInteropServer(tag: string, serveStatus: (port: number) => string, options: { failing?: string, configured?: boolean } = {}) {
+  const { project, reports } = projectWithRoots(tag)
+  const artifact = join(reports, 'plan.html')
+  writeFileSync(artifact, '<p>plan</p>')
+  const stateHome = temporaryDir(`${tag}-state`)
+  const reservation = await reservePort()
+  await closeServer(reservation.server)
+  const bin = wslInteropStub(serveStatus(reservation.port), 'STATUS=200', options.failing)
+  let configured: string | undefined
+  if (options.configured) {
+    configured = join(bin, 'Tailscale.EXE')
+    writeFileSync(configured, readFileSync(join(bin, 'windows-tailscale.exe')))
+    chmodSync(configured, 0o755)
+    rmSync(join(bin, 'powershell.exe'))
   }
+  spawnEnsure(project, baseEnv(stateHome, {
+    PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: configured, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+  }))
+  const state = await waitForState(stateHome, (value) => value.roots.length > 0)
+  return { artifact, stateHome, port: reservation.port, state }
+}
 
-  // `configured` pins the Windows executable directly (as `Tailscale.EXE`) instead of resolving it through PowerShell.
-  async function startWslInteropServer(tag: string, serveStatus: (port: number) => string, options: { failing?: string, configured?: boolean } = {}) {
-    const { project, reports } = projectWithRoots(tag)
-    const artifact = join(reports, 'plan.html')
-    writeFileSync(artifact, '<p>plan</p>')
-    const stateHome = temporaryDir(`${tag}-state`)
-    const reservation = await reservePort()
-    await closeServer(reservation.server)
-    const bin = wslInteropStub(serveStatus(reservation.port), 'STATUS=200', options.failing)
-    let configured: string | undefined
-    if (options.configured) {
-      configured = join(bin, 'Tailscale.EXE')
-      writeFileSync(configured, readFileSync(join(bin, 'windows-tailscale.exe')))
-      chmodSync(configured, 0o755)
-      rmSync(join(bin, 'powershell.exe'))
-    }
-    spawnEnsure(project, baseEnv(stateHome, {
-      PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: configured, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
-    }))
-    const state = await waitForState(stateHome, (value) => value.roots.length > 0)
-    return { artifact, stateHome, port: reservation.port, state }
-  }
-
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('offers no URL under WSL interop without a serve route, and names the command that creates it', async () => {
     const { artifact, stateHome, port, state } = await startWslInteropServer('tailscale-wsl', () => 'No serve config')
     const route = `tailscale serve --bg --set-path /artifacts http://127.0.0.1:${port}`
@@ -2796,7 +2819,9 @@ describe('owner decision 5: Tailscale access', () => {
     const status = await runCli(['status'], baseEnv(stateHome))
     expect(status.stdout).toContain('tailnetVia: windows-interop')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('keeps the HTTPS serve route under WSL interop without probing it from WSL', async () => {
     const { state } = await startWslInteropServer('tailscale-wsl-route',
       (port) => `https://host.tailnet.ts.net (tailnet only)\n|-- /artifacts proxy http://127.0.0.1:${port}\n`)
@@ -2804,14 +2829,18 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.tailnetVia).toBe('windows-interop')
     expect(state.tailnetDetection).toEqual({ status: 'available', reason: null })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('classifies a configured Windows executable as Windows interop, whatever the case of .exe', async () => {
     const { state } = await startWslInteropServer('tailscale-wsl-configured', () => 'No serve config', { configured: true })
     expect(state.tailnetVia).toBe('windows-interop')
     expect(state.remoteUrl).toBeNull()
     expect(state.tailnetDetection?.status).toBe('no-serve-route')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('offers no URL and no route advice under WSL interop when the serve or DNS status cannot be read', async () => {
     for (const { failing, reason } of [
       { failing: 'serve status', reason: 'could not read tailscale serve status (exit 1); no URL offered' },
@@ -2822,15 +2851,17 @@ describe('owner decision 5: Tailscale access', () => {
       expect(state.tailnetDetection).toEqual({ status: 'unavailable', reason })
     }
   })
+})
 
-  // A configured Node tailscale stub whose `ip -4` answers an address this host does not own, so binding it fails.
-  function unownedAddressStub(cwd: string, serveStatus: string) {
-    mkdirSync(cwd, { recursive: true, mode: 0o700 })
-    writeFileSync(join(cwd, 'ip'), "process.stdout.write('192.0.2.1\\n')\n")
-    writeFileSync(join(cwd, 'status'), "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
-    writeFileSync(join(cwd, 'serve'), `process.stdout.write(${JSON.stringify(serveStatus)})\n`)
-  }
+// A configured Node tailscale stub whose `ip -4` answers an address this host does not own, so binding it fails.
+function unownedAddressStub(cwd: string, serveStatus: string) {
+  mkdirSync(cwd, { recursive: true, mode: 0o700 })
+  writeFileSync(join(cwd, 'ip'), "process.stdout.write('192.0.2.1\\n')\n")
+  writeFileSync(join(cwd, 'status'), "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
+  writeFileSync(join(cwd, 'serve'), `process.stdout.write(${JSON.stringify(serveStatus)})\n`)
+}
 
+describe('owner decision 5: Tailscale access', () => {
   it('keeps an HTTPS serve route when the tailnet address cannot be bound', async () => {
     const { project } = projectWithRoots('tailscale-unbound-https')
     const stateHome = temporaryDir('tailscale-unbound-https-state')
@@ -2842,7 +2873,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/artifacts')
     expect(state.tailnetDetection).toEqual({ status: 'available', reason: null })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('drops the http tailnet URL, with its reason, when the tailnet address cannot be bound', async () => {
     const { project } = projectWithRoots('tailscale-unbound-http')
     const stateHome = temporaryDir('tailscale-unbound-http-state')
@@ -2855,7 +2888,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.tailnetDetection?.status).toBe('unavailable')
     expect(state.tailnetDetection?.reason).toContain(`could not listen on the tailnet address 192.0.2.1:${reservation.port}`)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('chooses the remote URL from the serve route, then the route the host can offer', () => {
     expect(chooseRemoteUrl({ httpsUrl: 'https://h.ts.net/artifacts', ip: '100.1.2.3', port: 48375, via: 'windows-interop' }))
       .toEqual({ remoteUrl: 'https://h.ts.net/artifacts', status: 'available', reason: null })
@@ -2874,7 +2909,9 @@ describe('owner decision 5: Tailscale access', () => {
         'Create the route: tailscale serve --bg --set-path /artifacts http://127.0.0.1:48375, then restart the artifact server (wt-artifact-server restart --force)',
     })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('quotes the checked URL as a PowerShell literal and reads the check result', () => {
     const script = windowsCheckScript("https://h.ts.net/a/it's\u2019.html", 8) as string
     expect(script).toContain("-Uri 'https://h.ts.net/a/it''s\u2019\u2019.html'")
@@ -2884,33 +2921,35 @@ describe('owner decision 5: Tailscale access', () => {
     expect(parseWindowsCheck('ERROR=The operation has timed out.\r\n')).toEqual({ verdict: 'unreachable', reason: 'The operation has timed out.', from: 'windows' })
     expect(parseWindowsCheck('')).toEqual({ verdict: 'unverified', reason: 'powershell.exe printed no check result' })
   })
+})
 
-  // A published state whose remote URL is `remoteUrl`, pointing at a root holding one artifact; the tailscale
-  // binary is the Node stub configured in `cwd`, whose `ip -4` succeeds unless `tailscaleFails`. `tailnetVia`
-  // is recorded in the state when given, as a current server writes it.
-  function checkFixture(tag: string, remoteUrl: (port: number) => string | null, port: number, tailscaleFails = false, tailnetVia?: string) {
-    const root = temporaryDir(`${tag}-root`)
-    const artifact = join(root, 'plan.html')
-    writeFileSync(artifact, '<p>plan</p>')
-    const stateHome = temporaryDir(`${tag}-state`)
-    mkdirSync(serverStateDir(stateHome), { recursive: true, mode: 0o700 })
-    atomicWriteJson(statePath(stateHome), {
-      version: 'x', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl: remoteUrl(port),
-      roots: [{ name: 'reports', path: root }], startedAt: new Date().toISOString(), ...(tailnetVia ? { tailnetVia } : {}),
-    })
-    const cwd = temporaryDir(`${tag}-tailscale`)
-    writeFileSync(join(cwd, 'ip'), tailscaleFails ? 'process.exitCode = 1\n' : "process.stdout.write('127.0.0.1\\n')\n")
-    return { artifact, cwd, env: baseEnv(stateHome) }
-  }
+// A published state whose remote URL is `remoteUrl`, pointing at a root holding one artifact; the tailscale
+// binary is the Node stub configured in `cwd`, whose `ip -4` succeeds unless `tailscaleFails`. `tailnetVia`
+// is recorded in the state when given, as a current server writes it.
+function checkFixture(tag: string, remoteUrl: (port: number) => string | null, port: number, tailscaleFails = false, tailnetVia?: string) {
+  const root = temporaryDir(`${tag}-root`)
+  const artifact = join(root, 'plan.html')
+  writeFileSync(artifact, '<p>plan</p>')
+  const stateHome = temporaryDir(`${tag}-state`)
+  mkdirSync(serverStateDir(stateHome), { recursive: true, mode: 0o700 })
+  atomicWriteJson(statePath(stateHome), {
+    version: 'x', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl: remoteUrl(port),
+    roots: [{ name: 'reports', path: root }], startedAt: new Date().toISOString(), ...(tailnetVia ? { tailnetVia } : {}),
+  })
+  const cwd = temporaryDir(`${tag}-tailscale`)
+  writeFileSync(join(cwd, 'ip'), tailscaleFails ? 'process.exitCode = 1\n' : "process.stdout.write('127.0.0.1\\n')\n")
+  return { artifact, cwd, env: baseEnv(stateHome) }
+}
 
-  async function answeringServer() {
-    const server = createServer((_request, response) => { response.writeHead(200); response.end('ok') })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const address = server.address()
-    if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
-    return { server, port: address.port }
-  }
+async function answeringServer() {
+  const server = createServer((_request, response) => { response.writeHead(200); response.end('ok') })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
+  return { server, port: address.port }
+}
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports a reachable remote URL from the native tailscale side with exit 0, the URL alone on stdout', async () => {
     const { server, port } = await answeringServer()
     try {
@@ -2927,7 +2966,9 @@ describe('owner decision 5: Tailscale access', () => {
       await closeServer(server)
     }
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports an unreachable remote URL with exit 4', async () => {
     const reservation = await reservePort()
     await closeServer(reservation.server)
@@ -2937,7 +2978,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(result.stderr).toBe('check: unreachable (ECONNREFUSED, from native)\n')
     expect(result.code).toBe(4)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports an unverified check with exit 5 when tailscale cannot be reached, and keeps usage at exit 2', async () => {
     const { artifact, cwd, env } = checkFixture('check-unverified', () => 'https://host.tailnet.ts.net/artifacts', 48_001, true)
     const result = await runCli(['url', artifact, '--remote', '--check'], env, cwd)
@@ -2948,7 +2991,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(usage.code).toBe(2)
     expect(usage.stderr).toContain('[--check]')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('checks a remote URL through Windows PowerShell under WSL interop, passing the URL as a quoted literal', async () => {
     const { artifact, env } = checkFixture('check-windows', () => 'https://host.tailnet.ts.net/artifacts', 48_001)
     const bin = wslInteropStub('No serve config', 'STATUS=200')
@@ -2964,7 +3009,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(failed.stderr).toBe('check: unreachable (The operation has timed out., from windows)\n')
     expect(failed.code).toBe(4)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('checks from the side the server recorded, never from a fresh resolution', async () => {
     const recordedWindows = checkFixture('check-recorded-windows', () => 'https://host.tailnet.ts.net/artifacts', 48_001, false, 'windows-interop')
     const windowsBin = wslInteropStub('No serve config', 'STATUS=200')
@@ -2983,14 +3030,18 @@ describe('owner decision 5: Tailscale access', () => {
       await closeServer(server)
     }
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform === 'win32')('reports an unverified check naming PowerShell when the recorded Windows side cannot be reached', async () => {
     const { artifact, cwd, env } = checkFixture('check-recorded-no-powershell', () => 'https://host.tailnet.ts.net/artifacts', 48_001, false, 'windows-interop')
     const result = await runCli(['url', artifact, '--remote', '--check'], { ...env, PATH: temporaryDir('no-powershell') }, cwd)
     expect(result.stderr).toMatch(/^check: unverified \(powershell\.exe did not complete the check \(/)
     expect(result.code).toBe(5)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('names the recorded detection reason when there is no remote URL, and stays generic for an older state', async () => {
     const { artifact, cwd, env } = checkFixture('no-remote-reason', () => null, 48_001)
     const older = await runCli(['url', artifact, '--remote'], env, cwd)
