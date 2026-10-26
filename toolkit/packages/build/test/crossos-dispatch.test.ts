@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
 // @ts-expect-error JS quality scanner
@@ -73,8 +73,8 @@ function authPathOf(dir: string) {
 }
 function fixture(workflowSource = JSON.stringify({ jobs: { matrix: { strategy: {
   matrix: { include: ['ubuntu-latest', 'windows-latest', 'macos-latest'].map((os) => ({ os })) },
-} } } })) {
-  const dir = scratchDir()
+} } } }), directory?: string) {
+  const dir = directory ?? scratchDir()
   git(dir, 'init', '-q', '-b', 'main')
   git(dir, 'config', 'user.name', 'Fixture')
   git(dir, 'config', 'user.email', 'fixture@example.test')
@@ -183,6 +183,47 @@ function advanceDevelop(f: ReturnType<typeof fixture>, from: string) {
   git(f.dir, 'branch', '-f', 'develop', tip)
   return tip
 }
+const shellArgument = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+function executeRecoveryRecipe(text: string, cwd: string, preview: string, branch: string) {
+  const commands = text.split('\n').filter((line) => /^(?:# )?(?:git |node )/.test(line))
+  expect(commands, 'refusal must print three executable recovery commands').toHaveLength(3)
+  let finalOutput = ''
+  for (const [index, printed] of commands.entries()) {
+    const command = printed.replaceAll('<dir>', shellArgument(preview)).replaceAll('<branch>', shellArgument(branch))
+    const result = spawnSync('bash', ['-c', command + (index === 2 ? ' --dry-run --repo-slug owner/repo' : '')], {
+      cwd, env: { ...env, GIT_MERGE_AUTOEDIT: 'no' }, encoding: 'utf8',
+    })
+    expect(result.status, `${command}\n${result.stdout}\n${result.stderr}`).toBe(0)
+    finalOutput = result.stdout
+  }
+  return finalOutput
+}
+
+describe('cross-OS printed recovery', () => {
+  it.each(['absolute', 'relative'])('executes the printed recipe from another repository with a %s repo path', async (mode) => {
+    const directory = join(scratchDir(), "target ' $repo; &" + (process.platform === 'win32' ? '' : ' '))
+    mkdirSync(directory)
+    const f = fixture(undefined, directory); const outside = fixture(); const out = output()
+    const tip = advanceDevelop(f, f.base)
+    const branch = "feature's-$topic"
+    git(f.dir, 'branch', branch, f.host)
+    git(f.dir, 'update-ref', 'refs/remotes/public/main', f.base)
+    const preview = join(scratchDir(), "preview ' $merge; &")
+    const before = git(outside.dir, 'worktree', 'list', '--porcelain')
+    const previous = process.cwd()
+    process.chdir(outside.dir)
+    try {
+      const repo = mode === 'absolute' ? f.dir : relative(outside.dir, f.dir)
+      expect(await liveDispatch(['decide', '--repo', repo, '--merge', f.host], { io: localOnlyIO(), print: out.print })).toBe(2)
+    } finally { process.chdir(previous) }
+    const finalOutput = executeRecoveryRecipe(out.lines.join('\n'), outside.dir, preview, branch)
+    expect(finalOutput, 'printed dispatcher must run the recovered preview').toContain('RESULT: dry-run')
+    expect(git(preview, 'merge-base', '--is-ancestor', tip, 'HEAD')).toBe('')
+    expect(git(preview, 'merge-base', '--is-ancestor', f.host, 'HEAD')).toBe('')
+    expect(git(preview, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ')).toHaveLength(3)
+    expect(git(outside.dir, 'worktree', 'list', '--porcelain')).toBe(before)
+  })
+})
 
 describe('cross-OS develop ancestry refusal', () => {
   const cases = developCommands.flatMap((command) => ['host behind', 'docs behind', 'diverged'].map((history) => ({ ...command, history })))
@@ -194,7 +235,7 @@ describe('cross-OS develop ancestry refusal', () => {
     expect(code, 'stale commit must be refused before deciding or dispatching').toBe(2)
     const text = out.lines.join('\n')
     expect(text).toContain(`does not contain current local develop tip ${tip}`)
-    expect(text).toContain('git worktree add --detach <dir> develop')
+    expect(text).toContain('worktree add --detach <dir> develop')
     expect(text).toContain('git -C <dir> merge --no-ff <branch>')
     expect(text).toContain('run --repo <dir> --merge HEAD')
     expect(out.lines.at(-1)).toBe('RESULT: error')
@@ -889,6 +930,49 @@ describe('cross-OS dispatch', () => {
     } }
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: output().print })).toBe(2)
     expect(existsSync(auth)).toBe(false)
+  })
+})
+
+describe('cross-OS historical collection', () => {
+  it.each(['advanced', 'absent'])('collects a timed-out run with develop %s and deletion-only authorization', async (develop) => {
+    const f = publicFixture(); const out = output(); const auth = authPathOf(f.dir)
+    const { io, authAtDelete, state } = timedOutBranchIo(fakeGh(f), auth)
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo', '--timeout-min', '0.000001'], { io, print: out.print })).toBe(4)
+    if (develop === 'advanced') {
+      const tip = advanceDevelop(f, f.docs)
+      expect(spawnSync('git', ['merge-base', '--is-ancestor', tip, f.host], { cwd: f.dir, env }).status).toBe(1)
+    } else git(f.dir, 'branch', '-D', 'develop')
+    state.pending = false; out.lines.length = 0
+    expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print }), out.lines.join('\n')).toBe(0)
+    expect(out.lines.join('\n')).not.toMatch(/does not contain current local develop|cannot resolve local develop/)
+    expect(out.lines.at(-1)).toBe('RESULT: green run=23')
+    expect(authAtDelete).toEqual([{ maxCount: 0 }])
+    expect(existsSync(auth)).toBe(false)
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
+  })
+})
+
+describe('cross-OS historical release verdict', () => {
+  it.each(['advanced', 'absent'])('uses the newest host-layer run with develop %s regardless of an older green or red', async (develop) => {
+    const f = publicFixture(); const out = output(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    writeFileSync(join(f.dir, 'plugin/bin/host.mjs'), 'second host change')
+    git(f.dir, 'commit', '-qam', 'second host change')
+    const latest = git(f.dir, 'rev-parse', 'HEAD')
+    if (develop === 'advanced') {
+      const tip = advanceDevelop(f, latest)
+      expect(spawnSync('git', ['merge-base', '--is-ancestor', tip, latest], { cwd: f.dir, env }).status).toBe(1)
+    } else git(f.dir, 'branch', '-D', 'develop')
+    const args = ['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', latest]
+    const record = (sha: string, runId: number, conclusion: string) => writeFileSync(join(store, `${sha}.json`), JSON.stringify({ sha, runId, workflow: 'cross-os.yml', status: 'completed', conclusion }))
+    record(f.host, 10, 'success'); record(latest, 11, 'failure')
+    expect(await dispatch(args, { io: fakeGh(f, 'failure').io, print: out.print }), out.lines.join('\n')).toBe(1)
+    expect(out.lines.join('\n')).not.toMatch(/does not contain current local develop|cannot resolve local develop/)
+    expect(out.lines.at(-1)).toBe('RESULT: red run=11')
+    out.lines.length = 0
+    record(f.host, 10, 'failure'); record(latest, 11, 'success')
+    expect(await dispatch(args, { io: fakeGh(f).io, print: out.print }), out.lines.join('\n')).toBe(0)
+    expect(out.lines.join('\n')).not.toMatch(/does not contain current local develop|cannot resolve local develop/)
+    expect(out.lines.at(-1)).toBe('RESULT: green run=11')
   })
 })
 
