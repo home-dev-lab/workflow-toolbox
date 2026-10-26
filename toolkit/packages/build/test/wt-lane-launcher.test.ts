@@ -265,7 +265,7 @@ function installDeterministicGroupedOrphan(status: string, cwd: string) {
   const script = `const { spawn } = require('node:child_process'); const fs = require('node:fs'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid) + '\\n'); setInterval(() => {}, 1000)`
   const leader = spawnChild(process.execPath, ['-e', script], { cwd, detached: true, stdio: 'ignore' })
   spawnedGroups.push(leader.pid!)
-  const childPid = Number(waitForContent(childPidFile, PID_COMPLETE, 5000))
+  const childPid = Number(waitForContent(childPidFile, PID_COMPLETE))
   const until = Date.now() + 5000
   let leaderIdentity = inspectProcess(leader.pid!)
   let child = inspectProcess(childPid)
@@ -1248,7 +1248,7 @@ function registerResumeCases() {
     waitForContent(status, /abandoned/)
     const fresh = run(f, ['--timeout', '10'])
     expect(fresh.status, fresh.stderr).toBe(0)
-    const resumed = waitForContent(join(f.dir, 'resumed'), /^resumed$/, 5000)
+    const resumed = waitForContent(join(f.dir, 'resumed'), /^resumed$/)
     expect(readFileSync(join(f.dir, 'progress'), 'utf8')).toBe('kept')
     expect(resumed).toBe('resumed')
     waitForContent(join(f.dir, '.lane', 'run.log'), /EXIT=0/)
