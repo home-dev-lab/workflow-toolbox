@@ -362,6 +362,25 @@ it.skipIf(process.platform !== 'linux')('ignores relative XDG state and launches
 })
 
 describe('suite broker launch authority', () => {
+  it('routes deadline queries through private parent IPC', () => {
+    const fs = fakeFs(), relay = { kill() {}, pid: 1 }
+    const spawnFn = vi.fn((_command: string, args: string[]) => { fs.ensureFile(socketOf(args)!); return relay })
+    const p = plan({ fs, spawnFn }) as SandboxPlan & { suiteBroker?: unknown }
+    try {
+      expect(spawnFn).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.objectContaining({ stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }))
+      expect(p.suiteBroker).toBe(relay)
+    } finally { p.dispose() }
+  })
+  it('carries private IPC through downstream attachment into the real deadline worker', () => {
+    const script = join(ROOT, 'toolkit/packages/build/test/lane-broker-deadline.selftest.mjs')
+    const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=^transport: downstream', script], { encoding: 'utf8', timeout: 15_000 })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/pass 1\b/)
+    expect(result.stdout).toMatch(/skipped 0\b/)
+  })
+})
+
+describe('suite broker capability authority', () => {
   it('binds each broker and its lane to a fresh launch capability', () => {
     const tokens: string[] = []
     for (let i = 0; i < 2; i++) {
