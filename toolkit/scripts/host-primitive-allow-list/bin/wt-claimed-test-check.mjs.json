@@ -1,8 +1,8 @@
 {
   "fs import": 1,
-  "hard-coded path separator": 4,
   "existsSync": 3,
   "readdirSync": 2,
   "statSync": 1,
+  "hard-coded path separator": 3,
   "readFileSync": 2
 }

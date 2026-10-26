@@ -26,6 +26,8 @@
 //                same plain-markdown prepend shape as the rules set.
 //   • scripts — fingerprinted thin launchers for the lane, waiter, arc and quota watchers.
 //               Runtime bodies and their libraries come from the installed plugin on each launch.
+//   • ssh-sign-retry — explicitly named opt-in, excluded from all: standalone Node program
+//                      plus an absent-only Git SSH signer setting (local, or --global).
 //   • docs — RETIRED. It installed the rules' rationale/field-case overflow into
 //            <cwd>/.claude/docs/wt. The shipped rules no longer point at any rationale
 //            file (the repository history is the record), so nothing is installed; a
@@ -71,7 +73,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent, sshSignRetryDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
 import { renderScriptShim, resolveAdoptedScript } from '../../../bin/lib/host/adopted-script-shim.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
@@ -545,9 +547,11 @@ const SETS = {
   agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
   autonomy: { kind: 'autonomy', srcDir: 'autonomy', defaultDir: '.claude', globalSubdir: '', resolveItems: () => MANAGED_AUTONOMY },
   scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }, { file: 'wt-lane-wait.mjs' }, { file: 'wt-arc-watch.mjs' }, { file: 'wt-quota-watch.mjs' }] },
+  'ssh-sign-retry': { kind: 'scripts', srcDir: path.join('bin', 'lib', 'host'), defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-ssh-sign-retry.mjs', standalone: true }] },
 }
 
-const MANAGED_SET_NAMES = Object.keys(SETS)
+// Optional host configuration is never pulled in by --set all or ambient refresh.
+const MANAGED_SET_NAMES = Object.keys(SETS).filter((name) => name !== 'ssh-sign-retry')
 
 // Retired set name: `--set docs` names it and exits non-zero, rather than failing as an unknown set.
 const RETIRED_DOCS_SET = 'docs'
@@ -725,7 +729,7 @@ function renderBanner(version, fp, stamp = null, file = '') {
  *  unedited installed file reproduces its stamped fingerprint. Markdown sets read their
  *  bundle source; scripts serialize the shared launcher template instead of copying bodies. */
 function itemContent(set, item, root) {
-  if (set.kind === 'scripts') return renderScriptShim(item.file)
+  if (set.kind === 'scripts' && !item.standalone) return renderScriptShim(item.file)
   const src = path.join(root, set.srcDir, item.file)
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   return fs.readFileSync(src, 'utf8')
@@ -742,7 +746,7 @@ function itemContent(set, item, root) {
  *  degrades to null and the caller falls back to the version comparison. */
 function shippedFingerprint(set, item, root, installedBody = null, preserveAgentFrontmatter = false) {
   try {
-    const rendered = set.kind === 'scripts' ? renderScriptShim(item.file) : fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8')
+    const rendered = set.kind === 'scripts' && !item.standalone ? renderScriptShim(item.file) : fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8')
     // A clean agent can legitimately retain an installer-preserved local frontmatter field.
     // Compare that copy to the current shipped definition with the same field retained, not to
     // the raw template which could never match it.
@@ -1030,6 +1034,8 @@ function adoptedFiles(set, dir, root) {
 }
 
 function existingAdoptionCandidates(name, set, root) {
+  // The shared signer must not rediscover a disposable project/config-profile copy.
+  if (name === 'ssh-sign-retry') return []
   const candidates = new Map()
   const add = (level, dir, placement = 'static') => {
     const resolved = path.resolve(dir)
@@ -2116,7 +2122,7 @@ function migratedStatus({ target, served }) {
 }
 
 function scriptTargetDecision(set, item, args, classification, decision) {
-  if (set.kind !== 'scripts') return decision
+  if (set.kind !== 'scripts' || item.standalone) return decision
   const resolved = resolveAdoptedScript(item.file)
   if (!resolved.target && (classification.state !== 'absent' || args.mode === 'install')) {
     return { status: `TARGET-MISSING (${resolved.lookup})`, write: false }
@@ -2250,6 +2256,10 @@ function publishManagedItem(target, text, classification, args) {
   return writeManagedFile(target, text, args.refreshOnly ? classification.raw : undefined)
 }
 
+function managedWriteOutcome(args, verb) {
+  return args.set === 'ssh-sign-retry' ? 'PREPARED' : verb
+}
+
 function writeManagedItem(set, dir, item, args, version, root, planned) {
   const { target, classification, triggers } = planned
   if (!targetUnchanged(target, classification, set)) {
@@ -2280,7 +2290,8 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
   const versions = classification.installedVer ? `v${classification.installedVer} -> v${version}` : `none -> v${version}`
   const headReport = triggers && (args.force || decisionRendersHead(planned)) && triggers.state !== 'current'
     ? ' · on-demand triggers refreshed from shipped spec' : triggerClause(triggers, item, dir)
-  process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})${headReport}\n`)
+  const outcome = managedWriteOutcome(args, verb)
+  process.stdout.write(`  ${item.file}: ${outcome} ${versions} -> ${target} (journal ${journalPath(dir)})${headReport}\n`)
 }
 
 function decisionRendersHead(planned) {
@@ -2995,6 +3006,7 @@ function executeMigration(dir, args) {
 }
 
 function commandTargetDir(args, set, globalRoot) {
+  if (set === SETS['ssh-sign-retry'] && !args.dir) return sshSignRetryDirectory()
   return path.resolve(
     args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
   )
@@ -3028,8 +3040,8 @@ function standardCommandContext(args) {
   if (args.set === RETIRED_DOCS_SET) {
     fail(`the '${RETIRED_DOCS_SET}' set is retired: the shipped rules no longer point at rationale files, so nothing is installed. A docs/wt/ copy installed earlier is left untouched and may be deleted.`)
   }
-  if (![...MANAGED_SET_NAMES, 'all'].includes(args.set)) {
-    fail(`unknown --set '${args.set}' (expected ${MANAGED_SET_NAMES.join(' | ')} | all)`)
+  if (![...Object.keys(SETS), 'all'].includes(args.set)) {
+    fail(`unknown --set '${args.set}' (expected ${Object.keys(SETS).join(' | ')} | all)`)
   }
   const root = pluginRoot()
   const version = currentVersion(root)
@@ -3115,6 +3127,7 @@ function managedSetGroups(set, fallbackDir, resolution, root) {
 // config dir IS the '.claude' layer already, so `globalSubdir` (its own field, NOT derived from
 // defaultDir's basename — see the SETS comment above) is appended instead.
 function managedSetFallbackDir(set, args, globalRoot) {
+  if (set === SETS['ssh-sign-retry'] && !args.dir) return sshSignRetryDirectory()
   return path.resolve(args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)))
 }
 
@@ -3189,22 +3202,39 @@ function checkRefreshOnlyFlags(args) {
   }
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2))
-  checkRefreshSelection(args)
-  checkFlagModeAsymmetry(args)
-  checkRefreshOnlyFlags(args)
+async function configureOptionalSigning(args, context) {
+  if (args.set !== 'ssh-sign-retry' || args.refreshOnly) return
+  const set = SETS[args.set]
+  const item = set.resolveItems(context.root)[0]
+  const target = path.join(managedSetFallbackDir(set, args, context.globalRoot), item.file)
+  const installed = classify(target, set)
+  const ready = installed.state === 'clean' && installed.contentFp === shippedFingerprint(set, item, context.root)
+  const modulePath = path.join(context.root, 'bin', 'lib', 'host', 'adopt-ssh-sign-retry.mjs')
+  const { configureSshSignRetry } = await import(pathToFileURL(modulePath).href)
+  configureSshSignRetry({ target, global: args.global, mode: args.mode, ready })
+}
+
+function checkTriggerFlags(args) {
   if (args.refreshTriggers || args.keepTriggers) {
     if (!args.file || args.set !== 'rules') fail('--refresh-triggers and --keep-triggers require --set rules --install --file <file>')
     if (args.refreshTriggers && args.keepTriggers) fail('--refresh-triggers and --keep-triggers are mutually exclusive')
     if (args.force && args.keepTriggers) fail('--force --keep-triggers is refused; use the commands separately')
   }
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2))
+  checkRefreshSelection(args)
+  checkFlagModeAsymmetry(args)
+  checkRefreshOnlyFlags(args)
+  checkTriggerFlags(args)
   if (args.mode === 'migrate') return runMigrationCommand(args)
   if (args.mode === 'audit-overlap') return runAuditCommand(args)
   await ensureOnDemandEngine()
   const context = standardCommandContext(args)
   if (args.mode === 'diff') return runDiffCommand(args, context)
   runManagedCommand(args, context)
+  await configureOptionalSigning(args, context)
 }
 
 try {

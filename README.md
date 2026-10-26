@@ -128,6 +128,10 @@ alongside the code. See the `external-lane` skill for the full exit-code and pro
 
 ## Configuration
 
+Linux lane suite-lock brokers can use an [operator-configured offload command](docs/public/suite-lock-offload.md)
+when the local queue is long. It is disabled by default; the reference covers host configuration,
+the versioned command protocol, fallback behavior, and result provenance.
+
 `node plugin/bin/wt-config.mjs` prints every Workflow Toolbox option with its effective value,
 source, and manifest default; `--json` emits the same report for automation. Plugin options win
 over their documented environment fallbacks. Executor-lane consent additionally honors the
@@ -372,6 +376,17 @@ what happened and whether resuming is safe.
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
 | `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config on explicit request; existing proven-unedited stale copies refresh at SessionStart. Each copy is fingerprinted so a later `--check` detects drift. | Automatically when you ask, or `/workflow-toolbox:adopt` |
 
+Artifact server `stop`/`restart` require discovery and matching listener launch evidence,
+then re-read the recorded PID's birth identity immediately before signalling; uncertainty
+means nothing is signalled and restart refuses to launch a replacement. Linux birth identity
+uses the boot ID and process start ticks; unavailable birth identity (currently including
+macOS and Windows) refuses even with `--force`, which only overrides registered-session policy.
+Servers started before birth identity was recorded also require manual shutdown.
+POSIX numeric-PID signals retain a race between the final identity re-read and kernel delivery.
+Concurrent control commands share an atomic `control.d` claim through replacement readiness;
+after a controller crashes, confirm no control command remains and run
+`rmdir <artifact-state-dir>/control.d` before retrying.
+
 ### Bundled rules & the delegation ladder
 
 The plugin bundles cross-cutting **rule files** in `plugin/rules/`: the
@@ -443,6 +458,28 @@ When an adopted copy is stale, the installer also slices `plugin/CHANGELOG.md`
 between the installed and current plugin versions so the user sees what shipped in
 that span: recent entries plus an honest count of omitted ones, and an explicit
 "no record" outcome when the installed version predates the oldest recorded heading.
+
+### Optional SSH signing retry
+
+`node plugin/skills/adopt/scripts/install.mjs --set ssh-sign-retry --install --global`
+installs a persistent per-user Node wrapper and configures an absent `gpg.ssh.program`.
+Omit `--global` inside a repository for repository-local configuration. Only stdin
+signing with a matched agent failure is retried, **once** (two attempts total, one
+second apart). Existing signers are preserved; `--set all` excludes this opt-in.
+
+Adoption locks only the config file it writes. After publication it uses Git, in the
+commit's configuration context, to check the intended effective signer and unchanged
+signing-key configuration. Invalid UTF-8 Git values explicitly refuse adoption before
+they can compare equal through lossy decoding. A mismatch restores the original file's
+identity, bytes, full mode, owner and ACLs using a retained hard link, and reports refusal
+without `WROTE`. A concurrent writer to an included config file during adoption is
+detected by this postcondition check only if it lands before the check and changes the
+effective values; after it, that is the user's own configuration change. Crash-stale
+locks require manual recovery, and an exit status of zero alone does not establish
+installation. Key file contents are not pinned between attempts. See the
+[adoption contract](plugin/skills/adopt/references/ssh-sign-retry.md) for diagnostic
+matches, legacy worktree migration, recovery and platform status. Linux fake-binary
+execution is tested; native Windows/macOS and real-agent signing remain unverified.
 
 ## The toolkit
 

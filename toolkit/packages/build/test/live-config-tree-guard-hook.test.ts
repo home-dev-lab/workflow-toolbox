@@ -73,7 +73,7 @@ function runHook(
   return { status: res.status, stdout, decision, systemMessage }
 }
 
-describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (default warn posture)', () => {
+function registerLiveWarningCases() {
   it('warns (does not deny) on a plain git switch to the live rules dir, by default', () => {
     const f = gitFixture('switch')
     const r = runHook(`git -C ${f.rulesDir} switch some-branch`, f.root, f.env)
@@ -82,11 +82,14 @@ describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (defa
     expect(r.systemMessage).toContain('LIVE CONFIG TREE')
   })
 
-  it('keeps its warning journal-only for a subagent', () => {
+  it('delivers the same warning to a subagent as additionalContext only', () => {
     const f = gitFixture('subagent-warn')
-    const r = runHook(`git -C ${f.rulesDir} switch some-branch`, f.root, f.env, [], 'a1')
+    const command = `git -C ${f.rulesDir} switch some-branch`
+    const main = runHook(command, f.root, f.env)
+    const r = runHook(command, f.root, f.env, [], 'a1')
     expect(r.status).toBe(0)
-    expect(r.stdout).toBe('')
+    expect(main.systemMessage).toContain('LIVE CONFIG TREE')
+    expect(r.stdout).toBe(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: main.systemMessage } }))
   })
 
   it('catches the exact near-miss: cd into the live dir then reset --hard, split across &&', () => {
@@ -95,6 +98,9 @@ describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (defa
     expect(r.systemMessage, 'must not be silent — this is the pattern that defeated the first draft').toBeTruthy()
   })
 
+}
+
+function registerLiveModeCases() {
   it('denies when WT_LIVE_CONFIG_TREE_GUARD_MODE=deny is set', () => {
     const f = gitFixture('deny-mode')
     const r = runHook(`git -C ${f.rulesDir} checkout other-branch`, f.root, {
@@ -133,6 +139,11 @@ describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (defa
     })
     expect(r.systemMessage, 'must not be silent — CLAUDE_CONFIG_DIR names this as the rules root').toBeTruthy()
   })
+}
+
+describe('wt-live-config-tree-guard-hook — CATCHES the near-miss pattern (default warn posture)', () => {
+  registerLiveWarningCases()
+  registerLiveModeCases()
 })
 
 describe('wt-live-config-tree-guard-hook — does NOT block legitimate work', () => {

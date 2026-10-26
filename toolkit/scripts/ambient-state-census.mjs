@@ -12,6 +12,7 @@ const SEAL_KEYS = ['NPM_CONFIG_PREFIX', 'HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG
 // Every accepted ambient read is named by its exact statement text (file, signal, source line text).
 // Adding or rewriting one requires a fresh decision; moving it does not. No file-wide exemption.
 export const ambientStateAllowList = new Map([
+  ["scripts/test/host-primitive-census.test.ts:real-home-directory:writeFileSync(join(root, 'bin', 'helper'), '#!/usr/bin/env node\\nimport { homedir } from \"node:os\"; homedir(); unrelated()')", 'homedir() is fixture source text written to a temp file for the census to scan; the test never calls it'],
   ["packages/build/test/adopt-installer.test.ts:short-negative-output-match:expect(out).not.toContain('=3')", 'assertion is over controlled fixture output, not ambient process output'],
   ["packages/build/test/adopt-installer.test.ts:short-negative-output-match:expect(out).not.toContain('=1')", 'assertion is over controlled fixture output, not ambient process output'],
   ["packages/build/test/adopt-installer.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [script, ...args, '--dir', dir], { encoding: 'utf8', env: { ...process.env, ...env } })", 'case supplies installer-specific fixture state; omitted ambient keys cannot affect the asserted path'],
@@ -49,7 +50,6 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/opencode-envelope-each-source.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [", 'zero-task case exits before opencode or plugin-state discovery'],
   ["packages/build/test/opencode-envelope-each-source.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [#2", 'argument-validation case exits before opencode or plugin-state discovery'],
   ["packages/build/test/opencode-envelope-each-source.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [#3", 'argument-validation case exits before opencode or plugin-state discovery'],
-  ["packages/build/test/opencode-envelope-reap.test.ts:inherited-env-to-child:const run = spawnSync(", 'case launches only owned fixture processes and asserts their lifecycle'],
   ["packages/build/test/opencode-skill-fence.integration.test.ts:real-home-directory:const env = { ...unfencedProcessEnv, HOME: home, OPENCODE_TEST_HOME: home, CLAUDE_CONFIG_DIR: config, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME:", 'opt-in real e2e case deliberately targets the operator installation home'],
   ["packages/build/test/pgrep-env-dump-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case tests command text classification with an isolated journal; no plugin-state lookup occurs'],
   ["packages/build/test/pilot-runner.test.ts:short-negative-output-match:expect(global.stdout).not.toContain('\\n')", 'assertion is over controlled SDK-resolution fixture output'],
@@ -63,7 +63,6 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/plugin-release-record-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync('git', args, {", 'case uses an explicit hermetic release environment and controlled hook payload'],
   ["packages/build/test/plugin-release-record-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case uses an explicit hermetic release environment and controlled hook payload'],
   ["packages/build/test/plugin-version-alignment.test.ts:inherited-env-to-child:const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...HERMETIC } })", 'case reads only repository manifests supplied by cwd'],
-  ["packages/build/test/plugin-version-alignment.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [HOOK], {", 'case reads only repository manifests supplied by cwd'],
   ["packages/build/test/propagation-reminder-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins hook payload and suite journal; no plugin-location lookup occurs'],
   ["packages/build/test/propagation-reminder-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {#2", 'case runs a controlled fixture child, not a plugin CLI'],
   ["packages/build/test/queue-gate-marker-expiry.test.ts:inherited-env-to-child:const run = spawnSync(process.execPath, ['--input-type=module', '--eval', program], {", 'case pins marker root and time; no plugin-location lookup occurs'],

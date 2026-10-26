@@ -107,6 +107,7 @@ function runnersFromSnapshot(stdout) {
 
 function existingRunners() {
   if (process.platform === 'win32') {
+    // Enabling enumeration on Windows requires mapping Git Bash spellings to host paths first, or coverage reads nothing.
     return { available: false, reason: 'process enumeration is not supported on Windows' }
   }
   const pathApi = path

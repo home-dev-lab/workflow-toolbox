@@ -7,7 +7,13 @@ import { Worker } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
 // The shipped plugin module lives outside the toolkit TypeScript project's root.
 // @ts-expect-error TS7016 -- the plugin's plain-JavaScript module has no declaration file
-import { announceable, detectRelays, dueRelays, eventBudget, parseTaskNotification, pendingQueueNotifications, readAgents, readNewMain, readThrottle, unresolvedWaits, writeResumed, writeThrottle } from '../../../../plugin/bin/lib/delegate-wake.mjs'
+import { WAKE_MAX_AGE_MS, announceable, detectRelays, dueRelays, eventBudget, parseTaskNotification, pendingQueueNotifications, readAgents, readNewMain, readThrottle, unresolvedWaits, writeResumed, writeThrottle } from '../../../../plugin/bin/lib/delegate-wake.mjs'
+// @ts-expect-error TS7016 -- shipped host adapter is plain JavaScript
+import { bootTime, sessionProcessStart } from '../../../../plugin/bin/lib/host/delegate-wake-restart.mjs'
+// @ts-expect-error TS7016 -- shipped observer is plain JavaScript
+import { classifyRelays } from '../../../../plugin/bin/lib/delegate-wake.mjs'
+// @ts-expect-error TS7016 -- shipped host adapter is plain JavaScript
+import { DECISION_MAX_AGE_MS, claimDecision, hasDecision, settleAged } from '../../../../plugin/bin/lib/host/delegate-wake-decisions.mjs'
 
 const sessionId = '00000000-0000-4000-8000-000000000001'
 const owner = 'aowner1234567'
@@ -321,8 +327,9 @@ fs.readFileSync = function (target, ...rest) {
 }
 `)
   const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
-  const result = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--grace', '90'], {
-    encoding: 'utf8', env: { PATH: process.env.PATH ?? '', NODE_OPTIONS: `--require ${guard}`, WT_OUTBOUND_GUARD_DIR: temp } })
+  const result = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--grace', '90',
+    '--boot-at', iso(-2000), '--session-started-at', iso(-1500)], {
+    encoding: 'utf8', env: { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: temp, NODE_OPTIONS: `--require ${guard}`, WT_OUTBOUND_GUARD_DIR: temp } })
   expect(result.stdout).toContain(`WAKE: ${owner}`)
   expect(result.stdout).not.toContain('ARC WATCH DEGRADED')
   expect(result.status).toBe(0)
@@ -426,8 +433,9 @@ it('route b: the one-shot scanner prefixes FORWARD candidates as unverified, kee
     writeFileSync(join(subs, `agent-${id}.meta.json`), JSON.stringify((scenario.meta as Record<string, unknown>)[id]))
   }
   const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
-  const env = { PATH: process.env.PATH ?? '', WT_OUTBOUND_GUARD_DIR: temp }
-  const run = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--grace', '90'], { encoding: 'utf8', env })
+  const env = { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: temp, WT_OUTBOUND_GUARD_DIR: temp }
+  const run = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--grace', '90',
+    '--boot-at', iso(-2000), '--session-started-at', iso(-1500)], { encoding: 'utf8', env })
   const lines = run.stdout.trim().split('\n')
   expect(lines.filter((l: string) => l.startsWith('WAKE: '))).toHaveLength(1)
   expect(lines.filter((l: string) => l.startsWith('FORWARD (unverified): '))).toHaveLength(1)
@@ -537,7 +545,10 @@ function scanScenario() {
 it('fix5 #3 route b JSON labels FORWARD unverified and non-actionable, and WAKE actionable', () => {
   const mainFile = scanScenario()
   const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
-  const run = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--json'], { encoding: 'utf8' })
+  const run = spawnSync(process.execPath, [cli, '--session', mainFile, '--at', iso(100000), '--json',
+    '--boot-at', iso(-2000), '--session-started-at', iso(-1500)], { encoding: 'utf8', env: {
+    PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: temp, WT_OUTBOUND_GUARD_DIR: temp,
+  } })
   expect(run.status).toBe(0)
   const result = JSON.parse(run.stdout)
   expect(result.lines).toHaveLength(2)
@@ -547,7 +558,7 @@ it('fix5 #3 route b JSON labels FORWARD unverified and non-actionable, and WAKE 
 
 // Exercise the shipped watcher itself. A preload fixes its clock and advances exactly three
 // real polls without wall-clock sleeps; stdout poll boundaries expose the shared line budget.
-function watcherFixture(diagnostics = 0, wakeCount = 1) {
+function watcherFixture(diagnostics = 0, wakeCount = 1, clock = start + 100000) {
   temp = mkdtempSync(join(tmpdir(), 'delegate-wake-'))
   const project = resolve(temp, 'project')
   const config = join(temp, 'config')
@@ -568,7 +579,7 @@ function watcherFixture(diagnostics = 0, wakeCount = 1) {
   const stateFile = join(stateDir, `${sessionId}.json`)
   writeFileSync(stateFile, '{}')
   const preload = join(temp, 'polls.cjs')
-  writeFileSync(preload, `Date.now = () => ${start + 100000};
+  writeFileSync(preload, `Date.now = () => ${clock};
 const timer = global.setTimeout; let polls = 0;
 global.setTimeout = (fn, ms, ...args) => {
   if (ms === 5000) {
@@ -578,18 +589,20 @@ global.setTimeout = (fn, ms, ...args) => {
   }
   return timer(fn, ms, ...args);
 };\n`)
-  const run = () => {
-    const watcher = fileURLToPath(new URL('../../../../plugin/bin/wt-arc-watch.mjs', import.meta.url))
-    const result = spawnSync(process.execPath, ['--require', preload, watcher, '--project', project, '--poll', '5'], {
-      // A hang bound only: the preloaded timers end the watcher after three polls.
-      encoding: 'utf8', timeout: 60_000, env: { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_SESSION_ID: sessionId,
-        WT_OUTBOUND_GUARD_DIR: registryDir, WT_DELEGATE_WAKE_DIR: stateDir, WT_LIVENESS_DIR: join(temp!, 'liveness') },
-    })
-    expect(result.error).toBeUndefined()
-    expect(result.status, result.stderr).toBe(0)
-    return result.stdout.split('FIX5 POLL END\n').slice(0, 3).map((poll) => poll.trim().split('\n').filter((line) => line && !/^ARC WATCH (ARMED|BASELINE):/.test(line)))
-  }
-  return { run, stateDir, stateFile }
+  const run = (extra: string[] = []) => runWatcherFixture({ preload, project, config, registryDir, stateDir }, extra)
+  return { run, stateDir, stateFile, mainFile: join(sessions, `${sessionId}.jsonl`), registryDir, config }
+}
+
+function runWatcherFixture(f: Record<string, string>, extra: string[]) {
+  const watcher = fileURLToPath(new URL('../../../../plugin/bin/wt-arc-watch.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, ['--require', f.preload!, watcher, '--project', f.project!, '--poll', '5',
+    '--boot-at', iso(-2000), '--session-started-at', iso(-1500), ...extra], {
+    encoding: 'utf8', timeout: 60_000, env: { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: f.config!, CLAUDE_CODE_SESSION_ID: sessionId,
+      WT_OUTBOUND_GUARD_DIR: f.registryDir!, WT_DELEGATE_WAKE_DIR: f.stateDir!, WT_LIVENESS_DIR: join(temp!, 'liveness') },
+  })
+  expect(result.error).toBeUndefined()
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout.split('FIX5 POLL END\n').slice(0, 3).map((poll) => poll.trim().split('\n').filter((line) => line && !/^ARC WATCH (ARMED|BASELINE):/.test(line)))
 }
 
 it('fix5 #4 watcher serves WAKE before 20 diagnostics and drains pending diagnostics within the 20-line poll cap', () => {
@@ -668,4 +681,213 @@ it('fix6 a completion older than the WAKE age ceiling is never relayed, only lis
   expect(old.lines).toEqual([])
   expect(old.stale).toEqual([{ owner, taskId: 'task1234', at: iso(0) }])
   expect(detectRelays({ ...input, now: start + 25 * hour, maxAge: 26 * hour }).lines).toHaveLength(1)
+})
+
+it.each(['--boot-at', '--session-started-at'])('restart %s: killed notice is orphaned once across polls and watcher restarts', (flag) => {
+  const f = watcherFixture()
+  writeFileSync(f.mainFile, readFileSync(f.mainFile, 'utf8').replace('<status>completed</status>', '<status>killed</status>'))
+  const polls = f.run([flag, iso(1000)])
+  expect(polls.flat().filter((line) => line.startsWith('ORPHANED BY RESTART:'))).toHaveLength(1)
+  expect(polls.flat().filter((line) => line.startsWith('WAKE:'))).toHaveLength(0)
+  expect(polls[1]).toEqual([])
+  expect(polls[2]).toEqual([])
+  expect(f.run([flag, iso(1000)]).flat()).toEqual([])
+})
+
+it('restart: a completed pre-boot notice is equally orphaned', () => {
+  const f = watcherFixture()
+  expect(f.run(['--boot-at', iso(1000)]).flat().filter((line) => line.startsWith('ORPHANED BY RESTART:'))).toHaveLength(1)
+})
+
+it('restart: post-restart killed notice still WAKEs with UTC', () => {
+  const f = watcherFixture()
+  writeFileSync(f.mainFile, readFileSync(f.mainFile, 'utf8').replace('<status>completed</status>', '<status>killed</status>'))
+  const wake = f.run().flat().find((line) => line.startsWith('WAKE:'))
+  expect(wake).toContain('20:20:08Z')
+  const input = forwardScenario()
+  input.main[0]!.timestamp = '2026-09-29T21:20:08.160+01:00'
+  expect(detectRelays(input).lines[0].line).toContain('20:20:08Z')
+})
+
+it('restart: boot unknown diagnoses once across watcher restarts and preserves WAKE behavior', () => {
+  const f = watcherFixture()
+  const polls = f.run(['--boot-at', 'unknown'])
+  expect(polls.flat().filter((line) => line.startsWith('WAKE:'))).toHaveLength(1)
+  expect(polls.flat().filter((line) => line.startsWith('ARC WATCH DEGRADED: boot time unknown'))).toHaveLength(1)
+  expect(f.run(['--boot-at', 'unknown']).flat()).toEqual([])
+})
+
+it.each([false, true])('restart: exact printed ack command silences the raw agent (orphan=%s)', (orphan) => {
+  const f = watcherFixture()
+  const extra = orphan ? ['--boot-at', iso(1000)] : []
+  const line = f.run(extra).flat().find((entry) => /^(WAKE|ORPHANED BY RESTART):/.test(entry))!
+  const command = line.split('Acknowledge: ')[1]
+  expect(command).toBeTruthy()
+  const ack = spawnSync(command!, { shell: true, encoding: 'utf8', env: {
+    PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: f.config,
+    WT_OUTBOUND_GUARD_DIR: f.registryDir, WT_DELEGATE_WAKE_DIR: f.stateDir,
+  } })
+  expect(ack.status, ack.stderr).toBe(0)
+  // Clear the retry throttle and every once-only orphan claim: the acknowledgement alone must
+  // keep the agent silent, otherwise an orphan's own claim would hide a missing ack suppression.
+  writeFileSync(f.stateFile, '{}')
+  const dir = join(f.stateDir, `${sessionId}.decisions`)
+  for (const name of fs.readdirSync(dir)) {
+    if (JSON.parse(readFileSync(join(dir, name), 'utf8')).key.startsWith('orphan:')) rmSync(join(dir, name))
+  }
+  expect(fs.readdirSync(dir).map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')).key)).toEqual([`ack:${owner}`])
+  expect(f.run(extra).flat()).toEqual([])
+})
+
+it('restart: scanner one-shot classifies injected pre-session notices without consuming watcher announcements', () => {
+  const f = watcherFixture()
+  const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [cli, '--session', f.mainFile, '--at', iso(100000),
+    '--boot-at', iso(-2000), '--session-started-at', iso(1000), '--json'], { encoding: 'utf8', env: {
+    PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: f.config, WT_OUTBOUND_GUARD_DIR: f.registryDir, WT_DELEGATE_WAKE_DIR: f.stateDir,
+  } })
+  expect(result.status, result.stderr).toBe(0)
+  expect(JSON.parse(result.stdout).lines).toEqual([expect.objectContaining({ kind: 'ORPHANED BY RESTART', actionable: false })])
+  expect(f.run(['--session-started-at', iso(1000)]).flat().filter((line) => line.startsWith('ORPHANED BY RESTART:'))).toHaveLength(1)
+})
+
+it('restart: platform probes accept only read evidence and explicitly return unknown on failures', () => {
+  const sec = Math.floor(start / 1000)
+  expect(bootTime({ platform: 'linux', read: () => `cpu 1 2 3\nbtime ${sec}\n` })).toBe(sec * 1000)
+  expect(bootTime({ platform: 'darwin', exec: () => `{ sec = ${sec}, usec = 0 }` })).toBe(sec * 1000)
+  expect(bootTime({ platform: 'win32', exec: () => String(sec) })).toBe(sec * 1000)
+  expect(bootTime({ platform: 'linux', read: () => { throw new Error('denied') } })).toBeNull()
+  for (const platform of ['linux', 'darwin', 'win32', 'other']) {
+    expect(bootTime({ platform, read: () => 'invalid', exec: () => 'invalid' })).toBeNull()
+    expect(sessionProcessStart({ platform, pid: 123, exec: () => 'invalid' })).toBeNull()
+  }
+  expect(sessionProcessStart({ platform: 'linux', pid: 123, exec: () => 'Tue Sep 29 20:20:08 2026' }))
+    .toBe(Date.parse('Tue Sep 29 20:20:08 2026'))
+  expect(sessionProcessStart({ platform: 'win32', pid: 123, exec: () => String(sec) })).toBe(sec * 1000)
+})
+
+it('restart: concurrent immutable claim writers publish exactly one complete decision', async () => {
+  fixture()
+  const dir = join(temp!, 'decisions')
+  const moduleUrl = new URL('../../../../plugin/bin/lib/host/delegate-wake-decisions.mjs', import.meta.url).href
+  const script = `const { parentPort, workerData } = require('node:worker_threads');
+    import(workerData.moduleUrl).then(({ claimDecision }) => parentPort.postMessage(claimDecision(workerData.dir, 'orphan:event')))`
+  const run = () => new Promise<boolean>((resolve, reject) => {
+    const worker = new Worker(script, { eval: true, workerData: { moduleUrl, dir } })
+    worker.once('message', resolve)
+    worker.once('error', reject)
+  })
+  expect((await Promise.all([run(), run()])).sort()).toEqual([false, true])
+  expect(hasDecision(dir, 'orphan:event')).toBe(true)
+  expect(claimDecision(dir, 'ack:aowner1234567')).toBe(true)
+  expect(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  expect(fs.readdirSync(dir)).toHaveLength(2)
+})
+
+it('restart: orphan classification precedes age ceiling and bypasses prior WAKE backoff', () => {
+  const input = forwardScenario()
+  const result = classifyRelays({ ...input, now: start + 25 * 3_600_000, restart: { bootAt: start + 1000 } })
+  const orphan = announceable(result.lines)[0]
+  expect(orphan.kind).toBe('ORPHANED BY RESTART')
+  const state = { [orphan.key]: { lastEmittedAt: start + 25 * 3_600_000, count: 4 } }
+  expect(dueRelays([orphan], state, start + 25 * 3_600_000)).toHaveLength(1)
+  expect(classifyRelays({ ...input, now: start + 25 * 3_600_000 }).stale).toHaveLength(1)
+})
+
+it('restart: poll budget never commits an unprinted orphan', () => {
+  fixture()
+  const dir = join(temp!, 'decisions')
+  const output: string[] = []
+  const budget = eventBudget((line: string) => output.push(line), 1)
+  expect(budget.emit('first', () => claimDecision(dir, 'first'))).toBe(true)
+  expect(budget.emit('second', () => claimDecision(dir, 'second'))).toBe(false)
+  expect(hasDecision(dir, 'first')).toBe(true)
+  expect(hasDecision(dir, 'second')).toBe(false)
+})
+
+const hours = (count: number) => count * 3_600_000
+
+it('restart: an orphan is flagged aged only past the relay age ceiling', () => {
+  const orphanAt = (age: number) => classifyRelays({ ...forwardScenario(), now: start + age, restart: { bootAt: start + 1000 } })
+    .lines.find((entry: { kind: string }) => entry.kind === 'ORPHANED BY RESTART')
+  expect(orphanAt(hours(23))).toMatchObject({ aged: false })
+  expect(orphanAt(WAKE_MAX_AGE_MS + 60_000)).toMatchObject({ aged: true })
+})
+
+it('restart: orphans past the 24 h ceiling are claimed silently, one named decision each', () => {
+  const f = watcherFixture(0, 3, start + hours(25) + 100000)
+  const polls = f.run(['--boot-at', iso(1000)])
+  expect(polls.flat().filter((line) => /^(ORPHANED BY RESTART|WAKE):/.test(line))).toEqual([])
+  const sessionDir = f.mainFile.slice(0, -'.jsonl'.length)
+  const { agents, meta } = readAgents(sessionDir)
+  const main = readFileSync(f.mainFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+  const expected = classifyRelays({ sessionId, main, agents, meta, restart: { bootAt: start + 1000 }, now: start + hours(25) + 100000 }).lines
+  expect(expected).toHaveLength(3)
+  expect(expected.every((entry: { aged: boolean }) => entry.aged)).toBe(true)
+  const dir = join(f.stateDir, `${sessionId}.decisions`)
+  const keys = fs.readdirSync(dir).map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')).key).sort()
+  expect(keys).toEqual(expected.map((entry: { key: string }) => `orphan:${entry.key}`).sort())
+  expect(f.run(['--boot-at', iso(1000)]).flat().filter((line) => /^(ORPHANED BY RESTART|WAKE):/.test(line))).toEqual([])
+})
+
+it('restart: the same three pre-boot notices inside the ceiling print three orphan lines', () => {
+  const f = watcherFixture(0, 3)
+  const lines = f.run(['--boot-at', iso(1000)]).flat().filter((line) => line.startsWith('ORPHANED BY RESTART:'))
+  expect(lines).toHaveLength(3)
+  const dir = join(f.stateDir, `${sessionId}.decisions`)
+  expect(fs.readdirSync(dir)).toHaveLength(3)
+})
+
+it('restart: the one-shot scanner lists an aged orphan as stale, never as a line', () => {
+  const f = watcherFixture()
+  const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [cli, '--session', f.mainFile, '--at', iso(hours(25)), '--boot-at', iso(1000), '--json'], {
+    encoding: 'utf8', env: { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: f.config, WT_OUTBOUND_GUARD_DIR: f.registryDir, WT_DELEGATE_WAKE_DIR: f.stateDir } })
+  expect(result.status, result.stderr).toBe(0)
+  const parsed = JSON.parse(result.stdout)
+  expect(parsed.lines).toEqual([])
+  expect(parsed.stale).toEqual([{ owner, taskId: 'task1234', at: iso(0) }])
+})
+
+it('restart: a decision older than the retention bound is pruned by the next write', () => {
+  fixture()
+  const dir = join(temp!, 'decisions')
+  expect(DECISION_MAX_AGE_MS).toBeGreaterThan(WAKE_MAX_AGE_MS)
+  expect(claimDecision(dir, 'ack:aold1234567')).toBe(true)
+  expect(claimDecision(dir, 'ack:afresh123456')).toBe(true)
+  writeFileSync(join(dir, '1.deadbeef.tmp'), '{}')
+  const expired = new Date(Date.now() - DECISION_MAX_AGE_MS - hours(1))
+  for (const name of fs.readdirSync(dir)) {
+    if (name.endsWith('.tmp') || JSON.parse(readFileSync(join(dir, name), 'utf8')).key === 'ack:aold1234567') utimesSync(join(dir, name), expired, expired)
+  }
+  expect(claimDecision(dir, 'ack:anew123456789')).toBe(true)
+  expect(hasDecision(dir, 'ack:aold1234567')).toBe(false)
+  expect(hasDecision(dir, 'ack:afresh123456')).toBe(true)
+  expect(hasDecision(dir, 'ack:anew123456789')).toBe(true)
+  expect(fs.readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  // The invariant that makes the bound safe: an expired orphan decision is settled silently again.
+  const aged = { kind: 'ORPHANED BY RESTART', key: 'WAKE:gone', aged: true }
+  expect(settleAged([aged], dir)).toEqual([])
+  expect(hasDecision(dir, 'orphan:WAKE:gone')).toBe(true)
+})
+
+it('restart: an aged-orphan claim that cannot be written is reported and never mutes a live entry', () => {
+  fixture()
+  const blocker = join(temp!, 'blocker')
+  writeFileSync(blocker, 'a regular file where the decisions directory should be')
+  const errors: unknown[] = []
+  const live = { kind: 'WAKE', key: 'WAKE:live' }
+  const aged = { kind: 'ORPHANED BY RESTART', key: 'WAKE:aged', aged: true }
+  expect(settleAged([aged, live], join(blocker, 'decisions'), (error: unknown) => errors.push(error))).toEqual([live])
+  expect(errors).toHaveLength(1)
+})
+
+it.each(['worker', 'task1234'])('restart: --ack with %s says it is not a raw agent id and records nothing', (input) => {
+  const f = watcherFixture()
+  const cli = fileURLToPath(new URL('../../../../plugin/bin/wt-delegate-wake-scan.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [cli, '--session', f.mainFile, '--ack', input], {
+    encoding: 'utf8', env: { PATH: process.env.PATH ?? '', CLAUDE_CONFIG_DIR: f.config, WT_OUTBOUND_GUARD_DIR: f.registryDir, WT_DELEGATE_WAKE_DIR: f.stateDir } })
+  expect(result.status).toBe(2)
+  expect(result.stderr).toContain(`not a raw agent id: ${input}`)
+  expect(fs.existsSync(join(f.stateDir, `${sessionId}.decisions`))).toBe(false)
 })

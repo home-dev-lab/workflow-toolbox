@@ -368,6 +368,16 @@ function liveDescendantCase() {
   expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ idle: { status: 'known' } })
 }
 
+function nonLinuxIdleUnknownCase() {
+  const f = deadlineFixture('exec sleep 30')
+  const { log, childPid, status } = launchDeadline(f, ['--timeout', '30', '--idle-window', '0.5', '--idle-timeout', '0.6'])
+  waitForContent(log, /^LANE_IDLE_UNKNOWN reason="process CPU time unavailable for pid \d+"$/m)
+  spawnSync('sleep', ['1.8'])
+  expect(readFileSync(log, 'utf8')).not.toMatch(/LANE_IDLE_STOP|^EXIT=/m)
+  expect(() => process.kill(childPid, 0)).not.toThrow()
+  expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ idle: { status: 'unknown', reason: expect.stringMatching(/^process CPU time unavailable/) } })
+}
+
 function observeIdleCase() {
   const f = deadlineFixture('exec sleep 30')
   const { log, childPid, status } = launchDeadline(f, ['--timeout', '30', '--idle-window', '0.5'])
@@ -417,8 +427,10 @@ describe.skipIf(process.platform === 'win32')('wt-lane deadline visibility and i
   it('journals grace-default extension receipts and the new deadline', graceDefaultReceiptCase)
   it('writes deadline receipts after a live child prints a quoted EXIT=0', quotedExitReceiptCase)
   it('abandons a known idle lane at its timeout instead of extending it by default', idleDefaultCase)
-  it('stops a silent stdin-ignoring child and its process group with enforced idle timeout', idleStopCase, 30_000)
-  it('keeps a silent child with a live descendant running beyond three idle timeouts', liveDescendantCase)
+  // Idle CPU evidence is read from /proc only; elsewhere the enforced stop must name its evidence unknown.
+  it.runIf(process.platform === 'linux')('stops a silent stdin-ignoring child and its process group with enforced idle timeout', idleStopCase, 30_000)
+  it.runIf(process.platform === 'linux')('keeps a silent child with a live descendant running beyond three idle timeouts', liveDescendantCase)
+  it.skipIf(process.platform === 'linux')('names idle evidence unknown and never stops where no CPU counters exist', nonLinuxIdleUnknownCase)
   it('warns once per silent stretch in observe mode and measures silence without stopping', observeIdleCase)
   it('keeps an explicit owner extension available after an idle default abandon', idleOwnerExtensionCase)
   it('documents the unattended bound and writes the configured bound at launch', deadlineBoundCase)

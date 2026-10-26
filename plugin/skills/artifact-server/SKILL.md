@@ -104,8 +104,13 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" restart
 
 `stop` and `restart` refuse while sessions are registered, and fail closed if the uid, count, or
 process identity cannot be verified. Add `--force` to override the registration refusal. On Linux,
-the state PID's `/proc/<pid>/cmdline` must contain `wt-artifact-server.mjs`; other platforms have a
-weaker identity check and require `--force`. These controls are CLI-only and are not agent tools.
+the command line must contain `wt-artifact-server.mjs`, listener launch evidence must match discovery,
+and the boot ID and process start ticks must match the recorded birth identity immediately before
+signalling. Missing discovery is unknown, and restart refuses to spawn. Unavailable birth identity
+(currently including macOS and Windows) refuses even with `--force`; older servers without a recorded
+birth identity require manual shutdown. Concurrent stop/restart commands share a `control.d` claim;
+after a controller crashes, confirm no control command remains and remove that empty directory before
+retrying. These controls are CLI-only and are not agent tools.
 
 ## Tailscale
 
@@ -163,6 +168,14 @@ the tailnet.
   narrows blast radius but does not make the artifact trusted: opening it still runs unreviewed code
   the owner chose to open. Raw SVG and unknown content retain the no-script sandbox; generated
   Markdown and indexes use a strict no-script CSP.
+- For HTML documents the owner reviews and annotates in Orca, put
+  `<!-- wt-artifact-server: annotatable -->` before any non-whitespace content. Like the rich
+  marker, it is case-insensitive and must fit entirely within the first 256 bytes. Annotatable
+  mode keeps the server's real origin (no CSP sandbox), so browser annotation tools can access
+  the document, but it never runs page scripts: `script-src 'none'` blocks them. Network
+  connections, forms, base-URL changes, and framing are blocked; inline styles and same-origin
+  or data images are allowed. For script-free expand/collapse interactivity, use native
+  `<details><summary>More</summary>...</details>` elements. This mode does not enable rich scripts.
 - Health reports service version and OS uid. UID and Linux command-line checks prevent cross-user
   attachment and accidental stale-PID signalling; they are not cryptographic attestation against a
   malicious process running as the same user. There is no rate limit or file-size limit.

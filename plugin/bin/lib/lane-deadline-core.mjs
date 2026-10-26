@@ -53,7 +53,51 @@ function validateIdleOptions(out) {
   return null
 }
 
-function processActivity(snapshot, rootPid) {
+function processActivity(snapshot, rootPid, requireCpu) {
+  const rows = snapshot?.processes
+  if (snapshot?.supported === false || !Array.isArray(rows)) return { status: 'unknown', reason: snapshot?.reason ?? 'process snapshot unavailable' }
+  return familyActivity(snapshot, rows, rootPid, requireCpu)
+}
+
+function familyActivity(snapshot, rows, rootPid, requireCpu) {
+  const usable = rows.filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid ?? row.parentPid))
+  if (!usable.some((row) => row.pid === rootPid)) return { status: 'unknown', reason: snapshot?.reason ?? 'process snapshot missing child' }
+  const descendants = liveDescendants(requireCpu ? usable.filter((row) => row.state !== 'Z' && row.state !== 'X') : usable, rootPid)
+  // Deadline defaults consume presence only; opt-in idle evidence also validates counters.
+  if (!requireCpu) return { status: 'known', descendants }
+  if (usable.length !== rows.length) return { status: 'unknown', reason: 'process snapshot contains unreadable ancestry' }
+  const family = new Set([rootPid, ...descendants])
+  return { descendants, ...validatedCpuEvidence(snapshot, usable, family) }
+}
+
+function validatedCpuEvidence(snapshot, usable, family) {
+  const evidence = processCpuEvidence(snapshot, usable.filter((row) => family.has(row.pid)))
+  if (evidence.status === 'known' && usable.some((row) => !isNamespaceInit(row) && (row.ppid ?? row.parentPid) <= 0)) return { status: 'unknown', reason: 'process snapshot contains unreadable ancestry' }
+  return evidence
+}
+
+function isNamespaceInit(row) {
+  // PID 1 and kernel threads (kthreadd) legitimately have no visible parent; other nonpositive parents remain unknown.
+  return (row.pid === 1 || row.kernelThread === true) && (row.ppid ?? row.parentPid) === 0
+}
+
+function processCpuEvidence(snapshot, family) {
+  if (snapshot.unknownPids?.length) return { status: 'unknown', reason: 'process snapshot contains unreadable pids' }
+  const unavailable = family.find((row) => !Number.isSafeInteger(row.cpuTicks) || row.cpuTicks < 0)
+  if (unavailable) return { status: 'unknown', reason: `process CPU time unavailable for pid ${unavailable.pid}` }
+  if (family.some((row) => row.activityTicks !== undefined && (!Number.isSafeInteger(row.activityTicks) || row.activityTicks < 0))) return { status: 'unknown', reason: 'process activity counters unavailable' }
+  return { status: 'known', cpuTimes: family.map(({ pid, startIdentity, cpuTicks, activityTicks }) => ({ pid, startIdentity, cpuTicks, activityTicks })) }
+}
+
+export function activityEvidence({ snapshot, worktree, rootPid, requireCpu = true }) {
+  if (!requireCpu) return baseActivityEvidence({ snapshot, worktree, rootPid })
+  const processEvidence = processActivity(snapshot, rootPid, requireCpu)
+  if (worktree.status !== 'known' || worktree.bounded) return { ...processEvidence, status: 'unknown', reason: 'worktree scan bounded or unknown' }
+  return processEvidence
+}
+
+// Extracted unchanged from base; the default timeout consumes presence only.
+function baseProcessActivity(snapshot, rootPid) {
   const rows = snapshot?.processes
   if (snapshot?.supported === false || !Array.isArray(rows)) return { status: 'unknown', reason: snapshot?.reason ?? 'process snapshot unavailable' }
   const usable = rows.filter((row) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.ppid ?? row.parentPid))
@@ -61,8 +105,8 @@ function processActivity(snapshot, rootPid) {
   return { status: 'known', descendants: liveDescendants(usable, rootPid) }
 }
 
-export function activityEvidence({ snapshot, worktree, rootPid }) {
-  const processEvidence = processActivity(snapshot, rootPid)
+export function baseActivityEvidence({ snapshot, worktree, rootPid }) {
+  const processEvidence = baseProcessActivity(snapshot, rootPid)
   if (worktree.status !== 'known' || worktree.bounded) return { ...processEvidence, status: 'unknown', reason: 'worktree scan bounded or unknown' }
   return processEvidence
 }

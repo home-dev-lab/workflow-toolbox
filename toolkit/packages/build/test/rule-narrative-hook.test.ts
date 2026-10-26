@@ -38,6 +38,7 @@ function runHook(payload: unknown, env: NodeJS.ProcessEnv) {
     env: sealRuleNarrative(root, env), timeout: 15000, killSignal: 'SIGKILL' })
   const stdout = run.stdout.trim()
   const output = stdout ? JSON.parse(stdout).hookSpecificOutput : {}
+  if (stdout) expect(output.hookEventName).toBe('PreToolUse')
   return { status: run.status, stdout, decision: output.permissionDecision, reason: output.permissionDecisionReason ?? '' }
 }
 

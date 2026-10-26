@@ -88,6 +88,8 @@ const trackedMembers = (surface) => Object.fromEntries(Object.entries(surface).m
   [name, typeof member === 'function' ? tracked(member) : member]));
 
 const SETTLE_LIMIT_MS = 10_000;
+// Plan-clock mocks must never disable the teardown's total bound on churning host calls.
+const teardownNow = performance.now.bind(performance);
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 const expiry = (ms) => {
   let timer;
@@ -106,10 +108,10 @@ function abandonHostOps(limitMs) {
 // microtasks of the first one's settlement, so it is visible by the next turn. A call that never settles fails the
 // teardown after SETTLE_LIMIT_MS of the monotonic clock instead of hanging it.
 export async function settleHostOps(limitMs = SETTLE_LIMIT_MS) {
-  const deadline = performance.now() + limitMs;
+  const deadline = teardownNow() + limitMs;
   for (await nextTurn(); pendingHostOps.size > 0; await nextTurn()) {
-    if (performance.now() >= deadline) abandonHostOps(limitMs);
-    const remaining = deadline - performance.now();
+    if (teardownNow() >= deadline) abandonHostOps(limitMs);
+    const remaining = deadline - teardownNow();
     const timeout = expiry(Math.max(0, remaining));
     try {
       const settled = await Promise.race([Promise.allSettled([...pendingHostOps]).then(() => true), timeout.promise.then(() => false)]);
@@ -184,7 +186,13 @@ export async function hookFixture(root, store, { sessionId = 'sample-session', f
 // 830 deliveries and ~560 agent contexts of 3-20k each, served ~7k, health ~1.2k), padded so the whole store is EXACTLY
 // at the limit. Rows carry padded evidence and agent contexts padded trigger errors: the byte shape is the measured
 // one with fewer rows, so the readers' own row-join cost stays small.
-export function atLimitStore(identity, { sessionId = 'sample-session', limit = HOST_STORE_LIMIT, verdictChars = 2_430_000, sessionChars = 1_750_000, evidenceChars = 2_000, segs = false } = {}) {
+function fullStoreOptions(options) {
+  const { sessionId = 'sample-session', limit = HOST_STORE_LIMIT, verdictChars = 2_430_000, sessionChars = 1_750_000, evidenceChars = 2_000, segs = false } = options;
+  return { sessionId, limit, verdictChars, sessionChars, evidenceChars, segs };
+}
+
+export function atLimitStore(identity, options = {}) {
+  const { sessionId, limit, verdictChars, sessionChars, evidenceChars, segs } = fullStoreOptions(options);
   const at = (n) => new Date(Date.parse('2026-09-30T00:00:00.000Z') + n * 1000).toISOString();
   const delivery = (n) => ({ rule: 'sample.md', ruleIdentity: identity, at: at(n), deliveryId: `oldtok-${n}`, deliverySeq: n, servingSeq: n });
   const lines = [];
@@ -212,6 +220,17 @@ export function atLimitStore(identity, { sessionId = 'sample-session', limit = H
   for (let i = 0; JSON.stringify(served).length < 6_800; i++) served[`other-rule-${i}.md`] = { count: i + 1, last: at(i), byChannel: { 'tool.call': i + 1 } };
   const health = { days: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`2026-09-${String(i + 10).padStart(2, '0')}`, { calls: 100, errors: 0, totalMs: 900, maxMs: 40, slow: 0 }])), lastErrors: [] };
   const store = { 'compliance-verdicts-jsonl': `${lines.join('\n')}\n`, sessions: { [sessionId]: { first: at(0), last: at(next), contexts } }, served, health };
+  fitVerdictLines(store, lines, limit);
+  return store;
+}
+
+function fitVerdictLines(store, lines, limit) {
+  // Whole-row generation overshoots its approximate budgets differently for each path identity.
+  // Keep the complete store below the cap before padding its final evidence to the exact limit.
+  while (JSON.stringify(store).length > limit && lines.length > 1) {
+    lines.pop();
+    store['compliance-verdicts-jsonl'] = `${lines.join('\n')}\n`;
+  }
   const missing = limit - JSON.stringify(store).length;
   if (missing < 0) throw new Error(`synthetic store already over the limit by ${-missing}`);
   // Pad the last verdict line's evidence: one ASCII character of evidence is one character of JSON text.
@@ -219,7 +238,6 @@ export function atLimitStore(identity, { sessionId = 'sample-session', limit = H
   lines[lines.length - 1] = JSON.stringify({ ...last, evidence: `${last.evidence}${'x'.repeat(missing)}` });
   store['compliance-verdicts-jsonl'] = `${lines.join('\n')}\n`;
   if (JSON.stringify(store).length !== limit) throw new Error('synthetic store is not exactly at the limit');
-  return store;
 }
 
 const script = (name) => fileURLToPath(new URL(`../scripts/${name}`, import.meta.url));

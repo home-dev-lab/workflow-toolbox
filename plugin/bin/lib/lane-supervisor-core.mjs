@@ -5,6 +5,8 @@ import { ensureLaneHostDir, laneHostDir, readWorktreeRegular } from './host/lane
 import { createProcfs, DEFAULT_PROC_ROOT, procfsProcessExists } from './host/procfs.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
 import { signalProcess } from './host/process-signal-boundary.mjs'
+import { scanWorktree } from './host/lane-worktree-scan.mjs'
+import { bestEffortLaneDiagnostic } from './host/lane-diagnostics.mjs'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 500
@@ -287,15 +289,17 @@ function ownedTerminationForce(record, { kill, ownedChild }) {
 // The worker owns the child handle and detached group. Its own leader is never force-signalled.
 function terminateOwnedLane(record, settings, event) {
   const { journal, markTerminal, graceMs } = settings
-  journal(event)
-  if (markTerminal) markTerminal('terminating')
   const refused = ownedTerminationSignal(record, settings)
   if (refused) return refused
   if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
   const failed = ownedTerminationForce(record, settings)
   if (failed) return failed
-  if (markTerminal) markTerminal('terminal')
-  journal({ ...event, event: 'terminated', reason: 'terminated' })
+  bestEffortLaneDiagnostic('termination journal', () => journal(event))
+  if (markTerminal) {
+    bestEffortLaneDiagnostic('terminal state', () => markTerminal('terminating'))
+    bestEffortLaneDiagnostic('terminal state', () => markTerminal('terminal'))
+  }
+  bestEffortLaneDiagnostic('termination journal', () => journal({ ...event, event: 'terminated', reason: 'terminated' }))
   return { killed: true, reason: 'terminated', verdict: { status: 'gone', reason: 'worker-owned-child-ended' } }
 }
 
@@ -472,7 +476,12 @@ export function processEvidenceStatus(pid, { platform = process.platform, inspec
   return status
 }
 
+function hasQueueDependentBound(record) {
+  return record?.unattendedMaxSeconds === null && ['suite-lock-no-progress', 'suite-lock-wait-or-hold'].includes(record?.queueWaitBound)
+}
+
 export function laneHardBoundAt(record) {
+  if (hasQueueDependentBound(record)) return null
   const timeoutAt = Date.parse(record?.timeoutAt)
   const timeoutMs = Number(record?.timeoutSeconds) * 1000
   const graceMs = Number(record?.decisionGraceSeconds) * 1000
@@ -506,43 +515,27 @@ function directoryEntries(dir) {
   try { return readdirSync(dir, { withFileTypes: true }) } catch { return null }
 }
 
-export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
-  if (maxEntries < 0) return { at: null, bounded: true, status: 'unknown' }
-  const skipped = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
-  const stack = [root]
-  let latest = 0
-  let latestPath = null
-  let visited = 0
-  while (stack.length) {
-    const dir = stack.pop()
-    const entries = directoryEntries(dir)
-    if (entries === null) continue
-    for (const entry of entries) {
-      if (++visited > maxEntries) return { at: null, bounded: true, status: 'unknown' }
-      if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))) continue
-      const full = path.join(dir, entry.name)
-      try {
-        const stat = statSync(full)
-        if (stat.mtimeMs > latest) { latest = stat.mtimeMs; latestPath = full }
-        if (entry.isDirectory()) stack.push(full)
-      } catch {}
-    }
-  }
-  return { at: latest || null, path: latestPath, bounded: false, status: 'known' }
+export function latestWorktreeWrite(root, options) {
+  return scanWorktree(root, options)
 }
 
 export function appendSupervisorJournal(dataDir, event) {
-  mkdirSync(dataDir, { recursive: true })
-  const journal = path.join(dataDir, 'lane-supervisor.jsonl')
   try {
-    if (statSync(journal).size >= JOURNAL_MAX_BYTES) {
-      rmSync(`${journal}.1`, { force: true })
-      renameSync(journal, `${journal}.1`)
+    mkdirSync(dataDir, { recursive: true })
+    const journal = path.join(dataDir, 'lane-supervisor.jsonl')
+    try {
+      if (statSync(journal).size >= JOURNAL_MAX_BYTES) {
+        rmSync(`${journal}.1`, { force: true })
+        renameSync(journal, `${journal}.1`)
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
     }
+    appendFileSync(journal, `${JSON.stringify({ version: 1, time: new Date().toISOString(), ...event })}\n`)
   } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
+    bestEffortLaneDiagnostic('supervisor journal', () => { throw error })
+    throw error
   }
-  appendFileSync(journal, `${JSON.stringify({ version: 1, time: new Date().toISOString(), ...event })}\n`)
 }
 
 export function writeJsonAtomic(file, value) {

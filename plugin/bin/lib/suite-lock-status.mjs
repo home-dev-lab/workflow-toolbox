@@ -1,6 +1,6 @@
 import { displayArgv, displayText } from './suite-lock-display.mjs'
 import { effectiveLevel, numericLevel, orderSuiteLockTickets, waitedMilliseconds } from './suite-lock-order.mjs'
-import { suiteLockLongHoldSeconds } from './suite-lock-priority.mjs'
+import { suiteLockLightHoldSeconds, suiteLockLongHoldSeconds } from './suite-lock-priority.mjs'
 
 const finite = (value) => Number.isFinite(value) ? value : null
 const pidNumber = (value) => Number.isSafeInteger(value) && value > 0 ? value : null
@@ -45,7 +45,9 @@ export function suiteLockStatusSnapshot(current, tickets, counter, now, env, p0C
   const stale = tickets.filter((ticket) => ticket.stale).sort((left, right) => left.number - right.number)
   const ageMs = current.held ? waitedMilliseconds(current.holder?.startedAt, now) : null
   const longHoldBoundS = suiteLockLongHoldSeconds(env)
+  const lightHoldBoundS = suiteLockLightHoldSeconds(env)
   return { ...current, holder: safeHolder(current.holder), ageMs, level: numericLevel(current.holder?.level) ? current.holder.level : null,
+    lightPastClass: current.holder?.light === true && ageMs !== null && ageMs > lightHoldBoundS * 1000, lightHoldBoundS,
     longHold: ageMs !== null && ageMs > longHoldBoundS * 1000, longHoldBoundS, order: ordered.order, levelOrder: ordered.levelOrder,
     queue: [...ordered.tickets, ...stale].map((ticket, index) => queueEntry(ticket, index + 1, now)) }
 }
@@ -77,6 +79,10 @@ function longHoldLine(current) {
   return `long hold: pid ${pidNumber(current.holder?.pid) ?? 'unknown'} held ${formatSuiteLockDuration(current.ageMs)}, above the ${finite(current.longHoldBoundS) ?? 'unknown'} s bound; the lock never pre-empts a holder`
 }
 
+function lightHoldLine(current) {
+  return `light lease past its class: pid ${pidNumber(current.holder?.pid) ?? 'unknown'} held ${formatSuiteLockDuration(current.ageMs)}, above the ${finite(current.lightHoldBoundS) ?? 'unknown'} s bound (${displayArgv(safeArgv(current.holder?.argv))}); the lock never pre-empts a holder`
+}
+
 function orderLines(current) {
   if (current.order === 'compatible') return ['queue compatibility order: exact older-client ordering while a live ticket has no level']
   return current.order === 'levels' && current.levelOrder === 'legacy' ? [LEGACY_LEVEL_ORDER] : []
@@ -88,6 +94,7 @@ export function formatSuiteLockStatus(current, holderText) {
   const free = waiting ? `suite lock free; ${waiting} wait` : 'suite lock free'
   const lines = [current.legacyStatus ?? (current.held ? holderHeadline(current, holderText) : free)]
   if (current.longHold) lines.push(longHoldLine(current))
+  if (current.lightPastClass && !current.stale) lines.push(lightHoldLine(current))
   lines.push(...orderLines(current))
   if (!Array.isArray(current.queue)) lines.push(OLDER_BROKER_QUEUE)
   lines.push(...queue.map(queueLine))
@@ -95,8 +102,9 @@ export function formatSuiteLockStatus(current, holderText) {
 }
 
 export function suiteLockStatusJson(current) {
-  const { held, holder, stale, ageMs, level, longHold, longHoldBoundS, order, levelOrder, queue } = current
+  const { held, holder, stale, ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order, levelOrder, queue } = current
   const status = current.legacyStatus ?? (Array.isArray(queue) ? null : OLDER_BROKER_QUEUE)
-  return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, order,
-    ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}) }
+  return { held, holder: safeHolder(holder), ...(stale === undefined ? {} : { stale }), ageMs, level, longHold, longHoldBoundS, lightPastClass, lightHoldBoundS, order,
+    ...(levelOrder === undefined ? {} : { levelOrder }), queue: Array.isArray(queue) ? safeValue(queue) : null, ...(status ? { status: displayText(status) } : {}),
+    ...(current.capabilities ? { capabilities: { offload: current.capabilities.offload === 1 ? 1 : 0 } } : {}) }
 }

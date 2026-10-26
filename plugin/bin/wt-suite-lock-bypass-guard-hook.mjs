@@ -32,10 +32,9 @@
 //                         the CLI reads), on win32 only: only there does age alone reclaim a live
 //                         holder.
 //   priority-release      `wt-suite-lock run --priority release` or `gate-chain.sh --priority release`.
-//   state-root-moved      a variable the lock directory is derived from (artifactStateDir with
-//                         os.homedir()), assigned for a locked gate: XDG_STATE_HOME or HOME on
-//                         Linux and macOS; XDG_STATE_HOME, LOCALAPPDATA or USERPROFILE on win32
-//                         (where os.homedir() reads USERPROFILE, not HOME). A locked gate is
+//   state-root-moved      an explicit state-root override assigned for a locked gate:
+//                         XDG_STATE_HOME on Linux and macOS; XDG_STATE_HOME or LOCALAPPDATA on
+//                         win32. HOME and USERPROFILE do not move the OS-account default. A locked gate is
 //                         pnpm test|typecheck|lint|quality, a non-watch vitest (`vitest run`, or
 //                         `vitest <filter>`), `wt-suite-lock run`, and `wt-suite-lock-run`.
 // Silent: WT_SUITE_LOCK=1, WT_SUITE_LOCK_WAIT_S, WT_SUITE_LOCK_CMD, WT_SUITE_LOCK_BROKER alone,
@@ -57,9 +56,8 @@
 // unset or overriding effect (`env -u`, a later assignment of the same name), which may still warn;
 // nesting deeper than MAX_DEPTH shells or substitutions.
 //
-// OUTPUT. A scoped exception to the convention that owned hooks stay silent for sub-agents
-// (emitGuardNotice drops output when agent_id is set): this warning exists FOR the sub-agent, the
-// actor bypassing the lock, and fires only on that agent's own act, so it writes
+// OUTPUT. Like emitGuardNotice's default, this warning reaches the triggering sub-agent as
+// context only. It fires only on that agent's own act and writes
 // `hookSpecificOutput.additionalContext` directly. It never writes `permissionDecision`: an `allow`
 // would auto-approve the call, and `deny` is the promoted phase. `WT_GUARD_MODE=observe` mutes the
 // output (the journal records `silent`). Fail-open on any error.
@@ -80,18 +78,15 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { guardMode, recordGuardEvent } from './lib/guard-journal.mjs'
 import { readStdinJson } from './lib/host/read-stdin-json.mjs'
 import { suiteLockBypassGuardPlatform, suiteLockDirLocation } from './lib/host/suite-lock-bypass-host.mjs'
+import { suiteLockStateRootVariables } from './lib/host/suite-lock-dir.mjs'
 import { blankHeredocBodies, parseStatements, shellUnquote } from './lib/rm-critical-path-core.mjs'
 import { isWorkflowSubagentPayload } from './lib/subagent-delivery-shape.mjs'
 
 const GUARD = 'wt-suite-lock-bypass-guard-hook.mjs'
 const TAG = '[workflow-toolbox suite-lock bypass guard]'
-const PREFILTER = /WT_SUITE_L|wt-suite-lock|gate-chain\.sh|HOME|LOCALAPPDATA|USERPROFILE/i
+const PREFILTER = /WT_SUITE_L|wt-suite-lock|gate-chain\.sh|XDG_STATE_HOME|LOCALAPPDATA/i
 const MAX_DEPTH = 4
 
-// Mirrors artifactStateDir (lib/artifact-server.mjs) and os.homedir(): which variables move the
-// lock directory on which platform.
-const POSIX_STATE_ROOTS = new Set(['XDG_STATE_HOME', 'HOME'])
-const WIN32_STATE_ROOTS = new Set(['XDG_STATE_HOME', 'LOCALAPPDATA', 'USERPROFILE'])
 const LOCK_NAMES = new Set(['WT_SUITE_LOCK', 'WT_SUITE_LOCK_DIR', 'WT_SUITE_LEASE'])
 const RESERVED = new Set(['!', '{', '}', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', 'time', 'coproc', 'noglob', 'nocorrect'])
 const POSIX_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh'])
@@ -139,7 +134,7 @@ const WHAT = {
   'lock-released-forced': '`wt-suite-lock release --force` removes a lock that a live run may hold',
   'lock-stale-reclaim': '`--stale-s 0` lets a Windows waiter reclaim a live holder\'s lock by age alone',
   'priority-release': 'release priority is reserved for the main session\'s release and merge-train gates',
-  'state-root-moved': 'moving the state or home directory the suite lock lives under (XDG_STATE_HOME or HOME; LOCALAPPDATA or USERPROFILE on Windows) for a test gate moves the lock with it, so the gate runs outside the machine queue',
+  'state-root-moved': 'moving the state directory the suite lock lives under (XDG_STATE_HOME; also LOCALAPPDATA on Windows) for a test gate moves the lock with it, so the gate runs outside the machine queue',
   'lock-dir-temp': '`WT_SUITE_LOCK_DIR` under the temporary directory gives this command its own lock, outside the machine queue',
   'lock-dir-unresolved': '`WT_SUITE_LOCK_DIR` set from an expansion gives this command its own lock, outside the machine queue',
 }
@@ -324,7 +319,7 @@ function isGate(command) {
 }
 
 function movesStateRoot(name, platform) {
-  return (platform === 'win32' ? WIN32_STATE_ROOTS : POSIX_STATE_ROOTS).has(name)
+  return suiteLockStateRootVariables(platform).includes(name)
 }
 
 function scanPosix(text, scan, depth) {

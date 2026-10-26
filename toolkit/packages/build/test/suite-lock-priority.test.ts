@@ -4,7 +4,7 @@ import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { baseSuiteLock } from './helpers/base-version-client.js'
 import { POSIX_STALENESS } from './helpers/suite-lock-platform.js'
 // @ts-expect-error runtime JavaScript under plugin/
@@ -55,6 +55,19 @@ function waiter(root: string, name: string, order: string[], options: Record<str
 }
 
 describe('suite lock priority for light runs: order only, one holder at a time', () => {
+  registerLightOrderingBasics()
+  registerLightBypassBound()
+  registerMixedCrowdAndTickets()
+  registerLightClassification()
+  registerVitestClassification()
+  describe.skipIf(process.platform === 'win32')('broker [unix-domain sockets; broker is Linux-sandbox-only]', () => {
+    registerBrokerLightTicket()
+    registerBrokerOlderRefusal()
+    registerBrokerOtherRefusal()
+  })
+})
+
+function registerLightOrderingBasics() {
   it('T1 gives a light waiter the lock before exclusive waiters queued earlier', async () => {
     const root = tempRoot()
     const holder = await acquireSuiteLock({ root, argv: ['H'] })
@@ -86,6 +99,9 @@ describe('suite lock priority for light runs: order only, one holder at a time',
   }, 30_000)
 
   // Fence, not a lock: it pins the constant's value, it does not exercise the bound (T2 does).
+}
+
+function registerLightBypassBound() {
   it('T2b bounds the bypass at eight light leases', () => {
     expect(LIGHT_BYPASS_MAX_GRANTS).toBe(8)
   })
@@ -106,7 +122,9 @@ describe('suite lock priority for light runs: order only, one holder at a time',
     const current = tempRoot(); mkdirSync(current, { recursive: true }); seed(current, { lightGrantsAtQueue: 0, lightGrantsGeneration: ensureLightCounter(current).generation })
     expect(await outcome(current), 'control: a ticket that carries the count is passed').toBe('acquired')
   }, 10_000)
+}
 
+function registerMixedCrowdAndTickets() {
   it('T3 never runs a mixed crowd of light and exclusive acquirers at once, and all of them acquire', async () => {
     const root = tempRoot()
     let inside = 0
@@ -145,6 +163,9 @@ describe('suite lock priority for light runs: order only, one holder at a time',
 
   // A lane `vitest run <file>` is exclusive on purpose: Vitest filters by substring (a.test.ts selects pkg1/a.test.ts ... pkgN/a.test.ts)
   // and the resolved config can enable coverage, so argv cannot bound the selection.
+}
+
+function registerLightClassification() {
   it('T5a classifies the small explicit table of light commands for lane runners', () => {
     for (const argv of [['pnpm', 'typecheck'], ['pnpm', 'run', 'typecheck'], ['pnpm', 'lint'], ['npm', 'run', 'quality'], ['pnpm', 'quality'], ['pnpm', '-r', 'typecheck'], ['npm', 'typecheck']]) {
       expect(lightRunCommand(argv), argv.join(' ')).toBe(true)
@@ -179,7 +200,9 @@ describe('suite lock priority for light runs: order only, one holder at a time',
     expect(suiteLeaseClassFor({ paths: undefined, coverageEnabled: false })).toBe('exclusive')
     expect(suiteLeaseClassFor({ paths: ['a.test.ts'], coverageEnabled: undefined }), 'unknown coverage state fails closed').toBe('exclusive')
   })
+}
 
+function registerVitestClassification() {
   it('T6b classifies a project object fail-closed: missing getPaths, unknown coverage, a throwing reader', () => {
     const project = (state: unknown, coverage: unknown) => ({ vitest: { state, config: { coverage } } })
     expect(suiteLeaseClassForProject(project({ getPaths: () => ['a.test.ts'] }, { enabled: false }))).toBe('light')
@@ -198,89 +221,94 @@ describe('suite lock priority for light runs: order only, one holder at a time',
     expect(suiteLeaseArgvForProject({ vitest: { state: { getPaths: () => { throw new Error('boom') } } } }), 'a throwing reader').toEqual(['vitest', 'run'])
     expect(suiteLeaseArgvForProject(undefined)).toEqual(['vitest', 'run'])
   })
+}
 
-  describe.skipIf(process.platform === 'win32')('broker [unix-domain sockets; broker is Linux-sandbox-only]', () => {
-    it('T7a accepts a light request and the broker ticket carries light', async () => {
-      const root = tempRoot()
-      const address = join(root, 'broker.sock')
-      const saved = { dir: process.env.WT_SUITE_LOCK_DIR, broker: process.env.WT_SUITE_LOCK_BROKER, lease: process.env.WT_SUITE_LEASE }
-      process.env.WT_SUITE_LOCK_DIR = join(root, 'locks'); process.env.WT_SUITE_LOCK_BROKER = ''; delete process.env.WT_SUITE_LEASE
-      const server = createSuiteLockBroker({ env: isolatedEnv(join(root, 'locks')) }) as net.Server
-      const holder = await acquireSuiteLock({ root: join(root, 'locks'), argv: ['H'] })
-      try {
-        await new Promise<void>((resolve) => server.listen(address, resolve))
-        const socket = net.connect(address); sockets.push(socket)
-        let text = ''
-        socket.on('data', (chunk) => { text += String(chunk) })
-        socket.write(`${JSON.stringify({ argv: ['pnpm', 'typecheck'], waitS: 30, light: true })}\n`)
-        await waitFor(() => records(join(root, 'locks')).length === 1)
-        expect(readRecord(join(root, 'locks'), records(join(root, 'locks'))[0]!).light).toBe(true)
-        releaseSuiteLock(holder)
-        await waitFor(() => /granted /.test(text))
-        socket.destroy()
-      } finally {
-        server.close()
-        for (const [key, value] of [['WT_SUITE_LOCK_DIR', saved.dir], ['WT_SUITE_LOCK_BROKER', saved.broker], ['WT_SUITE_LEASE', saved.lease]] as const) {
-          if (value === undefined) delete process.env[key]; else process.env[key] = value
-        }
-      }
-    }, 20_000)
-
-    it('T7b retries once without the field when an older broker refuses it, and says so', async () => {
-      const root = tempRoot()
-      const address = join(root, 'old-broker.sock')
-      const requests: Array<Record<string, unknown>> = []
-      const server = net.createServer((socket) => {
-        socket.on('data', (chunk) => {
-          const request = JSON.parse(String(chunk).split('\n')[0]!)
-          requests.push(request)
-          if ('light' in request) // Byte-exact from develop 353112a5 plugin/bin/lib/host/lane-suite-lock-broker.mjs lines 27 + 93: requestFrom's message,
-          // then the catch's `; requested command ${JSON.stringify(request?.argv ?? 'unavailable')}` (argv was never parsed).
-          socket.end('error argv must be an array of strings (only argv and waitS accepted); requested command "unavailable"\n')
-          else socket.write('granted old-lease\n')
-        })
-      })
+function registerBrokerLightTicket() {
+  it('T7a accepts a light request and the broker ticket carries light', async () => {
+    const root = tempRoot()
+    const address = join(root, 'broker.sock')
+    const saved = { dir: process.env.WT_SUITE_LOCK_DIR, broker: process.env.WT_SUITE_LOCK_BROKER, lease: process.env.WT_SUITE_LEASE }
+    process.env.WT_SUITE_LOCK_DIR = join(root, 'locks'); process.env.WT_SUITE_LOCK_BROKER = ''; delete process.env.WT_SUITE_LEASE
+    const server = createSuiteLockBroker({ env: isolatedEnv(join(root, 'locks')) }) as net.Server
+    const holder = await acquireSuiteLock({ root: join(root, 'locks'), argv: ['H'] })
+    try {
       await new Promise<void>((resolve) => server.listen(address, resolve))
-      const notes: string[] = []
-      const stderr = process.stderr.write.bind(process.stderr)
-      process.stderr.write = ((chunk: string | Uint8Array) => { notes.push(String(chunk)); return true }) as typeof process.stderr.write
-      try {
-        const lease = await acquireSuiteLock({ light: true, argv: ['pnpm', 'typecheck'], waitS: 5, env: { WT_SUITE_LOCK_BROKER: address } })
-        expect(lease.holder.leaseId).toBe('old-lease')
-        releaseSuiteLock(lease)
-      } finally {
-        process.stderr.write = stderr
-        server.close()
+      const socket = net.connect(address); sockets.push(socket)
+      let text = ''
+      socket.on('data', (chunk) => { text += String(chunk) })
+      socket.write(`${JSON.stringify({ argv: ['pnpm', 'test:ambient-state'], waitS: 30, light: true })}\n`)
+      await waitFor(() => records(join(root, 'locks')).length === 1)
+      expect(readRecord(join(root, 'locks'), records(join(root, 'locks'))[0]!).light).toBe(true)
+      releaseSuiteLock(holder)
+      await waitFor(() => /granted /.test(text))
+      socket.destroy()
+    } finally {
+      server.close()
+      for (const [key, value] of [['WT_SUITE_LOCK_DIR', saved.dir], ['WT_SUITE_LOCK_BROKER', saved.broker], ['WT_SUITE_LEASE', saved.lease]] as const) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value
       }
-      expect(requests.map((request) => 'light' in request)).toEqual([true, false])
-      expect(notes.join('')).toMatch(/broker is older.*without priority/)
-    }, 20_000)
+    }
+  }, 20_000)
+}
 
-    it('T7c does not retry, and does not claim an older broker, when the current broker refuses a light request for another reason', async () => {
-      const root = tempRoot()
-      const address = join(root, 'new-broker.sock')
-      const requests: Array<Record<string, unknown>> = []
-      const server = net.createServer((socket) => {
-        socket.on('data', (chunk) => {
-          requests.push(JSON.parse(String(chunk).split('\n')[0]!))
-          socket.end(`error ${BROKER_REFUSAL}\n`)
-        })
+function registerBrokerOlderRefusal() {
+  it('T7b retries once without the field when an older broker refuses it, and says so', async () => {
+    const root = tempRoot()
+    const address = join(root, 'old-broker.sock')
+    const requests: Array<Record<string, unknown>> = []
+    const server = net.createServer((socket) => {
+      socket.on('data', (chunk) => {
+        const request = JSON.parse(String(chunk).split('\n')[0]!)
+        requests.push(request)
+        if ('light' in request) // Byte-exact from develop 353112a5 plugin/bin/lib/host/lane-suite-lock-broker.mjs lines 27 + 93: requestFrom's message,
+        // then the catch's `; requested command ${JSON.stringify(request?.argv ?? 'unavailable')}` (argv was never parsed).
+        socket.end('error argv must be an array of strings (only argv and waitS accepted); requested command "unavailable"\n')
+        else socket.write('granted old-lease\n')
       })
-      await new Promise<void>((resolve) => server.listen(address, resolve))
-      const notes: string[] = []
-      const stderr = process.stderr.write.bind(process.stderr)
-      process.stderr.write = ((chunk: string | Uint8Array) => { notes.push(String(chunk)); return true }) as typeof process.stderr.write
-      try {
-        await expect(acquireSuiteLock({ light: true, argv: ['pnpm', 'typecheck'], waitS: 5, env: { WT_SUITE_LOCK_BROKER: address } })).rejects.toThrow(/plus light as a boolean/)
-      } finally {
-        process.stderr.write = stderr
-        server.close()
-      }
-      expect(requests.length, 'no retry').toBe(1)
-      expect(notes.join('')).not.toMatch(/broker is older/)
-    }, 20_000)
-  })
-})
+    })
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const notes: string[] = []
+    const stderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = ((chunk: string | Uint8Array) => { notes.push(String(chunk)); return true }) as typeof process.stderr.write
+    try {
+      const lease = await acquireSuiteLock({ light: true, argv: ['pnpm', 'typecheck'], waitS: 5, env: { WT_SUITE_LOCK_BROKER: address } })
+      expect(lease.holder.leaseId).toBe('old-lease')
+      releaseSuiteLock(lease)
+    } finally {
+      process.stderr.write = stderr
+      server.close()
+    }
+    expect(requests.map((request) => 'light' in request)).toEqual([true, false])
+    expect(notes.join('')).toMatch(/broker is older.*without priority/)
+  }, 20_000)
+}
+
+function registerBrokerOtherRefusal() {
+  it('T7c does not retry, and does not claim an older broker, when the current broker refuses a light request for another reason', async () => {
+    const root = tempRoot()
+    const address = join(root, 'new-broker.sock')
+    const requests: Array<Record<string, unknown>> = []
+    const server = net.createServer((socket) => {
+      socket.on('data', (chunk) => {
+        requests.push(JSON.parse(String(chunk).split('\n')[0]!))
+        socket.end(`error ${BROKER_REFUSAL}\n`)
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const notes: string[] = []
+    const stderr = process.stderr.write.bind(process.stderr)
+    process.stderr.write = ((chunk: string | Uint8Array) => { notes.push(String(chunk)); return true }) as typeof process.stderr.write
+    try {
+      await expect(acquireSuiteLock({ light: true, argv: ['pnpm', 'typecheck'], waitS: 5, env: { WT_SUITE_LOCK_BROKER: address } })).rejects.toThrow(/plus light as a boolean/)
+    } finally {
+      process.stderr.write = stderr
+      server.close()
+    }
+    expect(requests.length, 'no retry').toBe(1)
+    expect(notes.join('')).not.toMatch(/broker is older/)
+  }, 20_000)
+}
+
 
 describe('release priority', () => {
   registerMixedReleaseTickets()
@@ -347,7 +375,7 @@ function registerReleaseOrdering() {
     }
     releaseSuiteLock(holder); await Promise.all(all)
     expect(order, 'release priority has no per-waiter bypass bound').toEqual(['R1', 'R2', 'R3', 'R4', 'R5', 'L', 'E'])
-    expect(readdirSync(root).sort(), 'release admissions add no release-specific state; p0-grants comes from the default-P1 tickets, which record the P0 counter at queue time').toEqual(['admissions', 'light-grants', 'p0-grants', 'queue.d'])
+    expect(readdirSync(root).sort(), 'release admissions add no release-specific state; p0-grants comes from the default-P1 tickets, which record the P0 counter at queue time').toEqual(['admissions', 'journal.jsonl', 'light-grants', 'p0-grants', 'queue.d'])
     expect(readLightCounter(root).grants).toBe(1)
   }, 20_000)
 
@@ -601,20 +629,24 @@ function suspendedOrdinary(root: string, options: Record<string, unknown> = {}) 
 describe('direct release-holder watchdog renewal', () => {
   it.each([{ label: 'timestamp', waitS: 2, staleS: 2, beforeMs: 1_400, holdMs: 1_000 },
     { label: 'holder priority budget', waitS: 0.4, staleS: 2, beforeMs: 150, holdMs: 800 }])('A5g renews the first observed release holder: $label', async ({ waitS, staleS, beforeMs, holdMs }) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
     const root = tempRoot(); const ticket = suspendedOrdinary(root)
     const progress: Array<{ aheadExcludingRelease: number }> = []; const handovers: string[] = []
     const pending = acquireSuiteLock({ root, waitS, staleS, pollMs: 10,
       onProgress: (place: { aheadExcludingRelease: number }) => progress.push(place),
       onHandover: (id: string) => handovers.push(id),
     }).then((lease: { holder: unknown }) => { releaseSuiteLock(lease); return { acquired: true } }, (error: { code?: string }) => ({ error }))
-    await waitFor(() => progress.some((place) => place.aheadExcludingRelease === 1))
-    await new Promise((resolve) => setTimeout(resolve, beforeMs))
-    const release = await acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', pollMs: 10 })
-    await waitFor(() => handovers.includes(release.holder.leaseId))
-    await new Promise((resolve) => setTimeout(resolve, holdMs))
-    releaseSuiteLock(release); removeTicket(join(root, 'queue.d'), ticket)
-    expect(await pending, 'first observed release must renew the timestamp and preserve its hold budget').toEqual({ acquired: true })
-    expect(handovers).toEqual([release.holder.leaseId])
+    try {
+      await vi.waitFor(() => expect(progress.some((place) => place.aheadExcludingRelease === 1)).toBe(true), { interval: 10 })
+      await vi.advanceTimersByTimeAsync(beforeMs)
+      const release = await acquireSuiteLock({ root, env: isolatedEnv(root), priority: 'release', pollMs: 10 })
+      await vi.waitFor(() => expect(handovers).toContain(release.holder.leaseId), { interval: 10 })
+      await vi.advanceTimersByTimeAsync(holdMs)
+      releaseSuiteLock(release); removeTicket(join(root, 'queue.d'), ticket)
+      await vi.advanceTimersByTimeAsync(20)
+      expect(await pending, 'first observed release must renew the timestamp and preserve its hold budget').toEqual({ acquired: true })
+      expect(handovers).toEqual([release.holder.leaseId])
+    } finally { vi.useRealTimers() }
   }, 10_000)
 
 })
@@ -947,7 +979,7 @@ function registerLostCounter() {
 describe('package scripts: which ones are light', () => {
   const scripts = (JSON.parse(readFileSync(join(ROOT, 'toolkit/package.json'), 'utf8')) as { scripts: Record<string, string> }).scripts
   const light = (command: string) => /with-suite-lease\.mjs --light --/.test(command)
-  const LIGHT_SET = ['typecheck', 'lint', 'quality', 'quality:lint', 'quality:changed', 'quality:dup', 'quality:dead', 'quality:deps', 'test:spawning-files', 'test:ambient-state', 'test:fixed-waits', 'test:cross-repo']
+  const LIGHT_SET = ['test:spawning-files', 'test:ambient-state', 'test:fixed-waits', 'test:cross-repo']
 
   it('C-L3 marks exactly the intended scripts light', () => {
     for (const name of LIGHT_SET) expect(light(scripts[name] ?? ''), name).toBe(true)
@@ -959,6 +991,15 @@ describe('package scripts: which ones are light', () => {
       const runsSuite = /\bvitest\b/.test(command) || /script-gates\.mjs (test|quality:coverage)/.test(command) || /suite-under-load|certify/.test(command) || command === 'pnpm test'
       const explicitFiles = /\bvitest run\b[^&|]*\.(test|spec)\./.test(command)
       if (runsSuite && !explicitFiles) expect(light(command), `${name}: ${command}`).toBe(false)
+    }
+  })
+
+  it('C-L3 never marks any static script as running Vitest or the suite', () => {
+    for (const [name, command] of Object.entries(scripts)) {
+      const wrapper = command.split(' -- ')[0] ?? ''
+      if (!wrapper.includes('with-suite-lease.mjs') || !wrapper.split(/\s+/).includes('--static')) continue
+      const runsSuite = /\bvitest\b|script-gates\.mjs (?:test|quality:coverage)|suite-under-load|certify|\bpnpm (?:run )?test\b/.test(command)
+      expect(runsSuite, `${name}: ${command}`).toBe(false)
     }
   })
 })

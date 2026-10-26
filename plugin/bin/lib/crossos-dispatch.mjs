@@ -1,5 +1,6 @@
 import { commandIO } from './host/command-io.mjs'
 import { EVIDENCE_FIELDS, ciBranchFor, matchesHostPath, verdictFromEvidence } from './crossos-verdict.mjs'
+import { JOBS_PER_PAGE, readJobPages, workflowJobNames } from './crossos-evidence.mjs'
 import { isAbsolute } from 'node:path'
 
 const LIST = '.github/cross-os-host-layer.json'
@@ -7,7 +8,7 @@ const RESULTS = { 0: 'green', 1: 'red', 2: 'error', 3: 'mismatch', 4: 'timeout',
 const failure = (message, code = 2) => Object.assign(new Error(message), { code })
 const lines = (text) => text.trim().split('\n').filter(Boolean)
 // Every run ID and commit read from storage or from gh output is checked before any gh or git argv uses it.
-const RUN_ID = /^[1-9][0-9]*$/
+const RUN_ID = /^[1-9]\d*$/
 const COMMIT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 const validRunId = (id) => RUN_ID.test(String(id))
 
@@ -63,8 +64,25 @@ function checked(io, cwd, program, args) {
 }
 const git = (ctx, ...args) => checked(ctx.io, ctx.cwd, 'git', args)
 const gh = (ctx, ...args) => JSON.parse(checked(ctx.io, ctx.cwd, 'gh', args))
-const shaOf = (ctx, ref) => git(ctx, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`)
+const shaOf = (ctx, ref) => checkDevelopAncestry(ctx, git(ctx, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`))
 const recordPath = (ctx, sha) => ctx.io.join(ctx.store, `${sha}.json`)
+
+function checkDevelopAncestry(ctx, sha) {
+  // Historical collection/release evidence remains valid after develop advances.
+  if (!['decide', 'run'].includes(ctx.args.command)) return sha
+  let develop
+  try { develop = git(ctx, 'rev-parse', '--verify', '--end-of-options', 'refs/heads/develop^{commit}') }
+  catch { throw failure('cannot resolve local develop ref refs/heads/develop; restore it with: git branch develop <current-develop-tip>; then retry with a preview merge') }
+  const result = ctx.io.run('git', ['merge-base', '--is-ancestor', develop, sha], { cwd: ctx.cwd })
+  if (result.status === 0) return sha
+  if (result.status !== 1) throw failure(`cannot verify develop ancestry for ${sha}: git merge-base --is-ancestor failed (${result.status}): ${result.stderr.trim()}; repair local Git history and retry`)
+  throw failure(`commit ${sha} does not contain current local develop tip ${develop}; refusing ${ctx.args.command}.
+Build a preview merge containing develop and the feature branch, then dispatch that merge:
+git worktree add --detach <dir> develop
+git -C <dir> merge --no-ff <branch>
+node plugin/bin/wt-crossos-dispatch.mjs run --repo <dir> --merge HEAD`)
+}
+
 function reportSuccessfulDiagnostics(ctx, jobs) {
   for (const job of jobs) {
     let log
@@ -246,7 +264,15 @@ function runList(ctx, branch) {
 }
 
 function freshEvidence(ctx, runId) {
-  return gh(ctx, 'run', 'view', String(runId), '-R', ctx.slug, '--json', EVIDENCE_FIELDS)
+  const run = gh(ctx, 'run', 'view', String(runId), '-R', ctx.slug, '--json', EVIDENCE_FIELDS)
+  // Leave malformed identity evidence to the verdict's existing mismatch checks.
+  if (!COMMIT_ID.test(run.headSha)) return run
+  const source = git(ctx, 'show', `${run.headSha}:.github/workflows/${ctx.args.workflow}`)
+  run.expectedJobs = workflowJobNames(source)
+  // Fetch each REST page with version-independent gh arguments, then validate the
+  // complete count and unique identities before judging the run.
+  run.jobs = readJobPages((page) => gh(ctx, 'api', `repos/${ctx.slug}/actions/runs/${runId}/jobs?filter=latest&per_page=${JOBS_PER_PAGE}&page=${page}`))
+  return run
 }
 
 async function discoverRun(ctx, record) {

@@ -12,7 +12,49 @@ const PRODUCER = process.env.WT_ACTIONABLE_TEST_PRODUCER || join(BIN, 'wt-action
 const REFRESH = join(BIN, 'wt-actionable-snapshot-refresh.mjs')
 const GATE = join(BIN, 'wt-actionable-gate-hook.mjs')
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+// One shared deadline per hook run covers every pid wait and exit wait; a kill adds only a short grace.
+// Worst case with one root: CLEANUP_BUDGET_MS + KILL_GRACE_MS + RM_RETRY_MS = 10.5 s, under the 15 s config hookTimeout
+// and under the explicit CLEANUP_HOOK_TIMEOUT_MS passed to afterEach.
+const CLEANUP_BUDGET_MS = 8_000
+const KILL_GRACE_MS = 2_000
+const RM_RETRY_MS = 5 * 100
+const CLEANUP_HOOK_TIMEOUT_MS = 20_000
+const pidsFile = (root: string) => join(root, 'children.pids')
+const stubPath = (root: string) => join(root, 'refresh-stub.mjs')
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+function alive(pid: number) {
+  try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' }
+}
+function recordedPids(root: string) {
+  return existsSync(pidsFile(root)) ? readFileSync(pidsFile(root), 'utf8').split('\n').filter(Boolean).map(Number) : []
+}
+// A launch was recorded and its stub still exists, so a detached child is expected to report its pid.
+function childExpected(root: string) {
+  const dir = join(root, 'state/wt-actionable')
+  return existsSync(stubPath(root)) && existsSync(dir) && readdirSync(dir).some((name) => name.endsWith('.auto-refresh.json'))
+}
+async function until(condition: () => boolean, ms: number) {
+  for (const end = Date.now() + ms; Date.now() < end && !condition();) await sleep(50)
+  return condition()
+}
+// Cleanup never races a live child: a live process holding its cwd inside the temp dir makes Windows refuse the removal (EPERM).
+// Waits for each recorded child to exit within the shared deadline, then kills the exact pid that outlived it.
+async function settleChildren(root: string, deadline = Date.now() + CLEANUP_BUDGET_MS) {
+  const left = () => Math.max(0, deadline - Date.now())
+  if (childExpected(root)) await until(() => recordedPids(root).length > 0, left())
+  for (const pid of recordedPids(root)) {
+    if (await until(() => !alive(pid), left())) continue
+    try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+    await until(() => !alive(pid), KILL_GRACE_MS)
+  }
+}
+afterEach(async () => {
+  const deadline = Date.now() + CLEANUP_BUDGET_MS
+  for (const root of roots.splice(0)) {
+    await settleChildren(root, deadline)
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+}, CLEANUP_HOOK_TIMEOUT_MS)
 
 function project() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-actionable-bounded-')))
@@ -73,9 +115,10 @@ function live(p: Project, cwd = p.cwd) {
 function optIn(p: Project) {
   writeFileSync(join(p.cwd, '.claude/planka.json'), JSON.stringify({ boardId: 'board', actionableAutoRefresh: true }))
 }
+const RECORD_PID = (root: string) => `import { appendFileSync as recordPid } from 'node:fs'; recordPid(${JSON.stringify(pidsFile(root))}, process.pid + '\\n');\n`
 function stub(p: Project, source = `import { appendFileSync } from 'node:fs'; appendFileSync(${JSON.stringify(join(p.root, 'marker'))}, process.cwd() + '\\n')`) {
-  const path = join(p.root, 'refresh-stub.mjs')
-  writeFileSync(path, source)
+  const path = stubPath(p.root)
+  writeFileSync(path, RECORD_PID(p.root) + source)
   p.env = { ...p.env, WT_ACTIONABLE_REFRESH_BIN: path } as typeof p.env
   return path
 }
@@ -416,6 +459,23 @@ function collect(p: Project, source: string) {
     expect(result.hookSpecificOutput).toBeUndefined()
     expect(result.systemMessage).toContain('auto-refresh-launch-failed')
     expect(existsSync(join(p.root, 'marker'))).toBe(false)
+  })
+
+  it('cleanup waits for the recorded detached child to exit before the temp dir is removed', async () => {
+    const p = project(); optIn(p)
+    stub(p, 'setTimeout(() => {}, 1500)')
+    stop(p)
+    await settleChildren(p.root)
+    const pids = recordedPids(p.root)
+    expect(pids).toHaveLength(1)
+    expect(alive(pids[0]!)).toBe(false)
+  })
+
+  it('the cleanup bound fits inside the configured hook timeout with margin', () => {
+    const configured = Number(/hookTimeout:\s*([\d_]+)/.exec(readFileSync(join(ROOT, 'toolkit/vitest.config.mts'), 'utf8'))?.[1]?.replace(/_/g, ''))
+    expect(configured).toBeGreaterThan(0)
+    expect(CLEANUP_BUDGET_MS + KILL_GRACE_MS + RM_RETRY_MS).toBeLessThan(configured)
+    expect(CLEANUP_BUDGET_MS + KILL_GRACE_MS + RM_RETRY_MS).toBeLessThan(CLEANUP_HOOK_TIMEOUT_MS)
   })
 
   it('the parent exits before the detached child finishes', async () => {

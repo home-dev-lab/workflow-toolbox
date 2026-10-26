@@ -192,9 +192,9 @@ function eventId(session, kind, p) {
 function relayLine(kind, target, label, p, session, message, now) {
   const marker = `[wt-relay ${eventId(session, kind, p)}]`
   const detail = kind === 'WAKE'
-    ? `its background task ${p.taskId} finished at ${p.at.slice(11, 19)} and it has not resumed for ${Math.floor((now - Date.parse(p.at)) / 1000)}s`
+    ? `its background task ${p.taskId} finished at ${new Date(p.at).toISOString().slice(11, 19)}Z and it has not resumed for ${Math.floor((now - Date.parse(p.at)) / 1000)}s`
     : `delegate ${p.taskId} finished (${clean(p.status)}) but its notice has not reached the agent that spawned it`
-  return { kind, key: `${kind}:${eventId(session, kind, p)}`, at: Date.parse(p.at),
+  return { kind, target, taskId: p.taskId, key: `${kind}:${eventId(session, kind, p)}`, at: Date.parse(p.at),
     line: `${kind}: ${target} (${clean(label)}) — ${detail}. Relay one line: SendMessage to "${target}": "${relayText(message)} ${marker}"` }
 }
 
@@ -295,12 +295,39 @@ export function detectRelays({ sessionId, main, agents, meta, now = Date.now(), 
 
 // FORWARD infers "the parent has not received the notice" from the ABSENCE of a matching record;
 // every definition tried was refuted on real transcripts, so its precision is unmeasured. The live
-// watcher therefore announces WAKE (directly evidenced) only; FORWARD stays a scanner diagnostic.
-export const announceable = (lines) => lines.filter((entry) => entry.kind === 'WAKE')
+// watcher announces directly evidenced WAKEs and terminal orphan observations;
+// FORWARD stays a scanner diagnostic.
+export const announceable = (lines) => lines.filter((entry) => entry.kind === 'WAKE' || entry.kind === 'ORPHANED BY RESTART')
+
+// Restart evidence is injected by the host boundary. Ignore evidence newer than a
+// historical replay; a monitor reload is not itself evidence of a session restart.
+export function classifyRelays(input) {
+  const result = detectRelays({ ...input, maxAge: Infinity })
+  const restart = input.restart ?? {}
+  const now = input.now ?? Date.now()
+  const ceiling = input.maxAge ?? WAKE_MAX_AGE_MS
+  const boundaries = [restart.bootAt, restart.sessionStartedAt]
+    .filter((at) => Number.isFinite(at) && at <= now)
+  result.lines = result.lines.map((entry) => {
+    if (entry.kind !== 'WAKE') return entry
+    const ack = input.ackCommand ? ` Acknowledge: ${input.ackCommand(entry.target)}` : ''
+    // An orphan past the age ceiling is flagged `aged`: the host settles it without printing it.
+    if (boundaries.some((at) => entry.at < at)) return { ...entry, kind: 'ORPHANED BY RESTART', aged: now - entry.at > ceiling,
+      line: `ORPHANED BY RESTART: ${entry.target} — background task ${entry.taskId} notice at ${new Date(entry.at).toISOString()} predates boot or session process start.${ack}` }
+    if (now - entry.at > ceiling) {
+      result.stale.push({ owner: entry.target, taskId: entry.taskId, at: new Date(entry.at).toISOString() })
+      return null
+    }
+    return { ...entry, line: entry.line + ack }
+  }).filter(Boolean)
+  if (restart.bootAt === null) result.degraded.push(`boot time unknown (${restart.bootReason ?? 'unavailable'})`)
+  if (restart.sessionStartedAt === null) result.degraded.push('session process start unknown (unavailable)')
+  return result
+}
 
 export function dueRelays(candidates, state, now, limit = 20, repeat = 600_000) {
   const delay = (count) => count <= 3 ? repeat * (2 ** (count - 1)) : 60 * 60_000
-  return candidates.filter((p) => !state[p.key] || now - state[p.key].lastEmittedAt >= delay(state[p.key].count))
+  return candidates.filter((p) => p.kind === 'ORPHANED BY RESTART' || !state[p.key] || now - state[p.key].lastEmittedAt >= delay(state[p.key].count))
     .sort((a, b) => (state[a.key] ? 1 : 0) - (state[b.key] ? 1 : 0)
       || (state[a.key]?.lastEmittedAt ?? a.at) - (state[b.key]?.lastEmittedAt ?? b.at)
       || a.key.localeCompare(b.key)).slice(0, limit)
@@ -310,8 +337,9 @@ export function eventBudget(write, limit = 20) {
   let spent = 0
   let suppressed = 0
   return {
-    emit(line) {
+    emit(line, before = () => true) {
       if (spent >= limit) { suppressed++; return false }
+      if (!before()) return false
       spent++
       write(line)
       return true

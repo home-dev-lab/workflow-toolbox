@@ -42,7 +42,7 @@ function workflow(name: string): Workflow {
     expect(step.shell).toBe('bash')
     expect(step.run).toContain('pnpm test:shard packages/build/test/host-adapter.contract.test.ts')
     expect(step.run).toContain('ci-diagnostics/host-contract-')
-    if (name === 'cross-os') expect(step.if).toBe('${{ matrix.shard != 1 }}')
+    if (name === 'cross-os') expect(step.if).toBe('${{ matrix.shard != 2 && matrix.shard != 3 }}')
   })
 
   it('separates the Windows adapter clock assignment from process enumeration', () => {

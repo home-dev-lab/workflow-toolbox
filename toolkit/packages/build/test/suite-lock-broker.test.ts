@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { stopBrokerFixtureTimers, suiteBrokerAddress, suiteBrokerFixture, writeBrokerFixtureLine } from './helpers/suite-broker-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { acquireSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -18,8 +19,14 @@ const GLOBAL_SETUP = join(ROOT, 'toolkit/test-support/suite-lease.global-setup.m
 const roots: string[] = []
 const children: Array<ReturnType<typeof spawn>> = []
 
-afterEach(() => {
-  for (const child of children.splice(0)) child.kill('SIGKILL')
+afterEach(async () => {
+  await Promise.all(children.splice(0).map(async (child) => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exit = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+      child.kill('SIGKILL'); await exit
+    }
+    child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy()
+  }))
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -160,32 +167,71 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
   registerBusyRequestCleanup()
   registerLateRequest()
   registerLeaseLifecycle()
+  registerStaticAdmission()
   registerHoldBound()
   registerCommandTreeStop()
   registerStopGrace()
   registerHoldConfiguration()
   registerMalformedClients()
   registerBrokerDisappearance()
+  registerLightClassStatus()
+  registerLightClassWarning()
 })
+
+function registerLightClassStatus() {
+  it('light class fields survive broker status text and JSON whitelists', async () => {
+    const broker = await startBroker(process.pid, { WT_SUITE_LOCK_LIGHT_HOLD_S: '5' })
+    const root = join(broker.root, 'locks')
+    const held = await acquireSuiteLock({ root, env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '' }),
+      light: true, startedAt: new Date(Date.now() - 6000).toISOString(), argv: ['short-job'] })
+    const env = sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' })
+    try {
+      const json = spawnSync(process.execPath, [CLI, 'status', '--json'], { env, encoding: 'utf8', timeout: 15_000 })
+      expect(json.status, json.stderr).toBe(0)
+      expect(JSON.parse(json.stdout)).toMatchObject({ lightPastClass: true, lightHoldBoundS: 5, holder: { light: true } })
+      const text = spawnSync(process.execPath, [CLI, 'status'], { env, encoding: 'utf8', timeout: 15_000 })
+      expect(text.status, text.stderr).toBe(0); expect(text.stdout).toContain('light lease past its class:')
+    } finally { releaseSuiteLock(held) }
+  })
+}
+
+function registerLightClassWarning() {
+  it('light class run process warns while its broker lease is still held', async () => {
+    const broker = await startBroker(); const finished = join(broker.root, 'finish')
+    const script = `const fs=require('fs');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finished)})){clearInterval(timer)}},10)`
+    const child = spawn(process.execPath, [CLI, 'run', '--light', '--', process.execPath, '-e', script],
+      { env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket,
+        WT_SUITE_LEASE: '', WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+    let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+    try {
+      await waitFor(() => stderr.includes('light lease past its class:'))
+      expect(existsSync(broker.lock)).toBe(true)
+    } finally { writeFileSync(finished, 'done'); await exit }
+    expect(await exit).toBe(0); expect(stderr.match(/wt-suite-lock: light lease past its class:/g)).toHaveLength(1)
+    await waitFor(() => !existsSync(broker.lock))
+  })
+}
 
 function registerClientBudgetRenewal() {
   it('renews the client budget only for queue progress while a fake broker grants after five seconds', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lock-progress-')); roots.push(root)
-    const address = join(root, 'broker.sock')
+    const address = suiteBrokerAddress(root)
     const server = net.createServer((socket) => socket.once('data', () => {
       // A strictly better place every 0.4 s: 14 tickets ahead down to 1, then the grant at 5.2 s.
       let ahead = 14
-      socket.write(`progress ${ahead} 15\n`)
-      const interval = setInterval(() => { if (ahead > 1) { ahead -= 1; socket.write(`progress ${ahead} 15\n`) } }, 400)
-      const grant = setTimeout(() => { clearInterval(interval); socket.write('granted late-lease\n') }, 5200)
-      socket.once('close', () => { clearInterval(interval); clearTimeout(grant) })
+      writeBrokerFixtureLine(socket, `progress ${ahead} 15\n`)
+      const interval = setInterval(() => { if (ahead > 1) { ahead -= 1; writeBrokerFixtureLine(socket, `progress ${ahead} 15\n`) } }, 400)
+      const grant = setTimeout(() => { clearInterval(interval); writeBrokerFixtureLine(socket, 'granted late-lease\n') }, 5200)
+      stopBrokerFixtureTimers(socket, interval, grant)
     }))
-    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const fixture = suiteBrokerFixture(server)
     try {
+      await fixture.listen(address)
       const lease = await acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })
       expect(lease.holder.leaseId).toBe('late-lease')
       releaseSuiteLock(lease)
-    } finally { server.close() }
+    } finally { await fixture.close() }
   }, 15_000)
 
 }
@@ -221,20 +267,21 @@ function registerInvalidProgress() {
   // own watchdog still ends the wait about waitS + 2 s after the last real improvement.
   it('does not renew the client deadline for repeated, worse or impossible progress lines', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lock-dup-progress-')); roots.push(root)
-    const address = join(root, 'broker.sock')
+    const address = suiteBrokerAddress(root)
     const lines = ['progress 2 4', 'progress 3 4', 'progress 1 1', 'progress -1 4', 'progress 1.5 4', 'progress 9999999999 99999999999']
     const server = net.createServer((socket) => socket.once('data', () => {
-      socket.write('progress 2 4\n')
+      writeBrokerFixtureLine(socket, 'progress 2 4\n')
       let index = 0
-      const interval = setInterval(() => { socket.write(`${lines[index % lines.length]}\n`); index += 1 }, 200)
-      socket.once('close', () => clearInterval(interval))
+      const interval = setInterval(() => { writeBrokerFixtureLine(socket, `${lines[index % lines.length]}\n`); index += 1 }, 200)
+      stopBrokerFixtureTimers(socket, interval)
     }))
-    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const fixture = suiteBrokerFixture(server)
     try {
+      await fixture.listen(address)
       const start = performance.now()
       await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
       expect(performance.now() - start).toBeLessThan(5000)
-    } finally { server.close() }
+    } finally { await fixture.close() }
   }, 8000)
 
 }
@@ -242,19 +289,20 @@ function registerInvalidProgress() {
 function registerWaitOnlyNotices() {
   it('does not renew the client deadline for wait-only notices', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lock-wait-only-')); roots.push(root)
-    const address = join(root, 'broker.sock')
+    const address = suiteBrokerAddress(root)
     const server = net.createServer((socket) => socket.once('data', () => {
-      socket.write('wait still queued\n')
-      const interval = setInterval(() => socket.write('wait still queued\n'), 400)
-      socket.once('close', () => clearInterval(interval))
+      writeBrokerFixtureLine(socket, 'wait still queued\n')
+      const interval = setInterval(() => writeBrokerFixtureLine(socket, 'wait still queued\n'), 400)
+      stopBrokerFixtureTimers(socket, interval)
     }))
-    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const fixture = suiteBrokerFixture(server)
     try {
+      await fixture.listen(address)
       const start = performance.now()
       await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 1 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
       expect(performance.now() - start).toBeGreaterThanOrEqual(2900)
       expect(performance.now() - start).toBeLessThan(5000)
-    } finally { server.close() }
+    } finally { await fixture.close() }
   }, 8000)
 
 }
@@ -775,6 +823,24 @@ function registerLateRequest() {
 
 }
 
+function registerStaticAdmission() {
+  it('grants a static gate beside an exclusive suite, and with the switch off makes it wait', async () => {
+    const on = await startBroker()
+    const suite = connect(on.socket, { argv: ['pnpm', 'test'], waitS: 2 })
+    await suite.waitForReply(granted)
+    const lint = connect(on.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
+    await lint.waitForReply(granted)
+    lint.socket.end(); suite.socket.end()
+    const off = await startBroker(process.pid, { WT_SUITE_LOCK_STATIC_LANE: '0' })
+    const legacy = connect(off.socket, { argv: ['pnpm', 'test'], waitS: 2 })
+    await legacy.waitForReply(granted)
+    const waiting = connect(off.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
+    await waiting.waitForReply((text) => /(?:^|\n)wait [^\n]*\n/.test(text))
+    expect(waiting.text()).not.toContain('granted ')
+    legacy.socket.end(); await waiting.waitForReply(granted); waiting.socket.end()
+  })
+}
+
 function registerLeaseLifecycle() {
   it('holds as the broker, serialises clients, and releases on client end', async () => {
     const broker = await startBroker()
@@ -783,7 +849,7 @@ function registerLeaseLifecycle() {
     const holder = JSON.parse(readFileSync(broker.lock, 'utf8'))
     expect(holder.pid).toBe(broker.child.pid)
     expect(holder.argv.slice(0, 2)).toEqual(['wt-lane-sandbox', 'test-lane'])
-    const second = connect(broker.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
+    const second = connect(broker.socket, { argv: ['pnpm', 'test:blocking'], waitS: 2 })
     await second.waitForReply((text) => /(?:^|\n)wait [^\n]*\n/.test(text))
     expect(second.text()).not.toContain('granted ')
     first.socket.end()
@@ -996,6 +1062,13 @@ async function brokerQueuedTicket(workerEnv: NodeJS.ProcessEnv, level: number) {
     expect(JSON.parse(readFileSync(broker.lock, 'utf8')).level, 'the holder the broker took for the lane').toBe(level)
     const queue = join(broker.root, 'locks', 'queue.d')
     await waitFor(() => readdirSync(queue).some((name) => name.endsWith('.json')))
+    const statusEnv = sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' })
+    const json = spawnSync(process.execPath, [CLI, 'status', '--json'], { env: statusEnv, encoding: 'utf8', timeout: 15_000 })
+    expect(json.status, json.stderr).toBe(0)
+    expect(JSON.parse(json.stdout)).toMatchObject({ level, queue: [{ level, effectiveLevel: level }] })
+    const text = spawnSync(process.execPath, [CLI, 'status'], { env: statusEnv, encoding: 'utf8', timeout: 15_000 })
+    expect(text.status, text.stderr).toBe(0)
+    expect(text.stdout).toContain(`1. P${level} exclusive`)
     return JSON.parse(readFileSync(join(queue, readdirSync(queue).find((name) => name.endsWith('.json'))!), 'utf8'))
   } finally { first.socket.destroy(); second.socket.destroy() }
 }

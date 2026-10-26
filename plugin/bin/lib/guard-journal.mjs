@@ -231,8 +231,10 @@ export function guardMode() {
   return typeof raw === 'string' && raw.trim().toLowerCase() === 'observe' ? 'observe' : 'enforce'
 }
 
-/** Emit main-session notices unchanged; subagents opt in to additionalContext JSON only.
- * Observe mode emits nothing. Subagent text, stderr, and permission decisions never pass through.
+/** Keep main-session output intact; every non-empty string agent id receives context-only JSON.
+ * Prefer additionalContext (including an empty string), falling back to a non-empty systemMessage.
+ * Use the notice's string event name or the payload event. No usable context returns false.
+ * Observe mode emits nothing; subagents never receive text, stderr, or permission decisions.
  */
 export function emitGuardNotice(options = {}) {
   if (guardMode() === 'observe') return false
@@ -242,8 +244,8 @@ export function emitGuardNotice(options = {}) {
   return true
 }
 
-function emitSubagentNotice({ stdoutJson = null, reachSubagents = false }) {
-  const notice = subagentNotice(stdoutJson, reachSubagents)
+function emitSubagentNotice({ payload, stdoutJson = null }) {
+  const notice = subagentNotice(stdoutJson, payload)
   if (notice === null) return false
   writeSync(1, JSON.stringify(notice))
   return true
@@ -255,11 +257,22 @@ function writeMainNotice({ stdoutJson = null, stdoutText = '', stderrText = '' }
   if (stderrText) writeSync(2, stderrText)
 }
 
-// A subagent receives only hookEventName plus additionalContext, and only when the guard opts in.
-function subagentNotice(stdoutJson, reachSubagents) {
+// Project only the two context fields, never forwarding approval or refusal fields.
+function subagentNotice(stdoutJson, payload) {
   const output = stdoutJson?.hookSpecificOutput
-  if (reachSubagents !== true || typeof output?.additionalContext !== 'string') return null
-  return { hookSpecificOutput: { hookEventName: output.hookEventName, additionalContext: output.additionalContext } }
+  const additionalContext = typeof output?.additionalContext === 'string' ? output.additionalContext
+    : typeof stdoutJson?.systemMessage === 'string' && stdoutJson.systemMessage ? stdoutJson.systemMessage : null
+  if (additionalContext === null) return null
+  const subagentEvent = noticeEvent(output, payload)
+  // An envelope without its event is invalid hook output: deliver nothing rather than that.
+  if (subagentEvent === null) return null
+  return { hookSpecificOutput: { hookEventName: subagentEvent, additionalContext } }
+}
+
+// The guard's own event, else the triggering one; null when neither is a string.
+function noticeEvent(output, payload) {
+  const event = typeof output?.hookEventName === 'string' ? output.hookEventName : payload.hook_event_name
+  return typeof event === 'string' ? event : null
 }
 
 /** Names of precision rules that matched but did not change the decision (measured before they may). */

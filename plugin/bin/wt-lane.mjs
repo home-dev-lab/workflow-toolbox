@@ -52,10 +52,18 @@ const ATTACH_REMOVED = '--attach was removed: compose the extra text into the br
 
 export const BRIEF_GATE_RUNNABLES = Object.freeze([
   'gate-chain.sh', 'run-quality.mjs', 'pnpm test', 'pnpm typecheck', 'pnpm lint',
-  'pnpm quality', 'node --test', '.selftest.mjs', '.test.mjs', '.test.ts',
+  'pnpm quality', 'pnpm exec vitest run', 'node --test', '.selftest.mjs', '.test.mjs', '.test.ts',
 ])
+// `pnpm run <script>` runs the same script as `pnpm <script>`, so a gate line is matched with `run` folded away.
+// A script named `exec` is not folded: `pnpm run exec vitest` runs that script, not the pnpm exec command.
+const PNPM_RUN_FORM = /\bpnpm run (?!exec\b)/g
 const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
 const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
+
+function isRunnableGateLine(line) {
+  const folded = line.replace(/\s+/g, ' ').replace(PNPM_RUN_FORM, 'pnpm ')
+  return BRIEF_GATE_RUNNABLES.some((command) => folded.includes(command))
+}
 
 function hasBriefGateSection(text) {
   let inGates = false
@@ -64,7 +72,7 @@ function hasBriefGateSection(text) {
       inGates = /^##\s+Gates\b/i.test(line)
       continue
     }
-    if (inGates && BRIEF_GATE_RUNNABLES.some((command) => line.includes(command))) return true
+    if (inGates && isRunnableGateLine(line)) return true
   }
   return false
 }
@@ -72,7 +80,7 @@ function hasBriefGateSection(text) {
 export function briefGateSectionRefusal(text, { owner, role, noGateSectionReason, brief = '<path>' } = {}) {
   if (owner === 'pilot' || ['critic', 'review', 'refutation'].includes(role) || noGateSectionReason?.trim()) return null
   if (hasBriefGateSection(text)) return null
-  return `wt-lane: Refused: brief ${brief} has no gate section. Add these lines with the repository's gate command:\n## Gates\nRun detached, by exit code each: bash <gate-chain.sh> --dir <worktree>/toolkit --out <log-dir> --stamp <stamp> -- typecheck lint quality test\nRecognised runnable gates: ${BRIEF_GATE_RUNNABLES.join(', ')}.\nExemptions: ${GATE_SECTION_EXEMPTIONS}.`
+  return `wt-lane: Refused: brief ${brief} has no gate section. Add these lines with the repository's gate command:\n## Gates\nRun detached, by exit code each: bash <gate-chain.sh> --dir <worktree>/toolkit --out <log-dir> --stamp <stamp> -- typecheck lint quality test\nRecognised runnable gates: ${BRIEF_GATE_RUNNABLES.join(', ')} (each pnpm script also as pnpm run <script>).\nExemptions: ${GATE_SECTION_EXEMPTIONS}.`
 }
 
 function laneGateSectionChoiceError(out) {
@@ -99,7 +107,7 @@ function launchRecoveryCondition(reason) {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. Idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
 }
 
 // The suite-lock level a lane's host broker queues its gates at. Release stays reserved to the main session.

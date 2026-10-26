@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -17,16 +18,29 @@ import { orderSuiteLockTickets, P0_BYPASS_MAX_GRANTS } from '../../../../plugin/
 import { suiteQueueAdvanced } from '../../../../plugin/bin/lib/suite-lock-progress.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
 import { currentPidNamespace } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
+// @ts-expect-error runtime JavaScript under plugin/
+import * as statusApi from '../../../../plugin/bin/lib/suite-lock-status.mjs'
+// @ts-expect-error runtime JavaScript under plugin/
+import * as priorityApi from '../../../../plugin/bin/lib/suite-lock-priority.mjs'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { baseSuiteLock } from './helpers/base-version-client.js'
+import { renewBrokerFixture, suiteBrokerAddress, suiteBrokerFixture } from './helpers/suite-broker-fixture.js'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
+// A --import argument is a URL on every OS (a bare path or specifier is not portable to Windows).
+const TSX_IMPORT = pathToFileURL(createRequire(join(ROOT, 'toolkit/package.json')).resolve('tsx/esm')).href
 const roots: string[] = []
 const children: Array<ReturnType<typeof spawn>> = []
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs()
-  for (const child of children.splice(0)) child.kill('SIGKILL')
+  await Promise.all(children.splice(0).map(async (child) => {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exit = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+      child.kill('SIGKILL'); await exit
+    }
+    child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy()
+  }))
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 })
 })
 const temp = () => { const root = mkdtempSync(join(tmpdir(), 'wt-lock-levels-')); roots.push(root); return root }
@@ -34,6 +48,8 @@ const envFor = (root: string, extra: NodeJS.ProcessEnv = {}) => sealedPluginCliE
   WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extra,
 })
 const records = (root: string) => existsSync(join(root, 'queue.d')) ? readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).sort() : []
+// A variable specifier keeps the plugin's untyped runtime JavaScript out of the type check without an expect-error.
+const loadPluginModule = (relative: string) => import(pathToFileURL(join(ROOT, relative)).href)
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 async function waitFor(check: () => boolean) {
   const deadline = Date.now() + 15_000
@@ -431,6 +447,28 @@ describe('unobserved short-holder progress', () => {
   })
 })
 
+describe('lane operator release boundary', () => {
+  // Each case wraps its argument list in a one-element tuple: a bare array row would be spread into separate callback parameters.
+  const releaseArgs: Array<[string[]]> = [[[]], [['--force']], [['--stale-s', '0']]]
+  it.each(releaseArgs)('lane release %j refuses before reading or modifying a lock', async (args) => {
+    const root = temp(); const held = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    const before = readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')
+    try {
+      const result = cli(root, ['release', ...args], { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock') })
+      expect(result.status, result.stderr).toBe(2)
+      expect(result.stderr).toContain('release is not available inside a lane sandbox; the host operator releases the lock')
+      expect(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')).toBe(before)
+    } finally { lock.releaseSuiteLock(held) }
+  })
+  it('lane release refuses even when its masked lock directory cannot be read', () => {
+    const root = temp(); const obstacle = join(root, 'not-directory'); writeFileSync(obstacle, 'untouched')
+    const result = cli(root, ['release', '--force'], { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock'), WT_SUITE_LOCK_DIR: obstacle })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('release is not available inside a lane sandbox; the host operator releases the lock')
+    expect(result.stderr).not.toContain('ENOTDIR'); expect(readFileSync(obstacle, 'utf8')).toBe('untouched')
+  })
+})
+
 describe('declaration and isolated environments', () => {
   it('F6 explicit root retains P0 despite an ambient broker and never connects', async () => {
     const root = temp(); const connect = vi.spyOn(net, 'connect')
@@ -457,11 +495,281 @@ describe('declaration and isolated environments', () => {
   })
   it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
     vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
+    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
     const env = envFor(temp())
     expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
+    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
     expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
   })
 })
+
+describe('light class holder warning timer', () => {
+  registerLightTimerUnitTests()
+  registerLightTimerLockTests()
+  registerLightTimerCleanupTests()
+  registerDirectLightRunTests()
+  registerLightRunLifecycleTests()
+  registerLightRunOlderBrokerTests()
+  registerLightRunStaticLaneTests()
+  registerLightRunStaticBrokerTests()
+})
+
+// The seam of the light-class watcher and the static lane: only a light grant on the EXCLUSIVE mutex is a
+// light lease past its class; a static-lane grant blocks no full suite, so it is never flagged.
+const LIGHT_WARNING = 'wt-suite-lock: light lease past its class:'
+const lightWarnings = (stderr: string) => stderr.split('\n').filter((line) => line.startsWith(LIGHT_WARNING)).length
+const pollingScript = (started: string, finished: string) =>
+  `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'x');const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finished)}))clearInterval(t)},10)`
+
+function watchedRun(root: string, args: string[], env: NodeJS.ProcessEnv) {
+  const child = spawn(process.execPath, [CLI, 'run', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+  let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+  const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+  return { exit, stderr: () => stderr, finish: () => writeFileSync(join(root, 'finish'), 'done') }
+}
+
+async function expectWatchedRun(root: string, run: ReturnType<typeof watchedRun>, grant: { held: string; free: string; warns: boolean }) {
+  try {
+    await waitFor(() => existsSync(join(root, 'started')))
+    // The 1 ms warning timer is armed before the command is spawned, so it has fired once the command runs;
+    // the no-warning case needs no wait: its count is asserted after the run exits.
+    if (grant.warns) await waitFor(() => lightWarnings(run.stderr()) === 1)
+    expect(existsSync(join(root, grant.held, 'holder.json')), `${grant.held} holds the run`).toBe(true)
+    expect(existsSync(join(root, grant.free, 'holder.json')), `${grant.free} stays free`).toBe(false)
+  } finally { run.finish() }
+  expect(await run.exit, run.stderr()).toBe(0)
+  expect(lightWarnings(run.stderr()), `light warnings with ${grant.held} granted`).toBe(grant.warns ? 1 : 0)
+}
+
+const STATIC_LOCK = join('static-lane', 'lock.d')
+function registerLightRunStaticLaneTests() {
+  it.each([
+    { lane: '1', flags: ['--static', '--light'], held: STATIC_LOCK, free: 'lock.d', warns: false },
+    { lane: '0', flags: ['--static'], held: 'lock.d', free: STATIC_LOCK, warns: true },
+  ])('light class run on the direct route with static lane $lane and $flags warns only on the exclusive mutex', async ({ lane, flags, held, free, warns }) => {
+    const root = temp(); const script = pollingScript(join(root, 'started'), join(root, 'finish'))
+    const run = watchedRun(root, [...flags, '--', process.execPath, '-e', script],
+      envFor(root, { WT_SUITE_LOCK_STATIC_LANE: lane, WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }))
+    await expectWatchedRun(root, run, { held, free, warns })
+  })
+}
+
+function registerLightRunStaticBrokerTests() {
+  it.skipIf(process.platform === 'win32').each([
+    { name: 'a static request the host keeps in the main queue', flags: ['--static'], wrapper: false, held: 'lock.d', free: STATIC_LOCK, warns: true },
+    { name: 'a light request the host grants on the static lane', flags: ['--light'], wrapper: true, held: STATIC_LOCK, free: 'lock.d', warns: false },
+  ])('light class run through a broker: $name', async ({ flags, wrapper, held, free, warns }) => {
+    const root = temp(); const address = join(root, 'broker.sock'); const script = pollingScript(join(root, 'started'), join(root, 'finish'))
+    // `node <dir>/scripts/lint-gate.mjs` is wrapper argv the host classifies as static (staticWrapperCommand: the tool must
+    // be the bare word `node`); `node -e` it does not.
+    const lintGate = join(root, 'scripts', 'lint-gate.mjs')
+    mkdirSync(join(root, 'scripts')); writeFileSync(lintGate, script.replace("const fs=require('fs');", "import fs from 'node:fs';"))
+    const broker = createSuiteLockBroker({ env: envFor(root, { WT_SUITE_LOCK_STATIC_LANE: '1' }) }) as net.Server & { releaseAll: () => void }
+    await new Promise<void>((resolve) => broker.listen(address, resolve))
+    try {
+      const run = watchedRun(root, [...flags, '--', ...(wrapper ? ['node', lintGate] : [process.execPath, '-e', script])],
+        envFor(root, { WT_SUITE_LOCK_DIR: join(root, 'masked'), WT_SUITE_LOCK_BROKER: address, WT_SUITE_LOCK_STATIC_LANE: '1', WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }))
+      await expectWatchedRun(root, run, { held, free, warns })
+    } finally { broker.releaseAll(); await new Promise<void>((resolve) => broker.close(() => resolve())) }
+  })
+}
+
+function registerLightTimerUnitTests() {
+  it('light class timer is unrefed, fires once strictly past the bound and sanitises the command', async () => {
+    // @ts-expect-error runtime JavaScript under plugin/
+    const { watchLightSuiteLease } = await import('../../../../plugin/bin/lib/suite-lock-light-hold.mjs')
+    let now = 1000; let callback = () => {}; const unref = vi.fn(); const clear = vi.fn(); const write = vi.fn()
+    const timer = { unref }; const schedule = vi.fn((fn: () => void) => { callback = fn; return timer })
+    const stop = watchLightSuiteLease({ light: true, argv: ['job\n\u001b\u202e'], startedAt: new Date(now).toISOString() },
+      { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '5' }, now: () => now, setTimer: schedule, clearTimer: clear, write })
+    expect(unref).toHaveBeenCalledTimes(1); expect(schedule.mock.calls[0]).toHaveLength(2)
+    now = 6000; callback(); expect(write).not.toHaveBeenCalled()
+    now = 6001; callback(); now = 9000; callback()
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write.mock.calls[0]![0]).toBe('wt-suite-lock: light lease past its class: held 5.0 s above the 5 s bound (job???); the lock is still held, nobody is pre-empted\n')
+    stop(); expect(clear).toHaveBeenCalledWith(timer)
+  })
+}
+
+function registerLightTimerLockTests() {
+  it('light class timer counts from the lease startedAt, not from arming', async () => {
+    const { watchLightSuiteLease } = await loadPluginModule('plugin/bin/lib/suite-lock-light-hold.mjs')
+    let now = 10_000; let callback = () => {}; const write = vi.fn()
+    const schedule = vi.fn((fn: () => void) => { callback = fn; return { unref: vi.fn() } })
+    watchLightSuiteLease({ light: true, argv: ['aged'], startedAt: new Date(now - 4000).toISOString() },
+      { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '5' }, now: () => now, setTimer: schedule, clearTimer: vi.fn(), write })
+    expect((schedule.mock.calls[0] as unknown[])[1], 'first delay is the bound minus the lease age, plus 1 ms').toBe(1001)
+    now = 10_999; callback(); expect(write).not.toHaveBeenCalled()
+    now = 11_001; callback(); expect(write).toHaveBeenCalledTimes(1)
+    expect(write.mock.calls[0]![0]).toContain('held 5.0 s')
+  })
+  it('light class timer survives a stderr whose write throws', async () => {
+    const { watchLightSuiteLease } = await loadPluginModule('plugin/bin/lib/suite-lock-light-hold.mjs')
+    let now = 1000; let callback = () => {}
+    const write = vi.fn(() => { throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }) })
+    watchLightSuiteLease({ light: true, argv: ['x'], startedAt: new Date(now).toISOString() },
+      { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '1' }, now: () => now, setTimer: (fn: () => void) => { callback = fn; return { unref: vi.fn() } }, clearTimer: vi.fn(), write })
+    now = 5000; expect(() => callback()).not.toThrow(); expect(write).toHaveBeenCalledTimes(1)
+  })
+}
+
+function registerLightTimerCleanupTests() {
+  it('light class timer is cleared for a short lease, absent for exclusives and caps long timer delays', async () => {
+    // @ts-expect-error runtime JavaScript under plugin/
+    const { watchLightSuiteLease } = await import('../../../../plugin/bin/lib/suite-lock-light-hold.mjs')
+    vi.useFakeTimers(); const write = vi.fn()
+    const stop = watchLightSuiteLease({ light: true, argv: ['short'] }, { env: {}, write })
+    expect(vi.getTimerCount()).toBe(1); stop(); expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(700_000); expect(write).not.toHaveBeenCalled()
+    watchLightSuiteLease({ light: false, argv: ['exclusive'] }, { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }, write })()
+    expect(vi.getTimerCount()).toBe(0)
+    const schedule = vi.fn(() => ({ unref: vi.fn() }))
+    watchLightSuiteLease({ light: true, argv: ['long'] }, { env: { WT_SUITE_LOCK_LIGHT_HOLD_S: '3000000' }, setTimer: schedule, clearTimer: vi.fn(), write })()
+    expect(schedule.mock.calls[0]).toHaveLength(2)
+    expect((schedule.mock.calls[0] as unknown[])[1]).toBe(2_147_483_647)
+  })
+}
+
+function registerDirectLightRunTests() {
+  it.each([true, false])('light class run process warns exactly once while its command still holds the direct lease (light=%s)', async (light) => {
+    const root = temp(); const finished = join(root, 'finish')
+    const script = `const fs=require('fs');const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(finished)})){clearInterval(timer)}},10)`
+    const child = spawn(process.execPath, [CLI, 'run', ...(light ? ['--light'] : []), '--', process.execPath, '-e', script],
+      { env: envFor(root, { WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+    let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+    const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+    try {
+      await waitFor(() => light ? stderr.includes('light lease past its class:') : existsSync(join(root, 'lock.d', 'holder.json')))
+      expect(lock.readSuiteLock({ root }).held).toBe(true)
+    } finally { writeFileSync(finished, 'done'); await exit }
+    expect(await exit).toBe(0)
+    expect(stderr.split('\n').filter((line) => line.startsWith('wt-suite-lock: light lease past its class:'))).toHaveLength(light ? 1 : 0)
+    expect(lock.readSuiteLock({ root }).held).toBe(false)
+  })
+}
+
+function registerLightRunLifecycleTests() {
+  it('light class run arms the watcher from the lease start and clears it when the command ends', async () => {
+    const root = temp()
+    for (const [key, value] of Object.entries({ WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', WT_SUITE_LOCK_LIGHT_HOLD_S: '600' })) vi.stubEnv(key, value)
+    const { runSuiteLockCli } = await loadPluginModule('plugin/bin/wt-suite-lock.mjs')
+    const armed = vi.spyOn(globalThis, 'setTimeout'); const cleared = vi.spyOn(globalThis, 'clearTimeout')
+    const code = await runSuiteLockCli(['run', '--light', '--', process.execPath, '-e', ''])
+    expect(code).toBe(0)
+    const watchers = armed.mock.calls.flatMap((call, index) => Number(call[1]) > 598_000 && Number(call[1]) <= 600_001 ? [armed.mock.results[index]!.value] : [])
+    expect(watchers, `watcher armed near the 600 s bound, saw delays ${JSON.stringify(armed.mock.calls.map((call) => call[1]))}`).toHaveLength(1)
+    expect(cleared.mock.calls.map((call) => call[0]), 'the watcher timer is cleared when the command ends').toContain(watchers[0])
+    expect(lock.readSuiteLock({ root }).held).toBe(false)
+  })
+  it('light class run survives a closed stderr and releases the lease only after the command ends', async () => {
+    const root = temp(); const done = join(root, 'done')
+    const [started, go] = [join(root, 'started'), join(root, 'go')]
+    const script = `const fs=require('fs');fs.writeFileSync(${JSON.stringify(started)},'x');const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(go)})){clearInterval(t);fs.writeFileSync(${JSON.stringify(done)},'x')}},10)`
+    const child = spawn(process.execPath, [CLI, 'run', '--light', '--', process.execPath, '-e', script],
+      { env: envFor(root, { WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'ignore', 'pipe'] }); children.push(child)
+    child.stderr!.destroy()
+    const exit = new Promise<number | null>((resolve) => child.once('exit', resolve))
+    // The 1 ms warning timer fires, and its write meets the closed stderr, while the command is still being spawned.
+    try {
+      await waitFor(() => existsSync(started))
+      expect(existsSync(done), 'the command is still running').toBe(false)
+      expect(lock.readSuiteLock({ root }).held, 'the lease is held while the command runs').toBe(true)
+    } finally { writeFileSync(go, 'x'); await exit }
+    expect(await exit).toBe(0)
+    expect(existsSync(done), 'the run waited for the command').toBe(true)
+    expect(lock.readSuiteLock({ root }).held).toBe(false)
+  })
+}
+
+function registerLightRunOlderBrokerTests() {
+  it('light class run behind an older broker is granted exclusive and arms no watcher', async () => {
+    const root = temp(); const socket = suiteBrokerAddress(root, 'old-broker.sock'); const requests: Array<Record<string, unknown>> = []
+    const server = net.createServer((conn) => {
+      conn.on('data', (chunk) => {
+        const request = JSON.parse(String(chunk).split('\n')[0]!); requests.push(request)
+        if ('light' in request) conn.end('error argv must be an array of strings (only argv and waitS accepted); requested command "unavailable"\n')
+        else conn.write('granted old-lease\n')
+      })
+    })
+    const fixture = suiteBrokerFixture(server)
+    try {
+      await fixture.listen(socket)
+      const script = `setTimeout(()=>{},800)`
+      const child = spawn(process.execPath, [CLI, 'run', '--light', '--', process.execPath, '-e', script],
+        { env: envFor(root, { WT_SUITE_LOCK_BROKER: socket, WT_SUITE_LOCK_LIGHT_HOLD_S: '0' }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+      let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+      expect(await new Promise<number | null>((resolve) => child.once('exit', resolve))).toBe(0)
+      // The older broker sees the light request, the exclusive retry, then the run's exit line written at release
+      // (the ticket journal's outcome, sent after the grant, never an admission request).
+      await waitFor(() => requests.length >= 3)
+      expect(requests.map((request) => 'exit' in request ? 'exit' : 'light' in request)).toEqual([true, false, 'exit'])
+      expect(stderr).toContain('broker is older')
+      expect(stderr, 'an exclusive grant is never reported as an overdue light lease').not.toContain('light lease past its class:')
+    } finally { await fixture.close() }
+  })
+}
+
+describe('light class status snapshot', () => {
+  registerLightStatusBoundaryTests()
+  registerLightStatusDefaultTests()
+})
+
+function registerLightStatusBoundaryTests() {
+  it.each([599_999, 600_000, 600_001, 3_600_001])('light class status uses the full-precision holder age %i in text and JSON', async (ageMs) => {
+    const root = temp(); const now = Date.parse('2026-01-01T12:00:00Z')
+    const held = await lock.acquireSuiteLock({ root, env: envFor(root), light: true,
+      startedAt: new Date(now - ageMs).toISOString(), argv: ['unsafe\n\u001b\u202e'] })
+    try {
+      const snapshot = lock.readSuiteLockStatus({ root, env: envFor(root), now: () => now })
+      expect(snapshot).toMatchObject({ ageMs, lightPastClass: ageMs > 600_000, lightHoldBoundS: 600 })
+      expect(statusApi.suiteLockStatusJson(snapshot)).toMatchObject({ lightPastClass: ageMs > 600_000, lightHoldBoundS: 600 })
+      const text = statusApi.formatSuiteLockStatus(snapshot, lock.formatSuiteLockHolder(snapshot.holder))
+      expect(text.includes('light lease past its class:')).toBe(ageMs > 600_000)
+      expect(text.includes('long hold:')).toBe(ageMs > 3_600_000)
+      if (ageMs > 600_000) {
+        const line = text.split('\n').find((value: string) => value.startsWith('light lease past its class:'))!
+        expect(line).toContain(`pid ${process.pid}`); expect(line).toContain('held '); expect(line).toContain('unsafe???')
+        expect(line).not.toMatch(/[\x00-\x1f\u202e]/u)
+      }
+      expect(lock.readSuiteLock({ root }).held, 'status is warn-only').toBe(true)
+    } finally { lock.releaseSuiteLock(held) }
+  })
+  it.each([true, false])('light class bound override and zero never flag an exclusive holder (light=%s)', async (light) => {
+    const root = temp(); const now = Date.now()
+    const held = await lock.acquireSuiteLock({ root, env: envFor(root), light, startedAt: new Date(now - 5001).toISOString() })
+    try {
+      for (const bound of ['0', '5', '6']) {
+        const snapshot = lock.readSuiteLockStatus({ root, env: envFor(root, { WT_SUITE_LOCK_LIGHT_HOLD_S: bound }), now: () => now })
+        expect(snapshot).toMatchObject({ lightPastClass: light && Number(bound) < 5.001, lightHoldBoundS: Number(bound) })
+        expect(statusApi.formatSuiteLockStatus(snapshot, '').includes('light lease past its class:')).toBe(light && Number(bound) < 5.001)
+      }
+    } finally { lock.releaseSuiteLock(held) }
+  })
+}
+
+function registerLightStatusDefaultTests() {
+  it('light class status names a dead light holder as stale only, not also past its class', () => {
+    const holder = { pid: 4242, light: true, startedAt: '2026-01-01T00:00:00Z', argv: ['job'] }
+    const current = { held: true, stale: true, holder, ageMs: 700_000, lightPastClass: true, lightHoldBoundS: 600, longHold: false, queue: [] }
+    const text = statusApi.formatSuiteLockStatus(current, 'holder text')
+    expect(text).toContain('stale holder')
+    expect(text).not.toContain('light lease past its class:')
+    expect(statusApi.formatSuiteLockStatus({ ...current, stale: false }, 'holder text')).toContain('light lease past its class:')
+  })
+  it('light class status leaves free and unknown-age holders unflagged', () => {
+    const root = temp()
+    expect(lock.readSuiteLockStatus({ root, env: envFor(root) })).toMatchObject({ lightPastClass: false, lightHoldBoundS: 600 })
+    mkdirSync(join(root, 'lock.d')); writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ light: true, startedAt: 'unknown' }))
+    expect(lock.readSuiteLockStatus({ root, env: envFor(root) })).toMatchObject({ ageMs: null, lightPastClass: false })
+  })
+  it.each(['bad\n\u001b', '-1', 'Infinity', ''])('light class invalid bound %j emits one safe diagnostic and defaults to 600', (value) => {
+    const note = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    expect(priorityApi.suiteLockLightHoldSeconds({ WT_SUITE_LOCK_LIGHT_HOLD_S: value })).toBe(600)
+    expect(note).toHaveBeenCalledTimes(1)
+    expect(String(note.mock.calls[0]![0])).toContain('invalid WT_SUITE_LOCK_LIGHT_HOLD_S')
+    expect(String(note.mock.calls[0]![0]).trim()).not.toMatch(/[\x00-\x1f]/u)
+  })
+}
 
 describe('read-only status snapshot', () => {
   it('F4 malformed holder and ticket argv objects do not invoke JSON-supplied coercion', async () => {
@@ -558,45 +866,65 @@ describe('read-only status snapshot', () => {
   })
 })
 
-describe.skipIf(process.platform === 'win32')('broker host level and protocol compatibility [unix sockets]', () => {
-  async function localBroker(extra: Record<string, unknown> = {}) {
-    const root = temp(); const address = join(root, 'broker.sock')
-    vi.stubEnv('WT_SUITE_LOCK_DIR', root); vi.stubEnv('WT_SUITE_LOCK_BROKER', ''); vi.stubEnv('WT_SUITE_LEASE', '')
-    vi.stubEnv('WT_SUITE_LOCK_PRIORITY', 'P2')
-    const server = createSuiteLockBroker({ env: envFor(root, { WT_SUITE_LOCK_PRIORITY: 'P2' }), ...extra }) as net.Server & { releaseAll: () => void }
-    await new Promise<void>((resolve) => server.listen(address, resolve))
-    return { root, address, server }
-  }
-  async function childResult(root: string, args: string[], broker: string) {
-    const child = spawn(process.execPath, [CLI, ...args], { env: envFor(root, { WT_SUITE_LOCK_BROKER: broker }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
-    let stdout = ''; let stderr = ''
-    child.stdout!.on('data', (chunk) => { stdout += String(chunk) }); child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
-    const status = await new Promise<number | null>((resolve) => child.once('exit', resolve))
-    return { status, stdout, stderr }
-  }
+describe('broker host level and protocol compatibility', () => {
+  registerBrokerMetadataTests()
+  registerBrokerLegacyOrderingTests()
+  registerBrokerPriorityTests()
+  registerBrokerRequestTests()
+  registerBrokerRenewalCompatibilityTests()
+  registerBrokerLegacyStatusTests()
+  registerBrokerHiddenAdmissionsTests()
+})
+
+async function localBroker(extra: Record<string, unknown> = {}) {
+  const root = temp(); const address = suiteBrokerAddress(root)
+  vi.stubEnv('WT_SUITE_LOCK_DIR', root); vi.stubEnv('WT_SUITE_LOCK_BROKER', ''); vi.stubEnv('WT_SUITE_LEASE', '')
+  vi.stubEnv('WT_SUITE_LOCK_PRIORITY', 'P2')
+  const server = createSuiteLockBroker({ env: envFor(root, { WT_SUITE_LOCK_PRIORITY: 'P2' }), ...extra }) as net.Server & { releaseAll: () => void }
+  const fixture = suiteBrokerFixture(server)
+  await fixture.listen(address)
+  return { root, address, server, fixture }
+}
+
+async function childResult(root: string, args: string[], broker: string) {
+  const child = spawn(process.execPath, [CLI, ...args], { env: envFor(root, { WT_SUITE_LOCK_BROKER: broker }), stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+  let stdout = ''; let stderr = ''
+  child.stdout!.on('data', (chunk) => { stdout += String(chunk) }); child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+  const status = await new Promise<number | null>((resolve) => child.once('exit', resolve))
+  return { status, stdout, stderr }
+}
+
+function registerBrokerMetadataTests() {
   it('F4 broker status completes with bounded 2000-deep holder metadata', async () => {
-    const { root, address, server } = await localBroker()
-    const held = await lock.acquireSuiteLock({ root, env: envFor(root) })
-    const raw = JSON.stringify(held.holder).slice(0, -1) + ',"metadata":' + '{"nested":'.repeat(2000) + '"leaf"' + '}'.repeat(2000) + '}'
-    writeFileSync(join(root, 'lock.d', 'holder.json'), raw)
+    const { root, address, server, fixture } = await localBroker()
+    let held: { holder: Record<string, unknown> } | undefined
     try {
+      held = await lock.acquireSuiteLock({ root, env: envFor(root) })
+      const raw = JSON.stringify(held!.holder).slice(0, -1) + ',"metadata":' + '{"nested":'.repeat(2000) + '"leaf"' + '}'.repeat(2000) + '}'
+      writeFileSync(join(root, 'lock.d', 'holder.json'), raw)
       const snapshot = await lock.readBrokerSuiteLock(address)
       expect(snapshot.held).toBe(true); expect(snapshot.holder.metadata.nested.nested.nested.nested).toBe('[truncated]')
       expect(JSON.stringify(snapshot).length).toBeLessThan(4000)
-    } finally { server.releaseAll(); server.close(); lock.releaseSuiteLock(held) }
+    } finally { server.releaseAll(); await fixture.close(); if (held) lock.releaseSuiteLock(held) }
   })
+}
+
+function registerBrokerLegacyOrderingTests() {
   it.for(['preLevels', 'preRelease'] as const)('C4c actual %s broker agrees with a new light waiter', { timeout: 15_000 }, async (role, { skip }) => {
     const archiveRoot = temp(); const base = await baseSuiteLock(archiveRoot, role)
     if (!base.client) { skip(base.unavailable); return }
     const oldBroker = await import(pathToFileURL(join(archiveRoot, 'plugin/bin/lib/host/lane-suite-lock-broker.mjs')).href)
-    const root = temp(); const address = join(root, 'old.sock')
+    const root = temp(); const address = suiteBrokerAddress(root, 'old.sock')
     vi.stubEnv('WT_SUITE_LOCK_DIR', root); vi.stubEnv('WT_SUITE_LOCK_BROKER', ''); vi.stubEnv('WT_SUITE_LEASE', '')
     const holder = await lock.acquireSuiteLock({ root, env: envFor(root) })
     const server = oldBroker.createSuiteLockBroker() as net.Server & { releaseAll: () => void }
-    await new Promise<void>((resolve) => server.listen(address, resolve))
-    const socket = net.connect(address); let text = ''
-    socket.on('data', (chunk) => { text += String(chunk) }); socket.write('{"argv":["old-exclusive"],"waitS":5}\n')
+    const fixture = suiteBrokerFixture(server)
+    let socket: net.Socket | undefined; let text = ''
     try {
+      await fixture.listen(address)
+      socket = net.connect(address)
+      socket.on('error', () => socket?.destroy())
+      socket.on('data', (chunk) => { text += String(chunk) }); socket.write('{"argv":["old-exclusive"],"waitS":5}\n')
       await waitFor(() => records(root).length === 1)
       const pending = lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0', light: true, waitS: 5, pollMs: 10 })
       void pending.catch(() => {})
@@ -604,67 +932,83 @@ describe.skipIf(process.platform === 'win32')('broker host level and protocol co
       const lease = await pending
       expect(text, 'old broker must still wait while the new light holder is inside').not.toContain('granted ')
       lock.releaseSuiteLock(lease); await waitFor(() => text.includes('granted '))
-    } finally { socket.destroy(); server.releaseAll(); server.close(); lock.releaseSuiteLock(holder) }
+    } finally { socket?.destroy(); server.releaseAll(); await fixture.close(); lock.releaseSuiteLock(holder) }
   })
+}
+
+function registerBrokerPriorityTests() {
   it.each([undefined, 'P0'])('C7 host env/option level %s applies and sandbox flag is ignored', async (priority) => {
-    const { root, address, server } = await localBroker({ priority })
+    const { root, address, server, fixture } = await localBroker({ priority })
     try {
       const result = await childResult(root, ['run', '--priority', 'P0', '--', process.execPath, '-e', `process.stdout.write(require('fs').readFileSync(${JSON.stringify(join(root, 'lock.d', 'holder.json'))},'utf8'))`], address)
       expect(result.status, result.stderr).toBe(0); expect(result.stderr).toContain("host sets a lane's priority")
       expect(JSON.parse(result.stdout).level).toBe(priority ? 0 : 2)
       expect((await childResult(root, ['run', '--priority', 'release', '--', process.execPath, '-e', ''], address)).status).toBe(2)
       expect(JSON.parse((await childResult(root, ['status', '--json'], address)).stdout)).toMatchObject({ queue: [], order: 'levels', longHoldBoundS: 3600 })
-    } finally { server.releaseAll(); server.close() }
+    } finally { server.releaseAll(); await fixture.close() }
   }, 15_000)
+}
+
+function registerBrokerRequestTests() {
   it('C7b never sends a level-related field and refuses injected broker request levels', async () => {
-    const root = temp(); const address = join(root, 'mock.sock'); let request: Record<string, unknown> = {}
+    const root = temp(); const address = suiteBrokerAddress(root, 'mock.sock'); let request: Record<string, unknown> = {}
     const server = net.createServer((socket) => socket.once('data', (chunk) => { request = JSON.parse(String(chunk)); socket.write('granted fixed\n') }))
-    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const fixture = suiteBrokerFixture(server)
     try {
+      await fixture.listen(address)
       const lease = await lock.acquireSuiteLock({ priority: 'P0', env: envFor(root, { WT_SUITE_LOCK_BROKER: address, WT_SUITE_LOCK_PRIORITY: 'P0' }) })
       lock.releaseSuiteLock(lease); expect(Object.keys(request).sort()).toEqual(['argv', 'waitS'])
-    } finally { server.close() }
+    } finally { await fixture.close() }
     const broker = await localBroker()
     try {
-      const reply = await new Promise<string>((resolve) => { const socket = net.connect(broker.address); let text = ''; socket.on('data', (chunk) => { text += String(chunk) }); socket.once('end', () => resolve(text)); socket.write(JSON.stringify({ argv: ['x'], waitS: 1, level: 0 }) + '\n') })
+      const reply = await rejectedLevelReply(broker.address)
       expect(reply).toContain('error argv must be an array')
-    } finally { broker.server.releaseAll(); broker.server.close() }
+    } finally { broker.server.releaseAll(); await broker.fixture.close() }
   })
+}
+
+function registerBrokerRenewalCompatibilityTests() {
   it('C7c renewal line renews a new watchdog and actual develop ignores the added line', async ({ skip }) => {
     const base = await baseSuiteLock(temp(), 'preLevels')
     if (!base.client) { skip(base.unavailable); return }
-    const old = base.client; const root = temp(); const address = join(root, 'renew.sock')
-    const server = net.createServer((socket) => socket.once('data', () => {
-      socket.write('progress 1 3 1\n')
-      const timer = setInterval(() => socket.write('renew 1 3 1\n'), 100)
-      const done = setTimeout(() => { clearInterval(timer); socket.write('granted renewed\n') }, 2_350)
-      socket.once('close', () => { clearInterval(timer); clearTimeout(done) })
-    }))
-    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const old = base.client; const root = temp(); const address = suiteBrokerAddress(root, 'renew.sock')
+    const server = net.createServer((socket) => socket.once('data', () => renewBrokerFixture(socket)))
+    const fixture = suiteBrokerFixture(server)
     try {
+      await fixture.listen(address)
       const lease = await lock.acquireSuiteLock({ waitS: 0.1, env: envFor(root, { WT_SUITE_LOCK_BROKER: address }) })
       expect(lease.holder.leaseId).toBe('renewed'); lock.releaseSuiteLock(lease)
       const older = await old.acquireSuiteLock({ waitS: 3, env: envFor(root, { WT_SUITE_LOCK_BROKER: address }) })
       expect(older.holder.leaseId).toBe('renewed'); old.releaseSuiteLock(older)
       await expect(old.acquireSuiteLock({ waitS: 0.1, env: envFor(root, { WT_SUITE_LOCK_BROKER: address }) })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-    } finally { server.close() }
+    } finally { await fixture.close() }
   }, 15_000)
+}
+
+function registerBrokerLegacyStatusTests() {
   it.each(['text', 'json'])('C9d an older broker status reply explicitly says the queue is unavailable (%s)', async (mode) => {
-    const root = temp(); const address = join(root, 'old-status.sock')
+    const root = temp(); const address = suiteBrokerAddress(root, 'old-status.sock')
     const server = net.createServer((socket) => socket.once('data', () => socket.end('status {"held":false,"holder":null}\n')))
-    await new Promise<void>((resolve) => server.listen(address, resolve))
+    const fixture = suiteBrokerFixture(server)
     try {
+      await fixture.listen(address)
       const result = await childResult(root, mode === 'json' ? ['status', '--json'] : ['status'], address)
       expect(result.stdout).toContain('queue unavailable from an older broker')
       if (mode === 'json') expect(JSON.parse(result.stdout).queue).toBeNull()
     }
-    finally { server.close() }
+    finally { await fixture.close() }
   })
+}
+
+function registerBrokerHiddenAdmissionsTests() {
   it('C7d host broker publishes renewal for admissions it never observes as holders', async () => {
-    const { root, address, server } = await localBroker({ priority: 'P1' }); recordAdmissionGrant(root); seed(root)
-    let text = ''; const socket = net.connect(address)
-    socket.on('data', (chunk) => { text += String(chunk) }); socket.write('{"argv":["waiting"],"waitS":0.4}\n')
+    const { root, address, server, fixture } = await localBroker({ priority: 'P1' })
+    let text = ''; let socket: net.Socket | undefined
     try {
+      recordAdmissionGrant(root); seed(root)
+      socket = net.connect(address)
+      socket.on('error', () => socket?.destroy())
+      socket.on('data', (chunk) => { text += String(chunk) }); socket.write('{"argv":["waiting"],"waitS":0.4}\n')
       await waitFor(() => text.includes('progress '))
       for (let index = 0; index < 4; index += 1) {
         const previous = text.length; recordAdmissionGrant(root)
@@ -672,6 +1016,114 @@ describe.skipIf(process.platform === 'win32')('broker host level and protocol co
       }
       expect(readAdmissionCounter(root).grants).toBe(5)
       expect(readLightCounter(root).grants).toBe(0)
-    } finally { socket.destroy(); server.releaseAll(); server.close() }
+    } finally { socket?.destroy(); server.releaseAll(); await fixture.close() }
   })
+}
+
+async function rejectedLevelReply(address: string) {
+  const socket = net.connect(address)
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      let text = ''
+      socket.once('error', reject)
+      socket.on('data', (chunk) => { text += String(chunk) })
+      socket.once('end', () => resolve(text))
+      socket.write(JSON.stringify({ argv: ['x'], waitS: 1, level: 0 }) + '\n')
+    })
+  } finally { socket.destroy() }
+}
+
+describe('broker fixture platform and lifecycle locks', () => {
+  registerBrokerFixtureAddressTests()
+  registerBrokerFixtureTeardownTests()
+  registerBrokerFixtureTimerTests()
+  registerBrokerFixtureEpipeTest()
+  registerBrokerFixturePeerCloseTest()
 })
+
+function registerBrokerFixtureAddressTests() {
+  it.each(['linux', 'darwin', 'win32'] as const)('uses a native IPC address on %s', (platform) => {
+    const root = temp(); const address = suiteBrokerAddress(root, 'old-broker.sock', platform)
+    if (platform === 'win32') expect(address).toMatch(/^\\\\\.\\pipe\\wt-suite-test-[a-f0-9]{24}$/)
+    else expect(address).toBe(join(root, 'old-broker.sock'))
+    expect(suiteBrokerAddress(root, 'other.sock', platform)).not.toBe(address)
+  })
+}
+
+function registerBrokerFixtureTeardownTests() {
+  it('rejects a listen failure instead of leaving a pending listen promise', async () => {
+    const fixture = suiteBrokerFixture(net.createServer())
+    try { await expect(fixture.listen(temp())).rejects.toHaveProperty('code') }
+    finally { await fixture.close() }
+  })
+  it('closes accepted sockets before server teardown completes', async () => {
+    const fixture = suiteBrokerFixture(net.createServer()); let socket: net.Socket | undefined
+    try {
+      const address = suiteBrokerAddress(temp()); await fixture.listen(address)
+      socket = net.connect(address); socket.on('error', () => socket?.destroy())
+      await waitFor(() => fixture.sockets.size === 1)
+      const closing = fixture.close()
+      expect([...fixture.sockets].every((peer) => peer.destroyed), 'teardown destroys every accepted socket immediately').toBe(true)
+      await closing
+      expect(fixture.sockets.size).toBe(0)
+    } finally { socket?.destroy(); await fixture.close() }
+  })
+}
+
+function registerBrokerFixtureTimerTests() {
+  it.each(['end', 'close', 'error'] as const)('stops both renewal timers on socket %s before the next tick', (event) => {
+    vi.useFakeTimers()
+    const socket = new net.Socket(); const write = vi.spyOn(socket, 'write').mockReturnValue(true)
+    const stop = renewBrokerFixture(socket)
+    try {
+      socket.emit(event, Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))
+      vi.advanceTimersByTime(3000)
+      expect(write.mock.calls).toEqual([['progress 1 3 1\n']])
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { stop(); socket.destroy() }
+  })
+}
+
+function registerBrokerFixtureEpipeTest() {
+  it.each(['EPIPE', 'ECONNRESET'])('handles a transport %s on the next renewal tick without an uncaught error', (code) => {
+    const helper = new URL('./helpers/suite-broker-fixture.ts', import.meta.url).href
+    // The transport accepts the initial progress, then deterministically reports its peer gone.
+    // Running in a child makes a missing error listener observable as an uncaught EPIPE exit.
+    const script = `import net from 'node:net';import {renewBrokerFixture} from ${JSON.stringify(helper)};
+      const socket=new net.Socket();let peerClosed=false;
+      socket._write=(_chunk,_encoding,callback)=>callback(peerClosed?Object.assign(new Error('write '+${JSON.stringify(code)}),{code:${JSON.stringify(code)}}):null);
+      const stop=renewBrokerFixture(socket,1000,10);peerClosed=true;
+      socket.once('close',()=>{stop();process.stdout.write('renewal stopped\\n')});`
+    const result = spawnSync(process.execPath, ['--import', TSX_IMPORT, '--input-type=module', '-e', script], {
+      cwd: join(ROOT, 'toolkit'), env: envFor(temp()), encoding: 'utf8', timeout: 30_000,
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('renewal stopped\n')
+  })
+}
+
+function registerBrokerFixturePeerCloseTest() {
+  it('stops renewal when a real peer closes before the next timer tick', () => {
+    const helper = new URL('./helpers/suite-broker-fixture.ts', import.meta.url).href
+    const address = suiteBrokerAddress(temp(), 'peer-close.sock')
+    const script = `import net from 'node:net';import {renewBrokerFixture} from ${JSON.stringify(helper)};
+      let peer,client,stop=()=>{},finishTimer;let ended;
+      const end=new Promise(resolve=>{ended=resolve});
+      const server=net.createServer({allowHalfOpen:true},socket=>{
+        peer=socket;socket.once('data',()=>{stop=renewBrokerFixture(socket,1000,10)});
+        const finish=()=>{finishTimer??=setTimeout(ended,100)};
+        socket.once('end',finish);socket.once('close',finish);
+      });
+      try {
+        await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(${JSON.stringify(address)},resolve)});
+        client=net.connect(${JSON.stringify(address)});client.on('error',error=>{throw error});
+        client.once('data',()=>client.destroy());client.write('request\\n');
+        await end;process.stdout.write('peer closed cleanly\\n');
+      } finally {clearTimeout(finishTimer);stop();client?.destroy();peer?.destroy();await new Promise(resolve=>server.close(resolve))}`
+    const result = spawnSync(process.execPath, ['--import', TSX_IMPORT, '--input-type=module', '-e', script], {
+      cwd: join(ROOT, 'toolkit'), env: envFor(temp()), encoding: 'utf8', timeout: 30_000,
+    })
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('peer closed cleanly\n')
+  })
+}

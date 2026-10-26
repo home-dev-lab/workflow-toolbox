@@ -7,7 +7,9 @@ import { exerciseExitedChild, exerciseRealFamily } from './helpers/host-family.j
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { readLinuxProcProcesses } from '../../../../plugin/bin/lib/host/linux.mjs'
+import { readLinuxIdleProcProcesses, readLinuxProcProcesses } from '../../../../plugin/bin/lib/host/linux.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { activityEvidence } from '../../../../plugin/bin/lib/lane-deadline-core.mjs'
 
 const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
 const COMMITTED_EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
@@ -21,7 +23,7 @@ const snapshotSamples = {
   darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, startTime: Date.parse('Tue Nov 14 22:13:20 2023'), startIdentity: Date.parse('Tue Nov 14 22:13:20 2023'), command: '/sbin/launchd' },
   win32: { pid: 4, ppid: 0, elapsedMs: 46_000, startTime: 1_700_000_000_000, startIdentity: 1_700_000_000_000, command: 'System' },
 } as const
-const procStat = (pid: number, command: string, startTicks: number) => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 ${startTicks} 20\n`
+const procStat = (pid: number, command: string, startTicks: number, userTicks = '11', systemTicks = '12') => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 ${userTicks} ${systemTicks} 0 0 15 16 17 18 ${startTicks} 20\n`
 
 function evidenceHost(platform: typeof platforms[number]) {
   return createHostAdapter({
@@ -35,6 +37,16 @@ function evidenceHost(platform: typeof platforms[number]) {
 }
 
 const contractHost = (platform: typeof platforms[number]) => useRealHost ? createHostAdapter({ platform }) : evidenceHost(platform)
+
+// The product bounds a Windows process read at 5 s (plugin/bin/lib/host/win32.mjs); a cold runner can exceed it once.
+// The real-host contract retries a timed-out read, never any other failure.
+const REAL_READ_ATTEMPTS = 3
+const timedOut = (read: { supported: boolean, reason?: string }) => !read.supported && /\bETIMEDOUT$/.test(read.reason ?? '')
+function readWithTimeoutRetry<T extends { supported: boolean, reason?: string }>(read: () => T, attempts = REAL_READ_ATTEMPTS): T {
+  let result = read()
+  for (let attempt = 1; attempt < attempts && timedOut(result); attempt++) result = read()
+  return result
+}
 
 let assertions = 0
 let namedSkips = 0
@@ -147,6 +159,16 @@ function registerInjectedSnapshots() {
     expect(listProcesses).toHaveBeenCalledOnce()
     expect(run).not.toHaveBeenCalled()
   })
+
+  it.each(platforms)('names idle evidence unknown when the %s command snapshot has no CPU counters', (platform) => {
+    const outputs = {
+      linux: '1 0 46 /sbin/init\n',
+      darwin: '1 0 Tue Nov 14 22:13:20 2023 05:46 /sbin/launchd\n',
+      win32: '4 0 46000 1700000000000 System\r\n',
+    }
+    const host = createHostAdapter({ platform, invoke: { run: () => ({ status: 0, stdout: outputs[platform], stderr: '', error: null }) } })
+    expect(activityEvidence({ snapshot: host.readProcessSnapshot(), worktree: { status: 'known' }, rootPid: snapshotSamples[platform].pid })).toMatchObject({ status: 'unknown', reason: `process CPU time unavailable for pid ${snapshotSamples[platform].pid}` })
+  })
 }
 
 function registerLinuxIdentityContracts() {
@@ -181,6 +203,30 @@ function registerLinuxIdentityContracts() {
     })).toEqual({ processes: [], unknownPids: [42] })
   })
 }
+
+describe('Linux process CPU counters', () => {
+  const readLinuxProcProcesses = readLinuxIdleProcProcesses
+  it.each([
+    ['11', '12', 23],
+    ['0', '0', 0],
+    ['invalid', '12', null],
+    ['-1', '12', null],
+    ['11', 'Infinity', null],
+  ])('reads user=%s system=%s without inventing a zero', (user, system, cpuTicks) => {
+    let reads = 0
+    const snapshot = readLinuxProcProcesses({
+      readLink: () => String(process.pid),
+      readFile: (file: string) => {
+        if (file === '/proc/uptime') return '10 1\n'
+        if (file.endsWith('/stat')) return procStat(42, 'model (worker)', 100, ++reads === 1 ? '0' : user, reads === 1 ? '0' : system)
+        return 'model\0'
+      },
+      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      observedAt: 20_000,
+    })
+    expect(snapshot.processes).toEqual([expect.objectContaining({ pid: 42, startIdentity: 100, command: 'model', cpuTicks })])
+  })
+})
 
 function registerOtherPlatformSnapshots() {
   it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {
@@ -236,9 +282,24 @@ function registerSnapshotContracts() {
     expect(host.readProcessSnapshot()).toEqual({ supported: false, processes: [], reason: `process discovery failed: ${command} ${cause}` })
   })
 
+  it('retries a timed-out real-host read and never a different failure', () => {
+    const timeout = { supported: false, reason: 'process discovery failed: powershell.exe ETIMEDOUT' }
+    const ok = { supported: true }
+    const slowOnce = vi.fn().mockReturnValueOnce(timeout).mockReturnValue(ok)
+    expect(readWithTimeoutRetry(slowOnce)).toBe(ok)
+    expect(slowOnce).toHaveBeenCalledTimes(2)
+    const refused = { supported: false, reason: 'process discovery failed: powershell.exe exited 1' }
+    const other = vi.fn().mockReturnValue(refused)
+    expect(readWithTimeoutRetry(other)).toBe(refused)
+    expect(other).toHaveBeenCalledTimes(1)
+    const always = vi.fn().mockReturnValue(timeout)
+    expect(readWithTimeoutRetry(always)).toBe(timeout)
+    expect(always).toHaveBeenCalledTimes(REAL_READ_ATTEMPTS)
+  })
+
   contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {
     if (useRealHost) {
-      const result = contractHost(platform).readProcessSnapshot()
+      const result = readWithTimeoutRetry(() => contractHost(platform).readProcessSnapshot())
       expect(result.supported, result.reason).toBe(true)
       expect(result.processes.find((row: { pid: number }) => row.pid === process.pid)?.ppid).toBe(process.ppid)
       return

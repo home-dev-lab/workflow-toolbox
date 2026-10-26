@@ -73,7 +73,8 @@ test('check-rules audits prompt triggers and times the actual bounded matcher', 
   await writeFile(join(root, 'slow.md'), `---\non-demand:\n  triggers:\n    - kind: prompt\n      regex: '^a*a*a*a*a*a*a*a*c$'\n  compliance:\n    kind: none\n    reason: fixture\n---\nbody`);
   await writeFile(join(root, 'fast.md'), ruleText);
   await writeFile(corpus, JSON.stringify(['a'.repeat(60) + '!']));
-  const result = spawnSync(process.execPath, [scripts('rules'), 'check-rules', '--dir', root, '--corpus', corpus, '--time-bound-ms', '1000'], { encoding: 'utf8', timeout: 8000 });
+  // Failure-only outer bound: four patterns, each allowed the separate startup and work backstops.
+  const result = spawnSync(process.execPath, [scripts('rules'), 'check-rules', '--dir', root, '--corpus', corpus, '--time-bound-ms', '1000'], { encoding: 'utf8', timeout: 10_000 + 4 * (30_000 + 5_000) });
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.split('\n').some((line) => line.startsWith('ok\t') && line.endsWith('slow.md')));
   assert.ok(result.stdout.split('\n').some((line) => line.startsWith('ok\t') && line.endsWith('fast.md')));

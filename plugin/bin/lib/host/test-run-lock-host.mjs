@@ -1,7 +1,10 @@
 // Host reads for the concurrent-test guard's lock-coverage decision.
 //
 // Cross-platform verdict, per dependency:
-// - readText: portable; a missing or unreadable file is null (the caller treats it as absent).
+// - readText: reads exactly the path it is given; a missing or unreadable file is null (the caller treats it
+//   as absent). The coverage core hands it Git Bash spellings (`/c/repo/...`), which Node cannot read on
+//   Windows (probe evidence: probes/host-platform/evidence/windows-latest/git-bash-path-spelling.json), so it is
+//   correct on POSIX only.
 // - lockParticipants: portable; reads the suite lock's holder.json and queue tickets from the lock
 //   directory the lock itself derives (readSuiteLock). Foreign pid-namespace and stale records
 //   are skipped. On macOS and Windows namespace reads null. An unreadable queue returns null

@@ -5,5 +5,5 @@
   "readFileSync": 1,
   "homedir": 3,
   "hard-coded path separator": 2,
-  "writeSync": 3
+  "writeSync": 2
 }

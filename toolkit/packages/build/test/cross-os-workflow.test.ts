@@ -1,12 +1,15 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { parse } from 'yaml'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+// @ts-expect-error JS script module
+import * as shardChecker from '../../../scripts/check-posix-shards.mjs'
 
-// Lock for the Windows sharding of .github/workflows/cross-os.yml. The hosted Windows step of the unsharded suite measured
+// Locks for sharding in .github/workflows/cross-os.yml. The hosted Windows step of the unsharded suite measured
 // 1217-1724 s against a 35-minute job, so Windows runs as parallel shard jobs. What must hold is an INVARIANT of the
 // whole workflow (every gate still runs somewhere, exactly once, and no unsharded suite can reach Windows), so the test
 // evaluates each step's `if` against each matrix entry instead of matching text.
@@ -68,10 +71,10 @@ describe('omitted descriptor history evidence', () => {
   })
 })
 
-type Entry = { os: string; shard?: number }
+type Entry = { os: string; shard?: number; timeout?: number }
 type Step = { name?: string; if?: string; run?: string; shell?: string; uses?: string; with?: Record<string, string>; env?: Record<string, string>; 'timeout-minutes'?: number | string; 'continue-on-error'?: boolean | string }
 const workflow = parse(readFileSync(WORKFLOW, 'utf8')) as {
-  jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number; steps: Step[] } }
+  jobs: { matrix: { strategy: { matrix: { include?: Entry[]; os?: string[] } }; 'timeout-minutes': number | string; steps: Step[] } }
 }
 it('cross-OS owner certification has first-parent history and no environment bypass', () => {
   const steps = workflow.jobs.matrix.steps
@@ -139,6 +142,13 @@ function timeoutOf(step: Step, entry: Entry): number {
   if (!choice) throw new Error(`cross-os.yml step "${step.name}": unsupported timeout-minutes \`${String(value)}\` (extend timeoutOf in this test)`)
   return (entry.shard ?? 0) === Number(choice[1]) ? Number(choice[2]) : Number(choice[3])
 }
+// The job's `timeout-minutes` for one entry: a number, or exactly `${{ matrix.timeout || 45 }}` (the entry's `timeout`, else 45).
+function jobTimeoutOf(entry: Entry): number {
+  const value = job['timeout-minutes']
+  if (typeof value === 'number') return value
+  if (value.replace(/\s+/g, ' ') !== '${{ matrix.timeout || 45 }}') throw new Error(`cross-os.yml job: unsupported timeout-minutes \`${value}\` (extend jobTimeoutOf in this test)`)
+  return entry.timeout ?? 45
+}
 // Allowance for checkout, setup-node, corepack and install before the first suite step starts.
 const SETUP_ALLOWANCE_MINUTES = 3
 const isDiagnostic = (step: Step) => (step.name ?? '').startsWith('Diagnose ')
@@ -147,11 +157,13 @@ const isSuiteStep = (step: Step) => /test:shard/.test(step.run ?? '') && step.en
 const windowsTestSteps = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && !isDiagnostic(step) && isSuiteStep(step))
 const runningOn = (step: Step) => windowsEntries().filter((entry) => runsOn(step, entry))
 
-describe('cross-os workflow: Windows is sharded and every gate still runs once', () => {
-  it('the control: the evaluator reads the unsharded Linux suite as Linux-only', () => {
-    const linuxSuite = steps.find((step) => /pnpm test(?![:\w-])/.test(step.run ?? ''))
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 1 of 5)', () => {
+  it('the control: the evaluator reads the sharded Linux suite as Linux-only', () => {
+    const linuxSuite = steps.find((step) => step.name?.startsWith('Test (Ubuntu shard'))
     expect(linuxSuite, 'the Linux suite step').toBeDefined()
-    expect(entries.filter((entry) => runsOn(linuxSuite as Step, entry)).map((entry) => entry.os)).toEqual(['ubuntu-latest'])
+    const selected = entries.filter((entry) => runsOn(linuxSuite as Step, entry))
+    expect(selected).toEqual(entries.filter((entry) => runnerOs(entry) === 'Linux'))
+    expect(selected.length).toBeGreaterThanOrEqual(2)
   })
 
   it('the control: the evaluator reads a missing matrix.shard as 0 like GitHub and refuses an unknown runs-on label', () => {
@@ -180,12 +192,14 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     expect(build).toHaveLength(1)
     for (const entry of windowsEntries()) expect(runsOn(build[0] as Step, entry), `Windows shard ${entry.shard} builds`).toBe(true)
   })
+})
 
-  it('runs the build before every Windows and macOS suite step, on macOS too', () => {
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 2 of 5)', () => {
+  it('runs the build before every sharded suite step on every OS', () => {
     const buildIndex = steps.findIndex((step) => /build:dist/.test(step.run ?? '') && /cross-repo-typecheck/.test(step.run ?? ''))
     expect(buildIndex, 'build step index').toBeGreaterThanOrEqual(0)
-    const sharded = entries.filter((entry) => runnerOs(entry) !== 'Linux')
-    expect(sharded.map((entry) => runnerOs(entry)), 'non-Linux entries').toEqual(expect.arrayContaining(['macOS', 'Windows']))
+    const sharded = entries
+    expect(sharded.map((entry) => runnerOs(entry))).toEqual(expect.arrayContaining(['Linux', 'macOS', 'Windows']))
     for (const entry of sharded) {
       expect(runsOn(steps[buildIndex] as Step, entry), `build runs on ${entry.os} shard ${entry.shard}`).toBe(true)
       const suites = steps.map((step, index) => ({ step, index })).filter(({ step }) => runsOn(step, entry) && !isDiagnostic(step) && /test:shard/.test(step.run ?? ''))
@@ -215,7 +229,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
   it('runs no unsharded `pnpm test` on any step that can run on Windows', () => {
     for (const step of stepsOnWindows()) expect(step.run ?? '', `step "${step.name}"`).not.toMatch(/pnpm test(?![:\w-])/)
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 3 of 5)', () => {
   it('runs each of typecheck, quality, lint, the lifecycle smoke and the Diagnose step on exactly one Windows shard', () => {
     const once: Array<[string, (step: Step) => boolean]> = [
       ['typecheck', (step) => /pnpm typecheck/.test(step.run ?? '')],
@@ -234,7 +250,10 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
   it('keeps the gates that ran on every OS running on ubuntu and macOS', () => {
     for (const fragment of ['pnpm typecheck', 'pnpm quality', 'pnpm lint', 'ci-lifecycle-smoke']) {
       const step = steps.find((candidate) => (candidate.run ?? '').includes(fragment)) as Step
-      for (const os of ['ubuntu-latest', 'macos-latest']) expect(runsOn(step, { os }), `${fragment} on ${os}`).toBe(true)
+      for (const os of ['ubuntu-latest', 'macos-latest']) {
+        const selected = entries.filter((entry) => entry.os === os && runsOn(step, entry))
+        expect(selected, `${fragment} on ${os}`).toHaveLength(1)
+      }
     }
   })
 
@@ -243,11 +262,13 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
       const suite = windowsTestSteps(entry)[0] as Step
       const diagnose = steps.filter((step) => isDiagnostic(step) && runsOn(step, entry))
       const total = SETUP_ALLOWANCE_MINUTES + timeoutOf(suite, entry) + diagnose.reduce((sum, step) => sum + timeoutOf(step, entry), 0)
-      expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(job['timeout-minutes'])
-      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(job['timeout-minutes'])
+      expect(timeoutOf(suite, entry), `Windows shard ${entry.shard} suite step timeout-minutes`).toBeLessThan(jobTimeoutOf(entry))
+      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + suite ${timeoutOf(suite, entry)} + Diagnose ${diagnose.map((step) => timeoutOf(step, entry)).join('+') || 0}`).toBeLessThanOrEqual(jobTimeoutOf(entry))
     }
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 4 of 5)', () => {
   it('fetches the base-version lock client on every entry before any suite step, since the checkout is shallow', () => {
     const fetchIndex = steps.findIndex((step) => /git fetch\b/.test(step.run ?? '') && /base-version-client\.json/.test(step.run ?? ''))
     expect(fetchIndex, 'a step fetches the commit named in test-support/base-version-client.json').toBeGreaterThanOrEqual(0)
@@ -283,7 +304,9 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
     if (!/^(1|true)$/i.test(process.env.CI ?? '') && shallow.status === 0 && shallow.stdout.trim() === 'true') skip(reason)
     expect(missing, reason).toEqual([])
   })
+})
 
+describe('cross-os workflow: Windows is sharded and every gate still runs once (part 5 of 5)', () => {
   it('keeps historical git archive invocations in the shared descriptor helper across every build test', () => {
     const testRoot = join(root, 'toolkit/packages/build/test')
     const files = readdirSync(testRoot, { recursive: true }).map(String).filter((file) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file))
@@ -293,10 +316,55 @@ describe('cross-os workflow: Windows is sharded and every gate still runs once',
   })
 
   it('names the diagnostics artifact differently for every matrix entry', () => {
-    const upload = steps.find((step) => (step.uses ?? '').startsWith('actions/upload-artifact')) as Step
+    const upload = steps.find((step) => step.name === 'Upload cross-OS diagnostics') as Step
     const names = entries.map((entry) => interpolate(String(upload.with?.name), entry))
     expect(new Set(names).size, names.join(', ')).toBe(entries.length)
     for (const name of names) expect(name).not.toContain('/')
+  })
+})
+
+describe('cross-os workflow: job timeout per matrix entry', () => {
+  it('the control: the job timeout reads a number, `matrix.timeout || 45`, and refuses any other form', () => {
+    const original = job['timeout-minutes']
+    try {
+      job['timeout-minutes'] = '${{ matrix.timeout || 45 }}'
+      expect(jobTimeoutOf({ os: 'windows-latest', timeout: 75 })).toBe(75)
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(45)
+      job['timeout-minutes'] = 60
+      expect(jobTimeoutOf({ os: 'ubuntu-latest' })).toBe(60)
+      job['timeout-minutes'] = '${{ matrix.os }}'
+      expect(() => jobTimeoutOf({ os: 'ubuntu-latest' })).toThrow('unsupported timeout-minutes')
+    } finally {
+      job['timeout-minutes'] = original
+    }
+  })
+
+  it('gives the Windows entries a 75-minute job timeout and keeps 45 for ubuntu and macOS', () => {
+    for (const entry of entries) expect(jobTimeoutOf(entry), `${entry.os} shard ${entry.shard ?? '-'} job timeout`).toBe(entry.os === 'windows-latest' ? 75 : 45)
+  })
+})
+
+describe('cross-os workflow: Windows shard count', () => {
+  it('runs Windows as at least three shards: two were killed at the step timeout while still progressing', () => {
+    expect(windowsEntries().length).toBeGreaterThanOrEqual(3)
+  })
+
+  // Vitest cuts its path-hashed file order into contiguous slices, so with three shards the last slice holds only
+  // files that sat in the old second half, the half measured at over 28 minutes, while the first slice holds only
+  // files from the old first half (about 16 minutes). The non-suite gates therefore belong on shard 1, the lightest.
+  it('runs the non-suite gates and the Diagnose step on exactly one Windows shard, and that shard is shard 1', () => {
+    const extras = steps.filter((step) => isDiagnostic(step) || /pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke|host-adapter\.contract/.test(step.run ?? ''))
+    expect(extras.length, 'non-suite gate steps').toBeGreaterThanOrEqual(6)
+    for (const step of extras) expect(runningOn(step).map((entry) => entry.shard), `"${step.name}" Windows shards`).toEqual([1])
+  })
+
+  it('fits every Windows shard in the job budget with the timeout of every build, suite, Diagnose and gate step it runs', () => {
+    const counted = (step: Step) => /build:dist|test:shard|pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke/.test(step.run ?? '')
+    for (const entry of windowsEntries()) {
+      const caps = steps.filter((step) => runsOn(step, entry) && counted(step)).map((step) => timeoutOf(step, entry))
+      const total = SETUP_ALLOWANCE_MINUTES + caps.reduce((sum, minutes) => sum + minutes, 0)
+      expect(total, `Windows shard ${entry.shard}: setup ${SETUP_ALLOWANCE_MINUTES} + ${caps.join('+')}`).toBeLessThanOrEqual(jobTimeoutOf(entry))
+    }
   })
 })
 
@@ -307,3 +375,280 @@ describe('cross-os workflow: one red never hides the suite', () => {
     for (const step of suites) expect(strip(String(step.if ?? '')).split('&&').map((term) => term.trim()), `"${step.name}" if`).toContain('!cancelled()')
   })
 })
+
+const linux = entries.filter((entry) => runnerOs(entry) === 'Linux')
+const linuxSuites = (entry: Entry) => steps.filter((step) => runsOn(step, entry) && isSuiteStep(step) && !isDiagnostic(step))
+
+describe('cross-os workflow: Ubuntu shard budgets and gates', () => {
+  it('numbers at least three Ubuntu shards contiguously, with one covered suite each and no full-suite fallback', () => {
+    expect(linux.length).toBeGreaterThanOrEqual(3)
+    expect(linux.map(({ shard }) => shard)).toEqual(linux.map((_, index) => index + 1))
+    for (const entry of linux) {
+      const suites = linuxSuites(entry)
+      expect(suites).toHaveLength(1)
+      expect(suites[0]!.run).toContain(`test:shard --shard=\${{ matrix.shard }}/${linux.length} --coverage`)
+      expect(suites[0]!.shell).toBe('bash')
+      expect(suites[0]!['continue-on-error']).toBeUndefined()
+      for (const step of steps.filter((step) => runsOn(step, entry))) expect(step.run ?? '').not.toMatch(/pnpm test(?![:\w-])/)
+    }
+  })
+
+  it('projects at least 30 percent headroom from the measured unsharded duration, without raising its old step limit', () => {
+    for (const entry of linux) {
+      const cap = timeoutOf(linuxSuites(entry)[0]!, entry)
+      const projectedSeconds = (1782.44 - 300) * (partitionPlan.full.length / 504) / linux.length + 300
+      expect(1 - projectedSeconds / (cap * 60)).toBeGreaterThanOrEqual(0.3)
+      expect(cap).toBeLessThan(30)
+      expect(jobTimeoutOf(entry)).toBe(45)
+    }
+  })
+
+  it('deliberately puts every non-suite gate and the real host contract on Ubuntu shard 1 only', () => {
+    const gates = steps.filter((step) => /pnpm typecheck|pnpm quality|pnpm lint|ci-lifecycle-smoke|host-adapter\.contract/.test(step.run ?? ''))
+    expect(gates).toHaveLength(5)
+    for (const gate of gates) expect(linux.filter((entry) => runsOn(gate, entry)).map(({ shard }) => shard)).toEqual([1])
+  })
+})
+
+describe('cross-os workflow: coverage union wiring', () => {
+  const config = parse(readFileSync(WORKFLOW, 'utf8')) as { jobs: Record<string, { needs?: string; if?: string; 'runs-on'?: string; defaults?: { run?: { shell?: string; 'working-directory'?: string } }; steps: Step[] }> }
+  const merge = config.jobs['ubuntu-coverage']!
+
+  it('exports JSON execution manifests and converted coverage blobs from every Ubuntu shard', () => {
+    const uploads = steps.filter((step) => step.name === 'Upload Ubuntu coverage shard')
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0]!.if).toContain('always()')
+    expect(uploads[0]!.with).toMatchObject({ name: 'ubuntu-coverage-shard-${{ matrix.shard }}', 'if-no-files-found': 'error' })
+    for (const entry of linux) {
+      expect(runsOn(uploads[0]!, entry)).toBe(true)
+      const run = linuxSuites(entry)[0]!.run!
+      expect(run).toContain('--reporter=blob --reporter=json')
+      expect(run).toContain('--outputFile.blob=ci-coverage/blob-${{ matrix.shard }}.json')
+      expect(run).toContain('--outputFile.json=ci-diagnostics/ubuntu-shard-${{ matrix.shard }}.json')
+      expect(run).not.toContain('--coverage.thresholds')
+    }
+    expect(entries.filter((entry) => runsOn(uploads[0]!, entry))).toEqual(linux)
+  })
+
+  it('checks the actual shard union before merging coverage with the unchanged full-suite thresholds', () => {
+    expect(merge).toMatchObject({ needs: 'matrix', if: '${{ !cancelled() }}', 'runs-on': 'ubuntu-latest' })
+    expect(merge.defaults?.run).toEqual({ shell: 'bash', 'working-directory': 'toolkit' })
+    const download = merge.steps.find((step) => step.uses?.startsWith('actions/download-artifact'))!
+    expect(download.with).toEqual({ pattern: 'ubuntu-coverage-shard-*', path: 'toolkit/', 'merge-multiple': true })
+    const check = merge.steps.findIndex((step) => step.run === 'node scripts/check-posix-shards.mjs ci-diagnostics ci-coverage')
+    const judgement = merge.steps.findIndex((step) => step.run === 'pnpm exec vitest --merge-reports=ci-coverage --coverage --coverage.provider=v8')
+    expect(check).toBeGreaterThan(merge.steps.indexOf(download))
+    expect(judgement).toBeGreaterThan(check)
+    expect(merge.steps[judgement]!['continue-on-error']).toBeUndefined()
+  })
+})
+
+describe('Ubuntu suite command runs with the hosted Bash pipeline semantics', () => {
+  function runUbuntuCommand(body: string) {
+    const directory = mkdtempSync(join(tmpdir(), 'posix-shard-command-'))
+    historyRoots.push(directory)
+    const command = linuxSuites(linux[0]!)[0]!.run!.replaceAll('${{ matrix.shard }}', '1')
+    return spawnSync('bash', ['-e', '-o', 'pipefail', '-c', `pnpm() { ${body}; }\n${command}`], { cwd: directory, encoding: 'utf8' })
+  }
+
+  it('propagates a failing suite through tee rather than returning the log writer exit code', () => {
+    expect(runUbuntuCommand('return 23').status).toBe(23)
+  })
+
+  it('passes one shard selector, coverage and all reporter outputs as distinct argv values', () => {
+    const result = runUbuntuCommand(`node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"`)
+    expect(result.status, result.stderr).toBe(0)
+    const args = JSON.parse(result.stdout) as string[]
+    expect(args.filter((arg) => arg.startsWith('--shard='))).toEqual([`--shard=1/${linux.length}`])
+    // A file filter, project or test-name selector would change which tests run. Permit only these reporting flags.
+    expect(args).toEqual(['test:shard', `--shard=1/${linux.length}`, '--coverage',
+      '--reporter=default', '--reporter=blob', '--reporter=json', '--outputFile.blob=ci-coverage/blob-1.json', '--outputFile.json=ci-diagnostics/ubuntu-shard-1.json'])
+  })
+})
+
+const partitionScript = join(root, 'toolkit/scripts/check-posix-shards.mjs')
+type Plan = { full: string[]; shards: string[][] }
+let partitionPlan: Plan
+function partitionCommand(...args: string[]) {
+  return spawnSync(process.execPath, [partitionScript, ...args], { cwd: join(root, 'toolkit'), encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024 })
+}
+function partitionFixture() {
+  const directory = mkdtempSync(join(tmpdir(), 'posix-shard-reports-'))
+  historyRoots.push(directory)
+  const shards = partitionPlan.shards.map((files) => [...files])
+  writePartition(directory, shards)
+  return { directory, shards }
+}
+function writePartition(directory: string, shards: string[][]) {
+  shards.forEach((files, index) => writeFileSync(join(directory, `ubuntu-shard-${index + 1}.json`), JSON.stringify({ testResults: files.map((file) => ({ name: join(root, 'toolkit', file) })) })))
+}
+
+// Vitest's blob wire format is a flatted reference table, not ordinary JSON.
+function blobFixture(files: string[], coverage: unknown) {
+  const table: unknown[] = []
+  function encode(value: unknown): unknown {
+    if (value === null || typeof value !== 'object' && typeof value !== 'string') return value
+    const index = table.length
+    table.push(null)
+    table[index] = typeof value === 'string' ? value : Array.isArray(value) ? value.map(encode)
+      : Object.fromEntries(Object.entries(value).map(([key, child]) => [key, encode(child)]))
+    return String(index)
+  }
+  encode(['4.1.11', files.map((file) => ({ filepath: join(root, 'toolkit', file) })), [], coverage, 1, {}])
+  return JSON.stringify(table)
+}
+
+function writeBlobs(directory: string) {
+  const blobs = join(directory, 'blobs')
+  mkdirSync(blobs)
+  partitionPlan.shards.forEach((files, index) => writeFileSync(join(blobs, `blob-${index + 1}.json`),
+    blobFixture(files, { [`source-${index}.mjs`]: { path: `source-${index}.mjs`, s: { 0: index + 1 } } })))
+  return blobs
+}
+
+beforeAll(() => {
+  const result = partitionCommand('--plan')
+  expect(result.status, result.stderr).toBe(0)
+  partitionPlan = JSON.parse(result.stdout) as Plan
+}, 40_000)
+
+describe('Ubuntu shard union checker uses real Vitest-selected files and exit codes', () => {
+  it('covers the real full file list exactly once, including every configured project', () => {
+    expect(partitionPlan.full.length).toBeGreaterThan(0)
+    expect(partitionPlan.shards).toHaveLength(linux.length)
+    expect(partitionPlan.shards.flat().sort()).toEqual(partitionPlan.full)
+    const { directory } = partitionFixture()
+    const result = partitionCommand(directory)
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('FULL_MINUS_UNION=[]\nUNION_MINUS_FULL=[]\nDUPLICATES=[]')
+  })
+
+  it.each(['missing', 'duplicated', 'extra'])('fails by exit code when the real report population has a %s file', (defect) => {
+    const { directory, shards } = partitionFixture()
+    if (defect === 'missing') shards[0]!.pop()
+    if (defect === 'duplicated') shards[0]!.push(shards[1]![0]!)
+    if (defect === 'extra') shards[0]!.push('packages/build/test/unselected-fixture.test.ts')
+    writePartition(directory, shards)
+    const result = partitionCommand(directory)
+    expect(result.status, result.stderr).toBe(1)
+    expect(result.stderr).toContain('Shard union mismatch:')
+    expect(result.stderr).toMatch(new RegExp(`"${defect}":\\["`))
+  })
+
+  it('refuses a union-preserving swap between two shards', () => {
+    const { directory, shards } = partitionFixture()
+    ;[shards[0]![0], shards[1]![0]] = [shards[1]![0]!, shards[0]![0]!]
+    writePartition(directory, shards)
+    const result = partitionCommand(directory)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('Shard 1 membership:')
+  })
+})
+
+describe('Ubuntu shard union checker refuses incomplete artifact downloads', () => {
+  it('refuses an absent shard report rather than accepting the surviving reports', () => {
+    const { directory } = partitionFixture()
+    rmSync(join(directory, 'ubuntu-shard-1.json'))
+    const result = partitionCommand(directory)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('Shard reports: expected')
+  })
+
+  it('requires exactly one coverage blob from every shard', () => {
+    const { directory } = partitionFixture()
+    const blobs = writeBlobs(directory)
+    expect(partitionCommand(directory, blobs).status).toBe(0)
+    rmSync(join(blobs, 'blob-1.json'))
+    const result = partitionCommand(directory, blobs)
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('Coverage blobs: expected')
+  })
+})
+
+describe('Ubuntu shard blobs must attest their own membership and coverage', () => {
+  it('rejects a correctly named shard 2 blob with an empty coverage payload', () => {
+    const { directory } = partitionFixture()
+    const blobs = writeBlobs(directory)
+    writeFileSync(join(blobs, 'blob-2.json'), blobFixture(partitionPlan.shards[1]!, {}))
+    const result = partitionCommand(directory, blobs)
+    expect(result.status, result.stdout + result.stderr).toBe(1)
+    expect(result.stderr).toContain('Shard 2 coverage payload is empty')
+  })
+
+  it('rejects a correctly named shard 2 blob copied from shard 1', () => {
+    const { directory } = partitionFixture()
+    const blobs = writeBlobs(directory)
+    writeFileSync(join(blobs, 'blob-2.json'), readFileSync(join(blobs, 'blob-1.json')))
+    const result = partitionCommand(directory, blobs)
+    expect(result.status, result.stdout + result.stderr).toBe(1)
+    expect(result.stderr).toContain('Shard 2 blob membership:')
+  })
+
+  it('rejects shard 2 coverage copied from shard 1 even with its own correct test membership', () => {
+    const { directory } = partitionFixture()
+    const blobs = writeBlobs(directory)
+    writeFileSync(join(blobs, 'blob-2.json'), blobFixture(partitionPlan.shards[1]!, { 'source-0.mjs': { path: 'source-0.mjs', s: { 0: 1 } } }))
+    const result = partitionCommand(directory, blobs)
+    expect(result.status, result.stdout + result.stderr).toBe(1)
+    expect(result.stderr).toContain('Shard 2 coverage payload duplicates shard 1')
+  })
+})
+
+function coverageFixture() {
+  const parent = mkdtempSync(join(tmpdir(), 'posix-coverage-merge-'))
+  historyRoots.push(parent)
+  mkdirSync(join(parent, 'real'))
+  symlinkSync(join(parent, 'real'), join(parent, 'alias'), 'junction')
+  // macOS's temp root may itself be an alias (/var -> /private/var); use one identity for Vite and Node.
+  const directory = realpathSync(join(parent, 'alias'))
+  const branch = join(directory, 'branch.mjs')
+  writeFileSync(branch, 'export function choose(flag) {\n  if (flag) {\n    return 1\n  }\n  return 2\n}\n')
+  const testConfig = { include: ['*.test.mjs'], globals: true, maxWorkers: 1, coverage: {
+    provider: 'custom', customProviderModule: join(root, 'toolkit/scripts/child-process-coverage-provider.mjs').replaceAll('\\', '/'),
+    include: ['branch.mjs'], reporter: ['json-summary'], reportsDirectory: 'coverage',
+    thresholds: { lines: 100, branches: 100, functions: 100, statements: 100 },
+  } }
+  writeFileSync(join(directory, 'vitest.config.mjs'), `export default ${JSON.stringify({ test: testConfig })}`)
+  for (const flag of [true, false]) {
+    const child = `import { choose } from ${JSON.stringify(pathToFileURL(branch).href)}; choose(${flag})`
+    writeFileSync(join(directory, `${flag}.test.mjs`), `import { execFileSync } from 'node:child_process';\nit('child branch', () => { execFileSync(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(child)}]) })`)
+  }
+  return directory
+}
+
+function coverageRun(directory: string, ...args: string[]) {
+  return spawnSync(process.execPath, [join(root, 'plugin/bin/wt-suite-lock.mjs'), 'run', '--light', '--', process.execPath,
+    join(root, 'toolkit/node_modules/vitest/vitest.mjs'), ...args, '--config', join(directory, 'vitest.config.mjs'), '--root', directory, '--coverage.enabled=true'], {
+    cwd: directory, encoding: 'utf8', timeout: 45_000, maxBuffer: 4 * 1024 * 1024,
+  })
+}
+
+it('enforces thresholds on merged custom-provider blobs, including coverage executed only in child processes', () => {
+  const directory = coverageFixture()
+  const manifests: string[][] = []
+  for (let index = 1; index <= 2; index++) {
+    const result = coverageRun(directory, 'run', `--shard=${index}/2`, '--reporter=blob', '--reporter=json',
+      `--outputFile.blob=blobs/blob-${index}.json`, `--outputFile.json=manifest-${index}.json`)
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    const report = JSON.parse(readFileSync(join(directory, `manifest-${index}.json`), 'utf8')) as { testResults: { name: string }[] }
+    manifests.push(report.testResults.map(({ name }) => name.slice(directory.length + 1)))
+  }
+  expect(manifests.flat().sort()).toEqual(['false.test.mjs', 'true.test.mjs'])
+  expect(() => shardChecker.assertCoverageBlobs(join(directory, 'blobs'), manifests, directory)).not.toThrow()
+  const singleShard = coverageRun(directory, 'run', 'true.test.mjs', '--shard=1/1')
+  expect(singleShard.status, singleShard.stdout + singleShard.stderr).toBe(1)
+  expect(singleShard.stderr + singleShard.stdout).toMatch(/Coverage for .* does not meet global.*threshold/)
+  const incomplete = join(directory, 'incomplete')
+  mkdirSync(incomplete)
+  writeFileSync(join(incomplete, 'blob-1.json'), readFileSync(join(directory, 'blobs/blob-1.json')))
+  const red = coverageRun(directory, '--merge-reports=incomplete', '--coverage.provider=v8')
+  expect(red.status, red.stdout + red.stderr).toBe(1)
+  expect(red.stderr + red.stdout).toMatch(/Coverage for .* does not meet global.*threshold/)
+  const green = coverageRun(directory, '--merge-reports=blobs', '--coverage.provider=v8')
+  expect(green.status, green.stdout + green.stderr).toBe(0)
+  const summary = JSON.parse(readFileSync(join(directory, 'coverage/coverage-summary.json'), 'utf8')) as { total: Record<string, { total: number; covered: number }> }
+  for (const metric of ['lines', 'branches', 'functions', 'statements']) {
+    expect(summary.total[metric]!.total).toBeGreaterThan(0)
+    expect(summary.total[metric]!.covered).toBe(summary.total[metric]!.total)
+  }
+}, 180_000)
