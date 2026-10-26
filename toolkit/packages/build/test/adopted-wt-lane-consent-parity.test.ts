@@ -129,11 +129,7 @@ function copyPluginFiles(pluginRoot: string, transformSource?: (source: string) 
   mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'workflow-toolbox', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'frontmatter.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-deadline-core.mjs', 'lane-integrate.mjs', 'remedy-quote.mjs', 'resolved-binary.mjs']) {
-    cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
-  }
-  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', 'vendor'), join(pluginRoot, 'bin', 'lib', 'vendor'), { recursive: true })
-  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', 'host'), join(pluginRoot, 'bin', 'lib', 'host'), { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib'), join(pluginRoot, 'bin', 'lib'), { recursive: true })
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
   writeFileSync(join(pluginRoot, 'bin', 'wt-lane.mjs'), transformSource ? transformSource(launcher) : launcher)
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane-wait.mjs'), join(pluginRoot, 'bin', 'wt-lane-wait.mjs'))

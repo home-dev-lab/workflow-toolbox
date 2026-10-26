@@ -209,7 +209,7 @@ describe('round-three supervisor identities', () => {
 })
 
 describe('installed idle scanner wiring', () => {
-  it.skipIf(process.platform === 'win32')('excludes installed state, log and usage receipt aliases while accepting an encoded brief receipt', () => {
+  it.skipIf(process.platform === 'win32')('excludes installed state, log and usage receipt aliases while accepting an encoded brief receipt', async () => {
     const h = harness()
     h.watch.clear()
     const state = join(h.root, 'sample.json')
@@ -225,7 +225,7 @@ describe('installed idle scanner wiring', () => {
     const endGroup = vi.fn()
     const deadline = createLaneDeadline({ ...h.options, opts: { ...h.options.opts, timeout: 100, briefReceipt: 'eyJwYXRoIjoiYnJpZWYifQ' }, child: { pid: 4 }, args: [], runId: 'test-run', transitionBoundMs: 0, decisionFile: join(h.root, 'sample.decision.json'), modules: { latestWorktreeWrite, hostAdapter: { readProcessSnapshot: h.readSnapshot }, argvSummary: () => 'child' }, current: () => ({}), writeState: (value: unknown) => { writeFileSync(state, JSON.stringify(value)); writeFileSync(usage, JSON.stringify(value)) }, endGroup, cleanupBrief: vi.fn(), journal: vi.fn() })
     try {
-      vi.advanceTimersByTime(8000)
+      await vi.advanceTimersByTimeAsync(8000)
       expect(endGroup).toHaveBeenCalledTimes(1)
       expect(endGroup).toHaveBeenCalledWith(126, expect.objectContaining({ receiptLines: ['TERMINATION=idle'] }))
     } finally { deadline.clear(); h.cleanup() }
@@ -317,19 +317,19 @@ describe('idle review counterexamples', () => {
     } finally { h.cleanup() }
   })
 
-  it('preserves timeout extensions for a stalled descendant with idle enforcement off', () => {
+  it('preserves timeout extensions for a stalled descendant with idle enforcement off', async () => {
     const h = harness(0, procSnapshot())
     h.watch.clear()
     const endGroup = vi.fn()
     let state: Record<string, unknown> = { runId: 'test-run', extensions: [] }
     const deadline = createLaneDeadline({ ...h.options, opts: { ...h.options.opts, idleWindow: 1 }, child: { pid: 4 }, args: [], runId: 'test-run', transitionBoundMs: 0, decisionFile: join(h.root, 'decision.json'), modules: { latestWorktreeWrite: h.latestWrite, hostAdapter: { readProcessSnapshot: h.readSnapshot }, argvSummary: () => 'child', readLogTail: () => '', processEvidenceStatus: () => 'live' }, current: () => state, writeState: (extra: Record<string, unknown>) => { state = { ...state, ...extra } }, endGroup, cleanupBrief: vi.fn(), journal: vi.fn() })
     try {
-      vi.advanceTimersByTime(7000)
+      await vi.advanceTimersByTimeAsync(7000)
       expect(state, 'stalled descendants must retain the base timeout default').toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
-      vi.advanceTimersByTime(14_000)
+      await vi.advanceTimersByTimeAsync(14_000)
       expect(state).toMatchObject({ state: 'running', extensionCount: 3 })
       expect(endGroup).not.toHaveBeenCalled()
-      vi.advanceTimersByTime(7000)
+      await vi.advanceTimersByTimeAsync(7000)
       expect(endGroup).toHaveBeenCalledWith(126, expect.objectContaining({ receiptLines: ['TERMINATION=timeout'] }))
     } finally { deadline.clear(); h.cleanup() }
   })

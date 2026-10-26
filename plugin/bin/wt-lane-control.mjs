@@ -5,6 +5,8 @@ import { appendSupervisorJournal, classifyLane, readCurrentSupervision, supervis
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { laneHostDir } from './lib/host/lane-host-dir.mjs'
 import { legacySupervision } from './lib/lane-supervisor-core.mjs'
+import { handleNoDecisionPoint } from './lib/host/lane-extension-control.mjs'
+import { randomUUID } from 'node:crypto'
 
 function usage() {
   return 'Usage: node wt-lane-control.mjs --dir <worktree> [--slot <name>] --decision extend|abandon [--extend <seconds>] [--owner-token <token>] [--reason <text>]'
@@ -29,24 +31,21 @@ function parse(argv) {
   return out
 }
 
-function main() {
-  const options = parse(process.argv.slice(2))
-  if (options.help) { process.stdout.write(`${usage()}\n`); return 0 }
-  if (options.error) { process.stderr.write(`wt-lane-control: ${options.error}\n${usage()}\n`); return 2 }
-  const state = readCurrentSupervision(options.dir, options.slot)
-  if (!state) { process.stderr.write(legacySupervision(options.dir).length ? `wt-lane-control: legacy lane supervision in ${options.dir} ignored (written by a pre-upgrade launcher; it lives in lane-writable space)\n` : `wt-lane-control: no readable supervised lane at ${options.dir}\n`); return legacySupervision(options.dir).length ? 2 : 1 }
+function missingSupervision(options) {
+  process.stderr.write(legacySupervision(options.dir).length ? `wt-lane-control: legacy lane supervision in ${options.dir} ignored (written by a pre-upgrade launcher; it lives in lane-writable space)\n` : `wt-lane-control: no readable supervised lane at ${options.dir}\n`)
+  return legacySupervision(options.dir).length ? 2 : 1
+}
+
+function ownershipExit(options, state) {
   if (!['session', 'pilot'].includes(state.owner)) { process.stderr.write('wt-lane-control: refused: lane owner is unknown\n'); return 1 }
   const ownsLane = state.owner === 'session'
     ? Boolean(state.ownerSessionId && process.env.CLAUDE_CODE_SESSION_ID === state.ownerSessionId)
     : Boolean(state.ownerToken && options.ownerToken === state.ownerToken)
   if (!ownsLane) { process.stderr.write('wt-lane-control: refused: caller is not the recorded owner\n'); return 1 }
-  const verdict = classifyLane(state)
-  if (!['decision-needed', 'worker-gone-child-alive'].includes(verdict.status) || (verdict.status === 'decision-needed' && !state.timeoutAt)) { process.stderr.write(`wt-lane-control: refused: no current decision point (${verdict.status})\n`); return 1 }
-  if (verdict.status === 'decision-needed') {
-    writeJsonAtomic(supervisionPaths(options.dir, state.runId, options.slot).decision, { version: 1, runId: state.runId, timeoutAt: state.timeoutAt, decision: options.decision, extendSeconds: options.extendSeconds, reason: options.reason, decidedAt: new Date().toISOString() })
-    process.stdout.write(`decision=${options.decision}\nrun=${state.runId}\n`)
-    return 0
-  }
+  return null
+}
+
+function recoverOrphanedLane(options, state) {
   if (options.decision === 'abandon') {
     const stateFile = supervisionPaths(options.dir, state.runId, options.slot).record
     const abandoned = { ...state, state: 'abandoned', decision: 'abandon', decisionSource: 'owner', exit: 126, decidedAt: new Date().toISOString() }
@@ -61,6 +60,24 @@ function main() {
   }
   process.stderr.write('wt-lane-control: refused: launcher is gone; only abandon is available\n')
   return 1
+}
+
+function main() {
+  const options = parse(process.argv.slice(2))
+  if (options.help) { process.stdout.write(`${usage()}\n`); return 0 }
+  if (options.error) { process.stderr.write(`wt-lane-control: ${options.error}\n${usage()}\n`); return 2 }
+  const state = readCurrentSupervision(options.dir, options.slot)
+  if (!state) return missingSupervision(options)
+  const ownerExit = ownershipExit(options, state)
+  if (ownerExit !== null) return ownerExit
+  const verdict = classifyLane(state)
+  if (!['decision-needed', 'worker-gone-child-alive'].includes(verdict.status) || (verdict.status === 'decision-needed' && !state.timeoutAt)) return handleNoDecisionPoint(options, state, verdict.status)
+  if (verdict.status === 'decision-needed') {
+    writeJsonAtomic(supervisionPaths(options.dir, state.runId, options.slot).decision, { version: 1, runId: state.runId, requestId: randomUUID(), timeoutAt: state.timeoutAt, decision: options.decision, extendSeconds: options.extendSeconds, reason: options.reason, decidedAt: new Date().toISOString() })
+    process.stdout.write(`decision=${options.decision}\nrun=${state.runId}\n`)
+    return 0
+  }
+  return recoverOrphanedLane(options, state)
 }
 
 process.exitCode = main()
