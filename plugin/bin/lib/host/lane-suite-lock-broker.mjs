@@ -9,6 +9,7 @@ import { acquireBrokerJournalLease as acquireSuiteLock, observeBrokerJournalSock
 import { suiteOffloadConfig } from './suite-lock-offload-config.mjs'
 import { acquireOffloadRace } from './suite-lock-offload-race.mjs'
 import { parseOffloadRequest } from './suite-lock-offload-request.mjs'
+import { createBrokerQueueState } from './lane-suite-queue.mjs'
 
 const REQUEST_LIMIT = 4096
 const TRANSPORT_LIMIT = REQUEST_LIMIT + 32 * 1024
@@ -122,15 +123,21 @@ function brokerWaitCallbacks(socket) {
   })
 }
 
-export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, stopGraceS = DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S, env = process.env, priority, root } = {}) {
+export function createSuiteLockBroker({ label = '', maxHoldS = DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, stopGraceS = DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S, env = process.env, priority, root, runId } = {}) {
   if (!validMaxHold(maxHoldS)) throw new Error(`maxHoldS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(maxHoldS)})`)
   if (!validMaxHold(stopGraceS)) throw new Error(`stopGraceS must be a finite number of seconds above 0 and at most ${MAX_HOLD_CEILING_S} (got ${String(stopGraceS)})`)
   const lockOptions = { ...hostLockOptions(env, priority), offload: suiteOffloadConfig(root, env) }
-  const broker = { active: 0, releases: new Set(), lockOptions, label, maxHoldS, stopGraceS }
+  const queue = createBrokerQueueState(runId)
+  const broker = { active: 0, releases: new Set(), lockOptions, label, maxHoldS, stopGraceS, queue }
   const server = net.createServer((socket) => serveBrokerConnection(socket, broker))
   server.maxConnections = MAX_OPEN_SOCKETS
   // Releases every lock this broker holds (its lease on exit must not wait for its pid to read dead).
   server.releaseAll = () => { for (const release of [...broker.releases]) release() }
+  server.queueState = queue.snapshot
+  server.decideTimeout = queue.decide
+  server.cancelTimeout = queue.cancel
+  server.registerRun = queue.register
+  server.trackQueueRequest = queue.track
   return server
 }
 
@@ -152,9 +159,11 @@ function serveBrokerConnection(socket, broker) {
 function releaseConnection(state) {
   if (state.released) return
   state.released = true
+  state.queue?.releasing()
   state.controller.abort()
   state.broker.releases.delete(state.release)
   if (state.lease) releaseSuiteLock(state.lease)
+  if (!state.acquiring) state.queue?.done()
 }
 
 function finishConnection(state) {
@@ -199,16 +208,26 @@ async function handleBrokerRequest(state, chunk) {
     validateLaneCapability(request, state.broker.lockOptions.offload)
     if (answeredBrokerRequest(state, request)) return
     const { socket, broker, controller } = state
+    state.queue = broker.queue.track()
+    state.acquiring = true
     const acquired = await acquireOffloadRace(acquireSuiteLock, releaseSuiteLock, {
       ...broker.lockOptions, argv: ['wt-lane-sandbox', broker.label, ...request.argv], waitS: request.waitS,
       ...(request.light ? { light: true } : {}), signal: controller.signal, ...brokerWaitCallbacks(socket),
+      // Offloaded execution is working, even while its local acquisition waits.
+      onQueuePlace: () => { if (!request.offload) state.queue.waiting() },
+      beforePublish: () => state.queue.holding(), afterHandBack: () => { if (!request.offload) state.queue.requeued() },
     }, { config: broker.lockOptions.offload, request, socket, deadlineS: broker.maxHoldS, completed: () => endOffloadConnection(state) })
     if (state.closed) { releaseSuiteLock(acquired); return }
+    state.queue.holding()
     state.lease = acquired
     socket.write(`granted ${state.lease.holder.leaseId}\n`)
     state.holdTimer = setTimeout(() => expireBrokerLease(state, request), broker.maxHoldS * 1000)
     state.holdTimer.unref?.()
   } catch (cause) { reportBrokerRequestError(state, cause, request) }
+  finally {
+    state.acquiring = false
+    if (state.closed) state.queue?.done()
+  }
 }
 
 function reportBrokerRequestError(state, cause, request) {
@@ -234,10 +253,11 @@ function finishBrokerGrace(state, request) {
 }
 
 function main() {
-  const options = { socket: null, parent: null, parentStart: null, label: '', root: null }
+  const options = { socket: null, parent: null, parentStart: null, label: '', root: null, runId: null }
   parseHelperArguments(process.argv.slice(2), options, {
     '--label': (value) => { options.label = String(value ?? '') },
     '--root': (value) => { options.root = String(value ?? '') },
+    '--run-id': (value) => { options.runId = String(value ?? '') },
   })
   let maxHoldS
   try { maxHoldS = laneSuiteLockMaxHoldSeconds(process.env) } catch (error) {
@@ -245,7 +265,19 @@ function main() {
     process.stderr.write(`workflow-toolbox: lane suite-lock broker refused to start: ${error.message}\n`)
     process.exit(2)
   }
-  const server = createSuiteLockBroker({ label: options.label, maxHoldS, root: options.root })
+  const server = createSuiteLockBroker({ label: options.label, maxHoldS, root: options.root, runId: options.runId })
+  process.on('message', (message) => {
+    if (message?.cancelTimeoutRunId && process.connected) {
+      process.send({ requestId: message.requestId, verdict: server.cancelTimeout(message.cancelTimeoutRunId) })
+    }
+    if (message?.timeoutRunId && process.connected) {
+      process.send({ requestId: message.requestId, verdict: server.decideTimeout(message.timeoutRunId) })
+    }
+    if (message?.queueRunId && process.connected) {
+      server.registerRun(message.queueRunId)
+      process.send({ requestId: message.requestId, queue: server.queueState(message.queueRunId) })
+    }
+  })
   // A broker that is going away releases every lock it holds first, so the next waiter is not left
   // to wait for its pid to read dead; each lane client then sees its lease lost and stops its suite.
   runLaneHelper({ server, options, name: 'suite-lock broker', beforeExit: () => server.releaseAll() })

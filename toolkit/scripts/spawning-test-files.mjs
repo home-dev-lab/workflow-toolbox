@@ -96,6 +96,7 @@ export const spawningTestFiles = [
   'packages/build/test/lane-host-state.test.ts',
   'packages/build/test/lane-postdiff-check-cli.test.ts',
   'packages/build/test/lane-probe.test.ts',
+  'packages/build/test/lane-queue-deadline.test.ts',
   'packages/build/test/lane-sandbox.test.ts',
   'packages/build/test/lane-saturation-hook.test.ts',
   'packages/build/test/lane-supervisor-core.test.ts',
@@ -255,7 +256,7 @@ function testFilesUnder(directory) {
   return entries.flatMap((entry) => {
     const path = resolve(directory, entry.name)
     if (entry.isDirectory()) return testFilesUnder(path)
-    return entry.isFile() && entry.name.endsWith('.test.ts') ? [path] : []
+    return entry.isFile() && /\.test\.(ts|mjs)$/.test(entry.name) ? [path] : []
   })
 }
 
