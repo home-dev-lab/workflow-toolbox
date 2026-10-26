@@ -168,6 +168,14 @@ the tailnet.
   narrows blast radius but does not make the artifact trusted: opening it still runs unreviewed code
   the owner chose to open. Raw SVG and unknown content retain the no-script sandbox; generated
   Markdown and indexes use a strict no-script CSP.
+- For HTML documents the owner reviews and annotates in Orca, put
+  `<!-- wt-artifact-server: annotatable -->` before any non-whitespace content. Like the rich
+  marker, it is case-insensitive and must fit entirely within the first 256 bytes. Annotatable
+  mode keeps the server's real origin (no CSP sandbox), so browser annotation tools can access
+  the document, but it never runs page scripts: `script-src 'none'` blocks them. Network
+  connections, forms, base-URL changes, and framing are blocked; inline styles and same-origin
+  or data images are allowed. For script-free expand/collapse interactivity, use native
+  `<details><summary>More</summary>...</details>` elements. This mode does not enable rich scripts.
 - Health reports service version and OS uid. UID and Linux command-line checks prevent cross-user
   attachment and accidental stale-PID signalling; they are not cryptographic attestation against a
   malicious process running as the same user. There is no rate limit or file-size limit.
