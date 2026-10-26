@@ -256,7 +256,7 @@ function testFilesUnder(directory) {
   return entries.flatMap((entry) => {
     const path = resolve(directory, entry.name)
     if (entry.isDirectory()) return testFilesUnder(path)
-    return entry.isFile() && entry.name.endsWith('.test.ts') ? [path] : []
+    return entry.isFile() && /\.test\.(ts|mjs)$/.test(entry.name) ? [path] : []
   })
 }
 
