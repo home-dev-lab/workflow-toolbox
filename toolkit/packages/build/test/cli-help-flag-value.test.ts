@@ -405,6 +405,7 @@ const NOT_OPTIONS_OF_THE_CLI: Record<string, { literals: string[]; reason: strin
     literals: [
       '--verify', '--job', '--log', '--parents', '--name-only', '--no-renames', '--get', '--git-path', '--is-ancestor',
       '--delete', '--branch', '--json', '--heads', '--topo-order', '--absolute-git-dir', '--git-common-dir', '--end-of-options',
+      '--show-toplevel',
     ],
     reason: 'arguments of the git and gh commands lib/crossos-dispatch.mjs builds; none is read from its own argv',
   },

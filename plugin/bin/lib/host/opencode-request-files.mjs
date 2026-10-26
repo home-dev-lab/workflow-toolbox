@@ -1,7 +1,9 @@
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+
+const temporaryRequests = new Set()
 
 export function canonicalOpencodeDirectory(dir, admission) {
   if (!admission) return path.resolve(dir)
@@ -15,7 +17,28 @@ function requestDirectory(outDir, allowFallback) {
   } catch (error) {
     if (!allowFallback) throw error
     if (!['EACCES', 'EPERM', 'EROFS'].includes(error.code)) throw error
-    return mkdtempSync(path.resolve(tmpdir(), 'opencode-requests-'))
+    const request = mkdtempSync(path.resolve(tmpdir(), 'opencode-requests-'))
+    temporaryRequests.add(request)
+    return request
+  }
+}
+
+export function cleanupEnvelopeRequests() {
+  for (const request of temporaryRequests) {
+    try { rmSync(request, { recursive: true, force: true }) } catch (error) {
+      process.stderr.write(`wt-opencode-envelope: request cleanup warning: ${error.message}\n`)
+    }
+    temporaryRequests.delete(request)
+  }
+}
+
+export function requireWritableEnvelopeOutput(outDir) {
+  const probe = path.join(outDir, `.write-probe-${randomUUID()}`)
+  try {
+    writeFileSync(probe, '', { flag: 'wx' })
+    rmSync(probe)
+  } catch (error) {
+    throw new Error(`output directory is not writable: ${outDir}: ${error.message}`, { cause: error })
   }
 }
 

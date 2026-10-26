@@ -2,6 +2,7 @@ import { commandIO } from './host/command-io.mjs'
 import { EVIDENCE_FIELDS, ciBranchFor, matchesHostPath, verdictFromEvidence } from './crossos-verdict.mjs'
 import { JOBS_PER_PAGE, readJobPages, workflowJobNames } from './crossos-evidence.mjs'
 import { isAbsolute } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const LIST = '.github/cross-os-host-layer.json'
 const RESULTS = { 0: 'green', 1: 'red', 2: 'error', 3: 'mismatch', 4: 'timeout', 5: 'pending' }
@@ -11,6 +12,8 @@ const lines = (text) => text.trim().split('\n').filter(Boolean)
 const RUN_ID = /^[1-9]\d*$/
 const COMMIT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
 const validRunId = (id) => RUN_ID.test(String(id))
+const DISPATCHER = fileURLToPath(new URL('../wt-crossos-dispatch.mjs', import.meta.url))
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`
 
 function extractFailedTests(log) {
   const failures = new Map()
@@ -76,11 +79,16 @@ function checkDevelopAncestry(ctx, sha) {
   const result = ctx.io.run('git', ['merge-base', '--is-ancestor', develop, sha], { cwd: ctx.cwd })
   if (result.status === 0) return sha
   if (result.status !== 1) throw failure(`cannot verify develop ancestry for ${sha}: git merge-base --is-ancestor failed (${result.status}): ${result.stderr.trim()}; repair local Git history and retry`)
-  throw failure(`commit ${sha} does not contain current local develop tip ${develop}; refusing ${ctx.args.command}.
-Build a preview merge containing develop and the feature branch, then dispatch that merge:
-git worktree add --detach <dir> develop
+  const repository = ctx.io.run('git', ['rev-parse', '--show-toplevel'], { cwd: ctx.cwd })
+  // Git terminates this output with LF, including on Windows; a preceding CR belongs to the path.
+  const root = repository.status === 0 ? shellQuote(repository.stdout.replace(/\n$/, '')) : '<repository>'
+  const rootDiagnostic = repository.status === 0 ? '' : `\nCannot resolve selected repository root: ${repository.stderr.trim()}\nReplace <repository> with an absolute repository path, shell-quoted.`
+  throw failure(`commit ${sha} does not contain current local develop tip ${develop}; refusing ${ctx.args.command}.${rootDiagnostic}
+Build a preview merge containing develop and the feature branch, then dispatch that merge (POSIX shell; Git Bash on Windows):
+Use an absolute path for <dir>, and shell-quote both replacements:
+git -C ${root} worktree add --detach <dir> develop
 git -C <dir> merge --no-ff <branch>
-node plugin/bin/wt-crossos-dispatch.mjs run --repo <dir> --merge HEAD`)
+node ${shellQuote(DISPATCHER)} run --repo <dir> --merge HEAD`)
 }
 
 function reportSuccessfulDiagnostics(ctx, jobs) {

@@ -34,6 +34,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
+import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus, normalizeTailnetHost } from './lib/artifact-tailnet.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
@@ -226,14 +227,17 @@ function send(response, method, statusCode, body, contentType = 'text/plain; cha
 const GENERATED_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
 const RICH_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+const ANNOTATABLE_CSP = "default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 const REGISTRATION_OWNERSHIP_MISS_LIMIT = 3
 
 function fileContentType(file) {
   return CONTENT_TYPES.get(path.extname(file).toLowerCase()) ?? 'application/octet-stream'
 }
 
-function richHtml(file) {
-  return /^\s*<!--\s*wt-artifact-server:\s*rich\s*-->/i.test(file.toString('utf8', 0, 256))
+function htmlCsp(file) {
+  const mode = /^\s*<!--\s*wt-artifact-server:\s*(rich|annotatable)\s*-->/i.exec(file.toString('utf8', 0, 256))?.[1].toLowerCase()
+  if (mode === 'rich') return RICH_CSP
+  return mode === 'annotatable' ? ANNOTATABLE_CSP : RAW_CSP
 }
 
 async function directoryPage(root, target, urlSegments) {
@@ -269,6 +273,7 @@ class ArtifactService {
     this.requestedPort = configuredArtifactPort()
     this.startToken = process.env.WT_ARTIFACT_SERVER_START_TOKEN ?? randomUUID()
     this.tailscale = detectTailscale(this.requestedPort)
+    this.retryTailnet = createTailnetRetry({ detect: detectTailnetInWorker })
     this.registrations = new Map()
     this.mountAssignments = new Map()
     this.shuttingDown = false
@@ -401,10 +406,28 @@ class ArtifactService {
     return liveCount === 0 && (cleanRemoval || now >= this.noLiveSince + idleGraceMs() || (nextDeadline !== Infinity && now >= nextDeadline))
   }
 
-  requestMethod(request, response) {
+  async refreshTailnet(host) {
+    if (!this.discovery) return
+    const pending = this.retryTailnet(this.tailscale, this.requestedPort, host)
+    if (!pending) return
+    const recovered = await pending
+    if (this.shuttingDown) return
+    this.tailscale = recovered
+    await listenArtifactTailnet((address) => this.listen(address), recovered, this.requestedPort)
+    Object.assign(this.discovery, {
+      remoteUrl: recovered.remoteUrl, tailnetDetection: recovered.detection, tailnetVia: recovered.via,
+      tailnetBinary: recovered.binary, tailnetServeUrl: recovered.serveUrl,
+    })
+    this.writeDiscovery()
+  }
+
+  async requestMethod(request, response) {
+    this.refreshTailnet(request.headers.host).catch((error) => {
+      process.stderr.write(`wt-artifact-server: tailnet recovery failed: ${error.message}\n`)
+    })
     const { requestedPort, tailscale } = this
     const method = request.method ?? ''
-    const host = request.headers.host?.toLowerCase()
+    const host = normalizeTailnetHost(request.headers.host)
     const allowedHosts = new Set([`localhost:${requestedPort}`, `127.0.0.1:${requestedPort}`])
     if (tailscale.ip) { allowedHosts.add(tailscale.ip); allowedHosts.add(`${tailscale.ip}:${requestedPort}`) }
     if (tailscale.dnsName) { allowedHosts.add(tailscale.dnsName.toLowerCase()); allowedHosts.add(`${tailscale.dnsName.toLowerCase()}:${requestedPort}`) }
@@ -418,7 +441,7 @@ class ArtifactService {
   }
 
   async handler(request, response) {
-    const method = this.requestMethod(request, response)
+    const method = await this.requestMethod(request, response)
     if (method === null) return
     const { requestedPort } = this
     const requestUrl = this.requestUrl(request, response, method)
@@ -479,12 +502,14 @@ class ArtifactService {
       const file = await readFile(target)
       if (extension === '.md') send(response, method, 200, renderMarkdown(file.toString('utf8'), path.basename(target)), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       else if (['.txt', '.log', '.json'].includes(extension)) send(response, method, 200, htmlPage(path.basename(target), `<pre>${escapeHtml(file.toString('utf8'))}</pre>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
-      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': richHtml(file) ? RICH_CSP : RAW_CSP })
+      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': htmlCsp(file) })
       else send(response, method, 200, file, fileContentType(target), { 'Content-Security-Policy': RAW_CSP })
     } catch { send(response, method, 500, 'Internal Server Error\n') }
   }
 
   listen(host) {
+    const existing = this.servers.find((server) => server.address()?.address === host)
+    if (existing) return Promise.resolve(existing)
     return new Promise((resolve, reject) => {
       const server = createServer((request, response) => {
         Promise.resolve(this.handler(request, response)).catch(() => {
@@ -542,6 +567,7 @@ class ArtifactService {
       processIdentity: hostAdapter.readProcessIdentity(process.pid), startToken: this.startToken,
       baseUrl: `http://localhost:${requestedPort}`, remoteUrl: tailscale.remoteUrl,
       tailnetDetection: tailscale.detection, tailnetVia: tailscale.via,
+      tailnetBinary: tailscale.binary, tailnetServeUrl: tailscale.serveUrl,
       roots: [], mounts: [], startedAt: new Date().toISOString(),
     }
     await this.scanRegistrations()
@@ -709,12 +735,7 @@ async function statusCommand() {
   const probe = await probeArtifactServer(state.port)
   if (probe.kind !== 'ours' || probe.health.pid !== state.pid) return 'artifact server: stopped (stale state)'
   const roots = state.roots.map((root) => `${root.name}=${root.path}`).join(', ') || '(none)'
-  const detection = state.tailnetDetection
-  const detectionReason = detection?.reason ? ` (${detection.reason})` : ''
-  const tailnet = detection ? `${detection.status}${detectionReason}` : 'unknown (server predates tailnet detection status)'
-  // A state written before the field existed says nothing about the route: unknown, never native.
-  const via = typeof state.tailnetVia === 'string' ? state.tailnetVia : 'unknown'
-  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\ntailnetDetection: ${tailnet}\ntailnetVia: ${via}\nroots: ${roots}`
+  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\n${formatTailnetStatus(state)}\nroots: ${roots}`
 }
 
 const argv = process.argv.slice(2)

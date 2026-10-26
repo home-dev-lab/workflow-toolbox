@@ -340,7 +340,7 @@ describe('deadline diagnostic failures', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
       h.appendLine.mockImplementation((line) => { if (line.startsWith(kind)) throw new Error('receipt unavailable'); return true })
-      expect(() => vi.advanceTimersByTime(7000)).not.toThrow()
+      await vi.advanceTimersByTimeAsync(7000)
       expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
       expect(h.endGroup).not.toHaveBeenCalled()
       expect(stderr).toHaveBeenCalledWith(expect.stringMatching(/^wt-lane: .*receipt unavailable\n$/))
@@ -352,13 +352,13 @@ describe('deadline diagnostic failures', () => {
     const h = deadlineHarness(true, workers.createLaneDeadline)
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     try {
-      vi.advanceTimersByTime(2000)
+      await vi.advanceTimersByTimeAsync(2000)
       writeFileSync(h.decisionFile, JSON.stringify({ runId: 'test-run', timeoutAt: h.current().timeoutAt, decision: 'extend', extendSeconds: 10 }))
       h.appendLine.mockImplementation(() => { throw new Error('owner receipt unavailable') })
-      expect(() => vi.advanceTimersByTime(100)).not.toThrow()
+      await vi.advanceTimersByTimeAsync(100)
       expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'owner', extensions: [{ source: 'owner' }] })
       expect(h.endGroup).not.toHaveBeenCalled()
-      vi.advanceTimersByTime(5000)
+      await vi.advanceTimersByTimeAsync(5000)
       expect(h.endGroup).not.toHaveBeenCalled()
     } finally { stderr.mockRestore(); h.cleanup(); workers.cleanup() }
   })
@@ -378,10 +378,10 @@ describe('asynchronous diagnostic sink supervision', () => {
     const h = deadlineHarness(true, workers.createLaneDeadline)
     try {
       h.appendLine.mockImplementation(() => { throw new Error('receipt unavailable') })
-      vi.advanceTimersByTime(2000)
+      await vi.advanceTimersByTimeAsync(2000)
       await new Promise<void>((resolve) => setImmediate(resolve))
       expect(uncaught, 'diagnostic stderr errors must not escape supervision').toEqual([])
-      vi.advanceTimersByTime(5000)
+      await vi.advanceTimersByTimeAsync(5000)
       expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
       expect(h.endGroup).not.toHaveBeenCalled()
       expect(sink.listenerCount('error')).toBe(1)
@@ -400,9 +400,9 @@ describe('bounded diagnostic feedback', () => {
         if (extra.idle) throw new Error('idle state unavailable')
         writeState(extra)
       })
-      vi.advanceTimersByTime(2250)
+      await vi.advanceTimersByTimeAsync(2250)
       expect(h.endGroup).not.toHaveBeenCalled()
-      vi.advanceTimersByTime(250)
+      await vi.advanceTimersByTimeAsync(250)
       expect(h.endGroup, 'silent lane must reach its idle stop after at most one diagnostic reset').toHaveBeenCalledWith(126, expect.objectContaining({ receiptLines: ['TERMINATION=idle'] }))
       expect(stderr).toHaveBeenCalledTimes(1)
       expect(readFileSync(h.log, 'utf8').match(/^wt-lane: idle state write failed:/gm)).toHaveLength(1)
@@ -426,29 +426,29 @@ describe('bounded diagnostic feedback', () => {
 })
 
 describe('deadline grace activity refresh', () => {
-  it('extends instead of abandoning when a descendant appears during idle grace', () => {
+  it('extends instead of abandoning when a descendant appears during idle grace', async () => {
     const h = deadlineHarness(false)
     try {
-      vi.advanceTimersByTime(2000)
+      await vi.advanceTimersByTimeAsync(2000)
       expect(h.current()).toMatchObject({ state: 'decision-needed', defaultDecision: 'abandon' })
       h.readProcessSnapshot.mockImplementation(() => ({ processes: [{ pid: 4, parentPid: 1, cpuTicks: 0 }, { pid: 5, parentPid: 4, cpuTicks: performance.now() }] }))
-      vi.advanceTimersByTime(5000)
+      await vi.advanceTimersByTimeAsync(5000)
       expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1, decisionSource: 'grace-default' })
       expect(readFileSync(h.log, 'utf8')).toContain('LANE_EXTENDED count=1/3 source=grace-default')
       expect(h.endGroup).not.toHaveBeenCalled()
     } finally { h.cleanup() }
   })
 
-  it('does not abandon at the deadline after a forward wall-clock jump', () => {
+  it('does not abandon at the deadline after a forward wall-clock jump', async () => {
     const h = deadlineHarness(false)
     try {
-      vi.advanceTimersByTime(1250)
+      await vi.advanceTimersByTimeAsync(1250)
       appendFileSync(h.log, 'child progress\n')
-      vi.advanceTimersByTime(250)
+      await vi.advanceTimersByTimeAsync(250)
       vi.setSystemTime(Date.now() + 3600_000)
-      vi.advanceTimersByTime(500)
+      await vi.advanceTimersByTimeAsync(500)
       expect(h.current()).toMatchObject({ state: 'decision-needed', defaultDecision: 'extend' })
-      vi.advanceTimersByTime(5000)
+      await vi.advanceTimersByTimeAsync(5000)
       expect(h.current()).toMatchObject({ state: 'running', extensionCount: 1 })
       expect(h.endGroup).not.toHaveBeenCalled()
     } finally { h.cleanup() }
