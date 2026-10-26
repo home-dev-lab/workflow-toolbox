@@ -3,7 +3,8 @@ import { randomBytes } from 'node:crypto'
 import { accessSync, chmodSync, closeSync, constants, cpSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { EventEmitter } from 'node:events'
-import { tmpdir, userInfo } from 'node:os'
+import { syncBuiltinESMExports } from 'node:module'
+import os, { tmpdir, userInfo } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -1300,10 +1301,13 @@ describe('lane sandbox plan — codex home (H3)', () => {
       expect(JSON.parse(readFileSync(auth, 'utf8'))).toEqual({ ...fresh, OPENAI_API_KEY: 'host' })
     } finally { p.dispose() }
   })
+})
+
+describe('lane sandbox plan — codex home (H3), per-run CODEX_HOME', () => {
   it('keeps ~/.codex read-only, runs on a per-run CODEX_HOME, copies auth in, and offers a writeback', () => {
     const codexHome = `${HOME}/.codex`
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: 'tok', [`${codexHome}/hooks.json`]: '{}' }, [HOME, '/work/tree', codexHome])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CLAUDE_PLUGIN_DATA: '/run/lane/codex-broker' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { authWriteback?: { from: string, to: string } }
+    const p = plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CLAUDE_PLUGIN_DATA: '/run/lane/codex-broker' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { authWriteback?: { from: string, to: string } }
     const [, args] = p.wrap('/usr/bin/node', [])
     // ~/.codex is never a writable host bind; a per-run home is remapped onto it (outside != inside).
     expect(flat(args, '--bind-try')).not.toContain(codexHome)
@@ -1392,52 +1396,74 @@ describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans le
 // path of a bind or a remap, a tmpfs, or a created --dir. A host path the sandbox never binds (the
 // per-run runtime dir under /run/user/<uid>, hidden by design) is absent in there, and the CLI fails
 // on it — codex exited 1 on "CODEX_HOME points to ... but that path does not exist" (0.188.0).
-describe('lane sandbox plan — every --setenv path exists inside the sandbox', () => {
-  const MOUNT_FLAGS = new Set(['--bind', '--bind-try', '--ro-bind', '--ro-bind-try', '--dev-bind', '--dev-bind-try'])
-  const beforeCommand = (args: string[]) => args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
-  function insideRoots(args: string[]): { mounts: string[], dirs: string[] } {
-    const mounts: string[] = []
-    const dirs: string[] = []
-    for (let i = 0; i < args.length; i += 1) {
-      if (MOUNT_FLAGS.has(args[i]!)) mounts.push(args[i + 2]!)
-      else if (['--tmpfs', '--proc', '--dev'].includes(args[i]!)) mounts.push(args[i + 1]!)
-      else if (args[i] === '--dir') dirs.push(args[i + 1]!)
+const MOUNT_FLAGS = new Set(['--bind', '--bind-try', '--ro-bind', '--ro-bind-try', '--dev-bind', '--dev-bind-try'])
+const beforeCommand = (args: string[]) => args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
+function insideRoots(args: string[]): { mounts: string[], dirs: string[] } {
+  const mounts: string[] = []
+  const dirs: string[] = []
+  for (let i = 0; i < args.length; i += 1) {
+    if (MOUNT_FLAGS.has(args[i]!)) mounts.push(args[i + 2]!)
+    else if (['--tmpfs', '--proc', '--dev'].includes(args[i]!)) mounts.push(args[i + 1]!)
+    else if (args[i] === '--dir') dirs.push(args[i + 1]!)
+  }
+  return { mounts, dirs }
+}
+function setenvPaths(args: string[]): Array<[string, string]> {
+  return args.flatMap((v, i) => (v === '--setenv' && String(args[i + 2]).startsWith('/') ? [[args[i + 1]!, args[i + 2]!] as [string, string]] : []))
+}
+function expectAllInside(args: string[]) {
+  const prefix = beforeCommand(args)
+  const { mounts, dirs } = insideRoots(prefix)
+  const pairs = setenvPaths(prefix)
+  expect(pairs.length).toBeGreaterThan(0)
+  for (const [name, value] of pairs) {
+    if (name === 'PATH') {
+      expect(dirs).toContain(value.split(':')[0])
+      continue
     }
-    return { mounts, dirs }
+    const inside = dirs.includes(value) || mounts.some((root) => value === root || value.startsWith(`${root}/`))
+    expect(inside, `--setenv ${name} ${value} is not under any inside path (${[...mounts, ...dirs].join(', ')})`).toBe(true)
   }
-  function setenvPaths(args: string[]): Array<[string, string]> {
-    return args.flatMap((v, i) => (v === '--setenv' && String(args[i + 2]).startsWith('/') ? [[args[i + 1]!, args[i + 2]!] as [string, string]] : []))
-  }
-  function expectAllInside(args: string[]) {
-    const prefix = beforeCommand(args)
-    const { mounts, dirs } = insideRoots(prefix)
-    const pairs = setenvPaths(prefix)
-    expect(pairs.length).toBeGreaterThan(0)
-    for (const [name, value] of pairs) {
-      if (name === 'PATH') {
-        expect(dirs).toContain(value.split(':')[0])
-        continue
-      }
-      const inside = dirs.includes(value) || mounts.some((root) => value === root || value.startsWith(`${root}/`))
-      expect(inside, `--setenv ${name} ${value} is not under any inside path (${[...mounts, ...dirs].join(', ')})`).toBe(true)
-    }
-  }
-  const codexHome = `${HOME}/.codex`
-  const codexPlan = (env: Record<string, string>) => {
-    const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: JSON.stringify({ tokens: { a: 1 } }) }, [HOME, '/work/tree', codexHome])
-    return sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', ...env }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/user/1000', fs })
-  }
+}
+const SETENV_CODEX_HOME = `${HOME}/.codex`
+const codexPlan = (env: Record<string, string>) => {
+  const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${SETENV_CODEX_HOME}/auth.json`]: JSON.stringify({ tokens: { a: 1 } }) }, [HOME, '/work/tree', SETENV_CODEX_HOME])
+  return plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', ...env }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/user/1000', fs })
+}
+
+describe('lane sandbox plan — every --setenv path exists inside the sandbox (codex)', () => {
+  it.each(['/home/account', 'C:\\Users\\owner'])('builds the portable Codex plan with account home %s', (accountHome) => {
+    const account = os.userInfo()
+    const lookup = vi.spyOn(os, 'userInfo').mockReturnValue({ ...account, homedir: accountHome })
+    syncBuiltinESMExports()
+    try {
+      expect(userInfo().homedir).toBe(accountHome)
+      // codexPlan always supplies its fake filesystem and listening spawn, even on a red run.
+      const p = codexPlan({})
+      try {
+        expect(p.kind).toBe('bwrap')
+        const args = p.wrap('/usr/bin/node', [])[1]
+        expectAllInside(args)
+        const lockRoot = `${HOME}/.local/state/wt-suite-lock`
+        const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+        expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), lockRoot])
+        expect(flat(args, '--bind-try')).not.toContain(lockRoot)
+      } finally { p.dispose() }
+    } finally { lookup.mockRestore(); syncBuiltinESMExports() }
+  })
 
   it('codex: CODEX_HOME names the remapped ~/.codex, never the per-run dir under the runtime parent', () => {
     for (const env of [{}, { CLAUDE_PLUGIN_DATA: '/data/codex-broker' }]) {
       const [, args] = codexPlan(env).wrap('/usr/bin/node', [])
       expectAllInside(args)
       const value = args[args.indexOf('CODEX_HOME') + 1]!
-      expect(value).toBe(codexHome)
+      expect(value).toBe(SETENV_CODEX_HOME)
       expect(value.startsWith('/run/user/1000/')).toBe(false)
     }
   })
+})
 
+describe('lane sandbox plan — every --setenv path exists inside the sandbox (user CODEX_HOME, opencode)', () => {
   it('codex with a user-set CODEX_HOME exports none (the user value passes through unchanged)', () => {
     const [, args] = codexPlan({ CODEX_HOME: '/opt/codexhome' }).wrap('/usr/bin/node', [])
     expect(args.includes('CODEX_HOME')).toBe(false)
@@ -1529,19 +1555,19 @@ describe('lane sandbox plan — network endpoints (H4)', () => {
 
 // Round 3, defect 1: a remote provider (openai/* on OAuth) was unreachable because only loopback
 // baseURLs were bridged. Invariant: a lane reaches exactly the endpoints ITS model needs.
-describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
-  const config = `${HOME}/.config/opencode`
-  const share = `${HOME}/.local/share/opencode`
-  const CLIPROXY = '{ // comment with a URL-like // inside\n "provider": { "antigravity": { "options": { "baseURL": "http://127.0.0.1:8317/v1", }, }, }, }'
-  type Spawned = Array<{ command: string, args: string[] }>
-  function egressPlan(model: string | null, auth: Record<string, unknown>, extra: Record<string, unknown> = {}) {
-    const spawned: Spawned = []
-    const fs = fakeFs({ [`${config}/opencode.jsonc`]: CLIPROXY, [`${share}/auth.json`]: JSON.stringify(auth) }, [config, share, HOME, '/work/tree'])
-    const p = plan({ fs, args: ['run', 'x', ...(model ? ['--model', model] : [])], spawnFn: listening(fs, spawned), ...extra }) as SandboxPlan & { egressHosts?: string[] }
-    return { p, spawned, args: p.wrap('opencode', ['run'])[1] }
-  }
-  const setenv = (args: string[], name: string) => args.flatMap((v, i) => (v === '--setenv' && args[i + 1] === name ? [args[i + 2]!] : []))
+const EGRESS_CONFIG = `${HOME}/.config/opencode`
+const EGRESS_SHARE = `${HOME}/.local/share/opencode`
+const CLIPROXY = '{ // comment with a URL-like // inside\n "provider": { "antigravity": { "options": { "baseURL": "http://127.0.0.1:8317/v1", }, }, }, }'
+type Spawned = Array<{ command: string, args: string[] }>
+function egressPlan(model: string | null, auth: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  const spawned: Spawned = []
+  const fs = fakeFs({ [`${EGRESS_CONFIG}/opencode.jsonc`]: CLIPROXY, [`${EGRESS_SHARE}/auth.json`]: JSON.stringify(auth) }, [EGRESS_CONFIG, EGRESS_SHARE, HOME, '/work/tree'])
+  const p = plan({ fs, args: ['run', 'x', ...(model ? ['--model', model] : [])], spawnFn: listening(fs, spawned), ...extra }) as SandboxPlan & { egressHosts?: string[] }
+  return { p, spawned, args: p.wrap('opencode', ['run'])[1] }
+}
+const setenv = (args: string[], name: string) => args.flatMap((v, i) => (v === '--setenv' && args[i + 1] === name ? [args[i + 2]!] : []))
 
+describe('lane sandbox plan — per-model egress (round 3, defect 1), OpenAI hosts', () => {
   it('an openai/* OAuth lane gets an egress proxy allowing ONLY chatgpt.com and auth.openai.com, reached through the bridge', () => {
     const { p, spawned, args } = egressPlan('openai/gpt-5.6-luna', { openai: { type: 'oauth' } })
     expect(p.egressHosts).toEqual(['chatgpt.com', 'auth.openai.com'])
@@ -1561,7 +1587,9 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
   it('an API-key openai lane is allowed api.openai.com only', () => {
     expect(egressPlan('openai/gpt-5.6-luna', { openai: { type: 'api' } }).p.egressHosts).toEqual(['api.openai.com'])
   })
+})
 
+describe('lane sandbox plan — per-model egress (round 3, defect 1), other providers', () => {
   it('a loopback provider model is relayed, gets no proxy and no proxy variables', () => {
     const { p, spawned, args } = egressPlan('antigravity/some-model', {})
     expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }])
@@ -1586,7 +1614,7 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     const spawned: Spawned = []
     const codexHome = `${HOME}/.codex`
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: JSON.stringify({ OPENAI_API_KEY: null, tokens: { a: 1 } }) }, [HOME, '/work/tree', codexHome])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs, spawned), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
+    const p = plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs, spawned), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
     expect(p.egressHosts).toEqual(['chatgpt.com', 'auth.openai.com'])
   })
 
@@ -1635,7 +1663,7 @@ describe('lane sandbox plan — egress from lane-proof configuration only (round
 
   it('codex reads the auth store of CODEX_HOME when it is set', () => {
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { a: 1 } }), '/opt/codexhome/auth.json': JSON.stringify({ OPENAI_API_KEY: 'k' }) }, [HOME, '/work/tree', `${HOME}/.codex`, '/opt/codexhome'])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/opt/codexhome' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
+    const p = plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/opt/codexhome' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
     expect(p.egressHosts).toEqual(['api.openai.com'])
   })
 })
@@ -1651,7 +1679,7 @@ describe('lane sandbox plan — config and auth stay read-only (round 4, LOW 4)'
     const cfg = '/work/tree/xdg'
     expect(() => plan({ env: { HOME, PATH: '/usr/bin', XDG_CONFIG_HOME: cfg }, fs: fakeFs({}, [HOME, '/work/tree', cfg, `${cfg}/opencode`]) })).toThrow(sandbox.LaneSandboxRefusal)
     const fs = fakeFs({ '/usr/local/bin/codex': 'x' }, [HOME, '/work/tree', '/data', '/data/codex'])
-    expect(() => sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/data/codex', CLAUDE_PLUGIN_DATA: '/data' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs })).toThrow(/overlaps \/data\/codex/)
+    expect(() => plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/data/codex', CLAUDE_PLUGIN_DATA: '/data' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs })).toThrow(/overlaps \/data\/codex/)
   })
 })
 
