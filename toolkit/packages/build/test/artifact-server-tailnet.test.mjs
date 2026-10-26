@@ -245,12 +245,21 @@ function cli(args, env, cwd) {
   return once(child, 'close').then(([code]) => ({ code, stdout, stderr }))
 }
 
+const WORKER_ATTEMPT_PRELOAD = `const Worker = threads.Worker
+threads.Worker = class extends Worker {
+  constructor(file, options) {
+    super(file, options)
+    if (options?.workerData?.artifactTailnetPort) fs.appendFileSync(dir + '/attempts', 'attempt\\n')
+  }
+}`
+
 function fixturePreload(dir, pathResolution) {
   const file = path.join(dir, 'preload.cjs')
   writeFileSync(file, `
 const fs = require('node:fs')
 const net = require('node:net')
 const cp = require('node:child_process')
+const threads = require('node:worker_threads')
 const { syncBuiltinESMExports } = require('node:module')
 const dir = ${JSON.stringify(dir)}
 const now = Date.now
@@ -271,8 +280,14 @@ cp.execFileSync = (command, args, options) => {
   if (!allowed || !['ip', 'status', 'serve'].includes(args[0])) {
     throw Object.assign(new Error('fixture absent binary'), { code: 'ENOENT' })
   }
-  return run(process.execPath, args, options)
+  try {
+    return run(process.execPath, args, options)
+  } catch (error) {
+    fs.appendFileSync(dir + '/command-errors', JSON.stringify({ command: args[0], signal: error.signal, code: error.code }) + '\\n')
+    throw error
+  }
 }
+${WORKER_ATTEMPT_PRELOAD}
 syncBuiltinESMExports()
 `)
   return file
@@ -401,6 +416,57 @@ setTimeout(() => process.exit(0), 15000).unref()
   }
 })
 
+function resistTermination(dir, command) {
+  const output = readFileSync(path.join(dir, command), 'utf8')
+  writeFileSync(path.join(dir, command), `
+const fs = require('node:fs')
+process.on('SIGTERM', () => {})
+fs.writeFileSync('started', String(process.pid))
+const timer = setInterval(() => {
+  if (!fs.existsSync('release')) return
+  clearInterval(timer)
+  ${output}
+}, 10)
+setTimeout(() => process.exit(0), 15000).unref()
+`)
+  return output
+}
+
+function commandErrors(dir) {
+  const file = path.join(dir, 'command-errors')
+  return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []
+}
+
+for (const command of ['status', 'serve']) {
+  test(`a SIGTERM-ignoring ${command} command is killed at timeout and releases recovery`, async (context) => {
+    const server = await fixture(context)
+    // Failed address detection still probes status/Serve, while keeping later Host recovery eligible.
+    writeFileSync(path.join(server.dir, 'ip'), 'process.exitCode = 2')
+    const output = resistTermination(server.dir, command)
+    try {
+      assert.equal(await get(server.port, DNS), 421)
+      const pid = await waitFor(() => existsSync(path.join(server.dir, 'started')) && Number(readFileSync(path.join(server.dir, 'started'), 'utf8')))
+      const timedOut = await waitFor(() => commandErrors(server.dir).find((error) => error.command === command), 6500).catch(() => null)
+      assert.ok(timedOut, `a SIGTERM-ignoring ${command} command must be killed within its timeout budget`)
+      assert.equal(timedOut.signal, 'SIGKILL', `${command} must be forcibly killed, not released normally`)
+      assert.equal(timedOut.code, 'ETIMEDOUT')
+      assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }, 'the timed-out child must no longer exist')
+      await waitFor(() => /exit=2/.test(server.read()?.tailnetDetection.reason))
+      writeFileSync(path.join(server.dir, command), output)
+      writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.1')")
+      writeFileSync(path.join(server.dir, 'clock'), '60001')
+      await get(server.port, DNS)
+      const recovered = await waitFor(() => server.read()?.tailnetServeUrl, 3000).catch(() => null)
+      assert.equal(recovered, `https://${DNS}/artifacts`, `${command} timeout must release the recovery slot for a later attempt`)
+      assert.equal(await get(server.port, DNS), 200)
+    } finally {
+      // Release resistant children even when the timeout or kill signal is mutated.
+      writeFileSync(path.join(server.dir, 'release'), '')
+      await waitFor(() => /exit=2/.test(server.read()?.tailnetDetection.reason) || server.read()?.tailnetDetection.status === 'available')
+    }
+  })
+}
+
 const PREVIOUS_RESULTS = [
   ['partial', "console.log('127.0.0.1')", 'process.exitCode = 2', (state) => state.remoteUrl?.startsWith('http://127.0.0.1:')],
   ['no-tailnet', '', null, (state) => state.tailnetDetection.status === 'no-tailnet'],
@@ -435,6 +501,11 @@ for (const [shape, ip, status, matches] of PREVIOUS_RESULTS) {
     writeFileSync(path.join(server.dir, 'ip'), "console.log('127.0.0.1')")
     writeFileSync(path.join(server.dir, 'status'), `console.log(JSON.stringify({Self:{DNSName:'${DNS}.'}}))`)
     assert.equal(await get(server.port, DNS), 421, 'the minute throttle must survive an unsuccessful attempt')
+    await context.test(`${shape} result does not launch another recovery worker before one minute`, async () => {
+      // A subsequent local response drains the triggering handler's microtasks, including worker creation.
+      assert.equal(await get(server.port, `localhost:${server.port}`, '/__wt-artifact-server/health'), 200)
+      assert.equal(readFileSync(path.join(server.dir, 'attempts'), 'utf8'), 'attempt\n', `${shape} result must not start an early recovery worker`)
+    })
     writeFileSync(path.join(server.dir, 'clock'), '60001')
     await get(server.port, DNS)
     const recovered = await waitFor(() => server.read()?.tailnetDetection.status === 'available' && server.read()?.tailnetServeUrl, 3000).catch(() => null)
