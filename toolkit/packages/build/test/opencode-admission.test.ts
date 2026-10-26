@@ -645,3 +645,63 @@ it.each(['refusal', 'write'] as const)('preserves the first %s failure when an e
   const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
   expect(calls.map(call => call.task).sort()).toEqual([...f.prompts].sort())
 })
+
+function streamFailureFixture(event: 'close' | 'error') {
+  const f = orderedFailureFixture('refusal')
+  const binary = join(f.root, 'fake-opencode.mjs')
+  writeFileSync(binary, `import { spawnSync } from 'node:child_process';\n` + readFileSync(binary, 'utf8').replace(
+    `await wait(${JSON.stringify(join(f.root, 'first-error'))});`,
+    `await wait(${JSON.stringify(join(f.root, 'first-error'))});
+      const removed = spawnSync(process.execPath, ['-e', "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", ${JSON.stringify(join(f.root, 'state', 'wt-observe', 'external-lane-streams'))}]);
+      if (removed.status !== 0) throw new Error('stream directory removal failed');
+      writeFileSync(${JSON.stringify(join(f.root, 'streams-removed'))}, 'yes');`,
+  ))
+  if (event === 'error') {
+    const preload = join(f.root, 'cleanup-preload.mjs')
+    writeFileSync(preload, readFileSync(preload, 'utf8') + `
+      const cp = await import('node:child_process');
+      const spawn = cp.default.spawn;
+      cp.default.spawn = (...args) => {
+        const child = spawn(...args);
+        if (args[1].includes('run') && fs.readFileSync(args[1][args[1].indexOf('-f') + 1], 'utf8') === 'first rendered task')
+          child.once('exit', () => { fs.writeFileSync(${JSON.stringify(join(f.root, 'error-emitted'))}, 'yes'); child.emit('error', new Error('injected child error')); });
+        return child;
+      };
+      syncBuiltinESMExports();`)
+  }
+  return f
+}
+
+it.each(['close', 'error'] as const)('preserves a published refusal when a sibling %s callback cannot write its stream', event => {
+  const f = streamFailureFixture(event)
+  const result = launch(f, f.module)
+  console.info(`stream-failure ${event}: exit=${result.status}\n${result.stdout.trimEnd()}`)
+  expect(existsSync(join(f.root, 'streams-removed'))).toBe(true)
+  if (event === 'error') expect(existsSync(join(f.root, 'error-emitted'))).toBe(true)
+  expect(result.status, result.stdout + result.stderr).toBe(3)
+  expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
+  expect(result.stdout).toContain('OPENCODE_REFUSED: WT_OPENCODE_ENVELOPE_ADMISSION: request changed after admission: ')
+  expect(result.stderr).not.toContain('ENOENT')
+})
+
+it('preserves an ordinary error published before a later integrity refusal', () => {
+  const f = orderedFailureFixture('write')
+  const preload = join(f.root, 'cleanup-preload.mjs')
+  writeFileSync(preload, readFileSync(preload, 'utf8') + `
+    const { OpencodeAdmissionRefusal } = await import(${JSON.stringify(pathToFileURL(join(PLUGIN, 'bin/lib/opencode-admission.mjs')).href)});
+    const previousWrite = fs.writeFileSync;
+    fs.writeFileSync = (file, ...args) => {
+      if (String(file) === ${JSON.stringify(join(f.out, 'task-0.answer.txt'))}) {
+        previousWrite(${JSON.stringify(join(f.root, 'late-refusal'))}, 'yes');
+        throw new OpencodeAdmissionRefusal('late integrity refusal');
+      }
+      return previousWrite(file, ...args);
+    };
+    syncBuiltinESMExports();`)
+  const result = launch(f, f.module)
+  expect(existsSync(join(f.root, 'late-refusal')), 'the sibling must reject after the ordinary error was published').toBe(true)
+  expect(result.status, result.stdout + result.stderr).toBe(2)
+  expect(result.stdout).toContain('OPENCODE_ERROR: unexpected failure:')
+  expect(result.stdout).toContain('task-1.answer.txt')
+  expect(result.stdout).not.toContain('OPENCODE_REFUSED:')
+})
