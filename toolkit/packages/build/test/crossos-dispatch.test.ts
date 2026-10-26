@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
@@ -198,6 +198,67 @@ function executeRecoveryRecipe(text: string, cwd: string, preview: string, branc
   }
   return finalOutput
 }
+
+function recoveryFixture(directory?: string) {
+  const f = fixture(undefined, directory)
+  const tip = advanceDevelop(f, f.base)
+  git(f.dir, 'update-ref', 'refs/remotes/public/main', f.base)
+  return { ...f, tip, outside: fixture().dir, preview: join(scratchDir(), 'preview merge') }
+}
+
+describe('cross-OS recovery path bytes', () => {
+  it.skipIf(process.platform === 'win32')('preserves a real repository root ending in carriage return', async () => {
+    const directory = join(scratchDir(), 'selected\r'); mkdirSync(directory)
+    const f = recoveryFixture(directory); const out = output(); const io = localOnlyIO()
+    const rootOutput = io.run('git', ['rev-parse', '--show-toplevel'], { cwd: f.dir }).stdout
+    expect(rootOutput.endsWith('\r\n')).toBe(true)
+    expect(await liveDispatch(['decide', '--repo', f.dir, '--merge', f.host], { io, print: out.print })).toBe(2)
+    const text = out.lines.join('\n')
+    expect(text, 'printed root must retain the filename carriage return').toContain(`git -C ${shellArgument(rootOutput.slice(0, -1))} worktree add`)
+    expect(executeRecoveryRecipe(text, f.outside, f.preview, f.host)).toContain('RESULT: dry-run')
+    expect(git(f.preview, 'merge-base', '--is-ancestor', f.tip, 'HEAD')).toBe('')
+  })
+
+  it.each(['ordinary', 'carriage return', 'line feed'])('removes only Git LF from a %s root spelling', async (suffix) => {
+    const f = recoveryFixture(); const out = output(); const local = localOnlyIO()
+    const selected = `C:/selected ' $repo; &${suffix === 'carriage return' ? '\r' : suffix === 'line feed' ? '\n' : ''}`
+    const io = { ...local, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: `${selected}\n`, stderr: '' }
+      return local.run(program, args, opts)
+    } }
+    expect(await liveDispatch(['decide', '--repo', f.dir, '--merge', f.host], { io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain(`git -C ${shellArgument(selected)} worktree add --detach <dir> develop`)
+  })
+})
+
+describe('cross-OS recovery without a worktree', () => {
+  it.each(['bare', 'administrative'])('keeps the ancestry refusal and usable recipe for a %s repository', async (kind) => {
+    const f = recoveryFixture(); const out = output()
+    const selected = kind === 'bare' ? join(scratchDir(), 'selected.git') : join(f.dir, '.git')
+    if (kind === 'bare') git(f.dir, 'clone', '-q', '--bare', f.dir, selected)
+    expect(await liveDispatch(['decide', '--repo', selected, '--merge', f.host], { io: localOnlyIO(), print: out.print })).toBe(2)
+    const text = out.lines.join('\n')
+    expect(text).toContain(`commit ${f.host} does not contain current local develop tip ${f.tip}; refusing decide.`)
+    expect(text).toContain('Cannot resolve selected repository root: fatal: this operation must be run in a work tree')
+    expect(text).toContain('Replace <repository> with an absolute repository path, shell-quoted.')
+    expect(text).toContain('git -C <repository> worktree add --detach <dir> develop')
+    expect(out.lines.at(-1)).toBe('RESULT: error')
+    expect(executeRecoveryRecipe(text.replaceAll('<repository>', shellArgument(f.dir)), f.outside, f.preview, f.host)).toContain('RESULT: dry-run')
+  })
+})
+
+describe('cross-OS installed recovery', () => {
+  it('executes recovery with the dispatcher installed under a shell-special path', () => {
+    const f = recoveryFixture()
+    const installed = join(scratchDir(), "installed ' $tool; &", 'bin')
+    cpSync(join(root, 'plugin/bin'), installed, { recursive: true })
+    const result = spawnSync(process.execPath, [join(installed, 'wt-crossos-dispatch.mjs'), 'decide', '--repo', f.dir, '--merge', f.host], {
+      cwd: f.outside, env, encoding: 'utf8',
+    })
+    expect(result.status, result.stdout + result.stderr).toBe(2)
+    expect(executeRecoveryRecipe(result.stdout, f.outside, f.preview, f.host), 'installed dispatcher must execute as one shell argument').toContain('RESULT: dry-run')
+  })
+})
 
 describe('cross-OS printed recovery', () => {
   it.each(['absolute', 'relative'])('executes the printed recipe from another repository with a %s repo path', async (mode) => {

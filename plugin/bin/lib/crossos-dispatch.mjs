@@ -80,12 +80,13 @@ function checkDevelopAncestry(ctx, sha) {
   if (result.status === 0) return sha
   if (result.status !== 1) throw failure(`cannot verify develop ancestry for ${sha}: git merge-base --is-ancestor failed (${result.status}): ${result.stderr.trim()}; repair local Git history and retry`)
   const repository = ctx.io.run('git', ['rev-parse', '--show-toplevel'], { cwd: ctx.cwd })
-  if (repository.status !== 0) throw failure(`cannot resolve selected repository: ${repository.stderr.trim()}`)
-  const root = repository.stdout.replace(/\r?\n$/, '')
-  throw failure(`commit ${sha} does not contain current local develop tip ${develop}; refusing ${ctx.args.command}.
+  // Git terminates this output with LF, including on Windows; a preceding CR belongs to the path.
+  const root = repository.status === 0 ? shellQuote(repository.stdout.replace(/\n$/, '')) : '<repository>'
+  const rootDiagnostic = repository.status === 0 ? '' : `\nCannot resolve selected repository root: ${repository.stderr.trim()}\nReplace <repository> with an absolute repository path, shell-quoted.`
+  throw failure(`commit ${sha} does not contain current local develop tip ${develop}; refusing ${ctx.args.command}.${rootDiagnostic}
 Build a preview merge containing develop and the feature branch, then dispatch that merge (POSIX shell; Git Bash on Windows):
 Use an absolute path for <dir>, and shell-quote both replacements:
-git -C ${shellQuote(root)} worktree add --detach <dir> develop
+git -C ${root} worktree add --detach <dir> develop
 git -C <dir> merge --no-ff <branch>
 node ${shellQuote(DISPATCHER)} run --repo <dir> --merge HEAD`)
 }
