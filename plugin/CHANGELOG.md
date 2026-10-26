@@ -8,6 +8,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 
 - Artifact-server tailnet detection and remote URL checks try standard Tailscale and WSL PowerShell install locations after PATH lookup, preserving an explicitly configured Tailscale binary. Status names the resolved executable and warns when unavailable detection will reject a known Serve route with HTTP 421. Failed detection retries on the first tailnet-Host request, at most once per minute, and publishes recovered URLs and Host admission without a restart.
+- `wt-crossos-dispatch` preview-merge recovery commands preserve the selected repository, including a trailing carriage return, and use the installed dispatcher's absolute path, so they work from another directory. If the worktree root is unavailable, the ancestry refusal and recovery recipe remain visible with an explicit repository placeholder. Paths are shell-quoted for POSIX shells, including Git Bash on Windows; historical collection and release checks remain valid when local `develop` advances or is absent.
 - The opencode envelope reports the pool's first failure after draining running tasks, so a sibling's later output-write error cannot replace an integrity refusal or its exit-3 protocol. Successful output-writability probes are regression-tested for cleanup.
 
 ## [0.197.0] - 2026-10-26
@@ -28,7 +29,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- `wt-crossos-dispatch` preview-merge recovery commands preserve the selected repository, including a trailing carriage return, and use the installed dispatcher's absolute path, so they work from another directory. If the worktree root is unavailable, the ancestry refusal and recovery recipe remain visible with an explicit repository placeholder. Paths are shell-quoted for POSIX shells, including Git Bash on Windows; historical collection and release checks remain valid when local `develop` advances or is absent.
 - Admission opts out for a missing settings file only after native resolution proves that its profile directory exists. Missing or undecidable profiles, including intermediate dangling symlinks, refuse with a repair remedy. Quoted sibling repository paths retain their original spelling, and second-opinion validates repository symlink/`..` paths natively before launch.
 - Portable Codex sandbox-plan tests use an explicit fixture suite-lock root, so building a Linux plan on Windows does not interpret the Windows account home as a POSIX path. Production suite locks still follow the OS account home or an explicit state-root override.
 - `wt-crossos-dispatch` refuses `decide` and `run` (including dry runs) when the selected commit does not contain the current local `develop` tip, prints preview-merge commands, and refuses explicitly when the local branch is unavailable.
