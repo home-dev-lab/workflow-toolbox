@@ -4,7 +4,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+// @ts-expect-error standalone Node selftest shares its regression cases with Vitest
+import { registerArtifactCspTests } from './artifact-server-csp.selftest.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { artifactUrl, assignArtifactMounts, atomicWriteJson, chooseRemoteUrl, deriveArtifactPort, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
@@ -45,6 +47,10 @@ const PAUSED_HOLDER_TEST_BOUND_MS = OLD_CLAIM_STALE_BOUND_MS + CLAIM_OBSERVATION
 const WINDOWS_TEMP_REMOVE_RETRIES = { maxRetries: 100, retryDelay: 100 }
 // Linux can exercise all adapter branches with real processes; other hosts exercise their native refusal.
 const CONTROL_PLATFORMS = process.platform === 'linux' ? ['linux', 'darwin', 'win32'] : [process.platform]
+
+describe('HTML CSP opt-ins', () => {
+  registerArtifactCspTests({ before: beforeAll, after: afterAll, test: it })
+})
 
 function temporaryDir(tag: string) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))

@@ -889,17 +889,21 @@ function bridgeName(bridge) {
   return bridge.proxy ? 'egress proxy' : `relay to ${bridge.host}:${bridge.port}`
 }
 
+function bridgeStdio(bridge, diagnostics) { return ['ignore', 'ignore', typeof diagnostics === 'number' ? diagnostics : 'inherit', ...(bridge.hostOnly ? ['ipc'] : [])] }
+
+function observeBridgeExit(relay, bridge, diagnostics, state) {
+  if (typeof relay?.once === 'function') relay.once('exit', (code, signal) => {
+    if (!state.disposed) reportBridgeExit(diagnostics, `workflow-toolbox: lane ${bridgeName(bridge)} exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}); the sandboxed lane has lost that route\n`)
+  })
+}
+
 function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
   const relays = []
   try {
     for (const bridge of bridges) {
-      const relay = spawnFn(bridge.command, bridge.args, { stdio: ['ignore', 'ignore', typeof diagnostics === 'number' ? diagnostics : 'inherit'], detached: false, ...(bridge.env ? { env: bridge.env } : {}) })
+      const relay = spawnFn(bridge.command, bridge.args, { stdio: bridgeStdio(bridge, diagnostics), detached: false, ...(bridge.env ? { env: bridge.env } : {}) })
       relays.push(relay)
-      if (typeof relay?.once === 'function') {
-        relay.once('exit', (code, signal) => {
-          if (!state.disposed) reportBridgeExit(diagnostics, `workflow-toolbox: lane ${bridgeName(bridge)} exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}); the sandboxed lane has lost that route\n`)
-        })
-      }
+      observeBridgeExit(relay, bridge, diagnostics, state)
     }
     const insideCommands = bridges.filter((bridge) => !bridge.hostOnly).map((bridge) => `${shPosix(socat)} TCP4-LISTEN:${bridge.port},bind=${bridge.host},fork,reuseaddr UNIX-CONNECT:${shPosix(bridge.sock)} >/dev/null 2>&1 &`)
   // A host bridge's unix socket appears asynchronously. Wait for it BEFORE the sandbox starts, or
@@ -915,7 +919,7 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
       const names = missing.map(bridgeName).join(', ')
       throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)
     }
-    return { relays, insideCommands }
+    return { relays, insideCommands, suiteBroker: relays[bridges.findIndex((item) => item.hostOnly)] }
   } catch (error) {
     state.disposed = true
     for (const relay of relays) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }
@@ -1181,7 +1185,7 @@ function sandboxPlanResult(state, authSnapshot, line) {
   }
 
   const unreadable = (candidates, { probe, env: probeEnv = env, exempt = [] } = {}) => unreadableRequestPaths(candidates, { fs, wrap, execPath, env: probeEnv, probe, exempt })
-  return { kind: 'bwrap', opencodeDataDir: selected.opencodeDataDir, line, readable, writable, droppedBinds, relativeBinds, refusedExtras: extras.refused, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
+  return { kind: 'bwrap', suiteBroker: bridge.suiteBroker, opencodeDataDir: selected.opencodeDataDir, line, readable, writable, droppedBinds, relativeBinds, refusedExtras: extras.refused, laneWritable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, unreadable, dispose }
 }
 
 function cleanupFailedSandbox({ bridgeState, bridge, runtimeDir }) {

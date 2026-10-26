@@ -1,7 +1,7 @@
 {
   "name": "wt-rules-on-demand",
   "displayName": "WT Rules on Demand (EXPERIMENTAL)",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "EXPERIMENTAL. Deliver frontmatter-triggered rules at matching prompts and tool calls.",
   "author": { "name": "Frederic Thomas", "email": "fthomas@apache.org" },
   "userConfig": {
