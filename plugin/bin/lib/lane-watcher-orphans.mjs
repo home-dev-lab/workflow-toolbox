@@ -47,16 +47,21 @@ function sameCandidate(expected, actual) {
     && JSON.stringify(expected.argv) === JSON.stringify(actual.argv))
 }
 
-export function detectOrphanWatchers({ procRoot = DEFAULT_PROC_ROOT, platform = process.platform, selfPid = process.pid } = {}) {
-  const procfs = createProcfs({ root: procRoot, platform })
-  if (platform !== 'linux' || !procfs.rootExists()) {
-    return { status: 'unavailable', reason: 'watcher orphan detection unavailable on this platform: /proc required', orphans: [], reports: [] }
-  }
+function procReadFailureReason(error) {
+  return `watcher orphan detection /proc read failed: ${error?.code ?? String(error)}; will retry`
+}
+
+export function detectOrphanWatchers({ procRoot = DEFAULT_PROC_ROOT, platform = process.platform, selfPid = process.pid, procfs = createProcfs({ root: procRoot, platform }) } = {}) {
+  const unavailable = { status: 'unavailable', reason: 'watcher orphan detection unavailable on this platform: /proc required', orphans: [], reports: [] }
+  if (platform !== 'linux') return unavailable
   const orphans = []
   const reports = []
   let entries
-  try { entries = procfs.listProcesses({ withFileTypes: true }) } catch {
-    return { status: 'unavailable', reason: 'watcher orphan detection unavailable on this platform: /proc required', orphans, reports }
+  try {
+    if (!procfs.rootExists()) return unavailable
+    entries = procfs.listProcesses({ withFileTypes: true })
+  } catch (error) {
+    return { status: 'unavailable', reason: procReadFailureReason(error), retryable: true, orphans, reports }
   }
   for (const entry of entries) {
     collectOrphanWatcher(entry, procRoot, selfPid, orphans, reports)
@@ -89,8 +94,8 @@ function signalVerifiedOrphan(candidate, current, kill, killed, detected) {
   }
 }
 
-export function terminateOrphanWatchers({ procRoot = DEFAULT_PROC_ROOT, platform = process.platform, selfPid = process.pid, candidates = null, kill = signalProcess } = {}) {
-  const detected = detectOrphanWatchers({ procRoot, platform, selfPid })
+export function terminateOrphanWatchers({ procRoot = DEFAULT_PROC_ROOT, platform = process.platform, selfPid = process.pid, candidates = null, kill = signalProcess, procfs } = {}) {
+  const detected = detectOrphanWatchers({ procRoot, platform, selfPid, procfs })
   if (detected.status !== 'known') return { ...detected, killed: [] }
   const selected = candidates ?? detected.orphans
   const killed = []
