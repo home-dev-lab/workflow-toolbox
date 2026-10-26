@@ -299,8 +299,15 @@ function taskRunArgs(taskfile, dir, model, variant, agentMode) {
   return args
 }
 
+// EventEmitter callbacks run after the promise executor: their exceptions must reject the task.
+function taskCompletion(reject, callback) {
+  return (...args) => {
+    try { callback(...args) } catch (error) { reject(error) }
+  }
+}
+
 function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSec, taskId, childEnv, signal }) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const startedAt = Date.now()
     const streamFile = uniqueStreamFile(taskId)
     const args = taskRunArgs(taskfile, dir, model, variant, agentMode)
@@ -337,15 +344,15 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
 
     child.stdout.on('data', (d) => { stdout += d })
     child.stderr.on('data', (d) => { stderr += d })
-    child.on('error', (err) => {
+    child.on('error', taskCompletion(reject, (err) => {
       clearTimeout(timer)
       const exitCode = 1
       fs.writeFileSync(streamFile, stdout, 'utf8')
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       fs.appendFileSync(streamFile, `\n--- spawn error ---\n${String(err)}\n`, 'utf8')
       resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: false, startedAt, durationMs: Date.now() - startedAt })
-    })
-    child.on('close', (code, signal) => {
+    }))
+    child.on('close', taskCompletion(reject, (code, signal) => {
       clearTimeout(timer)
       // ⚠ REAP ON THE CLEAN PATH TOO — this is the half that is easy to leave out, because the
       // call SUCCEEDED and there is no failure to react to. Measured: a call can exit 0, write a
@@ -357,7 +364,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
       fs.appendFileSync(streamFile, `\nEXIT=${exitCode}\n`, 'utf8')
       if (stderr.length > 0) fs.appendFileSync(streamFile, `\n--- stderr ---\n${stderr}\n`, 'utf8')
       resolve({ streamFile, stdout, stderr, exitCode, reaped, timedOut: timedOut || signal === 'SIGKILL', startedAt, durationMs: Date.now() - startedAt })
-    })
+    }))
   })
 }
 
