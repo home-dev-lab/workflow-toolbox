@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { baseSuiteLock } from './helpers/base-version-client.js'
 import { POSIX_STALENESS } from './helpers/suite-lock-platform.js'
+import { acquireTestSuiteLock as acquireSuiteLock, suiteLockEnv as isolatedEnv } from './helpers/suite-lock-env.js'
 // @ts-expect-error runtime JavaScript under plugin/
-import { LIGHT_BYPASS_MAX_GRANTS, acquireSuiteLock, formatSuiteLockHolder, lightRunCommand, operatorReleaseSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { LIGHT_BYPASS_MAX_GRANTS, formatSuiteLockHolder, lightRunCommand, operatorReleaseSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
 import { BROKER_REFUSAL, createSuiteLockBroker } from '../../../../plugin/bin/lib/host/lane-suite-lock-broker.mjs'
 // @ts-expect-error runtime JavaScript under plugin/
@@ -34,7 +35,6 @@ afterEach(() => {
 const tempRoot = () => { const root = mkdtempSync(join(tmpdir(), 'wt-lock-priority-')); roots.push(root); return root }
 const records = (root: string) => (existsSync(join(root, 'queue.d')) ? readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')).sort() : [])
 const readRecord = (root: string, name: string) => JSON.parse(readFileSync(join(root, 'queue.d', name), 'utf8')) as { light?: boolean }
-const isolatedEnv = (root: string, extra: NodeJS.ProcessEnv = {}) => ({ ...process.env, WT_SUITE_LOCK_PRIORITY: undefined, WT_SUITE_LOCK_LONG_HOLD_S: undefined, WT_SUITE_LOCK_DIR: root, WT_SUITE_LOCK_BROKER: '', WT_SUITE_LEASE: '', ...extra })
 
 async function waitFor(predicate: () => boolean, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs
