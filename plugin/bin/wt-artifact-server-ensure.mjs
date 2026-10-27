@@ -262,8 +262,8 @@ async function probeCandidates(firstPort, timeout, claim = null, deadline = null
     if (interrupted) return interrupted
     const port = firstPort + offset
     const probeTimeout = candidateProbeTimeout(timeout, deadline)
-    const probe = await probeArtifactServer(port, probeTimeout)
-    if (probe.kind === 'ours') return { firstFree, found: { port, health: probe.health }, claimLost: false, timedOut: false }
+    const probe = await probeArtifactServerInstance(port, probeTimeout)
+    if (probe.kind === 'ours') return { firstFree, found: { port, health: probe.health, identity: probe.identity }, claimLost: false, timedOut: false }
     if (probe.kind === 'free' && firstFree === null) firstFree = port
     if (probe.kind === 'unknown') uncertain = true
   }
@@ -424,9 +424,9 @@ async function waitForAttachedServerExit(processes) {
 
 function pendingAttachedProcesses(processes) {
   const pending = []
-  for (const [pid, identity] of processes) {
+  for (const [key, { pid, identity }] of processes) {
     const evidence = artifactServerProcessStatus(pid, undefined, identity)
-    if (evidence.status === 'gone') processes.delete(pid)
+    if (evidence.status === 'gone') processes.delete(key)
     else pending.push({ pid, evidence })
   }
   return pending
@@ -435,13 +435,46 @@ function pendingAttachedProcesses(processes) {
 async function watchAttachedServer(state, firstPort) {
   pendingAttachedProcesses(state.attachedProcesses)
   const attached = state.attachedServer
-  const direct = await probeArtifactServer(attached.port, 750)
+  const direct = await probeArtifactServerInstance(attached.port, 750, attached.health?.pid)
   if (stopping) return attached
-  if (direct.kind === 'ours') return { port: attached.port, health: direct.health }
+  if (direct.kind === 'ours') return rememberObservedAttachment(state, { port: attached.port, health: direct.health, identity: direct.identity })
   const scan = await probeCandidates(firstPort, 750)
   if (stopping) return attached
-  if (scan.found) return scan.found
+  if (scan.found) return rememberObservedAttachment(state, scan.found)
   return await waitForAttachedServerExit(state.attachedProcesses) ? null : attached
+}
+
+// A first answer locates an otherwise unknown PID. Only the next, identity-bracketed
+// answer can name an instance; an interrupted confirmation remains an unknown barrier.
+async function probeArtifactServerInstance(port, timeout, pid) {
+  if (pid !== undefined) return confirmArtifactServerInstance(port, timeout, pid)
+  const located = await probeArtifactServer(port, timeout)
+  if (located.kind !== 'ours') return located
+  return confirmArtifactServerInstance(port, timeout, located.health?.pid, located)
+}
+
+async function confirmArtifactServerInstance(port, timeout, pid, located = null) {
+  const before = artifactServerProcessIdentity(pid)
+  const answer = await probeArtifactServer(port, timeout)
+  const after = artifactServerProcessIdentity(pid)
+  if (answer.kind !== 'ours') {
+    return located ? { ...located, identity: { status: 'unknown', reason: 'health confirmation unavailable' } } : answer
+  }
+  return { ...answer, identity: artifactHealthIdentity(pid, answer.health?.pid, before, after) }
+}
+
+function artifactHealthIdentity(pid, answeredPid, before, after) {
+  if (before.status !== 'known') return before
+  if (after.status !== 'known') return after
+  if (pid !== answeredPid || before.startIdentity !== after.startIdentity) {
+    return { status: 'unknown', reason: 'process identity changed during health probe' }
+  }
+  return before
+}
+
+function rememberObservedAttachment(state, attached) {
+  rememberAttachedProcess(state, attached)
+  return attached
 }
 
 function startRetry(kind) {
@@ -466,9 +499,13 @@ function createMonitorState(result) {
   return state
 }
 
-function rememberAttachedProcess(state) {
-  const pid = state.attachedServer.health?.pid
-  if (!state.attachedProcesses.has(pid)) state.attachedProcesses.set(pid, artifactServerProcessIdentity(pid))
+function rememberAttachedProcess(state, attached = state.attachedServer) {
+  const pid = attached.health?.pid
+  const identity = attached.identity ?? { status: 'unknown', reason: 'health identity unavailable' }
+  // Known instances coalesce by birth, never by PID. Unknown observations are unique
+  // and cannot acquire a later birth or overwrite an older instance's evidence.
+  const key = identity.status === 'known' ? JSON.stringify([pid, identity.startIdentity]) : Symbol('unknown instance')
+  state.attachedProcesses.set(key, { pid, identity })
 }
 
 function noticeArtifactUpgrade(result) {
@@ -618,10 +655,7 @@ async function watchTick(state, firstPort) {
   try {
     state.attachedServer = await watchAttachedServer(state, firstPort)
     if (stopping || state.pendingRetry) return
-    if (state.attachedServer !== null) {
-      rememberAttachedProcess(state)
-      return
-    }
+    if (state.attachedServer !== null) return
     process.stdout.write(`ARTIFACT SERVER LOST: server on port ${watchedPort} is no longer answering; restarting; registration retained.\n`)
     state.pendingRetry = startRetry('lost')
   } finally {

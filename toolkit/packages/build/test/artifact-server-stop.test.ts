@@ -54,7 +54,7 @@ function controls(platform: string, current: Probe, livenessError?: Liveness, si
     atomicWriteJson: vi.fn(), artifactIntentPath: () => 'intent.json',
     signalProcess: (pid: number, signal: string) => signalProcess(pid, signal, host),
     retainProcessOwner,
-    artifactServerProcessStatus: (pid: number) => artifactServerProcessStatus(pid, host.readProcessExecutionState),
+    artifactServerProcessStatus: (pid: number, _readState?: unknown, identity = null) => artifactServerProcessStatus(pid, host.readProcessExecutionState, identity, host.readProcessIdentity),
     spawnServer,
     ensureSecureStateDir: () => 'state-dir', configuredArtifactPort: () => 48001,
     acquireArtifactControlClaim: () => { if (claimed) return null; claimed = true; return () => { claimed = false } },
@@ -86,6 +86,16 @@ function registerExitConfirmationCases(platform: string, action: string) {
 }
 
 function registerIntentCase(platform: string, action: string) {
+  it('confirms exit when a live stranger reuses the recorded server PID after SIGTERM', async () => {
+    const flow = controls(platform, { kind: 'free' })
+    flow.kill.mockImplementation((_pid: number, signal: string | number) => {
+      if (signal === 'SIGTERM') flow.identity.mockReturnValue({ ...BIRTH, startIdentity: 'stranger-birth' })
+    })
+    expect((await flow.command(action, true)).ok, 'stop confirmation must use the recorded instance identity').toBe(true)
+    expect(flow.elapsed()).toBe(50)
+    expect(flow.spawnServer).toHaveBeenCalledTimes(action === 'restart' ? 1 : 0)
+    expect(flow.identity).toHaveBeenCalledTimes(2)
+  })
   it('records the verified PID and requested action before shutdown', async () => {
     const flow = controls(platform, { kind: 'free' }, 'ESRCH')
     await flow.command(action, true)
@@ -277,7 +287,9 @@ function registerDiscoveryCases(platform: string, action: string) {
   })
   it.each([undefined, { ...BIRTH, startIdentity: '' }])('refuses absent recorded birth identity %j', async (processIdentity) => {
     const flow = controls(platform, { kind: 'free' }, 'ESRCH', undefined, undefined, { discovery: { processIdentity } })
-    expect(await flow.command(action, true)).toEqual(IDENTITY_REFUSAL)
+    expect(await flow.command(action, true)).toEqual(processIdentity === undefined
+      ? { ok: false, message: 'artifact server: no recorded process identity; nothing was stopped' }
+      : IDENTITY_REFUSAL)
     expectNothingSignalled(flow)
   })
 }

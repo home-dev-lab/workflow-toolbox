@@ -9,6 +9,7 @@ import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 const { describe, it } = await import(process.argv[1] === fileURLToPath(import.meta.url) ? 'node:test' : 'vitest')
 const MONITOR = new URL('../../../../plugin/bin/wt-artifact-server-ensure.mjs', import.meta.url)
 const LIBRARY = new URL('../../../../plugin/bin/lib/artifact-server.mjs', import.meta.url)
+const SERVER = new URL('../../../../plugin/bin/wt-artifact-server.mjs', import.meta.url)
 type Evidence = { status: string, reason?: string }
 type Identity = Evidence & { pid?: number, startIdentity?: string }
 type Health = { pid: number | undefined, version: string }
@@ -26,9 +27,11 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
     now: 0, evidence, spawns: 0, output: '', direct: false, pid: pid as number | undefined, checks: [] as number[],
     candidate: null as Attachment | null, evidenceByPid: new Map<number, Evidence>(),
     identities: new Map<number, Identity>(), identityChecks: [] as number[],
+    onProbe: null as (() => void) | null,
   }
   const health = (): Health => ({ pid: state.pid, version: '1.0.0' })
-  const discover = async () => { state.spawns += 1; return { kind: 'found', port: 48001, health: health() } }
+  const identity = (old: number) => state.identities.get(old) ?? { status: 'known', pid: old, startIdentity: `birth-${old}` }
+  const discover = async () => { state.spawns += 1; return { kind: 'found', port: 48001, health: health(), identity: identity(state.pid!) } }
   const context = {
     Date: { now: () => state.now }, process: { stdout: { write: (line: string) => { state.output += line } } },
     hostAdapter: { readProcessExecutionState: (old: number) => {
@@ -36,23 +39,25 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
       return state.evidenceByPid.get(old) ?? state.evidence
     }, readProcessIdentity: (old: number) => {
       state.identityChecks.push(old)
-      return state.identities.get(old) ?? { status: 'known', pid: old, startIdentity: `birth-${old}` }
+      return identity(old)
     } },
     setTimeout: (done: () => void, ms: number) => { state.now += ms; done() },
     // Unconditional network/process seal, including when the production guard is mutated away.
-    discoverOrStart: discover, probeArtifactServer: async () => state.direct ? { kind: 'ours', health: health() } : { kind: 'free' },
-    probeCandidates: async () => ({ found: state.candidate }), testLog: () => {}, liveStartupClaimHolder: () => false,
+    discoverOrStart: discover, probeArtifactServer: async (port: number) => {
+      state.onProbe?.()
+      if (state.direct && port === 48001) return { kind: 'ours', health: health() }
+      return state.candidate?.port === port ? { kind: 'ours', health: state.candidate.health } : { kind: 'free' }
+    },
+    portAttempts: () => 3, testLog: () => {}, liveStartupClaimHolder: () => false,
     stopping: false, upgradeNoticed: false, firstPort: 48001, ARTIFACT_SERVER_VERSION: '1.0.0',
     compareVersions: () => 0, watchIntervalMs: () => 10, retryOverallCapMs: () => 300_000,
     retryWindowMs: () => 60_000, retryAttempts: () => 3,
   }
   const shared = sourceFunctions(library, 'export function artifactServerProcessStatus(', 'export function pathIsUnder(').replaceAll('export function', 'function')
   const helpers = sourceFunctions(source, 'async function waitForAttachedServerExit(', 'async function main(')
-  const body = sourceFunctions(source, '    const result = await discoverOrStart(firstPort)', '    const keepAlive = setInterval(')
-  const entry = source.includes('function createMonitorState(')
-    ? 'const result = await discoverOrStart(firstPort); const state = createMonitorState(result); reportInitialResult(result, state, firstPort); return { watchTick: () => watchTick(state, firstPort), retryTick: () => retryTick(state, firstPort), beginRetry: () => { state.pendingRetry = startRetry("lost") } }'
-    : `${body}; return { watchTick, retryTick }`
-  const create = runInNewContext(`${shared}\n${helpers}\n(async () => {${entry}})`, context)
+  const entry = 'const result = await discoverOrStart(firstPort); const state = createMonitorState(result); reportInitialResult(result, state, firstPort); return { watchTick: () => watchTick(state, firstPort), retryTick: () => retryTick(state, firstPort), beginRetry: () => { state.pendingRetry = startRetry("lost") } }'
+  const candidates = sourceFunctions(source, 'async function probeCandidates(', 'async function holdClaimForTest(')
+  const create = runInNewContext(`${shared}\n${candidates}\n${helpers}\n(async () => {${entry}})`, context)
   return { state, create, advance: () => { state.now += 20 } }
 }
 
@@ -277,6 +282,104 @@ describe('artifact monitor retires process instances', () => {
     await ticks.retryTick()
     assert.equal(flow.state.spawns, 0)
     assert.match(flow.state.output, /PID 42 is unknown.*initial birth unavailable/)
+  })
+})
+
+describe('artifact attachment observation and retirement', () => {
+  for (const location of ['direct', 'candidate']) {
+    it(`retains a same-PID successor born during the ${location} health probe`, async () => {
+      const flow = await startFlow()
+      flow.state.direct = location === 'direct'
+      flow.state.candidate = location === 'candidate' ? { port: 48002, health: { pid: 42, version: '1.0.0' } } : null
+      flow.state.onProbe = () => {
+        flow.state.identities.set(42, { status: 'known', pid: 42, startIdentity: 'successor-birth' })
+      }
+      await tick(flow)
+      flow.state.onProbe = null
+      flow.state.direct = false
+      flow.state.candidate = null
+      await tick(flow)
+      assert.equal(flow.state.spawns, 0, 'a same-PID health handoff must retain the still-running successor')
+      assert.match(flow.state.output, /RESTART DEFERRED: PID 42/)
+      if (location === 'direct') assert.match(flow.state.output, /unknown.*process identity changed during health probe/)
+      flow.state.evidence = { status: 'gone' }
+      await tick(flow)
+      assert.equal(flow.state.spawns, 1, 'positive exit retires even an ambiguously bound successor')
+    })
+  }
+  it('never resurrects an exited current attachment while a historical instance drains', async () => {
+    const flow = await switchAttachment(false, { status: 'alive' })
+    await tick(flow)
+    const checks = flow.state.checks.filter((pid) => pid === 43).length
+    flow.state.evidenceByPid.set(43, { status: 'alive' })
+    flow.state.identities.set(43, { status: 'unknown', reason: 'already exited' })
+    flow.state.evidenceByPid.set(42, { status: 'gone' })
+    await tick(flow)
+    assert.equal(flow.state.spawns, 1, 'a retired current attachment cannot become a permanent unknown barrier')
+    assert.equal(flow.state.checks.filter((pid) => pid === 43).length, checks, 'retirement is permanent without a fresh health answer')
+  })
+  registerAmbiguousIdentityCases()
+})
+
+function registerAmbiguousIdentityCases() {
+  for (const phase of ['before', 'after']) {
+    it(`retains an unknown observation when identity is unavailable ${phase} health`, async () => {
+      const flow = await startFlow()
+      flow.state.direct = true
+      if (phase === 'before') flow.state.identities.set(42, { status: 'unknown', reason: 'birth unreadable' })
+      flow.state.onProbe = () => {
+        flow.state.identities.set(42, phase === 'after'
+          ? { status: 'unknown', reason: 'birth unreadable' }
+          : { status: 'known', pid: 42, startIdentity: 'birth-42' })
+      }
+      await tick(flow)
+      flow.state.direct = false
+      flow.state.onProbe = null
+      flow.state.identities.set(42, { status: 'known', pid: 42, startIdentity: 'stranger' })
+      await tick(flow)
+      assert.equal(flow.state.spawns, 0, 'an unbound health answer is a distinct unknown instance, never an older birth')
+      assert.match(flow.state.output, /unknown.*birth unreadable/)
+    })
+  }
+}
+
+function cliFlow(recorded: Identity | null = { status: 'known', pid: 42, startIdentity: 'birth-42' }) {
+  const source = readFileSync(SERVER, 'utf8')
+  const functions = sourceFunctions(source, 'async function stopRunning(', 'function spawnServer(')
+  let now = 0
+  let signals = 0
+  let output = ''
+  const identity = () => ({ status: 'known', pid: 42, startIdentity: signals ? 'stranger' : 'birth-42' })
+  const library = sourceFunctions(readFileSync(LIBRARY, 'utf8'), 'export function artifactServerProcessStatus(', 'export function pathIsUnder(')
+  const context = {
+    process: { platform: 'linux', stderr: { write: (line: string) => { output += line } } }, Date: { now: () => now },
+    hostAdapter: { readProcessIdentity: identity, readProcessExecutionState: () => ({ status: 'alive' }) },
+    readArtifactDiscovery: () => ({ pid: 42, port: 48001, processIdentity: recorded, startToken: 'launch' }),
+    probeArtifactServer: async () => ({ kind: 'ours', health: { pid: 42, port: 48001, startToken: 'launch', registeredSessions: 0 } }),
+    hostProcfs: { readCommandLine: () => 'node\0wt-artifact-server.mjs\0serve' },
+    atomicWriteJson: () => {}, artifactIntentPath: () => 'sealed-intent', signalProcess: () => { signals += 1 },
+    setTimeout: (done: () => void, ms: number) => { now += ms; done() },
+  }
+  const command = runInNewContext(`${library.replaceAll('export function', 'function')}\n${functions}\nstopRunning`, context)
+  return { command, signals: () => signals, output: () => output }
+}
+
+describe('CLI shares monitor instance-exit evidence', () => {
+  for (const action of ['stop', 'restart']) {
+    it(`confirms ${action} when a stranger reuses the verified PID before exit polling`, async () => {
+      const flow = cliFlow()
+      const result = await flow.command(action, true)
+      assert.equal(result.ok, true, 'CLI must retire the verified birth even while its PID belongs to a live stranger')
+      assert.match(result.message, /stopped/)
+      assert.equal(flow.signals(), 1, 'only the verified original receives a signal')
+    })
+  }
+  it('states why a legacy discovery without recorded identity cannot be stopped', async () => {
+    const flow = cliFlow(null)
+    const result = await flow.command('stop', true)
+    assert.equal(result.ok, false)
+    assert.match(result.message, /no recorded process identity/)
+    assert.equal(flow.signals(), 0)
   })
 })
 

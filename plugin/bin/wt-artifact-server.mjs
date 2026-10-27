@@ -622,6 +622,7 @@ async function urlCommand(args) {
 async function stopRunning(action, force) {
   const state = readArtifactDiscovery()
   if (!state) return { ok: false, message: 'artifact server: unknown, nothing stopped (discovery unavailable)' }
+  if (state.processIdentity == null) return { ok: false, message: 'artifact server: no recorded process identity; nothing was stopped' }
   const probe = await probeArtifactServer(state.port)
   const refusal = artifactStopHealthRefusal(state, probe, force) ?? artifactStopProcessRefusal(state)
   if (refusal) return refusal
@@ -637,7 +638,7 @@ async function stopRunning(action, force) {
     await new Promise((resolve) => setTimeout(resolve, 50))
     // Listener closure and replacement health say nothing about draining connections.
     // Only host-confirmed exit (including an unreaped zombie) authorizes replacement.
-    if (artifactServerProcessStatus(state.pid).status === 'gone') return artifactStoppedResult(state, action)
+    if (artifactServerProcessStatus(state.pid, undefined, state.processIdentity).status === 'gone') return artifactStoppedResult(state, action)
   }
   return { ok: false, message: `artifact server: verified PID ${state.pid} did not stop` }
 }
