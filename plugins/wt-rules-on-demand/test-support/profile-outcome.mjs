@@ -25,7 +25,7 @@ try {
   const present = await outcome();
   for (const { store } of stores) await fs.rm(store, { recursive: true, force: true });
   const absent = await outcome();
-  assert.equal(present, absent, 'health presence must never change a fixture outcome');
+  assert.equal(present, absent, `health presence must never change a fixture outcome:\nrow=${JSON.stringify(args)}\nwith health=${present}\nwithout health=${absent}`);
 } finally {
   for (const { store, backup, existed } of stores) {
     await fs.rm(store, { recursive: true, force: true });
