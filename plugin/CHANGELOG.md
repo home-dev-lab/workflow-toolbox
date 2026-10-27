@@ -7,6 +7,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Admission runner and supervisor now use one-way module dependencies, preserving detached-process cleanup and existing admission results without a circular import.
+- Admission cleanup on Linux uses an optional python3 pidfd helper to stop detached descendants and inherited-pipe holders before returning a verdict, timeout, or interruption, without signalling reused PIDs. Every configured call emits its OS containment limitation: Linux requires pidfd support and can miss already-reparented daemons; macOS and Windows currently stop only the supervisor.
 - The lane orphan watcher distinguishes failed `/proc` lookups and listings from unsupported platforms or missing procfs, reports the read error code with a retry notice, preserves pending recovery across unavailable sweeps, and re-announces failures after recovery or a changed error reason.
 - The opencode envelope catches stream-log failures when a child closes or reports a spawn error, preserving an earlier integrity refusal and its exit-3 response instead of crashing.
 - Artifact-server tailnet detection and remote URL checks try standard Tailscale and WSL PowerShell install locations after PATH lookup, preserving an explicitly configured Tailscale binary. Status names the resolved executable and warns when unavailable detection will reject a known Serve route with HTTP 421. Failed detection retries on the first tailnet-Host request, at most once per minute, and publishes recovered URLs and Host admission without a restart.

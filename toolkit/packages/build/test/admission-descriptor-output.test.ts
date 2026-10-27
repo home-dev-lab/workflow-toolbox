@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import './admission-detach-cases.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_STDIO_TEST_PLUGIN ?? join(ROOT, 'plugin')
@@ -85,13 +86,19 @@ describe.each(launchers)('admission descriptor isolation: %s', launcher => {
     const result = launch(f)
     expect(result.status, result.stderr).toBe(3)
     expect(existsSync(f.marker)).toBe(false)
+    // The supervisor diagnostic is visible; none of the policy's descriptor writes escape.
+    expect(result.stderr).toContain(`cleanup limitation (${process.platform})`)
+    expect(result.stderr).not.toContain('policy import output')
+    expect(result.stderr).not.toContain('policy call output')
+    expect(result.stderr).not.toContain('policy drain output')
+    const stderr = result.stderr.replace(/^.*: cleanup limitation \([^\n]+\n/m, '')
     if (launcher === 'second-opinion') {
       expect(readFileSync(f.out, 'utf8')).toBe(`REFUSED: ${f.variable}: policy refuses\nEXIT=3\n`)
       expect(result.stdout).toBe('')
-      expect(result.stderr).toBe(`wt-second-opinion: ${f.variable}: policy refuses\n`)
+      expect(stderr).toBe(`wt-second-opinion: ${f.variable}: policy refuses\n`)
     } else {
       expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: policy refuses\n`)
-      expect(result.stderr).toBe('')
+      expect(stderr).toBe('')
     }
   })
 })
@@ -128,7 +135,7 @@ describe.each([1, 2])('admission inherited descriptor %i', descriptor => {
       expect(refusal).toBe(`${f.variable}: ${pending ? `timed out after ${timeout} ms` : 'policy refuses'}`)
       expect(elapsed).toBeLessThan(timeout + 400)
     } finally {
-      // Only the test owns/reaps the helper; the admission runner does not supervise descendants.
+      // Defensive cleanup also makes red runs leave no helper behind.
       if (existsSync(pidFile)) {
         try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch { /* already exited */ }
       }

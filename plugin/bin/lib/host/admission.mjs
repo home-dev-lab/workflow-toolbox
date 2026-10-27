@@ -2,12 +2,10 @@
 // A child owns the policy's descriptors; its worker preserves failure/drain semantics.
 import { fork } from 'node:child_process'
 import path from 'node:path'
-import { Worker } from 'node:worker_threads'
 import { resolveAdmissionModule } from './admission-options.mjs'
+import { admissionCleanupIdentity, cleanupAdmissionDescendants, formatAdmissionError, reportAdmissionCleanup } from './admission-process.mjs'
 
-export function formatAdmissionError(error) {
-  try { return String(error instanceof Error ? error.message : error) } catch { return 'unprintable thrown value' }
-}
+export { formatAdmissionError, workerAdmission } from './admission-process.mjs'
 
 export async function boundedAdmission(options, env, { moduleVariable, timeoutVariable, silent = false, admission = resolveAdmissionModule(moduleVariable, env), signal = options.signal }) {
   const timeout = Number(env[timeoutVariable] ?? 10_000)
@@ -35,9 +33,11 @@ async function processAdmission({ repo, request }, env, timeout, moduleVariable,
     env, execArgv: ['--unhandled-rejections=strict'], serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   })
+  const identity = admissionCleanupIdentity(child)
+  reportAdmissionCleanup(moduleVariable)
   // Drain both pipes without forwarding: even writeSync(1/2) stays off the CLI protocol.
   child.stdout.resume(); child.stderr.resume()
-  // `close` also waits for inherited pipes held by descendants; only reap our direct child.
+  // `close` also waits for inherited pipes; reap the supervisor separately after cleanup.
   const exited = new Promise((resolve) => { child.once('exit', resolve); child.once('error', resolve) })
   const verdict = processVerdict(child, moduleVariable)
   const expired = `${moduleVariable}: timed out after ${timeout} ms`
@@ -54,7 +54,11 @@ async function processAdmission({ repo, request }, env, timeout, moduleVariable,
   } finally {
     cancellation.dispose()
     clearTimeout(timer)
-    child.kill('SIGKILL')
+    try {
+      const limitation = await cleanupAdmissionDescendants(child, identity)
+      if (limitation) reportAdmissionCleanup(moduleVariable, limitation)
+    } catch (error) { reportAdmissionCleanup(moduleVariable, `cleanup incomplete: ${formatAdmissionError(error)}`) }
+    try { child.kill('SIGKILL') } catch (error) { reportAdmissionCleanup(moduleVariable, `supervisor cleanup failed: ${formatAdmissionError(error)}`) }
     child.stdout.destroy(); child.stderr.destroy()
     await exited
   }
@@ -64,46 +68,15 @@ function processVerdict(child, variable) {
   return new Promise((resolve, reject) => {
     let verdict
     let failure
-    child.on('message', (message) => { verdict = message.refusal; failure = message.error })
-    child.on('error', reject)
-    child.on('exit', (code) => {
+    child.on('message', (message) => {
+      verdict = message.refusal; failure = message.error
       if (failure) return reject(new Error(failure))
-      if (code !== 0) return resolve(`${variable}: admission worker exited with code ${code}`)
       if (verdict === null || typeof verdict === 'string') return resolve(verdict)
       resolve(`${variable}: admission worker exited without a verdict`)
     })
-  })
-}
-
-export async function workerAdmission({ repo, request }, env, timeout, moduleVariable, silent, admission) {
-  const deadline = performance.now() + timeout
-  const worker = new Worker(new URL('./admission-worker.mjs', import.meta.url), {
-    workerData: { repo, request, env, moduleVariable, admission }, env, execArgv: ['--unhandled-rejections=strict'],
-    ...(silent ? { stdout: true, stderr: true } : {}),
-  })
-  if (silent) { worker.stdout.resume(); worker.stderr.resume() }
-  let timer
-  const expired = `${moduleVariable}: timed out after ${timeout} ms`
-  try {
-    const refusal = await Promise.race([
-      workerVerdict(worker, moduleVariable),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(expired), Math.max(0, deadline - performance.now())) }),
-    ])
-    return performance.now() >= deadline ? expired : refusal
-  } finally {
-    clearTimeout(timer)
-    await worker.terminate()
-  }
-}
-
-function workerVerdict(worker, variable) {
-  return new Promise((resolve) => {
-    let verdict
-    let failure
-    worker.on('message', (message) => { verdict = message })
-    worker.on('error', (error) => { failure = `${variable}: admission worker failed: ${formatAdmissionError(error)}` })
-    worker.on('exit', (code) => {
-      if (failure) return resolve(failure)
+    child.on('error', reject)
+    child.on('exit', (code) => {
+      if (failure) return reject(new Error(failure))
       if (code !== 0) return resolve(`${variable}: admission worker exited with code ${code}`)
       if (verdict === null || typeof verdict === 'string') return resolve(verdict)
       resolve(`${variable}: admission worker exited without a verdict`)
