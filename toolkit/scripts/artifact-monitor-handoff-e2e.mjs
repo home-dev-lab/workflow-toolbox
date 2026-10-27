@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
-import { artifactServerProcessStatus, probeArtifactServer } from '../../plugin/bin/lib/artifact-server.mjs'
+import { artifactServerProcessIdentity, artifactServerProcessStatus, probeArtifactServer } from '../../plugin/bin/lib/artifact-server.mjs'
 
 const serverScript = fileURLToPath(new URL('../../plugin/bin/wt-artifact-server.mjs', import.meta.url))
 const monitorScript = fileURLToPath(new URL('../../plugin/bin/wt-artifact-server-ensure.mjs', import.meta.url))
@@ -118,6 +118,9 @@ async function main() {
   try {
     server = child(serverScript, env, directory)
     await until(async () => (await probeArtifactServer(port, 200)).health?.pid === server.pid, 'initial server health')
+    const health = (await probeArtifactServer(port, 200)).health
+    assert.deepEqual(health.processIdentity, artifactServerProcessIdentity(server.pid), 'health binds its own host birth')
+    console.log('real health response: answering process birth verified')
     monitor = child(monitorScript, env, directory)
     await until(() => receipts(env.WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG).length > 0, 'monitor attachment')
     await proveHandoff(server, monitor, env, port)

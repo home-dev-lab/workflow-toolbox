@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Retain every artifact-server health responder until proven exited, coalesce unknown process observations, and carry self-read birth evidence across monitor handoffs.
 - Bind artifact-server attachments to identity-bracketed health observations, permanently retire exited instances, and use recorded birth identity for CLI stop/restart confirmation.
 - Retain unresolved artifact-server processes across monitor attachment changes, and require confirmed exit for every prior attachment before spawning a replacement.
 - Keep the artifact session monitor from replacing a still-draining server; defer restart when process-exit evidence is unavailable.

@@ -263,7 +263,7 @@ async function probeCandidates(firstPort, timeout, claim = null, deadline = null
     const port = firstPort + offset
     const probeTimeout = candidateProbeTimeout(timeout, deadline)
     const probe = await probeArtifactServerInstance(port, probeTimeout)
-    if (probe.kind === 'ours') return { firstFree, found: { port, health: probe.health, identity: probe.identity }, claimLost: false, timedOut: false }
+    if (probe.kind === 'ours') return { firstFree, found: { port, health: probe.health, identity: probe.identity, observations: probe.observations }, claimLost: false, timedOut: false }
     if (probe.kind === 'free' && firstFree === null) firstFree = port
     if (probe.kind === 'unknown') uncertain = true
   }
@@ -437,30 +437,42 @@ async function watchAttachedServer(state, firstPort) {
   const attached = state.attachedServer
   const direct = await probeArtifactServerInstance(attached.port, 750, attached.health?.pid)
   if (stopping) return attached
-  if (direct.kind === 'ours') return rememberObservedAttachment(state, { port: attached.port, health: direct.health, identity: direct.identity })
+  if (direct.kind === 'ours') return rememberObservedAttachment(state, { port: attached.port, health: direct.health, identity: direct.identity, observations: direct.observations })
   const scan = await probeCandidates(firstPort, 750)
   if (stopping) return attached
   if (scan.found) return rememberObservedAttachment(state, scan.found)
   return await waitForAttachedServerExit(state.attachedProcesses) ? null : attached
 }
 
-// A first answer locates an otherwise unknown PID. Only the next, identity-bracketed
-// answer can name an instance; an interrupted confirmation remains an unknown barrier.
+// Every response is evidence, including the locator when confirmation changes PID.
+// New servers carry their self-read host birth; legacy replies need bracketing and
+// an unbound locator remains unknown until explicit exit, never a later guessed birth.
 async function probeArtifactServerInstance(port, timeout, pid) {
   if (pid !== undefined) return confirmArtifactServerInstance(port, timeout, pid)
   const located = await probeArtifactServer(port, timeout)
   if (located.kind !== 'ours') return located
-  return confirmArtifactServerInstance(port, timeout, located.health?.pid, located)
+  const identity = artifactObservedIdentity(located, { status: 'unknown', reason: 'health confirmation unavailable' })
+  const first = { ...located, identity }
+  const confirmed = await confirmArtifactServerInstance(port, timeout, located.health?.pid)
+  const observations = [first]
+  if (confirmed.kind === 'ours') observations.push(confirmed)
+  return { ...(confirmed.kind === 'ours' ? confirmed : first), observations }
 }
 
-async function confirmArtifactServerInstance(port, timeout, pid, located = null) {
+async function confirmArtifactServerInstance(port, timeout, pid) {
   const before = artifactServerProcessIdentity(pid)
   const answer = await probeArtifactServer(port, timeout)
   const after = artifactServerProcessIdentity(pid)
-  if (answer.kind !== 'ours') {
-    return located ? { ...located, identity: { status: 'unknown', reason: 'health confirmation unavailable' } } : answer
-  }
-  return { ...answer, identity: artifactHealthIdentity(pid, answer.health?.pid, before, after) }
+  if (answer.kind !== 'ours') return answer
+  const identity = artifactObservedIdentity(answer, artifactHealthIdentity(pid, answer.health?.pid, before, after))
+  return { ...answer, identity }
+}
+
+function artifactObservedIdentity(answer, fallback) {
+  if (answer.health?.processIdentity === undefined) return fallback
+  // The answering server reads its OWN host identity: this cannot accidentally name
+  // a later occupant read by the monitor after the HTTP response was produced.
+  return artifactServerProcessIdentity(answer.health?.pid, () => answer.health.processIdentity)
 }
 
 function artifactHealthIdentity(pid, answeredPid, before, after) {
@@ -500,11 +512,15 @@ function createMonitorState(result) {
 }
 
 function rememberAttachedProcess(state, attached = state.attachedServer) {
+  for (const observation of attached.observations ?? [attached]) rememberArtifactObservation(state, observation)
+}
+
+function rememberArtifactObservation(state, attached) {
   const pid = attached.health?.pid
   const identity = attached.identity ?? { status: 'unknown', reason: 'health identity unavailable' }
-  // Known instances coalesce by birth, never by PID. Unknown observations are unique
-  // and cannot acquire a later birth or overwrite an older instance's evidence.
-  const key = identity.status === 'known' ? JSON.stringify([pid, identity.startIdentity]) : Symbol('unknown instance')
+  // Unknown evidence is one unresolved obligation per PID, not one per poll. It
+  // never overwrites known births or acquires a later, potentially unrelated birth.
+  const key = JSON.stringify([pid, identity.status === 'known' ? identity.startIdentity : null])
   state.attachedProcesses.set(key, { pid, identity })
 }
 

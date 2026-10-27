@@ -12,7 +12,7 @@ const LIBRARY = new URL('../../../../plugin/bin/lib/artifact-server.mjs', import
 const SERVER = new URL('../../../../plugin/bin/wt-artifact-server.mjs', import.meta.url)
 type Evidence = { status: string, reason?: string }
 type Identity = Evidence & { pid?: number, startIdentity?: string }
-type Health = { pid: number | undefined, version: string }
+type Health = { pid: number | undefined, version: string, processIdentity?: Identity }
 type Attachment = { port: number, health: Health }
 
 function sourceFunctions(source: string, start: string, end: string) {
@@ -27,9 +27,9 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
     now: 0, evidence, spawns: 0, output: '', direct: false, pid: pid as number | undefined, checks: [] as number[],
     candidate: null as Attachment | null, evidenceByPid: new Map<number, Evidence>(),
     identities: new Map<number, Identity>(), identityChecks: [] as number[],
-    onProbe: null as (() => void) | null,
+    onProbe: null as (() => void) | null, answers: [] as (Health | null)[], selfIdentity: false, initialScan: false,
   }
-  const health = (): Health => ({ pid: state.pid, version: '1.0.0' })
+  const health = (): Health => ({ pid: state.pid, version: '1.0.0', ...(state.selfIdentity ? { processIdentity: identity(state.pid!) } : {}) })
   const identity = (old: number) => state.identities.get(old) ?? { status: 'known', pid: old, startIdentity: `birth-${old}` }
   const discover = async () => { state.spawns += 1; return { kind: 'found', port: 48001, health: health(), identity: identity(state.pid!) } }
   const context = {
@@ -43,11 +43,8 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
     } },
     setTimeout: (done: () => void, ms: number) => { state.now += ms; done() },
     // Unconditional network/process seal, including when the production guard is mutated away.
-    discoverOrStart: discover, probeArtifactServer: async (port: number) => {
-      state.onProbe?.()
-      if (state.direct && port === 48001) return { kind: 'ours', health: health() }
-      return state.candidate?.port === port ? { kind: 'ours', health: state.candidate.health } : { kind: 'free' }
-    },
+    discoverOrStart: discover, probeArtifactServer: async (port: number) => probeAnswer(state, port, health),
+    useCandidateDiscovery: () => state.initialScan,
     portAttempts: () => 3, testLog: () => {}, liveStartupClaimHolder: () => false,
     stopping: false, upgradeNoticed: false, firstPort: 48001, ARTIFACT_SERVER_VERSION: '1.0.0',
     compareVersions: () => 0, watchIntervalMs: () => 10, retryOverallCapMs: () => 300_000,
@@ -55,10 +52,20 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
   }
   const shared = sourceFunctions(library, 'export function artifactServerProcessStatus(', 'export function pathIsUnder(').replaceAll('export function', 'function')
   const helpers = sourceFunctions(source, 'async function waitForAttachedServerExit(', 'async function main(')
-  const entry = 'const result = await discoverOrStart(firstPort); const state = createMonitorState(result); reportInitialResult(result, state, firstPort); return { watchTick: () => watchTick(state, firstPort), retryTick: () => retryTick(state, firstPort), beginRetry: () => { state.pendingRetry = startRetry("lost") } }'
+  const entry = 'const result = useCandidateDiscovery() ? {kind: "found", ...(await probeCandidates(firstPort, 750)).found} : await discoverOrStart(firstPort); const state = createMonitorState(result); reportInitialResult(result, state, firstPort); return { records: () => [...state.attachedProcesses.values()], watchTick: () => watchTick(state, firstPort), retryTick: () => retryTick(state, firstPort), beginRetry: () => { state.pendingRetry = startRetry("lost") } }'
   const candidates = sourceFunctions(source, 'async function probeCandidates(', 'async function holdClaimForTest(')
   const create = runInNewContext(`${shared}\n${candidates}\n${helpers}\n(async () => {${entry}})`, context)
   return { state, create, advance: () => { state.now += 20 } }
+}
+
+function probeAnswer(state: ReturnType<typeof monitorFlow>['state'], port: number, health: () => Health) {
+  state.onProbe?.()
+  if (state.answers.length > 0) {
+    const answer = state.answers.shift()
+    return answer ? { kind: 'ours', health: answer } : { kind: 'free' }
+  }
+  if (state.direct && port === 48001) return { kind: 'ours', health: health() }
+  return state.candidate?.port === port ? { kind: 'ours', health: state.candidate.health } : { kind: 'free' }
 }
 
 async function startFlow(evidence?: Evidence, pid?: number) {
@@ -342,6 +349,162 @@ function registerAmbiguousIdentityCases() {
     })
   }
 }
+
+type Flow = Awaited<ReturnType<typeof startFlow>>
+
+function answerFor(flow: Pick<Flow, 'state'>, pid: number, birth = `birth-${pid}`): Health {
+  const processIdentity = { status: 'known', pid, startIdentity: birth }
+  flow.state.identities.set(pid, processIdentity)
+  flow.state.evidenceByPid.set(pid, { status: 'alive' })
+  return { pid, version: '1.0.0', processIdentity }
+}
+
+async function confirmationHandoff(initial: boolean) {
+  const flow = monitorFlow()
+  const a = answerFor(flow, 44)
+  const b = answerFor(flow, 43)
+  flow.state.initialScan = initial
+  flow.state.answers = initial ? [a, b] : []
+  const ticks = await flow.create()
+  flow.state.spawns = 0
+  flow.state.evidenceByPid.set(42, { status: 'gone' })
+  const started = { ...flow, ticks }
+  if (!initial) {
+    flow.state.answers = [null, a, b]
+    await tick(started)
+  }
+  flow.state.evidenceByPid.set(43, { status: 'gone' })
+  return started
+}
+
+describe('monotone artifact observation ledger', () => {
+  for (const initial of [true, false]) {
+    it(`retains the first responder when confirmation changes PID (${initial ? 'initial' : 'candidate'})`, async () => {
+      const flow = await confirmationHandoff(initial)
+      await tick(flow)
+      assert.equal(flow.state.spawns, 0, 'confirmation must not forget live first responder PID 44')
+      assert.match(flow.state.output, /RESTART DEFERRED: PID 44.*alive/)
+      flow.state.evidenceByPid.set(44, { status: 'gone' })
+      await tick(flow)
+      assert.equal(flow.state.spawns, 1, 'both observed responders exited permits recovery')
+    })
+  }
+  registerUnknownCoalescingCases()
+  registerSelfIdentifiedHandoffCases()
+})
+
+function registerUnknownCoalescingCases() {
+  for (const reason of ['PROCESS_IDENTITY_UNAVAILABLE on darwin', 'PROCESS_IDENTITY_UNAVAILABLE on win32', 'EACCES']) {
+    it(`coalesces 1000 repeated unknown observations: ${reason}`, async () => {
+      const flow = monitorFlow()
+      flow.state.identities.set(42, { status: 'unknown', reason })
+      flow.state.direct = true
+      const ticks = await flow.create()
+      flow.state.spawns = 0
+      const started = { ...flow, ticks }
+      for (let index = 0; index < 1_000; index += 1) await tick(started)
+      assert.equal(ticks.records().length, 1, 'one unresolved PID must occupy one unknown record')
+      flow.state.direct = false
+      await tick(started)
+      assert.equal(flow.state.spawns, 0)
+      assert.equal(flow.state.output.split('RESTART DEFERRED:').length - 1, 1, 'one bounded verdict per unknown PID')
+      flow.state.evidence = { status: 'gone' }
+      await tick(started)
+      assert.equal(flow.state.spawns, 1, 'explicit exit also retires coalesced unknown observations')
+    })
+  }
+}
+
+function registerSelfIdentifiedHandoffCases() {
+  for (const candidate of [false, true]) {
+    it(`retires a different-PID handoff after birth reuse without an unknown shadow (${candidate ? 'candidate' : 'direct'})`, async () => {
+      const flow = await startFlow()
+      const b = answerFor(flow, 43)
+      flow.state.answers = candidate ? [null, b, b] : [b]
+      await tick(flow)
+      flow.state.answers = [b]
+      await tick(flow)
+      flow.state.evidenceByPid.set(42, { status: 'gone' })
+      answerFor(flow, 43, 'unrelated-successor')
+      await tick(flow)
+      assert.equal(flow.state.spawns, 1, 'self-captured answering birth must retire without an unknown shadow')
+    })
+  }
+}
+
+function randomSource(seed: number) {
+  let value = seed
+  return () => { value = (Math.imul(value, 1664525) + 1013904223) >>> 0; return value >>> 8 }
+}
+
+function randomObservation(flow: Flow, random: () => number, step: number) {
+  const pid = 45 + random() % 5
+  const action = random() % 4
+  if (action === 0) { flow.state.evidenceByPid.set(pid, { status: 'gone' }); return }
+  if (action === 1) { answerFor(flow, pid, `unrelated-${step}`); return }
+  const a = answerFor(flow, pid, `answer-${step}`)
+  const b = answerFor(flow, 50 + random() % 5, `confirmation-${step}`)
+  flow.state.answers = action === 2 ? [a] : [null, a, b]
+}
+
+async function runLedgerProperty(seed: number) {
+  const random = randomSource(seed)
+  const flow = await confirmationHandoff(false)
+  await tick(flow)
+  assert.equal(flow.state.spawns, 0, `seed=${seed}: the first-response-only instance still drains`)
+  const answered = new Map<number, string>([[42, 'birth-42'], [43, 'birth-43'], [44, 'birth-44']])
+  flow.state.pid = 99
+  // The oracle tracks response births separately from the production ledger.
+  for (let step = 0; step < 80; step += 1) {
+    if (step === 20) flow.state.evidenceByPid.set(44, { status: 'gone' })
+    randomObservation(flow, random, step)
+    for (const health of flow.state.answers) if (health) answered.set(health.pid!, health.processIdentity!.startIdentity!)
+    const alive = modelHasAnsweredProcess(flow, answered)
+    const before: number = flow.state.spawns
+    const serving = flow.state.answers.some(Boolean)
+    await tick(flow)
+    assert.equal(flow.state.spawns, before + (alive || serving ? 0 : 1), `seed=${seed} step=${step}: match answered-process oracle`)
+    if (flow.state.spawns > before) answered.set(99, 'birth-99')
+  }
+  flow.state.answers = []
+  // Leave unrelated live PID occupants, proving recovery needs birth exit, not PID absence.
+  for (const pid of [44, ...flow.state.identities.keys()]) answerFor(flow, pid, `final-stranger-${pid}`)
+  const before: number = flow.state.spawns
+  await tick(flow)
+  assert.equal(flow.state.spawns, before + 1, `seed=${seed}: no barrier remains once all answered births exited`)
+}
+
+function modelHasAnsweredProcess(flow: Flow, answered: Map<number, string>) {
+  return [...answered].some(([pid, birth]) => (flow.state.evidenceByPid.get(pid) ?? flow.state.evidence).status !== 'gone' &&
+    (flow.state.identities.get(pid)?.startIdentity ?? `birth-${pid}`) === birth)
+}
+
+describe('artifact ledger randomized lifecycle property', () => {
+  for (let seed = 1; seed <= 24; seed += 1) {
+    it(`retains every answered instance and recovers after all exits (seed ${seed})`, async () => {
+      await runLedgerProperty(seed)
+    })
+  }
+})
+
+describe('artifact health carries its own host birth evidence', () => {
+  for (const status of ['known', 'unknown']) {
+    it(`publishes self-read ${status} birth evidence rather than a monitor guess`, async () => {
+      const identity = { status, pid: 42, startIdentity: 'self-birth', reason: 'unavailable' }
+      const handler = sourceFunctions(readFileSync(SERVER, 'utf8'), '  async handler(', '  requestUrl(')
+      let health: Record<string, unknown> = {}
+      const context = {
+        process: { pid: 42 }, ARTIFACT_SERVER_ID: 'test', ARTIFACT_SERVER_VERSION: '1.0.0', artifactUid: () => 'test',
+        hostAdapter: { readProcessIdentity: (pid: number) => { assert.equal(pid, 42); return identity } },
+        send: (_response: unknown, _method: string, _status: number, body: string) => { health = JSON.parse(body) as Record<string, unknown> },
+      }
+      const serve = runInNewContext(`class Service {${handler}}; Service.prototype.handler`, context)
+      await serve.call({ requestMethod: async () => 'GET', requestedPort: 48001, startToken: 'self-token',
+        requestUrl: () => ({ pathname: '/__wt-artifact-server/health' }), registrations: new Map() }, {}, {})
+      assert.deepEqual(health.processIdentity, identity, 'health must carry the answering process own birth evidence')
+    })
+  }
+})
 
 function cliFlow(recorded: Identity | null = { status: 'known', pid: 42, startIdentity: 'birth-42' }) {
   const source = readFileSync(SERVER, 'utf8')

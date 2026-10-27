@@ -451,6 +451,7 @@ class ArtifactService {
       send(response, method, 200, `${JSON.stringify({
         service: ARTIFACT_SERVER_ID, version: ARTIFACT_SERVER_VERSION, pid: process.pid,
         uid: artifactUid(), port: requestedPort, startToken: this.startToken,
+        processIdentity: hostAdapter.readProcessIdentity(process.pid),
         registeredSessions: [...this.registrations.values()].filter((registration) => registration.live).length,
       })}\n`, 'application/json; charset=utf-8')
       return
