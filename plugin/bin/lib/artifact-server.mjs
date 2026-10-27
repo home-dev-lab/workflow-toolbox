@@ -7,6 +7,7 @@ import { processEvidenceStatus } from './lane-supervisor-core.mjs'
 import { retainProcessOwner, signalProcess } from './host/process-signal-boundary.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { artifactBinaryContext, runArtifactBinary } from './host/artifact-binaries.mjs'
+import { hostAdapter } from './host/adapter.mjs'
 
 export const ARTIFACT_SERVER_ID = 'workflow-toolbox-artifact-server'
 export const ARTIFACT_SERVER_VERSION = JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version
@@ -176,6 +177,22 @@ export function registrationPidStatus(pid, options = {}) {
     return status
   }
   return pidAlive(pid) ? 'running' : 'gone'
+}
+
+// Listener closure is not process exit. Both lifecycle controllers use this evidence,
+// including Linux zombies; malformed, denied or unavailable evidence never means gone.
+export function artifactServerProcessStatus(pid, readState = hostAdapter.readProcessExecutionState) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: 'unknown', reason: 'invalid PID' }
+  try {
+    return normalizeArtifactProcessEvidence(readState(pid))
+  } catch (error) {
+    return { status: 'unknown', reason: error?.code ?? error?.message ?? 'process execution state read failed' }
+  }
+}
+
+function normalizeArtifactProcessEvidence(evidence) {
+  if (evidence?.status === 'gone' || evidence?.status === 'alive') return evidence
+  return { status: 'unknown', reason: evidence?.reason ?? 'process execution state unavailable' }
 }
 
 export function pathIsUnder(root, candidate) {

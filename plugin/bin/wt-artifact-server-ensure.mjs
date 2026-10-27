@@ -9,6 +9,7 @@ import {
   ARTIFACT_PORT_ATTEMPTS,
   ARTIFACT_SERVER_VERSION,
   artifactRegistrationsDir,
+  artifactServerProcessStatus,
   artifactStartupClaimPath,
   atomicWriteJson,
   configuredArtifactPort,
@@ -343,172 +344,234 @@ function cleanExit() {
   finish()
 }
 
+async function waitForAttachedServerExit(pid) {
+  const deadline = Date.now() + 3_000
+  let evidence = artifactServerProcessStatus(pid)
+  while (!stopping && evidence.status !== 'gone' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    evidence = artifactServerProcessStatus(pid)
+  }
+  if (evidence.status === 'gone') return true
+  if (!stopping) {
+    const reason = evidence.reason ? ` (${evidence.reason})` : ''
+    process.stdout.write(`ARTIFACT SERVER RESTART DEFERRED: PID ${pid ?? 'unknown'} is ${evidence.status}${reason} after 3000 ms; no replacement started; registration retained.\n`)
+  }
+  return false
+}
+
+async function watchAttachedServer(attached, firstPort) {
+  const direct = await probeArtifactServer(attached.port, 750)
+  if (stopping) return attached
+  if (direct.kind === 'ours') return { port: attached.port, health: direct.health }
+  const scan = await probeCandidates(firstPort, 750)
+  if (stopping) return attached
+  if (scan.found) return scan.found
+  return await waitForAttachedServerExit(attached.health?.pid) ? null : attached
+}
+
+function startRetry(kind) {
+  const startedAt = Date.now()
+  return {
+    kind, startedAt, attemptDeadline: startedAt + retryWindowMs(),
+    overallCapMs: retryOverallCapMs(), maxAttempts: retryAttempts(),
+    attempts: 0, deferred: false, deferredAt: kind === 'contended' ? startedAt : null,
+  }
+}
+
+function createMonitorState(result) {
+  const state = {
+    pendingRetry: null, retryInFlight: false, watchInFlight: false,
+    attachedServer: result.kind === 'found' ? result : null, lastWatchAt: Date.now(),
+  }
+  if (state.attachedServer !== null) testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${state.attachedServer.port}`)
+  return state
+}
+
+function noticeArtifactUpgrade(result) {
+  if (!upgradeNoticed && typeof result.health.version === 'string' && compareVersions(ARTIFACT_SERVER_VERSION, result.health.version) > 0) {
+    process.stdout.write(`artifact server v${result.health.version} is older than plugin v${ARTIFACT_SERVER_VERSION}; run \`node wt-artifact-server.mjs restart\` when sessions can disconnect.\n`)
+    upgradeNoticed = true
+  }
+}
+
+function reportInitialResult(result, state, firstPort) {
+  if (result.kind === 'exhausted') {
+    process.stdout.write(`ARTIFACT SERVER NOT STARTED: no available port in ${firstPort}-${Math.min(firstPort + portAttempts() - 1, 65535)}\n`)
+    return false
+  }
+  if (result.kind === 'contended') {
+    process.stdout.write(`ARTIFACT SERVER STARTUP PENDING: startup claim holder did not finish within ${holderWorkBoundMs()} ms; registration retained.\n`)
+    state.pendingRetry = startRetry(result.kind)
+  } else if (result.kind === 'claim-lost') {
+    process.stdout.write('ARTIFACT SERVER STARTUP PENDING: startup claim was lost; registration retained.\n')
+    state.pendingRetry = startRetry(result.kind)
+  } else if (result.kind === 'shutdown') {
+    process.stdout.write('ARTIFACT SERVER NOT STARTED: startup stopped during shutdown.\n')
+  } else if (result.kind === 'not-ready') {
+    process.stdout.write(`ARTIFACT SERVER STARTUP PENDING: spawned server did not become ready within ${serverReadinessMs()} ms; registration retained.\n`)
+    state.pendingRetry = startRetry(result.kind)
+  } else {
+    noticeArtifactUpgrade(result)
+  }
+  return true
+}
+
+function attachMonitor(state, found) {
+  process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${found.port} during startup retry.\n`)
+  state.attachedServer = found
+  recordMonitorAttachment(state)
+}
+
+function recordMonitorAttachment(state) {
+  testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${state.attachedServer.port}`)
+  state.lastWatchAt = Date.now()
+  state.pendingRetry = null
+}
+
+function retryCapReached(state) {
+  const now = Date.now()
+  const retry = state.pendingRetry
+  const reached = now - retry.startedAt >= retry.overallCapMs
+  if (!reached) return false
+  const holder = liveStartupClaimHolder() ? 'yes' : 'no'
+  process.stdout.write(`ARTIFACT SERVER RETRY STOPPED: overall cap reached after ${retry.attempts}/${retry.maxAttempts} attempts and ${now - retry.startedAt} ms total wait (cap ${retry.overallCapMs} ms); live startup claim holder: ${holder}; registration retained.\n`)
+  state.pendingRetry = null
+  return true
+}
+
+function deferMonitorRetry(state) {
+  state.pendingRetry.deferredAt ??= Date.now()
+  if (!state.pendingRetry.deferred) {
+    process.stdout.write('ARTIFACT SERVER RETRY DEFERRED: live startup claim holder is still working; registration retained.\n')
+    state.pendingRetry.deferred = true
+  }
+}
+
+function retryWindowExpired(state) {
+  const now = Date.now()
+  const retry = state.pendingRetry
+  if (retry.deferredAt !== null) {
+    retry.attemptDeadline += now - retry.deferredAt
+    retry.deferredAt = null
+    retry.deferred = false
+  }
+  const expired = retry.attempts >= retry.maxAttempts || now >= retry.attemptDeadline
+  if (!expired) return false
+  const windowMs = retryWindowMs()
+  process.stdout.write(`ARTIFACT SERVER RETRY STOPPED: gave up after ${retry.attempts}/${retry.maxAttempts} attempts within ${windowMs} ms of own retry time; live startup claim holder: no; registration retained.\n`)
+  state.pendingRetry = null
+  return true
+}
+
+function finishMonitorRetry(state, retried, attemptStartedAt) {
+  if (retried.kind === 'found') {
+    attachMonitor(state, retried)
+  } else {
+    state.pendingRetry.kind = retried.kind
+    if (retried.kind === 'contended') {
+      state.pendingRetry.attemptDeadline += Date.now() - attemptStartedAt
+      state.pendingRetry.deferredAt = Date.now()
+      state.pendingRetry.deferred = false
+    }
+  }
+}
+
+function reportRetryError(state, error) {
+  const message = error instanceof Error ? error.message : String(error)
+  process.stdout.write(`ARTIFACT SERVER RETRY ERROR: attempt ${state.pendingRetry?.attempts ?? 0}/${state.pendingRetry?.maxAttempts ?? retryAttempts()} failed: ${message}; registration retained.\n`)
+}
+
+function monitorRetryBlocked(state) {
+  return stopping || !state.pendingRetry || state.retryInFlight || state.watchInFlight
+}
+
+function monitorRetryInterrupted(state) { return stopping || !state.pendingRetry }
+
+async function retryTick(state, firstPort) {
+  if (monitorRetryBlocked(state)) return
+  state.retryInFlight = true
+  try {
+    if (retryCapReached(state)) return
+    const scan = await probeCandidates(firstPort, 750)
+    if (monitorRetryInterrupted(state)) return
+    if (scan.found) {
+      process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${scan.found.port} during startup retry.\n`)
+      state.attachedServer = scan.found
+      recordMonitorAttachment(state)
+      return
+    }
+    if (liveStartupClaimHolder()) { deferMonitorRetry(state); return }
+    if (retryWindowExpired(state)) return
+    state.pendingRetry.attempts += 1
+    process.stdout.write(`ARTIFACT SERVER RETRY ATTEMPT ${state.pendingRetry.attempts}/${state.pendingRetry.maxAttempts}: re-entering discovery after ${state.pendingRetry.kind}.\n`)
+    const attemptStartedAt = Date.now()
+    const retried = await discoverOrStart(firstPort)
+    if (monitorRetryInterrupted(state)) return
+    finishMonitorRetry(state, retried, attemptStartedAt)
+  } catch (error) {
+    reportRetryError(state, error)
+  } finally {
+    state.retryInFlight = false
+  }
+}
+
+async function watchTick(state, firstPort) {
+  if (stopping || state.pendingRetry || state.retryInFlight || state.watchInFlight || state.attachedServer === null) return
+  if (Date.now() - state.lastWatchAt < watchIntervalMs()) return
+  state.watchInFlight = true
+  const watchedPort = state.attachedServer.port
+  state.lastWatchAt = Date.now()
+  try {
+    state.attachedServer = await watchAttachedServer(state.attachedServer, firstPort)
+    if (stopping || state.pendingRetry) return
+    if (state.attachedServer !== null) return
+    process.stdout.write(`ARTIFACT SERVER LOST: server on port ${watchedPort} is no longer answering; restarting; registration retained.\n`)
+    state.pendingRetry = startRetry('lost')
+  } finally {
+    state.watchInFlight = false
+  }
+}
+
+async function monitorSession(firstPort) {
+  const result = await discoverOrStart(firstPort)
+  const state = createMonitorState(result)
+  if (!reportInitialResult(result, state, firstPort)) return
+  const keepAlive = setInterval(() => {
+    const shutdownFile = TEST_MODE ? process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE : null
+    if (shutdownFile && existsSync(shutdownFile)) cleanExit()
+    if (process.ppid !== parentPid) cleanExit()
+    void watchTick(state, firstPort)
+    void retryTick(state, firstPort)
+  }, 2_000)
+  try { await finished } finally { clearInterval(keepAlive) }
+}
+
+function registerMonitor() {
+  ensureSecureStateDir()
+  const firstPort = configuredArtifactPort()
+  const roots = configuredRoots()
+  registrationFile = path.join(artifactRegistrationsDir(), `${session}.json`)
+  atomicWriteJson(registrationFile, {
+    pid: process.pid, roots, deny: configuredDenyPatterns(), startedAt: new Date().toISOString(),
+    ...(process.platform === 'win32' ? { identity: {
+      pid: process.pid, argv: process.argv,
+      startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true,
+    } } : {}),
+  })
+  return firstPort
+}
+
 async function main() {
   if (!resolveWorkflowToolboxOption('artifact_server').value) return
   let firstPort
-  let roots
   try {
-    ensureSecureStateDir()
-    firstPort = configuredArtifactPort()
-    roots = configuredRoots()
-    registrationFile = path.join(artifactRegistrationsDir(), `${session}.json`)
-    atomicWriteJson(registrationFile, {
-      pid: process.pid, roots, deny: configuredDenyPatterns(), startedAt: new Date().toISOString(),
-      ...(process.platform === 'win32' ? { identity: {
-        pid: process.pid, argv: process.argv,
-        startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true,
-      } } : {}),
-    })
+    firstPort = registerMonitor()
   } catch (error) {
     process.stderr.write(`wt-artifact-server: ${error.message}\n`)
     process.exitCode = 1
     return
   }
-  try {
-    const result = await discoverOrStart(firstPort)
-    let pendingRetry = null
-    let retryInFlight = false
-    let watchInFlight = false
-    let attachedPort = result.kind === 'found' ? result.port : null
-    let lastWatchAt = Date.now()
-    if (attachedPort !== null) testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${attachedPort}`)
-    const startRetry = (kind) => {
-      const startedAt = Date.now()
-      return {
-        kind,
-        startedAt,
-        attemptDeadline: startedAt + retryWindowMs(),
-        overallCapMs: retryOverallCapMs(),
-        maxAttempts: retryAttempts(),
-        attempts: 0,
-        deferred: false,
-        deferredAt: kind === 'contended' ? startedAt : null,
-      }
-    }
-    if (result.kind === 'exhausted') {
-      process.stdout.write(`ARTIFACT SERVER NOT STARTED: no available port in ${firstPort}-${Math.min(firstPort + portAttempts() - 1, 65535)}\n`)
-      return
-    }
-    if (result.kind === 'contended') {
-      process.stdout.write(`ARTIFACT SERVER STARTUP PENDING: startup claim holder did not finish within ${holderWorkBoundMs()} ms; registration retained.\n`)
-      pendingRetry = startRetry(result.kind)
-    } else if (result.kind === 'claim-lost') {
-      process.stdout.write('ARTIFACT SERVER STARTUP PENDING: startup claim was lost; registration retained.\n')
-      pendingRetry = startRetry(result.kind)
-    } else if (result.kind === 'shutdown') {
-      process.stdout.write('ARTIFACT SERVER NOT STARTED: startup stopped during shutdown.\n')
-    } else if (result.kind === 'not-ready') {
-      process.stdout.write(`ARTIFACT SERVER STARTUP PENDING: spawned server did not become ready within ${serverReadinessMs()} ms; registration retained.\n`)
-      pendingRetry = startRetry(result.kind)
-    } else if (!upgradeNoticed && typeof result.health.version === 'string' && compareVersions(ARTIFACT_SERVER_VERSION, result.health.version) > 0) {
-      process.stdout.write(`artifact server v${result.health.version} is older than plugin v${ARTIFACT_SERVER_VERSION}; run \`node wt-artifact-server.mjs restart\` when sessions can disconnect.\n`)
-      upgradeNoticed = true
-    }
-
-    const retryTick = async () => {
-      if (stopping || !pendingRetry || retryInFlight || watchInFlight) return
-      retryInFlight = true
-      try {
-        let now = Date.now()
-        if (now - pendingRetry.startedAt >= pendingRetry.overallCapMs) {
-          const holder = liveStartupClaimHolder() ? 'yes' : 'no'
-          process.stdout.write(`ARTIFACT SERVER RETRY STOPPED: overall cap reached after ${pendingRetry.attempts}/${pendingRetry.maxAttempts} attempts and ${now - pendingRetry.startedAt} ms total wait (cap ${pendingRetry.overallCapMs} ms); live startup claim holder: ${holder}; registration retained.\n`)
-          pendingRetry = null
-          return
-        }
-
-        const scan = await probeCandidates(firstPort, 750)
-        if (stopping || !pendingRetry) return
-        if (scan.found) {
-          process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${scan.found.port} during startup retry.\n`)
-          attachedPort = scan.found.port
-          testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${attachedPort}`)
-          lastWatchAt = Date.now()
-          pendingRetry = null
-          return
-        }
-
-        if (liveStartupClaimHolder()) {
-          pendingRetry.deferredAt ??= Date.now()
-          if (!pendingRetry.deferred) {
-            process.stdout.write('ARTIFACT SERVER RETRY DEFERRED: live startup claim holder is still working; registration retained.\n')
-            pendingRetry.deferred = true
-          }
-          return
-        }
-
-        now = Date.now()
-        if (pendingRetry.deferredAt !== null) {
-          pendingRetry.attemptDeadline += now - pendingRetry.deferredAt
-          pendingRetry.deferredAt = null
-          pendingRetry.deferred = false
-        }
-        if (pendingRetry.attempts >= pendingRetry.maxAttempts || now >= pendingRetry.attemptDeadline) {
-          const windowMs = retryWindowMs()
-          process.stdout.write(`ARTIFACT SERVER RETRY STOPPED: gave up after ${pendingRetry.attempts}/${pendingRetry.maxAttempts} attempts within ${windowMs} ms of own retry time; live startup claim holder: no; registration retained.\n`)
-          pendingRetry = null
-          return
-        }
-
-        pendingRetry.attempts += 1
-        process.stdout.write(`ARTIFACT SERVER RETRY ATTEMPT ${pendingRetry.attempts}/${pendingRetry.maxAttempts}: re-entering discovery after ${pendingRetry.kind}.\n`)
-        const attemptStartedAt = Date.now()
-        const retried = await discoverOrStart(firstPort)
-        if (stopping || !pendingRetry) return
-        if (retried.kind === 'found') {
-          process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${retried.port} during startup retry.\n`)
-          attachedPort = retried.port
-          testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${attachedPort}`)
-          lastWatchAt = Date.now()
-          pendingRetry = null
-        } else {
-          pendingRetry.kind = retried.kind
-          if (retried.kind === 'contended') {
-            pendingRetry.attemptDeadline += Date.now() - attemptStartedAt
-            pendingRetry.deferredAt = Date.now()
-            pendingRetry.deferred = false
-          }
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        process.stdout.write(`ARTIFACT SERVER RETRY ERROR: attempt ${pendingRetry?.attempts ?? 0}/${pendingRetry?.maxAttempts ?? retryAttempts()} failed: ${message}; registration retained.\n`)
-      } finally {
-        retryInFlight = false
-      }
-    }
-    const watchTick = async () => {
-      if (stopping || pendingRetry || retryInFlight || watchInFlight || attachedPort === null) return
-      if (Date.now() - lastWatchAt < watchIntervalMs()) return
-      watchInFlight = true
-      const watchedPort = attachedPort
-      lastWatchAt = Date.now()
-      try {
-        const direct = await probeArtifactServer(watchedPort, 750)
-        if (stopping || pendingRetry || direct.kind === 'ours') return
-        const scan = await probeCandidates(firstPort, 750)
-        if (stopping || pendingRetry) return
-        if (scan.found) {
-          attachedPort = scan.found.port
-          return
-        }
-        process.stdout.write(`ARTIFACT SERVER LOST: server on port ${watchedPort} is no longer answering; restarting; registration retained.\n`)
-        attachedPort = null
-        pendingRetry = startRetry('lost')
-      } finally {
-        watchInFlight = false
-      }
-    }
-    const keepAlive = setInterval(() => {
-      const shutdownFile = TEST_MODE ? process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE : null
-      if (shutdownFile && existsSync(shutdownFile)) cleanExit()
-      if (process.ppid !== parentPid) cleanExit()
-      void watchTick()
-      void retryTick()
-    }, 2_000)
-    try { await finished } finally { clearInterval(keepAlive) }
-  } finally {
-    removeRegistration()
-  }
+  try { await monitorSession(firstPort) } finally { removeRegistration() }
 }
 
 const argv = process.argv.slice(2)

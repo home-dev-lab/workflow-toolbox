@@ -14,6 +14,7 @@ import {
   artifactDiscoveryPath,
   artifactIntentPath,
   artifactRegistrationsDir,
+  artifactServerProcessStatus,
   artifactUid,
   artifactUrlResult,
   assignArtifactMounts,
@@ -39,7 +40,7 @@ import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
-import { retainProcessOwner, signalProcess } from './lib/host/process-signal-boundary.mjs'
+import { signalProcess } from './lib/host/process-signal-boundary.mjs'
 
 const HELP = `wt-artifact-server - serve registered artifacts through local or tailnet URLs
 
@@ -636,7 +637,7 @@ async function stopRunning(action, force) {
     await new Promise((resolve) => setTimeout(resolve, 50))
     // Listener closure and replacement health say nothing about draining connections.
     // Only host-confirmed exit (including an unreaped zombie) authorizes replacement.
-    if (!retainProcessOwner(state.pid, hostAdapter.readProcessExecutionState)) return artifactStoppedResult(state, action)
+    if (artifactServerProcessStatus(state.pid).status === 'gone') return artifactStoppedResult(state, action)
   }
   return { ok: false, message: `artifact server: verified PID ${state.pid} did not stop` }
 }

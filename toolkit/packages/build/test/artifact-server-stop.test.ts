@@ -10,6 +10,8 @@ import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 import { retainProcessOwner, signalProcess } from '../../../../plugin/bin/lib/host/process-signal-boundary.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { acquireArtifactControlClaim } from '../../../../plugin/bin/lib/host/artifact-control-claim.mjs'
+// @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
+import { artifactServerProcessStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
 
 type Probe = { kind: string, reason?: string, health?: { pid?: unknown, port?: unknown, startToken?: unknown } }
 type Result = { ok: boolean, message: string }
@@ -52,6 +54,7 @@ function controls(platform: string, current: Probe, livenessError?: Liveness, si
     atomicWriteJson: vi.fn(), artifactIntentPath: () => 'intent.json',
     signalProcess: (pid: number, signal: string) => signalProcess(pid, signal, host),
     retainProcessOwner,
+    artifactServerProcessStatus: (pid: number) => artifactServerProcessStatus(pid, host.readProcessExecutionState),
     spawnServer,
     ensureSecureStateDir: () => 'state-dir', configuredArtifactPort: () => 48001,
     acquireArtifactControlClaim: () => { if (claimed) return null; claimed = true; return () => { claimed = false } },
