@@ -4,7 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { isLiveSandboxedLane, laneDescendantPids, posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
-import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
+import { terminateOrphanWatchers as terminateWatchers } from './lib/lane-watcher-orphans.mjs'
 import { ancestorPids, isOpencodeCommand, ownedOpencodePids, reportUnattributed } from './lib/lane-opencode-attribution.mjs'
 import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
 import { idleHelperEvents } from './lib/resolved-binary.mjs'
@@ -15,6 +15,27 @@ import { createLaneExitNotices } from './lib/lane-exit-notices.mjs'
 
 const CONTROL = fileURLToPath(new URL('./wt-lane-control.mjs', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./wt-lane.mjs', import.meta.url))
+let watcherReadFailed = false
+let watcherUnavailableReason = null
+let watcherUnavailableAnnounced = false
+
+function terminateOrphanWatchers() {
+  const result = terminateWatchers()
+  if (watcherReadFailed && result.status === 'known') {
+    process.stdout.write('watcher orphan detection recovered: /proc read succeeded\n')
+  }
+  if (result.status === 'known') watcherReadFailed = false
+  else if (result.retryable === true) watcherReadFailed = true
+  // The sweep announces the first unavailable result through its once-only key.
+  // Later episodes and reason changes need a fresh notice before that deduplication.
+  if (result.status === 'unavailable') {
+    if (watcherUnavailableAnnounced && result.reason !== watcherUnavailableReason) process.stdout.write(`${result.reason}\n`)
+    watcherUnavailableAnnounced = true
+  }
+  watcherUnavailableReason = result.reason ?? null
+  return result
+}
+
 const TEST_MAX_SWEEPS = (() => {
   const value = Number(process.env.WT_LANE_WATCH_TEST_MAX_SWEEPS)
   return Number.isSafeInteger(value) && value > 0 ? value : null
