@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
 
 export const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../plugin')
 export const skillPath = process.env.WT_SECOND_OPINION_LAUNCH_SKILL ?? join(pluginRoot, 'skills/second-opinion/SKILL.md')
@@ -107,4 +108,4 @@ export function runLaunchE2e() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) runLaunchE2e()
+if (isInvokedDirectly(import.meta.url)) runLaunchE2e()

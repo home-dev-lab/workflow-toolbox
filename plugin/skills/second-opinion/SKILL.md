@@ -126,11 +126,13 @@ when executed. Do not replace it with a remembered versioned cache path.
 
 The lookup follows the adopted-script convention (`../adopt/SKILL.md`, "Script
 resolution"): explicit `WT_PLUGIN_ROOT`, then applicable `workflow-toolbox@*`
-entries in the current profile's `plugins/installed_plugins.json`, then runtime
+entries in `<profile>/plugins/installed_plugins.json`, then runtime
 `CLAUDE_PLUGIN_ROOT`. Project/local entries in this project or its ancestors rank
 above user entries; equal ranks retain registry order. A selected broken install
 refuses rather than falling through. Use `WT_PLUGIN_ROOT` only for an intentional,
 current absolute checkout/install override; clear a stale override after updating.
+Here `<profile>` is `CLAUDE_CONFIG_DIR` when set, otherwise the `.claude` directory
+under `HOME`, `USERPROFILE`, or the OS home directory, in that order.
 
 ```javascript
 import fs from 'node:fs'
