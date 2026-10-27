@@ -120,3 +120,59 @@ describe('a published changelog section is frozen', () => {
     ).toEqual([])
   })
 })
+
+/** Preserve the heading, line endings and trailing whitespace, up to the next level-two heading. */
+function releasedByteBlocks(bytes: Buffer): { version: string; bytes: Buffer }[] {
+  // Latin-1 gives one character per byte, so UTF-8 prose cannot shift the slice offsets.
+  const headings = [...bytes.toString('latin1').matchAll(/^## [^\r\n]*/gm)]
+  return headings.flatMap((heading, index) => {
+    const version = heading[0].match(/^## \[(\d+\.\d+\.\d+)\](?:[ \t]|$)/)?.[1]
+    if (!version) return []
+    return [{ version, bytes: bytes.subarray(heading.index, headings[index + 1]?.index ?? bytes.length) }]
+  })
+}
+
+function changelogGit(args: string[]) {
+  // No shell, checkout or fetching: absent local history is explicitly unverified.
+  return spawnSync('git', ['-C', REPO_ROOT, ...args], {
+    env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
+    timeout: 10_000,
+    maxBuffer: 8 * 1024 * 1024,
+  })
+}
+
+const changelogBytes = readFileSync(CHANGELOG)
+const byteBlocks = releasedByteBlocks(changelogBytes)
+const tagListing = changelogGit(['for-each-ref', '--format=%(refname)', 'refs/tags/workflow-toolbox--v*'])
+const localTags = new Set(tagListing.stdout?.toString('utf8').trim().split('\n'))
+const unavailableGit = tagListing.error
+  ? `Git unavailable (${(tagListing.error as NodeJS.ErrnoException).code ?? tagListing.error.name})`
+  : tagListing.status !== 0 ? `Git tag refs unavailable (exit ${tagListing.status}, signal ${tagListing.signal})` : null
+
+describe('released changelog blocks equal their release tags', () => {
+  it('finds a byte block for every released heading', () => {
+    expect(byteBlocks.map(({ version }) => version)).toEqual(releasedHeadings(changelogBytes.toString('utf8')))
+  })
+
+  for (const { version, bytes } of byteBlocks) {
+    const tag = `workflow-toolbox--v${version}`
+    it(`keeps [${version}] byte-identical to ${tag}`, (context) => {
+      const reason = unavailableGit ?? (localTags.has(`refs/tags/${tag}`) ? null : 'tag unavailable locally')
+      if (reason) {
+        // Default reporters must show why this block was not checked, even with no tags at all.
+        console.warn(`SKIP ${tag}: ${reason}`)
+        context.skip(reason)
+      }
+      const archived = changelogGit(['show', `refs/tags/${tag}:plugin/CHANGELOG.md`])
+      expect(archived.error, `Cannot read ${tag}:plugin/CHANGELOG.md`).toBeUndefined()
+      expect(archived.status, `Cannot read ${tag}:plugin/CHANGELOG.md`).toBe(0)
+      const matching = releasedByteBlocks(archived.stdout).filter((block) => block.version === version)
+      expect(matching.length, `${tag} must contain exactly one [${version}] block`).toBe(1)
+      expect(
+        bytes.equals(matching[0]!.bytes),
+        `Released changelog block [${version}] differs from ${tag}:plugin/CHANGELOG.md. ` +
+          'Move new entries under ## [Unreleased]; released blocks must retain their exact bytes.',
+      ).toBe(true)
+    })
+  }
+})
