@@ -117,28 +117,147 @@ source present, the CLI uses its existing live-directory behavior. Snapshot sign
 handlers remain installed through cleanup for repeated SIGINT/SIGTERM and, on
 POSIX, SIGHUP/SIGQUIT; SIGKILL remains uncatchable.
 
+### Resolve the current installation on every launch
+
+Use a fresh output path in an existing writable directory. Save this standalone
+bootstrap as `<out-file>.launch.mjs` before launching. It uses only Node built-ins,
+so even skill text loaded before a plugin update resolves the **current** registry
+when executed. Do not replace it with a remembered versioned cache path.
+
+The lookup follows the adopted-script convention (`../adopt/SKILL.md`, "Script
+resolution"): explicit `WT_PLUGIN_ROOT`, then applicable `workflow-toolbox@*`
+entries in the current profile's `plugins/installed_plugins.json`, then runtime
+`CLAUDE_PLUGIN_ROOT`. Project/local entries in this project or its ancestors rank
+above user entries; equal ranks retain registry order. A selected broken install
+refuses rather than falling through. Use `WT_PLUGIN_ROOT` only for an intentional,
+current absolute checkout/install override; clear a stale override after updating.
+
+```javascript
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const env = process.env
+function canonical(value) {
+  try { return path.isAbsolute(value) ? fs.realpathSync(value) : null } catch { return null }
+}
+function withinProject(owner, here) {
+  if (!here || !owner) return false
+  const relative = path.relative(owner, here)
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+}
+function applicable(entry) {
+  if (entry?.scope === 'user') return true
+  if (entry?.scope !== 'project' && entry?.scope !== 'local') return false
+  const here = canonical(env.CLAUDE_PROJECT_DIR || process.cwd())
+  const owner = canonical(entry.projectPath)
+  return withinProject(owner, here)
+}
+function readRegistry() {
+  const config = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || env.USERPROFILE || os.homedir(), '.claude')
+  const registry = path.join(config, 'plugins', 'installed_plugins.json')
+  try { return JSON.parse(fs.readFileSync(registry, 'utf8')) } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+}
+function currentRoot() {
+  if (env.WT_PLUGIN_ROOT !== undefined) return env.WT_PLUGIN_ROOT
+  const parsed = readRegistry()
+  const entries = Object.entries(parsed?.plugins ?? parsed ?? {}).flatMap(([key, values]) =>
+    key.startsWith('workflow-toolbox@') ? (Array.isArray(values) ? values : [values]).filter(applicable) : [])
+  const rank = (entry) => Number(entry.scope === 'project' || entry.scope === 'local')
+  entries.sort((a, b) => rank(b) - rank(a))
+  return entries.length ? entries[0].installPath : env.CLAUDE_PLUGIN_ROOT
+}
+const candidate = currentRoot()
+const root = canonical(candidate)
+if (!root) throw new Error(`Cannot resolve workflow-toolbox plugin root: ${String(candidate)}; check WT_PLUGIN_ROOT and the installed-plugin registry`)
+const manifest = JSON.parse(fs.readFileSync(path.join(root, '.claude-plugin', 'plugin.json'), 'utf8'))
+if (manifest.name !== 'workflow-toolbox') throw new Error(`Not a workflow-toolbox installation: ${root}`)
+await import(pathToFileURL(path.join(root, 'bin', 'wt-second-opinion.mjs')).href)
+```
+
+### Linux
+
+Both stdout and stderr, including a missing `node`, bootstrap, CLI, or imported
+module, go to `<out-file>.launch.log`. Keep this log beside `--out`; never redirect
+the launch to `/dev/null`.
+
 ```bash
-setsid nohup node "${CLAUDE_PLUGIN_ROOT}/bin/wt-second-opinion.mjs" \
-  --request <request-file> --out <out-file> --effort <low|medium|high> \
-  --route <auto|astra|opus> \
-  --repo <repository> >/dev/null 2>&1 < /dev/null &
+request=<request-file>
+out=<out-file>
+repo=<repository>
+setsid nohup node "${out}.launch.mjs" \
+  --request "$request" --out "$out" --effort <low|medium|high> \
+  --route <auto|astra|opus> --repo "$repo" >"${out}.launch.log" 2>&1 < /dev/null &
+```
+
+### macOS
+
+Stock macOS has `nohup` but no `setsid`; use the same bootstrap and log:
+
+```sh
+request=<request-file>
+out=<out-file>
+repo=<repository>
+nohup node "${out}.launch.mjs" \
+  --request "$request" --out "$out" --effort <low|medium|high> \
+  --route <auto|astra|opus> --repo "$repo" >"${out}.launch.log" 2>&1 < /dev/null &
 ```
 
 Put every file the reviewer must read under `--repo`, and name it by absolute
 path. Expect `EXIT=2` before the reviewer starts when, on Linux, a named file is
 not readable inside the reviewer's sandbox; read the refusal for the path.
 Then apply one remedy: copy the file under `--repo` and name the copy; or
-re-run with `WT_LANE_SANDBOX_READ=<path>` for that exact path; or, for a path
+re-run with `WT_LANE_SANDBOX_READ=<path>` for that exact file. Multiple files use
+a colon-separated list of absolute exact file paths, never a whole directory
+(`WT_LANE_SANDBOX_READ='/absolute/a.md:/absolute/b.md'`). Set it in the launch
+environment before starting the process. Or, for a path
 only mentioned and not needed, re-run with
 `WT_SECOND_OPINION_UNREAD='["<path>"]'`. Read a `NOTE:` line as a named
 directory the reviewer cannot see: the review ran without it. Name the files
 you need reviewed; never rely on a named directory to carry them.
 
-On Windows, launch the same `node` command with `Start-Process` instead of
-`setsid nohup`; the CLI itself owns the output file and completion marker.
+### Windows (PowerShell)
 
-Poll the output file until its final line is `EXIT=<code>`. Read the **whole
-file**, never only the final line: the first line identifies the selected route
+Save the same bootstrap as `<out-file>.launch.mjs`. `Start-Process` requires
+distinct redirection paths: stderr is `<out-file>.launch.log`, stdout is
+`<out-file>.launch.stdout.log`. Read both on failure. Its own launch exceptions
+(including a missing `node`) are also written to the stderr launch log.
+
+```powershell
+$request = <request-file>
+$out = <out-file>
+$repo = <repository>
+$launchArgs = @("${out}.launch.mjs", '--request', $request, '--out', $out,
+  '--effort', '<low|medium|high>', '--route', '<auto|astra|opus>', '--repo', $repo) |
+  ForEach-Object { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' }
+try {
+  Start-Process -FilePath node -ArgumentList $launchArgs -WindowStyle Hidden `
+    -RedirectStandardError "${out}.launch.log" `
+    -RedirectStandardOutput "${out}.launch.stdout.log" -ErrorAction Stop
+} catch {
+  [IO.File]::AppendAllText("${out}.launch.log", ($_ | Out-String))
+  throw
+}
+```
+
+### Check startup within a minute
+
+About one minute after launch, verify that `--out` exists and its **first line**
+is `ROUTE=...` (`ROUTE=gpt-astra` or `ROUTE=claude-opus`). If it is absent or the
+first line is not `ROUTE=...`, immediately read `<out-file>.launch.log` (and the
+stdout launch log on Windows) and any existing output. Report the launch as
+failed; **never wait on missing output**. A terminal `REFUSED: ...` / `EXIT=...`
+in `--out` is already a completed refusal, even without a route line. Admission
+can publish `PENDING:` before route selection: report that startup is still
+pending in the startup-failure report and investigate its policy/snapshot instead
+of silently waiting for a route.
+
+Once startup is confirmed, poll the output file until its final line is
+`EXIT=<code>`. Read the **whole file**, never only the final line: the first line
+identifies the selected route
 (`ROUTE=gpt-astra` or `ROUTE=claude-opus`), the body is the complete answer or
 refusal, and the last line is completion status. A refusal names the unavailable
 lane, runtime or quota condition and its remedy; never bypass it by silently
