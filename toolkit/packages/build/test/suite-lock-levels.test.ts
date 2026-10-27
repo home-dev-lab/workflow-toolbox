@@ -367,12 +367,28 @@ describe('declared P0 order in a queue older than one hour (bounded P0 bypass): 
   })
 })
 
+const lightCounterRetryCases = [
+  { code: 'none', during: 'no retry' },
+  ...['EBUSY', 'EPERM', 'EACCES'].flatMap((code) =>
+    ['hidden light admission', 'hung-queue holder'].map((during) => ({ code, during }))),
+]
+
+async function withAdvancingTimers<T>(pending: Promise<T>) {
+  let settled = false
+  void pending.then(() => { settled = true }, () => { settled = true })
+  for (let elapsed = 0; !settled && elapsed < 6000; elapsed += 10) await vi.advanceTimersByTimeAsync(10)
+  expect(settled, 'acquisition must settle while its retry timers advance').toBe(true)
+  return pending
+}
+
 function registerLightCounterRenewalTest() {
-  it('C6 renews on counter advancement despite a worse historical place; a hung queue times out', async () => {
+  it.each(lightCounterRetryCases)('C6 renews on counter advancement despite a worse historical place; a hung queue times out ($during: $code)', async ({ code, during }) => {
     const root = temp(); const initial = await lock.acquireSuiteLock({ root, env: envFor(root) }); lock.releaseSuiteLock(initial)
     const ahead = seed(root)
     const notices: string[] = []; const renew = vi.fn(); const progress = vi.fn(); const handover = vi.fn(); let grants = 0; let result = 'waiting'
     const controller = new AbortController()
+    const retry = vi.fn()
+    if (code !== 'none') retry.mockImplementationOnce(() => { throw Object.assign(new Error(code), { code }) })
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
     const pending = lock.acquireSuiteLock({ root, env: envFor(root), waitS: 0.25, staleS: 0.25, pollMs: 70,
       signal: controller.signal, onRenew: renew, onProgress: progress, onHandover: handover,
@@ -382,10 +398,11 @@ function registerLightCounterRenewalTest() {
       expect(progress).toHaveBeenCalledWith({ ahead: 1, aheadExcludingRelease: 1, total: 2 })
       const laterP0 = seed(root, { level: 0 }) // Worsen the waiter's place without improving its historical best.
       for (; grants < 6; grants += 1) {
-        await vi.advanceTimersByTimeAsync(150)
+        await vi.advanceTimersByTimeAsync(50) // Leave room for a 100 ms transient retry inside the 250 ms watchdog.
         // Real, complete light admissions remain invisible as holders; wait for the lock to acknowledge each.
-        const hidden = await lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0', light: true, waitS: 0, pollMs: 1 })
-        lock.releaseSuiteLock(hidden)
+        await withAdvancingTimers(lock.acquireSuiteLock({ root, env: envFor(root), priority: 'P0', light: true, waitS: 0, pollMs: 1,
+          beforeAcquire: during === 'hidden light admission' ? retry : undefined })
+          .then((hidden: unknown) => lock.releaseSuiteLock(hidden)))
         await vi.waitFor(() => expect(renew).toHaveBeenCalledTimes(grants + 1))
         expect(renew).toHaveBeenLastCalledWith({ ahead: 2, aheadExcludingRelease: 2, total: 3 })
       }
@@ -393,12 +410,13 @@ function registerLightCounterRenewalTest() {
       expect(progress).toHaveBeenCalledTimes(1); expect(handover).not.toHaveBeenCalled()
       removeTicket(join(root, 'queue.d'), ahead); removeTicket(join(root, 'queue.d'), laterP0)
       await vi.waitFor(() => expect(result).toBe('acquired')); await pending
-      const holder = await lock.acquireSuiteLock({ root, env: envFor(root) }); seed(root)
+      const holder = await withAdvancingTimers(lock.acquireSuiteLock({ root, env: envFor(root), beforeAcquire: during === 'hung-queue holder' ? retry : undefined })); seed(root)
       try {
         const hung = expect(lock.acquireSuiteLock({ root, env: envFor(root), waitS: 0.15, staleS: 0.15, pollMs: 10 }))
           .rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
-        await vi.advanceTimersByTimeAsync(200); await hung
+        await withAdvancingTimers(hung)
       } finally { lock.releaseSuiteLock(holder) }
+      expect(retry).toHaveBeenCalledTimes(during === 'hidden light admission' ? 7 : during === 'hung-queue holder' ? 2 : 0)
     } finally { controller.abort(); vi.useRealTimers(); await pending }
   }, 10_000)
 }
