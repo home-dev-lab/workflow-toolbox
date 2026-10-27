@@ -148,12 +148,11 @@ async function spawnServer(port, claim) {
 }
 
 function startupClaimIsStale(claimPath) {
-  let staleOwnerPath = null
   let stale = false
   try {
     const files = readdirSync(claimPath)
     if (files.length === 1) {
-      staleOwnerPath = path.join(claimPath, files[0])
+      const staleOwnerPath = path.join(claimPath, files[0])
       const owner = JSON.parse(readFileSync(staleOwnerPath, 'utf8'))
       const expectedToken = files[0].endsWith('.json') ? files[0].slice(0, -5) : null
       if (typeof owner?.token !== 'string' || owner.token !== expectedToken) throw new Error('invalid startup claim owner')
@@ -162,7 +161,7 @@ function startupClaimIsStale(claimPath) {
       stale = Date.now() - statSync(claimPath).mtimeMs > startupClaimStaleMs()
     }
   } catch {
-    try { stale = Date.now() - statSync(claimPath).mtimeMs > startupClaimStaleMs() } catch {}
+    try { stale = Date.now() - statSync(claimPath).mtimeMs > startupClaimStaleMs() } catch { /* Inaccessible claims remain live. */ }
   }
   return stale
 }
@@ -177,9 +176,7 @@ function liveStartupClaimHolder() {
   return !startupClaimIsStale(claimPath)
 }
 
-function acquireStartupClaim() {
-  const claimPath = artifactStartupClaimPath()
-  const token = randomUUID()
+function startupClaimCreator(claimPath, token) {
   const ownerPath = path.join(claimPath, `${token}.json`)
   const createdAt = Date.now()
   let released = false
@@ -199,37 +196,52 @@ function acquireStartupClaim() {
     released = true
     try {
       unlinkSync(ownerPath)
-    } catch {}
-    try { rmdirSync(claimPath) } catch {}
+    } catch { /* Already absent or unavailable. */ }
+    try { rmdirSync(claimPath) } catch { /* Another owner may hold the claim. */ }
   }
-  const create = () => {
+  return () => {
     mkdirSync(claimPath, { mode: 0o700 })
     try {
       atomicWriteJson(ownerPath, { pid: process.pid, token, createdAt, heartbeatAt: Date.now() })
       testLog('WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG', `${process.pid} ${token}`)
       return { heartbeat, release }
     } catch (error) {
-      try { unlinkSync(ownerPath) } catch {}
-      try { rmdirSync(claimPath) } catch {}
+      try { unlinkSync(ownerPath) } catch { /* Preserve the publication error. */ }
+      try { rmdirSync(claimPath) } catch { /* Preserve the publication error. */ }
       throw error
     }
   }
+}
+
+function initialStartupClaim(create) {
   try {
     return create()
   } catch (error) {
     if (error?.code !== 'EEXIST' && error?.code !== 'ENOENT') throw error
     if (error?.code === 'ENOENT') return null
   }
+}
 
+function displaceStartupClaim(claimPath, displacedPath) {
+  try {
+    renameSync(claimPath, displacedPath)
+    return true
+  } catch (error) {
+    if (error?.code === 'EEXIST' || error?.code === 'ENOENT' || error?.code === 'ENOTEMPTY') return false
+    throw error
+  }
+}
+
+function acquireStartupClaim() {
+  const claimPath = artifactStartupClaimPath()
+  const token = randomUUID()
+  const create = startupClaimCreator(claimPath, token)
+  const initial = initialStartupClaim(create)
+  if (initial !== undefined) return initial
   const stale = startupClaimIsStale(claimPath)
   if (!stale) return null
   const displacedPath = `${claimPath}.stale-${token}`
-  try {
-    renameSync(claimPath, displacedPath)
-  } catch (error) {
-    if (error?.code === 'EEXIST' || error?.code === 'ENOENT' || error?.code === 'ENOTEMPTY') return null
-    throw error
-  }
+  if (!displaceStartupClaim(claimPath, displacedPath)) return null
   try {
     return create()
   } catch (error) {
@@ -245,16 +257,26 @@ async function probeCandidates(firstPort, timeout, claim = null, deadline = null
   let uncertain = false
   const attempts = portAttempts()
   for (let offset = 0; offset < attempts && firstPort + offset <= 65535; offset += 1) {
-    if (deadline !== null && Date.now() >= deadline) return { firstFree, found: null, claimLost: false, timedOut: true }
-    if (claim && !claim.heartbeat()) return { firstFree: null, found: null, claimLost: true, timedOut: false }
+    const interrupted = candidateScanInterruption(firstFree, claim, deadline)
+    if (interrupted) return interrupted
     const port = firstPort + offset
-    const probeTimeout = deadline === null ? timeout : Math.max(1, Math.min(timeout, deadline - Date.now()))
+    const probeTimeout = candidateProbeTimeout(timeout, deadline)
     const probe = await probeArtifactServer(port, probeTimeout)
     if (probe.kind === 'ours') return { firstFree, found: { port, health: probe.health }, claimLost: false, timedOut: false }
     if (probe.kind === 'free' && firstFree === null) firstFree = port
     if (probe.kind === 'unknown') uncertain = true
   }
   return { firstFree, found: null, claimLost: false, timedOut: false, uncertain }
+}
+
+function candidateScanInterruption(firstFree, claim, deadline) {
+  if (deadline !== null && Date.now() >= deadline) return { firstFree, found: null, claimLost: false, timedOut: true }
+  if (claim && !claim.heartbeat()) return { firstFree: null, found: null, claimLost: true, timedOut: false }
+  return null
+}
+
+function candidateProbeTimeout(timeout, deadline) {
+  return deadline === null ? timeout : Math.max(1, Math.min(timeout, deadline - Date.now()))
 }
 
 async function holdClaimForTest(claim) {
@@ -268,8 +290,12 @@ async function holdClaimForTest(claim) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())))
     const shutdownFile = process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE
     if (shutdownFile && existsSync(shutdownFile)) cleanExit()
-    if (!stopping && (!Number.isFinite(stopHeartbeatAfterMs) || Date.now() - startedAt < stopHeartbeatAfterMs)) claim.heartbeat()
+    heartbeatDuringTestHold(claim, startedAt, stopHeartbeatAfterMs)
   }
+}
+
+function heartbeatDuringTestHold(claim, startedAt, stopHeartbeatAfterMs) {
+  if (!stopping && (!Number.isFinite(stopHeartbeatAfterMs) || Date.now() - startedAt < stopHeartbeatAfterMs)) claim.heartbeat()
 }
 
 function compareVersions(left, right) {
@@ -286,18 +312,12 @@ async function discoverOrStart(firstPort) {
   let contentionDeadline = null
   while (!stopping) {
     const scan = await probeCandidates(firstPort, 750, null, contentionDeadline)
-    if (stopping) return { kind: 'shutdown' }
-    if (scan.timedOut) return { kind: 'contended' }
-    if (scan.found) return { kind: 'found', ...scan.found }
-    if (scan.firstFree === null) {
-      if (scan.uncertain) return { kind: 'contended' }
-      return { kind: 'exhausted' }
-    }
-
+    const discovered = initialDiscoveryResult(scan)
+    if (discovered) return discovered
     const claim = acquireStartupClaim()
     if (!claim) {
       testLog('WT_ARTIFACT_SERVER_TEST_CONTENTION_LOG', `${process.pid}`)
-      contentionDeadline ??= Date.now() + holderWorkBoundMs()
+      contentionDeadline = nextContentionDeadline(contentionDeadline)
       if (Date.now() >= contentionDeadline) return { kind: 'contended' }
       await new Promise((resolve) => setTimeout(resolve, 50))
       continue
@@ -307,28 +327,70 @@ async function discoverOrStart(firstPort) {
       await holdClaimForTest(claim)
       if (stopping) return { kind: 'shutdown' }
       const confirmed = await probeCandidates(firstPort, 750, claim)
-      if (stopping) return { kind: 'shutdown' }
-      if (confirmed.found) return { kind: 'found', ...confirmed.found }
-      if (confirmed.claimLost) return { kind: 'claim-lost' }
-      if (confirmed.firstFree === null) return { kind: 'exhausted' }
+      const confirmation = confirmedStartupResult(confirmed)
+      if (confirmation) return confirmation
       await spawnServer(confirmed.firstFree, claim)
-      if (stopping) return { kind: 'shutdown' }
-      if (!claim.heartbeat()) return { kind: 'claim-lost' }
+      const spawned = serverSpawnResult(claim)
+      if (spawned) return spawned
       const serverDeadline = Date.now() + serverReadinessMs()
       while (Date.now() < serverDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 50))
         const ready = await probeCandidates(firstPort, 250, claim)
-        if (stopping) return { kind: 'shutdown' }
-        if (ready.found) return { kind: 'found', ...ready.found }
-        if (ready.claimLost) return { kind: 'claim-lost' }
+        const readiness = serverReadinessResult(ready)
+        if (readiness) return readiness
       }
-      return { kind: stopping ? 'shutdown' : 'not-ready' }
+      return serverReadinessTimeout()
     } finally {
-      claim.release()
-      if (startupClaim === claim) startupClaim = null
+      releaseMonitorStartupClaim(claim)
     }
   }
   return { kind: 'shutdown' }
+}
+
+function initialDiscoveryResult(scan) {
+  if (stopping) return { kind: 'shutdown' }
+  if (scan.timedOut) return { kind: 'contended' }
+  if (scan.found) return { kind: 'found', ...scan.found }
+  if (scan.firstFree === null) return unavailableCandidateResult(scan)
+  return null
+}
+
+function unavailableCandidateResult(scan) {
+  if (scan.uncertain) return { kind: 'contended' }
+  return { kind: 'exhausted' }
+}
+
+function nextContentionDeadline(deadline) {
+  return deadline ?? Date.now() + holderWorkBoundMs()
+}
+
+function confirmedStartupResult(confirmed) {
+  const ready = serverReadinessResult(confirmed)
+  if (ready) return ready
+  if (confirmed.firstFree === null) return { kind: 'exhausted' }
+  return null
+}
+
+function serverSpawnResult(claim) {
+  if (stopping) return { kind: 'shutdown' }
+  if (!claim.heartbeat()) return { kind: 'claim-lost' }
+  return null
+}
+
+function serverReadinessResult(ready) {
+  if (stopping) return { kind: 'shutdown' }
+  if (ready.found) return { kind: 'found', ...ready.found }
+  if (ready.claimLost) return { kind: 'claim-lost' }
+  return null
+}
+
+function serverReadinessTimeout() {
+  return { kind: stopping ? 'shutdown' : 'not-ready' }
+}
+
+function releaseMonitorStartupClaim(claim) {
+  claim.release()
+  if (startupClaim === claim) startupClaim = null
 }
 
 function removeRegistration() {
@@ -344,29 +406,40 @@ function cleanExit() {
   finish()
 }
 
-async function waitForAttachedServerExit(pid) {
+async function waitForAttachedServerExit(pids) {
   const deadline = Date.now() + 3_000
-  let evidence = artifactServerProcessStatus(pid)
-  while (!stopping && evidence.status !== 'gone' && Date.now() < deadline) {
+  let pending = pendingAttachedProcesses(pids)
+  while (!stopping && pending.length > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50))
-    evidence = artifactServerProcessStatus(pid)
+    pending = pendingAttachedProcesses(pids)
   }
-  if (evidence.status === 'gone') return true
-  if (!stopping) {
+  if (pending.length === 0) return true
+  if (!stopping) for (const { pid, evidence } of pending) {
     const reason = evidence.reason ? ` (${evidence.reason})` : ''
     process.stdout.write(`ARTIFACT SERVER RESTART DEFERRED: PID ${pid ?? 'unknown'} is ${evidence.status}${reason} after 3000 ms; no replacement started; registration retained.\n`)
   }
   return false
 }
 
-async function watchAttachedServer(attached, firstPort) {
+function pendingAttachedProcesses(pids) {
+  const pending = []
+  for (const pid of pids) {
+    const evidence = artifactServerProcessStatus(pid)
+    if (evidence.status === 'gone') pids.delete(pid)
+    else pending.push({ pid, evidence })
+  }
+  return pending
+}
+
+async function watchAttachedServer(state, firstPort) {
+  const attached = state.attachedServer
   const direct = await probeArtifactServer(attached.port, 750)
   if (stopping) return attached
   if (direct.kind === 'ours') return { port: attached.port, health: direct.health }
   const scan = await probeCandidates(firstPort, 750)
   if (stopping) return attached
   if (scan.found) return scan.found
-  return await waitForAttachedServerExit(attached.health?.pid) ? null : attached
+  return await waitForAttachedServerExit(state.attachedPids) ? null : attached
 }
 
 function startRetry(kind) {
@@ -382,6 +455,7 @@ function createMonitorState(result) {
   const state = {
     pendingRetry: null, retryInFlight: false, watchInFlight: false,
     attachedServer: result.kind === 'found' ? result : null, lastWatchAt: Date.now(),
+    attachedPids: new Set(result.kind === 'found' ? [result.health?.pid] : []),
   }
   if (state.attachedServer !== null) testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${state.attachedServer.port}`)
   return state
@@ -423,6 +497,7 @@ function attachMonitor(state, found) {
 }
 
 function recordMonitorAttachment(state) {
+  state.attachedPids.add(state.attachedServer.health?.pid)
   testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${state.attachedServer.port}`)
   state.lastWatchAt = Date.now()
   state.pendingRetry = null
@@ -487,6 +562,10 @@ function monitorRetryBlocked(state) {
 
 function monitorRetryInterrupted(state) { return stopping || !state.pendingRetry }
 
+function monitorRestartInterrupted(state, processesGone) {
+  return !processesGone || monitorRetryInterrupted(state)
+}
+
 async function retryTick(state, firstPort) {
   if (monitorRetryBlocked(state)) return
   state.retryInFlight = true
@@ -500,6 +579,7 @@ async function retryTick(state, firstPort) {
       recordMonitorAttachment(state)
       return
     }
+    if (monitorRestartInterrupted(state, await waitForAttachedServerExit(state.attachedPids))) return
     if (liveStartupClaimHolder()) { deferMonitorRetry(state); return }
     if (retryWindowExpired(state)) return
     state.pendingRetry.attempts += 1
@@ -515,16 +595,23 @@ async function retryTick(state, firstPort) {
   }
 }
 
+function monitorWatchBlocked(state) {
+  return stopping || state.pendingRetry || state.retryInFlight || state.watchInFlight || state.attachedServer === null
+}
+
 async function watchTick(state, firstPort) {
-  if (stopping || state.pendingRetry || state.retryInFlight || state.watchInFlight || state.attachedServer === null) return
+  if (monitorWatchBlocked(state)) return
   if (Date.now() - state.lastWatchAt < watchIntervalMs()) return
   state.watchInFlight = true
   const watchedPort = state.attachedServer.port
   state.lastWatchAt = Date.now()
   try {
-    state.attachedServer = await watchAttachedServer(state.attachedServer, firstPort)
+    state.attachedServer = await watchAttachedServer(state, firstPort)
     if (stopping || state.pendingRetry) return
-    if (state.attachedServer !== null) return
+    if (state.attachedServer !== null) {
+      state.attachedPids.add(state.attachedServer.health?.pid)
+      return
+    }
     process.stdout.write(`ARTIFACT SERVER LOST: server on port ${watchedPort} is no longer answering; restarting; registration retained.\n`)
     state.pendingRetry = startRetry('lost')
   } finally {
