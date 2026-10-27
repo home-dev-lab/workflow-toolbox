@@ -231,10 +231,11 @@ export function guardMode() {
   return typeof raw === 'string' && raw.trim().toLowerCase() === 'observe' ? 'observe' : 'enforce'
 }
 
-/** Keep main-session output intact; every non-empty string agent id receives context-only JSON.
+/** Keep main-session output intact; every non-empty string agent id defaults to context-only JSON.
  * Prefer additionalContext (including an empty string), falling back to a non-empty systemMessage.
  * Use the notice's string event name or the payload event. No usable context returns false.
- * Observe mode emits nothing; subagents never receive text, stderr, or permission decisions.
+ * subagentDeny: true explicitly permits a PreToolUse deny, never an allow or ask decision.
+ * Observe mode emits nothing; subagents never receive text or stderr.
  */
 export function emitGuardNotice(options = {}) {
   if (guardMode() === 'observe') return false
@@ -244,11 +245,22 @@ export function emitGuardNotice(options = {}) {
   return true
 }
 
-function emitSubagentNotice({ payload, stdoutJson = null }) {
-  const notice = subagentNotice(stdoutJson, payload)
+function emitSubagentNotice({ payload, stdoutJson = null, subagentDeny = false }) {
+  const notice = subagentDeny === true ? subagentDenial(stdoutJson, payload) ?? subagentNotice(stdoutJson, payload)
+    : subagentNotice(stdoutJson, payload)
   if (notice === null) return false
   writeSync(1, JSON.stringify(notice))
   return true
+}
+
+// A refusal is an explicit per-call policy; the default projection below remains context-only.
+function subagentDenial(stdoutJson, payload) {
+  const output = stdoutJson?.hookSpecificOutput
+  if (output?.permissionDecision !== 'deny' || noticeEvent(output, payload) !== 'PreToolUse') return null
+  const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision: 'deny' }
+  if (typeof output.permissionDecisionReason === 'string') hookSpecificOutput.permissionDecisionReason = output.permissionDecisionReason
+  if (typeof output.additionalContext === 'string') hookSpecificOutput.additionalContext = output.additionalContext
+  return { hookSpecificOutput }
 }
 
 function writeMainNotice({ stdoutJson = null, stdoutText = '', stderrText = '' }) {
