@@ -14,6 +14,7 @@ import {
   artifactDiscoveryPath,
   artifactIntentPath,
   artifactRegistrationsDir,
+  artifactServerProcessStatus,
   artifactUid,
   artifactUrlResult,
   assignArtifactMounts,
@@ -39,7 +40,7 @@ import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { acquireArtifactControlClaim } from './lib/host/artifact-control-claim.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
-import { retainProcessOwner, signalProcess } from './lib/host/process-signal-boundary.mjs'
+import { signalProcess } from './lib/host/process-signal-boundary.mjs'
 
 const HELP = `wt-artifact-server - serve registered artifacts through local or tailnet URLs
 
@@ -450,6 +451,7 @@ class ArtifactService {
       send(response, method, 200, `${JSON.stringify({
         service: ARTIFACT_SERVER_ID, version: ARTIFACT_SERVER_VERSION, pid: process.pid,
         uid: artifactUid(), port: requestedPort, startToken: this.startToken,
+        processIdentity: hostAdapter.readProcessIdentity(process.pid),
         registeredSessions: [...this.registrations.values()].filter((registration) => registration.live).length,
       })}\n`, 'application/json; charset=utf-8')
       return
@@ -621,6 +623,7 @@ async function urlCommand(args) {
 async function stopRunning(action, force) {
   const state = readArtifactDiscovery()
   if (!state) return { ok: false, message: 'artifact server: unknown, nothing stopped (discovery unavailable)' }
+  if (state.processIdentity == null) return { ok: false, message: 'artifact server: no recorded process identity; nothing was stopped' }
   const probe = await probeArtifactServer(state.port)
   const refusal = artifactStopHealthRefusal(state, probe, force) ?? artifactStopProcessRefusal(state)
   if (refusal) return refusal
@@ -636,7 +639,7 @@ async function stopRunning(action, force) {
     await new Promise((resolve) => setTimeout(resolve, 50))
     // Listener closure and replacement health say nothing about draining connections.
     // Only host-confirmed exit (including an unreaped zombie) authorizes replacement.
-    if (!retainProcessOwner(state.pid, hostAdapter.readProcessExecutionState)) return artifactStoppedResult(state, action)
+    if (artifactServerProcessStatus(state.pid, undefined, state.processIdentity).status === 'gone') return artifactStoppedResult(state, action)
   }
   return { ok: false, message: `artifact server: verified PID ${state.pid} did not stop` }
 }
