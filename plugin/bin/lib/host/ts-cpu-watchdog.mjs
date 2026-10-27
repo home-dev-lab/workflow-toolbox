@@ -1,44 +1,98 @@
 import { createTsCpuReader } from './ts-cpu-sample.mjs'
 import { createTsCpuBudget, TS_CPU_BUDGET_PCT, TS_CPU_WINDOW_MS, TS_CPU_SAMPLE_MS } from './ts-cpu-budget.mjs'
+import { stopTsCpuFamily } from './ts-cpu-stop.mjs'
 
-// Runs in the launcher, so a synchronous tsserver loop cannot stall this timer.
+const pendingStops = new WeakMap()
 
-function stopFamily(child, sample, offender, readFamily, kill) {
-  const current = readFamily(child.pid)
-  if (current.status !== 'measured' || current.parent.identity !== sample.parent.identity) return false
-  if (!current.servers.some((server) => server.identity === offender.identity)) return false
-  // TLS is launched as an isolated POSIX session/group leader. One group signal
-  // stops both servers and transport, including a replacement forked mid-sample.
-  if (current.parent.pgid !== child.pid) return false
-  try { kill(-child.pid, 'SIGKILL'); return true } catch { return false }
+// The launcher must let the post-signal census/report finish before forwarding
+// the backend's fatal signal to itself. Ordinary closes remain synchronous.
+export function afterTsCpuStop(child, callback) {
+  return (...args) => {
+    const pending = pendingStops.get(child)
+    if (pending) void pending.then(() => callback(...args), () => callback(...args))
+    else callback(...args)
+  }
 }
 
-export function monitorTsserverCpu(child, stderr, {
-  readFamily = createTsCpuReader(), now = () => performance.now(), kill = process.kill,
-  intervalMs = TS_CPU_SAMPLE_MS, budgetPct = TS_CPU_BUDGET_PCT, windowMs = TS_CPU_WINDOW_MS,
-} = {}) {
-  const update = createTsCpuBudget({ budgetPct, windowMs })
-  let timer, unavailable = false, stopped = false
-  const diagnostic = (message) => { try { stderr.write(`wt-tsls: CPU watchdog: ${message}\n`) } catch { /* Protocol output is independent. */ } }
-  const check = () => {
-    if (stopped) return
-    const sample = readFamily(child.pid)
-    if (sample.status !== 'measured' && !unavailable) diagnostic(`unavailable (${sample.reason}); CPU budget is not enforced`)
-    unavailable = sample.status !== 'measured'
-    const breach = update(sample, now())
-    if (!breach) return
-    if (!stopFamily(child, sample, breach.server, readFamily, kill)) {
-      diagnostic('stop unavailable (process identity changed or signal failed); retrying next sample')
-      return
-    }
-    stopped = true
-    clearInterval(timer)
-    diagnostic(`stopped backend and tsserver ${breach.server.pid}: ${breach.percent.toFixed(1)}% CPU above ${budgetPct}% for ${breach.overMs}ms; restart the LSP client to launch wt-tsls again`)
+function diagnosticWriter(stderr) {
+  return (message) => { try { stderr.write(`wt-tsls: CPU watchdog: ${message}\n`) } catch { /* Protocol output is independent. */ } }
+}
+
+function reportStop(context, result, breach, budgetPct) {
+  if (result.status === 'stopped') {
+    context.stop()
+    const family = breach.scope === 'family' ? ' combined family' : ''
+    context.diagnostic(`stopped backend and tsserver ${breach.servers.map((server) => server.pid).join(',')}: ${breach.percent.toFixed(1)}% CPU above ${budgetPct}%${family} for ${breach.overMs}ms; restart the LSP client to launch wt-tsls again`)
+  } else if (result.status === 'survived') {
+    context.diagnostic(`survived: ${result.survivors.map((server) => server.pid).join(',')}; stop incomplete`)
+  } else if (result.status === 'unverified') context.diagnostic('stop unverified (post-signal census unavailable)')
+  else context.diagnostic('stop unavailable (process identity changed or signal failed); retrying next sample')
+}
+
+async function sampleAndEnforce(context, update, budgetPct) {
+  const sample = await context.readFamily(context.child.pid)
+  if (!context.active()) return
+  if (sample.status === 'measured' && sample.parent.identity !== context.pinned.identity) {
+    context.stop()
+    context.diagnostic('backend birth identity changed; supervision stopped without signalling')
+    return
   }
-  diagnostic(`budget ${budgetPct}% per tsserver for ${windowMs}ms, sample ${intervalMs}ms`)
-  check()
+  if (sample.status !== 'measured' && !context.unavailable) context.diagnostic(`unavailable (${sample.reason}); CPU budget is not enforced`)
+  context.unavailable = sample.status !== 'measured'
+  const breach = update(sample, context.now())
+  if (!breach) return
+  const pending = stopTsCpuFamily(context, sample, breach).then((result) => reportStop(context, result, breach, budgetPct))
+  pendingStops.set(context.child, pending)
+  try { await pending } finally { pendingStops.delete(context.child) }
+}
+
+function createCheck(context, birth, update, budgetPct) {
+  let busy = false
+  return async () => {
+    if (!context.active() || busy) return
+    busy = true
+    try {
+      const identity = await birth
+      if (!context.active()) return
+      if (identity.status !== 'measured') {
+        context.stop()
+        context.diagnostic(`birth identity unavailable (${identity.reason}); CPU budget is not enforced`)
+        return
+      }
+      context.pinned ??= { ...identity.process }
+      await sampleAndEnforce(context, update, budgetPct)
+    } catch { context.diagnostic('unavailable (CPU supervision read failed); CPU budget is not enforced') }
+    finally { busy = false }
+  }
+}
+
+function contextOptions(options, readFamily) {
+  return {
+    readIdentity: options.readIdentity ?? readFamily.identity, census: options.census ?? readFamily.census,
+    kill: options.kill ?? process.kill, now: options.now ?? (() => performance.now()),
+    settle: options.settle ?? (() => new Promise((resolve) => setTimeout(resolve, 20))),
+  }
+}
+
+export function monitorTsserverCpu(child, stderr, options = {}) {
+  const readFamily = options.readFamily ?? createTsCpuReader()
+  const intervalMs = options.intervalMs ?? TS_CPU_SAMPLE_MS
+  const budgetPct = options.budgetPct ?? TS_CPU_BUDGET_PCT
+  const windowMs = options.windowMs ?? TS_CPU_WINDOW_MS
+  const maxGapMs = 3 * intervalMs
+  let timer, stopped = false
+  const stop = () => { stopped = true; clearInterval(timer) }
+  const context = { child, readFamily, ...contextOptions(options, readFamily),
+    active: () => !stopped, stop, diagnostic: diagnosticWriter(stderr) }
+  child.once('exit', stop)
+  child.once('close', stop)
+  if (child.exitCode != null || child.signalCode != null) return { status: 'exited' }
+  // Invoke at spawn, before any CPU read, and never retry/adopt a later birth.
+  const birth = context.readIdentity(child.pid)
+  const check = createCheck(context, birth, createTsCpuBudget({ budgetPct, windowMs, maxGapMs }), budgetPct)
+  context.diagnostic(`budget ${budgetPct}% per tsserver for ${windowMs}ms, sample ${intervalMs}ms; also combined family, maximum gap ${maxGapMs}ms`)
   timer = setInterval(check, intervalMs)
   timer.unref()
-  child.once('close', () => { stopped = true; clearInterval(timer) })
+  void check()
   return { status: 'monitoring' }
 }

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 // Cumulative child CPU accounting; unavailable is deliberately distinct from idle.
@@ -6,7 +6,14 @@ import { readFileSync } from 'node:fs'
 const text = (file) => readFileSync(file, 'utf8')
 const isServer = (command) => /(?:^|[/\\])_?tsserver\.js(?:\s|$)/.test(command)
 const unavailable = (reason) => ({ status: 'unavailable', reason })
-const execute = (command, args) => spawnSync(command, args, { encoding: 'utf8', timeout: 1000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: { ...process.env, LC_ALL: 'C' } })
+/** @knipTestSeam Computed file-URL import in ts-language-server-cpu-r2.test.ts. */
+export function runTsCpuCommand(command, args, { exec = execFile, timeout = 1000 } = {}) {
+  return new Promise((resolve) => {
+    exec(command, args, { encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: { ...process.env, LC_ALL: 'C' } }, (error, stdout) => {
+      resolve({ status: error ? null : 0, error, stdout: stdout ?? '' })
+    })
+  })
+}
 
 function linuxProcess(pid, read, ticks) {
   const stat = read(`/proc/${pid}/stat`)
@@ -14,7 +21,7 @@ function linuxProcess(pid, read, ticks) {
   const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)
   const numbers = [fields[1], fields[11], fields[12], fields[19], fields[2]].map(Number)
   if (fields.length < 20 || numbers.some((n) => !Number.isSafeInteger(n) || n < 0)) throw new Error('invalid proc stat')
-  return { pid: Number(pid), ppid: numbers[0], pgid: numbers[4], identity: `${pid}:${fields[19]}`, cpuMs: (numbers[1] + numbers[2]) / ticks * 1000 }
+  return { pid: Number(pid), ppid: numbers[0], pgid: numbers[4], state: fields[0], identity: `${pid}:${fields[19]}`, cpuMs: (numbers[1] + numbers[2]) / ticks * 1000 }
 }
 
 function linuxFamily(pid, read, ticks) {
@@ -39,28 +46,40 @@ function cpuTime(value) {
   return total
 }
 
-function darwinFamily(pid, run) {
-  const result = run('/bin/ps', ['-wwaxo', 'pid=,ppid=,pgid=,lstart=,time=,command='])
+function psCommand(value) {
+  const command = value.trimStart() || value.slice(-1)
+  if (/[\r\n\u2028\u2029]/.test(command)) throw new Error('invalid ps process row')
+  return command
+}
+
+async function darwinProcesses(run) {
+  const result = await run('/bin/ps', ['-wwaxo', 'pid=,ppid=,pgid=,lstart=,time=,command='])
   if (result.status !== 0 || result.error) throw new Error('ps failed')
-  const rows = result.stdout.trim().split('\n').map((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(\S+)\s+(.+)$/.exec(line)
+  return result.stdout.trim().split('\n').map((line) => {
+    // Capture the delimiter once; command whitespace is handled without
+    // overlapping repetitions in the host-wide process-row expression.
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d\d:\d\d:\d\d\s+\d{4})\s+(\S+)(\s[\s\S]+)$/.exec(line)
     if (!match) throw new Error('invalid ps process row')
-    return { pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), identity: `${match[1]}:${match[4]}`, cpuMs: cpuTime(match[5]), command: match[6] }
+    return { pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), identity: `${match[1]}:${match[4]}`, cpuMs: cpuTime(match[5]), command: psCommand(match[6]) }
   })
+}
+
+async function darwinFamily(pid, run) {
+  const rows = await darwinProcesses(run)
   const parent = rows.find((row) => row.pid === Number(pid))
   if (!parent) throw new Error('backend not found')
   return { status: 'measured', parent, servers: rows.filter((row) => row.ppid === Number(pid) && isServer(row.command)) }
 }
 
 // Child CPU is OS cumulative user+system time, never the launcher's process.cpuUsage().
-export function createTsCpuReader({ platform = process.platform, read = text, run = execute } = {}) {
+export function createTsCpuReader({ platform = process.platform, read = text, run = runTsCpuCommand } = {}) {
   let ticks
-  return (pid) => {
+  const reader = async (pid) => {
     if (platform !== 'linux' && platform !== 'darwin') return unavailable(`unsupported platform ${platform}`)
     try {
-      if (platform === 'darwin') return darwinFamily(pid, run)
+      if (platform === 'darwin') return await darwinFamily(pid, run)
       if (ticks === undefined) {
-        const result = run('/usr/bin/getconf', ['CLK_TCK'])
+        const result = await run('/usr/bin/getconf', ['CLK_TCK'])
         const value = result.status === 0 && !result.error ? Number(result.stdout.trim()) : NaN
         if (!Number.isSafeInteger(value) || value <= 0) return unavailable('CLK_TCK unavailable')
         ticks = value
@@ -68,4 +87,38 @@ export function createTsCpuReader({ platform = process.platform, read = text, ru
       return linuxFamily(pid, read, ticks)
     } catch { return unavailable('process CPU sample failed') }
   }
+  // Birth capture needs no clock helper. On Linux this stat is read synchronously
+  // at spawn, before the first asynchronous cumulative-CPU sample starts.
+  reader.identity = (pid) => processIdentity(pid, { platform, read, run })
+  reader.census = (pids) => processCensus(pids, { platform, read, run })
+  return reader
+}
+
+async function processIdentity(pid, { platform, read, run }) {
+  try {
+    if (platform === 'linux') return { status: 'measured', process: linuxProcess(pid, read, 1) }
+    if (platform !== 'darwin') return unavailable(`unsupported platform ${platform}`)
+    const process = (await darwinProcesses(run)).find((row) => row.pid === pid)
+    return process ? { status: 'measured', process } : unavailable('backend not found')
+  } catch { return unavailable('process birth identity unavailable') }
+}
+
+function linuxCensus(pids, read) {
+  return pids.flatMap((pid) => {
+    try {
+      const process = linuxProcess(pid, read, 1)
+      return ['Z', 'X'].includes(process.state) ? [] : [process]
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ESRCH') return []
+      throw error
+    }
+  })
+}
+
+async function processCensus(pids, { platform, read, run }) {
+  try {
+    if (platform === 'linux') return { status: 'measured', processes: linuxCensus(pids, read) }
+    if (platform === 'darwin') return { status: 'measured', processes: (await darwinProcesses(run)).filter((row) => pids.includes(row.pid)) }
+    return unavailable(`unsupported platform ${platform}`)
+  } catch { return unavailable('post-signal process census failed') }
 }

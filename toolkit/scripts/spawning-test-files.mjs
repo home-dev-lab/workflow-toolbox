@@ -210,6 +210,7 @@ export const spawningTestFiles = [
   'packages/build/test/suite-lock-static.test.ts',
   'packages/build/test/suite-lock.test.ts',
   'packages/build/test/test-orphan-reaper.test.ts',
+  'packages/build/test/ts-language-server-cpu-r2.test.ts',
   'packages/build/test/ts-language-server-cpu.test.ts',
   'packages/build/test/ts-language-server-launcher.test.ts',
   'packages/build/test/ts-language-server-watches.test.ts',

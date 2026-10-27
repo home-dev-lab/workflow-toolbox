@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- `wt-tsls` pins CPU supervision to the backend's spawn-time identity and ends polling on exit. CPU limits now cover both individual tsservers and their combined usage, pause through brief unavailable measurements, and reset after gaps longer than 15 seconds. Measurement helpers run asynchronously with a hard kill timeout; stopping rechecks process identities, targets escaped offenders directly, and verifies termination before reporting success.
 - `wt-tsls` supervises Node tsserver CPU outside the server's event loop. A server above 100% of one core for 120 consecutive sampled seconds stops its isolated backend process group, including the transport and sibling servers. Samples run every five seconds using Linux user/system ticks or macOS `ps` CPU time. Unsupported platforms and failed measurements explicitly report an unavailable, unenforced budget instead of idle CPU. The existing native-watch bound remains active.
 - The lane orphan watcher distinguishes failed `/proc` lookups and listings from unsupported platforms or missing procfs, reports the read error code with a retry notice, preserves pending recovery across unavailable sweeps, and re-announces failures after recovery or a changed error reason.
 - The opencode envelope catches stream-log failures when a child closes or reports a spawn error, preserving an earlier integrity refusal and its exit-3 response instead of crashing.
