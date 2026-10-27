@@ -33,12 +33,25 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { describe, it, expect } from 'vitest'
+import { afterAll, describe, it, expect } from 'vitest'
 import { parse } from 'yaml'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 const CHANGELOG = join(REPO_ROOT, 'plugin/CHANGELOG.md')
+const CHILD_ENV_ROOT = mkdtempSync(join(tmpdir(), 'changelog-child-env-'))
+// A real empty file also works with Git for Windows, unlike a null device path.
+const EMPTY_GIT_CONFIG = join(CHILD_ENV_ROOT, 'gitconfig')
+writeFileSync(EMPTY_GIT_CONFIG, '')
+const CHILD_ENV = sealedPluginCliEnv(CHILD_ENV_ROOT, {
+  GIT_CONFIG_GLOBAL: EMPTY_GIT_CONFIG,
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_NO_LAZY_FETCH: '1',
+})
+// Wait for child completion, with a generous hang cap rather than a short readiness deadline.
+const CHILD_COMPLETION_TIMEOUT_MS = 60_000
+afterAll(() => rmSync(CHILD_ENV_ROOT, { recursive: true, force: true }))
 
 /** Every `## [x.y.z]` heading, in file order, with `## [Unreleased]` deliberately excluded. */
 function releasedHeadings(markdown: string): string[] {
@@ -80,7 +93,7 @@ function releasedSections(markdown: string): Map<string, string> {
 
 /** `main`'s copy of the changelog, or null when git cannot answer. Never a silent empty string. */
 function changelogOnMain(): string | null {
-  const r = spawnSync('git', ['-C', REPO_ROOT, 'show', 'main:plugin/CHANGELOG.md'], { encoding: 'utf8' })
+  const r = spawnSync('git', ['-C', REPO_ROOT, 'show', 'main:plugin/CHANGELOG.md'], { encoding: 'utf8', env: CHILD_ENV })
   if (r.error || r.status !== 0) return null
   return r.stdout ?? null
 }
@@ -138,8 +151,8 @@ function releasedByteBlocks(bytes: Buffer): { version: string; bytes: Buffer }[]
 function changelogGit(args: string[], root = REPO_ROOT) {
   // No shell, checkout or fetching: absent local history is explicitly unverified.
   return spawnSync('git', ['-C', root, ...args], {
-    env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
-    timeout: 10_000,
+    env: CHILD_ENV,
+    timeout: CHILD_COMPLETION_TIMEOUT_MS,
     maxBuffer: 8 * 1024 * 1024,
   })
 }
@@ -383,7 +396,7 @@ describe('cross-OS changelog policy has published release evidence', () => {
     fixtureGit(root, ['clone', '--quiet', '--no-tags', '--depth=2', pathToFileURL(root).href, checkout])
     expect(changelogGit(['rev-parse', '--is-shallow-repository'], checkout).stdout.toString().trim()).toBe('true')
     expect(changelogGit(['show-ref', '--verify', `refs/tags/${FIXTURE_TAG}`], checkout).status).not.toBe(0)
-    const fetched = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], { cwd: checkout, timeout: 10_000 })
+    const fetched = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], { cwd: checkout, env: CHILD_ENV, timeout: CHILD_COMPLETION_TIMEOUT_MS })
     expect(fetched.status, fetched.stderr?.toString()).toBe(0)
     const block = releasedByteBlocks(Buffer.from(FIXTURE_ARCHIVE))[0]!
     expect(releasedBlockIssue(checkout, block, new Map())).toBeNull()
@@ -402,7 +415,7 @@ describe('cross-OS release tag fetch preserves certification', () => {
     const checkout = join(root, 'checkout')
     fixtureGit(root, ['clone', '--quiet', '--no-tags', '--depth=2', pathToFileURL(root).href, checkout])
     expect(changelogGit(['rev-parse', '--verify', 'HEAD^1'], checkout).status).toBe(0)
-    const fetched = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], { cwd: checkout, timeout: 10_000 })
+    const fetched = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], { cwd: checkout, env: CHILD_ENV, timeout: CHILD_COMPLETION_TIMEOUT_MS })
     expect(fetched.status, fetched.stderr?.toString()).toBe(0)
     expect(changelogGit(['rev-parse', '--verify', 'HEAD^1'], checkout).status,
       'Fetching a release tag at HEAD must not remove the first parent required by owner certification',
