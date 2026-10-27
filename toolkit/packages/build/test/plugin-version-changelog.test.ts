@@ -28,7 +28,9 @@
 // branch that writes nothing at all stays green here.
 
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it, expect } from 'vitest'
@@ -132,13 +134,64 @@ function releasedByteBlocks(bytes: Buffer): { version: string; bytes: Buffer }[]
   })
 }
 
-function changelogGit(args: string[]) {
+function changelogGit(args: string[], root = REPO_ROOT) {
   // No shell, checkout or fetching: absent local history is explicitly unverified.
-  return spawnSync('git', ['-C', REPO_ROOT, ...args], {
+  return spawnSync('git', ['-C', root, ...args], {
     env: { ...process.env, GIT_NO_LAZY_FETCH: '1' },
     timeout: 10_000,
     maxBuffer: 8 * 1024 * 1024,
   })
+}
+
+type ByteBlock = ReturnType<typeof releasedByteBlocks>[number]
+type ReleasedEdit = { tagSha256: string; currentSha256: string; reason: string }
+type ReleasedEdits = ReadonlyMap<string, ReleasedEdit>
+
+// These are exact historical corrections, not permission to edit either version again.
+// Pin the historical side by digest only: it can contain text deliberately removed from publication.
+const RELEASED_EDITS: ReleasedEdits = new Map([
+  ['0.171.0', {
+    tagSha256: 'f246abf9a527646b8a32a4b64c112bf43588e4b7f5bcf5ae78b5914160b81d5f',
+    currentSha256: 'e7e10f7ab897a0c5dcd8d38faad0e76c18506bb4ea7ca7f57288b2936ef815a2',
+    reason: 'Historical whitespace cleanup removed exactly seven empty lines from the released block.',
+  }],
+  ['0.174.0', {
+    tagSha256: '877f285e2b1e9a04bbd0707b60f8a0a0064d486d3702c9f209d9ace8c2a2e6e2',
+    currentSha256: '966727fae9119a730e98b4da7d2be6d6ba974016bd090af65c2ee3eae3978809',
+    reason: 'A deliberate correction removed a private default and documented the empty default.',
+  }],
+])
+
+function blockSha256(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+/** Check the current half even without local tags, so removed versions and stale pins fail. */
+function releasedEditIssue(version: string, edit: ReleasedEdit, blocks: ByteBlock[]): string | null {
+  const matching = blocks.filter((block) => block.version === version)
+  if (matching.length !== 1) return `Unused exception [${version}]: expected exactly one current block`
+  if (!edit.reason.trim()) return `Exception [${version}] requires a reason`
+  if (blockSha256(matching[0]!.bytes) !== edit.currentSha256) {
+    return `Exception [${version}] does not match the current block digest`
+  }
+  return null
+}
+
+function releasedBlockIssue(root: string, block: ByteBlock, edits: ReleasedEdits): string | null {
+  const { version, bytes } = block
+  const tag = `workflow-toolbox--v${version}`
+  const archived = changelogGit(['show', `refs/tags/${tag}:plugin/CHANGELOG.md`], root)
+  if (archived.error || archived.status !== 0) return `Cannot read ${tag}:plugin/CHANGELOG.md`
+  const matching = releasedByteBlocks(archived.stdout).filter((entry) => entry.version === version)
+  if (matching.length !== 1) return `${tag} must contain exactly one [${version}] block`
+  const original = matching[0]!.bytes
+  const edit = edits.get(version)
+  if (!edit) return bytes.equals(original) ? null : `Released changelog block [${version}] differs from ${tag}`
+  if (bytes.equals(original)) return `Unused exception [${version}]: current block equals its release tag`
+  const currentIssue = releasedEditIssue(version, edit, [block])
+  if (currentIssue) return currentIssue
+  if (blockSha256(original) !== edit.tagSha256) return `Exception [${version}] does not match the tag block digest`
+  return null
 }
 
 const changelogBytes = readFileSync(CHANGELOG)
@@ -154,6 +207,12 @@ describe('released changelog blocks equal their release tags', () => {
     expect(byteBlocks.map(({ version }) => version)).toEqual(releasedHeadings(changelogBytes.toString('utf8')))
   })
 
+  for (const [version, edit] of RELEASED_EDITS) {
+    it(`keeps the reasoned exception for [${version}] pinned to an existing current block`, () => {
+      expect(releasedEditIssue(version, edit, byteBlocks)).toBeNull()
+    })
+  }
+
   for (const { version, bytes } of byteBlocks) {
     const tag = `workflow-toolbox--v${version}`
     it(`keeps [${version}] byte-identical to ${tag}`, (context) => {
@@ -163,16 +222,128 @@ describe('released changelog blocks equal their release tags', () => {
         console.warn(`SKIP ${tag}: ${reason}`)
         context.skip(reason)
       }
-      const archived = changelogGit(['show', `refs/tags/${tag}:plugin/CHANGELOG.md`])
-      expect(archived.error, `Cannot read ${tag}:plugin/CHANGELOG.md`).toBeUndefined()
-      expect(archived.status, `Cannot read ${tag}:plugin/CHANGELOG.md`).toBe(0)
-      const matching = releasedByteBlocks(archived.stdout).filter((block) => block.version === version)
-      expect(matching.length, `${tag} must contain exactly one [${version}] block`).toBe(1)
-      expect(
-        bytes.equals(matching[0]!.bytes),
-        `Released changelog block [${version}] differs from ${tag}:plugin/CHANGELOG.md. ` +
-          'Move new entries under ## [Unreleased]; released blocks must retain their exact bytes.',
-      ).toBe(true)
+      // Diagnostics contain no archived prose: a deliberate correction may have removed private text.
+      expect(releasedBlockIssue(REPO_ROOT, { version, bytes }, RELEASED_EDITS),
+        'Move new entries under ## [Unreleased]; only the exact reasoned corrections are permitted.',
+      ).toBeNull()
     })
   }
+})
+
+const FIXTURE_VERSION = '1.2.3'
+const FIXTURE_TAG = `workflow-toolbox--v${FIXTURE_VERSION}`
+const FIXTURE_ARCHIVE = '# Changelog\n\n## [Unreleased]\n\n- New entry.\n\n## [1.2.3]\n\n- Original café.  \n\n'
+const FIXTURE_CURRENT = FIXTURE_ARCHIVE.replace('Original café', 'Corrected café')
+type ReleaseFixture = { root: string; block: ByteBlock; edits: Map<string, ReleasedEdit> }
+
+function fixtureGit(root: string, args: string[]): void {
+  const result = changelogGit([
+    '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Fixture', '-c', 'user.email=fixture.invalid', ...args,
+  ], root)
+  if (result.error || result.status !== 0) throw new Error(`Fixture git ${args[0]} failed`)
+}
+
+function tagFixtureChangelog(root: string, markdown: string): void {
+  writeFileSync(join(root, 'plugin/CHANGELOG.md'), markdown)
+  fixtureGit(root, ['add', 'plugin/CHANGELOG.md'])
+  fixtureGit(root, ['commit', '--no-gpg-sign', '-m', 'Fixture release'])
+  fixtureGit(root, ['tag', '-f', FIXTURE_TAG])
+}
+
+function withReleaseFixture(run: (fixture: ReleaseFixture) => void): void {
+  const root = mkdtempSync(join(tmpdir(), 'changelog-policy-'))
+  try {
+    mkdirSync(join(root, 'plugin'))
+    fixtureGit(root, ['init', '--quiet'])
+    tagFixtureChangelog(root, FIXTURE_ARCHIVE)
+    writeFileSync(join(root, 'plugin/CHANGELOG.md'), FIXTURE_CURRENT)
+    const block = releasedByteBlocks(readFileSync(join(root, 'plugin/CHANGELOG.md')))[0]!
+    const edit = {
+      tagSha256: blockSha256(releasedByteBlocks(Buffer.from(FIXTURE_ARCHIVE))[0]!.bytes),
+      currentSha256: blockSha256(block.bytes),
+      reason: 'Correct the fixture release wording.',
+    }
+    run({ root, block, edits: new Map([[FIXTURE_VERSION, edit]]) })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+describe('released changelog exceptions against real fixture tags', () => {
+  it('accepts an unchanged release without an exception', () => withReleaseFixture(({ root }) => {
+    const block = releasedByteBlocks(Buffer.from(FIXTURE_ARCHIVE))[0]!
+    expect(releasedBlockIssue(root, block, new Map())).toBeNull()
+  }))
+
+  it('rejects an entry moved from Unreleased into an unallowlisted release', () => withReleaseFixture(({ root }) => {
+    const moved = FIXTURE_ARCHIVE.replace('- New entry.\n\n', '').replace('- Original', '- New entry.\n- Original')
+    const block = releasedByteBlocks(Buffer.from(moved))[0]!
+    expect(releasedBlockIssue(root, block, new Map())).toBe(
+      `Released changelog block [${FIXTURE_VERSION}] differs from ${FIXTURE_TAG}`,
+    )
+  }))
+
+  it('accepts only the exact pinned correction', () => withReleaseFixture(({ root, block, edits }) => {
+    expect(releasedBlockIssue(root, block, edits)).toBeNull()
+  }))
+
+  it('rejects further drift of an allowlisted block', () => withReleaseFixture(({ root, block, edits }) => {
+    block.bytes = Buffer.concat([block.bytes, Buffer.from('\n')])
+    expect(releasedBlockIssue(root, block, edits)).toBe(
+      `Exception [${FIXTURE_VERSION}] does not match the current block digest`,
+    )
+  }))
+
+  it('rejects a changed tag even when the current pin still matches', () => withReleaseFixture(({ root, block, edits }) => {
+    tagFixtureChangelog(root, FIXTURE_ARCHIVE.replace('Original café', 'Another release'))
+    expect(releasedBlockIssue(root, block, edits)).toBe(
+      `Exception [${FIXTURE_VERSION}] does not match the tag block digest`,
+    )
+  }))
+})
+
+describe('released changelog exception staleness', () => {
+  it('rejects an exception after the drift is reverted even if its current pin is updated', () => withReleaseFixture(({ root, edits }) => {
+    const block = releasedByteBlocks(Buffer.from(FIXTURE_ARCHIVE))[0]!
+    edits.get(FIXTURE_VERSION)!.currentSha256 = blockSha256(block.bytes)
+    expect(releasedBlockIssue(root, block, edits)).toBe(
+      `Unused exception [${FIXTURE_VERSION}]: current block equals its release tag`,
+    )
+  }))
+
+  it.each([['removed', 0], ['duplicated', 2]] as const)(
+    'rejects an exception whose version is %s', (_label, count) => withReleaseFixture(({ block, edits }) => {
+      expect(releasedEditIssue(FIXTURE_VERSION, edits.get(FIXTURE_VERSION)!, Array<ByteBlock>(count).fill(block))).toBe(
+        `Unused exception [${FIXTURE_VERSION}]: expected exactly one current block`,
+      )
+    }),
+  )
+
+  it('rejects a stale current pin without needing the tag', () => withReleaseFixture(({ block, edits }) => {
+    block.bytes = Buffer.concat([block.bytes, Buffer.from('another edit\n')])
+    expect(releasedEditIssue(FIXTURE_VERSION, edits.get(FIXTURE_VERSION)!, [block])).toBe(
+      `Exception [${FIXTURE_VERSION}] does not match the current block digest`,
+    )
+  }))
+
+  it('requires a nonempty reason', () => withReleaseFixture(({ block, edits }) => {
+    edits.get(FIXTURE_VERSION)!.reason = ' \n'
+    expect(releasedEditIssue(FIXTURE_VERSION, edits.get(FIXTURE_VERSION)!, [block])).toBe(
+      `Exception [${FIXTURE_VERSION}] requires a reason`,
+    )
+  }))
+})
+
+describe('release tag evidence is required for a comparison', () => {
+  it.each([['missing', '## [9.9.9]\n'], ['duplicated', '## [1.2.3]\n## [1.2.3]\n']])(
+    'rejects a %s block in the tag', (_label, markdown) => withReleaseFixture(({ root, block, edits }) => {
+      tagFixtureChangelog(root, markdown)
+      expect(releasedBlockIssue(root, block, edits)).toBe(`${FIXTURE_TAG} must contain exactly one [${FIXTURE_VERSION}] block`)
+    }),
+  )
+
+  it('reports an unreadable tag instead of treating it as matching', () => withReleaseFixture(({ root, block, edits }) => {
+    fixtureGit(root, ['tag', '-d', FIXTURE_TAG])
+    expect(releasedBlockIssue(root, block, edits)).toBe(`Cannot read ${FIXTURE_TAG}:plugin/CHANGELOG.md`)
+  }))
 })
