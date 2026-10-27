@@ -3,12 +3,14 @@ import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathS
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { laneSandboxContext, noteInsideLaneSandbox, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
 // @ts-expect-error ESM runtime module
 import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { detectOrphanWatchers, terminateOrphanWatchers } from '../../../../plugin/bin/lib/lane-watcher-orphans.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { createProcfs } from '../../../../plugin/bin/lib/host/procfs.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { classifyIdleHelper, IDLE_HELPER_SAFE_TO_STOP_SECONDS } from '../../../../plugin/bin/lib/resolved-binary.mjs'
 // @ts-expect-error ESM runtime module
@@ -16,6 +18,22 @@ import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const WATCHER = resolve(__dirname, '../../../../plugin/bin/wt-lane-orphan-watch.mjs')
 const LIB = resolve(__dirname, '../../../../plugin/bin/lib')
+const PROCFS_URL = pathToFileURL(join(LIB, 'host/procfs.mjs')).href
+const ORPHANS_URL = pathToFileURL(join(LIB, 'lane-watcher-orphans.mjs')).href
+const SEEDED_PROCFS = (outcomes: Array<string | null>) => `
+export * from ${JSON.stringify(PROCFS_URL)};
+import { createProcfs as real } from ${JSON.stringify(PROCFS_URL)};
+const outcomes = ${JSON.stringify(outcomes)};
+let reads = 0;
+export function createProcfs(options) {
+  const code = outcomes[reads++];
+  return real({ ...options, platform: 'linux', exists: () => code !== 'missing',
+    stat: () => { throw Object.assign(new Error('seeded lookup failure'), { code: 'ENOENT' }); }, readdir: () => {
+    if (code) throw Object.assign(new Error('seeded read failure'), { code });
+    return [];
+  } });
+}
+`
 const load = async <T>(file: string): Promise<T> => (await import(pathToFileURL(join(LIB, file)).href)) as T
 const { isLiveSandboxedLane, laneDescendantPids } = await load<{ isLiveSandboxedLane: (record: Record<string, unknown>, verdict: { status: string }) => boolean, laneDescendantPids: (roots: number[], rows: Array<{ pid: number, ppid?: number }>) => Set<number> }>('lane-live-scan.mjs')
 const { inspectProcess } = await load<{ inspectProcess: (pid: number | undefined) => { argv: string[], startTime: number } }>('lane-supervisor-core.mjs')
@@ -48,6 +66,118 @@ async function withTempDirAsync(run: (root: string) => Promise<void>) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-orphan-watch-')))
   try { await run(root) } finally { rmSync(laneHostDir(root), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) }
 }
+
+function readRecoveryWatcher(root: string, outcomes: Array<string | null>, platform = process.platform) {
+  const fixture = join(root, 'procfs.mjs')
+  const preload = join(root, 'preload.mjs')
+  const detector = join(root, 'detector.mjs')
+  const helpers = join(root, 'helpers.json')
+  writeFileSync(fixture, SEEDED_PROCFS(outcomes))
+  writeFileSync(detector, `import { terminateOrphanWatchers as real } from ${JSON.stringify(ORPHANS_URL)};
+    const hostOptions = { platform: ${JSON.stringify(platform)} };
+    export function terminateOrphanWatchers() { return real({ ...hostOptions, platform: 'linux' }); }`)
+  writeFileSync(helpers, '[]')
+  const hook = `export function resolve(specifier, context, nextResolve) {
+    if (context.parentURL === ${JSON.stringify(pathToFileURL(WATCHER).href)} && specifier === './lib/lane-watcher-orphans.mjs') {
+      return { url: ${JSON.stringify(pathToFileURL(detector).href)}, shortCircuit: true };
+    }
+    if (context.parentURL === ${JSON.stringify(ORPHANS_URL)} && specifier === './host/procfs.mjs') {
+      return { url: ${JSON.stringify(pathToFileURL(fixture).href)}, shortCircuit: true };
+    }
+    return nextResolve(specifier, context);
+  }`
+  writeFileSync(preload, `import { register } from 'node:module'; register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(hook)}`)}, import.meta.url);`)
+  return spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, WATCHER, '--project', root], {
+    encoding: 'utf8', timeout: 30_000,
+    env: { ...process.env, CLAUDE_CONFIG_DIR: join(root, 'config'), CLAUDE_PLUGIN_DATA: join(root, 'data'), XDG_STATE_HOME: join(root, 'state'), WT_LANE_WATCH_TEST_HELPERS: helpers, WT_LANE_WATCH_TEST_MAX_SWEEPS: String(outcomes.length) },
+  })
+}
+
+it.each(['darwin', 'win32'])('procfs availability: preserves the unsupported-platform verdict on %s without filesystem reads', (platform) => {
+  const exists = vi.fn(() => true)
+  const readdir = vi.fn(() => [])
+  const procfs = createProcfs({ platform, exists, readdir })
+  expect(detectOrphanWatchers({ platform, procfs })).toEqual({
+    status: 'unavailable', reason: 'watcher orphan detection unavailable on this platform: /proc required', orphans: [], reports: [],
+  })
+  expect(exists).not.toHaveBeenCalled()
+  expect(readdir).not.toHaveBeenCalled()
+  expect(terminateOrphanWatchers({ platform: 'linux', procfs: createProcfs({ platform: 'linux', exists: () => true, readdir: () => { throw Object.assign(new Error('read'), { code: 'EIO' }) } }) })).toMatchObject({
+    retryable: true, reason: 'watcher orphan detection /proc read failed: EIO; will retry', killed: [],
+  })
+})
+
+it('procfs availability: distinguishes a missing root from an unreadable root without attempting a listing', () => {
+  const exists = vi.fn(() => false)
+  const readdir = vi.fn(() => [])
+  const stat = vi.fn(() => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) })
+  const procfs = createProcfs({ platform: 'linux', exists, stat, readdir })
+  expect(detectOrphanWatchers({ platform: 'linux', procfs })).toEqual({
+    status: 'unavailable', reason: 'watcher orphan detection unavailable on this platform: /proc required', orphans: [], reports: [],
+  })
+  expect(exists).toHaveBeenCalledExactlyOnceWith('/proc')
+  expect(readdir).not.toHaveBeenCalled()
+  stat.mockImplementation(() => { throw Object.assign(new Error('lookup'), { code: 'EACCES' }) })
+  expect(detectOrphanWatchers({ platform: 'linux', procfs })).toMatchObject({
+    status: 'unavailable', retryable: true, reason: 'watcher orphan detection /proc read failed: EACCES; will retry',
+  })
+})
+
+it('procfs availability: a false existence lookup still lists a root whose stat succeeds', () => {
+  const stat = vi.fn(() => ({}))
+  const readdir = vi.fn(() => [])
+  const procfs = createProcfs({ platform: 'linux', exists: () => false, stat, readdir })
+  expect(detectOrphanWatchers({ platform: 'linux', procfs })).toEqual({ status: 'known', orphans: [], reports: [] })
+  expect(stat).toHaveBeenCalledExactlyOnceWith('/proc')
+  expect(readdir).toHaveBeenCalledExactlyOnceWith('/proc', { withFileTypes: true })
+})
+
+it.each(['EACCES', 'EPERM', 'EIO'])('procfs availability: preserves root lookup error %s and sends no signal', (code) => {
+  const readdir = vi.fn(() => [])
+  const kill = vi.fn()
+  const procfs = createProcfs({ platform: 'linux', exists: () => false, stat: () => { throw Object.assign(new Error('lookup'), { code }) }, readdir })
+  expect(terminateOrphanWatchers({ platform: 'linux', procfs, kill })).toEqual({
+    status: 'unavailable', retryable: true, reason: `watcher orphan detection /proc read failed: ${code}; will retry`,
+    orphans: [], reports: [], killed: [],
+  })
+  expect(readdir).not.toHaveBeenCalled()
+  expect(kill).not.toHaveBeenCalled()
+})
+
+it.each(['EACCES', 'EPERM', 'EIO', 'ENOENT', undefined])('procfs availability: reports a retryable read failure with reason %s and sends no signal', (code) => {
+  const error = Object.assign(new Error('seeded read failure'), code ? { code } : {})
+  const readdir = vi.fn(() => { throw error })
+  const procfs = createProcfs({ platform: 'linux', exists: () => true, readdir })
+  const kill = vi.fn()
+  expect(terminateOrphanWatchers({ platform: 'linux', procfs, kill })).toEqual({
+    status: 'unavailable', retryable: true,
+    reason: `watcher orphan detection /proc read failed: ${code ?? 'Error: seeded read failure'}; will retry`,
+    orphans: [], reports: [], killed: [],
+  })
+  expect(readdir).toHaveBeenCalledExactlyOnceWith('/proc', { withFileTypes: true })
+  expect(kill).not.toHaveBeenCalled()
+})
+
+const READ_FAILED = 'watcher orphan detection /proc read failed: EIO; will retry'
+const RECOVERED = 'watcher orphan detection recovered: /proc read succeeded'
+const MISSING_ROOT = 'watcher orphan detection unavailable on this platform: /proc required'
+it.each([
+  { name: 'repeated episodes', outcomes: [null, 'EIO', 'EIO', null, null, 'EIO', null], expected: [READ_FAILED, RECOVERED, READ_FAILED, RECOVERED] },
+  { name: 'intervening missing root', outcomes: ['EIO', 'missing', 'missing', null, null], expected: [READ_FAILED, MISSING_ROOT, RECOVERED] },
+  { name: 'missing root before read failure', outcomes: ['missing', 'EIO', 'EIO', null], expected: [MISSING_ROOT, READ_FAILED, RECOVERED] },
+  { name: 'changed failure reason', outcomes: ['EIO', 'EPERM', 'EPERM', null], expected: [READ_FAILED, 'watcher orphan detection /proc read failed: EPERM; will retry', RECOVERED] },
+])('procfs availability: reports ordered notices for $name in the real watcher', ({ outcomes, expected }) => withTempDir((root) => {
+  const result = readRecoveryWatcher(root, outcomes)
+  expect(result.status, result.stderr).toBe(0)
+  expect(result.stdout.split('\n').filter(Boolean)).toEqual(expected)
+  expect(result.stderr).toContain(`test sweep limit reached (${outcomes.length}/${outcomes.length})`)
+}))
+
+it.each(['linux', 'darwin', 'win32'] as const)('procfs availability: injected Linux procfs recovers with detector host %s', (platform) => withTempDir((root) => {
+  const result = readRecoveryWatcher(root, ['EIO', null, 'EIO', null], platform)
+  expect(result.status, result.stderr).toBe(0)
+  expect(result.stdout.split('\n').filter(Boolean)).toEqual([READ_FAILED, RECOVERED, READ_FAILED, RECOVERED])
+}))
 
 // Host PIDs whose command line contains `needle` (read from /proc; Linux-only callers).
 function pidsMatching(needle: string): number[] {
