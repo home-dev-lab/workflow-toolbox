@@ -420,10 +420,24 @@ describe('wt-release-push-evidence-guard-hook literal fallback', () => {
 })
 
 describe('wt-release-push-evidence-guard-hook eligibility', () => {
+  it.each(['git push public HEAD:main', 'git push public --delete main', 'git push public --all', 'git status && git push public HEAD:main'])(
+    'delivers delegate refusals for %s and records muted refusals as silent', (command) => {
+      const root = repo()
+      configureReleaseRemote(root)
+      const denied = runReleasePush(root, command, {}, { agent_id: 'child' })
+      expect(denied.status).toBe(0)
+      expect(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+      expect(runReleasePush(root, command, { WT_GUARD_MODE: 'observe' }, { agent_id: 'child' }).stdout).toBe('')
+      const journalFile = readdirSync(states.get(root)!).find((file) => file.endsWith('.ndjson'))!
+      const entries = readFileSync(join(states.get(root)!, journalFile), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+      expect(entries.map((entry) => entry.decision)).toEqual(['blocked', 'silent'])
+    },
+  )
+
   it('preserves eligibility, observe mode, fail-open, and exact-command overrides', () => {
     const root = repo()
     configureReleaseRemote(root)
-    for (const payload of [{ tool_name: 'Read' }, { hook_event_name: 'PostToolUse' }, { agent_id: 'child' }, { tool_input: {} }]) {
+    for (const payload of [{ tool_name: 'Read' }, { hook_event_name: 'PostToolUse' }, { tool_input: {} }]) {
       expect(runReleasePush(root, undefined, {}, payload).stdout).toBe('')
     }
     expect(runReleasePush(root, 'git status').stdout).toBe('')

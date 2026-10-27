@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Refuse the expensive ambient general-purpose agent unless justified; warn on unpinned models.
+// Refuse the main session's expensive ambient general-purpose agent unless justified; warn on unpinned models.
+// Delegate spawn-style denials remain context-only and are journalled silent when nothing is emitted.
 // Hook errors must never prevent a legitimate spawn.
 
 import { resolveAgentModelPin } from './lib/agent-model-pin.mjs'
@@ -96,21 +97,31 @@ function warnIfUnpinned(input, toolInput) {
 }
 
 function denyDefaultSpawn(input, type) {
-  recordGuardEvent({
-    guard: GUARD,
-    decision: 'blocked',
-    session: input.session_id,
-    agent: input.agent_id,
-    class: type ? 'general-purpose' : 'subagent-type-absent',
-    reason: type ? 'general-purpose without reason' : 'subagent_type absent without reason',
-  })
-  process.stdout.write(JSON.stringify({
+  const stdoutJson = {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
       permissionDecisionReason: refusal(),
     },
-  }))
+  }
+  const emitted = emitSpawnRefusal(input, stdoutJson)
+  recordGuardEvent({
+    guard: GUARD,
+    decision: emitted ? 'blocked' : 'silent',
+    session: input.session_id,
+    agent: input.agent_id,
+    class: type ? 'general-purpose' : 'subagent-type-absent',
+    reason: type ? 'general-purpose without reason' : 'subagent_type absent without reason',
+  })
+}
+
+function emitSpawnRefusal(input, stdoutJson) {
+  // Spawn style stays context-only for delegates; retain the existing main refusal in every mode.
+  if (typeof input.agent_id === 'string' && input.agent_id) {
+    return emitGuardNotice({ payload: input, stdoutJson })
+  }
+  process.stdout.write(JSON.stringify(stdoutJson))
+  return true
 }
 
 function main() {
