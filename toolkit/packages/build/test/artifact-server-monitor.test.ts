@@ -10,6 +10,7 @@ const { describe, it } = await import(process.argv[1] === fileURLToPath(import.m
 const MONITOR = new URL('../../../../plugin/bin/wt-artifact-server-ensure.mjs', import.meta.url)
 const LIBRARY = new URL('../../../../plugin/bin/lib/artifact-server.mjs', import.meta.url)
 type Evidence = { status: string, reason?: string }
+type Identity = Evidence & { pid?: number, startIdentity?: string }
 type Health = { pid: number | undefined, version: string }
 type Attachment = { port: number, health: Health }
 
@@ -24,6 +25,7 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
   const state = {
     now: 0, evidence, spawns: 0, output: '', direct: false, pid: pid as number | undefined, checks: [] as number[],
     candidate: null as Attachment | null, evidenceByPid: new Map<number, Evidence>(),
+    identities: new Map<number, Identity>(), identityChecks: [] as number[],
   }
   const health = (): Health => ({ pid: state.pid, version: '1.0.0' })
   const discover = async () => { state.spawns += 1; return { kind: 'found', port: 48001, health: health() } }
@@ -32,6 +34,9 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
     hostAdapter: { readProcessExecutionState: (old: number) => {
       state.checks.push(old)
       return state.evidenceByPid.get(old) ?? state.evidence
+    }, readProcessIdentity: (old: number) => {
+      state.identityChecks.push(old)
+      return state.identities.get(old) ?? { status: 'known', pid: old, startIdentity: `birth-${old}` }
     } },
     setTimeout: (done: () => void, ms: number) => { state.now += ms; done() },
     // Unconditional network/process seal, including when the production guard is mutated away.
@@ -41,7 +46,7 @@ function monitorFlow(evidence: Evidence = { status: 'alive' }, pid: number | und
     compareVersions: () => 0, watchIntervalMs: () => 10, retryOverallCapMs: () => 300_000,
     retryWindowMs: () => 60_000, retryAttempts: () => 3,
   }
-  const shared = sourceFunctions(library, 'export function artifactServerProcessStatus(', 'export function pathIsUnder(').replace('export function', 'function')
+  const shared = sourceFunctions(library, 'export function artifactServerProcessStatus(', 'export function pathIsUnder(').replaceAll('export function', 'function')
   const helpers = sourceFunctions(source, 'async function waitForAttachedServerExit(', 'async function main(')
   const body = sourceFunctions(source, '    const result = await discoverOrStart(firstPort)', '    const keepAlive = setInterval(')
   const entry = source.includes('function createMonitorState(')
@@ -201,10 +206,138 @@ describe('artifact monitor restart barrier', () => {
   })
 })
 
+async function healthyHandoff(samePort: boolean) {
+  const flow = await startFlow()
+  flow.state.candidate = { port: samePort ? 48001 : 48002, health: { pid: 43, version: '1.0.0' } }
+  flow.state.pid = 43
+  flow.state.direct = samePort
+  await tick(flow)
+  flow.state.candidate = null
+  flow.state.direct = true
+  return flow
+}
+
+async function loseB(flow: Awaited<ReturnType<typeof startFlow>>) {
+  flow.state.evidenceByPid.set(43, { status: 'gone' })
+  flow.state.direct = false
+  flow.state.pid = 44
+  await tick(flow)
+}
+
+function registerInstanceRetirementCases(samePort: boolean) {
+  const location = samePort ? 'same port' : 'candidate port'
+  it(`recovers after A exits during healthy B and its PID is reused (${location})`, async () => {
+    const flow = await healthyHandoff(samePort)
+    flow.state.evidenceByPid.set(42, { status: 'gone' })
+    await tick(flow)
+    flow.state.evidenceByPid.set(42, { status: 'alive' })
+    flow.state.identities.set(42, { status: 'known', pid: 42, startIdentity: 'unrelated-birth' })
+    await loseB(flow)
+    assert.equal(flow.state.spawns, 1, 'a recycled historical PID must not block recovery after all attached instances exit')
+    assert.doesNotMatch(flow.state.output, /RESTART DEFERRED: PID 42/)
+  })
+  it(`retires confirmed exits on healthy ticks without accumulating history (${location})`, async () => {
+    const flow = await healthyHandoff(samePort)
+    flow.state.evidenceByPid.set(42, { status: 'gone' })
+    const before = flow.state.checks.filter((pid) => pid === 42).length
+    await tick(flow)
+    const after = flow.state.checks.filter((pid) => pid === 42).length
+    assert.ok(after > before, 'healthy B must not skip checking historical A')
+    for (let index = 0; index < 100; index += 1) await tick(flow)
+    assert.equal(flow.state.checks.filter((pid) => pid === 42).length, after, 'confirmed exits must be retired permanently')
+    assert.equal(flow.state.spawns, 0, 'healthy B needs no replacement')
+  })
+  it(`detects reuse between ticks without observing A absent (${location})`, async () => {
+    const flow = await healthyHandoff(samePort)
+    flow.state.identities.set(42, { status: 'known', pid: 42, startIdentity: 'unrelated-birth' })
+    await loseB(flow)
+    assert.equal(flow.state.spawns, 1, 'birth identity must distinguish a recycled PID even when exit was not polled')
+  })
+}
+
+describe('artifact monitor retires process instances', () => {
+  for (const samePort of [false, true]) registerInstanceRetirementCases(samePort)
+  for (const reason of ['EACCES', 'PROCESS_IDENTITY_UNAVAILABLE on darwin', 'PROCESS_IDENTITY_UNAVAILABLE on win32']) {
+    it(`reports unavailable current identity as unknown: ${reason}`, async () => {
+      const flow = await healthyHandoff(false)
+      flow.state.identities.set(42, { status: 'unknown', reason })
+      await loseB(flow)
+      assert.equal(flow.state.spawns, 0, 'unavailable birth identity never authorizes replacement')
+      assert.ok(flow.state.output.includes(`PID 42 is unknown (${reason})`), 'identity uncertainty must be stated, not silently alive')
+    })
+  }
+  it('never learns an initially unknown identity from a later unrelated process', async () => {
+    const flow = monitorFlow()
+    flow.state.identities.set(42, { status: 'unknown', reason: 'initial birth unavailable' })
+    const ticks = await flow.create()
+    flow.state.spawns = 0
+    flow.state.identities.set(42, { status: 'known', pid: 42, startIdentity: 'unrelated-birth' })
+    flow.advance()
+    await ticks.watchTick()
+    await ticks.retryTick()
+    assert.equal(flow.state.spawns, 0)
+    assert.match(flow.state.output, /PID 42 is unknown.*initial birth unavailable/)
+  })
+})
+
 function sharedStatus() {
   const source = sourceFunctions(readFileSync(LIBRARY, 'utf8'), 'export function artifactServerProcessStatus(', 'export function pathIsUnder(')
-  return runInNewContext(`${source.replace('export function', 'function')}; artifactServerProcessStatus`)
+  return runInNewContext(`${source.replaceAll('export function', 'function')}; artifactServerProcessStatus`)
 }
+
+describe('shared artifact process-instance evidence', () => {
+  const original = { status: 'known', pid: 42, startIdentity: 'original-birth' }
+  for (const identity of [undefined, {}, { ...original, pid: 43 }, { ...original, startIdentity: '' }, { status: 'unknown', reason: 'EPERM' }]) {
+    it(`retains malformed or unavailable birth evidence: ${JSON.stringify(identity)}`, () => {
+      const check = sharedStatus()
+      // Undefined is an unavailable captured identity, not the legacy no-identity call.
+      assert.equal(check(42, () => ({ status: 'alive' }), identity ?? {}, () => original).status, 'unknown')
+      assert.equal(check(42, () => ({ status: 'alive' }), original, () => identity).status, 'unknown')
+    })
+  }
+  it('names a throwing identity check as unknown without mistaking it for exit', () => {
+    const result = sharedStatus()(42, () => ({ status: 'alive' }), original, () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }) })
+    assert.equal(result.status, 'unknown')
+    assert.equal(result.reason, 'EACCES')
+  })
+  it('recognizes a different birth even when execution-state evidence is unavailable', () => {
+    const result = sharedStatus()(42, () => ({ status: 'unknown', reason: 'EIO' }), original, () => ({ ...original, startIdentity: 'recycled-birth' }))
+    assert.equal(result.status, 'gone')
+    assert.equal(result.reason, 'PID reused')
+  })
+  it('confirms explicit exit even when the captured identity was unavailable', () => {
+    const result = sharedStatus()(42, () => ({ status: 'gone' }), {}, () => assert.fail('exit needs no identity read'))
+    assert.equal(result.status, 'gone')
+  })
+})
+
+describe('artifact birth evidence through host adapters', () => {
+  it('distinguishes Linux PID reuse using full-precision birth ticks and boot identity', () => {
+    let ticks = '9007199254740992'
+    let boot = '12345678-1234-1234-1234-123456789abc'
+    const host = createHostAdapter({ platform: 'linux', invoke: {
+      kill: () => {}, read: (file: string) => ({ status: 'read', value: file.endsWith('/stat')
+        ? `42 (server) ${['S', ...Array<string>(18).fill('1'), ticks].join(' ')}` : boot }),
+    } })
+    const birth = host.readProcessIdentity(42)
+    const check = () => sharedStatus()(42, host.readProcessExecutionState, birth, host.readProcessIdentity)
+    assert.equal(check().status, 'alive')
+    ticks = '9007199254740993'
+    assert.equal(check().status, 'gone', 'birth ticks must not lose precision')
+    ticks = '9007199254740992'
+    boot = '87654321-1234-1234-1234-123456789abc'
+    assert.equal(check().status, 'gone', 'another boot must not reuse a birth identity')
+  })
+  for (const platform of ['darwin', 'win32']) {
+    it(`states unknown birth identity on ${platform} without inferring it from existence`, () => {
+      const host = createHostAdapter({ platform, invoke: { kill: () => {}, read: () => assert.fail('no identity evidence path') } })
+      const birth = host.readProcessIdentity(42)
+      assert.equal(birth.status, 'unknown')
+      assert.equal(birth.reason, `PROCESS_IDENTITY_UNAVAILABLE on ${platform}`)
+      assert.equal(sharedStatus()(42, () => ({ status: 'alive' }), birth, host.readProcessIdentity).status, 'unknown')
+    })
+  }
+})
 
 describe('shared artifact process-exit evidence', () => {
   for (const status of ['alive', 'gone', 'unknown']) {

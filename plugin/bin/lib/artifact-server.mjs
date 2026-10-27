@@ -181,18 +181,48 @@ export function registrationPidStatus(pid, options = {}) {
 
 // Listener closure is not process exit. Both lifecycle controllers use this evidence,
 // including Linux zombies; malformed, denied or unavailable evidence never means gone.
-export function artifactServerProcessStatus(pid, readState = hostAdapter.readProcessExecutionState) {
+export function artifactServerProcessStatus(pid, readState = hostAdapter.readProcessExecutionState, identity = null, readIdentity) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return { status: 'unknown', reason: 'invalid PID' }
   try {
-    return normalizeArtifactProcessEvidence(readState(pid))
+    const evidence = normalizeArtifactProcessEvidence(readState(pid))
+    if (evidence.status === 'gone' || identity === null) return evidence
+    return artifactProcessInstanceEvidence(pid, identity, evidence, readIdentity)
   } catch (error) {
-    return { status: 'unknown', reason: error?.code ?? error?.message ?? 'process execution state read failed' }
+    return artifactProcessReadFailure(error, 'process execution state read failed')
   }
+}
+
+function artifactProcessReadFailure(error, fallback) {
+  return { status: 'unknown', reason: error?.code ?? error?.message ?? fallback }
 }
 
 function normalizeArtifactProcessEvidence(evidence) {
   if (evidence?.status === 'gone' || evidence?.status === 'alive') return evidence
   return { status: 'unknown', reason: evidence?.reason ?? 'process execution state unavailable' }
+}
+
+// Capture once at attachment: learning an unavailable birth later could bind a recycled PID.
+export function artifactServerProcessIdentity(pid, readIdentity = hostAdapter.readProcessIdentity) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return { status: 'unknown', reason: 'invalid PID' }
+  try {
+    return normalizeArtifactProcessIdentity(pid, readIdentity(pid))
+  } catch (error) {
+    return artifactProcessReadFailure(error, 'process identity read failed')
+  }
+}
+
+function normalizeArtifactProcessIdentity(pid, identity) {
+  if (identity?.status === 'known' && identity.pid === pid && typeof identity.startIdentity === 'string' && identity.startIdentity.length > 0) return identity
+  return { status: 'unknown', reason: identity?.reason ?? 'process identity unavailable' }
+}
+
+function artifactProcessInstanceEvidence(pid, identity, evidence, readIdentity) {
+  const attached = normalizeArtifactProcessIdentity(pid, identity)
+  if (attached.status !== 'known') return attached
+  const current = artifactServerProcessIdentity(pid, readIdentity)
+  if (current.status !== 'known') return current
+  if (current.startIdentity !== attached.startIdentity) return { status: 'gone', reason: 'PID reused' }
+  return evidence
 }
 
 export function pathIsUnder(root, candidate) {

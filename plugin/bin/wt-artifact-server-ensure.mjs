@@ -9,6 +9,7 @@ import {
   ARTIFACT_PORT_ATTEMPTS,
   ARTIFACT_SERVER_VERSION,
   artifactRegistrationsDir,
+  artifactServerProcessIdentity,
   artifactServerProcessStatus,
   artifactStartupClaimPath,
   atomicWriteJson,
@@ -406,12 +407,12 @@ function cleanExit() {
   finish()
 }
 
-async function waitForAttachedServerExit(pids) {
+async function waitForAttachedServerExit(processes) {
   const deadline = Date.now() + 3_000
-  let pending = pendingAttachedProcesses(pids)
+  let pending = pendingAttachedProcesses(processes)
   while (!stopping && pending.length > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 50))
-    pending = pendingAttachedProcesses(pids)
+    pending = pendingAttachedProcesses(processes)
   }
   if (pending.length === 0) return true
   if (!stopping) for (const { pid, evidence } of pending) {
@@ -421,17 +422,18 @@ async function waitForAttachedServerExit(pids) {
   return false
 }
 
-function pendingAttachedProcesses(pids) {
+function pendingAttachedProcesses(processes) {
   const pending = []
-  for (const pid of pids) {
-    const evidence = artifactServerProcessStatus(pid)
-    if (evidence.status === 'gone') pids.delete(pid)
+  for (const [pid, identity] of processes) {
+    const evidence = artifactServerProcessStatus(pid, undefined, identity)
+    if (evidence.status === 'gone') processes.delete(pid)
     else pending.push({ pid, evidence })
   }
   return pending
 }
 
 async function watchAttachedServer(state, firstPort) {
+  pendingAttachedProcesses(state.attachedProcesses)
   const attached = state.attachedServer
   const direct = await probeArtifactServer(attached.port, 750)
   if (stopping) return attached
@@ -439,7 +441,7 @@ async function watchAttachedServer(state, firstPort) {
   const scan = await probeCandidates(firstPort, 750)
   if (stopping) return attached
   if (scan.found) return scan.found
-  return await waitForAttachedServerExit(state.attachedPids) ? null : attached
+  return await waitForAttachedServerExit(state.attachedProcesses) ? null : attached
 }
 
 function startRetry(kind) {
@@ -455,10 +457,18 @@ function createMonitorState(result) {
   const state = {
     pendingRetry: null, retryInFlight: false, watchInFlight: false,
     attachedServer: result.kind === 'found' ? result : null, lastWatchAt: Date.now(),
-    attachedPids: new Set(result.kind === 'found' ? [result.health?.pid] : []),
+    attachedProcesses: new Map(),
   }
-  if (state.attachedServer !== null) testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${state.attachedServer.port}`)
+  if (state.attachedServer !== null) {
+    rememberAttachedProcess(state)
+    testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${state.attachedServer.port}`)
+  }
   return state
+}
+
+function rememberAttachedProcess(state) {
+  const pid = state.attachedServer.health?.pid
+  if (!state.attachedProcesses.has(pid)) state.attachedProcesses.set(pid, artifactServerProcessIdentity(pid))
 }
 
 function noticeArtifactUpgrade(result) {
@@ -497,7 +507,7 @@ function attachMonitor(state, found) {
 }
 
 function recordMonitorAttachment(state) {
-  state.attachedPids.add(state.attachedServer.health?.pid)
+  rememberAttachedProcess(state)
   testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${state.attachedServer.port}`)
   state.lastWatchAt = Date.now()
   state.pendingRetry = null
@@ -579,7 +589,7 @@ async function retryTick(state, firstPort) {
       recordMonitorAttachment(state)
       return
     }
-    if (monitorRestartInterrupted(state, await waitForAttachedServerExit(state.attachedPids))) return
+    if (monitorRestartInterrupted(state, await waitForAttachedServerExit(state.attachedProcesses))) return
     if (liveStartupClaimHolder()) { deferMonitorRetry(state); return }
     if (retryWindowExpired(state)) return
     state.pendingRetry.attempts += 1
@@ -609,7 +619,7 @@ async function watchTick(state, firstPort) {
     state.attachedServer = await watchAttachedServer(state, firstPort)
     if (stopping || state.pendingRetry) return
     if (state.attachedServer !== null) {
-      state.attachedPids.add(state.attachedServer.health?.pid)
+      rememberAttachedProcess(state)
       return
     }
     process.stdout.write(`ARTIFACT SERVER LOST: server on port ${watchedPort} is no longer answering; restarting; registration retained.\n`)
