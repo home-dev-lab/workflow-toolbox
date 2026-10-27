@@ -124,6 +124,40 @@ function registerNoticeProjectionCases() {
 
 }
 
+describe('explicit subagent deny delivery', () => {
+  const denied = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'blocked' } }
+
+  it.each(['a1', 'workflow-worker'])('delivers only the opted-in deny JSON to %s', (agent_id) => {
+    const r = emitNotice({ agent_id }, { subagentDeny: true, stdoutJson: denied, stderrText: 'drop' })
+    expect(r.stdout).toBe(JSON.stringify(denied))
+    expect(r.stderr).toBe('RETURN=true')
+  })
+
+  it.each(['allow', 'ask'])('never forwards an opted-in %s decision', (permissionDecision) => {
+    const r = emitNotice({ agent_id: 'a1' }, { subagentDeny: true, stdoutJson: { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision } } })
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('RETURN=false')
+  })
+
+  it('keeps observe-mode denials muted even with the opt-in', () => {
+    const r = emitNotice({ agent_id: 'a1' }, { subagentDeny: true, stdoutJson: denied }, 'observe')
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('RETURN=false')
+  })
+
+  it.each([{}, { hook_event_name: 'PostToolUse' }])('never delivers a deny without a PreToolUse event: %j', (payload) => {
+    const r = emitNotice({ agent_id: 'a1', ...payload }, { subagentDeny: true, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'blocked' } } })
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('RETURN=false')
+  })
+
+  it('projects just the deny fields and context, never other output', () => {
+    const r = emitNotice({ agent_id: 'a1', hook_event_name: 'PreToolUse' }, { subagentDeny: true, stderrText: 'drop', stdoutJson: { extra: 'drop', systemMessage: 'drop', hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'blocked', additionalContext: 'context', extra: 'drop' } } })
+    expect(r.stdout).toBe('{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"blocked","additionalContext":"context"}}')
+    expect(r.stderr).toBe('RETURN=true')
+  })
+})
+
 function registerContextFallbackCases() {
   it.each([undefined, '', null, false, 7])('main session bytes are unchanged for agent id %j', (agent_id) => {
     const r = emitNotice({ agent_id }, { stdoutJson: { systemMessage: 'warning' }, stderrText: 'stderr' })
