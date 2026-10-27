@@ -32,8 +32,9 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, it, expect } from 'vitest'
+import { parse } from 'yaml'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
@@ -345,5 +346,66 @@ describe('release tag evidence is required for a comparison', () => {
   it('reports an unreadable tag instead of treating it as matching', () => withReleaseFixture(({ root, block, edits }) => {
     fixtureGit(root, ['tag', '-d', FIXTURE_TAG])
     expect(releasedBlockIssue(root, block, edits)).toBe(`Cannot read ${FIXTURE_TAG}:plugin/CHANGELOG.md`)
+  }))
+})
+
+type WorkflowStep = {
+  name?: string; uses?: string; run?: string; shell?: string; if?: string
+  'continue-on-error'?: boolean | string
+}
+const crossOsWorkflow = parse(readFileSync(join(REPO_ROOT, '.github/workflows/cross-os.yml'), 'utf8')) as {
+  jobs: { matrix: { steps: WorkflowStep[] } }
+}
+
+function releaseTagFetchStep(): WorkflowStep {
+  const matches = crossOsWorkflow.jobs.matrix.steps.filter((step) => step.name === 'Fetch release tags for changelog policy')
+  expect(matches, 'Every cross-OS shard must fetch published release tags before testing').toHaveLength(1)
+  return matches[0]!
+}
+
+describe('cross-OS changelog policy has published release evidence', () => {
+  it('fetches release tags as a required step before any build or suite on every runner', () => {
+    const step = releaseTagFetchStep()
+    const steps = crossOsWorkflow.jobs.matrix.steps
+    expect(step.shell).toBe('bash')
+    expect(step.if).toBeUndefined()
+    expect(step['continue-on-error']).toBeUndefined()
+    expect(steps.indexOf(step)).toBeGreaterThan(steps.findIndex((entry) => entry.uses?.startsWith('actions/checkout@')))
+    const consumers = steps.filter((entry) => /pnpm (?:build:dist|test:shard)/.test(entry.run ?? ''))
+    expect(consumers.length).toBeGreaterThan(0)
+    for (const consumer of consumers) expect(steps.indexOf(step)).toBeLessThan(steps.indexOf(consumer))
+  })
+
+  it('executes the CI fetch in a tagless shallow clone and then rejects a misplaced entry', () => withReleaseFixture(({ root }) => {
+    const step = releaseTagFetchStep()
+    const checkout = join(root, 'checkout')
+    for (const index of [1, 2]) fixtureGit(root, ['commit', '--no-gpg-sign', '--allow-empty', '-m', `After release ${index}`])
+    fixtureGit(root, ['clone', '--quiet', '--no-tags', '--depth=2', pathToFileURL(root).href, checkout])
+    expect(changelogGit(['rev-parse', '--is-shallow-repository'], checkout).stdout.toString().trim()).toBe('true')
+    expect(changelogGit(['show-ref', '--verify', `refs/tags/${FIXTURE_TAG}`], checkout).status).not.toBe(0)
+    const fetched = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], { cwd: checkout, timeout: 10_000 })
+    expect(fetched.status, fetched.stderr?.toString()).toBe(0)
+    const block = releasedByteBlocks(Buffer.from(FIXTURE_ARCHIVE))[0]!
+    expect(releasedBlockIssue(checkout, block, new Map())).toBeNull()
+    block.bytes = Buffer.concat([block.bytes, Buffer.from('- Misplaced entry.\n')])
+    expect(releasedBlockIssue(checkout, block, new Map())).toBe(
+      `Released changelog block [${FIXTURE_VERSION}] differs from ${FIXTURE_TAG}`,
+    )
+  }))
+})
+
+describe('cross-OS release tag fetch preserves certification', () => {
+  it('preserves first-parent certification history when the checked-out commit is also a release tag', () => withReleaseFixture(({ root }) => {
+    const step = releaseTagFetchStep()
+    for (const index of [1, 2]) fixtureGit(root, ['commit', '--no-gpg-sign', '--allow-empty', '-m', `After release ${index}`])
+    fixtureGit(root, ['tag', 'workflow-toolbox--v1.2.4'])
+    const checkout = join(root, 'checkout')
+    fixtureGit(root, ['clone', '--quiet', '--no-tags', '--depth=2', pathToFileURL(root).href, checkout])
+    expect(changelogGit(['rev-parse', '--verify', 'HEAD^1'], checkout).status).toBe(0)
+    const fetched = spawnSync('bash', ['-eo', 'pipefail', '-c', step.run!], { cwd: checkout, timeout: 10_000 })
+    expect(fetched.status, fetched.stderr?.toString()).toBe(0)
+    expect(changelogGit(['rev-parse', '--verify', 'HEAD^1'], checkout).status,
+      'Fetching a release tag at HEAD must not remove the first parent required by owner certification',
+    ).toBe(0)
   }))
 })
