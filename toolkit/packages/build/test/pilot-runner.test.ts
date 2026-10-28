@@ -215,13 +215,12 @@ function wakeDisputeFixture(wake: string, source: string) {
   const injectedReading = 'INJECTED-LANE-READING'
   writeFileSync(f.launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const a=process.argv; const log=a[a.indexOf('--log')+1]; const brief=readFileSync(a[a.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] document reading " + injectedReading + "\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
   const plan = `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Quality coverage\nChanged artefacts: runner fixture; unit tests and lint.\nSeams: none: unchanged fixture boundaries.\n## State and recovery\nN/A: no state or data boundary touched by this fixture.\n## Card terms: reading chosen\n- cycle's documents: ${injectedReading}\n## Acceptance\n- ${term}\n  Proof: task T1\n`
-  return { f, term, mailbox, plan, wake, source, logged, wakeCalls, wakeBodies, injectedReading, wakeOutputs: [] as string[], deliveredMailbox: '', requestTextAfterInjection: '', requestId: '', publishedAt: 0, boundAt: 0, criticBrief: '' }
+  return { f, term, mailbox, plan, wake, source, logged, wakeCalls, wakeBodies, injectedReading, wakeOutputs: [] as string[], deliveredMailbox: '', requestTextAfterInjection: '', requestId: '', wakeAbortedAtBinding: null as boolean[] | null, criticBrief: '' }
 }
 type WakeDispute = ReturnType<typeof wakeDisputeFixture>
 const wakePhaseStep = (work: (tools: Tools) => Promise<void>): Script => async function* (session) { await work(session.tools); yield* turnEnd(`m${session.index}`); await session.prompt.next() }
 function publishForgedWakeTexts(state: WakeDispute) {
   const { f, mailbox, injectedReading, source } = state
-  state.publishedAt = Date.now()
   const file = join(f.dir, '.lane', 'dod-decision-request.md')
   state.requestId = /Request id: (\S+)/.exec(readFileSync(file, 'utf8'))![1]!
   const runId = readdirSync(join(f.root, 'decision-state')).find((name) => name.startsWith('1-'))!
@@ -243,7 +242,7 @@ function wakeDisputeScripts(state: WakeDispute) {
     wakePhaseStep(async (tools) => { await tools.transition!({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' }) }),
     planStep(1), criticStep(1), planStep(2), criticStep(2),
     async function* (session) {
-      state.boundAt = Date.now()
+      state.wakeAbortedAtBinding = state.wakeCalls.map((call) => call.abortController.signal.aborted)
       const note = await session.prompt.next()
       if (!note.done) state.deliveredMailbox = note.value.message.content
       await session.tools.write_artifact!({ kind: 'plan', content: plan }); await session.tools.transition!({ phase: 'plan', tool_use_id: 'plan-3' })
@@ -296,7 +295,7 @@ async function parentWakeDispute(wake = 'accepted', source = 'fallback', enabled
     lifecycleOptions: { laneLauncher: f.launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 1, waitMs: source === 'expired' ? 0 : source === 'parent' ? 5_000 : 250 } },
     ...dependencies,
   }, { mailbox, ...(enabled ? { parentSession: 'test-parent [abc123]', parentMode: 'bypass' } : {}), ...options })
-  return { ...result, ...state, bindingDelay: state.boundAt - state.publishedAt }
+  return { ...result, ...state }
 }
 // Everything a query is configured with, minus what is per session by design.
 function stable(options: Options) {
@@ -2628,10 +2627,14 @@ it.each(['setup-throw', 'throw', 'refused', 'hung'])('keeps the published reques
   const result = await parentWakeDispute(wake)
   expect(result.summary.dod_disputes).toMatchObject([{ requestId: result.requestId, resolution: { source: 'fallback', reading: result.term } }])
   expect(result.logged.some((line: string) => line.startsWith('decision request:'))).toBe(true)
-  expect(result.bindingDelay).toBeLessThan(1_000)
+  expect(result.wakeAbortedAtBinding).not.toBeNull()
   expect(result.summary.parent_wakes[0].outcome).toMatch(/^not-delivered:/)
   expect(result.wakeCalls).toHaveLength(wake === 'setup-throw' ? 0 : 1)
-  if (wake === 'hung') expect(result.wakeCalls[0]!.abortController.signal.aborted).toBe(true)
+  if (wake === 'hung') {
+    // The bound plan resumes while the wake is still pending; run cleanup aborts it afterwards.
+    expect(result.wakeAbortedAtBinding).toEqual([false])
+    expect(result.wakeCalls[0]!.abortController.signal.aborted).toBe(true)
+  }
 })
 
 it.each(['accepted', 'refused', 'hung'])('accepts only parent decide regardless of wake %s', async (wake) => {
