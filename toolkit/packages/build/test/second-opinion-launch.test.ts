@@ -1,8 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error executable .mjs test companion
 import { documentedLaunch, launchFixture, pluginRoot, skillPath } from '../../../scripts/second-opinion-launch-e2e.mjs'
+
+// Each test blocks in one synchronous PowerShell launch, bounded at 60 s on Windows plus a 5 s
+// completion poll; vitest fails a synchronous test that outlasts its timeout, so this must exceed both.
+vi.setConfig({ testTimeout: process.platform === 'win32' ? 90_000 : 20_000 })
 
 const roots: string[] = []
 afterEach(() => {

@@ -67,7 +67,8 @@ export function documentedLaunch(f, options = {}) {
   const command = launchCommand(f, options, windows)
   const shell = windows ? 'powershell.exe' : '/bin/bash'
   const args = windows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command]
-  const result = spawnSync(shell, args, { cwd: f.repo, env: { ...f.env, ...options.env }, encoding: 'utf8', timeout: 10_000 })
+  // Cold PowerShell startup on Windows CI can exceed 10 seconds; bound it at one minute.
+  const result = spawnSync(shell, args, { cwd: f.repo, env: { ...f.env, ...options.env }, encoding: 'utf8', timeout: windows ? 60_000 : 10_000 })
   assert.ifError(result.error)
   assert.equal(result.status, 0, result.stderr)
   waitForLaunch(f.out)
