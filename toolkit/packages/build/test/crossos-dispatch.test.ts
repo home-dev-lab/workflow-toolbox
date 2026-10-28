@@ -53,10 +53,26 @@ const env = { ...process.env, HOME: sealedHome, GIT_CONFIG_GLOBAL: '/dev/null', 
 afterAll(() => rmSync(sealedHome, { recursive: true, force: true }))
 afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }) })
 function git(cwd: string, ...args: string[]) {
-  const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' })
+  // This helper prepares fixture state. Product pushes use commandIO.push and
+  // explicit guard probes use spawnSync, so setup can skip the installed hook.
+  const argv = args[0] === 'push' ? ['push', '--no-verify', ...args.slice(1)] : args
+  const result = spawnSync('git', argv, { cwd, env, encoding: 'utf8' })
   if (result.status !== 0) throw new Error(result.stderr)
   return result.stdout.trim()
 }
+
+describe('cross-OS fixture publication', () => {
+  it('prepares a completed-run branch without launching the installed push guard', () => {
+    const f = publicFixture(); const auth = authPathOf(f.dir)
+    const branch = ciBranchFor(f.host)
+    writeFileSync(auth, JSON.stringify({ commits: [f.host] }))
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/${branch}`)
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/${branch}`)).toBe(`${f.host}\trefs/heads/${branch}`)
+    expect(readdirSync(join(f.dir, '.git')).filter((name) => name.startsWith('wt-push-authorized.consumed-')),
+      'fixture publication must not launch the installed push guard').toEqual([])
+    expect(existsSync(auth), 'fixture publication must leave guard authorization unconsumed').toBe(true)
+  })
+})
 // The fixture repository is reached through a NON-canonical path, the way macOS (/var -> /private/var) and Windows
 // runners (8.3 short names in TEMP) present it: git reports the canonical path, the test holds the other spelling.
 // On POSIX a symlink reproduces that on every runner; Windows runners already present a short-name TEMP.
