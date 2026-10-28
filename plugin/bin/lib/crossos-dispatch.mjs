@@ -1,7 +1,7 @@
 import { commandIO } from './host/command-io.mjs'
 import { EVIDENCE_FIELDS, ciBranchFor, matchesHostPath, verdictFromEvidence } from './crossos-verdict.mjs'
 import { JOBS_PER_PAGE, readJobPages, workflowJobNames } from './crossos-evidence.mjs'
-import { isAbsolute } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const LIST = '.github/cross-os-host-layer.json'
@@ -181,6 +181,7 @@ function readRecord(ctx, sha) {
   const file = recordPath(ctx, sha)
   if (!ctx.io.exists(file)) return null
   const record = JSON.parse(ctx.io.readText(file))
+  if (record?.sha !== sha) throw failure(`record SHA mismatch: requested=${sha} recorded=${record?.sha}`, 3)
   return record?.runId === undefined || validRunId(record.runId) ? record : null
 }
 
@@ -271,10 +272,12 @@ function runList(ctx, branch) {
   return gh(ctx, 'run', 'list', '-R', ctx.slug, '--workflow', ctx.args.workflow, '--branch', branch, '--json', 'databaseId,url,event,headBranch,headSha,status,conclusion')
 }
 
-function freshEvidence(ctx, runId) {
+function freshEvidence(ctx, runId, sha) {
   const run = gh(ctx, 'run', 'view', String(runId), '-R', ctx.slug, '--json', EVIDENCE_FIELDS)
   // Leave malformed identity evidence to the verdict's existing mismatch checks.
   if (!COMMIT_ID.test(run.headSha)) return run
+  // A foreign run must not supply the workflow roster or jobs used for collection.
+  if (sha && verdictFromEvidence(run, sha).verdict === 'unchecked') return run
   const source = git(ctx, 'show', `${run.headSha}:.github/workflows/${ctx.args.workflow}`)
   run.expectedJobs = workflowJobNames(source)
   // Fetch each REST page with version-independent gh arguments, then validate the
@@ -305,13 +308,18 @@ async function pollUntilCompleted(ctx, record) {
   const deadline = ctx.io.now() + Number(ctx.args.timeoutMin) * 60000
   const seen = { jobs: new Set(), os: new Set(), failures: new Map() }
   for (;;) {
-    const run = freshEvidence(ctx, record.runId)
+    const run = freshEvidence(ctx, record.runId, record.sha)
+    const identity = verdictFromEvidence(run, record.sha)
+    if (identity.verdict === 'unchecked') {
+      if (run.status === 'completed') return run
+      throw failure(`run ${record.runId} ${identity.reason}`, 3)
+    }
     // Early lines are advisory: a failure here must never change the verdict nor strand the temporary branch.
     try { announceConcluded(ctx, record, run, seen) } catch (error) { ctx.print(`EARLY REPORT UNAVAILABLE: ${error.message}`) }
     if (run.status === 'completed') return run
     if (ctx.io.now() >= deadline) {
       record.status = 'timed_out'; save(ctx, record)
-      ctx.print(`TIMEOUT: branch kept; collect with node plugin/bin/wt-crossos-dispatch.mjs collect --merge ${record.sha}`)
+      ctx.print(`TIMEOUT: branch kept; collect with (POSIX shell; Git Bash on Windows):\nnode ${shellQuote(DISPATCHER)} collect --repo ${shellQuote(resolve(ctx.cwd))} --merge ${record.sha} --repo-slug ${shellQuote(ctx.slug)} --workflow ${shellQuote(ctx.args.workflow)}`)
       return null
     }
     await ctx.io.sleep(30000)
@@ -358,10 +366,10 @@ function printRunSummary(ctx, run, incomplete, matrixIncomplete) {
 }
 
 function concludeRun(ctx, record, run) {
-  record.status = run.status; record.conclusion = run.conclusion
-  save(ctx, record)
   const { verdict, reason, incomplete: matrixIncomplete } = verdictFromEvidence(run, record.sha)
   if (verdict === 'unchecked') throw failure(`run ${record.runId} ${reason}`, 3)
+  record.status = run.status; record.conclusion = run.conclusion
+  save(ctx, record)
   const incomplete = verdict === 'green' ? null : reason
   printRunSummary(ctx, run, incomplete, matrixIncomplete)
   if (incomplete) reportRedRun(ctx, record, (run.jobs ?? []).filter((job) => job.conclusion !== 'success'))

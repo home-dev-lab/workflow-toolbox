@@ -65,8 +65,13 @@ jobs:
       - uses: actions/checkout@v4
         timeout-minutes: 5
         with:
-          # The current tree and its first parent are sufficient for owner certification.
+          # Owner certification needs the first parent; the changelog policy fetches release tags below.
           fetch-depth: 2
+      - name: Fetch release tags for changelog policy
+        shell: bash
+        # Keep HEAD's first parent even when HEAD itself is tagged for release.
+        run: git fetch --no-tags --depth=2 origin '+refs/tags/workflow-toolbox--v*:refs/tags/workflow-toolbox--v*'
+        timeout-minutes: 3
       - uses: actions/setup-node@v4
         timeout-minutes: 5
         with:

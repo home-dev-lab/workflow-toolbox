@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { parse } from 'yaml'
 // @ts-expect-error JS quality scanner
@@ -53,10 +53,26 @@ const env = { ...process.env, HOME: sealedHome, GIT_CONFIG_GLOBAL: '/dev/null', 
 afterAll(() => rmSync(sealedHome, { recursive: true, force: true }))
 afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }) })
 function git(cwd: string, ...args: string[]) {
-  const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' })
+  // This helper prepares fixture state. Product pushes use commandIO.push and
+  // explicit guard probes use spawnSync, so setup can skip the installed hook.
+  const argv = args[0] === 'push' ? ['push', '--no-verify', ...args.slice(1)] : args
+  const result = spawnSync('git', argv, { cwd, env, encoding: 'utf8' })
   if (result.status !== 0) throw new Error(result.stderr)
   return result.stdout.trim()
 }
+
+describe('cross-OS fixture publication', () => {
+  it('prepares a completed-run branch without launching the installed push guard', () => {
+    const f = publicFixture(); const auth = authPathOf(f.dir)
+    const branch = ciBranchFor(f.host)
+    writeFileSync(auth, JSON.stringify({ commits: [f.host] }))
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/${branch}`)
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/${branch}`)).toBe(`${f.host}\trefs/heads/${branch}`)
+    expect(readdirSync(join(f.dir, '.git')).filter((name) => name.startsWith('wt-push-authorized.consumed-')),
+      'fixture publication must not launch the installed push guard').toEqual([])
+    expect(existsSync(auth), 'fixture publication must leave guard authorization unconsumed').toBe(true)
+  })
+})
 // The fixture repository is reached through a NON-canonical path, the way macOS (/var -> /private/var) and Windows
 // runners (8.3 short names in TEMP) present it: git reports the canonical path, the test holds the other spelling.
 // On POSIX a symlink reproduces that on every runner; Windows runners already present a short-name TEMP.
@@ -1184,6 +1200,102 @@ function pagedWorkflowScenario(defect: string) {
   } }
   return { f, io }
 }
+
+function recordedCollection() {
+  const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+  const path = join(store, `${f.host}.json`)
+  const record = { sha: f.host, runId: 23, workflow: 'cross-os.yml', branch: ciBranchFor(f.host), url: 'https://github.com/owner/repo/actions/runs/23', status: 'timed_out' }
+  writeFileSync(path, JSON.stringify(record))
+  const deletes: string[][] = []
+  const io = { ...fakeGh(f).io, push(args: string[]) { deletes.push(args); return { status: 0, stdout: '', stderr: '' } } }
+  return { f, store, path, record, io, deletes, args: ['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'] }
+}
+
+describe('cross-OS collection identity', () => {
+  const fields = ['headSha', 'headBranch', 'event']
+  it.each(fields.flatMap((field) => ['completed', 'in_progress'].map((status) => ({ field, status }))))(
+    'refuses foreign $field on a $status run before reporting jobs or writing cards', async ({ field, status }) => {
+      const c = recordedCollection(); const out = output(); const evidenceReads: string[][] = []; let clock = 0
+      const io = { ...c.io, now: () => clock += 1000, run(program: string, args: string[], opts: { cwd: string }) {
+        if ((program === 'git' && args[0] === 'show') || (program === 'gh' && (args[0] === 'api' || args.includes('--job')))) evidenceReads.push(args)
+        const result = c.io.run(program, args, opts)
+        if (program !== 'gh' || args[1] !== 'view' || args.includes('--job')) return result
+        const run = JSON.parse(result.stdout)
+        const foreign = { headSha: c.f.docs, headBranch: ciBranchFor(c.f.docs), event: 'push' }
+        return { ...result, stdout: JSON.stringify({ ...run, [field]: foreign[field as keyof typeof foreign], status, conclusion: 'failure', jobs: [
+          { databaseId: 43, name: 'matrix (ubuntu-latest)', status: 'completed', conclusion: 'failure' },
+        ] }) }
+      } }
+      const code = await dispatch([...c.args, '--timeout-min', '0.000001'], { io, print: out.print })
+      expect(readdirSync(c.store).filter((name) => name.endsWith('.card.md')), 'foreign runs must not write failure cards').toEqual([])
+      expect(code, out.lines.join('\n')).toBe(3)
+      expect(out.lines.at(-1)).toBe('RESULT: mismatch')
+      expect(out.lines.join('\n')).toContain(`evidence is not about ${c.f.host}`)
+      expect(out.lines.some((line) => /^(EARLY JOB|EARLY OS|BLOCKER|FAILED JOB)/.test(line))).toBe(false)
+      expect(evidenceReads, 'foreign runs must not supply workflow rosters, jobs, or logs').toEqual([])
+      expect(JSON.parse(readFileSync(c.path, 'utf8')).status).toBe('timed_out')
+      expect(c.deletes).toEqual(status === 'completed' ? [['push', 'public', '--delete', c.record.branch]] : [])
+    })
+})
+
+describe('cross-OS stored record identity', () => {
+  it.each(['foreign', 'missing', 'malformed'])('refuses a %s embedded record SHA before contacting GitHub', async (kind) => {
+    const c = recordedCollection(); const out = output(); const calls: string[][] = []
+    const sha = kind === 'foreign' ? c.f.docs : kind === 'missing' ? undefined : 'not-a-commit'
+    const text = JSON.stringify({ ...c.record, sha }); writeFileSync(c.path, text)
+    const io = { ...c.io, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'gh') calls.push(args)
+      return c.io.run(program, args, opts)
+    } }
+    expect(await dispatch(c.args, { io, print: out.print }), 'record SHA must match the requested commit').toBe(3)
+    expect(out.lines.join('\n')).toContain(`record SHA mismatch: requested=${c.f.host} recorded=${sha}`)
+    expect(out.lines.at(-1)).toBe('RESULT: mismatch')
+    expect(calls).toEqual([])
+    expect(c.deletes).toEqual([])
+    expect(readFileSync(c.path, 'utf8')).toBe(text)
+    expect(readdirSync(c.store)).toEqual([`${c.f.host}.json`])
+  })
+})
+
+function recoveryArgv(text: string, cwd: string) {
+  const command = text.split('\n').find((line) => line.startsWith('node '))
+    ?? text.split('collect with ')[1]?.split('\n')[0]
+  expect(command, 'timeout must print an executable recovery command').toBeTruthy()
+  const capture = `node() { command node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"; }; ${command}`
+  const result = spawnSync('bash', ['-c', capture], { cwd, env, encoding: 'utf8' })
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  return JSON.parse(result.stdout) as string[]
+}
+
+describe('cross-OS timeout recovery', () => {
+  it.each(['absolute', 'relative'])('executes recovery from outside the selected worktree with a %s repo path', async (mode) => {
+    const c = recordedCollection(); const out = output(); const outside = scratchDir()
+    const selected = join(scratchDir(), "selected ' $repo; &")
+    git(c.f.dir, 'worktree', 'add', '--detach', selected, c.f.host)
+    const previous = process.cwd(); let clock = 0
+    process.chdir(outside)
+    try {
+      const repo = mode === 'absolute' ? selected : relative(outside, selected)
+      const io = { ...c.io, ...fakeGh(c.f, '', 'in_progress').io, now: () => clock += 1000 }
+      expect(await dispatch(['collect', '--merge', c.f.host, '--repo', repo, '--repo-slug', 'owner/repo', '--workflow', 'cross-os.yml', '--timeout-min', '0.000001'], { io, print: out.print })).toBe(4)
+      const argv = recoveryArgv(out.lines.join('\n'), outside)
+      expect(isAbsolute(argv[0]!), 'recovery dispatcher path must be absolute').toBe(true)
+      expect(existsSync(argv[0]!)).toBe(true)
+      expect(argv[0]).toBe(join(root, 'plugin/bin/wt-crossos-dispatch.mjs'))
+      const recoveredRepo = argv[argv.indexOf('--repo') + 1]!
+      expect(isAbsolute(recoveredRepo), 'recovery repository path must be absolute').toBe(true)
+      expect(git(recoveredRepo, 'rev-parse', '--absolute-git-dir'), 'recovery must pin the selected repository').toBe(git(selected, 'rev-parse', '--absolute-git-dir'))
+      expect(argv[argv.indexOf('--repo-slug') + 1]).toBe('owner/repo')
+      expect(argv[argv.indexOf('--workflow') + 1]).toBe('cross-os.yml')
+      expect(out.lines.join('\n')).toContain('POSIX shell; Git Bash on Windows')
+      const recovered = output()
+      expect(await dispatch(argv.slice(1), { io: c.io, print: recovered.print }), recovered.lines.join('\n')).toBe(0)
+      expect(recovered.lines.at(-1)).toBe('RESULT: green run=23')
+      expect(JSON.parse(readFileSync(c.path, 'utf8')).branchDeleted).toBe(true)
+      expect(existsSync(join(outside, '.git'))).toBe(false)
+    } finally { process.chdir(previous) }
+  })
+})
 
 describe('live dispatcher roster and paginated jobs', () => {
   it.each(['none', 'matrix (ubuntu-latest, 2)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage', 'all Ubuntu', 'partial page', 'legacy gh', 'paginated'])(
