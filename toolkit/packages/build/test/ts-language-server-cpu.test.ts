@@ -128,7 +128,8 @@ async function monitored() {
   const readFamily = vi.fn(() => status === 'measured' ? sample(cpuMs, identity) : { status: 'unavailable', reason: 'denied' })
   const kill = vi.fn(), write = vi.fn()
   const readIdentity = (pid: number) => ({ status: 'measured', process: pid === 10 ? sample(0).parent : sample(cpuMs, identity).servers[0] })
-  monitorTsserverCpu(child, { write }, { readFamily, readIdentity, census: () => ({ status: 'measured', processes: [] }), settle: async () => {}, kill, now: () => Date.now(), intervalMs: 1000, windowMs: 2000 })
+  const readTree = () => ({ ...sample(cpuMs, identity), parent: { ...sample(0).parent, state: 'T' }, processes: sample(cpuMs, identity).servers.map(server => ({ ...server, state: 'T' })) })
+  monitorTsserverCpu(child, { write }, { readFamily, readIdentity, readTree, census: () => ({ status: 'measured', processes: [] }), settle: async () => {}, kill, now: () => Date.now(), intervalMs: 1000, windowMs: 2000 })
   await vi.advanceTimersByTimeAsync(0)
   return { child, kill, write, readFamily, identity: (id: string) => { identity = id }, status: (value: string) => { status = value }, tick: async () => { cpuMs += 1500; await vi.advanceTimersByTimeAsync(1000) } }
 }

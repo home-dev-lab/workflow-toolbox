@@ -8,9 +8,10 @@ function advance(prior, server, now, options) {
   const delta = prior ? server.cpuMs - prior.cpuMs : 0
   const anchor = { at: now, cpuMs: server.cpuMs, overMs: 0, percent: 0 }
   if (!prior || elapsed <= 0 || elapsed > options.maxGapMs || delta < 0) return anchor
-  // Neither the outage nor the recovery interval contributes time or CPU.
-  if (prior.paused) return { ...anchor, overMs: prior.overMs }
   const percent = delta / elapsed * 100
+  // Neither the outage nor the recovery interval contributes time or CPU.
+  // A measured at-or-under-budget recovery still disproves a sustained streak.
+  if (prior.paused) return { ...anchor, overMs: percent > options.budgetPct ? prior.overMs : 0 }
   return { ...anchor, percent, overMs: percent > options.budgetPct ? prior.overMs + elapsed : 0 }
 }
 
@@ -31,15 +32,24 @@ function retainMissing(previous, next, now, maxGapMs) {
 const containsMembers = (members, subset) => subset.every((server) => members.some((member) => member.identity === server.identity))
 const regressed = (members, servers) => members.some((before) => servers.some((server) => server.identity === before.identity && server.cpuMs < before.cpuMs))
 
+function familyContinuity(prior, servers, parent, now, maxGapMs) {
+  if (!prior || prior.parent !== parent.identity || now - prior.at > maxGapMs) return { reset: true }
+  const subset = containsMembers(prior.members, servers)
+  return { reset: regressed(prior.members, servers),
+    stable: subset && servers.length === prior.members.length,
+    missing: subset && servers.length < prior.members.length }
+}
+
 function advanceFamily(prior, sample, now, options) {
   const { servers, parent } = sample
-  const valid = prior && prior.parent === parent.identity && now - prior.at <= options.maxGapMs
-  const subset = valid && containsMembers(prior.members, servers)
-  if (subset && servers.length < prior.members.length) return pause(prior, now, options.maxGapMs)
+  const continuity = familyContinuity(prior, servers, parent, now, options.maxGapMs)
+  if (continuity.missing && !continuity.reset) return pause(prior, now, options.maxGapMs)
   if (!servers.length) return undefined
-  const stable = subset && servers.length === prior.members.length && !regressed(prior.members, servers)
   const cpuMs = servers.reduce((sum, server) => sum + server.cpuMs, 0)
-  return { ...advance(stable ? prior : undefined, { cpuMs }, now, options), parent: parent.identity, members: servers }
+  // A changed membership invalidates this delta, not already accepted intervals.
+  const state = advance(continuity.stable && !continuity.reset ? prior : undefined, { cpuMs }, now, options)
+  if (!continuity.stable && !continuity.reset) state.overMs = prior.overMs
+  return { ...state, parent: parent.identity, members: servers }
 }
 
 function breached(state, options) {

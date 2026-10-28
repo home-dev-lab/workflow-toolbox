@@ -22,11 +22,15 @@ function reportStop(context, result, breach, budgetPct) {
   if (result.status === 'stopped') {
     context.stop()
     const family = breach.scope === 'family' ? ' combined family' : ''
-    context.diagnostic(`stopped backend and tsserver ${breach.servers.map((server) => server.pid).join(',')}: ${breach.percent.toFixed(1)}% CPU above ${budgetPct}%${family} for ${breach.overMs}ms; restart the LSP client to launch wt-tsls again`)
+    context.diagnostic(`stopped backend and tsserver ${breach.servers.map((server) => server.pid).join(',')}: ${breach.percent.toFixed(1)}% CPU above ${budgetPct}%${family} for ${breach.overMs}ms; verified tree pids: ${result.targets.map((target) => target.pid).join(',')}; restart the LSP client to launch wt-tsls again`)
   } else if (result.status === 'survived') {
     context.diagnostic(`survived: ${result.survivors.map((server) => server.pid).join(',')}; stop incomplete`)
-  } else if (result.status === 'unverified') context.diagnostic('stop unverified (post-signal census unavailable)')
-  else context.diagnostic('stop unavailable (process identity changed or signal failed); retrying next sample')
+  } else if (result.status === 'unverified') context.diagnostic(`stop unverified (process tree or post-signal census unavailable); known target pids: ${result.targets.map((target) => target.pid).join(',')}`)
+  else context.diagnostic(`stop unavailable (process identity changed or signal failed); ${result.attempted ? 'disconnecting client' : 'retrying next sample'}`)
+  if (result.attempted) {
+    context.stop()
+    context.child.emit('wt-tsls-cpu-stop', result)
+  }
 }
 
 async function sampleAndEnforce(context, update, budgetPct) {
@@ -69,6 +73,7 @@ function createCheck(context, birth, update, budgetPct) {
 function contextOptions(options, readFamily) {
   return {
     readIdentity: options.readIdentity ?? readFamily.identity, census: options.census ?? readFamily.census,
+    readTree: options.readTree ?? readFamily.tree,
     kill: options.kill ?? process.kill, now: options.now ?? (() => performance.now()),
     settle: options.settle ?? (() => new Promise((resolve) => setTimeout(resolve, 20))),
   }
