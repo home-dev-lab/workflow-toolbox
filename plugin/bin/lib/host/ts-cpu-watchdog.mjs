@@ -19,21 +19,27 @@ function diagnosticWriter(stderr) {
 }
 
 function reportStop(context, result, breach, budgetPct) {
+  const qualification = '; tracked set only; untracked descendants: unknown'
   if (result.status === 'stopped') {
     context.stop()
     const family = breach.scope === 'family' ? ' combined family' : ''
-    context.diagnostic(`stopped backend and tsserver ${breach.servers.map((server) => server.pid).join(',')}: ${breach.percent.toFixed(1)}% CPU above ${budgetPct}%${family} for ${breach.overMs}ms; verified tree pids: ${result.targets.map((target) => target.pid).join(',')}; restart the LSP client to launch wt-tsls again`)
-  } else if (result.status === 'survived') {
-    context.diagnostic(`survived: ${result.survivors.map((server) => server.pid).join(',')}; stop incomplete`)
-  } else if (result.status === 'unverified') context.diagnostic(`stop unverified (process tree or post-signal census unavailable); known target pids: ${result.targets.map((target) => target.pid).join(',')}`)
-  else context.diagnostic(`stop unavailable (process identity changed or signal failed); ${result.attempted ? 'disconnecting client' : 'retrying next sample'}`)
-  if (result.attempted) {
-    context.stop()
+    context.diagnostic(`stopped backend and tsserver ${breach.servers.map((server) => server.pid).join(',')}: ${breach.percent.toFixed(1)}% CPU above ${budgetPct}%${family} for ${breach.overMs}ms; verified tracked pids: ${result.targets.map((target) => target.pid).join(',')}${qualification}; restart the LSP client to launch wt-tsls again`)
     context.child.emit('wt-tsls-cpu-stop', result)
-  }
+    context.cleanup.resolve()
+    pendingStops.delete(context.child)
+  } else if (result.status === 'survived') {
+    context.diagnostic(`survived: ${result.survivors.map((server) => server.pid).join(',')}; stop incomplete; retrying next sample${qualification}`)
+  } else context.diagnostic(`stop unknown: ${(result.unknown ?? []).map((target) => target.pid).join(',')}; identity, process tree or census unavailable; retrying next sample${qualification}`)
+}
+
+async function retryStop(context, budgetPct) {
+  const { sample, breach } = context.cleanup
+  const result = await stopTsCpuFamily(context, sample, breach)
+  reportStop(context, result, breach, budgetPct)
 }
 
 async function sampleAndEnforce(context, update, budgetPct) {
+  if (context.cleanup) return retryStop(context, budgetPct)
   const sample = await context.readFamily(context.child.pid)
   if (!context.active()) return
   if (sample.status === 'measured' && sample.parent.identity !== context.pinned.identity) {
@@ -45,9 +51,12 @@ async function sampleAndEnforce(context, update, budgetPct) {
   context.unavailable = sample.status !== 'measured'
   const breach = update(sample, context.now())
   if (!breach) return
-  const pending = stopTsCpuFamily(context, sample, breach).then((result) => reportStop(context, result, breach, budgetPct))
+  let resolve
+  const pending = new Promise((done) => { resolve = done })
+  context.cleanup = { sample, breach, resolve }
   pendingStops.set(context.child, pending)
-  try { await pending } finally { pendingStops.delete(context.child) }
+  context.retain()
+  await retryStop(context, budgetPct)
 }
 
 function createCheck(context, birth, update, budgetPct) {
@@ -87,10 +96,11 @@ export function monitorTsserverCpu(child, stderr, options = {}) {
   const maxGapMs = 3 * intervalMs
   let timer, stopped = false
   const stop = () => { stopped = true; clearInterval(timer) }
-  const context = { child, readFamily, ...contextOptions(options, readFamily),
+  const context = { child, readFamily, ...contextOptions(options, readFamily), retain: () => timer.ref(),
     active: () => !stopped, stop, diagnostic: diagnosticWriter(stderr) }
-  child.once('exit', stop)
-  child.once('close', stop)
+  const exited = () => { if (!context.cleanup) stop() }
+  child.once('exit', exited)
+  child.once('close', exited)
   if (child.exitCode != null || child.signalCode != null) return { status: 'exited' }
   // Invoke at spawn, before any CPU read, and never retry/adopt a later birth.
   const birth = context.readIdentity(child.pid)

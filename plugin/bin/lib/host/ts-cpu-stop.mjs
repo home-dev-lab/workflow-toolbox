@@ -78,43 +78,58 @@ async function freezeTree(context, targets) {
   return false
 }
 
-async function thawTree(context, targets) {
-  // On failure, do not leave the still-owned processes suspended indefinitely.
-  try { if (await ownedBackend(context)) context.kill(-context.child.pid, 'SIGCONT') } catch { /* Report the failed stop. */ }
-  for (const target of [context.pinned, ...targets]) {
-    try {
-      const current = await context.readIdentity(target.pid)
-      if (sameBirth(current, target)) context.kill(target.pid, 'SIGCONT')
-    } catch { /* Failure remains explicit; never adopt a replacement process. */ }
-  }
-}
-
 async function signalTargets(context, targets) {
-  for (const server of targets) {
-    if (server.pgid === context.child.pid) continue
-    try { await signalProcess(context, server, 'SIGKILL') } catch { /* Census reports this survivor; keep cleaning other targets. */ }
+  const unknown = []
+  for (const target of targets) {
+    let current
+    try {
+      // Once tracked, a birth remains owned even after the backend exits.
+      current = await context.readIdentity(target.pid)
+    } catch { unknown.push(target); continue }
+    if (current.status !== 'measured') unknown.push(target)
+    else if (context.active() && sameBirth(current, target)) {
+      try { context.kill(target.pid, 'SIGKILL') } catch { /* A readable census decides whether a failed signal left a survivor. */ }
+    }
   }
   try {
     if (await ownedBackend(context)) context.kill(-context.child.pid, 'SIGKILL')
   } catch { /* A successful signal is not the termination verdict; the census is. */ }
+  return unknown
+}
+
+function stopResult(context, state, status, extra = {}) {
+  return { status, attempted: state.attempted, targets: [context.pinned, ...state.targets.values()],
+    scope: 'tracked set', untrackedDescendants: 'unknown', ...extra }
+}
+
+async function censusTargets(context, state, unknown) {
+  const after = await context.census([...new Set(state.remaining.map((target) => target.pid))])
+  if (after.status !== 'measured') return stopResult(context, state, 'unknown', { unknown: state.remaining })
+  const survivors = after.processes.filter((process) => state.remaining.some((target) => sameBirth({ status: 'measured', process }, target)))
+  state.remaining = state.remaining.filter((target) => survivors.some((process) => process.pid === target.pid))
+  if (unknown.length) return stopResult(context, state, 'unknown', { unknown })
+  return survivors.length ? stopResult(context, state, 'survived', { survivors }) : stopResult(context, state, 'stopped')
 }
 
 export async function stopTsCpuFamily(context, sample, breach) {
-  const verified = await verifyTargets(context, sample, breach)
-  if (!verified) return { status: 'unavailable' }
-  const targets = new Map(verified.map((target) => [`${target.pid}/${target.identity}`, target]))
-  let attempted = false
-  const result = (status, extra = {}) => ({ status, attempted, targets: [context.pinned, ...targets.values()], ...extra })
+  let state = context.cpuStop
   try {
-    attempted = await ownedBackend(context)
-    if (!attempted || !await freezeTree(context, targets)) return result('unverified')
-    await signalTargets(context, [...targets.values()])
+    if (!state) {
+      const verified = await verifyTargets(context, sample, breach)
+      if (!verified) return { status: 'unknown', attempted: false, targets: [], unknown: breach.servers, scope: 'tracked set', untrackedDescendants: 'unknown' }
+      state = context.cpuStop = { targets: new Map(verified.map((target) => [`${target.pid}/${target.identity}`, target])), attempted: false }
+    }
+    if (!state.ready) {
+      state.attempted ||= await ownedBackend(context)
+      if (!state.attempted || !await freezeTree(context, state.targets)) return stopResult(context, state, 'unknown', { unknown: [context.pinned, ...state.targets.values()] })
+      state.ready = true
+      state.remaining = [context.pinned, ...state.targets.values()]
+    }
+    const unknown = await signalTargets(context, state.remaining)
     await context.settle()
-    const expected = [context.pinned, ...targets.values()]
-    const after = await context.census([...new Set(expected.map((target) => target.pid))])
-    if (after.status !== 'measured') return result('unverified')
-    const survivors = after.processes.filter((process) => expected.some((target) => process.pid === target.pid && process.identity === target.identity))
-    return survivors.length ? result('survived', { survivors }) : result('stopped')
-  } catch { return result('unavailable') }
-  finally { if (attempted) await thawTree(context, [...targets.values()]) }
+    return await censusTargets(context, state, unknown)
+  } catch {
+    return state ? stopResult(context, state, 'unknown', { unknown: state.remaining ?? [context.pinned, ...state.targets.values()] })
+      : { status: 'unknown', attempted: false, targets: [], unknown: breach.servers, scope: 'tracked set', untrackedDescendants: 'unknown' }
+  }
 }

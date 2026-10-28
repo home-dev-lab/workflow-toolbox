@@ -31,6 +31,7 @@ function retainMissing(previous, next, now, maxGapMs) {
 
 const containsMembers = (members, subset) => subset.every((server) => members.some((member) => member.identity === server.identity))
 const regressed = (members, servers) => members.some((before) => servers.some((server) => server.identity === before.identity && server.cpuMs < before.cpuMs))
+const provablyIdle = (members, servers) => containsMembers(servers, members) && servers.every((server) => server.cpuMs === (members.find((before) => before.identity === server.identity)?.cpuMs ?? 0))
 
 function familyContinuity(prior, servers, parent, now, maxGapMs) {
   if (!prior || prior.parent !== parent.identity || now - prior.at > maxGapMs) return { reset: true }
@@ -48,7 +49,7 @@ function advanceFamily(prior, sample, now, options) {
   const cpuMs = servers.reduce((sum, server) => sum + server.cpuMs, 0)
   // A changed membership invalidates this delta, not already accepted intervals.
   const state = advance(continuity.stable && !continuity.reset ? prior : undefined, { cpuMs }, now, options)
-  if (!continuity.stable && !continuity.reset) state.overMs = prior.overMs
+  if (!continuity.stable && !continuity.reset && !provablyIdle(prior.members, servers)) state.overMs = prior.overMs
   return { ...state, parent: parent.identity, members: servers }
 }
 
