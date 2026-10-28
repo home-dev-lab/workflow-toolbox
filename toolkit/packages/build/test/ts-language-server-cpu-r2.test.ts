@@ -27,13 +27,10 @@ async function monitored() {
   const child = Object.assign(new EventEmitter(), { pid: 10, exitCode: null })
   const readFamily = vi.fn(() => sample(cpuMs))
   const readIdentity = vi.fn((pid: number) => ({ status: 'measured', process: pid === 10 ? parent : server }))
-  const census = vi.fn(() => ({ status: 'measured', processes: [] as object[] }))
   const kill = vi.fn(), write = vi.fn()
-  const readTree = async () => { const family = await readFamily(); return { ...family, parent: { ...family.parent, state: 'T' }, processes: family.servers.map(member => ({ ...member, state: 'T' })) } }
-  monitorTsserverCpu(child, { write }, { readFamily, readIdentity, readTree, census, settle: async () => {}, kill, now: () => Date.now(), intervalMs: 5000, windowMs: 10_000 })
+  monitorTsserverCpu(child, { write }, { readFamily, readIdentity, kill, now: () => Date.now(), intervalMs: 5000, windowMs: 10_000 })
   await vi.advanceTimersByTimeAsync(0)
-  return { child, readFamily, readIdentity, census, kill, write,
-    text: () => write.mock.calls.flat().join(''),
+  return { child, readFamily, readIdentity, kill, write,
     tick: async () => { cpuMs += 7500; await vi.advanceTimersByTimeAsync(5000) },
   }
 }
@@ -62,22 +59,6 @@ it('refuses a replacement backend consistently present in later samples', async 
   run.readFamily.mockImplementation(() => ({ ...sample(Date.now() * 1.5), parent: { ...parent, identity: '10:replacement' } }))
   run.readIdentity.mockImplementation(pid => ({ status: 'measured', process: pid === 10 ? { ...parent, identity: '10:replacement' } : server }))
   await run.tick(); await run.tick(); await run.tick()
-  expect(run.kill).not.toHaveBeenCalled()
-})
-
-it('refuses backend identity changes between verdict and stop', async () => {
-  const run = await monitored()
-  await run.tick()
-  run.readFamily.mockImplementationOnce(() => sample(15_000)).mockImplementationOnce(() => ({ ...sample(15_000), parent: { ...parent, identity: '10:replacement' } }))
-  await run.tick()
-  expect(run.kill).not.toHaveBeenCalled()
-})
-
-it('rechecks the pinned backend birth immediately before signalling', async () => {
-  const run = await monitored()
-  await run.tick()
-  run.readIdentity.mockImplementation(pid => ({ status: 'measured', process: pid === 10 ? { ...parent, identity: '10:replacement' } : server }))
-  await run.tick()
   expect(run.kill).not.toHaveBeenCalled()
 })
 
@@ -113,44 +94,6 @@ it('discards an in-flight verdict after exit', async () => {
   resolve(sample(15_000))
   await vi.advanceTimersByTimeAsync(0)
   expect(run.kill).not.toHaveBeenCalled()
-})
-
-it('signals an escaped offender by its own verified pid as well as the backend group', async () => {
-  const run = await monitored()
-  run.readFamily.mockImplementation(() => ({ ...sample(Date.now() * 1.5), servers: [{ ...server, pgid: 11, cpuMs: Date.now() * 1.5 }] }))
-  run.readIdentity.mockImplementation(pid => ({ status: 'measured', process: pid === 10 ? parent : { ...server, pgid: 11 } }))
-  // Re-anchor synthetic CPU to avoid mixing the initial zero with the fake epoch.
-  await run.tick(); await run.tick(); await run.tick()
-  expect(run.kill).toHaveBeenCalledWith(11, 'SIGKILL')
-  expect(run.kill).toHaveBeenCalledWith(-10, 'SIGKILL')
-  expect(run.census).toHaveBeenCalledWith([10, 11])
-  expect(run.text()).toContain('stopped backend and tsserver')
-})
-
-it('refuses an escaped offender whose own identity changed before its pid signal', async () => {
-  const run = await monitored()
-  await run.tick()
-  run.readFamily.mockImplementation(() => ({ ...sample(15_000), servers: [{ ...server, pgid: 11, cpuMs: 15_000 }] }))
-  run.readIdentity.mockImplementation(pid => ({ status: 'measured', process: pid === 10 ? parent : { ...server, pgid: 11, identity: '11:replacement' } }))
-  await run.tick()
-  expect(run.kill).not.toHaveBeenCalled()
-})
-
-it('reports survivors instead of stopped after the post-signal census', async () => {
-  const run = await monitored()
-  run.census.mockReturnValue({ status: 'measured', processes: [server] })
-  await run.tick(); await run.tick()
-  expect(run.census).toHaveBeenCalledTimes(1)
-  expect(run.text()).toContain('survived: 11')
-  expect(run.text()).not.toContain('stopped backend and tsserver')
-})
-
-it('does not claim stopped when the post-signal census is unavailable', async () => {
-  const run = await monitored()
-  run.census.mockReturnValue({ status: 'unavailable', reason: 'denied' } as unknown as ReturnType<typeof run.census>)
-  await run.tick(); await run.tick()
-  expect(run.text()).toContain('stop unknown')
-  expect(run.text()).not.toContain('stopped backend and tsserver')
 })
 
 it('does not overlap asynchronous samples while a helper is in flight', async () => {
@@ -241,12 +184,12 @@ it('keeps the event loop responsive and kills a helper that ignores SIGTERM', as
   } finally { clearImmediate(timer) }
 })
 
-function launchFixture(spinning: boolean, escaped = false) {
+function launchFixture(spinning: boolean) {
   const root = mkdtempSync(join(tmpdir(), 'wt-tsls-cpu-launch-'))
   cpSync(join(plugin, 'bin'), join(root, 'plugin/bin'), { recursive: true })
   const budgetFile = join(root, 'plugin/bin/lib/host/ts-cpu-budget.mjs')
   const budget = readFileSync(budgetFile, 'utf8')
-  writeFileSync(budgetFile, budget.replace('TS_CPU_BUDGET_PCT = 100', 'TS_CPU_BUDGET_PCT = 1').replace('TS_CPU_WINDOW_MS = 120_000', `TS_CPU_WINDOW_MS = ${escaped ? 500 : 200}`).replace('TS_CPU_SAMPLE_MS = 5000', 'TS_CPU_SAMPLE_MS = 50'))
+  writeFileSync(budgetFile, budget.replace('TS_CPU_BUDGET_PCT = 100', 'TS_CPU_BUDGET_PCT = 1').replace('TS_CPU_WINDOW_MS = 120_000', 'TS_CPU_WINDOW_MS = 200').replace('TS_CPU_SAMPLE_MS = 5000', 'TS_CPU_SAMPLE_MS = 50'))
   const lib = join(root, 'bin/node_modules/typescript-language-server/lib')
   mkdirSync(lib, { recursive: true })
   const ts = join(root, 'node_modules/typescript')
@@ -254,15 +197,9 @@ function launchFixture(spinning: boolean, escaped = false) {
   writeFileSync(join(ts, 'package.json'), JSON.stringify({ name: 'typescript', version: '6.0.0' }))
   const script = join(ts, 'lib/tsserver.js')
   writeFileSync(script, spinning ? 'while (true) {}' : 'setTimeout(() => process.send({ idle: true }), 650); setInterval(() => {}, 1000)')
-  const siblingScript = join(root, 'escaped/tsserver.js')
-  if (escaped) {
-    mkdirSync(join(root, 'escaped'))
-    writeFileSync(siblingScript, `const { spawn } = require('node:child_process'); const nested = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'inherit' }); process.stderr.write('GRANDCHILD_PID=' + nested.pid + '\\n'); setInterval(() => {}, 1000);`)
-  }
-  const spawnSibling = escaped ? `const sibling = spawn(process.execPath, [${JSON.stringify(siblingScript)}], { detached: true, stdio: ['ignore', process.stdout, process.stderr] }); process.stderr.write('ESCAPED_PID=' + sibling.pid + '\\n');` : ''
   const cli = join(lib, 'cli.mjs')
   const reply = frame({ id: 1, result: { capabilities: {} } }).toString()
-  writeFileSync(cli, `import { spawn } from 'node:child_process'; const child = spawn(process.execPath, [${JSON.stringify(script)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] }); ${spawnSibling} child.on('message', () => process.stderr.write('IDLE_OBSERVED\\n')); process.stderr.write('BACKEND_PID=' + process.pid + '\\nSERVER_PID=' + child.pid + '\\n'); process.stdout.write(${JSON.stringify(reply)}); process.stdin.resume(); process.stdin.on('end', () => process.exit(0));`)
+  writeFileSync(cli, `import { spawn } from 'node:child_process'; const child = spawn(process.execPath, [${JSON.stringify(script)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] }); child.on('message', () => process.stderr.write('IDLE_OBSERVED\\n')); process.stderr.write('BACKEND_PID=' + process.pid + '\\nSERVER_PID=' + child.pid + '\\n'); process.stdout.write(${JSON.stringify(reply)}); process.stdin.resume(); process.stdin.on('end', () => process.exit(0));`)
   symlinkSync(cli, join(root, 'bin/typescript-language-server'))
   const child = spawn(process.execPath, [join(root, 'plugin/bin/wt-tsls.mjs')], { cwd: root, detached: true, env: { ...fixtureEnvironment(root), PATH: join(root, 'bin') } })
   let stderr = ''
@@ -277,27 +214,33 @@ function state(pid: number) {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'gone'; throw error }
 }
 
-it.skipIf(process.platform !== 'linux').each([true, false])('real wt-tsls launch stops a synchronous spin and preserves idle (spin=%s)', async spinning => {
+it.skipIf(process.platform !== 'linux').each([true, false])('real wt-tsls launch warns on a synchronous spin and preserves idle (spin=%s)', async spinning => {
   const run = launchFixture(spinning)
   const closed = once(run.child, 'close', { signal: AbortSignal.timeout(40_000) })
   let pid = 0, backend = 0
   try {
     await vi.waitFor(() => expect(run.stderr()).toMatch(/SERVER_PID=\d+/), { timeout: 15_000 })
     pid = Number(/SERVER_PID=(\d+)/.exec(run.stderr())![1])
-    try { backend = Number(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').at(-1)!.split(' ')[1]) } catch { /* The spin may already have stopped. */ }
+    backend = Number(/BACKEND_PID=(\d+)/.exec(run.stderr())![1])
     if (spinning) {
-      await vi.waitFor(() => expect(run.child.signalCode).toBe('SIGKILL'), { timeout: 15_000, interval: 50 })
-      expect(await closed).toEqual([null, 'SIGKILL'])
-      await vi.waitFor(() => expect(['gone', 'Z', 'X']).toContain(state(pid)))
-      expect(run.stderr()).toContain('stopped backend and tsserver')
-      console.log('real wt-tsls synchronous spin: backend SIGKILL; offender gone/dead; stopped confirmed')
+      await vi.waitFor(() => expect(run.stderr()).toContain('CPU budget exceeded:'), { timeout: 15_000, interval: 50 })
+      expect(run.stderr()).toContain('stop is disabled in this version; sampling continues')
+      expect(run.child.exitCode).toBeNull(); expect(run.child.signalCode).toBeNull()
+      expect(['S', 'R']).toContain(state(pid))
+      expect(run.stderr().match(/CPU budget exceeded:/g)).toHaveLength(1)
+      console.log('real wt-tsls synchronous spin: CPU breach warned; backend and offender alive; stop disabled')
     } else {
       await vi.waitFor(() => expect(run.stderr()).toContain('IDLE_OBSERVED'), { timeout: 15_000 })
       expect(run.child.exitCode).toBeNull(); expect(run.child.signalCode).toBeNull()
       expect(['S', 'R']).toContain(state(pid))
-      expect(run.stderr()).not.toContain('stopped backend and tsserver')
-      console.log('real wt-tsls idle: alive past 200ms window; no watchdog stop')
+      expect(run.stderr()).not.toContain('CPU budget exceeded:')
+      console.log('real wt-tsls idle: alive past 200ms window; no CPU breach warning; no watchdog stop')
     }
+    const ended = once(run.child.stdout, 'end', { signal: AbortSignal.timeout(15_000) })
+    run.child.stdin.end()
+    expect(await closed).toEqual([0, null])
+    await ended
+    console.log(`real wt-tsls backend exit (spin=${spinning}): exit 0; client EOF observed`)
   } finally {
     for (const target of [backend ? -backend : 0, -run.child.pid!, pid]) if (target) try { process.kill(target, 'SIGKILL') } catch { /* Already dead. */ }
     await closed.catch(() => {})
@@ -305,29 +248,14 @@ it.skipIf(process.platform !== 'linux').each([true, false])('real wt-tsls launch
   }
 }, 45_000)
 
-const { stopTsCpuFamily } = await import(url('ts-cpu-stop'))
 const { runTsLaunch } = await import(url('ts-language-server'))
-
-it('retains supervision and defers launcher disconnect while a signalled stop leaves survivors', async () => {
-  const run = await monitored()
-  const disconnect = vi.fn()
-  run.child.on('wt-tsls-cpu-stop', disconnect)
-  run.census.mockReturnValue({ status: 'measured', processes: [server] })
-  await run.tick(); await run.tick()
-  expect(disconnect).not.toHaveBeenCalled()
-  await run.tick()
-  expect(run.census).toHaveBeenCalledTimes(2)
-  run.census.mockReturnValue({ status: 'measured', processes: [] })
-  await run.tick()
-  expect(disconnect).toHaveBeenCalledWith(expect.objectContaining({ status: 'stopped', scope: 'tracked set', untrackedDescendants: 'unknown' }))
-})
 
 it.each([
   { backpressure: false, answered: false, stderrThrows: false },
   { backpressure: false, answered: true, stderrThrows: false },
   { backpressure: true, answered: true, stderrThrows: false },
   { backpressure: false, answered: true, stderrThrows: true },
-])('disconnects the client within one second without backend close (backpressure=$backpressure answered=$answered stderrThrows=$stderrThrows)', async ({ backpressure, answered, stderrThrows }) => {
+])('ignores the removed CPU-stop event (backpressure=$backpressure answered=$answered stderrThrows=$stderrThrows)', async ({ backpressure, answered, stderrThrows }) => {
   vi.useFakeTimers()
   const input = new PassThrough(), output = new PassThrough({ highWaterMark: 1 }), stderr = new PassThrough()
   const child = Object.assign(new EventEmitter(), { pid: 10, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, kill: vi.fn() })
@@ -340,104 +268,16 @@ it.each([
   if (stderrThrows) vi.spyOn(stderr, 'write').mockImplementation(() => { throw new Error('diagnostic failed') })
   child.emit('wt-tsls-cpu-stop', { status: 'survived', attempted: true })
   await vi.advanceTimersByTimeAsync(1000)
-  expect(exitSignal).toHaveBeenCalledExactlyOnceWith('SIGKILL')
-  expect(output.writableEnded).toBe(true)
-  expect(child.stdout.destroyed).toBe(true)
-  child.emit('close', null, 'SIGKILL')
-  await vi.advanceTimersByTimeAsync(0)
-  expect(exitSignal).toHaveBeenCalledTimes(1)
+  expect(exitSignal).not.toHaveBeenCalled()
+  expect(output.writableEnded).toBe(false)
+  expect(child.stdout.destroyed).toBe(false)
+  expect(child.listenerCount('wt-tsls-cpu-stop')).toBe(0)
+  expect(vi.getTimerCount()).toBe(0)
   expect(exit).not.toHaveBeenCalled()
+  vi.restoreAllMocks()
+  child.emit('close', 0, null)
+  await vi.advanceTimersByTimeAsync(0)
   input.destroy(); output.destroy(); stderr.destroy()
-})
-
-function stoppedTree() {
-  const sibling = { ...server, pid: 12, pgid: 12, identity: '12:birth', state: 'T' }
-  const grandchild = { ...server, pid: 13, ppid: 12, pgid: 13, identity: '13:birth', state: 'T' }
-  const members = [{ ...server, state: 'T' }, sibling, grandchild]
-  const backend = { ...parent, state: 'T' }
-  const family = { ...sample(15_000), servers: [server, sibling] }
-  const readIdentity = vi.fn((pid: number) => ({ status: 'measured', process: [backend, ...members].find(member => member.pid === pid) }))
-  const readTree = vi.fn(() => ({ status: 'measured', parent: backend, processes: [...members] }))
-  const census = vi.fn(() => ({ status: 'measured', processes: [] as object[] }))
-  const kill = vi.fn((pid: number, signal: string) => {
-    const target = members.find(member => member.pid === pid)
-    if (target && signal === 'SIGSTOP') target.state = 'T'
-  })
-  const context = { child: { pid: 10 }, pinned: parent, active: () => true, readFamily: async () => family, readIdentity, readTree, census, kill, settle: async () => {} }
-  return { context, family, members, sibling, grandchild,
-    stop: () => stopTsCpuFamily(context, family, { servers: [server] }) }
-}
-
-it('cleans the whole tree including an escaped idle sibling and non-server grandchild', async () => {
-  const run = stoppedTree()
-  expect(await run.stop()).toMatchObject({ status: 'stopped' })
-  expect(run.context.kill).toHaveBeenCalledWith(12, 'SIGKILL')
-  expect(run.context.kill).toHaveBeenCalledWith(13, 'SIGKILL')
-  expect(run.context.census).toHaveBeenCalledWith([10, 11, 12, 13])
-})
-
-it('does not report stopped when a below-budget escaped sibling survives', async () => {
-  const run = stoppedTree()
-  run.context.census.mockReturnValue({ status: 'measured', processes: [run.sibling] })
-  expect(await run.stop()).toMatchObject({ status: 'survived', survivors: [{ pid: 12 }] })
-})
-
-it('censuses and names survivors when termination signalling fails', async () => {
-  const run = stoppedTree()
-  run.context.kill.mockImplementation((_pid, signal) => { if (signal === 'SIGKILL') throw new Error('denied') })
-  run.context.census.mockReturnValue({ status: 'measured', processes: [parent, ...run.members] })
-  expect(await run.stop()).toMatchObject({ status: 'survived', survivors: [{ pid: 10 }, { pid: 11 }, { pid: 12 }, { pid: 13 }] })
-  expect(run.context.census).toHaveBeenCalledTimes(1)
-  expect(run.context.kill).toHaveBeenCalledWith(13, 'SIGKILL')
-  expect(run.context.kill).toHaveBeenCalledWith(-10, 'SIGKILL')
-  expect(run.context.kill).not.toHaveBeenCalledWith(-10, 'SIGCONT')
-})
-
-it('freezes the tree and includes descendants born during the first walk', async () => {
-  const run = stoppedTree()
-  const late = { ...run.grandchild, pid: 14, ppid: 13, pgid: 14, identity: '14:birth', state: 'R' }
-  run.context.readTree.mockImplementationOnce(() => ({ status: 'measured', parent: { ...parent, state: 'T' }, processes: [...run.members] }))
-  run.context.readTree.mockImplementation(() => {
-    if (!run.members.includes(late)) run.members.push(late)
-    return { status: 'measured', parent: { ...parent, state: 'T' }, processes: [...run.members] }
-  })
-  expect(await run.stop()).toMatchObject({ status: 'stopped' })
-  expect(run.context.kill).toHaveBeenCalledWith(-10, 'SIGSTOP')
-  expect(run.context.kill).toHaveBeenCalledWith(14, 'SIGSTOP')
-  expect(run.context.kill).toHaveBeenCalledWith(14, 'SIGKILL')
-  expect(run.context.census).toHaveBeenCalledWith([10, 11, 12, 13, 14])
-})
-
-it('retains an unreadable tree attempt without resuming the owned group and retries it', async () => {
-  const run = stoppedTree()
-  run.context.readTree.mockReturnValueOnce({ status: 'unavailable', reason: 'denied' } as unknown as ReturnType<typeof run.context.readTree>)
-  expect(await run.stop()).toMatchObject({ status: 'unknown' })
-  expect(run.context.kill).not.toHaveBeenCalledWith(-10, 'SIGKILL')
-  expect(run.context.kill).not.toHaveBeenCalledWith(-10, 'SIGCONT')
-  expect(await run.stop()).toMatchObject({ status: 'stopped', untrackedDescendants: 'unknown' })
-  expect(run.context.kill).toHaveBeenCalledWith(13, 'SIGKILL')
-})
-
-it('refuses an escaped descendant when its recorded ancestor birth changed', async () => {
-  const run = stoppedTree()
-  run.sibling.pgid = 10
-  let siblingReads = 0
-  run.context.readIdentity.mockImplementation(pid => ({ status: 'measured', process: pid === 12 && ++siblingReads > 1 ? { ...run.sibling, identity: '12:replacement' } : [{ ...parent, state: 'T' }, ...run.members].find(member => member.pid === pid) }))
-  expect(await run.stop()).toMatchObject({ status: 'unknown' })
-  expect(run.context.kill).not.toHaveBeenCalledWith(13, 'SIGKILL')
-  expect(run.context.kill).not.toHaveBeenCalledWith(-10, 'SIGKILL')
-})
-
-it('bounds freeze attempts instead of accepting a tree that keeps changing', async () => {
-  const run = stoppedTree()
-  run.context.readTree.mockImplementation(() => {
-    const pid = 20 + run.members.length
-    run.members.push({ ...run.grandchild, pid, identity: `${pid}:birth`, state: 'R' })
-    return { status: 'measured', parent: { ...parent, state: 'T' }, processes: [...run.members] }
-  })
-  expect(await run.stop()).toMatchObject({ status: 'unknown' })
-  expect(run.context.readTree).toHaveBeenCalledTimes(5)
-  expect(run.context.kill).not.toHaveBeenCalledWith(-10, 'SIGKILL')
 })
 
 it.each([
@@ -501,34 +341,6 @@ it('reports a failed macOS tree helper and unsupported Windows tree as unavailab
   expect(run).not.toHaveBeenCalled()
 })
 
-it.skipIf(process.platform !== 'linux')('real wt-tsls stop removes an escaped idle sibling and grandchild and ends the client stream', async () => {
-  const run = launchFixture(true, true)
-  const closed = once(run.child, 'close', { signal: AbortSignal.timeout(40_000) })
-  let stopAt: number | undefined, streamEndedAt: number | undefined
-  run.child.stderr.on('data', () => { if (run.stderr().includes('CPU budget stop')) stopAt ??= performance.now() })
-  run.child.stdout.once('end', () => { streamEndedAt = performance.now() })
-  let pids: number[] = [], backend = 0
-  try {
-    await vi.waitFor(() => expect(run.stderr()).toMatch(/GRANDCHILD_PID=\d+/), { timeout: 15_000 })
-    pids = [...run.stderr().matchAll(/(?:SERVER|ESCAPED|GRANDCHILD)_PID=(\d+)/g)].map(match => Number(match[1]))
-    expect(pids).toHaveLength(3)
-    try { backend = Number(readFileSync(`/proc/${pids[0]}/stat`, 'utf8').split(') ').at(-1)!.split(' ')[1]) } catch { /* Already stopped. */ }
-    expect(await closed).toEqual([null, 'SIGKILL'])
-    expect(stopAt).toBeTypeOf('number'); expect(streamEndedAt).toBeTypeOf('number')
-    expect(streamEndedAt! - stopAt!).toBeLessThanOrEqual(1500)
-    for (const pid of pids) await vi.waitFor(() => expect(['gone', 'Z', 'X']).toContain(state(pid)))
-    expect(run.stderr()).toContain('stopped backend and tsserver')
-    expect(run.stderr()).toContain('disconnecting client')
-    console.log('real wt-tsls escaped tree: spinning server, idle escaped sibling and escaped grandchild gone/dead; client stream ended')
-  } finally {
-    pids = [...run.stderr().matchAll(/(?:SERVER|ESCAPED|GRANDCHILD)_PID=(\d+)/g)].map(match => Number(match[1]))
-    backend ||= Number(/BACKEND_PID=(\d+)/.exec(run.stderr())?.[1] ?? 0)
-    for (const target of [backend ? -backend : 0, -run.child.pid!, ...pids]) if (target) try { process.kill(target, 'SIGKILL') } catch { /* Already dead. */ }
-    await closed.catch(() => {})
-    rmSync(run.root, { recursive: true, force: true })
-  }
-}, 45_000)
-
 it('resets combined evidence when a zero-CPU sibling joins a provably idle interval', () => {
   const update = createTsCpuBudget()
   for (let at = 0; at <= 115_000; at += 5000) expect(update(pair(at * 0.75, at * 0.75), at)).toBeUndefined()
@@ -537,113 +349,3 @@ it('resets combined evidence when a zero-CPU sibling joins a provably idle inter
   const next = { ...idle, servers: idle.servers.map(member => ({ ...member, cpuMs: member.cpuMs + (member.pid === 13 ? 0 : 3750) })) }
   expect(update(next, 125_000)).toBeUndefined()
 })
-
-it('retries an identity-read failure after backend exit without resuming or abandoning an escaped target', async () => {
-  vi.useFakeTimers()
-  const run = stoppedTree(), child = Object.assign(new EventEmitter(), { pid: 10, exitCode: null })
-  const alive = new Set([10, 11, 12, 13]), write = vi.fn(), disconnect = vi.fn()
-  let injected = false, killing = false
-  const readIdentity = async (pid: number) => {
-    if (pid === 12 && killing && !injected) {
-      injected = true
-      return { status: 'unavailable', reason: 'one injected read failure' }
-    }
-    return run.context.readIdentity(pid)
-  }
-  const kill = vi.fn((pid: number, signal: string) => {
-    if (signal !== 'SIGKILL') return
-    killing = true
-    if (pid === -10) { alive.delete(10); alive.delete(11); child.emit('exit', null, 'SIGKILL') }
-    else alive.delete(pid)
-  })
-  const census = () => ({ status: 'measured', processes: [parent, ...run.members].filter(member => alive.has(member.pid)) })
-  const readFamily = () => ({ ...run.family, servers: [{ ...server, cpuMs: Date.now() * 1.5 }] })
-  child.on('wt-tsls-cpu-stop', disconnect)
-  monitorTsserverCpu(child, { write }, { ...run.context, readFamily, readIdentity, census, kill, now: () => Date.now(), intervalMs: 5000, windowMs: 10_000 })
-  await vi.advanceTimersByTimeAsync(10_000)
-  expect(injected).toBe(true)
-  expect(write.mock.calls.flat().join('')).toContain('stop unknown: 12')
-  expect(write.mock.calls.flat().join('')).not.toContain('survived: 12')
-  expect(disconnect).not.toHaveBeenCalled()
-  expect(alive.has(12)).toBe(true)
-  await vi.advanceTimersByTimeAsync(5000)
-  expect(kill).toHaveBeenCalledWith(12, 'SIGKILL')
-  expect(alive.has(12)).toBe(false)
-  expect(kill.mock.calls.some(([, signal]) => signal === 'SIGCONT')).toBe(false)
-  expect(disconnect).toHaveBeenCalledWith(expect.objectContaining({ status: 'stopped', untrackedDescendants: 'unknown' }))
-})
-
-it('revises a transient survivor verdict on the next tick before disconnecting', async () => {
-  const run = await monitored(), disconnect = vi.fn()
-  run.child.on('wt-tsls-cpu-stop', disconnect)
-  run.census.mockReturnValueOnce({ status: 'measured', processes: [server] })
-  await run.tick(); await run.tick()
-  expect(run.text()).toContain('survived: 11')
-  expect(disconnect).not.toHaveBeenCalled()
-  await run.tick()
-  expect(disconnect).toHaveBeenCalledWith(expect.objectContaining({ status: 'stopped' }))
-  expect(run.text().split('\n').filter(line => line.includes('stopped backend and tsserver')))
-    .toEqual([expect.stringContaining('tracked set only; untracked descendants: unknown')])
-})
-
-it.skipIf(process.platform !== 'linux')('qualifies a tracked-set stop when a real detached reparented grandchild is outside the tree', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'wt-tsls-reparent-'))
-  const script = join(root, 'tsserver.js')
-  writeFileSync(script, 'setInterval(() => {}, 1000)')
-  const helper = `const { spawn } = require('node:child_process'); const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' }); console.log('GRANDCHILD_PID=' + g.pid); g.unref()`
-  const code = `const { spawn } = require('node:child_process'); spawn(process.execPath, [${JSON.stringify(script)}], { stdio: 'ignore' }); const h = spawn(process.execPath, ['-e', ${JSON.stringify(helper)}], { stdio: ['ignore', 'inherit', 'inherit'] }); h.on('exit', () => console.log('HELPER_EXITED')); setInterval(() => {}, 1000)`
-  const child = spawn(process.execPath, ['-e', code], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: fixtureEnvironment(root) })
-  let output = '', grandchild = 0
-  child.stdout.on('data', chunk => { output += chunk.toString() })
-  try {
-    await vi.waitFor(() => expect(output).toContain('HELPER_EXITED'), { timeout: 15_000 })
-    grandchild = Number(/GRANDCHILD_PID=(\d+)/.exec(output)![1])
-    const reader = cpu.createTsCpuReader(), family = await reader(child.pid)
-    const birth = await reader.identity(child.pid)
-    const context = { child, pinned: birth.process, active: () => true, readFamily: reader, readIdentity: reader.identity, readTree: reader.tree, census: reader.census, kill: process.kill, settle: () => new Promise(resolve => setTimeout(resolve, 20)) }
-    let result = await stopTsCpuFamily(context, family, { servers: family.servers })
-    await vi.waitFor(async () => {
-      if (result.status !== 'stopped') result = await stopTsCpuFamily(context, family, { servers: family.servers })
-      expect(result.status).toBe('stopped')
-    }, { timeout: 5000 })
-    expect(result).toMatchObject({ status: 'stopped', scope: 'tracked set', untrackedDescendants: 'unknown' })
-    expect(result.targets.map((target: { pid: number }) => target.pid)).not.toContain(grandchild)
-    expect(['S', 'R']).toContain(state(grandchild))
-  } finally {
-    grandchild ||= Number(/GRANDCHILD_PID=(\d+)/.exec(output)?.[1] ?? 0)
-    for (const pid of [-child.pid!, grandchild]) if (pid) try { process.kill(pid, 'SIGKILL') } catch { /* Already dead. */ }
-    rmSync(root, { recursive: true, force: true })
-  }
-}, 30_000)
-
-it.skipIf(process.platform !== 'linux')('kills a real escaped target on retry after one injected identity-read failure', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'wt-tsls-retry-')), script = join(root, 'tsserver.js')
-  writeFileSync(script, 'setInterval(() => {}, 1000)')
-  const code = `const { spawn } = require('node:child_process'); const child = spawn(process.execPath, [${JSON.stringify(script)}], { detached: true, stdio: 'ignore' }); console.log(child.pid); setInterval(() => {}, 1000)`
-  const child = spawn(process.execPath, ['-e', code], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: fixtureEnvironment(root) })
-  let output = '', pid = 0, killing = false, injected = false
-  child.stdout.on('data', chunk => { output += chunk.toString() })
-  try {
-    await vi.waitFor(() => expect(output).toMatch(/\d+/), { timeout: 15_000 })
-    pid = Number(output.trim())
-    const reader = cpu.createTsCpuReader(), family = await reader(child.pid), birth = await reader.identity(child.pid)
-    const kill = vi.fn((target: number, signal: NodeJS.Signals) => { if (signal === 'SIGKILL') killing = true; process.kill(target, signal) })
-    const readIdentity = (target: number) => {
-      if (target === pid && killing && !injected) { injected = true; return { status: 'unavailable', reason: 'injected once' } }
-      return reader.identity(target)
-    }
-    const context = { child, pinned: birth.process, active: () => true, readFamily: reader, readIdentity, readTree: reader.tree, census: reader.census, kill, settle: () => new Promise(resolve => setTimeout(resolve, 20)) }
-    expect(await stopTsCpuFamily(context, family, { servers: family.servers })).toMatchObject({ status: 'unknown', unknown: [{ pid }] })
-    expect(injected).toBe(true)
-    expect(state(pid)).toBe('T')
-    await vi.waitFor(async () => expect(await stopTsCpuFamily(context, family, { servers: family.servers })).toMatchObject({ status: 'stopped' }), { timeout: 5000 })
-    expect(kill).toHaveBeenCalledWith(pid, 'SIGKILL')
-    expect(kill.mock.calls.some(([, signal]) => signal === 'SIGCONT')).toBe(false)
-    expect(['gone', 'Z', 'X']).toContain(state(pid))
-    console.log('real identity-read failure: unknown while escaped target frozen; retry SIGKILL; offender gone/dead; no SIGCONT')
-  } finally {
-    pid ||= Number(output.trim())
-    for (const target of [-child.pid!, pid]) if (target) try { process.kill(target, 'SIGKILL') } catch { /* Already dead. */ }
-    rmSync(root, { recursive: true, force: true })
-  }
-}, 30_000)

@@ -1,4 +1,4 @@
-// CPU accounting, process ownership and the enforced resource bound.
+// CPU accounting, process ownership and warn-only resource supervision.
 import { spawn, spawnSync } from 'node:child_process'
 import { EventEmitter, once } from 'node:events'
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
@@ -86,7 +86,7 @@ it('reports unavailable for failed, truncated or malformed ps output', async () 
 
 const sample = (cpuMs: number, identity = '11:123') => ({ status: 'measured', parent: { pid: 10, identity: '10:123', pgid: 10 }, servers: [{ pid: 11, ppid: 10, pgid: 10, identity, cpuMs }] })
 
-it('enforces the stated one-core budget after 120 seconds without an unbounded startup grace', () => {
+it('detects the stated one-core budget after 120 seconds without an unbounded startup grace', () => {
   expect([TS_CPU_BUDGET_PCT, TS_CPU_WINDOW_MS, TS_CPU_SAMPLE_MS]).toEqual([100, 120_000, 5000])
   const update = createTsCpuBudget()
   expect(update(sample(0), 0)).toBeUndefined()
@@ -128,38 +128,25 @@ async function monitored() {
   const readFamily = vi.fn(() => status === 'measured' ? sample(cpuMs, identity) : { status: 'unavailable', reason: 'denied' })
   const kill = vi.fn(), write = vi.fn()
   const readIdentity = (pid: number) => ({ status: 'measured', process: pid === 10 ? sample(0).parent : sample(cpuMs, identity).servers[0] })
-  const readTree = () => ({ ...sample(cpuMs, identity), parent: { ...sample(0).parent, state: 'T' }, processes: sample(cpuMs, identity).servers.map(server => ({ ...server, state: 'T' })) })
-  monitorTsserverCpu(child, { write }, { readFamily, readIdentity, readTree, census: () => ({ status: 'measured', processes: [] }), settle: async () => {}, kill, now: () => Date.now(), intervalMs: 1000, windowMs: 2000 })
+  monitorTsserverCpu(child, { write }, { readFamily, readIdentity, kill, now: () => Date.now(), intervalMs: 1000, windowMs: 2000 })
   await vi.advanceTimersByTimeAsync(0)
   return { child, kill, write, readFamily, identity: (id: string) => { identity = id }, status: (value: string) => { status = value }, tick: async () => { cpuMs += 1500; await vi.advanceTimersByTimeAsync(1000) } }
 }
 
-it('kills the isolated backend family together, clears sampling, and writes only stderr diagnostics', async () => {
+it('warns once on a CPU breach, sends no signals, and continues sampling', async () => {
   const run = await monitored()
   await run.tick(); expect(run.kill).not.toHaveBeenCalled()
   await run.tick()
-  expect(run.kill).toHaveBeenCalledWith(-10, 'SIGKILL')
-  expect(run.child.kill).not.toHaveBeenCalled()
-  expect(run.write.mock.calls.flat().join('')).toContain('stopped backend and tsserver 11: 150.0% CPU above 100% for 2000ms')
-  const reads = run.readFamily.mock.calls.length
-  await run.tick(); expect(run.readFamily).toHaveBeenCalledTimes(reads)
-  expect(vi.getTimerCount()).toBe(0)
-})
-
-it('does not signal a reused process between the budget verdict and stop', async () => {
-  const run = await monitored()
-  await run.tick()
-  run.readFamily.mockImplementationOnce(() => sample(3000)).mockImplementationOnce(() => sample(3000, '11:456'))
-  await run.tick()
-  expect(run.kill).not.toHaveBeenCalled(); expect(run.child.kill).not.toHaveBeenCalled()
-})
-
-it('refuses to kill a process group shared with the caller', async () => {
-  const run = await monitored()
-  await run.tick()
-  run.readFamily.mockImplementationOnce(() => sample(3000)).mockImplementationOnce(() => ({ ...sample(3000), parent: { pid: 10, identity: '10:123', pgid: 1 } }))
-  await run.tick()
   expect(run.kill).not.toHaveBeenCalled()
+  expect(run.child.kill).not.toHaveBeenCalled()
+  expect(run.write.mock.calls.flat().join('')).toContain('CPU budget exceeded: tsserver 11: 150.0% CPU, 50.0 percentage points above 100% for 2000ms; stop is disabled in this version; sampling continues')
+  const reads = run.readFamily.mock.calls.length
+  await run.tick(); expect(run.readFamily).toHaveBeenCalledTimes(reads + 1)
+  expect(run.write.mock.calls.flat().join('').match(/CPU budget exceeded:/g)).toHaveLength(1)
+  expect(run.kill).not.toHaveBeenCalled()
+  expect(vi.getTimerCount()).toBe(1)
+  run.child.emit('exit', 0, null)
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('reports unavailable once per outage and stops polling on transport close', async () => {
@@ -195,12 +182,13 @@ function processState(pid: number) {
   }
 }
 
-it.skipIf(process.platform !== 'linux')('stops a real synchronous spinning child even though its event loop cannot service timers', async () => {
+it.skipIf(process.platform !== 'linux')('warns about a real synchronous spinning child without stopping its event loop', async () => {
   const root = mkdtempSync(join(tmpdir(), 'wt-tsls-cpu-spin-'))
   const cli = join(root, 'cli.mjs'), server = join(root, 'tsserver.js')
   writeFileSync(server, 'while (true) {}')
   writeFileSync(cli, `import { spawn } from 'node:child_process'; const child = spawn(process.execPath, [${JSON.stringify(server)}], { stdio: 'ignore' }); console.log(child.pid); setInterval(() => {}, 1000);`)
   const child = spawn(process.execPath, [cli], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: fixtureEnvironment(root) })
+  const closed = once(child, 'close')
   const lines = createInterface({ input: child.stdout })
   let serverPid: number | undefined
   const write = vi.fn()
@@ -208,16 +196,15 @@ it.skipIf(process.platform !== 'linux')('stops a real synchronous spinning child
     const [line] = await once(lines, 'line', { signal: AbortSignal.timeout(15_000) })
     serverPid = Number(line)
     expect(Number.isSafeInteger(serverPid) && serverPid > 0).toBe(true)
-    const closed = once(child, 'close', { signal: AbortSignal.timeout(15_000) })
     monitorTsserverCpu(child, { write }, { intervalMs: 50, windowMs: 200, budgetPct: 1 })
-    const result = await closed
-    expect(result).toEqual([null, 'SIGKILL'])
-    await vi.waitFor(() => expect(write.mock.calls.flat().join('')).toContain('stopped backend and tsserver'))
-    // A dead child may remain briefly as a zombie until the host reaps it; no CPU can accrue.
-    await vi.waitFor(() => expect(['gone', 'Z', 'X']).toContain(processState(serverPid!)), { timeout: 15_000, interval: 20 })
+    await vi.waitFor(() => expect(write.mock.calls.flat().join('')).toContain('CPU budget exceeded:'), { timeout: 15_000 })
+    expect(child.exitCode).toBeNull(); expect(child.signalCode).toBeNull()
+    expect(['S', 'R']).toContain(processState(serverPid!))
+    expect(write.mock.calls.flat().join('')).toContain('stop is disabled in this version; sampling continues')
   } finally {
     lines.close()
     try { process.kill(-child.pid!, 'SIGKILL') } catch { /* Already dead. */ }
+    await closed
     rmSync(root, { recursive: true, force: true })
   }
 }, 40_000)

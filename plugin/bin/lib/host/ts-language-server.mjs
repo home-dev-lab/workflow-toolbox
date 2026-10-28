@@ -1,5 +1,4 @@
 import { spawnTsProcess as spawn } from './ts-process.mjs'
-import { afterTsCpuStop } from './ts-cpu-watchdog.mjs'
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
@@ -361,48 +360,23 @@ function connectTsStreams(child, result, replay, streams, state) {
   else child.stdin.once('drain', handoff)
 }
 
-function disconnectTsCpuStop(child, streams, state, cleanup, exitSignal) {
-  return () => {
-    if (state.finished) return
-    state.finished = true
-    cleanup()
-    streams.input.unpipe(child.stdin)
-    streams.input.pause()
-    child.stdout.unpipe(streams.output)
-    child.stderr.unpipe(streams.stderr)
-    child.stdin.destroy()
-    child.stdout.destroy()
-    child.stderr.destroy()
-    try { streams.stderr.write('wt-tsls: CPU budget stop; disconnecting client; restart the language server\n') } catch { /* Disconnect even if the diagnostic stream failed. */ }
-    // Backpressure and inherited backend pipes cannot keep this client connected.
-    let finished = false
-    const finish = () => { if (!finished) { finished = true; exitSignal('SIGKILL') } }
-    const timer = setTimeout(finish, 1000)
-    timer.unref()
-    streams.output.end(() => { clearTimeout(timer); finish() })
-  }
-}
-
 function superviseTsChild(child, plan, result, replay, streams, exitSignal) {
   const { input, output, exit } = streams
-  const state = { answered: false, started: false, refusing: false, finished: false, responseBytes: Buffer.alloc(0) }
+  const state = { answered: false, started: false, refusing: false, responseBytes: Buffer.alloc(0) }
   const cleanup = forwardTsSignals(child)
-  child.once('wt-tsls-cpu-stop', disconnectTsCpuStop(child, streams, state, cleanup, exitSignal))
   child.on('error', (error) => {
-    if (state.finished) return
     cleanup()
     if (!state.answered) { state.refusing = true; refuse(`wt-tsls: could not start ${plan.command}: ${error.message}`, replay, streams) }
     else exit(1)
   })
   child.on('spawn', () => connectTsStreams(child, result, replay, streams, state))
-  child.on('close', afterTsCpuStop(child, (code, signal) => {
+  child.on('close', (code, signal) => {
     cleanup()
     input.unpipe(child.stdin)
-    if (state.finished) return
     if (state.refusing) return
     if (!state.started || state.answered) output.write('', () => { if (signal) exitSignal(signal); else exit(code ?? 0) })
     else refuse(`wt-tsls: ${plan.backend} exited before answering initialize`, replay, streams)
-  }))
+  })
 }
 
 function startTsBackend(result, replay, plan, streams, start, exitSignal) {
