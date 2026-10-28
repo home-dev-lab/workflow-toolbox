@@ -31,8 +31,8 @@ export function running(pid: number) {
   }
 }
 
-async function until(predicate: () => boolean, message: string) {
-  const deadline = performance.now() + 3000
+async function until(predicate: () => boolean, message: string, timeout = 3000) {
+  const deadline = performance.now() + timeout
   while (!predicate() && performance.now() < deadline) await sleep(10)
   expect(predicate(), message).toBe(true)
 }
@@ -40,6 +40,7 @@ async function until(predicate: () => boolean, message: string) {
 function fixture(mode: Mode, inherit: boolean, nested = false, orphaned = false) {
   const root = mkdtempSync(join(tmpdir(), 'admission-detach-'))
   const policy = join(root, 'policy.mjs'), marker = join(root, 'pids.json'), ready = join(root, 'ready')
+  const release = join(root, 'release')
   const sleeper = 'setInterval(() => {}, 60000)'
   const code = nested ? `const child = spawn(process.execPath, ['-e', ${JSON.stringify(sleeper)}], { detached: true, stdio: 'ignore' });
     writeFileSync(${JSON.stringify(marker)}, JSON.stringify([process.pid, child.pid])); child.unref(); ${orphaned ? '' : sleeper}` : sleeper
@@ -47,11 +48,13 @@ function fixture(mode: Mode, inherit: boolean, nested = false, orphaned = false)
   writeFileSync(policy, `import { spawn } from 'node:child_process'; import { existsSync, writeFileSync } from 'node:fs';
     export default async () => {
       const child = spawn(process.execPath, ['-e', ${JSON.stringify(script)}], { detached: true, stdio: ${JSON.stringify(inherit ? ['ignore', 'inherit', 'inherit'] : 'ignore')} });
+      const exited = new Promise(resolve => child.once('exit', resolve));
       ${nested ? `while (!existsSync(${JSON.stringify(marker)})) await new Promise(resolve => setTimeout(resolve, 5));` : `writeFileSync(${JSON.stringify(marker)}, JSON.stringify([child.pid]));`}
-      ${orphaned ? `await new Promise(resolve => child.once("exit", resolve)); writeFileSync(${JSON.stringify(ready)}, 'orphaned');` : ''}
+      ${orphaned ? `await exited; writeFileSync(${JSON.stringify(ready)}, 'orphaned');
+        while (!existsSync(${JSON.stringify(release)})) await new Promise(resolve => setTimeout(resolve, 5));` : ''}
       child.unref(); ${policyFinish(mode)};
     }`)
-  return { root, policy, marker, ready }
+  return { root, policy, marker, ready, release }
 }
 
 function policyFinish(mode: Mode) {
@@ -72,27 +75,64 @@ function expected(mode: Mode, timeout: number) {
   return `${variable}: timed out after ${timeout} ms`
 }
 
+function scenarioTimeout(mode: Mode, orphaned: boolean) {
+  if (!orphaned) return mode.includes('timeout') ? 1200 : 5000
+  // Startup is bounded by the readiness check, not by the deadline under test.
+  // Advance only the caller's timer after a real daemon is known to be orphaned.
+  if (mode === 'timeout') vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  return 60_000
+}
+
+async function observeOrphan(f: ReturnType<typeof fixture>) {
+  await until(() => existsSync(f.ready), 'policy must spawn and orphan its daemon before the driver acts', 10_000)
+  expect(existsSync(f.ready), 'driver must observe daemon readiness before acting').toBe(true)
+  const [parent, daemon] = JSON.parse(readFileSync(f.marker, 'utf8')) as [number, number]
+  expect(running(parent), 'intermediate parent must have exited before readiness').toBe(false)
+  expect(running(daemon), 'orphaned daemon must be running before the driver acts').toBe(true)
+  const stat = readFileSync(`/proc/${daemon}/stat`, 'utf8')
+  const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+  expect(ppid, 'daemon must have reparented before readiness').not.toBe(parent)
+}
+
+async function actOnFixture(f: ReturnType<typeof fixture>, mode: Mode, orphaned: boolean, controller: AbortController, timeout: number) {
+  if (orphaned) await observeOrphan(f)
+  else if (mode === 'abort') await until(() => existsSync(f.marker), 'policy must spawn its helper before abort')
+  if (mode === 'abort') controller.abort()
+  else if (orphaned) {
+    writeFileSync(f.release, 'observed')
+    if (mode === 'timeout') await vi.advanceTimersByTimeAsync(timeout)
+  }
+}
+
+function stateAtReturn(f: ReturnType<typeof fixture>, sibling: number, refusal: string | null) {
+  const published = existsSync(f.marker)
+  const pids = published ? JSON.parse(readFileSync(f.marker, 'utf8')) as number[] : []
+  return { refusal, published, running: pids.map(running), siblingRunning: running(sibling) }
+}
+
 export async function exercise(mode: Mode, inherit: boolean, nested = false, orphaned = false, host?: Host) {
   const f = fixture(mode, inherit, nested, orphaned), controller = new AbortController()
-  const timeout = mode.includes('timeout') ? 1200 : 5000
+  const timeout = scenarioTimeout(mode, orphaned)
   const sibling = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'ignore' })
   const siblingExit = once(sibling, 'exit')
+  let result: Promise<string | null> | undefined
   try {
-    const result = boundedAdmission({ repo: f.root, request: {}, signal: controller.signal }, {
+    result = boundedAdmission({ repo: f.root, request: {}, signal: controller.signal }, {
       SystemRoot: process.env.SystemRoot, [variable]: f.policy, [timeoutVariable]: String(timeout),
     }, { moduleVariable: variable, timeoutVariable, silent: true, host })
-    if (mode === 'abort') {
-      await until(() => existsSync(orphaned ? f.ready : f.marker), 'policy must spawn and orphan its daemon before abort')
-      controller.abort()
-    }
-    const refusal = await result
+    // Snapshot in the first completion callback, even if advancing the timer
+    // lets admission finish before actOnFixture itself returns.
+    const returned = result!.then(refusal => stateAtReturn(f, sibling.pid!, refusal))
+    await actOnFixture(f, mode, orphaned, controller, timeout)
+    const state = await returned, { refusal } = state
     if (mode === 'supervisor-death') expect(refusal).toContain('admission worker exited')
     else expect(refusal).toBe(expected(mode, timeout))
-    expect(existsSync(f.marker), 'policy must actually start its detached helper').toBe(true)
-    const pids = JSON.parse(readFileSync(f.marker, 'utf8')) as number[]
-    for (const pid of pids) expect(running(pid), 'detached policy process must be stopped AT admission return').toBe(false)
-    expect(running(sibling.pid!), 'unrelated sibling must remain running').toBe(true)
+    expect(state.published, 'policy must actually start its detached helper').toBe(true)
+    for (const alive of state.running) expect(alive, 'detached policy process must be stopped AT admission return').toBe(false)
+    expect(state.siblingRunning, 'unrelated sibling must remain running').toBe(true)
   } finally {
+    controller.abort(); await result?.catch(() => {})
+    vi.useRealTimers()
     if (existsSync(f.marker)) for (const pid of JSON.parse(readFileSync(f.marker, 'utf8')) as number[]) {
       try { process.kill(pid, 'SIGKILL') } catch { /* defensive cleanup on a red run */ }
     }
