@@ -5,7 +5,9 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
-import './admission-detach-cases.js'
+import { registerAdmissionDetachCases } from './admission-detach-cases.js'
+
+registerAdmissionDetachCases()
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_STDIO_TEST_PLUGIN ?? join(ROOT, 'plugin')
@@ -122,7 +124,9 @@ describe.each([1, 2])('admission inherited descriptor %i', descriptor => {
     const f = fixture('envelope', descriptor)
     const pidFile = inheritedPipePolicy(f, descriptor, pending)
     const { boundedAdmission } = await import(pathToFileURL(join(PLUGIN, 'bin/lib/host/admission.mjs')).href)
-    const timeout = 300
+    // Include containment-owner, supervisor and worker startup in the budget;
+    // the 2 s pipe holder still outlives both this deadline and the 400 ms bound.
+    const timeout = 1200
     const timeoutVariable = `${f.variable}_TIMEOUT_MS`
     const env = sealedPluginCliEnv(f.root, { [f.variable]: f.policy, [timeoutVariable]: String(timeout) })
     try {

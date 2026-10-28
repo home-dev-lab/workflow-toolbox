@@ -10,9 +10,9 @@ export function formatAdmissionError(error) {
 }
 
 export function admissionCleanupLimitation(platform = process.platform) {
-  if (platform === 'linux') return 'cleanup limitation (linux): Linux descendant cleanup requires /usr/bin/python3 with pidfd support; already-reparented daemons, unavailable procfs, and uninterruptible processes can escape'
-  if (platform === 'darwin') return 'cleanup limitation (darwin): macOS stops only the admission supervisor; detached descendants can survive (no identity-bound containment is installed)'
-  if (platform === 'win32') return 'cleanup limitation (win32): Windows stops only the admission supervisor; detached descendants can survive (no Job Object containment is installed)'
+  if (platform === 'linux') return 'cleanup limitation (linux): subreaper contains detached descendants without pidfds; uninterruptible processes or containment-owner death can escape and produce a containment unknown refusal'
+  if (platform === 'darwin') return 'cleanup limitation (darwin): detached descendants can survive without a native container; configured policies refuse before execution'
+  if (platform === 'win32') return 'cleanup limitation (win32): detached descendants can survive without a Job Object; configured policies refuse before execution'
   return `cleanup limitation (${platform}): descendant cleanup is unsupported; only the admission supervisor is stopped`
 }
 
@@ -52,7 +52,7 @@ def record(pid):
         if not stat.startswith(('%s (' % pid).encode()) or not fields[19].isdigit():
             raise RuntimeError('invalid process birth identity')
         return (pid, int(fields[1]), fields[19].decode('ascii'), fields[0])
-    except (FileNotFoundError, ProcessLookupError):
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
         return None
 
 def own(pid, start):
@@ -210,7 +210,7 @@ async function run({ options, env, timeout, moduleVariable, silent, admission })
   let message
   try { message = { refusal: await workerAdmission(options, env, timeout, moduleVariable, silent, admission) } }
   catch (error) { message = { error: formatAdmissionError(error) } }
-  // Keep ancestry intact until the caller has stopped descendants and reaped us.
+  // The outer containment owner stops and reaps this supervisor and all orphans.
   if (process.connected) process.send(message)
 }
 

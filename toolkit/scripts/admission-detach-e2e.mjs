@@ -54,13 +54,13 @@ async function demonstrate(mode) {
   }
 }
 
-const hasPidfds = process.platform === 'linux' && spawnSync('/usr/bin/python3', ['-I', '-c',
-  'import os, signal; fd = os.pidfd_open(os.getpid()); signal.pidfd_send_signal(fd, 0); os.close(fd)',
+const hasContainment = process.platform === 'linux' && spawnSync('/usr/bin/python3', ['-I', '-c',
+  'import ctypes; assert ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0',
 ], { stdio: 'ignore' }).status === 0
-if (hasPidfds) {
+if (hasContainment) {
   await demonstrate('verdict')
   await demonstrate('timeout')
   await demonstrate('abort')
 } else {
-  console.error(`cleanup limitation (${process.platform}): Linux with python3/pidfd is required; detached-process assertions explicitly skipped`)
+  console.error(`containment unknown (${process.platform}): Linux with python3/subreaper is required; detached-process assertions explicitly skipped`)
 }
