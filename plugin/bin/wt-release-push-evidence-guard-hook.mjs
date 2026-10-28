@@ -33,7 +33,7 @@ function resolutionText(resolved, remote) {
 }
 
 function refuse(input, target, classification, reason, output) {
-  recordGuardEvent({ guard: GUARD, decision: 'blocked', class: classification, reason, cwd: target.repo, session: input.session_id, agent: input.agent_id })
+  output.denialEvent = { guard: GUARD, class: classification, reason, cwd: target.repo, session: input.session_id, agent: input.agent_id }
   output.denial = reason
 }
 
@@ -62,12 +62,17 @@ function main() {
     }
   } finally {
     if (output.denial || output.messages.length) {
-      const hookSpecificOutput = output.denial
-        ? { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: output.denial }
-        : { hookEventName: 'PreToolUse', additionalContext: output.messages.join('\n') }
-      emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput } })
+      emitPushOutput(input, output)
     }
   }
+}
+
+function emitPushOutput(input, output) {
+  const hookSpecificOutput = output.denial
+    ? { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: output.denial }
+    : { hookEventName: 'PreToolUse', additionalContext: output.messages.join('\n') }
+  const emitted = emitGuardNotice({ payload: input, subagentDeny: true, stdoutJson: { hookSpecificOutput } })
+  if (output.denial) recordGuardEvent({ ...output.denialEvent, decision: emitted ? 'blocked' : 'silent' })
 }
 
 function processTarget(input, target, command, output) {
@@ -164,7 +169,7 @@ function refuseStaleEvidence(input, target, { command, root, pushedCommit, resol
   const overrideExample = JSON.stringify({ command, reason: '<why>' })
   const allowanceMissSuffix = allowanceMiss ? ' ' + allowanceMiss : ''
   const reason = `Gate evidence is required before pushing ${target.remote}/${target.destination} at ${pushedCommit}. ${resolution}\n${problemLines}${legacyRefresh}\nRun:\n${refresh}\nThe release path does not accept a gates: skipped trailer. If a gate cannot run, write ${overrideExample} to ${overrideFile} and retry; the exact-command override requires a non-empty reason and is consumed once.${allowanceMissSuffix}`
-  recordGuardEvent({ guard: GUARD, decision: 'blocked', class: 'release-gate-evidence-stale', reason: problems.map(({ gate, status }) => `${gate.name}:${status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id })
+  output.denialEvent = { guard: GUARD, class: 'release-gate-evidence-stale', reason: problems.map(({ gate, status }) => `${gate.name}:${status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id }
   output.denial = reason
 }
 

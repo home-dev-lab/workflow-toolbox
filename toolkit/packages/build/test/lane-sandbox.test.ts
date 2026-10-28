@@ -1,11 +1,11 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import childProcess, { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { accessSync, chmodSync, closeSync, constants, cpSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { EventEmitter } from 'node:events'
 import { syncBuiltinESMExports } from 'node:module'
 import os, { tmpdir, userInfo } from 'node:os'
-import { dirname, join, posix } from 'node:path'
+import { dirname, join, posix, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hermeticPath } from './helpers/hermetic-path.js'
@@ -27,6 +27,8 @@ const LIB = join(ROOT, 'plugin/bin/lib')
 interface SandboxPlan { kind: 'bwrap' | 'none', line: string, opencodeDataDir?: string | null, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
 type NoticeDestination = ((text: string) => void) | number | { write: (text: string) => unknown }
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
+interface SocketScanResult { status: number | null, signal: NodeJS.Signals | null, error?: NodeJS.ErrnoException, stdout: Buffer, stderr: Buffer }
+type SocketScanRunner = (command: string, args: string[], options: { timeout: number, maxBuffer: number }) => SocketScanResult
 interface SandboxModule {
   realFs: { isWindowsDriveMount?: DriveMountModule['isWindowsDriveMount'] }
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
@@ -37,6 +39,7 @@ interface SandboxModule {
   LaneSandboxRefusal: new (message: string) => Error
   trustedSystemExecutable: (name: string, searchPath: string) => string | null
   suiteLockCli: (fs?: { isFile: (f: string) => boolean, isExecutable?: (f: string) => boolean }) => string
+  socketMasks: (bindings: Array<{ inside: string, outside: string }>, socketDir: string | null, fs: SandboxModule['realFs'], searchPath: string, find: string, runFind?: SocketScanRunner) => string[]
   probeRequestPaths: (paths: string[], options: { wrap: (bin: string, args: string[]) => [string, string[]], execPath: string, env: Record<string, string | undefined> }) => Record<string, string | null>
 }
 interface SuiteLockModule {
@@ -731,6 +734,99 @@ describe('lane sandbox plan — availability and pass-through', () => {
     expect(() => plan({ probe: flaky })).toThrow(sandbox.LaneSandboxRefusal)
     expect(plan({ probe: flaky }).kind).toBe('bwrap')
   })
+})
+
+async function socketScanFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-scan-')))
+  roots.push(root)
+  const source = join(root, 'tree'), alias = join(root, 'alias')
+  mkdirSync(source)
+  for (let directory = 0; directory < 32; directory++) {
+    const dir = join(source, `d-${directory}`); mkdirSync(dir)
+    for (let file = 0; file < 64; file++) writeFileSync(join(dir, `f-${file}`), '')
+  }
+  const names = ['first.sock', 'd-15/middle.sock', 'd-31/late\nsocket.sock']
+  for (const name of names) {
+    const server = net.createServer(); servers.push(server)
+    const socket = join(source, name), local = relative(process.cwd(), socket)
+    // Keep the shorter spelling within sockaddr_un's limit on deeply nested checkouts and macOS.
+    const address = Buffer.byteLength(local) < Buffer.byteLength(socket) ? local : socket
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen(address, resolve))
+  }
+  symlinkSync(source, alias)
+  return { source, alias, names }
+}
+
+function timedOutScan(stdout = Buffer.alloc(0)): SocketScanResult {
+  return { status: null, signal: 'SIGTERM', error: Object.assign(new Error('spawnSync find ETIMEDOUT'), { code: 'ETIMEDOUT' }), stdout, stderr: Buffer.alloc(0) }
+}
+
+function registerSlowSocketScanTests() {
+  it.skipIf(process.platform === 'win32').each([
+    [11_000, [10_000, 30_000]], [31_000, [10_000, 30_000, 90_000]],
+  ] as const)('masks every socket after an IO-delayed %ims walk, discarding partial attempts', async (duration, expectedBudgets) => {
+    const { source, alias, names } = await socketScanFixture()
+    const bindings = [{ outside: alias, inside: '/bound/read' }, { outside: source, inside: '/bound/write' }, { outside: join(source, names[2]!), inside: '/bound/single.sock' }]
+    const budgets: number[] = []
+    const walker: SocketScanRunner = (command, args, options) => {
+      expect(command).toBe('/usr/bin/find'); expect(args.slice(1)).toEqual(['-type', 's', '-print0'])
+      expect([source, join(source, names[2]!)]).toContain(args[0])
+      budgets.push(options.timeout)
+      // Execute find on the synthetic tree; charge virtual IO time against its real budget.
+      const result = spawnSync(command, args, options)
+      expect(result.status, String(result.stderr)).toBe(0)
+      return options.timeout < Number(duration) ? timedOutScan(Buffer.from(`${source}/stale.sock\0`)) : result
+    }
+    const masks = sandbox.socketMasks(bindings, null, sandbox.realFs, '/usr/bin', '/usr/bin/find', walker)
+    const expected = [...names.flatMap((name) => [join('/bound/read', name), join('/bound/write', name)]), '/bound/single.sock']
+    expect(masks.filter((_, index) => index % 3 === 2).sort()).toEqual(expected.sort())
+    expect(masks.filter((_, index) => index % 3 !== 2)).toEqual(expected.flatMap(() => ['--ro-bind', '/dev/null']))
+    expect(budgets).toEqual([...expectedBudgets, ...expectedBudgets, ...expectedBudgets])
+  })
+}
+
+function registerFailedSocketScanTests() {
+  const partial = Buffer.from('/synthetic/first.sock\0')
+  const cases: Array<[string, SocketScanResult, number[]]> = [
+    ['timeout exhaustion', timedOutScan(partial), [10_000, 30_000, 90_000]],
+    ['permission denied', { status: 1, signal: null, stdout: partial, stderr: Buffer.from('find: Permission denied\n') }, [10_000]],
+    ['nonzero exit without stderr', { status: 1, signal: null, stdout: partial, stderr: Buffer.alloc(0) }, [10_000]],
+    ['signal', { status: null, signal: 'SIGKILL', stdout: partial, stderr: Buffer.alloc(0) }, [10_000]],
+    ...['ENOBUFS', 'ENOENT'].map((code): [string, SocketScanResult, number[]] => [code, { ...timedOutScan(partial), error: Object.assign(new Error(code), { code }) }, [10_000]]),
+  ]
+  it.skipIf(process.platform === 'win32').each(cases)('refuses an incomplete socket walk: %s', (_name, result, expectedBudgets) => {
+    const source = tempRoot('incomplete-scan'), budgets: number[] = []
+    const walker: SocketScanRunner = (_command, _args, options) => { budgets.push(options.timeout); return result }
+    let refusal: unknown
+    try { sandbox.socketMasks([{ outside: source, inside: '/bound' }], null, sandbox.realFs, '/usr/bin', '/usr/bin/find', walker) } catch (error) { refusal = error }
+    expect(refusal).toBeInstanceOf(sandbox.LaneSandboxRefusal)
+    expect(String(refusal)).toContain(`cannot enumerate unix sockets under ${source}`)
+    expect(String(refusal)).toContain(`scan budget ${expectedBudgets.at(-1)} ms`)
+    expect(budgets).toEqual(expectedBudgets)
+  })
+}
+
+function registerSocketScanLaunchTests() {
+  it.skipIf(process.platform === 'win32')('refuses the production launch and cleans up before starting bridges when the scan cannot finish', () => {
+    const root = tempRoot('scan-launch'), home = join(root, 'home'), work = join(root, 'work'), run = join(root, 'run')
+    for (const directory of [home, work, run]) mkdirSync(directory)
+    const spawnFn = vi.fn(), budgets: number[] = []
+    const find = vi.spyOn(childProcess, 'spawnSync').mockImplementation((() => timedOutScan()) as unknown as typeof spawnSync)
+    syncBuiltinESMExports()
+    try {
+      find.mockImplementation(((_command: string, _args: string[], options: { timeout: number }) => { budgets.push(options.timeout); return timedOutScan() }) as typeof spawnSync)
+      expect(() => plan({ ...posixPlanner(root), bin: '/usr/bin/node', env: { HOME: home, PATH: '/usr/bin' }, optionEnv: { WT_LANE_HOST_STATE: join(root, 'host-state') }, cwd: work, runtimeParent: run, fs: sandbox.realFs, find: '/usr/bin/find', socat: null, spawnFn })).toThrow(sandbox.LaneSandboxRefusal)
+      expect(budgets).toEqual([10_000, 30_000, 90_000])
+      expect(spawnFn).not.toHaveBeenCalled()
+      expect(readdirSync(run)).toEqual([])
+    } finally { find.mockRestore(); syncBuiltinESMExports() }
+  })
+}
+
+describe('bounded complete socket scans', () => {
+  registerSlowSocketScanTests()
+  registerFailedSocketScanTests()
+  registerSocketScanLaunchTests()
 })
 
 function registerSocketMaskTests() {
