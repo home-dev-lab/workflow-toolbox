@@ -5,6 +5,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Artifact-server HTML can opt into scripts and browser annotation tools with a first-content `<!-- wt-artifact-server: interactive -->` marker within 256 bytes. Existing raw, rich, and annotatable policies are unchanged. Markdown `mermaid` fences render escaped diagram source with a reserved local Mermaid asset and a hash-pinned initializer; Markdown without diagrams remains script-free. Mermaid 11.17.2 asset placeholders include installation instructions for network-restricted checkouts.
+
 ### Fixed
 
 - Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
