@@ -7,6 +7,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
+- Retain every artifact-server health responder until proven exited, coalesce unknown process observations, and carry self-read birth evidence across monitor handoffs.
+- Bind artifact-server attachments to identity-bracketed health observations, permanently retire exited instances, and use recorded birth identity for CLI stop/restart confirmation.
+- Retain unresolved artifact-server processes across monitor attachment changes, and require confirmed exit for every prior attachment before spawning a replacement.
+- Keep the artifact session monitor from replacing a still-draining server; defer restart when process-exit evidence is unavailable.
 - Release-record and release-push guards explicitly deliver denials to delegates and record `blocked` only when output was emitted. Right-sized spawn keeps delegate style checks context-only with a `silent` journal record; main-session refusals retain their existing output. Other delegate guard notices continue to project context only unless the caller explicitly opts into a PreToolUse deny.
 - The lane orphan watcher distinguishes failed `/proc` lookups and listings from unsupported platforms or missing procfs, reports the read error code with a retry notice, preserves pending recovery across unavailable sweeps, and re-announces failures after recovery or a changed error reason.
 - The opencode envelope catches stream-log failures when a child closes or reports a spawn error, preserving an earlier integrity refusal and its exit-3 response instead of crashing.

@@ -8,9 +8,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 // @ts-expect-error standalone Node selftest shares its regression cases with Vitest
 import { registerArtifactCspTests } from './artifact-server-csp.selftest.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, atomicWriteJson, chooseRemoteUrl, deriveArtifactPort, detectTailscale, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, atomicWriteJson, checkArtifactUrl, chooseRemoteUrl, deriveArtifactPort, detectTailscale, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { wslCheckFixture } from './helpers/wsl-check-fixture.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SERVER = join(REPO_ROOT, 'plugin/bin/wt-artifact-server.mjs')
@@ -3000,18 +3001,27 @@ describe('owner decision 5: Tailscale access', () => {
 })
 
 describe('owner decision 5: Tailscale access', () => {
-  it.skipIf(process.platform !== 'linux')('checks a remote URL through Windows PowerShell under WSL interop, passing the URL as a quoted literal', async () => {
-    const { artifact, env } = checkFixture('check-windows', () => 'https://host.tailnet.ts.net/artifacts', 48_001)
-    const bin = wslInteropStub('No serve config', 'STATUS=200')
-    const reached = await runCli(['url', artifact, '--remote', '--check'], { ...env, PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: undefined }, bin)
+  it('checks a remote URL through Windows PowerShell under WSL interop, passing the URL as a quoted literal', async () => {
+    const url = 'https://host.tailnet.ts.net/artifacts/reports/plan.html'
+    const { artifact, env } = checkFixture('check-windows', () => 'https://host.tailnet.ts.net/artifacts', 48_001, false, 'windows-interop')
+    const bin = temporaryDir('check-windows-bin')
+    const reachedFixture = wslCheckFixture(bin, env, 'STATUS=200')
+    // Resolve an older state through explicit WSL/runner/filesystem seams, even on a non-WSL host.
+    expect(await checkArtifactUrl(url, reachedFixture.options)).toEqual({ verdict: 'reachable', status: 200, from: 'windows' })
+    expect(reachedFixture.commands).toEqual(['tailscale', 'tailscale.exe', 'powershell.exe', 'wslpath', '/fixture/tailscale.exe', 'powershell.exe'])
+    expect(readdirSync(bin).some((name) => /^tailscale(?:\.exe)?$/i.test(name))).toBe(false)
+    const reached = await runCli(['url', artifact, '--remote', '--check'], reachedFixture.env, bin)
     expect(reached.stdout).toBe('https://host.tailnet.ts.net/artifacts/reports/plan.html\n')
     expect(reached.stderr).toBe('check: reachable (HTTP 200, from windows)\n')
     expect(reached.code).toBe(0)
-    const args = readFileSync(join(bin, 'ps-args'), 'utf8')
+    const args = reachedFixture.args()
     expect(args).toContain("-Uri 'https://host.tailnet.ts.net/artifacts/reports/plan.html'")
     expect(args.split('\n').slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command'])
-    const timedOutBin = wslInteropStub('No serve config', 'ERROR=The operation has timed out.')
-    const failed = await runCli(['url', artifact, '--remote', '--check'], { ...env, PATH: timedOutBin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: undefined }, timedOutBin)
+    const timedOutBin = temporaryDir('check-windows-timeout-bin')
+    const failedFixture = wslCheckFixture(timedOutBin, env, 'ERROR=The operation has timed out.')
+    expect(await checkArtifactUrl(url, failedFixture.options)).toEqual({ verdict: 'unreachable', reason: 'The operation has timed out.', from: 'windows' })
+    const failed = await runCli(['url', artifact, '--remote', '--check'], failedFixture.env, timedOutBin)
+    expect(failed.stdout).toBe(`${url}\n`)
     expect(failed.stderr).toBe('check: unreachable (The operation has timed out., from windows)\n')
     expect(failed.code).toBe(4)
   })
