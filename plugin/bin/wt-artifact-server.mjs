@@ -35,7 +35,7 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
-import { markdownFenceTag, markdownScripts, MERMAID_FILE, MERMAID_PATH } from './lib/artifact-mermaid.mjs'
+import { closeMarkdownFence, markdownFenceTag, markdownScripts, MERMAID_FILE, MERMAID_PATH } from './lib/artifact-mermaid.mjs'
 import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus, normalizeTailnetHost } from './lib/artifact-tailnet.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
@@ -174,8 +174,9 @@ function renderMarkdown(source, fallback) {
   }
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex]
-    if (/^```/.test(line)) {
-      flushParagraph(); closeList(); output.push(markdownFenceTag(line, fence))
+    const fenceTag = markdownFenceTag(line, fence)
+    if (fenceTag !== null) {
+      flushParagraph(); closeList(); output.push(fenceTag)
       continue
     }
     if (fence.open) { output.push(`${line}\n`); continue }
@@ -193,7 +194,7 @@ function renderMarkdown(source, fallback) {
     if (markdownListItem(line, { output, listOpen, flushParagraph, openList: () => { listOpen = true } })) continue
     if (line.trim() === '') { flushParagraph(); closeList() } else paragraph.push(line)
   }
-  flushParagraph(); closeList(); if (fence.open) output.push(markdownFenceTag('', fence))
+  flushParagraph(); closeList(); if (fence.open) output.push(closeMarkdownFence(fence))
   return { html: htmlPage(markdownTitle(source, fallback), output.join('\n')), hasMermaid: fence.hasMermaid }
 }
 
@@ -462,8 +463,14 @@ class ArtifactService {
     const segments = decodeRequestPath(request.url ?? '/')
     if (segments === undefined) { send(response, method, 400, 'Bad Request\n'); return }
     if (segments === null) { send(response, method, 403, 'Forbidden\n'); return }
-    if (`/${segments.join('/')}` === MERMAID_PATH) {
-      send(response, method, 200, await readFile(MERMAID_FILE), 'text/javascript; charset=utf-8', { 'Content-Security-Policy': RAW_CSP })
+    // The reserved segment is the server's at ANY depth: a Markdown page reached by a non-canonical path (trailing or
+    // repeated slash) resolves its relative script URL one level off, and that URL must still land on the bundled
+    // build, never on a root file of the same name.
+    const reserved = segments.indexOf(MERMAID_PATH.split('/')[1])
+    if (reserved !== -1) {
+      if (segments.length === reserved + 2 && segments[reserved + 1] === path.posix.basename(MERMAID_PATH)) {
+        send(response, method, 200, await readFile(MERMAID_FILE), 'text/javascript; charset=utf-8', { 'Content-Security-Policy': RAW_CSP })
+      } else send(response, method, 404, 'Not Found\n')
       return
     }
     const roots = this.liveRoots()

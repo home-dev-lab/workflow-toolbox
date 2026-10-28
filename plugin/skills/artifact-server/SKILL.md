@@ -116,10 +116,15 @@ flowchart LR
 
 The server escapes the diagram source, loads its own pinned Mermaid build (never a CDN), and
 uses strict Mermaid security with the neutral theme. Only Markdown with a Mermaid fence enables
-scripts: the policy admits the exact server-owned asset path and the fixed initializer's hash.
-Other Markdown remains script-free. Use a direct local or tailnet URL for diagrams. A reverse
-proxy mounted below a path needs matching rewrites of both the generated script URL and its
-exact-path CSP; the server cannot infer that proxy-owned prefix.
+scripts: the policy admits same-origin scripts (`'self'`) and the fixed initializer's hash, and
+the page carries no other script, because rendered Markdown escapes HTML. The script URL is
+relative, so it works directly and behind a path-mounted proxy such as `tailscale serve`
+under `/artifacts`. The path segment `__wt-artifact-server` belongs to the server at any depth:
+a root file or folder of that name is never served. A Mermaid example quoted inside a longer or
+`~~~` fence stays text. Other Markdown remains script-free.
+
+`'self'` spans every registered root on the origin: an interactive HTML page can load a script
+from another root. Mark a page interactive only when you trust every root served beside it.
 
 ## Lifecycle
 

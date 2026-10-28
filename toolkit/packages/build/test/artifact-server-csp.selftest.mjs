@@ -246,6 +246,44 @@ async function mermaidAsset() {
   }
 }
 
+// Astra r1 HIGH: a non-canonical request path (trailing or repeated slash) moved the relative script URL into a
+// registered root, which then served its own mermaid.min.js. Whatever URL the browser resolves, the script it loads
+// must be the server's build, directly and behind a path-mounted proxy (tailscale serve /artifacts).
+async function nonCanonicalMermaidPaths() {
+  mkdirSync(join(directory, 'artifacts', '__wt-artifact-server'), { recursive: true })
+  writeFileSync(join(directory, 'artifacts', '__wt-artifact-server', 'mermaid.min.js'), 'SHADOW')
+  writeFileSync(join(directory, 'artifacts', 'diagram.md'), '```mermaid\nflowchart LR\n  A-->B\n```')
+  for (const requestPath of ['/review/diagram.md', '/review/diagram.md/', '/review//diagram.md', '/review/./diagram.md/']) {
+    const response = await fetch(`${origin}${requestPath}`, { headers: { Connection: 'close' } })
+    assert.equal(response.status, 200, requestPath)
+    const source = /<script src="([^"]+)"><\/script>/.exec(await response.text())?.[1]
+    assert.ok(source, `${requestPath} carries the Mermaid script`)
+    for (const prefix of ['', '/artifacts']) {
+      const resolved = new URL(source, `https://tailnet.example${prefix}${requestPath}`).pathname
+      assert.ok(resolved.startsWith(`${prefix}/`), `${requestPath} under ${prefix || 'root'} stays inside the mount`)
+      const script = await fetch(`${origin}${resolved.slice(prefix.length)}`, { headers: { Connection: 'close' } })
+      assert.equal(script.status, 200, `${requestPath} under ${prefix || 'root'} resolves to ${resolved}`)
+      assert.equal(await script.text(), MERMAID_STUB, `${requestPath} under ${prefix || 'root'} loads the server build, never a root file`)
+    }
+  }
+  for (const reserved of ['/review/__wt-artifact-server/mermaid.min.js', '/review/x/%5F_wt-artifact-server/mermaid.min.js']) {
+    const response = await fetch(`${origin}${reserved}`, { headers: { Connection: 'close' } })
+    assert.equal(await response.text(), MERMAID_STUB, `${reserved}: the reserved segment never reaches a root`)
+  }
+  const other = await fetch(`${origin}/review/__wt-artifact-server/other.js`, { headers: { Connection: 'close' } })
+  assert.equal(other.status, 404, 'any other file under the reserved segment is not found, never read from a root')
+}
+
+// Astra r1 LOW: a Mermaid example quoted inside a longer or tilde fence is text, not a diagram.
+async function nestedFenceMermaid() {
+  for (const source of ['~~~text\n```mermaid\nA-->B\n```\n~~~', '````\n```mermaid\nA-->B\n```\n````', '````md\n```mermaid\nA-->B\n```\n````']) {
+    const response = await page('nested.md', source)
+    assert.equal(response.headers.get('content-security-policy'), GENERATED, `quoted Mermaid stays script-free: ${JSON.stringify(source)}`)
+    assert.doesNotMatch(response.body, /<script\b|<pre class="mermaid">/)
+    assert.ok(response.body.includes('```mermaid'), 'the quoted fence is shown as text')
+  }
+}
+
 export function registerArtifactCspTests({ before, after, test }) {
   before(startServer)
   after(stopServer)
@@ -260,6 +298,8 @@ export function registerArtifactCspTests({ before, after, test }) {
   test('Mermaid fence source is HTML-escaped including script and pre closing tags', escapedMermaid)
   test('ordinary Markdown and non-exact Mermaid info strings stay script-free', ordinaryMarkdown)
   test('the reserved Mermaid asset has JavaScript MIME and cannot be shadowed by roots', mermaidAsset)
+  test('non-canonical Markdown paths still load the server Mermaid build, never a root file (Astra r1 HIGH)', nonCanonicalMermaidPaths)
+  test('a Mermaid fence quoted inside a longer or tilde fence stays text (Astra r1 LOW)', nestedFenceMermaid)
 }
 
 if (isInvokedDirectly(import.meta.url)) registerArtifactCspTests(await import('node:test'))

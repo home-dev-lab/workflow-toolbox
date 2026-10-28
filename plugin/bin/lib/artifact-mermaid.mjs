@@ -5,15 +5,27 @@ export const MERMAID_FILE = new URL('../../skills/artifact-server/assets/mermaid
 const MERMAID_INIT = "mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'strict' });"
 const INIT_HASH = createHash('sha256').update(MERMAID_INIT).digest('base64')
 
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+
+// CommonMark fences: a block closes only on the same character, at least as long, with nothing after it, so a
+// Mermaid example quoted inside a longer or tilde fence stays text. Returns null when the line is not a boundary.
 export function markdownFenceTag(line, fence) {
+  const match = FENCE.exec(line)
   if (fence.open) {
-    fence.open = false
-    return fence.mermaid ? '</pre>' : '</code></pre>'
+    if (!match || match[1][0] !== fence.marker[0] || match[1].length < fence.marker.length || match[2].trim() !== '') return null
+    return closeMarkdownFence(fence)
   }
+  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null
   fence.open = true
+  fence.marker = match[1]
   fence.mermaid = line === '```mermaid'
   fence.hasMermaid ||= fence.mermaid
   return fence.mermaid ? '<pre class="mermaid">' : '<pre><code>'
+}
+
+export function closeMarkdownFence(fence) {
+  fence.open = false
+  return fence.mermaid ? '</pre>' : '</code></pre>'
 }
 
 export function markdownScripts({ html, hasMermaid }, { depth, generatedCsp }) {
