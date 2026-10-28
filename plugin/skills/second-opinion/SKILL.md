@@ -223,9 +223,12 @@ you need reviewed; never rely on a named directory to carry them.
 
 ### Windows (PowerShell)
 
-Save the same bootstrap as `<out-file>.launch.mjs`. `Start-Process` requires
-distinct redirection paths: stderr is `<out-file>.launch.log`, stdout is
-`<out-file>.launch.stdout.log`. Read both on failure. Its own launch exceptions
+Save the same bootstrap as `<out-file>.launch.mjs`. The short-lived Node launcher
+below gives the detached child ignored stdin and file-backed stdout/stderr, then
+unrefs it before returning to PowerShell. It does not use PowerShell-managed
+stream redirection or inherit the caller's pipes. Stderr is
+`<out-file>.launch.log`, stdout is `<out-file>.launch.stdout.log`; read both on
+failure. `<out-file>.launch.pid` records the child PID. Launch exceptions
 (including a missing `node`) are also written to the stderr launch log.
 
 ```powershell
@@ -233,12 +236,34 @@ $request = <request-file>
 $out = <out-file>
 $repo = <repository>
 $launchArgs = @("${out}.launch.mjs", '--request', $request, '--out', $out,
-  '--effort', '<low|medium|high>', '--route', '<auto|astra|opus>', '--repo', $repo) |
-  ForEach-Object { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' }
+  '--effort', '<low|medium|high>', '--route', '<auto|astra|opus>', '--repo', $repo)
+$detach = @'
+import { spawn } from 'node:child_process'
+import { appendFileSync, closeSync, openSync, writeFileSync } from 'node:fs'
+const [bootstrap, ...args] = process.argv.slice(1)
+const out = args[args.indexOf('--out') + 1]
+const log = out + '.launch.log'
+const fds = []
 try {
-  Start-Process -FilePath node -ArgumentList $launchArgs -WindowStyle Hidden `
-    -RedirectStandardError "${out}.launch.log" `
-    -RedirectStandardOutput "${out}.launch.stdout.log" -ErrorAction Stop
+  fds.push(openSync(out + '.launch.stdout.log', 'a'))
+  fds.push(openSync(log, 'a'))
+  const child = spawn(process.execPath, [bootstrap, ...args], {
+    detached: true, windowsHide: true, stdio: ['ignore', ...fds],
+  })
+  child.once('error', (error) => { appendFileSync(log, String(error) + '\n'); process.exitCode = 1 })
+  if (child.pid) writeFileSync(out + '.launch.pid', String(child.pid))
+  child.unref()
+} catch (error) {
+  appendFileSync(log, String(error) + '\n')
+  process.exitCode = 1
+} finally {
+  for (const fd of fds) closeSync(fd)
+}
+'@
+try {
+  $node = (Get-Command node -CommandType Application -ErrorAction Stop).Source
+  & $node --input-type=module -e $detach -- @launchArgs
+  if ($LASTEXITCODE -ne 0) { throw "Detached node launcher exited with code $LASTEXITCODE" }
 } catch {
   [IO.File]::AppendAllText("${out}.launch.log", ($_ | Out-String))
   throw
