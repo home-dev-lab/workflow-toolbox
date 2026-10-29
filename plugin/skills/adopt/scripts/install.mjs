@@ -2205,7 +2205,7 @@ function onDemandItemDecision(set, dir, item, root, classification, decision, du
   return { decision, duplicate, migrated, unverified }
 }
 
-function triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, item, dir) {
+function triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, { item, dir }) {
   if (args.refreshTriggers || args.keepTriggers) {
     if (!canWriteTriggerHead(triggers, legacyDecision, classification, args)) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
   }
@@ -2242,7 +2242,7 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
   const triggers = managedTriggerState(set, dir, item, args, root, classification)
-  decision = triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, item, dir)
+  decision = triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, { item, dir })
   const stale = managedItemStale(classification, version, shippedFp, currentContentFp)
   return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate, migrated: !!migrated && !legacyDecision,
     unverified: !!unverified && !legacyDecision }
