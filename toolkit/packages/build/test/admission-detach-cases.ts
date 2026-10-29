@@ -116,6 +116,7 @@ export async function exercise(mode: Mode, inherit: boolean, nested = false, orp
   const sibling = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'ignore' })
   const siblingExit = once(sibling, 'exit')
   let result: Promise<string | null> | undefined
+  let needsCleanup = true
   try {
     result = boundedAdmission({ repo: f.root, request: {}, signal: controller.signal }, {
       SystemRoot: process.env.SystemRoot, [variable]: f.policy, [timeoutVariable]: String(timeout),
@@ -125,6 +126,7 @@ export async function exercise(mode: Mode, inherit: boolean, nested = false, orp
     const returned = result!.then(refusal => stateAtReturn(f, sibling.pid!, refusal))
     await actOnFixture(f, mode, orphaned, controller, timeout)
     const state = await returned, { refusal } = state
+    needsCleanup = state.running.some(Boolean)
     if (mode === 'supervisor-death') expect(refusal).toContain('admission worker exited')
     else expect(refusal).toBe(expected(mode, timeout))
     expect(state.published, 'policy must actually start its detached helper').toBe(true)
@@ -133,7 +135,7 @@ export async function exercise(mode: Mode, inherit: boolean, nested = false, orp
   } finally {
     controller.abort(); await result?.catch(() => {})
     vi.useRealTimers()
-    if (existsSync(f.marker)) for (const pid of JSON.parse(readFileSync(f.marker, 'utf8')) as number[]) {
+    if (needsCleanup && existsSync(f.marker)) for (const pid of JSON.parse(readFileSync(f.marker, 'utf8')) as number[]) {
       try { process.kill(pid, 'SIGKILL') } catch { /* defensive cleanup on a red run */ }
     }
     sibling.kill('SIGKILL'); await siblingExit

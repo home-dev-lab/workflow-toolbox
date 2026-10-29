@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { fork, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -13,11 +13,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_STDIO_TEST_PLUGIN ?? join(ROOT, 'plugin')
 const roots: string[] = []
 const launchers = ['envelope', 'verify', 'second-opinion'] as const
+const platforms = [...new Set([process.platform, 'darwin', 'win32'])]
 type Launcher = typeof launchers[number]
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 // Both model routes are sealed unconditionally, even if admission is removed entirely.
-function networkSeal(root: string, marker: string) {
+function networkSeal(root: string, marker: string, platform: string) {
   const binary = join(root, 'fake-opencode.mjs')
   writeFileSync(binary, `import { writeFileSync } from 'node:fs';
     if (process.argv[2] === 'run') {
@@ -38,6 +39,10 @@ function networkSeal(root: string, marker: string) {
     }`
   const loader = join(root, 'seal-loader.mjs')
   writeFileSync(loader, `export async function load(url, context, next) {
+    if (url.endsWith('/admission-containment.mjs')) {
+      const native = url + '?native';
+      return { format:'module', shortCircuit:true, source: 'export * from ' + JSON.stringify(native) + '; import { admissionContainmentHost as nativeHost } from ' + JSON.stringify(native) + '; export const admissionContainmentHost = () => ({...nativeHost(), platform: ' + JSON.stringify(${JSON.stringify(platform)}) + '});' };
+    }
     if (url.endsWith('/lib/opencode-skill-fence.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(fence)} };
     if (url.endsWith('/lib/resolved-binary.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(`export const resolvedBinary = () => ${JSON.stringify(binary)};`)} };
     if (url.endsWith('/lib/second-opinion-core.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(secondOpinion)} };
@@ -46,7 +51,7 @@ function networkSeal(root: string, marker: string) {
   return loader
 }
 
-function fixture(launcher: Launcher, descriptor: number) {
+function fixture(launcher: Launcher, descriptor: number, platform: string = process.platform) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'admission-descriptors-')))
   roots.push(root)
   const repo = join(root, 'repo'); mkdirSync(repo)
@@ -67,7 +72,7 @@ function fixture(launcher: Launcher, descriptor: number) {
   const args = launcher === 'envelope' ? [input, '--dir', repo]
     : launcher === 'verify' ? ['--id', 'task', '--task-file', request, '--dir', repo]
       : ['--request', request, '--out', out, '--repo', repo]
-  return { root, repo, policy, marker, out, variable, cli, args, loader: networkSeal(root, marker) }
+  return { root, repo, policy, marker, out, variable, cli, args, platform, loader: networkSeal(root, marker, platform) }
 }
 
 function launch(f: ReturnType<typeof fixture>) {
@@ -82,26 +87,34 @@ function launch(f: ReturnType<typeof fixture>) {
   })
 }
 
+function platformRefusal(variable: string, platform: string) {
+  return `${variable}: containment unknown (${platform}): admission policy was not started; a native descendant container is unavailable`
+}
+
 describe.each(launchers)('admission descriptor isolation: %s', launcher => {
-  it.each([1, 2])('captures descriptor %i writes at import, call and callback drain before refusal', descriptor => {
-    const f = fixture(launcher, descriptor)
-    const result = launch(f)
-    expect(result.status, result.stderr).toBe(3)
-    expect(existsSync(f.marker)).toBe(false)
-    // The supervisor diagnostic is visible; none of the policy's descriptor writes escape.
-    expect(result.stderr).toContain(`cleanup limitation (${process.platform})`)
-    expect(result.stderr).not.toContain('policy import output')
-    expect(result.stderr).not.toContain('policy call output')
-    expect(result.stderr).not.toContain('policy drain output')
-    const stderr = result.stderr.replace(/^.*: cleanup limitation \([^\n]+\n/m, '')
-    if (launcher === 'second-opinion') {
-      expect(readFileSync(f.out, 'utf8')).toBe(`REFUSED: ${f.variable}: policy refuses\nEXIT=3\n`)
-      expect(result.stdout).toBe('')
-      expect(stderr).toBe(`wt-second-opinion: ${f.variable}: policy refuses\n`)
-    } else {
-      expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: policy refuses\n`)
-      expect(stderr).toBe('')
-    }
+  describe.each(platforms)('host=%s', platform => {
+    it.each([1, 2])('captures descriptor %i writes at import, call and callback drain before refusal', descriptor => {
+      const f = fixture(launcher, descriptor, platform)
+      const result = launch(f)
+      expect(result.status, result.stderr).toBe(3)
+      expect(existsSync(f.marker)).toBe(false)
+      // Only supported hosts run a supervisor; policy descriptor writes never escape.
+      if (platform === 'linux') expect(result.stderr).toContain(`cleanup limitation (${platform})`)
+      else expect(result.stderr).not.toContain('cleanup limitation')
+      expect(result.stderr).not.toContain('policy import output')
+      expect(result.stderr).not.toContain('policy call output')
+      expect(result.stderr).not.toContain('policy drain output')
+      const stderr = result.stderr.replace(/^.*: cleanup limitation \([^\n]+\n/m, '')
+      const refusal = platform === 'linux' ? `${f.variable}: policy refuses` : platformRefusal(f.variable, platform)
+      if (launcher === 'second-opinion') {
+        expect(readFileSync(f.out, 'utf8')).toBe(`REFUSED: ${refusal}\nEXIT=3\n`)
+        expect(result.stdout).toBe('')
+        expect(stderr).toBe(`wt-second-opinion: ${refusal}\n`)
+      } else {
+        expect(result.stdout).toBe(`OPENCODE_REFUSED: ${refusal}\n`)
+        expect(stderr).toBe('')
+      }
+    })
   })
 })
 
@@ -120,29 +133,36 @@ function inheritedPipePolicy(f: ReturnType<typeof fixture>, descriptor: number, 
 }
 
 describe.each([1, 2])('admission inherited descriptor %i', descriptor => {
-  it.each([true, false])('bounds the whole call while a descendant holds the pipe (pending=%s)', async pending => {
-    const f = fixture('envelope', descriptor)
-    const pidFile = inheritedPipePolicy(f, descriptor, pending)
-    const { boundedAdmission } = await import(pathToFileURL(join(PLUGIN, 'bin/lib/host/admission.mjs')).href)
-    // Include containment-owner, supervisor and worker startup in the budget;
-    // the 2 s pipe holder still outlives both this deadline and the 400 ms bound.
-    const timeout = 1200
-    const timeoutVariable = `${f.variable}_TIMEOUT_MS`
-    const env = sealedPluginCliEnv(f.root, { [f.variable]: f.policy, [timeoutVariable]: String(timeout) })
-    try {
-      const start = performance.now()
-      const refusal = await boundedAdmission({ repo: f.repo, request: {} }, env, {
-        moduleVariable: f.variable, timeoutVariable, silent: true,
-      })
-      const elapsed = performance.now() - start
-      expect(existsSync(pidFile), 'the descendant must actually start before the deadline').toBe(true)
-      expect(refusal).toBe(`${f.variable}: ${pending ? `timed out after ${timeout} ms` : 'policy refuses'}`)
-      expect(elapsed).toBeLessThan(timeout + 400)
-    } finally {
-      // Defensive cleanup also makes red runs leave no helper behind.
-      if (existsSync(pidFile)) {
-        try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch { /* already exited */ }
+  describe.each(platforms)('host=%s', platform => {
+    it.each([true, false])('bounds the whole call while a descendant holds the pipe (pending=%s)', async pending => {
+      const f = fixture('envelope', descriptor, platform)
+      const pidFile = inheritedPipePolicy(f, descriptor, pending)
+      const { boundedAdmission } = await import(pathToFileURL(join(PLUGIN, 'bin/lib/host/admission.mjs')).href)
+      // Include containment-owner, supervisor and worker startup in the budget;
+      // the 2 s pipe holder still outlives both this deadline and the 400 ms bound.
+      const timeout = 1200
+      const timeoutVariable = `${f.variable}_TIMEOUT_MS`
+      const env = sealedPluginCliEnv(f.root, { [f.variable]: f.policy, [timeoutVariable]: String(timeout) })
+      try {
+        const start = performance.now()
+        const refusal = await boundedAdmission({ repo: f.repo, request: {} }, env, {
+          moduleVariable: f.variable, timeoutVariable, silent: true, host: { platform, fork },
+        })
+        const elapsed = performance.now() - start
+        if (platform !== 'linux') {
+          expect(refusal).toBe(platformRefusal(f.variable, platform))
+          expect(existsSync(pidFile), 'unsupported hosts must not start the policy').toBe(false)
+          return
+        }
+        expect(existsSync(pidFile), 'the descendant must actually start before the deadline').toBe(true)
+        expect(refusal).toBe(`${f.variable}: ${pending ? `timed out after ${timeout} ms` : 'policy refuses'}`)
+        expect(elapsed).toBeLessThan(timeout + 400)
+      } finally {
+        // Defensive cleanup also makes red runs leave no helper behind.
+        if (existsSync(pidFile)) {
+          try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL') } catch { /* already exited */ }
+        }
       }
-    }
+    })
   })
 })

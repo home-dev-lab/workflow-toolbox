@@ -8,6 +8,15 @@ import { fileURLToPath } from 'node:url'
 const LINUX_ADMISSION_CONTAINER = String.raw`
 import ctypes, os, select, signal, sys, time
 
+shutdown_requested = False
+
+def request_shutdown(signum, frame):
+    global shutdown_requested
+    shutdown_requested = True
+
+for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+    signal.signal(signum, request_shutdown)
+
 def children():
     with open('/proc/self/task/%s/children' % os.getpid(), 'rb') as stream:
         return [int(pid) for pid in stream.read().split()]
@@ -45,11 +54,13 @@ def supervise():
         os.close(4)  # Only the containment owner may hold the shutdown pipe.
         os.set_inheritable(ipc, True)
         os.execve(sys.argv[2], [sys.argv[2], '--unhandled-rejections=strict', sys.argv[1]], os.environ)
-    os.close(ipc)
-    while os.waitpid(pid, os.WNOHANG)[0] == 0:
-        if select.select([4], [], [], 0.005)[0]:
-            break
-    cleanup()
+    try:
+        os.close(ipc)
+        while not shutdown_requested and os.waitpid(pid, os.WNOHANG)[0] == 0:
+            if select.select([4], [], [], 0.005)[0]:
+                break
+    finally:
+        cleanup()
 
 try:
     supervise()
@@ -70,6 +81,8 @@ export function admissionContainmentRefusal(host) {
 export function startAdmissionContainer(env, host) {
   return host.fork(fileURLToPath(new URL('./admission-process.mjs', import.meta.url)), [process.execPath], {
     env, execPath: '/usr/bin/python3', execArgv: ['-I', '-c', LINUX_ADMISSION_CONTAINER], serialization: 'advanced',
+    // Caller-group interrupts must not destroy the owner before it can reap.
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe', 'ipc', 'pipe'],
   })
 }
@@ -77,9 +90,39 @@ export function startAdmissionContainer(env, host) {
 export async function finishAdmissionContainer(child, exited) {
   // EOF requests cleanup without killing the subreaper. It must outlive ALL of
   // its children; its exit, rather than inherited pipe closure, is our barrier.
-  child.stdio[4].on('error', () => {})
-  child.stdio[4].end()
+  const shutdown = child.stdio[4]
+  // Closing the handle delivers EOF even when socket shutdown is denied. A late
+  // pipe error may mean the owner is already finalizing, not that it needs TERM.
+  shutdown.on('error', () => {})
+  try { shutdown.end() } catch { /* The direct close still requests cleanup. */ }
+  shutdown.destroy()
   child.stdout.destroy(); child.stderr.destroy()
-  await exited
-  if (child.connected) child.disconnect()
+  try {
+    if (await admissionOwnerExited(exited, 1500)) return null
+    // Signals are independent of socket shutdown. TERM requests Python cleanup;
+    // KILL is only a final escape from a stuck owner and never proves containment.
+    signalAdmissionOwner(child, 'SIGTERM')
+    if (await admissionOwnerExited(exited, 1500)) return null
+    signalAdmissionOwner(child, 'SIGKILL')
+    const ended = await admissionOwnerExited(exited, 250)
+    if (!ended) child.unref()
+    return `containment unknown: owner shutdown exceeded its cleanup deadline; ${ended ? 'owner stopped by kill fallback' : 'owner exit could not be verified after kill fallback'}`
+  } finally {
+    shutdown.destroy()
+    if (child.connected) child.disconnect()
+  }
+}
+
+function signalAdmissionOwner(child, signal) {
+  try { child.kill(signal) } catch { /* The bounded wait reports unverifiable shutdown. */ }
+}
+
+async function admissionOwnerExited(exited, milliseconds) {
+  let timer
+  try {
+    return await Promise.race([
+      exited.then(() => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), milliseconds) }),
+    ])
+  } finally { clearTimeout(timer) }
 }

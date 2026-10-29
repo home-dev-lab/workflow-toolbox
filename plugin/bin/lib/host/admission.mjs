@@ -43,6 +43,7 @@ async function processAdmission({ repo, request }, env, timeout, moduleVariable,
   let timer
   let refusal
   let failure
+  let cleanupFailure
   try {
     child.send({ options: { repo, request }, env, timeout, moduleVariable, silent, admission })
     refusal = await Promise.race([
@@ -56,8 +57,9 @@ async function processAdmission({ repo, request }, env, timeout, moduleVariable,
   } finally {
     cancellation.dispose()
     clearTimeout(timer)
-    await finishAdmissionContainer(child, exited)
+    cleanupFailure = await finishAdmissionContainer(child, exited)
   }
+  if (cleanupFailure) return `${moduleVariable}: ${cleanupFailure}`
   if (child.exitCode !== 0) return `${moduleVariable}: containment unknown: launcher exited with code ${child.exitCode}, signal ${child.signalCode}`
   if (failure) throw failure
   return refusal

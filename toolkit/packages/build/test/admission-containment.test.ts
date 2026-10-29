@@ -8,6 +8,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { expect, it, vi } from 'vitest'
 import { exercise, running } from './admission-detach-cases.js'
+import { registerContainmentShutdownCases } from './admission-containment-cases.js'
+
+registerContainmentShutdownCases()
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_DETACH_TEST_PLUGIN ?? join(ROOT, 'plugin')
@@ -104,7 +107,7 @@ linuxIt('reports unknown if the containment owner dies', async () => {
   await refusedBeforePolicy(pythonHost('import os, signal\nos.kill(os.getpid(), signal.SIGKILL)'))
 })
 
-linuxIt('legacy census continues past an unreadable unrelated process record', async () => {
+linuxIt.each([false, true])('legacy census handles unreadable procfs records (owned=%s)', async owned => {
   const root = mkdtempSync(join(tmpdir(), 'admission-procfs-')), marker = join(root, 'pid')
   const child = spawn(process.execPath, ['-e', `const {spawn} = require('node:child_process');
     const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], {detached:true, stdio:'ignore'});
@@ -113,7 +116,7 @@ linuxIt('legacy census continues past an unreadable unrelated process record', a
   const prefix = `import builtins, os
 real_open = builtins.open
 def restricted_open(path, *args, **kwargs):
-    if path == '/proc/1/stat': raise PermissionError('injected unrelated EACCES')
+    if path == ${owned ? `'/proc/%s/stat' % real_open(${JSON.stringify(marker)}).read()` : "'/proc/1/stat'"}: raise PermissionError('injected ${owned ? 'owned' : 'unrelated'} EACCES')
     return real_open(path, *args, **kwargs)
 builtins.open = restricted_open
 os.listdir = lambda path: ['1', '${child.pid}', real_open(${JSON.stringify(marker)}).read()]\n`
@@ -128,8 +131,11 @@ os.listdir = lambda path: ['1', '${child.pid}', real_open(${JSON.stringify(marke
     expect(existsSync(marker)).toBe(true)
     const identity = admissionCleanupIdentity(child)
     const limitation = await cleanupAdmissionDescendants(child, identity)
-    expect(running(Number(readFileSync(marker, 'utf8'))), 'unrelated EACCES must not hide owned descendants').toBe(false)
-    expect(limitation).toBeNull()
+    if (owned) expect(limitation, 'an unreadable owned process must never be reported clean').toContain('containment unknown')
+    else {
+      expect(running(Number(readFileSync(marker, 'utf8'))), 'unrelated EACCES must not hide owned descendants').toBe(false)
+      expect(limitation).toBeNull()
+    }
   } finally {
     start.mockRestore(); syncBuiltinESMExports()
     if (existsSync(marker)) { try { process.kill(Number(readFileSync(marker, 'utf8')), 'SIGKILL') } catch { /* red cleanup */ } }

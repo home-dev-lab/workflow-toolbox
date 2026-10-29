@@ -52,7 +52,7 @@ def record(pid):
         if not stat.startswith(('%s (' % pid).encode()) or not fields[19].isdigit():
             raise RuntimeError('invalid process birth identity')
         return (pid, int(fields[1]), fields[19].decode('ascii'), fields[0])
-    except (FileNotFoundError, ProcessLookupError, PermissionError):
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 def own(pid, start):
@@ -77,12 +77,34 @@ def send(entry, signum):
     except ProcessLookupError:
         pass
 
+def owned_child(pid, family):
+    for parent in family.values():
+        if ended(parent):
+            continue
+        try:
+            tasks = os.listdir('/proc/%s/task' % parent[0])
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        for task in tasks:
+            try:
+                with open('/proc/%s/task/%s/children' % (parent[0], task), 'rb') as stream:
+                    if str(pid).encode() in stream.read().split():
+                        return True
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+    return False
+
 def discover(family):
     added = False
     for name in os.listdir('/proc'):
         if not name.isdigit() or int(name) in family:
             continue
-        current = record(int(name))
+        try:
+            current = record(int(name))
+        except PermissionError:
+            if owned_child(int(name), family):
+                raise RuntimeError('owned process record is unreadable: %s' % name)
+            continue
         if not current:
             continue
         parent = family.get(current[1])
@@ -165,7 +187,7 @@ export function cleanupAdmissionDescendants(child, identity) {
       clearTimeout(timer)
       if (code === 0) return resolve(null)
       const detail = error.trim() || `pidfd helper exited with code ${code}`
-      resolve(`cleanup incomplete: ${detail}`)
+      resolve(`cleanup incomplete: containment unknown: ${detail}`)
     })
   })
 }
