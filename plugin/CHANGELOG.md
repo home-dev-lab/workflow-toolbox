@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Read-only worktree sweep with ordered KEEP reasons, conservative liveness verdicts,
+  an explicit JSON output, and throttled report-only session/prompt hooks. Reports
+  never archive, move, purge or delete worktrees; apply remains unavailable.
+
 ### Fixed
 
 - Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
