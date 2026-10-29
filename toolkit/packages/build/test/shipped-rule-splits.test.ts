@@ -65,6 +65,12 @@ const paragraphs = (file: string, generated: RegExp) => readFileSync(file, 'utf8
   .filter((paragraph) => !generated.test(paragraph))
 
 type Trigger = { kind?: string, regex?: string, tool?: string, flags?: string, 'input-regex'?: string, unconditional?: boolean, 'before-first-act'?: boolean }
+function rideAlongReason(name: string, trigger: Trigger): string | undefined {
+  if (name !== 'wt-verify-by-ground-truth') return undefined
+  if (trigger.kind === 'bash') return 'Verification guidance governs reading the result.'
+  if (trigger.kind === 'tool' && trigger.tool === '^Agent$') return 'Spawn-result guidance remains available without blocking delegation.'
+  return undefined
+}
 const COMMAND_HEAD = String.raw`^(?:(?:(?:[^'";&|()\n]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')*(?:;|&&|\|\||\||&(?!&)|\()\s*)|(?:[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()]+))\s+|(?:timeout(?:(?:\s+(?:-s|--signal|-k|--kill-after)\s+\S+|\s+--(?:signal|kill-after)=\S+|\s+--(?:foreground|preserve-status|verbose))*)\s+\S+|nice(?:\s+(?:-[^\s]+|\d+))*|time|nohup|setsid|sudo(?:\s+(?:-[ugChpRT]\s+\S+|--(?:user|group|close-from|host|prompt|role|type)(?:=\S+|\s+\S+)|-[^\s]+))*|npx|pnpm\s+exec|env(?:\s+(?:-[uC]\s+\S+|--(?:unset|chdir)(?:=\S+|\s+\S+)|-[^\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s;&|()]+)))*)\s+|(?:ba)?sh\s+-c\s+['"]\s*|(?:if|then|do|else|elif|while|until)\s+|\{\s*|!\s*)*`
 const triggersFor = (name: typeof ACT_RULES[number]) => JSON.parse(
   readFileSync(join(ROOT, 'plugin/rules', `${name}-at-act.spec.json`), 'utf8'),
@@ -232,17 +238,19 @@ describe('shipped split rules', () => {
   })
 
   it('serves every trigger that governs its own call before that call', () => {
-    const afterTheActAllowList: Record<string, string> = {}
+    const afterTheActReasons = new Set<string>()
     for (const name of ACT_RULES) {
       for (const [index, trigger] of triggersFor(name).entries()) {
         const identity = `${name}:${index}`
+        const reason = rideAlongReason(name, trigger)
+        if (reason) afterTheActReasons.add(reason)
         expect(
-          trigger['before-first-act'] === true || Boolean(afterTheActAllowList[identity]),
-          `${identity} must set before-first-act or have an after-the-act reason`,
-        ).toBe(true)
+          trigger['before-first-act'],
+          `${identity}: ${reason ?? 'This duty governs the call itself.'}`,
+        ).toBe(reason === undefined)
       }
     }
-    expect(afterTheActAllowList).toEqual({})
+    expect(afterTheActReasons.size).toBe(2)
   })
 
   it.skip('keeps historical whole paragraphs (replaced by directive-level checks)', () => {
@@ -287,11 +295,16 @@ describe('shipped split rules', () => {
     ]) {
       const body = readFileSync(join(rulesDir, `${name}-at-act.md`), 'utf8')
       const spec = JSON.parse(readFileSync(join(rulesDir, `${name}-at-act.spec.json`), 'utf8')) as {
-        'on-demand': { triggers: Array<{ 'before-first-act'?: boolean }> }
+        'on-demand': { triggers: Trigger[] }
       }
       expect(body.length, name).toBeLessThan(9500)
       expect(spec['on-demand'].triggers.length, name).toBeGreaterThan(0)
-      expect(spec['on-demand'].triggers.every((trigger) => trigger['before-first-act']), name).toBe(true)
+      expect(spec['on-demand'].triggers.every((trigger) => typeof trigger['before-first-act'] === 'boolean'), name).toBe(true)
+      expect(spec['on-demand'].triggers.some((trigger) => trigger['before-first-act'] === true), name).toBe(true)
+      for (const trigger of spec['on-demand'].triggers) {
+        const reason = rideAlongReason(name, trigger)
+        if (reason) expect(trigger['before-first-act'], `${name}: ${reason}`).toBe(false)
+      }
     }
   })
 
