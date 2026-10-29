@@ -17,6 +17,11 @@ export function suiteLockPriority(options = {}, env = process.env) {
   return 'P1'
 }
 
+// Lane defaults belong at the host boundary; ordinary lock callers retain P1.
+export function laneSuiteLockPriority(options = {}, env = process.env) {
+  return suiteLockPriority(options, { WT_SUITE_LOCK_PRIORITY: env.WT_SUITE_LOCK_PRIORITY ?? 'P2' })
+}
+
 export function suiteLockLongHoldSeconds(env = process.env) {
   const raw = env.WT_SUITE_LOCK_LONG_HOLD_S
   if (raw === undefined) return 3600

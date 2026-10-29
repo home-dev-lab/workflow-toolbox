@@ -517,6 +517,18 @@ describe('lane operator release boundary', () => {
 })
 
 describe('declaration and isolated environments', () => {
+  it('ordinary non-lane acquisition still defaults to P1', async () => {
+    const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    try { expect(lease.holder.level).toBe(1) }
+    finally { lock.releaseSuiteLock(lease) }
+  })
+  it.each(['P0', 'P1', 'P2'])('non-sandbox --priority %s overrides an ambient level', (priority) => {
+    const root = temp()
+    const script = `process.stdout.write(require('fs').readFileSync(${JSON.stringify(join(root, 'lock.d', 'holder.json'))},'utf8'))`
+    const result = cli(root, ['run', '--priority', priority, '--', process.execPath, '-e', script], { WT_SUITE_LOCK_PRIORITY: priority === 'P0' ? 'P2' : 'P0' })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout).level).toBe(Number(priority.slice(1)))
+  })
   it('F6 explicit root retains P0 despite an ambient broker and never connects', async () => {
     const root = temp(); const connect = vi.spyOn(net, 'connect')
     const held = await lock.acquireSuiteLock({ root, env: envFor(root, { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock') }), priority: 'P0' })
