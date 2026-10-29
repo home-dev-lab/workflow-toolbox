@@ -3,7 +3,7 @@ import { classifyOutbound } from './outbound-tools.js';
 import { classifyOutbound as baseClassify } from './fixtures/base-outbound-tools.frozen.mjs';
 import { rows, objectRows } from './fixtures/value-boundary-rows.mjs';
 import { contextualMatches } from './detector.js';
-import { blankReferences, discoverCandidates, referenceProof, valueExtent, WIDE_REFERENCE } from './value-boundary.js';
+import { blankReferences, discoverCandidates, referenceProof, valueExtent } from './value-boundary.js';
 
 const findings = async (content, classify = classifyOutbound) => (await classify({}, { tool: 'Write', content })).findings;
 const groupOf = (id) => id.match(/^(?:AR|AF|CTL|SEED|[A-Z]|7)/)[0];
@@ -111,14 +111,34 @@ function occurrenceProofs(key, text) {
   return direct;
 }
 
+function removalRange(text, entry) {
+  let start = entry.duplicateOf?.keyStart ?? entry.keyStart ?? 0;
+  let end = entry.proof.end;
+  const lineStart = Math.max(text.lastIndexOf('\n', start - 1), text.lastIndexOf('\r', start - 1)) + 1;
+  if (/^[ \t]*$/.test(text.slice(lineStart, start)) && /^(?:\r\n|[\r\n]|$)/.test(text.slice(end))) {
+    start = lineStart;
+    end += text.slice(end).match(/^(?:\r\n|[\r\n])/)?.[0].length ?? 0;
+  }
+  return [start, end];
+}
+
+function removeOccurrences(text, evidence) {
+  const ranges = evidence.filter((entry) => referenceProof(entry.proof.text, entry.proof.mode))
+    .map((entry) => removalRange(text, entry)).sort((a, b) => a[0] - b[0]);
+  assert.ok(ranges.length, 'flip control removed no proven occurrence');
+  const merged = [];
+  for (const [start, end] of ranges) {
+    const previous = merged.at(-1);
+    if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+    else merged.push([start, end]);
+  }
+  for (const [start, end] of merged.reverse()) text = text.slice(0, start) + text.slice(end);
+  return text;
+}
+
 function referenceControl(event, evidence) {
   const [key, text] = Object.entries(event).find(([name]) => name !== 'tool');
-  const ranges = [...text.matchAll(WIDE_REFERENCE)].filter((match) => referenceProof(match[0])
-    && evidence.some(({ proof }) => match.index >= proof.start && match.index + match[0].length <= proof.end));
-  let control = text;
-  for (const match of ranges.reverse()) control = control.slice(0, match.index) + 'x' + control.slice(match.index + match[0].length);
-  assert.ok(ranges.length, 'flip control replaced no proven reference');
-  return { ...event, [key]: control };
+  return { ...event, [key]: removeOccurrences(text, evidence) };
 }
 
 async function justifyFlip(event, before, id) {
@@ -132,7 +152,7 @@ async function justifyFlip(event, before, id) {
       if (entry.duplicateOf) assert.ok(before.some((direct) => direct.kind === entry.duplicateOf.kind && direct.value === entry.duplicateOf.value), `whole-field finding lacks direct occurrence: ${id}`);
     }
   }
-  assert.equal((await baseClassify({}, referenceControl(event, evidence))).findings.length, 0, `reference-replaced control still refused: ${id}`);
+  assert.equal((await baseClassify({}, referenceControl(event, evidence))).findings.length, 0, `occurrence-removed control still refused: ${id}`);
   return evidence.length;
 }
 
@@ -176,7 +196,7 @@ async function differentialLock(f) {
     const event = { tool: 'Write', content: 'password="${HOME}"\ntoken=Q7m9Ab12' };
     const before = (await baseClassify({}, event)).findings.filter((item) => item.value === '${HOME}');
     assert.ok(before.length, 'missing reference occurrence control');
-    await assert.rejects(justifyFlip(event, before, 'control'), /reference-replaced control still refused/);
+    await assert.rejects(justifyFlip(event, before, 'control'), /occurrence-removed control still refused/);
   }));
 }
 
@@ -279,6 +299,24 @@ async function independentEvidenceLocks(f) {
   }
 }
 
+async function removalControlLocks(f) {
+  for (const ending of ['\n', '\r\n', '\r']) {
+    await f.test(`VB removal control preserves sibling bytes ${JSON.stringify(ending)}`, async () => {
+      const text = `[s]${ending}password="\${HOME}"${ending}user=Q7m9Ab12`;
+      const event = { tool: 'Write', content: text };
+      const keyStart = text.indexOf('password');
+      const evidence = [{ keyStart, proof: { start: keyStart + 9, end: keyStart + 18, text: '"${HOME}"' } }];
+      assert.equal(referenceControl(event, evidence).content,
+        `[s]${ending}user=Q7m9Ab12`, 'control must remove key, separator, full value and closing line ending');
+    });
+  }
+  await f.test('VB removal control preserves inline surroundings and unions duplicates', async () => {
+    const event = { tool: 'Write', content: 'left password="${HOME}"; token="${OTHER}" right' };
+    const proof = { keyStart: 5, proof: { start: 14, end: 23, text: '"${HOME}"' } };
+    assert.equal(referenceControl(event, [proof, proof]).content, 'left ; token="${OTHER}" right', 'inline bytes outside occurrence changed');
+  });
+}
+
 async function sequence(f, content, later, refused = true) {
   const event = typeof content === 'string' ? { tool: 'Write', content } : { tool: 'mcp__fixture__send', ...content };
   const initial = (await classifyOutbound({}, event)).findings;
@@ -312,5 +350,5 @@ async function provenanceLocks(f) {
 }
 
 export async function runValueBoundaryLocks(fixture) {
-  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock, continuationLocks, provenanceLocks, roundThreeLocks]) await run(fixture);
+  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock, continuationLocks, provenanceLocks, roundThreeLocks, removalControlLocks]) await run(fixture);
 }

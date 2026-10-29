@@ -95,6 +95,7 @@ export function valueExtent(text, item, candidates = []) {
     at = next.cursor;
   }
   // Project out only the recognised key prefix, retaining the full writer end.
+  // Differential controls remove the key through this end, including continuations.
   return finishedExtent(text, item, at, skipped);
 }
 

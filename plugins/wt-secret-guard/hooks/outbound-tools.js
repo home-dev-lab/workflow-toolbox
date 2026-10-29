@@ -39,6 +39,7 @@ function pushDetectedFindings(found, value, key, path, options) {
   const candidate = withoutReferences(value);
   const baseDirect = detections(candidate);
   // Writer-value proofs cancel contextual occurrences only; independent detector evidence survives.
+  // An unheld bare tail is not independent evidence; occurrence-removal controls lock that distinction.
   const direct = baseDirect.filter((item) => !isContextual(item.kind)).map((item) => {
     const start = candidate.indexOf(item.value);
     return start < 0 ? { ...item, path } : { ...item, value: value.slice(start, start + item.value.length), path, index: start };
