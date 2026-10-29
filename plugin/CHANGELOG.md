@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- `wt-tsls` CPU budgets now warn only: stopping an over-budget server is disabled until a later version. Individual or combined tsserver usage above 100% of one core for 120 sampled seconds produces one stderr warning with the measured excess and duration, then sampling continues without signalling processes or delaying the client's normal disconnect. Samples run every five seconds using Linux user/system ticks or macOS `ps` CPU time, pinned to the backend's spawn-time identity; polling ends on backend exit. Brief unavailable measurements pause evidence, gaps longer than 15 seconds reset it, and proven idle recovery resets sustained evidence while sibling replacement preserves accepted combined-CPU history. Unsupported platforms and failed measurements explicitly report an unavailable, unenforced budget instead of idle CPU. The existing native-watch bound remains active.
 - Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
 - Retain every artifact-server health responder until proven exited, coalesce unknown process observations, and carry self-read birth evidence across monitor handoffs.
 - Bind artifact-server attachments to identity-bracketed health observations, permanently retire exited instances, and use recorded birth identity for CLI stop/restart confirmation.
