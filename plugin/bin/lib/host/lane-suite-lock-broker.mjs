@@ -3,7 +3,7 @@ import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
 import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
 import { formatSuiteLockHolder, readSuiteLock, readSuiteLockStatus } from '../suite-lock.mjs'
-import { suiteLockPriority } from '../suite-lock-priority.mjs'
+import { laneSuiteLockPriority } from '../suite-lock-priority.mjs'
 import { suiteLockStatusJson } from '../suite-lock-status.mjs'
 import { acquireBrokerJournalLease as acquireSuiteLock, observeBrokerJournalSocket, releaseBrokerJournalLease as releaseSuiteLock } from './suite-lock-broker-journal.mjs'
 import { suiteOffloadConfig } from './suite-lock-offload-config.mjs'
@@ -103,7 +103,7 @@ export function laneSuiteLockMaxHoldSeconds(env = process.env) {
 
 function hostLockOptions(env, priority) {
   const hostEnv = { ...env }
-  const declared = suiteLockPriority({ priority }, hostEnv)
+  const declared = laneSuiteLockPriority({ priority }, hostEnv)
   if (declared === 'release') throw new Error('release priority is not available to a lane broker')
   return { env: hostEnv, priority: declared }
 }

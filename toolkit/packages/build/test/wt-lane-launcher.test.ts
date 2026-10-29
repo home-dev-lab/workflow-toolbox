@@ -2139,7 +2139,7 @@ describe('wt-lane --priority and the removed --attach', () => {
 describe('wt-lane --lock-priority carries the card suite-lock level to the lane host broker', () => {
   const base = ['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']
   it('accepts P0, P1 and P2 in any case, normalised to upper case; absent declares nothing', () => {
-    expect(parse(base).lockPriority, 'no flag: the ambient WT_SUITE_LOCK_PRIORITY (else P1) still applies').toBeNull()
+    expect(parse(base).lockPriority, 'no flag: the host resolves ambient WT_SUITE_LOCK_PRIORITY, else P2').toBeNull()
     expect([['P0'], ['p1'], ['p2']].map(([value]) => parse([...base, '--lock-priority', value!]).lockPriority)).toEqual(['P0', 'P1', 'P2'])
   })
   it.each([['release'], ['Release'], ['P3'], ['urgent'], [''], [null]])('refuses %j at parsing, naming --lock-priority', (value) => {
@@ -2147,26 +2147,26 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
     expect(error).toContain('--lock-priority must be P0, P1 or P2')
     if (value?.toLowerCase() === 'release') expect(error).toContain('release is reserved to the main session')
   })
-  it('the worker env carries the declared level over an ambient one, and is the ambient env without the flag', () => {
+  it('the worker env carries the declared level over an ambient one, else defaults to P2', () => {
     const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
     expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P0' })
     expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
     expect(laneWorkerEnv(ambient, null)).toEqual(ambient)
-    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin' })
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' })
   })
 })
 
 describe('wt-lane --lock-priority reaches the processes the launcher starts', () => {
-  it.each([[['--lock-priority', 'p0'], undefined, 'P0'], [[], undefined, 'unset'], [[], 'P2', 'unset']] as const)('the opencode child env carries the declared level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
+  it.each([[['--lock-priority', 'p0'], 'P2', 'P0'], [['--lock-priority', 'p1'], 'P0', 'P1'], [['--lock-priority', 'p2'], 'P0', 'P2'], [[], undefined, 'P2'], [[], 'P0', 'P0'], [[], 'P1', 'P1'], [[], 'P2', 'P2']] as const)('the opencode child env carries the effective level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
     const f = fixture('lock-priority-env')
-    // Without the flag an ambient level stays filtered out of the child, as before this flag existed.
+    // The host resolves the priority before the child environment allow-list is applied.
     if (ambient) f.env.WT_SUITE_LOCK_PRIORITY = ambient
     const res = run(f, ['--timeout', '1', ...extra]); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'lock-priority-env'), 'utf8')).toBe(expected)
   })
-  it.skipIf(process.platform !== 'linux')('a launched worker runs with the declared level, and without one when no flag is given [reads /proc/<pid>/environ]', () => {
-    for (const [extra, expected] of [[['--lock-priority', 'p0'], 'WT_SUITE_LOCK_PRIORITY=P0'], [[], undefined]] as const) {
+  it.skipIf(process.platform !== 'linux')('a launched worker runs with the declared level, else P2 [reads /proc/<pid>/environ]', () => {
+    for (const [extra, expected] of [[['--lock-priority', 'p0'], 'WT_SUITE_LOCK_PRIORITY=P0'], [[], 'WT_SUITE_LOCK_PRIORITY=P2']] as const) {
       const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
       expect(f.env.WT_SUITE_LOCK_PRIORITY, 'the fixture env declares no ambient level').toBeUndefined()
       expect(run(f, ['--timeout', '60', ...extra]).status).toBe(0)

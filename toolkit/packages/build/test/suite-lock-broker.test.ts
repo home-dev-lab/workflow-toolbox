@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { stopBrokerFixtureTimers, suiteBrokerAddress, suiteBrokerFixture, writeBrokerFixtureLine } from './helpers/suite-broker-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acquireSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { acquireSuiteLock, readBrokerSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSuiteLockBroker, DEFAULT_LANE_SUITE_LOCK_MAX_HOLD_S, DEFAULT_LANE_SUITE_LOCK_STOP_GRACE_S, laneSuiteLockMaxHoldSeconds } from '../../../../plugin/bin/lib/host/lane-suite-lock-broker.mjs'
 
@@ -1074,9 +1074,50 @@ async function brokerQueuedTicket(workerEnv: NodeJS.ProcessEnv, level: number) {
 }
 
 describe.skipIf(process.platform === 'win32')('lane suite-lock broker carries the lane worker lock level [unix-domain sockets]', () => {
-  it.each([[{ WT_SUITE_LOCK_PRIORITY: 'P0' }, 0], [{}, 1]] as const)('a broker started with lane worker env %j queues its tickets at level %i', async (workerEnv, level) => {
+  it.each([[{ WT_SUITE_LOCK_PRIORITY: 'P0' }, 0], [{ WT_SUITE_LOCK_PRIORITY: 'P1' }, 1], [{ WT_SUITE_LOCK_PRIORITY: 'P2' }, 2], [{}, 2]] as const)('a broker started with lane worker env %j queues its tickets at level %i', async (workerEnv, level) => {
     const ticket = await brokerQueuedTicket(workerEnv, level)
     expect(ticket.level, 'the level of the ticket the broker queued for the lane').toBe(level)
     expect(ticket.argv.at(-1), 'the broker prefixes its own label; the client argv ends the ticket argv').toBe('second')
   }, 12_000)
+})
+
+const SANDBOX_ENTRIES = ['api', 'cli', 'package-wrapper', 'vitest-setup'] as const
+type SandboxEntry = typeof SANDBOX_ENTRIES[number]
+
+async function startSandboxAcquisition(broker: Awaited<ReturnType<typeof startBroker>>, entry: SandboxEntry, light: boolean) {
+  const env = sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK: '1', WT_SUITE_LOCK_DIR: join(broker.root, 'masked'), WT_SUITE_LOCK_BROKER: broker.socket, WT_SUITE_LEASE: '' })
+  if (entry === 'api') {
+    const lease = await acquireSuiteLock({ env, light, argv: ['routine-gate'], waitS: 10 })
+    releaseSuiteLock(lease)
+    return 0
+  }
+  const flags = light ? ['--light'] : []
+  const command = [process.execPath, '-e', '']
+  const setup = `const {default:setup}=await import(${JSON.stringify(GLOBAL_SETUP)});await setup({vitest:{state:{getPaths:()=>${JSON.stringify(light ? ['routine.test.ts'] : [])}},config:{coverage:{enabled:false}}}})`
+  const args = entry === 'vitest-setup' ? ['--input-type=module', '-e', setup]
+    : entry === 'package-wrapper' ? [join(ROOT, 'toolkit/scripts/with-suite-lease.mjs'), ...flags, '--', ...command]
+      : [CLI, 'run', ...flags, '--', ...command]
+  const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] }); children.push(child)
+  let stderr = ''; child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+  const status = await exitWithin(child, 15_000)
+  expect(status, stderr).toBe(0)
+  return status
+}
+
+describe.skipIf(process.platform === 'win32')('routine sandbox gate default across acquisition entry points [unix-domain sockets]', () => {
+  it.each(SANDBOX_ENTRIES.flatMap((entry) => [false, true].map((light) => ({ entry, light }))))('$entry queues P2 without a declared level (light=$light)', async ({ entry, light }) => {
+    const broker = await startBroker(process.pid, { WT_SUITE_LOCK_STATIC_LANE: '0' })
+    const first = connect(broker.socket, { argv: ['holder'], waitS: 10 })
+    await first.waitForReply(granted)
+    const pending = startSandboxAcquisition(broker, entry, light)
+    void pending.catch(() => {})
+    try {
+      const queue = join(broker.root, 'locks', 'queue.d')
+      await waitFor(() => readdirSync(queue).some((name) => name.endsWith('.json')))
+      const ticket = JSON.parse(readFileSync(join(queue, readdirSync(queue).find((name) => name.endsWith('.json'))!), 'utf8'))
+      expect(ticket.level, 'routine sandbox acquisition must queue below P1').toBe(2)
+      expect(ticket.light === true).toBe(light)
+      expect((await readBrokerSuiteLock(broker.socket)).queue).toMatchObject([{ level: 2, effectiveLevel: 2 }])
+    } finally { first.socket.destroy(); await pending }
+  }, 20_000)
 })

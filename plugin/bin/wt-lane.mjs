@@ -8,6 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
 import { applyLanePriority } from './lib/host/lane-priority.mjs'
+import { laneSuiteLockPriority } from './lib/suite-lock-priority.mjs'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
@@ -107,7 +108,7 @@ function launchRecoveryCondition(reason) {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every lane gate, with or without a host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P2).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
 }
 
 // The suite-lock level a lane's host broker queues its gates at. Release stays reserved to the main session.
@@ -118,19 +119,16 @@ function laneLockPriority(value) {
 }
 
 /**
- * An env carrying a declared --lock-priority. Used twice: for the worker, which hands its env to the host-side
+ * An env carrying the effective lane priority. Used twice: for the worker, which hands its env to the host-side
  * suite-lock broker (lane-sandbox.mjs, the broker bridge, which reads WT_SUITE_LOCK_PRIORITY); and for the opencode
- * child, whose env filter would otherwise drop it. Without the flag the env is returned unchanged, so the ambient
- * level (else P1) applies as before.
+ * child, whose env filter would otherwise drop it. A declaration wins over the ambient level, else P2.
  */
 export function laneWorkerEnv(env, lockPriority) {
-  return lockPriority ? { ...env, WT_SUITE_LOCK_PRIORITY: lockPriority } : env
+  return { ...env, WT_SUITE_LOCK_PRIORITY: laneSuiteLockPriority({ priority: lockPriority ?? undefined }, env) }
 }
 
 // The worker argv that carries a declared --lock-priority to the detached worker; nothing when none was declared.
 const laneLockPriorityArgs = (lockPriority) => lockPriority ? ['--lock-priority', lockPriority] : []
-// WT_SUITE_LOCK_PRIORITY is a name the launcher owns on the opencode child only when declared: an ambient value stays filtered.
-const laneLockPriorityEnvNames = (lockPriority) => lockPriority ? ['WT_SUITE_LOCK_PRIORITY'] : []
 
 // The option values parse() checks after reading argv, in the order it always checked them; normalises
 // --lock-priority in place. Returns the first refusal, or null.
@@ -801,17 +799,16 @@ async function main() {
 
   // Resolved (and refused when absent) by the loaded plugin runtime; see suiteLockCli in lib/host/lane-sandbox.mjs.
   const suiteLockCli = consentModules.suiteLockCli
-  // The env filter drops WT_SUITE_LOCK_PRIORITY; a declared --lock-priority is set again on the child, so a gate with no
-  // host broker in its path (sandbox off, macOS, Windows) queues at it. Behind a broker it is inert (the client forces P1
-  // and the broker reads no level from the request): the worker env carries it to the broker instead.
-  const childEnv = laneWorkerEnv(consentModules.opencodeChildEnv(process.env, opts.model), opts.lockPriority)
+  // Resolve before filtering: gates without a broker (sandbox off, macOS, Windows) use the same host-selected
+  // level, including the routine P2 default. Brokered gates still take their level only from the host broker.
+  const childEnv = laneWorkerEnv(consentModules.opencodeChildEnv(process.env, opts.model), laneSuiteLockPriority({ priority: opts.lockPriority ?? undefined }))
   childEnv.WT_SUITE_LOCK_CMD = suiteLockCli
   if (allowlist.allowed.length) childEnv.OPENCODE_CONFIG = allowedSkills.configPath
   const opencodeBinary = fence.binary ?? 'opencode'
   writeLaneStage(opts.log, 'effective-discovery-start')
   // Names the launcher sets itself: the child environment allow-list passes them, never inherits them.
-  // WT_SUITE_LOCK_PRIORITY passes the child's env filter only when declared: an ambient value stays filtered, as before.
-  const ownedNames = ['OPENCODE_CONFIG', 'WT_SUITE_LOCK_CMD', ...laneLockPriorityEnvNames(opts.lockPriority)]
+  // The effective host-selected priority is explicitly owned, so it survives the child's env filter.
+  const ownedNames = ['OPENCODE_CONFIG', 'WT_SUITE_LOCK_CMD', 'WT_SUITE_LOCK_PRIORITY']
   // Inside the Linux lane sandbox the lock DIRECTORY is bound read-write by the sandbox itself. The
   // CLI that WT_SUITE_LOCK_CMD runs reads beyond bin/ at import (lib/artifact-server.mjs reads
   // .claude-plugin/plugin.json), so the whole plugin root it ships in is bound read-only here.

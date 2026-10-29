@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Routine lane gates now default to P2, reserving P1 and P0 for explicitly prioritized work. Host environment priorities and lane declarations still win, including when no sandbox broker is available; ordinary non-lane callers retain P1 and sandboxed release remains refused.
 - Admission runner and supervisor now use one-way module dependencies, preserving detached-process cleanup and existing admission results without a circular import.
 - Admission on Linux installs a child subreaper before executing policy, then kills and reaps detached descendants, including double-forked daemons, before returning. Cleanup survives Node-supervisor death and needs neither pidfds nor unrelated procfs records. Unavailable containment (including macOS and Windows) refuses before policy execution; abnormal containment-owner exit reports an explicit unknown.
 - The admission containment owner now ignores interrupt, terminate, hangup and quit signals so it cannot be stopped before its contained descendants are cleaned up, and its shutdown steps are time-bounded so a stuck child cannot hang admission.
