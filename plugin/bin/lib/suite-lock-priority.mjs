@@ -25,3 +25,12 @@ export function suiteLockLongHoldSeconds(env = process.env) {
   process.stderr.write(`wt-suite-lock: invalid WT_SUITE_LOCK_LONG_HOLD_S ${JSON.stringify(displayArgv([raw]))}; using 3600 s\n`)
   return 3600
 }
+
+export function suiteLockLightHoldSeconds(env = process.env) {
+  const value = env.WT_SUITE_LOCK_LIGHT_HOLD_S
+  if (value === undefined) return 600
+  const seconds = Number(value)
+  if (String(value).trim() && Number.isFinite(seconds) && seconds >= 0) return seconds
+  process.stderr.write(`wt-suite-lock: invalid WT_SUITE_LOCK_LIGHT_HOLD_S ${JSON.stringify(displayArgv([value]))}; using 600 s\n`)
+  return 600
+}

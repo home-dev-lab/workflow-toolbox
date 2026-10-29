@@ -7,7 +7,7 @@ import { base64Utf8, classifyOutbound } from './outbound-tools.js';
 import { isIssuedToken, knownTokens, knownValueOccurrences } from './token-vault.js';
 import { scrubWithVaultOccurrences } from './scrub.js';
 
-const ADAPTERS = new Set(['mcp__plugin_atrium_atrium__speak', 'mcp__atrium__speak']);
+export const OWNER_CHANNEL_ADAPTERS = new Set(['mcp__plugin_atrium_atrium__speak', 'mcp__atrium__speak']);
 
 function encodedOccurrences(text) {
   const matches = knownValueOccurrences(text);
@@ -41,7 +41,7 @@ function redactBody(text) {
 }
 
 export async function planOwnerChannel(event, classify = classifyOutbound) {
-  if (!config().ownerChannelRedaction || !ADAPTERS.has(event.tool)) return null;
+  if (!config().ownerChannelRedaction || !OWNER_CHANNEL_ADAPTERS.has(event.tool)) return null;
   const { text, ...routing } = event;
   const outside = await classify({}, routing);
   if (outside.findings.length) return null;

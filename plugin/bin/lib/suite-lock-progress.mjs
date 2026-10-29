@@ -7,6 +7,12 @@ export function suiteQueueAdvanced(previous, place) {
 
 export const isBrokerQueueEvent = (line) => /^(progress|renew) /.test(line)
 
+// Internal observers see every placement, including worsening positions after priority arrivals.
+export function observeSuiteQueuePlace(options, place) {
+  options.onQueuePlace?.(place)
+  return place
+}
+
 export function brokerProgressPlace(line) {
   const fields = line.split(' ').map((field) => (/^(0|[1-9]\d{0,8})$/.test(field) ? Number(field) : Number.NaN))
   const [aheadExcludingRelease, total, actualAhead] = fields

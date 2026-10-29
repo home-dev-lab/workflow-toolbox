@@ -14,6 +14,16 @@ import * as EXECUTOR_DEFAULTS_MODULE from '../../../../plugin/bin/lib/executor-d
 import manifest from '../../../../plugin/.claude-plugin/plugin.json'
 
 const roots: string[] = []
+it.each(['second_opinion', 'opencode_envelope', 'opencode_verify'])('displays the admission env-first precedence for %s', prefix => {
+  const option = `${prefix}_admission`
+  const envKey = `WT_${prefix.toUpperCase()}_ADMISSION`
+  const f = fixture({ pluginConfigs: { 'workflow-toolbox@synthetic': { options: { [option]: '/plugin-policy.mjs' } } } })
+  const env = { ...f.env, [envKey]: '' }
+  expect(resolveWorkflowToolboxOption(option, { env })).toEqual({ value: '', source: 'env' })
+  const rows = describeWorkflowToolboxOptions({ env, projectDir: f.project, manifest })
+  expect(rows.find((row: { option: string }) => row.option === option)).toMatchObject({ effective: '', source: 'env' })
+  expect(resolveWorkflowToolboxOption(option, { env: f.env })).toEqual({ value: '/plugin-policy.mjs', source: 'plugin option' })
+})
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const cases = [

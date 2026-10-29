@@ -3,6 +3,17 @@
   "version": 1,
   "entries": [
     {
+      "source": "rules/wt-proactive-decision-making.md",
+      "heading": "# Decide technical matters yourself — escalate only the four triggers",
+      "recipients": [
+        "pilot"
+      ],
+      "triggers": [
+        "phase:plan",
+        "phase:report"
+      ]
+    },
+    {
       "source": "rules/wt-sdlc.md",
       "heading": "## Understand before coding",
       "recipients": [

@@ -1,0 +1,11 @@
+{
+  "fs import": 1,
+  "mkdirSync": 1,
+  "copyFileSync": 2,
+  "existsSync": 1,
+  "writeFileSync": 1,
+  "lstatSync": 2,
+  "readFileSync": 1,
+  "statSync": 1,
+  "readdirSync": 2
+}

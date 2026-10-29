@@ -1,11 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { hostStore, hookFixture, atLimitStore, readerTotals, HOST_STORE_LIMIT, archivedUnits, shrinkDeliveries } from './store-host-fake.mjs';
+import { hostStore, hookFixture, atLimitStore, readerTotals, HOST_STORE_LIMIT, archivedUnits, shrinkDeliveries, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_LIMIT, STORE_BUDGETS, STORE_OVERHEAD, STORE_MARGIN, FOREIGN_KEYS_BUDGET, EVICT_TO, VERDICTS, ARCHIVE_RETENTION_BYTES,
   VERDICT_ARCHIVE, STORE_ARCHIVE, archiveTexts, retentionVictims, shrink, jsonLength } from '../hooks/store-budget.js';
 import { mergeSessions, sumSessions, sumServed, archivedSegments } from '../scripts/delivery-join.mjs';
@@ -19,8 +18,7 @@ const listArchives = async (f, family = STORE_ARCHIVE) => (await readdir(f.quali
 const keySizes = (store) => Object.fromEntries([...store.map].map(([key, value]) => [key, jsonLength(value)]));
 
 async function sandbox(t, prefix) {
-  const root = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, prefix);
   return root;
 }
 

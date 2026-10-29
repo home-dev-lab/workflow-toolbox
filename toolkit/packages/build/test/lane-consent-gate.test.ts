@@ -318,7 +318,7 @@ describe('wt-lane.mjs worktree guard', () => {
   it('refuses a non-repository directory before consent, unless --allow-no-git is explicit', () => {
     const f = fixture('worktree-guard')
     const brief = join(f.project, 'brief.md')
-    writeFileSync(brief, '# brief\n')
+    writeFileSync(brief, '# brief\n## Gates\npnpm test\n')
 
     const rejected = runLane(f.project, brief, f.env)
     expect(rejected.status).toBe(2)
@@ -333,7 +333,7 @@ describe('wt-lane.mjs worktree guard', () => {
   it('reaches the consent gate for a committed git fixture', () => {
     const f = fixture('worktree-git')
     const brief = join(f.project, 'brief.md')
-    writeFileSync(brief, '# brief\n')
+    writeFileSync(brief, '# brief\n## Gates\npnpm test\n')
     const gitEnv = { ...f.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
     expect(spawnSync('git', ['init'], { cwd: f.project, encoding: 'utf8', env: gitEnv }).status).toBe(0)
     expect(spawnSync('git', ['add', '.'], { cwd: f.project, encoding: 'utf8', env: gitEnv }).status).toBe(0)

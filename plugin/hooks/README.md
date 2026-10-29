@@ -10,10 +10,9 @@ By default it scans `<cwd>/.claude`, the active Claude config directory, the sta
 
 Run `node plugin/hooks/snapshot-cli --help` for the complete argument reference.
 
-## Work journal hooks
+## Work journal (retired)
 
-`bin/wt-work-journal-hook.mjs` records Bash acts at PreToolUse/PostToolUse and admitted MCP
-acts at PostToolUse. SessionStart verifies its chain, recovers interrupted writes and shows
-a bounded subject digest. Stop warns about unmatched or unconfirmed outward acts.
-See [the journal guide](../../docs/public/work-journal.md) for commands, backup and the
-per-user storage boundary on Linux, macOS and Windows.
+The work journal's hooks are removed: no hook records acts, and SessionStart and Stop print
+no journal notices. `bin/wt-work-journal.mjs` still reads, verifies, restores and exports an
+existing journal. See [the journal guide](../../docs/public/work-journal.md) for those
+commands and the per-user storage boundary on Linux, macOS and Windows.

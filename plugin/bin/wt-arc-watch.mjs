@@ -55,7 +55,9 @@ import { hasRecordedStop, lastStopTimestamps, lastRealRecordTimestampMs } from '
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
-import { announceable, detectRelays, dueRelays, eventBudget, readAgents, readNewMain, readThrottle, writeThrottle, writeResumed } from './lib/delegate-wake.mjs'
+import { announceable, classifyRelays, dueRelays, eventBudget, readAgents, readNewMain, readThrottle, writeThrottle, writeResumed } from './lib/delegate-wake.mjs'
+import { restartEvidence } from './lib/host/delegate-wake-restart.mjs'
+import { acknowledgementCommand, claimDecision, claimOrphan, hasDecision, settleAged, unsettled } from './lib/host/delegate-wake-decisions.mjs'
 
 const HELP = `wt-arc-watch — delegated-arc watcher: watches this project's subagent transcripts
 (corroborated by the outbound-guard stop journal and any liveness declaration file) and
@@ -69,6 +71,10 @@ Options:
   --poll <seconds>   poll interval (default 60, minimum 5)
   --wake-grace <s>  seconds before an unresolved completion is announced (default 90)
   --wake-repeat <s> minimum first retry interval (default 600)
+  --boot-at <iso|unknown> override boot evidence for replay/testing (default: platform probe)
+  --session-started-at <iso|unknown> override parent process start (default: parent process probe)
+  Pre-restart completions are ORPHANED BY RESTART once, including across watcher restarts.
+  WAKE and ORPHANED lines include a paste-ready scanner --ack command for the raw agent id.
   --help, -h         print this text and exit 0
 `
 
@@ -134,7 +140,7 @@ function readNumber(value) {
 }
 
 handleHelpFlag(process.argv.slice(2), HELP, {
-  valueFlags: ['--project', '--reports', '--stale', '--poll', '--wake-grace', '--wake-repeat'],
+  valueFlags: ['--project', '--reports', '--stale', '--poll', '--wake-grace', '--wake-repeat', '--boot-at', '--session-started-at'],
   booleanFlags: [],
 })
 const relayLine = relaySkipLine('ARC WATCH')
@@ -149,6 +155,8 @@ let projectDir = process.cwd()
 let reportsDir = ''
 let wakeGrace = 90
 let wakeRepeat = 600
+let bootOverride
+let sessionOverride
 
 for (let i = 2; i < process.argv.length; i += 2) {
   const option = process.argv[i]
@@ -160,7 +168,11 @@ for (let i = 2; i < process.argv.length; i += 2) {
   // Argument text can carry a secret (a token pasted into a path). Diagnostics
   // echo it back to stdout, so it goes through the same scrubbing as everything else.
   const shown = value === undefined ? '(missing)' : redact(value)
-  if (option === '--project') {
+  if (option === '--boot-at' || option === '--session-started-at') {
+    if (!value) fail(`missing value for ${option}`, 2)
+    if (option === '--boot-at') bootOverride = value
+    else sessionOverride = value
+  } else if (option === '--project') {
     if (!value) fail(`missing value for --project (got ${shown})`, 2)
     projectDir = value
   } else if (option === '--reports') {
@@ -186,6 +198,9 @@ for (let i = 2; i < process.argv.length; i += 2) {
 
 // poll=0 would spin a tight loop re-reading directories continuously.
 if (pollSeconds < 5) fail(`invalid --poll (minimum 5s): ${pollSeconds}`, 2)
+let wakeRestart
+try { wakeRestart = restartEvidence(bootOverride, sessionOverride) }
+catch (error) { fail(error.message, 2) }
 
 // The harness stores a project's sessions under a slug built from the project's
 // absolute path with every character outside [A-Za-z0-9-] replaced by '-'.
@@ -648,13 +663,25 @@ const wakeDegraded = new Set()
 const wakePendingProblems = new Set()
 const wakeDataDir = process.env.WT_DELEGATE_WAKE_DIR || path.join(OUTBOUND_GUARD_DIR, 'delegate-wake')
 const wakeStateFile = path.join(wakeDataDir, `${currentSessionId || 'unknown'}.json`)
+const wakeDecisions = path.join(wakeDataDir, `${currentSessionId || 'unknown'}.decisions`)
 function wakeProblem(reason, budget) {
   if (reason && !wakeDegraded.has(reason)) wakePendingProblems.add(reason)
   if (suppressEmission) return
   for (const pending of wakePendingProblems) {
-    if (!budget.emit(`ARC WATCH DEGRADED: ${safeName(pending)}`)) return
+    if (!emitWakeProblem(pending, budget)) return
     wakeDegraded.add(pending)
     wakePendingProblems.delete(pending)
+  }
+}
+
+function emitWakeProblem(pending, budget) {
+  try {
+    const terminal = pending.startsWith('boot time unknown')
+    if (terminal && hasDecision(wakeDecisions, 'degraded:boot')) return true
+    return budget.emit(`ARC WATCH DEGRADED: ${safeName(pending)}`,
+      () => !terminal || claimDecision(wakeDecisions, 'degraded:boot'))
+  } catch {
+    return budget.emit('ARC WATCH DEGRADED: terminal decisions unavailable; once-only diagnostics cannot be persisted')
   }
 }
 
@@ -669,24 +696,41 @@ function sweepDelegateWake(budget) {
     const registry = path.join(OUTBOUND_GUARD_DIR, `${currentSessionId}.jsonl`)
     try { writeResumed(registry, path.join(sessionDir, 'subagents')) }
     catch { attributionProblems.push('registry resume transition unavailable') }
-    const result = detectRelays({ sessionId: currentSessionId, main, agents, meta,
+    const result = classifyRelays({ sessionId: currentSessionId, main, agents, meta, restart: wakeRestart,
+      ackCommand: (target) => acknowledgementCommand(path.join(sessionsRoot, `${currentSessionId}.jsonl`), target),
       now: Date.now(), grace: wakeGrace * 1000 })
     candidates = announceable(result.lines)
     attributionProblems = [...attributionProblems, ...result.degraded]
   } catch (error) { wakeProblem(`completion attribution unavailable (${error.code ?? 'invalid transcript or meta'})`, budget); return }
+  publishDelegateWake(candidates, attributionProblems, budget)
+}
+
+function publishDelegateWake(candidates, attributionProblems, budget) {
   const { state, degraded: stateError } = readThrottle(wakeStateFile)
   const now = Date.now()
-  const due = dueRelays(candidates, state, now, MAX_EVENTS_PER_POLL, wakeRepeat * 1000)
+  let due
+  try {
+    const open = settleAged(unsettled(candidates, wakeDecisions), wakeDecisions,
+      () => wakeProblem('terminal decisions unwritable', budget))
+    due = dueRelays(open, state, now, MAX_EVENTS_PER_POLL, wakeRepeat * 1000)
+  } catch { wakeProblem('terminal decisions unreadable', budget); return }
   // The shared budget serves eligible WAKEs in F4 order before any diagnostics.
   // Unprinted problems survive even if the next poll no longer observes their cause.
-  for (const item of due) {
-    if (suppressEmission || !budget.emit(item.line)) continue
-    const prior = state[item.key]
-    state[item.key] = { lastEmittedAt: now, count: (prior?.count ?? 0) + 1 }
-  }
+  for (const item of due) emitDelegateWake(item, state, now, budget)
   for (const problem of attributionProblems) wakeProblem(problem, budget)
   wakeProblem(stateError, budget)
   if (!suppressEmission && due.length && writeThrottle(wakeStateFile, state)) wakeProblem('throttle state unwritable', budget)
+}
+
+function emitDelegateWake(item, state, now, budget) {
+  if (suppressEmission || !budget.emit(item.line, () => claimWakeDecision(item, budget))) return
+  const prior = state[item.key]
+  state[item.key] = { lastEmittedAt: now, count: (prior?.count ?? 0) + 1 }
+}
+
+function claimWakeDecision(item, budget) {
+  try { return claimOrphan(item, wakeDecisions) }
+  catch { wakeProblem('terminal decisions unwritable', budget); return false }
 }
 
 write(`ARC WATCH ARMED: stale=${staleMinutes}min poll=${pollSeconds}s tracking=${previousTranscripts.size} transcript(s)`)

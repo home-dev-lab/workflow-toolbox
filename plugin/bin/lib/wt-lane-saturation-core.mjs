@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
 import { stripNonCommandText } from './command-invocation.mjs'
+import { inspectLaneLockWait, pgrepLaneName } from './host/lane-lock-wait.mjs'
 
 /** The bound is a NAMED parameter, never a buried constant: the 8-16 wall is empirical and
  *  moves with the subscribed plan. The default is the LOW end deliberately — being warned
@@ -38,7 +38,15 @@ export function stripNonExecutedText(command) {
   return out
 }
 
-/** Count live lane processes by EXACT PROCESS NAME.
+function counterOptions(options) {
+  return { pgrep: options?.pgrep ?? pgrepLaneName, inspectLockWait: options?.inspectLockWait ?? inspectLaneLockWait }
+}
+
+function failedPgrepStatus(res) {
+  return res.status !== 0 && res.status !== 1
+}
+
+/** Count lane processes by EXACT PROCESS NAME, discounting only positively proved lock waits.
  *
  *  ⚠ THE OBVIOUS FORM IS WRONG AND INFLATES BY CONSTRUCTION. `pgrep -f 'opencode run'`
  *  matches any process whose COMMAND LINE contains that string — which includes the shell
@@ -51,19 +59,21 @@ export function stripNonExecutedText(command) {
  *  So: `-x`, which matches the kernel's process name and cannot match a shell that merely
  *  mentions it.
  *
+ *  An ok result includes the raw `liveCount`, retained `count`/`pids`, and `excludedCount` plus
+ *  a reason per excluded PID. Unknown idle evidence retains the PID; failed pgrep remains unknown.
  *  Returns `{ state: 'ok', count }` or `{ state: 'unknown', reason }` — NEVER a zero it
  *  could not measure. "pgrep is missing" and "nothing is running" are opposite facts, and
  *  reporting the first as the second would tell a caller the lane is free at exactly the
  *  moment nobody can tell. */
-export function countLaneProcessesReal(names = LANE_PROCESS_NAMES, ownedPids = null) {
-  let total = 0
+export function countLaneProcessesReal(names = LANE_PROCESS_NAMES, ownedPids = null, options) {
+  const { pgrep, inspectLockWait } = counterOptions(options)
   const matchedPids = []
   const owned = ownedPids === null ? null : new Set(ownedPids)
   for (const name of names) {
-    const res = spawnSync('pgrep', ['-x', name], { encoding: 'utf8' })
+    const res = pgrep(name)
     if (res.error) return { state: 'unknown', reason: `pgrep is unavailable (${res.error.message})` }
     // pgrep exits 1 when nothing matched — that is a real zero, not an error.
-    if (res.status !== 0 && res.status !== 1) {
+    if (failedPgrepStatus(res)) {
       return { state: 'unknown', reason: `pgrep exited ${res.status} for "${name}"` }
     }
     const lines = String(res.stdout ?? '').trim().split(/\s+/).filter(Boolean)
@@ -75,10 +85,22 @@ export function countLaneProcessesReal(names = LANE_PROCESS_NAMES, ownedPids = n
     }
     const pids = lines.map(Number)
     const selected = owned === null ? pids : pids.filter((pid) => owned.has(pid))
-    total += selected.length
     matchedPids.push(...selected)
   }
-  return { state: 'ok', count: total, pids: matchedPids }
+  return countNonWaitingLanes(matchedPids, inspectLockWait)
+}
+
+function countNonWaitingLanes(matchedPids, inspectLockWait) {
+  const pids = []
+  const excluded = []
+  for (const pid of matchedPids) {
+    let evidence
+    try { evidence = inspectLockWait(pid) } catch { /* a broken idle detector must retain the lane */ }
+    if (evidence?.state === 'waiting' && typeof evidence.reason === 'string' && evidence.reason.trim()) {
+      excluded.push({ pid, reason: evidence.reason })
+    } else pids.push(pid)
+  }
+  return { state: 'ok', count: pids.length, pids, liveCount: matchedPids.length, excludedCount: excluded.length, excluded }
 }
 
 export function laneSaturationTestSeams(env = process.env) {
@@ -128,6 +150,14 @@ export function enforceModeFromEnvReal(env = process.env) {
   return raw === 'warn' ? 'warn' : 'deny'
 }
 
+function laneCountSummary(live) {
+  return `${live.count} call(s) counted, ${live.excludedCount ?? 0} excluded as lock waiters`
+}
+
+function isLaneCommand(command) {
+  return typeof command === 'string' && LANE_INVOCATIONS.some((re) => re.test(stripNonExecutedText(command)))
+}
+
 export function evaluateLaneCall(
   payload,
   {
@@ -138,7 +168,7 @@ export function evaluateLaneCall(
   } = {},
 ) {
   const command = payload?.tool_input?.command
-  if (typeof command !== 'string' || !LANE_INVOCATIONS.some((re) => re.test(stripNonExecutedText(command)))) {
+  if (!isLaneCommand(command)) {
     return { silent: true }
   }
 
@@ -147,18 +177,26 @@ export function evaluateLaneCall(
     ? countLaneProcesses()
     : countLaneProcessesReal(LANE_PROCESS_NAMES, testOwnedPids(env))
 
+  return laneCountVerdict(live, bound, source, enforceModeFromEnv, env)
+}
+
+function unknownLaneVerdict(live) {
+  return {
+    silent: false,
+    deny: false,
+    message:
+      `[wt] lane usage NOT MEASURED before this call — ${live.reason}. ` +
+      `This is not a report that the lane is free; it is a report that nothing was counted. ` +
+      `If a batch dies on timeout shortly after, contention is the first hypothesis, not the last.`,
+  }
+}
+
+function laneCountVerdict(live, bound, source, enforceModeFromEnv, env) {
   if (live.state === 'unknown') {
     // NEVER deny on a measurement failure: "pgrep is missing" and "nothing is running" are
     // opposite facts, and the one clean thing a broken measurement can do is stay out of
     // the caller's way rather than block on a guess.
-    return {
-      silent: false,
-      deny: false,
-      message:
-        `[wt] lane usage NOT MEASURED before this call — ${live.reason}. ` +
-        `This is not a report that the lane is free; it is a report that nothing was counted. ` +
-        `If a batch dies on timeout shortly after, contention is the first hypothesis, not the last.`,
-    }
+    return unknownLaneVerdict(live)
   }
 
   // The count EXCLUDES the call about to be made — it has not started yet.
@@ -167,12 +205,16 @@ export function evaluateLaneCall(
   const mode = enforceModeFromEnv(env)
   const deny = mode === 'deny'
 
+  return laneBoundVerdict(live, bound, source, deny)
+}
+
+function laneBoundVerdict(live, bound, source, deny) {
   return {
     silent: false,
     deny,
     message: [
-      `[wt] ${deny ? 'Refused: ' : ''}the external lane is at or past its bound: ${live.count} ` +
-        `call(s) already live, this one would make ${live.count + 1}, bound ${bound} (${source}).`,
+      `[wt] ${deny ? 'Refused: ' : ''}the external lane is at or past its bound: ${laneCountSummary(live)}; ` +
+        `this one would make ${live.count + 1}, bound ${bound} (${source}).`,
       `  What happens past the bound is NOT a clean refusal from the CLI itself: the lane ` +
         `rate-limits and retries, latency goes up roughly 5-8x, and then YOUR OWN timeout ` +
         `converts that slowdown into a dead call. Four batches were lost that way in the ` +

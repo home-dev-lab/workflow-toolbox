@@ -1,0 +1,11 @@
+{
+  "fs import": 1,
+  "os import": 1,
+  "homedir": 2,
+  "realpathSync": 1,
+  "existsSync": 3,
+  "readdirSync": 2,
+  "readFileSync": 2,
+  "statSync": 2,
+  "appendFileSync": 1
+}

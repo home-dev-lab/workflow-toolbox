@@ -2,14 +2,14 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "memory-available",
-    "capturedAt": "2026-09-22T23:06:42.851Z",
+    "capturedAt": "2026-10-12T01:03:21.065Z",
     "command": "node memory-available.mjs D:\\a\\workflow-toolbox\\workflow-toolbox\\probes\\host-platform\\evidence\\windows-latest\\memory-available.json",
-    "runId": "35795762873",
-    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "windows-latest",
       "os": "win25-vs2026",
-      "version": "20260907.229.1"
+      "version": "20260925.250.1"
     },
     "osRelease": {
       "platform": "win32",
@@ -18,7 +18,7 @@
       "arch": "x64"
     },
     "tools": {
-      "node": "v24.20.0",
+      "node": "v24.21.0",
       "procps": {
         "status": "not_used",
         "reason": "procps is not the process-table provider on this OS"
@@ -28,13 +28,13 @@
         "exitCode": 0,
         "signal": null,
         "error": null,
-        "raw": "7.6.5\r\n"
+        "raw": "7.6.6\r\n"
       }
     }
   },
   "osMemory": {
     "status": "measured",
-    "freeBytes": 14364753920,
+    "freeBytes": 14259056640,
     "totalBytes": 17174360064
   },
   "linux": {
@@ -53,7 +53,7 @@
       "command": "powershell.exe -NoProfile -NonInteractive -Command (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
       "exitCode": null,
       "signal": "SIGTERM",
-      "durationMilliseconds": 3010.8523,
+      "durationMilliseconds": 3037.6949,
       "error": {
         "message": "spawnSync powershell.exe ETIMEDOUT",
         "code": "ETIMEDOUT",
@@ -68,9 +68,9 @@
       "command": "powershell.exe -NoProfile -NonInteractive -Command (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
       "exitCode": 0,
       "signal": null,
-      "durationMilliseconds": 964.542,
+      "durationMilliseconds": 866.0957,
       "error": null,
-      "stdout": "13973712\r\n",
+      "stdout": "13876632\r\n",
       "stderr": ""
     },
     "windowsBootstrapEnvironment": {
@@ -78,7 +78,7 @@
       "command": "powershell.exe -NoProfile -NonInteractive -Command (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
       "exitCode": null,
       "signal": "SIGTERM",
-      "durationMilliseconds": 3015.5488,
+      "durationMilliseconds": 3016.5,
       "error": {
         "message": "spawnSync powershell.exe ETIMEDOUT",
         "code": "ETIMEDOUT",

@@ -1,0 +1,6 @@
+{
+  "fs/promises import": 1,
+  "readFile": 1,
+  "lstat": 2,
+  "readdir": 1
+}

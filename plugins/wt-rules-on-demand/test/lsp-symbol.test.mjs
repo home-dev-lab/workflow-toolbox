@@ -113,6 +113,22 @@ test('symbol Grep refuses once; non-symbol and muted Greps do not read detector 
   assert.equal(f.reads(), scanned);
 });
 
+test('served detector model rule still measures later matching Greps', async () => {
+  const f = fake();
+  f.files.set('/cfg/rules-on-demand/lsp.md', rule().replace(/    kind: 'next-call'[\s\S]*?---/, "    kind: model\n    model: haiku\n    prompt: Judge the Grep\n    window: 1\n    on-close: not applicable\n---"));
+  const prompts = [];
+  f.$.model = { classify: async (prompt) => { prompts.push(prompt); return 'followed'; } };
+  const input = { pattern: 'buildEnvelope', path: '/repo/a.ts' };
+  assert.match((await f.call('Grep', input)).deny, /Use LSP/);
+  await f.call('Grep', input);
+  await f.hooks.get('turn.complete')(f.$, {}, async () => ({}));
+  await f.call('Grep', input);
+  await f.hooks.get('turn.complete')(f.$, {}, async () => ({}));
+  assert.equal(prompts.length, 2, 'matching later detector act gets a judge call');
+  assert.deepEqual(f.rows().map((row) => row.later), [false, true]);
+  assert.equal(f.rows()[1].servedDeliveryId, f.rows()[0].deliveryId);
+});
+
 test('next-call: first matching call start decides once, or window closes', async () => {
   for (const [sequence, expected] of [
     [['ToolSearch', 'LSP', 'Grep'], 'followed'],

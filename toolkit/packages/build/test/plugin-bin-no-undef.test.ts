@@ -139,7 +139,7 @@ describe('the lint gate covers every shipped plugin script', () => {
       const [result] = await eslint.lintText(`(function (${parameters}) {\n${SNAPSHOT_PROGRAM as string}\n});\n`, { filePath })
       return result!.messages.filter((message) => message.ruleId === 'no-undef' || message.ruleId === 'no-unused-vars')
     }
-    expect(await lint('require, laneHostDir, ensureLaneHostDir')).toEqual([])
+    expect(await lint('require, laneHostDir, ensureLaneHostDir, createProcfs')).toEqual([])
     // Control: without the injected names the same lint must report them, so a green result
     // above comes from the rules running on the program, not from the text being skipped.
     const withoutInjection = await lint('require')

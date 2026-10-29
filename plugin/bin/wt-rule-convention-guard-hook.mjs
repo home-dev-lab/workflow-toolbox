@@ -75,7 +75,7 @@ function emitDecision(payload, findings, lines, result, deny) {
   recordGuardEvent({ guard: SELF, decision: deny ? 'blocked' : 'warned',
     class: [...new Set(findings.map((finding) => finding.detector))].sort().join(','),
     session: payload.session_id, agent: payload.agent_id, cwd: payload.cwd, reason })
-  const output = { hookEventName: 'PreToolUse', ...(deny
+  const output = { ...(deny
     ? { permissionDecision: 'deny', permissionDecisionReason: reason }
     : { additionalContext: reason }) }
   writeRuleDecision(output)

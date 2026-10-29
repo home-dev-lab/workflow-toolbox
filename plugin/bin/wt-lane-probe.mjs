@@ -40,6 +40,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 
@@ -186,7 +187,7 @@ function listMatchingPids(pattern, adapter) {
 function getCwd(pid) {
   try {
     if (process.platform === 'linux') {
-      const cwd = fs.readlinkSync(`/proc/${pid}/cwd`)
+      const cwd = hostProcfs.readWorkingDirectory(pid)
       return { ok: true, cwd }
     }
     if (process.platform === 'darwin') {

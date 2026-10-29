@@ -1,5 +1,5 @@
 import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
-import { spawn, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
@@ -32,6 +32,13 @@ import { criticFindingAfterNoReblock } from '../../../../plugin/bin/lib/lifecycl
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error ESM runtime module
 import { insideChildUserNamespace } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+// @ts-expect-error ESM runtime module
+import { assertCleanPilotStart, selectDeliveryPaths, snapshotSelectedTree, stageDeliverySelection } from '../../../../plugin/bin/lib/lifecycle-selection.mjs'
+// @ts-expect-error ESM runtime module
+import { prospectivePatch } from '../../../../plugin/bin/lib/lifecycle-brief.mjs'
+// @ts-expect-error ESM runtime module
+import { createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
+import { parseDependsOn, hasDependsOnLine } from '../../../../plugin/bin/lib/depends-on-parser.mjs'
 
 function join(...parts: string[]): string {
   const index = parts.indexOf('.lane')
@@ -69,6 +76,23 @@ const descendantSkipReason = inBwrapPidNamespace
 // fixture override. Real-launch fixtures cannot share their private host root there.
 const realLaunchUnavailable = process.platform === 'win32' || insideChildUserNamespace() === true
 
+function assertUncitedCoverageWarning(warning: string) {
+  expect(warning).toMatch(/^accepted phase=critic/)
+  expect(warning).toContain('WARN ONLY')
+  expect(warning).toContain('The existing test proves the guard remains active.')
+  expect(warning).toContain('must carry a repo-relative `path:line` citation')
+}
+
+function descendantFixtureGit(_program: string, args: string[]) {
+  return args[0] === 'write-tree'
+    ? '1111111111111111111111111111111111111111\n'
+    : args[0] === 'status'
+      ? ' M changed.txt\n'
+      : args[0] === 'diff' && args.includes('--binary')
+        ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
+        : ''
+}
+
 function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, signal = process.kill) {
   if (inspect(pid) !== null) return true
   try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
@@ -93,6 +117,552 @@ function linuxProcState(pid: number) {
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] ?? null
   } catch { return null }
 }
+
+  it.each(['GIT_LITERAL_PATHSPECS', 'GIT_GLOB_PATHSPECS', 'GIT_NOGLOB_PATHSPECS', 'GIT_ICASE_PATHSPECS'])('SDK literal staging lock: sanitizes inherited %s', (variable) => {
+    const lifecycle = realGitLifecycle()
+    mkdirSync(join(lifecycle.root, 'src'))
+    const name = process.platform === 'win32' ? 'src/[draft] final é.ts' : 'src/[draft]\nfinal *.ts'
+    writeFileSync(join(lifecycle.root, name), 'literal\n'); writeFileSync(join(lifecycle.root, 'src', 'unselected.ts'), 'other\n')
+    const previous = process.env[variable]
+    process.env[variable] = '1'
+    try { stageDeliverySelection(lifecycle.root, { paths: [name] }, execFileSync) } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+    expect(fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only', '-z').split('\0').filter(Boolean)).toEqual([name])
+  })
+  it.each(['tracked', 'staged'])('SDK dirty preflight lock: refuses %s changes with paths and a remedy', (kind) => {
+    const lifecycle = realGitLifecycle()
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'owner change\n')
+    if (kind === 'staged') fixtureGit(lifecycle.root, 'add', 'tracked.txt')
+    expect(() => assertCleanPilotStart(lifecycle.root)).toThrow(/tracked.txt.*commit them or move them aside, then relaunch/)
+  })
+
+  it('SDK dirty preflight lock: allows only untracked owner files', () => {
+    const lifecycle = realGitLifecycle('untracked')
+    expect(() => assertCleanPilotStart(lifecycle.root)).not.toThrow()
+  })
+
+  it.each(['reset', 'add', 'write-tree'])('SDK staging recovery lock: resets a partially mutated index and retries the same selection after %s fails', async (step) => {
+    let fail = true
+    const git = (program: string, args: string[], options: Parameters<typeof execFileSync>[2]) => {
+      const result = execFileSync(program, args, options)
+      if (args[0] === step && fail) { fail = false; throw new Error('after first index mutation') }
+      return result
+    }
+    const lifecycle = realGitLifecycle('untracked', () => {}, { git })
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run\n'); writeFileSync(join(lifecycle.root, 'new.txt'), 'run\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain('after first index mutation')
+    expect(fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only')).toBe('')
+    const selection = readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8')).toBe(selection)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('untracked-delivery.txt')
+  })
+
+  it.each(['committed', 'commit-unknown'])('SDK residual status lock: checks first completion and %s recovery', async (recovery) => {
+    let dirtyStatus = true; let committed = false; let failedHeads = 0
+    const git = (program: string, args: string[], options: Parameters<typeof execFileSync>[2]) => {
+      if (args[0] === 'status' && dirtyStatus) return ' M tracked.txt\0'
+      if (recovery === 'commit-unknown' && committed && args[0] === 'rev-parse' && args[1] === 'HEAD' && failedHeads++ < 2) throw new Error('unknown HEAD')
+      const result = execFileSync(program, args, options)
+      if (args[0] === 'commit') committed = true
+      return result
+    }
+    const lifecycle = realGitLifecycle('untracked', () => {}, { git })
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run\n'); await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain(recovery === 'committed' ? 'clean tree' : 'commit unknown')
+    const head = fixtureGit(lifecycle.root, 'rev-parse', 'HEAD')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'dirty-retry' }))).toContain('clean tree')
+    dirtyStatus = false
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'clean-retry' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'rev-parse', 'HEAD')).toBe(head)
+  })
+
+  it('SDK exclusion identity lock: records modified/deleted drafts and an ignored file made visible', async () => {
+    const lifecycle = realGitLifecycle('untracked', (root) => {
+      mkdirSync(join(root, 'ign')); writeFileSync(join(root, 'ign', 'owner.txt'), 'ignored owner\n')
+      writeFileSync(join(root, 'deleted.tmp'), 'old\n')
+    })
+    writeFileSync(join(lifecycle.root, 'untracked-delivery.txt'), 'run overwrote owner\n'); unlinkSync(join(lifecycle.root, 'deleted.tmp'))
+    fixtureGit(lifecycle.root, 'add', 'untracked-delivery.txt')
+    writeFileSync(join(lifecycle.root, '.gitignore'), '.lane/\n.claude/reports/\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const selection = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8'))
+    expect(selection.untrackedExcluded).toEqual(expect.arrayContaining([
+      { path: 'untracked-delivery.txt', reason: 'modified-by-run' }, { path: 'deleted.tmp', reason: 'deleted-by-run' }, { path: 'ign/owner.txt', reason: 'pre-existing' },
+    ]))
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toMatch(/untracked-delivery|owner.txt|deleted.tmp/)
+  })
+
+  it('SDK ignored exclusion lock: changed ignored baseline files produce no exclusion record or log', async () => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, 'ign')); writeFileSync(join(root, 'ign', 'cache.txt'), 'old cache\n')
+    })
+    writeFileSync(join(lifecycle.root, 'ign', 'cache.txt'), 'new cache\n')
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'delivery\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const selection = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8'))
+    expect(selection.untrackedExcluded).toEqual([])
+    const log = join(lifecycle.root, '.lane', 'sdk-pilot.log')
+    expect(fs.existsSync(log) ? readFileSync(log, 'utf8') : '').not.toContain('ign/cache.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('ign/cache.txt')
+    expect(readFileSync(join(lifecycle.root, 'ign', 'cache.txt'), 'utf8')).toBe('new cache\n')
+  })
+
+  it('SDK artefact path lock: refuses a modified pre-existing declared delivery', async () => {
+    const lifecycle = realGitLifecycle('untracked')
+    writeFileSync(join(lifecycle.root, 'untracked-delivery.txt'), 'new identity\n'); await realReportReady(lifecycle)
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`untracked-delivery.txt\`\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toContain('declared artefact predates this run')
+  })
+
+  it.each(['unstaged', 'staged'])('SDK shared selection lock: neither the review index nor prospective patch contains %s owner drafts', (kind) => {
+    const lifecycle = realGitLifecycle('untracked')
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    if (kind === 'staged') fixtureGit(lifecycle.root, 'add', 'untracked-delivery.txt')
+    const originalIndex = fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only')
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run\n'); writeFileSync(join(lifecycle.root, 'new.txt'), 'new\n')
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'test.index'), baseline, execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain('untracked-delivery.txt')
+    const patch = prospectivePatch(lifecycle.root, 'HEAD', execFileSync, 1024 * 1024, baseline)
+    expect(patch).toContain('new.txt'); expect(patch).toContain('tracked.txt'); expect(patch).not.toContain('untracked-delivery.txt')
+    expect(fixtureGit(lifecycle.root, 'diff', '--cached', '--name-only')).toBe(originalIndex)
+  })
+
+  it.each(['file', 'modified', 'staged', 'ignored', 'directory'])('SDK renamed draft lock: excludes an owner %s under its new name from every delivery', async (kind) => {
+    const original = ['file', 'modified', 'staged'].includes(kind) ? 'notes.tmp' : `${kind === 'ignored' ? 'ign' : 'drafts'}/owner.tmp`
+    const renamed = kind === 'directory' ? 'moved/owner.tmp' : 'renamed.tmp'
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, original, '..'), { recursive: true }); writeFileSync(join(root, original), 'owner\n')
+    })
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    fs.renameSync(join(lifecycle.root, kind === 'directory' ? 'drafts' : original), join(lifecycle.root, kind === 'directory' ? 'moved' : renamed))
+    if (kind === 'modified') fs.appendFileSync(join(lifecycle.root, renamed), 'edit\n')
+    if (kind === 'staged') fixtureGit(lifecycle.root, 'add', renamed)
+    writeFileSync(join(lifecycle.root, 'new.txt'), 'run\n')
+    const selection = selectDeliveryPaths(lifecycle.root, baseline, execFileSync)
+    expect(selection.paths).not.toContain(renamed)
+    expect(selection.untrackedExcluded).toContainEqual({ path: renamed, reason: `pre-existing-from ${JSON.stringify(original)}` })
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'moved.index'), baseline, execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain(renamed)
+    expect(prospectivePatch(lifecycle.root, 'HEAD', execFileSync, 1024 * 1024, baseline)).not.toContain(renamed)
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'renamed-report' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain(renamed)
+    expect(readFileSync(join(lifecycle.root, renamed), 'utf8')).toBe(kind === 'modified' ? 'owner\nedit\n' : 'owner\n')
+  })
+
+  it('SDK renamed declared draft lock: refuses owner delivery through ignored artefact read-back', async () => {
+    const lifecycle = realGitLifecycle('untracked')
+    mkdirSync(join(lifecycle.root, 'ign'))
+    fs.renameSync(join(lifecycle.root, 'untracked-delivery.txt'), join(lifecycle.root, 'ign', 'renamed.tmp'))
+    await realReportReady(lifecycle)
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`ign/renamed.tmp\`\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'renamed-artefact' }))).toContain('declared artefact predates this run')
+  })
+
+  it('SDK new inode lock: selects a renamed draft replaced through an atomic editor save', () => {
+    const lifecycle = realGitLifecycle('untracked')
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    fs.renameSync(join(lifecycle.root, 'untracked-delivery.txt'), join(lifecycle.root, 'renamed.tmp'))
+    writeFileSync(join(lifecycle.root, 'replacement.tmp'), 'editor replacement\n')
+    fs.renameSync(join(lifecycle.root, 'replacement.tmp'), join(lifecycle.root, 'renamed.tmp'))
+    expect(selectDeliveryPaths(lifecycle.root, baseline, execFileSync).paths).toContain('renamed.tmp')
+  })
+
+  it('SDK force-staged ignored lock: preserves new staged ignored delivery in review and report', async () => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, 'ign')); writeFileSync(join(root, 'ign', 'owner.tmp'), 'owner\n')
+    })
+    const baseline = artefactIdentitiesAtStart(lifecycle.root).untracked
+    writeFileSync(join(lifecycle.root, 'ign', 'new-fixture.txt'), 'new\n')
+    fixtureGit(lifecycle.root, 'add', '-f', 'ign/new-fixture.txt', 'ign/owner.tmp')
+    expect(() => snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'ignored.index'), baseline, execFileSync)).not.toThrow()
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'ignored.index'), baseline, execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).toContain('ign/new-fixture.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain('ign/owner.tmp')
+    // The forced baseline is a review exclusion probe, not part of the gate-evidenced delivery tree.
+    fixtureGit(lifecycle.root, 'reset', '--', 'ign/owner.tmp')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'ignored-report' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).toContain('ign/new-fixture.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('ign/owner.tmp')
+  })
+
+  it.each(['ignored', 'symlink'])('SDK current gate set lock: report refuses a newly required quality receipt through %s declaration', async (kind) => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      mkdirSync(join(root, 'toolkit')); mkdirSync(join(root, 'ign'))
+      writeFileSync(join(root, 'ign', 'package.json'), JSON.stringify({ scripts: {} }))
+      if (kind === 'symlink') symlinkSync('../ign/package.json', join(root, 'toolkit', 'package.json'))
+      else writeFileSync(join(root, 'toolkit', 'package.json'), JSON.stringify({ scripts: {} }))
+      if (kind === 'ignored') writeFileSync(join(root, '.gitignore'), `${readFileSync(join(root, '.gitignore'), 'utf8')}toolkit/package.json\n`)
+      fixtureGit(root, 'add', '-A'); fixtureGit(root, 'commit', '-qm', 'declaration fixture')
+    })
+    await realReportReady(lifecycle)
+    const before = treeSignature(lifecycle.root)
+    writeFileSync(join(lifecycle.root, kind === 'symlink' ? 'ign' : 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    expect(treeSignature(lifecycle.root)).toBe(before)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'current-gates' }))).toContain('quality.log')
+  })
+
+  it('SDK empty selection lock: preserves excluded paths without index mutation', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-empty-delivery-'))); roots.push(root)
+    fixtureGit(root, 'init', '-q'); fixtureGit(root, 'config', 'user.name', 'Fixture'); fixtureGit(root, 'config', 'user.email', 'fixture@example.invalid')
+    fixtureGit(root, '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'empty base')
+    writeFileSync(join(root, 'owner.tmp'), 'owner\n')
+    const baseline = artefactIdentitiesAtStart(root).untracked
+    const selection = selectDeliveryPaths(root, baseline, execFileSync)
+    expect(selection.paths).toEqual([])
+    const calls: unknown[] = []
+    stageDeliverySelection(root, selection, (...args: unknown[]) => { calls.push(args) })
+    expect(calls).toEqual([])
+    expect(readFileSync(join(root, 'owner.tmp'), 'utf8')).toBe('owner\n')
+  })
+
+  it('SDK staged rename lock: review and delivery both remove the original tracked name', async () => {
+    const lifecycle = realGitLifecycle()
+    fs.renameSync(join(lifecycle.root, 'tracked.txt'), join(lifecycle.root, 'renamed.txt'))
+    fixtureGit(lifecycle.root, 'add', '-A')
+    const tree = snapshotSelectedTree(lifecycle.root, join(lifecycle.root, '.lane', 'rename.index'), new Map(), execFileSync)
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).not.toContain('tracked.txt')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', tree)).toContain('renamed.txt')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', 'HEAD')).not.toContain('tracked.txt')
+  })
+
+  it.each(['typecheck', 'lint', 'quality', 'test'])('SDK four-gate receipt lock: refuses red %s', async (name) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, { [name]: { exit: '1' } })
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: name }))).toMatch(/gate receipt EXIT=1/)
+  })
+
+  it.each([
+    { typecheck: { exit: '2' } }, { lint: { exit: '3' } },
+    { quality: { exit: '1' } }, { quality: { exit: '1' }, test: { exit: '1' } },
+    { typecheck: { exit: '2' }, lint: { exit: '3' }, quality: { exit: '7' }, test: { exit: '124' } },
+  ])('SDK failed VERIFY recovers every attested red gate: %j', async (overrides) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, overrides)
+    const [name, result] = Object.entries(overrides)[0]!
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${name} EXIT=${result.exit}`], tool_use_id: 'red' }))).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    for (const [gate, evidence] of Object.entries(overrides)) {
+      expect(remediation).toContain(`gate ${gate} EXIT=${evidence.exit}`)
+      expect(remediation).toContain(pathJoin('.lane', `${gate}.log`))
+    }
+  })
+
+  it('SDK failed VERIFY validates every finding independently and rejects all-green failure', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, { quality: { exit: '2' }, test: { exit: '3' } })
+    for (const finding of ['gate quality EXIT=1', 'gate lint EXIT=1', 'gate imaginary EXIT=1', 'gate test EXIT=1', 'gate test EXIT=0', 'gate quality EXIT=02', 'gate quality EXIT=oops', 'gate quality EXIT=-2', 'arbitrary failure']) {
+      expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2', finding], tool_use_id: finding }))).toMatch(/^edge refused:/)
+    }
+    await writeQualityGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2'], tool_use_id: 'green' }))).toMatch(/at least one nonzero gate receipt/)
+  })
+
+function recordedGateFinding(root: string, gate: string): string {
+  const evidence = JSON.parse(readFileSync(join(root, '.lane', 'evidence.json'), 'utf8'))
+  return evidence.verify_snapshot.findings.find((finding: { location: string }) => finding.location === gate).text
+}
+
+it.each(['typecheck', 'lint', 'quality', 'test'])('SDK gate markers return to TDD twice and stop at the blocking-count bound: %s', async (gate) => {
+  let round = 1
+  const gateRunner = async (args: { name: string, log: string, root: string }) => {
+    await writePassingGate(args)
+    if (args.name !== gate) return 0
+    fs.appendFileSync(args.log, `Error: validation failed\nExpected: valid ${round === 1 ? 'user' : 'order'}\nReceived: missing ${round === 1 ? 'name' : 'total'}\n`)
+    return 1
+  }
+  const lifecycle = await lifecycleAtVerify(successLauncher(), { gateRunner, testFramework: 'vitest' }); enableQuality(lifecycle.root)
+  for (round = 1; round <= 3; round += 1) {
+    await writeQualityGates(lifecycle, { [gate]: { exit: '1' } })
+    const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [`gate ${gate} EXIT=1`], tool_use_id: `red-${round}` }))
+    expect(result).toBe(round < 3 ? 'accepted phase=tdd' : 'accepted phase=report (non-convergence: partial run, verify non-convergence: blocking count failed to set a new minimum for two consecutive rounds: best 1; 1 -> 1)')
+    if (round === 3) break
+    await lifecycle.artifact({ kind: 'brief', content: 'fix gate diagnostic' })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: `fixed-${round}` }))).toBe('accepted phase=verify')
+  }
+  expect(recordedGateFinding(lifecycle.root, gate)).toBe(`gate ${gate} EXIT=1`)
+})
+
+it.each([false, true])('SDK marker-shaped test name requires extraction (extracted: %s)', async (extracted) => {
+  const gateRunner = async (args: { name: string, log: string, root: string }) => {
+    await writePassingGate(args)
+    if (args.name !== 'test') return 0
+    if (extracted) fs.appendFileSync(args.log, ' FAIL test/gate.test.ts > gate quality EXIT=1\n')
+    return 1
+  }
+  const lifecycle = await lifecycleAtVerify(successLauncher(), { gateRunner, testFramework: 'vitest' }); enableQuality(lifecycle.root)
+  await writeQualityGates(lifecycle, { test: { exit: '1' } })
+  const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'marker-name' }))
+  if (!extracted) { expect(result).toMatch(/^edge refused:/); expect(lifecycle.state().phase).toBe('verify'); return }
+  expect(result).toBe('accepted phase=tdd')
+  await lifecycle.artifact({ kind: 'brief', content: 'fix extracted marker-shaped test' })
+  await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+  expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'fixed-name' }))).toBe('accepted phase=verify')
+  await writeQualityGates(lifecycle, { test: { exit: '1' } })
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'repeat-name' })))
+    .toBe('accepted phase=report (non-convergence: partial run, verify non-convergence: same finding returned: verify — gate quality EXIT=1)')
+})
+
+it('SDK failed VERIFY accepts an extracted test name beginning with gate and refuses an unextracted malformed marker', async () => {
+  const gateRunner = async (args: { name: string, log: string, root: string }) => {
+    await writePassingGate(args)
+    if (args.name !== 'test') return 0
+    fs.appendFileSync(args.log, ' FAIL test/gate.test.ts > gate rejects stale receipts\n')
+    return 1
+  }
+  const lifecycle = await lifecycleAtVerify(successLauncher(), { gateRunner, testFramework: 'vitest' })
+  await writeGates(lifecycle, { test: { exit: '1' } })
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=oops'], tool_use_id: 'malformed' }))).toMatch(/^edge refused:/)
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate rejects stale receipts'], tool_use_id: 'real-name' }))).toBe('accepted phase=tdd')
+  expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain('gate rejects stale receipts')
+})
+
+   it('SDK failed VERIFY plain gate markers stop at the blocking-count bound across fresh fix receipts', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    for (let round = 1; round <= 3; round += 1) {
+      await writeQualityGates(lifecycle, { quality: { exit: '2' } })
+      const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=2'], tool_use_id: `red-${round}` }))
+      expect(result).toBe(round < 3 ? 'accepted phase=tdd' : 'accepted phase=report (non-convergence: partial run, verify non-convergence: blocking count failed to set a new minimum for two consecutive rounds: best 1; 1 -> 1)')
+      if (round < 3) {
+        await lifecycle.artifact({ kind: 'brief', content: 'fix quality' })
+        await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+        expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: `fixed-${round}` }))).toBe('accepted phase=verify')
+      }
+    }
+  })
+
+  it.each(['missing', 'tampered', 'tree', 'new-quality', 'missing-exit', 'malformed-exit'])('SDK failed VERIFY preserves the %s evidence lock', async (kind) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    await writeQualityGates(lifecycle, { quality: { exit: '1' } })
+    let expected = 'unchanged gate receipt'
+    if (kind === 'missing') rmSync(join(lifecycle.root, '.lane', 'lint.log'))
+    if (kind === 'tampered') fs.appendFileSync(join(lifecycle.root, '.lane', 'quality.log'), 'tampered\n')
+    if (kind === 'tree') { writeFileSync(join(lifecycle.root, 'changed.txt'), 'change'); expected = 'current tree signature' }
+    if (kind === 'new-quality') { rmSync(join(lifecycle.root, '.lane', 'quality.log')); expected = 'unchanged gate receipt' }
+    if (kind.endsWith('exit')) {
+      const append = fs.appendFileSync.bind(fs)
+      const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
+        append(file, typeof file === 'string' && file.endsWith('quality.log') && String(data).includes('EXIT=') ? (kind === 'missing-exit' ? '\n' : '\nEXIT=oops\n') : data, options)
+      }) as typeof fs.appendFileSync)
+      syncBuiltinESMExports()
+      try { await lifecycle.run({ kind: 'gate', name: 'quality' }) } finally { spy.mockRestore(); syncBuiltinESMExports() }
+      expected = `gate receipt EXIT=${kind === 'missing-exit' ? 'missing' : 'oops'}`
+    }
+    const result = await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: kind }))
+    expect(result).toContain(`edge refused: verify->tdd; missing ${expected}: `)
+    if (kind === 'missing') expect(result).toBe(`edge refused: verify->tdd; missing unchanged gate receipt: ${join(lifecycle.root, '.lane', 'lint.log')}`)
+    expect(lifecycle.state().phase).toBe('verify')
+  })
+
+  it('SDK failed VERIFY refuses a real red gate older than the latest lane receipt', async () => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000); enableQuality(lifecycle.root)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief' })
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+    lifecycle.gateResults.quality = { exit: '1' }
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=1')
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+    await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }); await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'red-stale' }))).toMatch(/gate newer than lane receipt.*quality.log/)
+  })
+
+  it.each([undefined, '', '   ', 42])('SDK failed VERIFY optional quality remains compatible (%s)', async (quality) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root, quality)
+    await writeGates(lifecycle, { test: { exit: '2' } })
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'undeclared' }))).toMatch(/^edge refused:/)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate test EXIT=2'], tool_use_id: 'fallback' }))).toBe('accepted phase=tdd')
+  })
+
+  it('SDK failed VERIFY refuses newly required quality evidence even with a red test and unchanged tree', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root, '')
+    fs.appendFileSync(join(lifecycle.root, '.gitignore'), 'toolkit/package.json\n')
+    await writeGates(lifecycle, { test: { exit: '1' } })
+    const before = treeSignature(lifecycle.root)
+    enableQuality(lifecycle.root)
+    expect(treeSignature(lifecycle.root)).toBe(before)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate test EXIT=1'], tool_use_id: 'new-quality-red' })))
+      .toBe(`edge refused: verify->tdd; missing unchanged gate receipt: ${join(lifecycle.root, '.lane', 'quality.log')}`)
+  })
+
+  it('SDK quality freshness lock: rejects quality from before the latest lane', async () => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000); enableQuality(lifecycle.root)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=0')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+    await lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' })
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'stale' }))).toMatch(/gate newer than lane receipt.*quality.log/)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'stale-red' }))).toMatch(/gate newer than lane receipt.*quality.log/)
+  })
+
+  it.each(['receipt', 'tree'])('SDK quality tamper lock: refuses changed %s evidence', async (kind) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root); await writeQualityGates(lifecycle)
+    if (kind === 'receipt') writeFileSync(join(lifecycle.root, '.lane', 'quality.log'), 'tampered\nEXIT=0\n')
+    else writeFileSync(join(lifecycle.root, 'changed.txt'), 'changed\n')
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: kind }))).toContain(kind === 'receipt' ? 'unchanged gate receipt' : 'current tree signature')
+  })
+
+  it('SDK four-gate clock lock: accepts all four receipts after a backward clock step', async () => {
+    const lifecycle = await lifecycleAtVerify(equalMtimeLauncher()); enableQuality(lifecycle.root)
+    const nonceLog = readdirSync(laneHostDir(lifecycle.root)).find((name) => /^tdd-run\..+\.log$/.test(name))!
+    const steppedBack = fs.statSync(join(laneHostDir(lifecycle.root), nonceLog)).mtimeMs - 60_000
+    const append = fs.appendFileSync.bind(fs)
+    const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
+      append(file, data, options)
+      if (typeof file === 'string' && /[\\/](?:typecheck|lint|quality|test)\.log$/.test(file)) utimesSync(file, steppedBack / 1000, steppedBack / 1000)
+    }) as typeof fs.appendFileSync)
+    syncBuiltinESMExports()
+    try { await writeQualityGates(lifecycle) } finally { spy.mockRestore(); syncBuiltinESMExports() }
+    const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(['typecheck', 'lint', 'quality', 'test'].map((name) => evidence.entries[join(lifecycle.root, '.lane', `${name}.log`)].mtime)).toEqual(Array(4).fill(steppedBack))
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'clock-passed' }))).toBe('accepted phase=report')
+  })
+
+  it('SDK quality snapshot lock: refuses quality tampering at report', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root); await writeQualityGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'snapshot-passed' }))).toBe('accepted phase=report'); await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
+    writeFileSync(join(lifecycle.root, '.lane', 'quality.log'), 'tampered\nEXIT=0\n')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toMatch(/gate digest changed.*quality.log/)
+  })
+
+  it.each([undefined, '', '   ', 42])('SDK three-gate compatibility lock: refuses an undeclared quality script %s', async (quality) => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root, quality)
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toContain('gate typecheck|lint|test')
+    expect(await text(lifecycle.run({ kind: 'inspect', what: 'log', name: 'quality.log' }))).not.toContain('regular inspect log')
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'compatibility-passed' }))).toBe('accepted phase=report')
+  })
+
+  it('SDK gate declaration drift lock: removal immediately restores three-gate admission', async () => {
+    const lifecycle = await lifecycleAtVerify(); enableQuality(lifecycle.root)
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=0')
+    enableQuality(lifecycle.root, '')
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toContain('gate typecheck|lint|test')
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'drift-passed' }))).toBe('accepted phase=report')
+  })
+  it('SDK selective staging lock: leaves owner drafts untracked while committing run changes literally', async () => {
+    const lifecycle = realGitLifecycle(false, (root) => {
+      writeFileSync(join(root, 'delete.txt'), 'delete\n'); writeFileSync(join(root, 'rename.txt'), 'rename\n')
+      fixtureGit(root, 'add', '-A'); fixtureGit(root, 'commit', '-qm', 'tracked fixture')
+      mkdirSync(join(root, 'scratch')); writeFileSync(join(root, 'notes.tmp'), 'owner notes\n')
+      writeFileSync(join(root, 'scratch', 'draft.txt'), 'owner draft\n')
+    })
+    writeFileSync(join(lifecycle.root, 'tracked.txt'), 'run change\n'); unlinkSync(join(lifecycle.root, 'delete.txt'))
+    fs.renameSync(join(lifecycle.root, 'rename.txt'), join(lifecycle.root, 'renamed.txt'))
+    mkdirSync(join(lifecycle.root, 'src'))
+    const names = process.platform === 'win32'
+      ? ['src/new.ts', 'src/[draft] final.ts', '-leading space', 'src/é.ts']
+      : ['src/new.ts', 'src/[draft]\nfinal.ts', '-leading space', 'src/quote\"*?é.ts']
+    for (const name of names) writeFileSync(join(lifecycle.root, name), 'run\n')
+    await realReportReady(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const files = fixtureGit(lifecycle.root, 'ls-tree', '-r', '--name-only', '-z', 'HEAD').split('\0')
+    expect(files).not.toContain('notes.tmp'); expect(files).not.toContain('scratch/draft.txt')
+    for (const name of [...names, 'tracked.txt', 'renamed.txt']) expect(files).toContain(name)
+    expect(files).not.toContain('delete.txt'); expect(files).not.toContain('rename.txt')
+    expect(readFileSync(join(lifecycle.root, 'notes.tmp'), 'utf8')).toBe('owner notes\n')
+    expect(fixtureGit(lifecycle.root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean).sort()).toEqual(['notes.tmp', 'scratch/draft.txt'])
+    const selection = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'staging-selection.json'), 'utf8'))
+    expect(selection.untrackedExcluded.map((entry: { path: string }) => entry.path).sort()).toEqual(['notes.tmp', 'scratch/draft.txt'])
+    expect(readFileSync(join(lifecycle.root, '.lane', 'sdk-pilot.log'), 'utf8')).toContain('notes.tmp')
+  })
+
+  it('SDK quality admission lock: requires quality when the run adds its script', async () => {
+    const lifecycle = await lifecycleAtVerify()
+    mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await writeGates(lifecycle)
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'missing-quality' }))).toContain('quality.log')
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'quality' }))).toBe('gate quality EXIT=0')
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'quality-passed' }))).toBe('accepted phase=report')
+  })
+
+  it.each([false, true])('SDK gate warning lock: logs tracked and new path changes without hiding the gate output (spawn error %s)', async (fail) => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, {
+      gateRunner: async ({ root, log }: { root: string, log: string }) => {
+        writeFileSync(join(root, 'gate-output.txt'), 'generated\n'); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n# gate edit\n')
+        writeFileSync(log, 'gate\n'); if (fail) throw new Error('gate failed after mutation'); return 0
+      },
+    })
+    const result = await text(lifecycle.run({ kind: 'gate', name: 'typecheck' }))
+    if (fail) expect(result).toContain('gate spawn (gate failed after mutation)')
+    else expect(result).toBe('gate typecheck EXIT=0')
+    const log = readFileSync(join(lifecycle.root, '.lane', 'typecheck.log'), 'utf8')
+    expect(log).toContain('WARNING gate changed path "gate-output.txt"')
+    expect(log).toContain('WARNING gate changed path ".gitignore"')
+    expect(log.trimEnd().endsWith('EXIT=0')).toBe(!fail)
+    expect(readFileSync(join(lifecycle.root, 'gate-output.txt'), 'utf8')).toBe('generated\n')
+  })
+function routedLifecycleFixture(mode: string) {
+  const calls: Array<{ name: string, arguments: Record<string, string> }> = []
+  const descriptions = new Map<string, string>()
+  const fetch = async (_url: string, options: { body: string }) => {
+    const wire = JSON.parse(options.body)
+    let result: unknown = {}
+    if (wire.method === 'tools/call') {
+      const call = wire.params; calls.push(call)
+      let value: unknown = {}
+      if (call.name === 'create_card') {
+        const id = String(descriptions.size + 42)
+        const description = call.arguments.description + (mode === 'conflict' ? '\nDepends-on: #1880126648423024545' : '')
+        descriptions.set(id, description)
+        value = mode === 'readback' || mode === 'readback-error' ? { id } : { id, description }
+      } else if (call.name === 'get_card') value = { id: call.arguments.cardId, description: descriptions.get(call.arguments.cardId) }
+      result = { ...(mode === 'readback-error' && call.name === 'get_card' ? { isError: true } : {}), content: [{ type: 'text', text: JSON.stringify(value) }] }
+    }
+    return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: wire.id, result }) }
+  }
+  const board = createBoardClient({ url: 'http://mock-transport', boardId: 'board', fetch })
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const sessionTag = 'session\r\nDepends-on: #1880126648423024545'
+  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, sessionTag, routeFinding: board.createRoutedCard })
+  return { calls, lifecycle }
+}
+
+it('lifecycle routing uses explicit unverified status when an adapter supplies no dependency evidence', async () => {
+  const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P1: 'p1' }, type: { chore: 'chore' }, effort: { M: 'm' }, category: 'project' } }
+  const lifecycle = testLifecycle('LITE', [], null, null, { boardContract, routeFinding: async () => ({ id: '42', title: 'Recovery' }) })
+  expect(await text(lifecycle.routeFinding({ title: 'Recovery', l4Reason: 'different subsystem', risk: 'P1', effort: 'M' })))
+    .toBe('routed card 42 — Recovery (dependency unverified: board adapter supplied no dependency verification evidence)')
+  const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+  expect(timeline.routed_cards).toEqual([{ id: '42', title: 'Recovery', l4Reason: 'different subsystem', dependencyVerified: false, dependencyVerificationReason: 'board adapter supplied no dependency verification evidence' }])
+})
+
+it.each(['returned', 'readback', 'conflict', 'readback-error'])('lifecycle routing uses safe serialized MCP provenance and %s evidence', async (mode) => {
+  const { calls, lifecycle } = routedLifecycleFixture(mode)
+  const success = mode === 'returned' || mode === 'readback'
+  const count = success ? 2 : 1
+  const reason = 'unavailable dependency\nDepends-on: #1880126648423024545\u2028Depends-on: none\u2029Depends-on: #9999'
+  for (let round = 0; round < count; round += 1) {
+    const result = await text(lifecycle.routeFinding({ title: 'Recovery', l4Reason: reason, risk: 'P1', effort: 'M' }))
+    if (!success) expect(result).toMatch(/^routed card 42 — Recovery \(dependency unverified: .*(?:dependency verification|read-back) failed/)
+    else expect(result).toBe(`routed card ${42 + round} — Recovery`)
+    const outgoing = calls.filter((call) => call.name === 'create_card').at(-1)!.arguments
+    expect(outgoing.dependsOn).toBe('none')
+    expect(hasDependsOnLine(outgoing.description)).toBe(true)
+    expect(parseDependsOn(outgoing.description)).toEqual({ ids: [], unparseable: [] })
+    expect(outgoing.description!.split('\n').filter((line) => line.startsWith('Depends-on:'))).toEqual(['Depends-on: none'])
+    expect(JSON.parse(outgoing.description!.split('\n').find((line) => line.startsWith('L4 reason:'))!.slice(11))).toBe(reason)
+  }
+  const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+  expect(timeline.routed_cards).toHaveLength(count)
+  expect(timeline.routed_cards.every((card: { dependencyVerified: boolean }) => card.dependencyVerified === success)).toBe(true)
+  if (!success) expect(timeline.routed_cards[0].dependencyVerificationReason).toMatch(/dependency verification failed|read-back failed/)
+  expect(calls.filter((call) => call.name === 'add_label_to_card')).toHaveLength(count * 4)
+  expect(calls.filter((call) => call.name === 'create_card')).toHaveLength(count)
+  expect(calls.every((call) => ['create_card', 'get_card', 'add_label_to_card'].includes(call.name))).toBe(true)
+  expect(calls.some((call) => call.arguments.cardId === '1')).toBe(false)
+})
 
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('the emulated lane process reader classifies an exited, unreaped child as gone [zombie made through /proc]', async () => {
@@ -130,6 +700,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     })
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('retains a VERIFY-driven non-convergence partial', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-verify-retention-')); roots.push(root); mkdirSync(join(root, '.lane'))
     expect(writeWorktreeRetentionMarker({
@@ -169,6 +742,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     expect(deriveRoute(card).route).toBe(expected)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('routes card signals mechanically, with a human override first', () => {
     expect(deriveRoute('Route: LITE\nType: feature\nRisk: guard')).toMatchObject({ route: 'LITE', reasons: ['human Route: LITE'] })
     expect(deriveRoute('Type: feature')).toMatchObject({ route: 'FULL' })
@@ -205,6 +781,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     else expect(result.reasons).toEqual(['all LITE signals clear'])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('routes the two archived real cards from their copied fixtures', () => {
     expect(deriveRoute(readFileSync(new URL('./fixtures/typescript-lsp-card.md', import.meta.url), 'utf8')).route).toBe('LITE')
     expect(deriveRoute(readFileSync(new URL('./fixtures/intake-triage-card.md', import.meta.url), 'utf8')).route).toBe('FULL')
@@ -232,12 +811,15 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     const reason = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
     expect(await text(lifecycle.routeFinding({ title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'S' })))
       .toBe(`${reason}\nrouting is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`)
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] }, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] }, deferred: null, blocked: null })
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `# report\nPartial: ${reason}\n` })))
       .toBe(`pilot-report: partial run, make "Partial: ${reason}" the first line`)
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: ${reason}\n# report\n` }))).toBe('wrote pilot-report')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('routes an L4 finding through the runner and persists its trusted lifecycle record', async () => {
     const created: Array<Record<string, unknown>> = []
     const boardContract = {
@@ -246,13 +828,13 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     }
     const lifecycle = testLifecycle('LITE', [], null, null, {
       boardContract,
-      routeFinding: async (input: Record<string, unknown>) => { created.push(input); return { id: '987654321', title: input.title } },
+      routeFinding: async (input: Record<string, unknown>) => { created.push(input); return { id: '987654321', title: input.title, dependencyVerified: true } },
       now: () => Date.parse('2026-09-16T10:00:00.000Z'),
     })
     expect(await text(lifecycle.routeFinding({ title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore' }))).toBe('routed card 987654321 — Memory store migration')
     expect(created).toEqual([expect.objectContaining({ originCardId: '1', sessionTag: 'test', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore', boardContract })])
     expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([
-      { id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store' },
+      { id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', dependencyVerified: true },
     ])
   })
 
@@ -263,15 +845,18 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     }
     const lifecycle = testLifecycle('LITE', [], null, null, {
       boardContract,
-      routeFinding: async () => ({ id: '987654321', title: 'Memory store migration', labelFailures: [{ labelId: 'medium', error: 'board unavailable: Request failed with status code 500' }] }),
+      routeFinding: async () => ({ id: '987654321', title: 'Memory store migration', dependencyVerified: true, labelFailures: [{ labelId: 'medium', error: 'board unavailable: Request failed with status code 500' }] }),
     })
     expect(await text(lifecycle.routeFinding({ title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore' })))
       .toBe('routed card 987654321 — Memory store migration (label failure: add_label_to_card medium: board unavailable: Request failed with status code 500)')
     expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{
-      id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', failure: 'add_label_to_card medium: board unavailable: Request failed with status code 500',
+      id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', dependencyVerified: true, failure: 'add_label_to_card medium: board unavailable: Request failed with status code 500',
     }])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
     const lifecycle = testLifecycle('LITE')
     expect(await text(lifecycle.artifact({ kind, content: 'content' }))).toMatch(/^edge refused: discovery->next; missing .*: /)
@@ -317,6 +902,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     expect(result).toContain(DISCOVERY_REFUSAL_FORMAT)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts fetched content or its digest beside each external claim', async () => {
     const lifecycle = testLifecycle('FULL')
     const record = '## External-source ledger\n- Claim: docs promise retries\n  Source: https://example.test/docs\n  Fetched SHA-256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n  Verdict: confirmed\n- Claim: tickets report timeouts\n  Source: ticket 42\n  Fetched content: timeout occurs after 30 seconds\n  Verdict: refuted\n\nGrounding route: proceed\n'
@@ -341,10 +929,13 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('keeps the launch snapshot for a genuine pilot decision timeout [fixture records identity from Linux /proc]', async () => {
     const timeoutLauncher = rawLauncher("import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const brief=args[args.indexOf('--brief')+1]; const runId='999-1'; const dir=join(root,'.lane','supervision'); writeFileSync(join(root,'.lane','snapshot-path'),brief); mkdirSync(dir,{recursive:true}); const source=\"const fs=require('fs'),path=require('path');const root=process.argv[1],runId='999-1',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv,owner:'pilot',defaultDecision:'extend',decisionDueAt:'later',evidence:{}}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)\"; const child=spawn(process.execPath,['-e',source,root],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')")
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
@@ -370,7 +961,9 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it.skipIf(realLaunchUnavailable)('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane [requires POSIX and host user namespace]', async () => {
+})
+
+function restartLaneLauncher() {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
@@ -389,13 +982,19 @@ report=$(node -e 'const fs=require("fs"),tick=String.fromCharCode(96),text=fs.re
 printf 'report\n' > "$report"
 `
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
+    return wrapper
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(realLaunchUnavailable)('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane [requires POSIX and host user namespace]', async () => {
+    const wrapper = restartLaneLauncher()
     const lifecycle = testLifecycle('LITE', [], wrapper, 7_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const first = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
     expect(first).toContain("run { kind: 'control', decision: 'abandon' }")
     const firstBrief = readFileSync(join(lifecycle.root, '.lane', 'launch-brief-1'), 'utf8')
     expect(existsSync(firstBrief)).toBe(true)
-    expect(await text(lifecycle.run({ kind: 'control', decision: 'abandon' }))).toMatch(/^control abandon accepted: decision=abandon/m)
+    expect(await text(lifecycle.run({ kind: 'control', decision: 'abandon' }))).toBe('control abandon submitted; lane tdd EXIT=missing')
     const firstPointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const firstRecordPath = join(lifecycle.root, '.lane', 'supervision', `${firstPointer.runId}.json`)
     for (let i = 0; i < 80 && !readFileSync(firstRecordPath, 'utf8').includes('abandoned'); i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
@@ -411,6 +1010,9 @@ printf 'report\n' > "$report"
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-restart-count'), 'utf8')).toBe('2')
   }, 60_000)
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(realLaunchUnavailable)('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [requires POSIX and host user namespace]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
@@ -443,6 +1045,9 @@ printf 'report\n' > "$report"
     await waitForIdentityExit({ pid: supervision.workerPid, argv: supervision.workerArgv })
   }, 15_000)
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not accept a reused worker pid with different argv as live lane evidence', async () => {
     const pidFileName = '.lane/reused-worker-pid'
     const workerArgv = [process.execPath, '-e', 'setInterval(()=>{},1000)']
@@ -471,6 +1076,9 @@ printf 'report\n' > "$report"
     killIdentity(identity, 'SIGKILL')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('returns actionable TIMEOUT and kills nothing while a matching worker remains running past transition due [fixture records identity from Linux /proc]', async () => {
     const pidFileName = '.lane/running-worker-pid'
     const running = rawLauncher(`import { spawn } from 'node:child_process'; import { mkdirSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const workerSource="const fs=require('fs'),path=require('path');const root=process.argv[1],pidFile=process.argv[2],runId='996-1',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(root,pidFile),String(process.pid));fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'running',workerPid:process.pid,workerArgv,owner:'pilot',decisionTransitionDueAt:new Date(Date.now()-1).toISOString()}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)"; mkdirSync(join(root,'.lane','supervision'),{recursive:true}); const child=spawn(process.execPath,['-e',workerSource,root,${JSON.stringify(pidFileName)}],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun=996-1\\n')`)
@@ -484,10 +1092,10 @@ printf 'report\n' > "$report"
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
-    const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
-    for (const entry of ['running', 'finishing', 'exited-first', 'child-unreadable'] as const) {
-      const workerSource = `
+})
+
+function finishingWorkerSource(supervisor: string, entry: string) {
+  return `
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -521,6 +1129,13 @@ writeFileSync(report, 'report\\n')
 appendFileSync(log, 'genuine\\nEXIT=0\\n')
 writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'exited', exit: 0 }))
 `
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(process.platform !== 'linux')('waits for the receipt while a matching worker finishes after its child exits', async () => {
+    const supervisor = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
+    for (const entry of ['running', 'finishing', 'exited-first', 'child-unreadable'] as const) {
+      const workerSource = finishingWorkerSource(supervisor, entry)
       const finishing = rawLauncher(`import { spawn } from 'node:child_process'; import { existsSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],log=args[args.indexOf('--log')+1],brief=args[args.indexOf('--brief')+1]; const worker=spawn(process.execPath,['--input-type=module','-e',${JSON.stringify(workerSource)},root,log,brief],{detached:true,stdio:'ignore'}); worker.unref(); const ready=join(root,'.lane',${JSON.stringify(`${entry === 'running' ? 'initial' : 'finishing'}-verdict.json`)}),deadline=Date.now()+15_000; while(!existsSync(ready)&&Date.now()<deadline) await new Promise((resolve)=>setTimeout(resolve,10)); process.stdout.write('pid='+worker.pid+'\\nrun=993-1\\n')`)
       // While a child exits, Linux /proc can serve its stat with an empty cmdline: identity reads unknown, not gone.
       // The emulated window lasts until the worker records its exit, far longer than the real one.
@@ -558,6 +1173,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     }
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform !== 'linux')('returns TIMEOUT naming a surviving child when the worker is gone [fixture records Linux argv identity]', async () => {
     const detached = launcher(`import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],runId='995-1',dir=join(root,'.lane','supervision'),source='setInterval(()=>{},1000)',child=spawn(process.execPath,['-e',source],{detached:true,stdio:'ignore'}); child.unref(); mkdirSync(dir,{recursive:true}); writeFileSync(join(root,'.lane','orphan-pid'),String(child.pid)); writeFileSync(join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv:process.argv,childPid:child.pid,childArgv:[process.execPath,'-e',source],worktree:root,owner:'pilot',ownerToken:args[args.indexOf('--owner-token')+1],timeoutAt:new Date().toISOString()})); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('run='+runId+'\\n')`)
     const lifecycle = testLifecycle('LITE', [], detached, 30)
@@ -591,6 +1209,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     killIdentity(inspectProcess(pid), 'SIGKILL')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses a lane receipt with an empty report', async () => {
     const lifecycle = testLifecycle('LITE', [], logOnlyLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -632,6 +1253,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'stepped' }))).toBe('accepted phase=report')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses verify with gates run before the latest lane receipt, whatever their mtimes say', async () => {
     const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
@@ -673,6 +1297,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .resolves.toMatch(/missing gate digest changed .*?[a-f0-9]{64}.*[a-f0-9]{64}.*test\.log/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts a real-git report transaction with a tracked file deleted before the gates', async () => {
     const lifecycle = realGitLifecycle()
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -710,6 +1337,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain('missing declared artefact .lane/missing.txt')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts a new declared artefact backdated before the lifecycle start', async () => {
     const lifecycle = await realGitLifecycleReadyForReport()
     const artefact = join(lifecycle.root, '.lane', 'backdated.txt')
@@ -746,6 +1376,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain('declared artefact predates this run: tracked.txt')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform === 'win32')('refuses an old file declared via a directory alias', async () => {
     const lifecycle = await realGitLifecycleReadyForReport('alias')
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/alias/pre-existing.txt\`\n` })
@@ -784,16 +1417,18 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(existsSync(join(root, '.lane', 'card.md'))).toBe(false)
   })
 
-  it('accepts a pre-existing declared artefact rewritten during the run despite its old mtime', async () => {
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it('refuses a pre-existing declared artefact rewritten during the run despite its old mtime', async () => {
     const lifecycle = await realGitLifecycleReadyForReport(true)
     const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
     writeFileSync(artefact, 'rewritten this run\n')
     utimesSync(artefact, new Date(1), new Date(1))
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/pre-existing.txt\`\n` })
 
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'rewritten-artefact' }))).toBe('accepted phase=awaiting_fidelity')
-    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
-    expect(summary.delivery.artifacts[0]).toMatchObject({ path: '.lane/pre-existing.txt', modified_after_started: true })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'rewritten-artefact' }))).toContain('declared artefact predates this run: .lane/pre-existing.txt')
+    expect(existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
   it('still refuses a real-git delivery that changes nothing and declares no artefact', async () => {
@@ -822,6 +1457,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('fixture gate receipts land past the filesystem clock tick of the lane receipt', async () => {
     // The server appends EXIT= to a gate log AFTER the fixture runner returns, so the receipt carries the real
     // clock. A fake gate is instantaneous: without a deliberate pause both writes can share one coarse
@@ -849,6 +1487,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('publishes matching cost receipts and refuses a stale report with its first divergent phase row', () => {
     const fixture = (stale: boolean) => {
       const container = mkdtempSync(join(tmpdir(), 'wt-cost-publish-')); roots.push(container)
@@ -877,6 +1518,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readdirSync(join(stale.archiveRoot, '.claude', 'reports'))).toEqual([])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('allows no cost block only before cost.json exists and refuses an unreadable or unpaired receipt', () => {
     const publish = (kind: 'absent' | 'cost-only' | 'report-only' | 'unreadable') => {
       const container = mkdtempSync(join(tmpdir(), 'wt-cost-missing-')); roots.push(container)
@@ -909,11 +1553,14 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports')).filter((name) => !name.includes('.tmp-'))).toHaveLength(1)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('records the commit, archive manifest digest, and lifecycle implementation', async () => {
     let revisions = 0
     const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
-    const lifecycle = await lifecycleReadyForReport({ git, boardContract, routeFinding: async () => ({ id: '42', title: 'Late route' }) })
+    const lifecycle = await lifecycleReadyForReport({ git, boardContract, routeFinding: async () => ({ id: '42', title: 'Late route', dependencyVerified: true }) })
     expect(await text(lifecycle.routeFinding({ title: 'Late route', l4Reason: 'different subsystem', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Late route')
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Late route — different subsystem')
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
@@ -940,6 +1587,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toThrow(/archive destination must be outside the lifecycle worktree/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('keeps the lifecycle archive readable after removing its real git worktree', async () => {
     const container = mkdtempSync(join(tmpdir(), 'wt-lifecycle-removal-')); roots.push(container)
     const project = join(container, 'project'); const worktree = join(container, 'card-worktree')
@@ -968,6 +1618,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(createHash('sha256').update(manifestContent).digest('hex')).toBe(summary.archive.manifest_sha256)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses to remove a marked worktree while its card is open, then removes it after the marker is cleared', async () => {
     const container = mkdtempSync(join(tmpdir(), 'wt-retained-worktree-')); roots.push(container)
     const project = join(container, 'project'); const worktree = join(container, 'card-worktree')
@@ -996,6 +1649,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(existsSync(worktree)).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses to remove a marked worktree when the board is unavailable and allows expiry in Done', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-retention-decision-')); roots.push(root)
     mkdirSync(join(root, '.lane')); mkdirSync(join(root, '.git'))
@@ -1020,6 +1676,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     ])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('fails closed for invalid, dangling, and foreign retention markers and names the marker and card', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-retention-invalid-')); roots.push(root)
     const foreign = mkdtempSync(join(tmpdir(), 'wt-retention-foreign-')); roots.push(foreign)
@@ -1038,7 +1697,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     await expect(removeLifecycleWorktree({ root, board: null })).rejects.toThrow(new RegExp(`${markerPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*card 42.*${realpathSync(foreign).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*${realpathSync(root).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   })
 
-  it('drives the real retention CLI through configured HTTP for terminal, open, and unavailable cards', async () => {
+})
+
+function retentionCliWorktrees() {
     const container = mkdtempSync(join(tmpdir(), 'wt-retention-cli-')); roots.push(container)
     const project = join(container, 'project'); mkdirSync(project); writeFileSync(join(project, '.gitignore'), '.lane/\n'); writeFileSync(join(project, 'tracked.txt'), 'base\n')
     const git = (...args: string[]) => spawnSync('git', args, { cwd: project, encoding: 'utf8' })
@@ -1053,10 +1714,13 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       }))
       return [name, worktree]
     }))
-    let unavailable = false
+    return { container, worktrees }
+}
+
+function retentionHttpServer(isUnavailable: () => boolean) {
     const server = createServer((request, response) => {
       let body = ''; request.setEncoding('utf8'); request.on('data', (chunk) => { body += chunk }); request.on('end', () => {
-        if (unavailable) { response.writeHead(500); response.end('unavailable'); return }
+        if (isUnavailable()) { response.writeHead(500); response.end('unavailable'); return }
         let rpc: { method?: string, id?: unknown, params?: { name?: string, arguments?: { cardId?: string } } }
         try { rpc = JSON.parse(body) } catch { response.writeHead(400); response.end(); return }
         let result = {}
@@ -1069,6 +1733,14 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
         response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id ?? null, result }))
       })
     })
+    return server
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it('drives the real retention CLI through configured HTTP for terminal, open, and unavailable cards', async () => {
+    const { container, worktrees } = retentionCliWorktrees()
+    let unavailable = false
+    const server = retentionHttpServer(() => unavailable)
     await new Promise<void>((resolveReady) => server.listen(0, '127.0.0.1', resolveReady))
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('HTTP fixture has no port')
     const incompleteStatus = await new Promise<number>((resolveStatus, reject) => {
@@ -1096,11 +1768,14 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     } finally { await new Promise<void>((resolveClose) => server.close(() => resolveClose())) }
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('H14-2 lock: refuses a Partial line on a full run and exposes null partial state', async () => {
     const lifecycle = await lifecycleAtVerify()
     await writeGates(lifecycle)
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null, deferred: null, blocked: null })
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: '# report\nPartial: not partial\n' })))
       .toBe('pilot-report: this run is not partial')
   })
@@ -1118,6 +1793,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(fs.existsSync(/--brief (\S+)/.exec(call)![1]!)).toBe(false)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('launches an independent lane from a read-only snapshot outside the worktree', async () => {
     const recordedBrief = join(tmpdir(), `wt-h9-brief-${process.pid}-${Date.now()}`)
     const recordedInput = `${recordedBrief}.diff`
@@ -1152,6 +1830,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(recordedInput, 'utf8')).not.toContain('forged diff')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not terminate a launcher-reported process group after attesting its receipt', async () => {
     const pidFile = join(tmpdir(), `wt-h9-pid-${process.pid}-${Date.now()}`)
     roots.push(pidFile)
@@ -1180,7 +1861,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(refused).toContain('wt-lane: Refused: another lane launch owns the current supervision pointer')
   })
 
-  it.skipIf(process.platform === 'win32' || inBwrapPidNamespace)(`the shipped launcher keeps ordinary descendants in the terminated lane group [${descendantSkipReason}]`, async () => {
+})
+
+function prepareDescendantFixture() {
     const bin = mkdtempSync(join(tmpdir(), 'wt-h10-bin-')); roots.push(bin)
     const config = mkdtempSync(join(tmpdir(), 'wt-h10-config-')); roots.push(config)
     const watcher = join(bin, 'watcher.mjs')
@@ -1199,13 +1882,28 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     process.env.PATH = hermeticPath([bin]); process.env.CLAUDE_CONFIG_DIR = config; process.env.XDG_STATE_HOME = join(config, 'state')
     process.env.NODE_OPTIONS = `${oldNodeOptions ? `${oldNodeOptions} ` : ''}--require=${platformPreload}`
     process.env.WT_LANE_MIN_AVAILABLE_MIB = '0'
-    const git = (_program: string, args: string[]) => args[0] === 'write-tree'
-      ? '1111111111111111111111111111111111111111\n'
-      : args[0] === 'status'
-      ? ' M changed.txt\n'
-      : args[0] === 'diff' && args.includes('--binary')
-        ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
-        : ''
+    return { oldPath, oldConfig, oldState, oldNodeOptions, oldMinimum }
+}
+
+function restoreDescendantFixture(lifecycle: ReturnType<typeof testLifecycle>, saved: ReturnType<typeof prepareDescendantFixture>) {
+       const { oldPath, oldConfig, oldState, oldNodeOptions, oldMinimum } = saved
+       process.env.PATH = oldPath
+       if (oldConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
+       else process.env.CLAUDE_CONFIG_DIR = oldConfig
+       if (oldState === undefined) delete process.env.XDG_STATE_HOME
+       else process.env.XDG_STATE_HOME = oldState
+       if (oldNodeOptions === undefined) delete process.env.NODE_OPTIONS
+       else process.env.NODE_OPTIONS = oldNodeOptions
+       if (oldMinimum === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
+       else process.env.WT_LANE_MIN_AVAILABLE_MIB = oldMinimum
+       const pgidFile = join(lifecycle.root, '.lane', 'survivor-pgid')
+       if (fs.existsSync(pgidFile)) { try { process.kill(-Number(readFileSync(pgidFile, 'utf8')), 'SIGKILL') } catch {} }
+}
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it.skipIf(process.platform === 'win32' || inBwrapPidNamespace)(`the shipped launcher keeps ordinary descendants in the terminated lane group [${descendantSkipReason}]`, async () => {
+    const saved = prepareDescendantFixture()
+    const git = descendantFixtureGit
     const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), DESCENDANT_LANE_WAIT_MS, {
       git,
       lanePlatform: 'darwin',
@@ -1233,20 +1931,13 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'review-snapshot.json'), 'utf8'))).toEqual({ dir: 0o700, brief: 0o400 })
       expect(() => process.kill(survivorPid, 0), `ordinary descendant ${survivorPid} survived its lane receipt`).toThrow()
     } finally {
-      process.env.PATH = oldPath
-      if (oldConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = oldConfig
-      if (oldState === undefined) delete process.env.XDG_STATE_HOME
-      else process.env.XDG_STATE_HOME = oldState
-      if (oldNodeOptions === undefined) delete process.env.NODE_OPTIONS
-      else process.env.NODE_OPTIONS = oldNodeOptions
-      if (oldMinimum === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
-      else process.env.WT_LANE_MIN_AVAILABLE_MIB = oldMinimum
-      const pgidFile = join(lifecycle.root, '.lane', 'survivor-pgid')
-      if (fs.existsSync(pgidFile)) { try { process.kill(-Number(readFileSync(pgidFile, 'utf8')), 'SIGKILL') } catch {} }
+      restoreDescendantFixture(lifecycle, saved)
     }
   }, DESCENDANT_TEST_BUDGET_MS)
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses traversal and absolute inspect log names', async () => {
     const lifecycle = testLifecycle('LITE')
     for (const name of ['../../x', '/tmp/x']) expect(await text(lifecycle.run({ kind: 'inspect', what: 'log', name }))).toContain('missing log name')
@@ -1265,6 +1956,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['Quality coverage', '', 'Missing ## Quality coverage'],
     ['State and recovery', '## State and recovery\n\n', 'Empty ## State and recovery'],
@@ -1293,6 +1987,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(priorEvidence, 'utf8')).toBe('prior critic evidence\n')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('warns on uncited existing coverage, checks citation targets, and leaves future coverage untouched', async () => {
     const plan = (claim: string) => planCoverage + `## ADR\nDecision: x\nRejected: y\n## Tasks\n- ${claim} DoD: green\n## Gates\n- test\n`
 
@@ -1300,10 +1997,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     await uncited.transition({ phase: 'discovery', tool_use_id: 'start' })
     await uncited.artifact({ kind: 'plan', content: plan('The existing test proves the guard remains active.') })
     const warning = await text(uncited.transition({ phase: 'plan', tool_use_id: 'plan' }))
-    expect(warning).toMatch(/^accepted phase=critic/)
-    expect(warning).toContain('WARN ONLY')
-    expect(warning).toContain('The existing test proves the guard remains active.')
-    expect(warning).toContain('must carry a repo-relative `path:line` citation')
+    assertUncitedCoverageWarning(warning)
 
     const cited = testLifecycle('FULL')
     writeFileSync(join(cited.root, 'guard.test.ts'), 'setup\nassert guard\n')
@@ -1337,6 +2031,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(futureResult).toContain('no existing-coverage claims detected; coverage was not verified')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('requires byte-identical card DoD bullets with named proofs in plan Acceptance', async () => {
     const cardText = 'Route: FULL\n## Definition of done\n- Preserve exact punctuation.\n- Run the real e2e.\n\n## Notes\n- not acceptance\n'
     const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
@@ -1352,6 +2049,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'complete' }))).toMatch(/^accepted phase=critic/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('uses the routing DoD grammar for headings, inline fields, numbering, wrapping, fences, nesting, CRLF, and duplicates', async () => {
     const cardText = [
       'Route: FULL',
@@ -1383,6 +2083,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(inline.transition({ phase: 'plan', tool_use_id: 'inline' }))).toMatch(/^accepted phase=critic/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('requires every card DoD bullet and outcome in pilot report Acceptance', async () => {
     const cardText = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
     const lifecycle = await lifecycleReadyForReport({ cardText })
@@ -1410,10 +2113,13 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(lifecycle.state()).toEqual({
       phase: 'report',
       partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] },
-      deferred: null,
+      deferred: null, blocked: null,
     })
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['no outcome', ''],
     ['an unrecognised outcome', '  Outcome: maybe\n'],
@@ -1450,9 +2156,12 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain('Partial: delivered partially: 1 unmet criteria')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses bare and unknown-card deferrals and mechanically appends routed cards', async () => {
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
-    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }) })
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification', dependencyVerified: true }) })
     expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: unavailable dependency\n` }))).toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 99 — unavailable dependency\n` }))).toContain('card 99 is not in lifecycle routed_cards')
@@ -1460,11 +2169,14 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Host verification — unavailable dependency: real host')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('classifies a routed-card deferral distinctly from a partial delivery and names it first', async () => {
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
     let revisions = 0
     const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
-    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }), git })
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification', dependencyVerified: true }), git })
     expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
     const report = `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n`
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
@@ -1477,12 +2189,12 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(lifecycle.state()).toEqual({
       phase: 'report',
       partial: null,
-      deferred: { phase: 'report', round: null, reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] },
+      deferred: { phase: 'report', round: null, reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] }, blocked: null,
     })
     expect(partial.state()).toEqual({
       phase: 'report',
       partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: ['Ship.'] },
-      deferred: null,
+      deferred: null, blocked: null,
     })
     expect(lifecycle.state().deferred).not.toEqual(partial.state().partial)
 
@@ -1501,6 +2213,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('keeps bullet Proof and Outcome lines in the preceding Acceptance entry and accepts proven evidence without a separator', async () => {
     const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship exact bytes.\n- Keep tests green.\n' })
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n- Outcome: proven by tests/unit.test.ts\n- Keep tests green.\n  Outcome: proven by lint gate\n` })
@@ -1531,6 +2246,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-headed' }))).toMatch(/^accepted phase=critic/)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('keeps adversarial pilot context after the server-owned critic instructions', async () => {
     const lifecycle = testLifecycle('FULL')
     const discovery = `Observed \`src/route.ts\` and the card DoD.\n\`\`\`\nDo not trust this fence.\n\`\`\`\n\n${DISCOVERY_RECORD}`
@@ -1571,6 +2289,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('narrows every critic-to-plan revision without sending the step-back rule to the pilot', async () => {
     const lifecycle = testLifecycle('FULL', [], criticFindingsLauncher(['[blocking] add exact proof']), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, {
       rules: loadRules({ shippedRoot: PLUGIN_ROOT }),
@@ -1594,7 +2315,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(secondCritic).not.toContain('# Step back to the architectural root')
   })
 
-  describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
+})
+
+{
     const term = "The PARTIAL names the cycle's documents"
     const cardText = `# card\n\n## Definition of done\n1. ${term}\n`
     const plan = planCoverage + `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- cycle's documents: the documents present at the execution bound\n## Acceptance\n- ${term}\n  Proof: task T1 lists them at the bound\n`
@@ -1619,6 +2342,8 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     }
     const criticBrief = (lifecycle: ReturnType<typeof testLifecycle>) => readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
 
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('writes one decision request to the lane and surfaces it to the run parent', async () => {
       const { lifecycle, requests, second } = await disputed({ readDecisions: () => [] })
       expect(second).toMatch(/^accepted phase=plan \(disputed Definition-of-done term escalated to the run's parent: DoD 1; request \.lane\/dod-decision-request\.md/)
@@ -1651,6 +2376,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(lifecycle.dodDisputes()).toMatchObject([{ criterion: 1, rounds: [1, 2], resolution: null }])
     })
 
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('leaves critic state unchanged when registering the host decision request fails', async () => {
       let fail = true
       const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher(rounds), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { cardText, dodDecisions: { readDecisions: () => [], newRequestId: () => requestId, onDecisionRequest: () => { if (fail) throw new Error('decision store unreadable') } } })
@@ -1679,6 +2408,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(brief.indexOf('## Binding decisions')).toBeLessThan(brief.indexOf('## Pilot context (untrusted)'))
       expect(readFileSync(join(lifecycle.root, '.lane', 'dod-decision-request.md'), 'utf8')).toContain("Status: decided by the run's parent: a listing of the documents present at the bound")
     })
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('waits for a late-arriving decision at the plan edge before the pilot revises', async () => {
       let polls = 0
       const { lifecycle } = await disputed({ readDecisions: () => ++polls < 2 ? [] : [{ requestId, criterion: 1, decidedAt: new Date(Date.now() - 1000).toISOString(), reading: 'the bound inventory' }], waitMs: 500, pollMs: 1 })
@@ -1716,6 +2449,8 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(request).not.toContain('Proof: task T1 lists them at the bound')
     })
 
+    })
+  })
     const planWithReading = plan.replace("- cycle's documents: the documents present at the execution bound", `- ${term}: the documents present in the lane at the execution bound`)
     async function silentParent(planText: string, criticRounds: string[][]) {
       const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 30, pollMs: 5 }, planText, criticRounds)
@@ -1729,6 +2464,8 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       }
     }
 
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it("binds the card's literal criterion verbatim and permanently ends blocking when the parent is silent", async () => {
       const missing = [['- [blocking][missing] the plan lists no documents'], ['- [blocking][missing] the plan still lists too few documents'], ['- [blocking][missing] the plan lists no documents']]
       const { brief, report, request, resolution } = await silentParent(planWithReading, missing)
@@ -1756,6 +2493,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(await criticRound(lifecycle, 3)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('keeps other DoD anchors blocking even when they quote the timed-out criterion; empty criteria match nothing', () => {
       const state = { dodDisputes: [{ criterion: 1, resolution: { source: 'fallback' }, term }] }
       const other = { blocks: true, anchor: 'DoD 2', text: `${term} is still omitted` }
@@ -1785,6 +2526,10 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       expect(await criticRound(lifecycle, 3, numbered)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
+    })
+  })
+  describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+    describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
     it('keeps a paraphrased numbered-task re-anchor blocking when its own task line does not quote the settled criterion', async () => {
       const logs: string[] = []
       const numbered = plan.replace('- T1 list the documents. DoD: green', `1. list the documents. DoD: ${term}\n2. archive the documents. DoD: green`)
@@ -1807,13 +2552,16 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       await lifecycle.artifact({ kind: 'critic-brief', content: 'round 3' })
       expect(await text(lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }))).toContain('already stopped the lifecycle')
     })
+    })
   })
+}
 
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
     const finding = '[blocking] CONTEST routed card 42: this is in scope'
     const snapshots: Array<{ phases: Array<{ phase: string }>, routed_cards: Array<{ contested?: boolean }> }> = []
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
-    const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher([[`- ${finding}`], [`- ${finding}`]]), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { boardContract, routeFinding: async () => ({ id: '42', title: 'L4 item' }), timelineWriter: (file: string, content: string) => { snapshots.push(JSON.parse(content)); writeFileSync(file, content) } })
+    const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher([[`- ${finding}`], [`- ${finding}`]]), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { boardContract, routeFinding: async () => ({ id: '42', title: 'L4 item', dependencyVerified: true }), timelineWriter: (file: string, content: string) => { snapshots.push(JSON.parse(content)); writeFileSync(file, content) } })
     const plan = planCoverage + '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
     await lifecycle.routeFinding({ title: 'L4 item', l4Reason: 'different subsystem', risk: 'P1', effort: 'M' })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -1824,7 +2572,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
     await lifecycle.artifact({ kind: 'critic-brief', content: 'maintain L4 with citation src/other.ts:1' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-2' }))).toBe('accepted phase=tdd')
-    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{ id: '42', title: 'L4 item', l4Reason: 'different subsystem', contested: true }])
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{ id: '42', title: 'L4 item', l4Reason: 'different subsystem', dependencyVerified: true, contested: true }])
   })
 
   it('A-1 requires defined blocking and non-blocking severity policy in the critic report contract', async () => {
@@ -1846,6 +2594,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(brief).toContain("the repository's mandatory gates")
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['unions exact-deduplicated findings', [['changes-requested', ['[blocking] shared', '[blocking] alpha']], ['changes-requested', ['[blocking] shared', '[blocking] beta']]], 'changes-requested', ['[blocking] shared', '[blocking] alpha', '[blocking] beta']],
     ['requests changes when only one critic blocks', [['approved', []], ['changes-requested', ['[blocking] one lane blocks']]], 'changes-requested', ['[blocking] one lane blocks']],
@@ -1867,6 +2618,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(existsSync(join(lifecycle.root, '.lane', 'critic-B-report.md'))).toBe(true)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['all non-blocking advances and carries findings', ['[non-blocking] polish the wording'], 'tdd'],
     ['any blocking consumes a round', ['[non-blocking] polish the wording', '[blocking] missing proof'], 'plan'],
@@ -1908,6 +2662,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toContain(expected)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('R3 carries mixed-round non-blocking findings and deduplicates exact text', async () => {
     const first = ['- [non-blocking] polish wording', '- [non-blocking] polish wording', '- [blocking] add proof']
     const second = ['- [non-blocking] optional rename']
@@ -1943,6 +2700,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(lifecycle.state().phase).toBe('critic')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('publishes and attests the nonce report rather than stale shared reports', async () => {
     const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(join(root,'.lane/critic-report.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(join(root,'.lane/critic-report.other.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] genuine\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
     const lifecycle = testLifecycle('FULL', [], worker, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
@@ -1972,6 +2732,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(commits).toBe(1)
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('derives the critic verdict from its attested report and rejects a pilot mismatch', async () => {
     const lifecycle = testLifecycle('FULL', [], verdictLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -1985,6 +2748,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       .toBe('accepted phase=plan')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not collect bullets after the findings section ends at a following heading', async () => {
     const lifecycle = testLifecycle('FULL', [], launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] real finding\\n## Notes\\n- explanatory bullet\\n')"), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -2021,6 +2787,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(empty.transition({ phase: 'critic', tool_use_id: 'empty' }))).toContain('VERDICT block')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses a symlinked lane report and a symlinked .lane directory', async () => {
     const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -2062,13 +2831,16 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(clean.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'audit' }))).toBe('accepted phase=report')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('removes stale receipts before launch and refuses to attest them', async () => {
     const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'old\nEXIT=0\n')
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-report.md'), 'old\n')
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing'); expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'stale' }))).toContain('missing lane receipt unchanged')
   })
 
   it('does not attest a foreign receipt without the launch nonce', async () => {
@@ -2084,7 +2856,7 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')"), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing'); expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'foreign' }))).toContain('missing lane receipt unchanged')
   })
 
   it('publishes only the genuine per-launch receipt while an old worker writes every other receipt', async () => {
@@ -2103,6 +2875,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(Object.keys(evidence.entries).filter((file) => file.includes('tdd-run'))).toEqual([join(lifecycle.root, '.lane', 'tdd-run.log')])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each(['run', 'write_artifact', 'transition'] as const)('refuses %s after .lane is replaced', async (operation) => {
     const lifecycle = testLifecycle('LITE')
     const moved = mkdtempSync(join(tmpdir(), 'wt-lifecycle-replaced-lane-')); roots.push(moved)
@@ -2141,6 +2916,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(readdirSync(join(archive.archiveRoot, '.claude', 'reports')).filter((name) => name.includes('.tmp-'))).toEqual([])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('does not commit again after post-commit status throws', async () => {
     let revisions = 0; let commits = 0; let statusReads = 0
     const git = (_program: string, call: string[]) => {
@@ -2177,10 +2955,13 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'first' }))).toContain('missing changed HEAD')
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toContain('missing changed HEAD')
     expect(commits).toBe(2)
-    expect(resets).toBe(2)
+    expect(resets).toBe(4)
     expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports'))).toEqual([])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('refuses an archive whose reports ancestor becomes a symlink', async () => {
     let revisions = 0
     const lifecycle = await lifecycleReadyForReport({ git: (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '' })
@@ -2215,6 +2996,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'one', route: 'LITE' }))).toContain('unique tool_use_id')
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts a transition despite a lifecycle receipt write failure and retries it idempotently', async () => {
     let writes = 0
     const lifecycle = testLifecycle('LITE', [], null, null, {
@@ -2231,6 +3015,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
     expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd'])
   })
 
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it('accepts lifecycle and archive directories reached through a symlinked temporary ancestor', () => {
     const physical = mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-')); roots.push(physical)
     const linked = join(tmpdir(), `wt-lifecycle-link-${Date.now()}`)
@@ -2251,6 +3038,9 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
   // Card 1873173639063406158: WT_AGENT_SDK_PATH, set for the runner only, reached the run's own
   // `pnpm test` gate and turned two correct tests red. The real default gate path (no gateRunner) runs a
   // fake `pnpm` that prints the environment it received into the gate log.
+})
+
+describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(process.platform === 'win32')('runs a lifecycle gate without the runner-only WT_* variables and keeps what a gate needs', async () => {
     const bin = realpathSync(mkdtempSync(join(tmpdir(), 'wt-gate-env-bin-'))); roots.push(bin)
     writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'for (const [k, v] of Object.entries(process.env)) console.log(k + "=" + v)'\n`)
@@ -2281,6 +3071,183 @@ writeFileSync(join(dir, runId + '.json'), JSON.stringify({ ...record, state: 'ex
       vi.unstubAllEnvs()
     }
   })
+})
+
+// Delivery classification locks sit at file level so the main describe block does not keep growing.
+// Witness trial 2026-10-12: a first draft numbered its criteria, the edge refused the schema, and the
+// criteria it could not find were latched as unmet, so every corrected draft had to say "Partial:".
+const reportGit = () => {
+  let revisions = 0
+  return (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+}
+const twoCriteria = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
+const bulletedAcceptance = '## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n- Keep tests green.\n  Outcome: proven\n'
+const numberedAcceptance = '## Acceptance\n1. Ship exact bytes.\n   Outcome: proven\n2. Keep tests green.\n   Outcome: proven\n'
+const notDoneAcceptance = '## Acceptance\n- Ship exact bytes.\n  Outcome: not done: blocked upstream\n- Keep tests green.\n  Outcome: proven\n'
+
+it('never counts a criterion the parser could not find as unmet delivery', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${numberedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'numbered' }))).toContain('pilot-report: missing expected `- Ship exact bytes.`')
+  expect(lifecycle.state().partial).toBeNull()
+})
+
+it('classifies delivery from the accepted report, never from a refused numbered draft', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${numberedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'numbered' }))).toContain('pilot-report: missing expected')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'bulleted' }))).toBe('accepted phase=awaiting_fidelity')
+  expect(lifecycle.state().partial).toBeNull()
+  expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))).toMatchObject({ partial: null })
+})
+
+it('clears a partial classified on a refused draft once the corrected draft proves every criterion', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven' }))).toBe('accepted phase=awaiting_fidelity')
+  expect(lifecycle.state().partial).toBeNull()
+})
+
+it('re-classifies delivery when a corrected report is written, so a timeout never keeps the refused draft verdict', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(lifecycle.state().partial).toBeNull()
+})
+
+it('refuses a Deferred headline kept on a report that no longer defers anything', async () => {
+  const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+  const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification', dependencyVerified: true }), git: reportGit() })
+  expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'deferred' }))).toContain('Deferred: Ship. (card 42)')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Deferred: Ship. (card 42)\n${liteReport}\n## Acceptance\n- Ship.\n  Outcome: proven\n` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'stale-headline' }))).toContain('pilot-report: this run is not deferred')
+  expect(lifecycle.state().deferred).toBeNull()
+})
+
+it('keeps the committed partial verdict when an archive retry follows a rewritten report', async () => {
+  let commits = 0; let copies = 0
+  const versions = reportGit()
+  const git = (program: string, call: string[]) => { if (call[0] === 'commit') commits += 1; return versions(program, call) }
+  const copy = (...args: Parameters<typeof cpSync>) => { copies += 1; if (copies === 1) throw new Error('temporary archive failure'); return cpSync(...args) }
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git, copy })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: delivered partially: 1 unmet criteria\n${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'archive-fails' }))).toContain('archive')
+  expect(commits).toBe(1)
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${bulletedAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toContain('add the line "Partial: delivered partially: 1 unmet criteria"')
+  expect(lifecycle.state().partial).toMatchObject({ reason: 'delivered partially: 1 unmet criteria' })
+  expect(commits).toBe(1)
+})
+
+it('keeps a not-done criterion partial on the accepted report that carries its Partial line', async () => {
+  const lifecycle = await lifecycleReadyForReport({ cardText: twoCriteria, git: reportGit() })
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'not-done' }))).toContain('Partial: delivered partially: 1 unmet criteria')
+  expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: delivered partially: 1 unmet criteria\n${liteReport}\n${notDoneAcceptance}` }))).toBe('wrote pilot-report')
+  expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'partial' }))).toBe('accepted phase=awaiting_fidelity')
+  expect(lifecycle.state().partial).toMatchObject({ reason: 'delivered partially: 1 unmet criteria', findings: ['Ship exact bytes.'] })
+})
+
+describe.sequential('runner-hosted SDK pilot repository checks and boundary stops', () => {
+  it('names the repository-declared checks, as authoritative plan rules, on entering plan only', async () => {
+    const lifecycle = testLifecycle('FULL', [], dualCriticLauncher([['approved', []], ['approved', []]]))
+    mkdirSync(join(lifecycle.root, '.claude-plugin')); writeFileSync(join(lifecycle.root, '.claude-plugin', 'plugin.json'), '{}\n')
+    writeFileSync(join(lifecycle.root, '.wt-gates.json'), JSON.stringify({ gates: [{ name: 'test', command: 'pnpm test:blocking', cwd: 'toolkit' }] }))
+    for (const args of [['add', '-A'], ['-c', 'user.email=t@example.invalid', '-c', 'user.name=T', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'base']]) expect(spawnSync('git', args, { cwd: lifecycle.root }).status).toBe(0)
+    const toPlan = await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))
+    expect(toPlan).toContain('## Repository-declared checks for your plan (authoritative)')
+    expect(toPlan).toContain('`claude plugin validate . --strict` (derived from .claude-plugin/plugin.json)')
+    expect(toPlan).toContain('`pnpm test:blocking` in toolkit (gate `test`, source: .wt-gates.json)')
+    const plan = planCoverage + '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' }))).not.toContain('Repository-declared checks')
+  })
+
+  it.each([
+    ['stops at the boundary leaving the named phase', 'critic', 'stopped phase=critic reason=stop-after critic'],
+    ['does not stop when the named phase is another one', 'tdd', 'accepted phase=tdd'],
+    ['does not stop without the option', undefined, 'accepted phase=tdd'],
+  ] as const)('stop-after %s', async (_name, stopAfterPhase, expected) => {
+    const lifecycle = testLifecycle('FULL', [], dualCriticLauncher([['approved', []], ['approved', []]]), null, { stopAfterPhase })
+    const plan = planCoverage + '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-1' }))).toBe(expected)
+    const report = join(lifecycle.root, '.lane', 'pilot-report.md')
+    if (stopAfterPhase === 'critic') {
+      expect(readFileSync(report, 'utf8')).toContain('Finalization: stop-after critic')
+      expect(readFileSync(report, 'utf8')).toContain('Phase reached: critic')
+    } else expect(existsSync(report)).toBe(false)
+  })
+})
+
+const blockingBoardContract = { boardId: 'b', listId: 'l' }
+const routeBlocker = (lifecycle: ReturnType<typeof testLifecycle>) => lifecycle.routeFinding({ title: 'receipt blocker', l4Reason: 'unavailable dependency: receipt owner', risk: 'P2', effort: 'S' })
+
+it('T5 a live owned lane remains a path forward after a routed ownership refusal', async () => {
+  const f = testLifecycle('LITE', [], emptyLauncher(), 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await f.artifact({ kind: 'brief', content: 'brief' })
+  await f.run({ kind: 'lane', phase: 'tdd' }); await routeBlocker(f)
+  await f.run({ kind: 'control', decision: 'extend' })
+  expect(f.state()).toMatchObject({ blocked: null })
+})
+
+it('T5 route then receipt refusal stays recoverable when a fresh lane is admissible', async () => {
+  const f = testLifecycle('LITE', [], null, 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await routeBlocker(f)
+  await f.artifact({ kind: 'brief', content: 'brief' })
+  expect(await text(f.transition({ phase: 'tdd', tool_use_id: 'refused' }))).toContain('lane receipt unchanged')
+  expect(f.state()).toMatchObject({ blocked: null })
+})
+
+it('T5 routing after a refusal requires another refusal before blocking', async () => {
+  const f = testLifecycle('LITE', [], null, 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await f.transition({ phase: 'tdd', tool_use_id: 'refused' }); await routeBlocker(f)
+  expect(f.state()).toMatchObject({ blocked: null })
+  await f.run({ kind: 'control', decision: 'extend' })
+  expect(f.state()).toMatchObject({ blocked: { cardId: 'receipt-fix', refusal: { code: 'ownership' } } })
+})
+
+it('T5 a nonzero gate result is progress while an artifact is not', async () => {
+  const f = testLifecycle('LITE', [], null, 1, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }), gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'controlled red gate\n'); return 1 } })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await routeBlocker(f)
+  expect(await text(f.run({ kind: 'gate', name: 'lint' }))).toBe('gate lint EXIT=1')
+  await f.transition({ phase: 'tdd', tool_use_id: 'refused' })
+  expect(f.state()).toMatchObject({ blocked: null })
+})
+
+it('T5 a missing report allows recovery, and an accepted transition clears the route', async () => {
+  const f = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1000, { boardContract: blockingBoardContract, routeFinding: async () => ({ id: 'receipt-fix' }) })
+  await f.transition({ phase: 'discovery', tool_use_id: 'start' }); await f.artifact({ kind: 'brief', content: 'brief' })
+  await f.run({ kind: 'lane', phase: 'tdd' }); await routeBlocker(f)
+  const report = join(f.root, '.lane', 'tdd-report.md'); const content = readFileSync(report, 'utf8')
+  unlinkSync(report)
+  expect(await text(f.transition({ phase: 'tdd', tool_use_id: 'missing-report' }))).toContain('non-empty unchanged lane report')
+  expect(f.state()).toMatchObject({ blocked: null })
+  writeFileSync(report, content); await f.run({ kind: 'lane', phase: 'tdd' })
+  await f.transition({ phase: 'tdd', tool_use_id: 'advance' })
+  expect(f.state()).toMatchObject({ phase: 'verify', blocked: null })
+})
+
+it('R2 persists launch-evidence support in the initial lane record before spawning', async () => {
+  const probe = rawLauncher("import { copyFileSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; copyFileSync(join(root,'.lane','lifecycle.json'),join(root,'.lane','initial-lane.json'))")
+  const lifecycle = testLifecycle('LITE', [], probe, 30)
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+  expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('launcher pid')
+  const initial = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'initial-lane.json'), 'utf8'))
+  expect(initial.lanes).toHaveLength(1)
+  expect(initial.lanes[0]).toMatchObject({ state: 'running', ended_at: null, launch_evidence: true })
 })
 
 const roots: string[] = []
@@ -2344,7 +3311,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
-function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false) {
+function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false, beforeStart: (root: string) => void = () => {}, options: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-'))); roots.push(root)
   const archiveRoot = archiveProject()
   mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\nign/\n'); writeFileSync(join(root, 'tracked.txt'), 'tracked\n')
@@ -2370,12 +3337,38 @@ function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked'
     writeFileSync(join(root, 'ign', 'vendor', 'old.txt'), 'pre-existing\n')
     expect(spawnSync('git', ['init', '-q'], { cwd: join(root, 'ign', 'vendor') }).status).toBe(0)
   }
+  beforeStart(root)
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
-  const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: async (args: { name: string, log: string, root: string }) => { await writePassingGate(args); return Number(gateResults[args.name]?.exit ?? '0') }, rules: [] })
+  const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: async (args: { name: string, log: string, root: string }) => { await writePassingGate(args); return Number(gateResults[args.name]?.exit ?? '0') }, rules: [], ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
+}
+function fixtureGit(root: string, ...args: string[]) {
+  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout
+}
+function enableQuality(root: string, ...values: unknown[]) {
+  const quality = values.length ? values[0] : 'true'
+  mkdirSync(join(root, 'toolkit'), { recursive: true })
+  writeFileSync(join(root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality } }))
+}
+async function writeQualityGates(lifecycle: ReturnType<typeof testLifecycle>, overrides: Record<string, { exit?: string }> = {}) {
+  for (const name of ['typecheck', 'lint', 'quality', 'test']) {
+    lifecycle.gateResults[name] = overrides[name] ?? {}
+    expect(await text(lifecycle.run({ kind: 'gate', name }))).toBe(`gate ${name} EXIT=${overrides[name]?.exit ?? '0'}`)
+  }
+}
+async function realReportReady(lifecycle: ReturnType<typeof realGitLifecycle>) {
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+  expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+  await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })
+  await writeGates(lifecycle)
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }))).toBe('accepted phase=report')
+  await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
 }
 async function realGitLifecycleReadyForReport(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false) {
   const lifecycle = realGitLifecycle(preExistingArtefact)
@@ -2461,8 +3454,8 @@ async function lifecycleAtCritic(worker: string) {
   return lifecycle
 }
 function foreignThenGenuineLauncher() { return launcher("import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; const nonce = readFileSync(log, 'utf8'); rmSync(log); writeFileSync(log, 'foreign\\nEXIT=0\\n'); setTimeout(() => { writeFileSync(log, nonce); appendFileSync(log, 'genuine\\nEXIT=0\\n'); writeFileSync(report, 'report\\n') }, 40)") }
-async function lifecycleAtVerify(worker = successLauncher()) {
-  const lifecycle = testLifecycle('LITE', [], worker, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
+async function lifecycleAtVerify(worker = successLauncher(), options: Record<string, unknown> = {}) {
+  const lifecycle = testLifecycle('LITE', [], worker, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, options)
   expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
   expect(await text(lifecycle.artifact({ kind: 'brief', content: 'brief\n' }))).toBe('wrote brief')
   expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')

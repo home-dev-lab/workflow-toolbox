@@ -34,6 +34,128 @@ afterEach(() => {
   delete process.env.WT_FULL_COUNTS
 })
 
+  it.each([true, false])('SDK quality plan proof lock: follows the current quality declaration %s', async (declared) => {
+    const lifecycle = fullLifecycle()
+    if (declared) { mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } })) }
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
+    await lifecycle.artifact({ kind: 'plan', content: plan.replace('Proof: e2e mechanical lifecycle test', 'Proof: quality') })
+    const result = await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    if (declared) expect(result).toMatch(/^accepted phase=critic/)
+    else expect(result).toContain('Proof:')
+  })
+
+  it('SDK four-gate review lock: sends quality and the selected delivery to independent review', async () => {
+    const lifecycle = fullLifecycle({}, (worktree) => writeFileSync(join(worktree, 'owner-notes.tmp'), 'private draft\n'))
+    mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await reachReview(lifecycle, plan.replace('Proof: e2e mechanical lifecycle test', 'Proof: quality'), ['typecheck', 'lint', 'quality', 'test'])
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' })
+    expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toBe('lane review EXIT=0')
+    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(calls.find((call) => call.phase === 'review').briefText).toContain('quality.log')
+    const patch = readFileSync(join(lifecycle.root, '.lane', 'review-input.diff'), 'utf8')
+    expect(patch).toContain('created.txt'); expect(patch).not.toContain('owner-notes.tmp'); expect(patch).not.toContain('private draft')
+    expect(spawnSync('git', ['diff', '--cached', '--name-only'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout).not.toContain('owner-notes.tmp')
+  })
+
+  it.each(['typecheck', 'lint', 'quality'])('SDK four-gate remediation lock: red %s recovers with all red gate evidence', async (redGate) => {
+    let failing = false
+    const gateRunner = async (args: { name: string, log: string, root: string }) => {
+      await writePassingGate(args)
+      if (failing && args.name === 'test') { appendFileSync(args.log, ' FAIL  tests/example.test.ts > suite > regression case\n'); return 1 }
+      return failing && args.name === redGate ? 1 : 0
+    }
+    const lifecycle = fullLifecycle({ gateRunner }); mkdirSync(join(lifecycle.root, 'toolkit'))
+    writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await reachReview(lifecycle, plan, ['typecheck', 'lint', 'quality', 'test'])
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix' })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain('targeted tests, typecheck, lint, and quality')
+    failing = true
+    for (const name of ['typecheck', 'lint', 'quality', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > regression case'], tool_use_id: 'red' })).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    expect(remediation).toContain(`gate ${redGate} EXIT=1`)
+    expect(remediation).toContain('suite > regression case')
+  })
+  it.each([
+    ['vitest', 0, ''],
+    ['vitest', 1, ' FAIL tests/example.test.ts > suite > actual failure\n'],
+    ['auto-undetected', 1, 'opaque test failure\n'],
+    ['auto-ambiguous', 1, 'opaque test failure\n'],
+    ['auto-vitest', 1, 'runner crashed before naming tests\n'],
+  ])('attested red gate recovery: recovers quality with %s test EXIT=%s and preserves complete remediation', async (testFramework, testExit, output) => {
+    let red = false
+    const gateRunner = async (args: { name: string, log: string, root: string }) => {
+      await writePassingGate(args)
+      if (!red) return 0
+      if (args.name === 'test') { appendFileSync(args.log, output); return testExit }
+      return args.name === 'quality' ? 1 : 0
+    }
+    const lifecycle = fullLifecycle({ gateRunner, testFramework: testFramework.startsWith('auto-') ? undefined : testFramework }, (worktree) => {
+      if (testFramework === 'auto-ambiguous' || testFramework === 'auto-vitest') writeFileSync(join(worktree, 'example.ts'), '')
+      if (testFramework === 'auto-ambiguous') writeFileSync(join(worktree, 'example.py'), '')
+    })
+    mkdirSync(join(lifecycle.root, 'toolkit')); writeFileSync(join(lifecycle.root, 'toolkit', 'package.json'), JSON.stringify({ scripts: { quality: 'true' } }))
+    await reachReview(lifecycle, plan, ['typecheck', 'lint', 'quality', 'test'])
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: ['initial defect'] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['initial defect'], tool_use_id: 'review-red' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix-red' })
+    red = true
+    for (const name of ['typecheck', 'lint', 'quality', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate quality EXIT=1'], tool_use_id: 'red-gates' })).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    expect(remediation).toContain('gate quality EXIT=1')
+    expect(remediation).toContain(join('.lane', 'quality.log'))
+    if (testExit) {
+      expect(remediation).toContain('gate test EXIT=1'); expect(remediation).toContain(join('.lane', 'test.log'))
+      if (output.includes('actual failure')) expect(remediation).toContain('suite > actual failure')
+    }
+    const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(evidence.verify_snapshot.findings).toEqual(expect.arrayContaining([expect.objectContaining({ text: 'gate quality EXIT=1', location: 'quality' })]))
+    expect(lifecycle.ledger().priorReviewRounds.at(-1).findingDetails).toEqual(expect.arrayContaining([expect.objectContaining({ text: 'gate quality EXIT=1', location: 'quality' })]))
+    await lifecycle.artifact({ kind: 'brief', content: 'fix all gates' })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain(remediation.trim())
+  }, FIXTURE_TEST_TIMEOUT_MS)
+  it.each(['custom-runner', 'undetected'])('attested fallback rejects invented names with %s before accepting gate test', async (testFramework) => {
+    const gateRunner = async (args: { name: string, log: string, root: string }) => {
+      await writePassingGate(args)
+      return args.name === 'test' ? 1 : 0
+    }
+    const lifecycle = fullLifecycle({ gateRunner, testFramework })
+    await reachInitialVerify(lifecycle)
+    for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['invented name'], tool_use_id: 'invented' })).toMatch(/^edge refused:/)
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['gate test EXIT=1'], tool_use_id: 'fallback' })).toBe('accepted phase=tdd')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain(join('.lane', 'test.log'))
+  }, FIXTURE_TEST_TIMEOUT_MS)
+it('attested red gate recovery preserves progress when failed names change and shrink', async () => {
+  let failedNames = ['suite > first', 'suite > second', 'suite > third']
+  const gateRunner = async (args: { name: string, log: string, root: string }) => {
+    await writePassingGate(args)
+    if (args.name !== 'test') return 0
+    for (const name of failedNames) appendFileSync(args.log, ` FAIL tests/example.test.ts > ${name}\n`)
+    return 1
+  }
+  const lifecycle = fullLifecycle({ gateRunner }); await reachInitialVerify(lifecycle)
+  for (let round = 1; round <= 2; round += 1) {
+    for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [failedNames[0]], tool_use_id: `progress-${round}` })).toBe('accepted phase=tdd')
+    const remediation = readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')
+    expect(remediation).toContain('gate test EXIT=1')
+    for (const name of failedNames) expect(remediation).toContain(name)
+    if (round === 2) expect(lifecycle.ledger().priorReviewRounds.at(-1).blockingFindings).toHaveLength(failedNames.length)
+    if (round === 1) {
+      failedNames = ['suite > newly exposed failure']
+      await lifecycle.artifact({ kind: 'brief', content: 'fix named tests' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+      expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'progress-fix' })).toBe('accepted phase=verify')
+    }
+  }
+}, FIXTURE_TEST_TIMEOUT_MS)
+
 describe.sequential('plan task anchor lifecycle', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('returns a MEDIUM finding on a numbered plan task to tdd', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle, numberedAnchorPlan)
@@ -142,6 +264,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(phaseLaunchPlan('tdd', 'test-model', 'claude-sdk').executor).toBe('claude-sdk')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('records the launched family per lane and route in a mixed FULL lifecycle', async () => {
     const index = join(tmpdir(), 'mixed-memory', 'MEMORY.md')
     const lifecycle = fullLifecycle({ models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6.1-sol', review: 'openai/gpt-6-astra', refutation: 'opus' }, knowledgeBase: { path: index, checkedPath: index } })
@@ -178,6 +303,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(calls.find((call) => call.phase === 'review').argv).toContain('--owner')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('names the external knowledge-base index in GPT independent briefs with a refused-read instruction, without widening launcher arguments', async () => {
     const index = join(tmpdir(), 'external-memory', 'MEMORY.md')
     const lifecycle = fullLifecycle({ knowledgeBase: { path: index, checkedPath: index } })
@@ -210,6 +338,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(readFileSync(join(lifecycle.calls, '..', 'refutation-input.diff'), 'utf8')).toContain('+created by tdd')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('returns blocking review findings to the TDD implementer with focused fix gates', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] preserve the lifecycle invariant'
@@ -236,6 +367,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'skip-fix-brief' })).toMatch(/lane receipt unchanged/)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('requires fresh review and refutation receipts after a fix loop-back', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const reviewFinding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] review defect'
@@ -277,6 +411,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['stale plan finding'], tool_use_id: 'stale-critic-after-plan-change' })).toMatch(/lane receipt unchanged/)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('replays the archived four review-to-harden transitions as review-to-TDD fix loops', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const replay: Array<[string, string, string]> = []
@@ -316,6 +453,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(brief).toContain('### Round 1\n- Prior finding 1: first defect')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('admits an empty round-two snapshot delta and asks the parent about the open finding', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] defect'
@@ -347,6 +487,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(diff).not.toContain('+created by tdd')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('returns a plan-task finding in prior TDD fix code for another fix', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: ['anchored first-round defect'] } })
@@ -385,6 +528,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(lifecycle.state()).toMatchObject({ phase: 'report', partial: { question: expect.stringContaining('repeated review report parse failure') } })
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('re-asks an extension to a nonexistent prior finding once, then ends partial', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const first = '[HIGH][anchor: DoD 1][location: tracked.txt:2] first defect'
@@ -399,6 +545,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [malformed], tool_use_id: 'bad-extension' })).toContain('accepted phase=report')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('routes a LOW finding carried by clear', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const finding = '[LOW][anchor: DoD 1][location: tracked.txt:2] typo'
@@ -435,6 +584,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('- route at boundary — tracked.txt:2')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('names git stderr when a review snapshot fails', async () => {
     const realGit = (program: string, args: string[], options: Record<string, unknown>) => execFileSync(program, args, options as Parameters<typeof execFileSync>[2])
     const git = (program: string, args: string[], options: Record<string, unknown>) => {
@@ -472,6 +624,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(readFileSync(join(lifecycle.root, '.lane', 'review-brief.md'), 'utf8')).toContain('original pilot context')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('H6-1 lock: refuses independent briefs when prospective review input is unavailable', async () => {
     const realGit = (program: string, args: string[], options: Record<string, unknown>) => execFileSync(program, args, options as Parameters<typeof execFileSync>[2])
     const cases = [
@@ -481,7 +636,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
       { reason: /ENOBUFS|maxBuffer|stdout/i, options: { git: realGit, prospectivePatchMaxBuffer: 1 } },
       ...['M  staged.txt', ' M unstaged.txt', '?? untracked.txt', ' D deleted.txt'].map((status) => ({
         reason: 'dirty tree produced no substantive patch',
-        options: { git: (_program: string, args: string[]) => args[0] === 'status' ? `${status}\0` : '' },
+        options: { git: (_program: string, args: string[]) => args[0] === 'status' ? `${status}\0` : args[0] === 'write-tree' ? 'fixture-tree' : '' },
       })),
     ]
     for (const [index, fixture] of cases.entries()) {
@@ -509,27 +664,33 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await refutation.run({ kind: 'lane', phase: 'refutation', timeout: 1 })).toMatch(/brief not written through write_artifact/)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('H7-1 lock: refuses independent briefs when cumulative prospective patch output exceeds the limit', async () => {
     const maxBuffer = 256
     const untrackedPatch = `diff --git a/file b/file\n${'+'.repeat(110)}\n`
     expect(Buffer.byteLength(untrackedPatch)).toBeLessThan(maxBuffer)
     expect(Buffer.byteLength(untrackedPatch) * 2).toBeGreaterThan(maxBuffer)
-    let untrackedCalls = 0
+    let patchCalls = 0
     const git = (_program: string, args: string[]) => {
       if (args[0] === 'ls-files') return 'first.txt\0second.txt\0'
-      if (args[0] === 'status') return '?? first.txt\0?? second.txt\0'
-      if (args.includes('--no-index')) { untrackedCalls += 1; return untrackedPatch }
+      if (args[0] === 'status') return '?? first.txt\0?? second.txt\0'; if (args[0] === 'write-tree') return 'fixture-tree'
+      if (args.includes('--binary')) { patchCalls += 1; return untrackedPatch.repeat(2) }
       return ''
     }
     const lifecycle = fullLifecycle({ git, prospectivePatchMaxBuffer: maxBuffer }); await reachReview(lifecycle)
     const result = await lifecycle.artifact({ kind: 'review-brief', content: 'review' })
     expect(result).toContain(`prospective patch exceeds ${maxBuffer}-byte limit`)
-    expect(untrackedCalls).toBe(2)
+    expect(patchCalls).toBe(1)
     expect(existsSync(join(lifecycle.root, '.lane', 'review-input.diff'))).toBe(false)
     expect(existsSync(join(lifecycle.root, '.lane', 'review-brief.md'))).toBe(false)
     expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toMatch(/brief not written through write_artifact/)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('mechanically completes the full route through the registered handlers', async () => {
     const lifecycle = fullLifecycle()
     expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
@@ -565,16 +726,12 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: fullReport })).toBe('wrote pilot-report')
     expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toBe('accepted phase=awaiting_fidelity')
 
-    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
-    // Owner 2026-09-14: the critic is its own role (HARD: Astra) and never borrows the review model.
-    expect(calls.filter((call) => call.phase === 'critic').length).toBeGreaterThan(0)
-    expect(calls.filter((call) => call.phase === 'critic').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
-    expect(calls.filter((call) => call.phase === 'review').every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
-    expect(calls.filter((call) => call.phase === 'refutation').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
-    expect(calls.filter((call) => call.phase === 'tdd').every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
-    expect(calls.filter((call) => call.phase === 'tdd').every((call) => call.briefText.includes('# Write release records'))).toBe(true)
+    assertFullRouteLaunches(lifecycle)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('owner rule: critic remains bounded while review has no fixed ceiling', () => {
     expect(FIXED_CRITIC_ROUNDS).toBe(3)
     expect(MAX_CRITIC_ROUNDS).toBe(6)
@@ -616,6 +773,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic-empty' })).toContain('failed critic round')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('requires a per-section account from each lane in the first dual-critic round', async () => {
     const lifecycle = fullLifecycle()
     edgeConfig(lifecycle, { critic: { verdict: 'approved', findings: [], missingAccountLane: 'B' } })
@@ -629,7 +789,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     const lifecycle = await runCriticRounds([
       findings('r1', 4), findings('r2', 3), findings('r3', 2), null,
     ])
-    expect(lifecycle.state()).toEqual({ phase: 'tdd', partial: null, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'tdd', partial: null, deferred: null, blocked: null })
   })
 
   it('treats a narrowed critic finding as convergence rather than recurrence', async () => {
@@ -659,6 +819,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(lifecycle.state().phase).toBe('tdd')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('allows one critic plateau and stops on the second', async () => {
     const lifecycle = await runCriticRounds([
       findings('r1', 3), findings('r2', 2), findings('r3', 2), findings('r4', 2),
@@ -689,6 +852,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(lifecycle.state()).toMatchObject({ phase: 'review', partial: null })
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('H14-1 lock: completes the exact last-critic-pass sequence as a partial committed and archived run', async () => {
     const lifecycle = fullLifecycle()
     const criticRounds = FIXED_CRITIC_ROUNDS
@@ -708,7 +874,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(timeline.phases.filter((item: { phase: string }) => ['plan', 'critic'].includes(item.phase)).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
       ['plan', 1], ['critic', 1], ['plan', 2], ['critic', 2], ['plan', 3], ['critic', 3],
     ])
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] }, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] }, deferred: null, blocked: null })
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
       .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: `${fullReport}Partial: ${reason}\n` })).toBe('wrote pilot-report')
@@ -720,6 +886,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(manifest.partial).toEqual(summary.partial)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('routes a recurring anchored review finding to a partial report with the parent question', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const reason = 'review non-convergence: same finding returned: DoD 1 — finding'
@@ -742,7 +911,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(timeline.phases.filter((item: { phase: string; round: number | null }) => ['review', 'tdd'].includes(item.phase) && item.round !== null).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
       ['review', 1], ['tdd', 1], ['review', 2],
     ])
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: 2, reason, findings: ['finding'], question: 'The review loop stopped because same finding returned: DoD 1 — finding. The unresolved findings are: finding. How should the run parent resolve them?' }, deferred: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: 2, reason, findings: ['finding'], question: 'The review loop stopped because same finding returned: DoD 1 — finding. The unresolved findings are: finding. How should the run parent resolve them?' }, deferred: null, blocked: null })
     const authored = `${fullReport}Partial: ${reason}\n\n## Findings to route\n- pilot-authored note\n\n## Question for parent\nPilot-authored context.\n`
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: authored })).toBe('wrote pilot-report')
     const saved = readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')
@@ -754,6 +923,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(summary.partial).toMatchObject({ reason, findings: ['finding'], finalizationReason: 'timeout' })
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('keeps non-convergence findings and signal when a timeout fires at the transition boundary', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] recurring boundary defect'
@@ -782,6 +954,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(lifecycle.finalizePartial('timeout').partial).toMatchObject({ reason: 'timeout', findings: ['unresolved timeout defect'] })
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('keeps unresolved findings when a parse-failure partial precedes timeout finalization', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] unresolved before malformed reviews'
@@ -807,6 +982,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(lifecycle.state().partial).toMatchObject({ reason: 'timeout', findings: ['unresolved boundary defect'] })
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('routes a red full suite in VERIFY back to TDD with failing tests as a counted fix round', async () => {
     let testRuns = 0
     const gateRunner = async (args: { name: string; log: string; root: string }) => {
@@ -846,7 +1024,10 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [failedTest], tool_use_id: `${testFramework}-red` })).toBe('accepted phase=tdd')
   })
 
-  it.each(['custom-runner', 'undetected'])('refuses the %s failed-test adapter and tells the pilot to escalate', async (testFramework) => {
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
+  it.each(['custom-runner', 'undetected'])('refuses invented test names with the %s adapter but accepts the attested fallback', async (testFramework) => {
     let testRuns = 0
     const gateRunner = async (args: { name: string; log: string; root: string }) => {
       const code = await writePassingGate(args)
@@ -880,6 +1061,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     }
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('refuses passing test names that merely occur in a red full-suite receipt', async () => {
     let testRuns = 0
     const gateRunner = async (args: { name: string; log: string; root: string }) => {
@@ -899,6 +1083,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > A', 'suite > B', 'suite > C'], tool_use_id: 'passing-names' })).toMatch(/failing test names found in the red full-suite receipt/)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('reports recurring red VERIFY failures from their current red evidence', async () => {
     let testRuns = 0
     const gateRunner = async (args: { name: string; log: string; root: string }) => {
@@ -930,6 +1117,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(readFileSync(join(lifecycle.root, '.lane', 'review-warnings.md'), 'utf8')).toContain('dropped LOW finding 1: extends nonexistent prior finding 999')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('records 0,2,0,0 and reaches report without including clear passes in the running minimum', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     edgeConfig(lifecycle, { review: { verdict: 'clear' } })
@@ -948,6 +1138,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'clear-refutation' })).toBe('accepted phase=report')
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it.each([
     ['wrong phase for the event', async () => liteLifecycle().transition({ phase: 'tdd', tool_use_id: 'wrong' }), /current phase discovery/],
     ['missing receipt', async () => { const lifecycle = liteLifecycle(); await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); return lifecycle.transition({ phase: 'tdd', tool_use_id: 'missing' }) }, /lane receipt unchanged/],
@@ -975,6 +1168,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await exercise()).toMatch(expected)
   })
 
+})
+
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('refuses a FULL report without Independent Review even when E2E is present', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     edgeConfig(lifecycle, { review: { verdict: 'clear' }, refutation: { verdict: 'clear' } })
@@ -994,6 +1190,32 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: 'critic' })).toBe('accepted phase=plan')
   })
 })
+
+describe.sequential('real SDK lifecycle server repository commit forwarding', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
+  it('passes the run construction base to every Claude SDK lane as --repo-commit, and to no GPT lane', async () => {
+    const claude = fullLifecycle({ executor: 'claude-sdk', models: { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' } })
+    edgeConfig(claude, { critic: { verdict: 'approved' } })
+    await claude.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await claude.artifact({ kind: 'plan', content: plan }); await claude.transition({ phase: 'plan', tool_use_id: 'plan' }); await claude.artifact({ kind: 'critic-brief', content: 'critic\n' }); await claude.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    const claudeCalls = readFileSync(claude.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(claudeCalls.length).toBeGreaterThan(0)
+    for (const call of claudeCalls) expect(call.argv.slice(call.argv.indexOf('--repo-commit'), call.argv.indexOf('--repo-commit') + 2)).toEqual(['--repo-commit', claude.base])
+    const gpt = fullLifecycle()
+    edgeConfig(gpt, { critic: { verdict: 'approved' } })
+    await gpt.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await gpt.artifact({ kind: 'plan', content: plan }); await gpt.transition({ phase: 'plan', tool_use_id: 'plan' }); await gpt.artifact({ kind: 'critic-brief', content: 'critic\n' }); await gpt.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(readFileSync(gpt.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).every((call) => !call.argv.includes('--repo-commit'))).toBe(true)
+  })
+})
+
+function assertFullRouteLaunches(lifecycle: ReturnType<typeof fullLifecycle>) {
+  const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+  // The critic is its own role and never borrows the review model.
+  expect(calls.filter((call) => call.phase === 'critic').length).toBeGreaterThan(0)
+  expect(calls.filter((call) => call.phase === 'critic').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
+  expect(calls.filter((call) => call.phase === 'review').every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
+  expect(calls.filter((call) => call.phase === 'refutation').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
+  expect(calls.filter((call) => call.phase === 'tdd').every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
+  expect(calls.filter((call) => call.phase === 'tdd').every((call) => call.briefText.includes('# Write release records'))).toBe(true)
+}
 
 function root() {
   const value = mkdtempSync(join(tmpdir(), 'wt-lifecycle-full-')); roots.push(value)
@@ -1045,13 +1267,14 @@ function laneLauncher() {
   writeFileSync(file, source)
   return file
 }
-function fullLifecycle(options: Record<string, unknown> = {}) {
+function fullLifecycle(options: Record<string, unknown> = {}, beforeStart: (worktree: string) => void = () => {}) {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
+  beforeStart(worktree)
   const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, testFramework: 'vitest', rules: [], ...options })
-  return { ...handlers(server), calls, base, root: worktree, state: server.state, requestStop: server.requestStop, finalizePartial: server.finalizePartial }
+  return { ...handlers(server), calls, base, root: worktree, state: server.state, ledger: server.ledger, requestStop: server.requestStop, finalizePartial: server.finalizePartial }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
@@ -1060,8 +1283,8 @@ function liteLifecycle() {
   const server = createLifecycleServer({ worktree, archiveRoot, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, rules: [] })
   return { ...handlers(server), root: worktree }
 }
-async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) {
-  for (const name of ['typecheck', 'lint', 'test']) expect(await lifecycle.run({ kind: 'gate', name })).toBe(`gate ${name} EXIT=0`)
+async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }, names = ['typecheck', 'lint', 'test']) {
+  for (const name of names) expect(await lifecycle.run({ kind: 'gate', name })).toBe(`gate ${name} EXIT=0`)
 }
 function findings(prefix: string, count: number) { return Array.from({ length: count }, (_, index) => `${prefix} finding ${index + 1}`) }
 async function runCriticRounds(rounds: Array<string[] | null>) {
@@ -1088,7 +1311,7 @@ async function writePassingGate({ log, root }: { log: string, root: string }) {
   throw new Error(`fixture gate mtime did not advance 20ms past lane receipt ${laneMtime}`)
 }
 function edgeConfig(lifecycle: { root: string }, config: Record<string, unknown>) { writeFileSync(join(lifecycle.root, '.lane', 'edge-config.json'), JSON.stringify(config)) }
-async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan) {
+async function reachInitialVerify(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan) {
   edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
   expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
   expect(await lifecycle.artifact({ kind: 'plan', content: planContent })).toBe('wrote plan')
@@ -1099,7 +1322,10 @@ async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planCont
   expect(await lifecycle.artifact({ kind: 'brief', content: planContent })).toBe('wrote brief')
   expect(await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })).toBe('lane tdd EXIT=0')
   expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })).toBe('accepted phase=verify')
-  await gates(lifecycle)
+}
+async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>, planContent = plan, gateNames = ['typecheck', 'lint', 'test']) {
+  await reachInitialVerify(lifecycle, planContent)
+  await gates(lifecycle, gateNames)
   expect(await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })).toBe('accepted phase=review')
 }
 async function reviewEdge(verdict: string, exit: number, outcome: string, findings?: string[], noVerdict = false) {

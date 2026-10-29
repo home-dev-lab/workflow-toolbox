@@ -10,14 +10,20 @@ export function matchesHostPath(file, glob) {
 // distinct from a job that ran and failed.
 const NOT_RUN = new Set(['skipped', null, undefined, ''])
 
+function missingExpectedJob(run) {
+  if (!Array.isArray(run.expectedJobs) || !run.expectedJobs.length) return 'no expected workflow job roster'
+  for (const name of run.expectedJobs) {
+    if (!run.jobs.some((job) => job.name === name)) return `missing job ${name}`
+  }
+}
+
 // Splits "the matrix is missing information" (a job absent, or present but not run) from
 // "the matrix is complete and at least one job failed" — the two are different facts and must
 // never share one reason string (a complete, failed matrix is not an incomplete one).
 function matrixState(run) {
   if (!run.jobs?.length) return { incomplete: 'no jobs' }
-  for (const os of ['ubuntu', 'windows', 'macos']) {
-    if (!run.jobs.some((job) => job.name.toLowerCase().includes(os))) return { incomplete: `missing ${os}` }
-  }
+  const missing = missingExpectedJob(run)
+  if (missing) return { incomplete: missing }
   const notRun = run.jobs.find((job) => NOT_RUN.has(job.conclusion))
   if (notRun) return { incomplete: `job ${notRun.name}: ${notRun.conclusion ?? 'no conclusion'}` }
   const failed = run.jobs.filter((job) => job.conclusion !== 'success')
@@ -26,12 +32,11 @@ function matrixState(run) {
 }
 
 export const ciBranchFor = (sha) => `card/ci-${sha.slice(0, 12)}`
-export const EVIDENCE_FIELDS = 'event,headBranch,headSha,status,conclusion,jobs'
+export const EVIDENCE_FIELDS = 'event,headBranch,headSha,status,conclusion'
 
 // The ONLY producer of a green verdict. Green needs positive evidence about exactly this commit: a dispatched run on
-// its own card/ci branch at its sha, completed, with a successful ubuntu, windows and macos job (Windows runs as
-// several shard jobs, `matrix (windows-latest, 1)` and so on; green needs EVERY job of the run to have succeeded,
-// so one failed shard is red). Absent, foreign or
+// its own card/ci branch at its sha, completed, with EVERY expected job from that commit's workflow present
+// and successful, including every shard and the coverage union. Absent, foreign or
 // partial evidence is unchecked, pending or red, never green. Callers pass evidence read live from GitHub
 // (freshEvidence); a stored record is never evidence.
 export function verdictFromEvidence(run, sha) {
@@ -42,7 +47,7 @@ export function verdictFromEvidence(run, sha) {
   if (run.status !== 'completed' || !run.conclusion) return { verdict: 'pending', reason: `status ${run.status}` }
   const state = matrixState(run)
   if (state.incomplete) return { verdict: 'red', reason: state.incomplete, incomplete: true }
-  if (!state.failed.length) return { verdict: 'green', reason: 'ubuntu, windows and macos jobs succeeded', incomplete: false }
+  if (!state.failed.length) return { verdict: 'green', reason: 'all expected workflow jobs succeeded', incomplete: false }
   const names = state.failed.map((job) => job.name).join(', ')
   return { verdict: 'red', reason: `${state.failed.length} of ${run.jobs.length} jobs failed (${names})`, incomplete: false }
 }

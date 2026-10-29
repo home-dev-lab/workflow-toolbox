@@ -165,6 +165,12 @@ export function scrubSettled(value, command, includeOptional = true, substituted
   return { value: current.value, changed };
 }
 
+// Text the guard assembles from scrubbed pieces and its own wording (a refusal with a warning, notes beside a
+// result) is scrubbed once more: the join can complete a held value that no single piece held.
+export function scrubAssembled(value) {
+  return scrubSettled(value, '', true, new Set(), { complete: true }).value;
+}
+
 export function testScrubWithVaultOccurrences(value, command, includeOptional, vaultOccurrences, substituted = new Set()) {
   return replaceKnown(value, command, includeOptional, substituted, vaultOccurrences);
 }

@@ -6,10 +6,11 @@ import path from 'node:path'
 import { treeSignature } from './gate-evidence.mjs'
 import { PHASES } from './lifecycle-state-machine.mjs'
 import { laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
+import { LIFECYCLE_GATE_NAMES } from './lifecycle-gates.mjs'
 
 const MANIFEST = 'fidelity-manifest.json'
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
-const GATES = new Set(['typecheck', 'lint', 'test'])
+const GATES = new Set(LIFECYCLE_GATE_NAMES)
 const LIFECYCLE_PHASES = new Set(PHASES)
 const INTEGER_EXIT = /^-?\d+$/
 
@@ -33,14 +34,14 @@ function within(root, target) {
 function recognizedKind(name) {
   const lane = /^\.lane\/([^/]+)-run\.log$/.exec(name)
   const report = /^\.lane\/(pilot-report|[^/]+-report)\.md$/.exec(name)
-  const gate = /^\.lane\/(typecheck|lint|test)\.log$/.exec(name)
+  const gate = /^\.lane\/([^/]+)\.log$/.exec(name)
   if (lane && LIFECYCLE_PHASES.has(lane[1])) return 'lane'
   if (report) {
     const phase = report[1] === 'pilot-report' ? 'report' : report[1].slice(0, -'-report'.length)
     if (LIFECYCLE_PHASES.has(phase)) return 'report'
   }
   if (name === '.lane/summary.json') return 'commit'
-  if (gate) return 'gate'
+  if (gate && GATES.has(gate[1])) return 'gate'
   return null
 }
 

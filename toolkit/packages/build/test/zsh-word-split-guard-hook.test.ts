@@ -125,7 +125,7 @@ describe('wt-zsh-word-split-guard-hook option and scope precision', () => {
   })
 })
 
-describe('wt-zsh-word-split-guard-hook contract', () => {
+function registerBasicNoticeCases() {
   it('warns without denying and names safe forms', () => {
     const result = bash(FIELD_CASE)
     expect(result.context).toContain('zsh does not word-split')
@@ -150,9 +150,22 @@ describe('wt-zsh-word-split-guard-hook contract', () => {
     expect(result.stdout).toContain('zsh does not word-split')
   })
 
-  it('stays silent for a subagent payload', () => {
+}
+
+function registerSubagentAndInputCases() {
+  it('delivers the exact file-copy loop warning to the subagent that triggered it', () => {
+    const result = run({ hook_event_name: 'PreToolUse', tool_name: 'Bash', agent_id: 'copy-worker',
+      tool_input: { command: 'files=$(git -C $X diff --name-only); for f in $files; do mkdir -p $(dirname $W/$f); cp -f $X/$f $W/$f; done' } })
+    expect(result.status).toBe(0)
+    expect(result.context).toContain('zsh does not word-split')
+    expect(result.context).toContain('`files`')
+    expect(result.stdout).toBe(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: result.context } }))
+  })
+
+  it('delivers a warning for a subagent payload', () => {
     const result = run({ hook_event_name: 'PreToolUse', tool_name: 'Bash', agent_id: 'a123', tool_input: { command: FIELD_CASE } })
-    expect(result.stdout).toBe('')
+    expect(result.context).toContain('zsh does not word-split')
+    expect(result.stdout).not.toContain('permissionDecision')
   })
 
   it('ignores non-Bash tools', () => {
@@ -166,6 +179,9 @@ describe('wt-zsh-word-split-guard-hook contract', () => {
     expect(result.stdout).toBe('')
   })
 
+}
+
+function registerJournalAndScopeCases() {
   it('journals a warning', () => {
     const journal = mkdtempSync(join(tmpdir(), 'wt-zsh-word-split-journal-')); roots.push(journal)
     bash(FIELD_CASE, { WT_GUARD_JOURNAL_DIR: journal })
@@ -193,6 +209,12 @@ describe('wt-zsh-word-split-guard-hook contract', () => {
       .map((hook: { command?: string }) => hook.command ?? '')
     expect(commands.some((command: string) => command.includes('wt-zsh-word-split-guard-hook.mjs'))).toBe(true)
   })
+}
+
+describe('wt-zsh-word-split-guard-hook contract', () => {
+  registerBasicNoticeCases()
+  registerSubagentAndInputCases()
+  registerJournalAndScopeCases()
 })
 
 type CharacterizationFinding = { name: string; kind: 'list' | 'cmdsub'; context: 'args' | 'for' | 'set'; use: string }
@@ -324,7 +346,7 @@ describe('wt-zsh-word-split-guard-hook exact notice and journal characterization
     expect(result.stdout).toBe(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } }))
   })
 
-  it.each([['observe', 'observe', ''], ['subagent', '', 'a123']])('preserves silent output and the %s journal record', (_label, mode, agent) => {
+  it.each([['observe', 'observe', ''], ['subagent', '', 'a123']])('preserves the %s notice contract and journal record', (_label, mode, agent) => {
     const journal = mkdtempSync(join(tmpdir(), 'wt-zsh-word-split-characterization-')); roots.push(journal)
     const result = run({ hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: 'vitest', agent_id: agent,
       tool_input: { command: 'L="a b"; kill $L' } }, {
@@ -332,7 +354,8 @@ describe('wt-zsh-word-split-guard-hook exact notice and journal characterization
       WT_GUARD_JOURNAL_NOW: '2026-01-05T00:00:00Z', WT_GUARD_JOURNAL_TEST_ORIGIN: '1',
     })
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe('')
+    if (mode === 'observe') expect(result.stdout).toBe('')
+    else expect(result.context).toContain('zsh does not word-split')
     const entries = readdirSync(journal).filter((file) => file.endsWith('.ndjson'))
       .flatMap((file) => readFileSync(join(journal, file), 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)))
     expect(entries).toHaveLength(1)

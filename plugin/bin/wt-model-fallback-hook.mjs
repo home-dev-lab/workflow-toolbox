@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 import path from 'node:path'
 import { analyseTranscript, modelWarnings, requestedFromMeta } from './lib/model-fallback-core.mjs'
+import { cachedTargets } from './lib/model-fallback-cache.mjs'
 import { expandHome, readStdin } from './lib/host/model-fallback-files.mjs'
 
+// WT_MODEL_FALLBACK_CACHE_DEBUG=1 reports how the parent read went (cache hit, bytes range) on stderr.
+const cacheStats = process.env.WT_MODEL_FALLBACK_CACHE_DEBUG === '1'
+  ? (stats) => process.stderr.write(`model-fallback-cache ${JSON.stringify(stats)}\n`) : undefined
+
 function fallbackTargets(file) {
-  return file ? analyseTranscript(file, { targetsOnly: true }).fallbacks : []
+  return file ? cachedTargets(file, { onStats: cacheStats }).fallbacks : []
 }
 
 function run(payload) {

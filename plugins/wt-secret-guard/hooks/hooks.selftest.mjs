@@ -168,6 +168,7 @@ const journalHostFor = (runtime) => ({
   sessionId: () => runtime.session.id(), sessionCwd: () => runtime.session.cwd(), uiLog: (text) => runtime.ui.log(text),
 });
 const referenceHostFor = (runtime) => ({
+  ...journalHostFor(runtime),
   envGet: (name) => runtime.env.get(name),
   processRun: (argv) => runtime.process.run(argv), fsRead: (path) => runtime.fs.read(path), uiLog: (text) => runtime.ui.log(text),
 });
@@ -208,7 +209,7 @@ await test('inbound known-vendor credential is withheld with a visible revocatio
   assert.match(received[0].text, /https:\/\/github\.com\/settings\/tokens/);
   assert.match(received[0].text, /cannot unsend/i);
   assert.equal(logs.slice(beforeLogs).some((line) => line.includes(github)), false);
-  assert(logs.slice(beforeLogs).some((line) => /credential.*revocation/i.test(line)));
+  assert.equal(logs.length, beforeLogs, 'inbound scrub reached ui.log');
 });
 await test('ordinary inbound message mentioning key is unchanged and answerable', async () => {
   assert(receive, 'session.receive hook was not registered');
@@ -338,7 +339,7 @@ for (const [shape, template] of [
     assert.deepEqual(argvs, []);
   });
 }
-await test('op reference rewrite with shell quoting', async () => { const { received, argvs, result } = await prefetchArgv('echo "op://Private/O\'Brien/token"'); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.deepEqual(argvs.at(-1), ['op', 'read', "op://Private/O'Brien/token"], 'the quote in the reference did not reach the prefetch argv intact'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
+await test('op reference rewrite with shell quoting', async () => { const { received, argvs, result } = await prefetchArgv('echo "op://Private/O\'Brien/token"'); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.deepEqual(argvs.at(-1), ['op', 'read', "op://Private/O'Brien/token"], 'the quote in the reference did not reach the prefetch argv intact'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); assert.equal((result.context ?? []).filter((note) => /wt-secret-guard: rewrote/.test(note)).length, 1); assert.doesNotMatch(result.text, /wt-secret-guard: rewrote/); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); const withAccount = await prefetchArgv('echo op://Private/item/field-account'); configure({}); assert.deepEqual(withAccount.argvs.at(-1), ['op', 'read', '--account', 'my.1password.com', 'op://Private/item/field-account']); assert.equal(commandPart(withAccount.received), 'echo "${__wt_secret_0}"'); const plain = await prefetchArgv('echo op://Private/item/field-plain'); assert.deepEqual(plain.argvs.at(-1), ['op', 'read', 'op://Private/item/field-plain']); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
 await test('double-quoted op reference rewrites with exactly one level of quoting', async () => { const { received } = await prefetchArgv('export K="op://Private/item/field-dq"; printf %s "$K"'); assert.equal(commandPart(received), 'export K="${__wt_secret_0}"; printf %s "$K"'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value'); });
@@ -406,7 +407,7 @@ await test('Bash secret-file reads warn and execute in measurement mode', async 
   const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event; return { text: 'fixture file contents' }; });
   assert.equal(received.command, command);
   assert.equal(result.deny, undefined);
-  assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+  assert.equal(result.text, 'fixture file contents'); assert.match(result.context?.at(-1) ?? '', /WOULD BLOCK; executed in measurement mode/);
 });
 await test('all SR Cloud and review rows retain their recorded verdicts', async () => {
   for (const fixture of corpus.denyCommands) assert.equal(verdictForBash(fixture.command).verdict, fixture.verdict, fixture.command);
@@ -417,14 +418,14 @@ await test('Bash policy evaluates the byte-identical original before reference r
   let received;
   const result = await bash($, { tool: 'Bash', command, tool_use_id: 'tool-order' }, async (event) => { received = event.command; return { text: 'ok' }; });
   assert.equal(received?.includes('__wt_secret_0'), true, 'the reference was not rewritten');
-  assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+  assert.equal(result.text, 'ok'); assert.match(result.context?.at(-1) ?? '', /WOULD BLOCK; executed in measurement mode/);
 });
 await test('Read and NotebookRead guarded paths warn but still execute', async () => {
   for (const [hook, event] of [[read, { tool: 'Read', file_path: '/tmp/.env' }], [notebookRead, { tool: 'NotebookRead', notebook_path: '/tmp/.aws/credentials' }]]) {
     let executed = false;
     const result = await hook($, event, async () => { executed = true; return { text: 'contents' }; });
     assert.equal(executed, true);
-    assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+    assert.equal(result.text, 'contents'); assert.match(result.context?.at(-1) ?? '', /WOULD BLOCK; executed in measurement mode/);
   }
 });
 await test('malformed read events fail open after a value-free evaluation', async () => {
@@ -634,10 +635,12 @@ await test('a scrubbed prompt carries the redaction note as context and keeps it
 });
 await test('a scrubbed tool result explains its tokens; an untouched one gets no note', async () => {
   const value = 'tok' + 'en=' + 'Hy72' + 'kQp1' + 'Vn38';
+  // The host renders an answered call from its result, never from a hook's `text`: the note goes in `context`.
   const scrubbed = await call('x', `out ${value}`);
-  assert.match(scrubbed.text, /REDACTION TOKEN/);
+  assert.match((scrubbed.context ?? []).join('\n'), /REDACTION TOKEN/);
+  assert.doesNotMatch(scrubbed.text, /REDACTION TOKEN/);
   const clean = await call('x', 'nothing sensitive here');
-  assert.doesNotMatch(clean.text, /REDACTION TOKEN/);
+  assert.doesNotMatch(JSON.stringify(clean), /REDACTION TOKEN/);
 });
 await test('plain prompt reaches next exactly once and preserves its outcome', async () => {
   const input = { text: 'continue', source: 'user' };
@@ -3690,23 +3693,27 @@ await test('F4 distinctive secrets retain inbound result stream and outbound pro
   assert.ok(answer.deny, 'distinctive secret was not refused outbound');
   assert.equal(executed, false);
 }));
-await test('F5 refused registration logs aggregate kind reason and count without values or hashes', () => freshVault(async () => {
+function registrationEvents() {
+  return [...journalSnapshot().values()].flatMap((text) => text.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))).filter((event) => event.action === 'registration-refused');
+}
+await test('F5 refused registration journals kind and count without values or hashes', () => freshVault(async () => {
   const before = logs.length;
+  const beforeEvents = registrationEvents().length;
   const beforeCalls = calls.length;
   for (const value of ['\n', '\r\n', 'Q7', 'report']) tokenize('op-output', value);
   await prompt($, { text: 'ordinary prose' }, async (event) => event);
-  const refused = logs.slice(before).filter((line) => line.includes('registration refused'));
-  assert.equal(refused.length, 3, 'refused registrations were not logged by reason');
-  assert.ok(refused.includes('wt-secret-guard: registration refused (kind op-output, reason whitespace, count 2)'));
-  assert.ok(refused.includes('wt-secret-guard: registration refused (kind op-output, reason short, count 1)'));
-  assert.ok(refused.includes('wt-secret-guard: registration refused (kind op-output, reason common-word, count 1)'));
-  assert.equal(refused.some((line) => /report|Q7|[\r\n]|#[a-f0-9]{6}|sha256/.test(line)), false, 'refusal log disclosed value material');
+  const refused = registrationEvents().slice(beforeEvents);
+  assert.deepEqual(refused.map(({ kinds, count }) => ({ kinds, count })), [
+    { kinds: ['op-output'], count: 2 }, { kinds: ['op-output'], count: 1 }, { kinds: ['op-output'], count: 1 },
+  ]);
+  assert.equal(logs.length, before);
+  assert.equal(/report|Q7|#[a-f0-9]{6}|sha256/.test(JSON.stringify(refused)), false, 'refusal journal disclosed value material');
   const published = calls.slice(beforeCalls).filter((call) => call.key === 'detections').at(-1)?.value;
   assert.equal(published?.entries?.some((entry) => entry.kind === 'op-output') ?? false, false);
 }));
 await test('F6 under floor op reads refuse execution with a reason and register nothing', () => freshVault(async () => {
   for (const [index, value, reason] of [[0, '\n\n', 'whitespace'], [1, 'Q7', 'short'], [2, 'Report\r\n', 'common-word'], [3, '\r\n', 'whitespace'], [4, '', 'whitespace']]) {
-    const before = logs.length;
+    const before = registrationEvents().length;
     let reads = 0;
     const runtime = { ...$, process: { run: async (argv, init) => {
       if (/^op(?:\.exe)?$/.test(argv[0])) { reads += 1; return { exitCode: 0, stdout: value }; }
@@ -3720,7 +3727,7 @@ await test('F6 under floor op reads refuse execution with a reason and register 
       await assertNotHeld(value.replace(/\r?\n$/, ''));
     }
     assert.equal(reads, 1, 'under-floor op failure was not remembered');
-    assert.ok(logs.slice(before).some((line) => line.includes(`reason ${reason}`)), 'op floor refusal was silent');
+    assert.ok(registrationEvents().length > before, 'op floor refusal was not journaled');
   }
 }));
 await test('F7 clipped op output spans cannot register newline or common word slices', () => freshVault(async () => {
@@ -3728,12 +3735,12 @@ await test('F7 clipped op output spans cannot register newline or common word sl
   for (const tail of ['\n', 'report']) {
     const value = `${marker}${tail}`;
     tokenize('op-output', value);
-    const before = logs.length;
+    const before = registrationEvents().length;
     const answer = await call('op item get example', value);
     await assertNotHeld(tail);
     assert.equal(answer.text.includes(value), false, 'clipped slice released the full held op-output value');
     assert.ok(answer.text.startsWith(marker), 'clipping changed an already issued token');
-    assert.ok(logs.slice(before).some((line) => /registration refused.*kind op-output/.test(line)), 'clipped op-output refusal was silent');
+    assert.ok(registrationEvents().slice(before).some((event) => event.kinds.includes('op-output')), 'clipped op-output refusal was not journaled');
   }
   assert.equal((await call('echo one\necho two', 'one\ntwo')).deny, undefined);
 }));
@@ -3742,12 +3749,12 @@ await test('F8 under floor file references fail closed and stripped variants are
     const path = `/tmp/wt-floor-file-${index}`;
     setFile(path, value);
     let executed = false;
-    const before = logs.length;
+    const before = registrationEvents().length;
     const answer = await bash($, { tool: 'Bash', command: `printf %s secret:file:${path}` }, async () => { executed = true; });
     assert.equal(executed, false, 'under-floor file reference executed');
     assert.match(answer.deny ?? '', new RegExp(reason), 'file floor refusal did not state its reason');
     await assertNotHeld(value);
-    assert.ok(logs.slice(before).some((line) => line.includes(`reason ${reason}`)), 'file floor refusal was silent');
+    assert.ok(registrationEvents().length > before, 'file floor refusal was not journaled');
   }
   const value = 'FAKE-variant-q7X9m2R8\n\n';
   setFile('/tmp/wt-floor-variant', value);
@@ -3765,14 +3772,14 @@ await test('F8b an empty file reference still binds, executes, and holds nothing
   const { testVaultSnapshot } = await import('./token-vault.js');
   assert.equal(testVaultSnapshot().values.has(''), false, 'an empty value was held');
 }));
-await test('F9 refused detections mask their first occurrence and log on every registering hook path', () => freshVault(async () => {
+await test('F9 refused detections mask their first occurrence and journal on every registering hook path', () => freshVault(async () => {
   const text = 'password: report';
   const check = async (run) => {
-    const before = logs.length;
+    const before = registrationEvents().length;
     const result = await run();
     assert.equal(result.includes('report'), false, 'refused detection was not masked in its first text');
     await assertNotHeld('report');
-    assert.ok(logs.slice(before).some((line) => /registration refused.*reason common-word/.test(line)), 'hook registration refusal was silent');
+    assert.ok(registrationEvents().length > before, 'hook registration refusal was not journaled');
   };
   await check(() => receive($, { text }, async (event) => event.text));
   await check(() => prompt($, { text }, async (event) => event.text));
@@ -4049,6 +4056,92 @@ await test('a refused common word does not refuse text beside an issued token', 
 await test('a successful result scrubs a value that only a later field revealed', () => freshVault(async () => {
   const answer = await bash($, { tool: 'Bash', command: 'true' }, async () => ({ result: { stdout: 'PIN 6127\n', stderr: '{"type":"CONCEALED","value":"6127"}' }, text: 'PIN 6127\n', ref: 9 }));
   assert.equal(/(?<![A-Za-z0-9])6127(?![A-Za-z0-9])/.test(JSON.stringify(answer)), false, 'the value revealed by a later field stayed raw in an earlier one');
+}));
+// The host's ToolCallResult is a union: a refusal carries `deny` and nothing else, and on an answered call
+// `text` is core's own rendering, which the host does not read back from a hook (measured on a real host: a
+// warning appended there never reached the model, on a refusal or on a result). The measurement-mode warning
+// therefore travels inside the refusal text, or in `context` beside a result.
+const MEASUREMENT_WARNING = /WOULD BLOCK; executed in measurement mode/;
+// A refusal may come before anything ran (an unreadable reference), so its warning must not claim execution.
+const REFUSAL_WARNING = /\[wt-secret-guard: WOULD BLOCK(?![^\]]*executed)[^\]]*credential file/;
+const guardedCommand = 'cat "$HOME/.netrc"';
+await test('a guarded-path refusal for an unreadable reference carries the warning inside deny and no other field', () => freshVault(async () => {
+  let executed = false;
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} secret:file:/tmp/wt-secret-guard-missing` }, async () => { executed = true; return { text: 'ran' }; });
+  assert.equal(executed, false, 'the refused command ran');
+  assert.deepEqual(Object.keys(answer), ['deny'], 'a refusal carried a field the host contract forbids');
+  assert.match(answer.deny, /refused Bash execution/);
+  assert.match(answer.deny, REFUSAL_WARNING, 'the refusal did not carry a warning that stays true when nothing ran');
+  assert.doesNotMatch(answer.deny, MEASUREMENT_WARNING, 'a refusal claimed the command executed');
+}));
+await test('a guarded-path errored command answers a scrubbed refusal with the warning inside deny and no other field', () => freshVault(async () => {
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} >&2; exit 3` }, async () => erroredCore(`Exit code 3\n${erroredValue}`));
+  assert.deepEqual(Object.keys(answer), ['deny'], 'a refusal carried a field the host contract forbids');
+  assert.equal(answer.deny.includes(erroredValue), false, 'raw value reached the refusal');
+  assert.match(answer.deny, /secret:slack-token#/);
+  assert.match(answer.deny, REFUSAL_WARNING, 'the refusal did not carry a warning that stays true when nothing ran');
+  assert.doesNotMatch(answer.deny, MEASUREMENT_WARNING, 'a refusal claimed the command executed');
+}));
+await test('a guarded-path result keeps core text untouched and carries the warning in context after the context beneath', () => freshVault(async () => {
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: guardedCommand }, async () => ({ result: { stdout: 'ok\n', stderr: '' }, text: 'ok\n', ref: 9, context: ['beneath'] }));
+  assert.equal(answer.deny, undefined);
+  assert.equal(answer.text, 'ok\n', 'core text was rewritten');
+  assert.equal(answer.ref, 9, 'core ref was dropped');
+  assert.deepEqual(answer.context?.slice(0, 1), ['beneath'], 'context from the hooks beneath was dropped');
+  assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING, 'the measurement warning was not in context');
+}));
+await test('a guarded Read answers with the warning in context, never in text', () => freshVault(async () => {
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ result: { type: 'text' }, text: 'contents', ref: 4 }));
+  assert.equal(answer.text, 'contents', 'core text was rewritten');
+  assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING);
+}));
+await test('an unguarded result gets no measurement warning anywhere', () => freshVault(async () => {
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo plain' }, async () => ({ result: { stdout: 'plain\n', stderr: '' }, text: 'plain\n', ref: 3 }));
+  assert.equal(MEASUREMENT_WARNING.test(JSON.stringify(answer)), false);
+}));
+await test('an empty refusal from beneath stays a bare refusal, guarded or not, even after a reference rewrite', () => freshVault(async () => {
+  const plain = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async () => ({ deny: '' }));
+  assert.deepEqual(plain, { deny: '' }, 'an empty refusal gained a field the host contract forbids');
+  const guarded = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} && echo op://Private/item/field` }, async () => ({ deny: '' }));
+  assert.deepEqual(Object.keys(guarded), ['deny'], 'a guarded empty refusal gained a field the host contract forbids');
+  assert.match(guarded.deny, REFUSAL_WARNING);
+}));
+await test('a guarded errored result with nothing to scrub keeps core error and carries the warning in context', () => freshVault(async () => {
+  const core = { isError: true, result: 'Exit code 3', text: 'Exit code 3', ref: 7 };
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: `${guardedCommand} >/dev/null; exit 3` }, async () => core);
+  assert.equal(answer.deny, undefined);
+  assert.equal(answer.result, core.result);
+  assert.equal(answer.text, core.text, 'core error text was rewritten');
+  assert.equal(answer.isError, true);
+  assert.match(answer.context?.at(-1) ?? '', MEASUREMENT_WARNING);
+}));
+// The guard's own wording is joined to text that was already scrubbed. The join can complete a held value that
+// no single piece held, and a note can itself contain a held value, so what the guard assembles is scrubbed again.
+await test('a refusal warning joined to a refusal never completes a held value', () => freshVault(async () => {
+  const held = 'Zq8r1Lp6\n[wt-secret-guard:';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ deny: 'Zq8r1Lp6' }));
+  assert.deepEqual(Object.keys(answer), ['deny']);
+  assert.equal(answer.deny.includes(held), false, 'the refusal warning completed a held value');
+}));
+await test('a measurement warning in context never carries a held value', () => freshVault(async () => {
+  const held = 'This command can read a credential file.';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/.env' }, async () => ({ result: { type: 'text' }, text: 'contents', ref: 4 }));
+  assert.equal(JSON.stringify(answer.context ?? []).includes(held), false, 'the measurement warning carried a held value');
+}));
+await test('a redaction note in context never carries a held value', () => freshVault(async () => {
+  const held = 'The real value was removed before it reached you';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Read')($, { tool: 'Read', file_path: '/tmp/wt-secret-guard-notes.txt' }, async () => ({ result: { type: 'text', file: { content: held } }, text: held, ref: 5 }));
+  assert.equal(JSON.stringify(answer).includes(held), false, 'a note carried a held value');
+}));
+await test('a redaction note joined to an errored refusal never carries a held value', () => freshVault(async () => {
+  const held = 'The real value was removed before it reached you';
+  tokenize('fixture', held);
+  const answer = await hookForTool('Bash')($, { tool: 'Bash', command: 'echo plain >&2; exit 3' }, async () => erroredCore(`Exit code 3\n${erroredValue}`));
+  assert.deepEqual(Object.keys(answer), ['deny']);
+  assert.equal(answer.deny.includes(held), false, 'a note in the refusal carried a held value');
 }));
 const { runRevisionLocks } = await import('./revision-locks.mjs');
 await runRevisionLocks({ test, freshVault, receive, $, assertNotHeld, call, testState, tokenize, mcp, hookForTool, logs, prompt, setFile, rewriteReferences, referenceHostFor, calls, journalHostFor, transcriptPath, getFile, configure, allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
@@ -4338,4 +4431,575 @@ await test('R3 opaque credential surrounded by sentence prose stays masked', () 
     text: `password="See the docs for ${opaqueCredential}${opaqueTail} and the details here.` }]);
   assert.equal(output, 'secret:assignment#<id>\n[NOTE]');
 }));
+async function quietScrub(name, run) {
+  await test(name, async () => {
+    const before = logs.length;
+    const result = JSON.stringify(await run());
+    assert.equal(result.includes(github), false, 'raw credential survived quiet scrub');
+    assert.match(result, /secret:github-classic#[a-f0-9]{6}/);
+    assert.equal(logs.length, before, `${name}: routine scrub reached ui.log`);
+  });
+}
+await quietScrub('N1 tool result scrub stays console silent', () => hookForTool('Grep')($, { tool: 'Grep' }, async () => ({ text: github })));
+await quietScrub('N2 Bash scrub stays console silent', () => call('echo fixture', github));
+await quietScrub('N3 origin prompt scrub stays console silent', () => {
+  setFile(historyPath, `${JSON.stringify({ display: github, pastedContents: {} })}\n`);
+  return prompt($, { text: github, origin: { kind: 'composer' } }, async (event) => event);
+});
+await quietScrub('N4 inbound scrub stays console silent', () => receive($, { text: github }, async (event) => event));
+await quietScrub('N5 main owner forwarding stays console silent', () => {
+  const event = { tool: 'mcp__atrium__speak', text: github, tool_use_id: 'quiet-owner' };
+  setFile(transcriptPath, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: event.tool_use_id, input: event }] } })}\n`);
+  return mcp($, event, async (forwarded) => forwarded);
+});
+await quietScrub('N6 subagent owner forwarding stays console silent', () => mcp($, { tool: 'mcp__atrium__speak', text: github, agentId: 'quiet-child' }, async (event) => event));
+await test('N7 common word registration scrub stays console silent', async () => {
+  const before = logs.length;
+  const result = await hookForTool('Grep')($, { tool: 'Grep' }, async () => ({ text: 'password: report' }));
+  assert.equal(result.text.includes('report'), false, 'common word detection was not replaced');
+  assert.match(result.text, /secret:[a-z-]+#[a-f0-9]{6}/);
+  assert.equal(logs.length, before, 'N7 common word registration scrub stays console silent: routine scrub reached ui.log');
+});
+await test('N8 failure notices dedupe by session and fixed kind', async () => {
+  const localLogs = [];
+  const runtime = (id) => ({ ...$, session: { ...$.session, id: () => id }, ui: { log: (line) => localLogs.push(line) } });
+  const first = runtime('notice-session-one');
+  for (let index = 0; index < 2; index += 1) {
+    await bash(first, { tool: 'Bash', command: github, agentId: `child-${index}` }, async () => assert.fail('raw outbound input executed'));
+  }
+  assert.equal(localLogs.length, 1, 'same failure kind reached ui.log twice in one session');
+  for (let index = 0; index < 2; index += 1) {
+    await attachment(first, { text: github, index, origin: { kind: 'hook', event: 'SessionStart' } }, async (event) => event);
+  }
+  assert.equal(localLogs.length, 2, 'different failure kind did not get exactly one notice');
+  await bash(runtime('notice-session-two'), { tool: 'Bash', command: github, agentId: 'child' }, async () => assert.fail('raw outbound input executed'));
+  assert.equal(localLogs.length, 3, 'new session did not get its own failure notice');
+});
+await test('N9 diagnostic journal events do not alter aggregates or promotion', async () => {
+  const host = journalHostFor($);
+  const events = [{ action: 'evaluated', surface: 'bash', project: 'measured', at: '2026-08-01T00:00:00.000Z' }];
+  const diagnostics = [];
+  for (const [surface, action] of [['registration', 'registration-refused'], ['mcp', 'storage-unrepaired']]) {
+    const event = await buildEvent(host, { surface, action, kinds: ['assignment'], count: 2 });
+    diagnostics.push({ ...event, project: 'diagnostic-only', at: '2020-01-01T00:00:00.000Z' });
+  }
+  assert.deepEqual(deriveAggregates([...events, ...diagnostics]), deriveAggregates(events));
+  const now = Date.parse('2026-09-22T00:00:00.000Z');
+  assert.deepEqual(promotionStatus([...events, ...diagnostics], [], now), promotionStatus(events, [], now));
+});
+await test('N8 different text shares fixed notice identity', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  const host = { sessionId: () => 'notice-text', uiLog: (text) => lines.push(text) };
+  await consoleNotice(host, 'fixed-id', 'first text');
+  await consoleNotice(host, 'fixed-id', 'different text');
+  assert.equal(lines.length, 1, 'different text duplicated a fixed notice id');
+});
+await test('N8 concurrent delivery reserves notice identity', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const host = { sessionId: () => 'notice-concurrent', uiLog: async (text) => { lines.push(text); await pending; } };
+  const first = consoleNotice(host, 'fixed-id', 'first');
+  const second = consoleNotice(host, 'fixed-id', 'second');
+  await new Promise((resolve) => setImmediate(resolve));
+  release();
+  await Promise.all([first, second]);
+  assert.equal(lines.length, 1, 'concurrent delivery duplicated a notice');
+});
+await test('N8 failed delivery releases notice reservation', async () => {
+  const { consoleNotice } = await import('./console-notice.js');
+  const lines = [];
+  let attempts = 0;
+  const host = { sessionId: () => 'notice-recovery', uiLog: (text) => {
+    if (++attempts === 1) throw new Error('delivery unavailable');
+    lines.push(text);
+  } };
+  assert.equal(await consoleNotice(host, 'fixed-id', 'failure'), false, 'failed notice must return false without throwing');
+  assert.equal(await consoleNotice(host, 'fixed-id', 'recovery'), true);
+  assert.equal(lines.length, 1, 'failed delivery consumed the notice');
+});
+for (const boundary of ['sessionId', 'uiLog']) {
+  await test(`N11 ${boundary} failure preserves subagent denial`, async () => {
+    const event = { tool: 'Bash', command: github, agentId: `notice-failure-${boundary}` };
+    const working = { ...$, session: { ...$.session, id: () => `deny-${boundary}` }, ui: { log: () => {} } };
+    const expected = await bash(working, event, async () => assert.fail('raw outbound input executed'));
+    const failing = { ...working,
+      session: { ...working.session, id: () => { if (boundary === 'sessionId') throw new Error('session unavailable'); return `deny-failure-${boundary}`; } },
+      ui: { log: () => { if (boundary === 'uiLog') throw new Error('delivery unavailable'); } },
+    };
+    const actual = await bash(failing, event, async () => assert.fail('raw outbound input executed'));
+    assert.ok(actual.deny, 'notice failure lost subagent denial');
+    assert.deepEqual(actual, expected, 'notice failure changed the protection outcome');
+  });
+}
+await test('N10 overlapping refusal drains attempt each entry at most once', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-overlap');
+  const originalNow = Date.now;
+  let now = originalNow();
+  let attempts = 0;
+  const host = { ...journalHostFor($), sessionId: () => 'refusal-overlap', processRun: () => {
+    attempts += 1; return { exitCode: 1 };
+  } };
+  Date.now = () => now;
+  try {
+    await Promise.all(Array.from({ length: 100 }, () => {
+      tokenize('op-output', 'report');
+      return publish(host);
+    }));
+    assert.equal(attempts, 100, 'overlapping publications did not attempt all 100 drained entries');
+    now += 60_000;
+    await Promise.all(Array.from({ length: 100 }, () => publish(host)));
+    assert.ok(attempts <= 100, 'overlapping outage drains re-attempted entries: failed writes must not exceed 100 drained refusals');
+  } finally { Date.now = originalNow; }
+}));
+await test('N10 partial refusal drain drops failed suffix', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-partial');
+  const records = [];
+  const originalNow = Date.now;
+  let now = originalNow();
+  let attempts = 0;
+  let outage = true;
+  const host = { ...journalHostFor($), sessionId: () => 'refusal-partial', processRun: (argv, init) => {
+    if (++attempts > 1 && outage) return { exitCode: 1 };
+    records.push(JSON.parse(init.stdin));
+    return { exitCode: 0, stdout: argv[2] };
+  } };
+  Date.now = () => now;
+  try {
+    for (const value of ['\n', 'Q7', 'report']) tokenize('op-output', value);
+    await publish(host);
+    assert.deepEqual(records.map(({ reason, count }) => ({ reason, count })), [{ reason: 'whitespace', count: 1 }], 'partial drain did not preserve successful prefix exactly once');
+    assert.equal(attempts, 2, 'partial drain attempted entries after its first failure');
+    outage = false;
+    now += 60_000;
+    await publish(host);
+    await publish(host);
+    assert.equal(attempts, 2, 'later publications re-attempted the dropped refusal suffix');
+    assert.equal(records.length, 1, 'partial drain replayed its successful prefix or dropped suffix');
+  } finally { Date.now = originalNow; }
+}));
+await test('N10 session outage does not suppress healthy refusal writes', () => freshVault(async () => {
+  const { publish } = await import('./journal.js?n10-sessions');
+  const records = [];
+  const base = journalHostFor($);
+  const failing = { ...base, sessionId: () => 'refusal-outage', processRun: () => ({ exitCode: 1 }) };
+  const healthy = { ...base, sessionId: () => 'refusal-healthy', processRun: (argv, init) => {
+    records.push(JSON.parse(init.stdin)); return { exitCode: 0, stdout: argv[2] };
+  } };
+  tokenize('op-output', '\n');
+  await publish(failing);
+  tokenize('op-output', 'report');
+  await publish(healthy);
+  assert.equal(records.length, 1, 'session A outage suppressed session B refusal write on its next publication');
+  assert.deepEqual(records.map(({ sessionId, reason, count }) => ({ sessionId, reason, count })), [{ sessionId: 'refusal-healthy', reason: 'common-word', count: 1 }], 'healthy session received another drain\'s dropped refusal');
+  await publish(healthy);
+  assert.equal(records.length, 1, 'healthy session recorded the refusal more than once');
+}));
+await test('N12 registration refusal reasons are closed enums', async () => {
+  const host = journalHostFor($);
+  for (const reason of ['whitespace', 'short', 'common-word', 'ordinary-shape', 'low-distinctiveness', 'released']) {
+    assert.equal((await buildEvent(host, { surface: 'registration', action: 'registration-refused', reason })).reason, reason, 'validated refusal reason was dropped');
+  }
+  const event = await buildEvent(host, { surface: 'registration', action: 'registration-refused', reason: github });
+  assert.equal(Object.hasOwn(event, 'reason'), false, 'unvalidated reason reached journal');
+});
+await test('N12 registration drain preserves refusal reasons', () => freshVault(async () => {
+  const before = registrationEvents().length;
+  for (const value of ['\n', 'Q7', 'report']) tokenize('op-output', value);
+  const { publishRefusals } = await import('./journal.js');
+  await publishRefusals(journalHostFor($));
+  assert.deepEqual(registrationEvents().slice(before).map(({ reason }) => reason), ['whitespace', 'short', 'common-word'], 'registration journal lost refusal reasons');
+}));
+const { runReleaseLineLocks } = await import('./release-line-locks.mjs');
+await runReleaseLineLocks({ test, freshVault, receive, $, testState, tokenize, mcp, hookForTool, configure, hooks,
+  allTools: hooks.find((entry) => entry.event === 'tool.call' && entry.matcher?.tool instanceof RegExp && entry.matcher.tool.test('CustomTool'))?.hook });
+// Test-only instrumentation keeps private recognizers private in the shipped modules.
+const recognizerRoot = process.env.WT_SECRET_GUARD_TEST_ROOT
+  ? new URL(process.env.WT_SECRET_GUARD_TEST_ROOT) : new URL('./', import.meta.url);
+async function privateRecognizer(file, exports) {
+  const url = new URL(file, recognizerRoot);
+  const source = readFileSync(url, 'utf8').replace(/from '(\.\/[^']+)'/g,
+    (_match, path) => `from '${new URL(path, url).href}'`);
+  return import(`data:text/javascript;base64,${Buffer.from(`${source}\n${exports}`).toString('base64')}`);
+}
+const RECOGNIZER_CHILD = String.raw`
+    const root = new URL(process.argv[1]);
+    process.stdin.setEncoding('utf8');
+    const { operation, value } = JSON.parse(await new Promise(resolve => {
+      let data = ''; process.stdin.on('data', chunk => data += chunk);
+      process.stdin.on('end', () => resolve(data));
+    }));
+    let result;
+    if (operation === 'outbound' || operation === 'private-outbound') {
+      const { classifyOutbound } = await import(new URL('outbound-tools.js', root));
+      const verdict = await classifyOutbound({}, { tool: 'mcp__sink__send', payload: { note: value } });
+      result = { surface: verdict.surface, kinds: verdict.findings.map(item => item.kind) };
+    } else if (operation === 'refusal') {
+      const { registrationRefusalReason } = await import(new URL('token-vault.js', root));
+      result = registrationRefusalReason(value, 'op-output');
+    } else if (operation === 'punctuation') {
+      const { detections } = await import(new URL('detector.js', root));
+      result = value.map(text => detections(text).map(item => item.kind));
+    } else if (operation === 'detector') {
+      const { detections } = await import(new URL('detector.js', root));
+      result = detections(value).map(item => item.kind);
+    } else if (operation === 'emails') {
+      const { configure } = await import(new URL('config.js', root));
+      configure({ maskEmails: true });
+      const { classifyOutbound } = await import(new URL('outbound-tools.js', root));
+      const verdict = await classifyOutbound({}, { tool: 'mcp__sink__send', payload: { note: value } });
+      result = { surface: verdict.surface, kinds: verdict.findings.map(item => item.kind) };
+    } else if (operation === 'template') {
+      const { readFileSync } = await import('node:fs');
+      const url = new URL('references.js', root);
+      const source = readFileSync(url, 'utf8') + '\nexport { templateDestination };';
+      const { templateDestination } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+      result = templateDestination(value);
+    } else if (operation === 'template-plan') {
+      const { planReferences } = await import(new URL('references.js', root));
+      const plan = planReferences(value);
+      result = { ok: plan.ok, reason: plan.reason, occurrences: plan.occurrences.length };
+    } else if (operation === 'newline-reference') {
+      const { rewriteReferences } = await import(new URL('reference-runtime.js', root));
+      result = [];
+      for (let index = 0; index < 3; index += 1) {
+        const host = { fsRead: async () => 'copy' + index + value };
+        const reference = ['secret', 'file', '/fixture/newline'].join(':');
+        const plan = await rewriteReferences(host, 'printf %s ' + reference);
+        result.push({ count: plan.count, invalid: plan.invalidReference, reason: plan.reason, substituted: plan.substituted.length });
+      }
+    } else {
+      const { planReferences } = await import(new URL('references.js', root));
+      result = [];
+      for (const prefix of ["cat <<'EOF'\n", 'cat <<EOF\n', 'cat <<-EOF\n']) {
+        const plan = planReferences(prefix + value);
+        result.push({ ok: plan.ok, reason: plan.reason, occurrences: plan.occurrences.length });
+      }
+    }
+    console.log('RECOGNIZER_OK ' + JSON.stringify(result));`;
+function recognizerWatchdog(operation, value, expected) {
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', RECOGNIZER_CHILD, recognizerRoot.href], {
+    input: JSON.stringify({ operation, value }), encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL',
+  });
+  const failure = child.error?.code === 'ETIMEDOUT' ? 'watchdog timeout: ETIMEDOUT' : `child spawn failure: ${child.error?.code}`;
+  assert.equal(child.error, undefined, failure);
+  assert.equal(child.status, 0, `child import/assertion failure: ${child.stderr}`);
+  assert.ok(child.stdout.startsWith('RECOGNIZER_OK '), 'child success marker absent');
+  assert.deepEqual(JSON.parse(child.stdout.slice('RECOGNIZER_OK '.length)), expected);
+}
+const labelWord = ['pass', 'word'].join('');
+await test('linear L1 review repro outbound watchdog', () => {
+  const text = labelWord + ': of the ' + 'AaaAaaAaa' + 'a'.repeat(60) + 'A in on by\n';
+  assert.equal(text.length, 97);
+  recognizerWatchdog('outbound', text, { surface: 'mcp', kinds: ['op-output'] });
+});
+await test('linear L1b ordinary prose outbound watchdog', () => {
+  const text = labelWord + ': ask the platform team for the shared staging value in the Vault entry named Prod A\n';
+  recognizerWatchdog('outbound', text, { surface: 'mcp', kinds: ['op-output'] });
+});
+const refusalPumps = [
+  ['L2 lowercase then uppercase', 'AaaAaaAaa' + 'a'.repeat(64000) + 'A', ''],
+  ['lowercase then Ab', 'AaaAaaAaa' + 'a'.repeat(64000) + 'Ab', ''],
+  ['lowercase then A1', 'AaaAaaAaa' + 'a'.repeat(64000) + 'A1', ''],
+  ['lowercase then titlecase', 'AaaAaaAaa' + 'a'.repeat(64000) + 'ǅ', ''],
+  ['lowercase then aA and lowercase', 'AaaAaaAaa' + 'a'.repeat(64000) + 'aA' + 'a'.repeat(60), 'low-distinctiveness'],
+  ['uppercase then lowercase', 'AaaAaaAaa' + 'A'.repeat(64000) + 'a', ''],
+  ['accepted long input', 'AaaAaaAaa' + 'a'.repeat(64000) + 'aa', 'low-distinctiveness'],
+];
+for (const [name, value, reason] of refusalPumps) {
+  await test(`linear ${name} refusal watchdog`, () => recognizerWatchdog('refusal', value, reason));
+}
+await test('linear punctuation outbound detector watchdog', () => {
+  const texts = ['.', ',', '?'].map(edge => labelWord + ': ' + edge.repeat(100000) + 'a\n');
+  recognizerWatchdog('punctuation', texts, Array(3).fill(['op-output']));
+});
+await test('linear heredoc reference planner watchdog', () => {
+  recognizerWatchdog('references', '\\'.repeat(100000) + 'x\nEOF\n', Array(3).fill({ ok: true, reason: '', occurrences: 0 }));
+});
+for (const [name, value] of [['local starts', 'a.'.repeat(150000) + '!'], ['domain', 'a@' + 'a.'.repeat(150000) + '1!']]) {
+  await test(`linear email ${name} watchdog`, () => recognizerWatchdog('emails', value, { surface: 'mcp', kinds: [] }));
+}
+await test('linear template destination watchdog', () => recognizerWatchdog('template', '>'.repeat(100000) + 'x', false));
+await test('linear template reference planner watchdog', () => {
+  recognizerWatchdog('template-plan', 'echo op://a/b/c ' + '>'.repeat(100000) + 'x', {
+    ok: false, reason: 'a redirection without a target - beside a secret reference this guard accepts only simple commands with literal command names, joined by ; && || | & or a newline', occurrences: 1,
+  });
+});
+await test('linear private key watchdog', () => recognizerWatchdog('private-outbound', '-----BEGIN PRIVATE KEY-----'.repeat(100000), { surface: 'mcp', kinds: [] }));
+await test('linear JWT outbound watchdog', () => recognizerWatchdog('private-outbound', 'eyJ-'.repeat(150000) + '!', { surface: 'mcp', kinds: [] }));
+// Positive long inputs: a linear rewrite must still FIND a long credential, and one placed after a long
+// failing prefix. A scanner that gives up on long text passes every negative watchdog above.
+const longJwt = ['ey', 'J'].join('') + 'a'.repeat(100000) + '.b.c';
+const keyMarker = (edge) => ['-----', edge, ' PRIVATE KEY-----'].join('');
+const longKey = keyMarker('BEGIN') + '\n' + 'Q'.repeat(100000) + '\n' + keyMarker('END');
+const positiveLongCases = [
+  ['long JWT', 'private-outbound', longJwt, { surface: 'mcp', kinds: ['jwt'] }],
+  ['JWT after failing prefix', 'private-outbound', 'eyJ-'.repeat(150000) + '! ' + longJwt, { surface: 'mcp', kinds: ['jwt'] }],
+  ['long private key', 'private-outbound', longKey, { surface: 'mcp', kinds: ['private-key'] }],
+  ['private key after unterminated openings', 'private-outbound', keyMarker('BEGIN').repeat(100000) + '\n' + longKey, { surface: 'mcp', kinds: ['private-key'] }],
+  ['long email', 'emails', 'a'.repeat(100000) + '@example.test', { surface: 'mcp', kinds: ['email'] }],
+  ['email after failing local starts', 'emails', 'a.'.repeat(150000) + '! b@example.test', { surface: 'mcp', kinds: ['email'] }],
+  ['long template destination', 'template', '> ' + 'a'.repeat(100000) + '.tpl', true],
+  ['template after failing redirects', 'template', '>'.repeat(100000) + 'x ; cat > a.tpl', true],
+];
+for (const [name, operation, value, expected] of positiveLongCases) {
+  await test(`linear positive ${name} watchdog`, () => recognizerWatchdog(operation, value, expected));
+}
+// op-output and environment-dump captured `(\S.*?)[ \t]*$`: the lazy value and the trailing blanks retried
+// each other on a run of blanks, quadratic in the run length.
+const dumpName = ['X', '_TOK', 'EN'].join('');
+const blankRunCases = [
+  ['op-output blank run', labelWord + ': a' + ' '.repeat(100000) + 'b\n', ['op-output']],
+  ['environment-dump blank run', dumpName + '=a' + ' '.repeat(100000) + 'b\n', ['environment-dump']],
+  ['op-output tab run', labelWord + ': a' + ' \t'.repeat(50000) + 'b\n', ['op-output']],
+  ['positive long op-output value', labelWord + ': ' + 'v'.repeat(100000) + ' \t \n', ['op-output']],
+];
+for (const [name, value, expected] of blankRunCases) {
+  await test(`linear ${name} watchdog`, () => recognizerWatchdog('detector', value, expected));
+}
+async function trailingBlankPairs() {
+  const { opOutput, environmentDump } = await privateRecognizer('detector.js', String.raw`
+    export const opOutput = patterns.find(([kind]) => kind === 'op-output')[1];
+    export const environmentDump = patterns.find(([kind]) => kind === 'environment-dump')[1];`);
+  return [
+    [opOutput, /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim, labelWord + ':'],
+    [environmentDump, /^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*?)[ \t]*$/gm, dumpName + '='],
+  ];
+}
+function captureMatches(expression, value) {
+  expression.lastIndex = 0;
+  const result = [];
+  for (let match; (match = expression.exec(value));) result.push([match.index, match[0], match[1]]);
+  assert.equal(expression.lastIndex, 0, 'failed-exec lastIndex mismatch');
+  return result;
+}
+// The differential below stays short and lowercase; these cases lock what it cannot see: whole long captures
+// (a truncating trim), several long credentials in one text, and labels in any case (the op-output `i` flag).
+await test('linear trailing-blank capture long values and label case', async () => {
+  const [[opOutput, opOracle], [environmentDump, dumpOracle]] = await trailingBlankPairs();
+  const long = 'v'.repeat(100000);
+  const opTexts = [labelWord + ': ' + long + ' \t ', labelWord + ': ' + long + '\n  ' + labelWord + ':\t' + long + 'w \r\n',
+    'PASSWORD: abcdef', 'Token: abcdef\nsEcReT : ' + long + ' ', 'CREDENTIAL:abcdef\t'];
+  for (const text of opTexts) assert.deepEqual(captureMatches(opOutput, text), captureMatches(opOracle, text));
+  assert.equal(captureMatches(opOutput, opTexts[0])[0][2].length, 100000, 'long op-output capture truncated');
+  assert.equal(captureMatches(opOutput, opTexts[2]).length, 1, 'uppercase op-output label not matched');
+  const dumpTexts = [dumpName + '=' + long + ' \t', 'export ' + dumpName + '=' + long + '\n+ ' + dumpName + ' = ' + long + 'x \n'];
+  for (const text of dumpTexts) assert.deepEqual(captureMatches(environmentDump, text), captureMatches(dumpOracle, text));
+  assert.equal(captureMatches(environmentDump, dumpTexts[1]).length, 2, 'second long environment-dump value missed');
+});
+await test('linear trailing-blank capture differential', async () => {
+  const pairs = await trailingBlankPairs();
+  const matches = captureMatches;
+  let cases = 0;
+  const pieces = [' ', '\t', 'a', 'é', '\n', '\r', ' ', ' ', ':', '='];
+  for (const [candidate, oracle, prefix] of pairs) {
+    const compare = value => {
+      assert.deepEqual(matches(candidate, value), matches(oracle, value), `capture mismatch ${JSON.stringify(value)}`); cases += 1;
+    };
+    for (const lead of ['', ' ', 'x\n', '\t' + prefix + 'z\n']) {
+      exhaustiveStrings(pieces, 5, tail => compare(lead + prefix + tail));
+    }
+    const random = seededRecognizerRandom();
+    for (let trial = 0; trial < 20000; trial += 1) {
+      let value = '';
+      const length = 7 + random() % 34;
+      for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+      compare(prefix + value);
+      compare(value + '\n' + prefix + value);
+    }
+    for (const tail of [' a' + ' '.repeat(3000) + 'b', ' ' + 'v'.repeat(3000) + ' \t ', ' a \r\n', ' a\t ', '  a  ']) compare(prefix + tail);
+  }
+  console.log(`DIFFERENTIAL trailing-blank cases=${cases}`);
+});
+await test('linear newline file reference watchdog', () => {
+  recognizerWatchdog('newline-reference', 'fixture-key-' + '\n'.repeat(300000) + 'x',
+    Array(3).fill({ count: 1, invalid: false, reason: '', substituted: 1 }));
+});
+await test('linear trailing newline differential', async () => {
+  const { boundaryStrip } = await privateRecognizer('reference-runtime.js', String.raw`
+    export const boundaryStrip = typeof stripTrailingNewlines === 'function' ? stripTrailingNewlines
+      : value => value.replace(/\n+$/, '');`);
+  let cases = 0;
+  const compare = value => {
+    assert.equal(boundaryStrip(value), value.replace(/\n+$/, ''), `newline mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['\n', '\r', 'a', '𝒂', '\ud800', '\u2028'], 6, compare);
+  for (const value of ['\n'.repeat(10000), '\n'.repeat(10000) + 'x', 'x' + '\n'.repeat(10000), 'x\r\n', 'x\n\u2028']) compare(value);
+  console.log(`DIFFERENTIAL newline cases=${cases}`);
+});
+await test('linear JWT differential', async () => {
+  const { matcher } = await privateRecognizer('detector.js', String.raw`
+    export const matcher = typeof jwtMatcher === 'function' ? jwtMatcher()
+      : /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;`);
+  const oracle = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
+  let cases = 0;
+  const matches = (expression, value) => {
+    expression.lastIndex = 0;
+    const result = [];
+    for (let match; (match = expression.exec(value));) result.push([match.index, match[0]]);
+    assert.equal(expression.lastIndex, 0, 'JWT failed-exec lastIndex mismatch');
+    return result;
+  };
+  const compare = value => {
+    assert.deepEqual(matches(matcher, value), matches(oracle, value), `JWT mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  const pieces = ['eyJ', 'a', '-', '_', '.', ' ', '!', 'é', '\n'];
+  exhaustiveStrings(pieces, 5, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 30000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 34;
+    for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+    compare(value);
+  }
+  for (const value of ['eyJa.b.c', 'eyJ.b.c', '-eyJ-.b.c-', 'eyJa.b.---', 'eyJa.b.c.eyJd.e.f',
+    'eyJa.eyJb.c.d', 'eyJa.b.-c-', 'eyJa.b.c_', 'xeyJa.b.c', 'éeyJa.b.cé']) compare(value);
+  console.log(`DIFFERENTIAL JWT cases=${cases}`);
+});
+await test('linear template destination differential', async () => {
+  const { templateDestination } = await privateRecognizer('references.js', 'export { templateDestination };');
+  const oracle = /(?:>{1,2}|\btee(?:[ \t]+-\w+)*)[ \t]*(?:"[^"\n]*\.tpl"|'[^'\n]*\.tpl'|[^ \t\n;|&]+\.tpl)(?=[ \t\n]|$|[;|&])/m;
+  let cases = 0;
+  const compare = value => {
+    assert.equal(templateDestination(value), oracle.test(value), `template mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  const pieces = ['>', 'tee', ' ', '-a', 'x', '.tpl', '"', "'", '\n', ';', '\t', '|', '&', '\r', '\u2028', '\u2029'];
+  exhaustiveStrings(pieces, 4, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 40000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 34;
+    for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+    compare(value);
+  }
+  for (const value of ['>.tpl', '>>.tpl', '>>>.tpl', '>x.tpl', '>".tpl"', "tee -a -p 'x y.tpl'\n",
+    'atee x.tpl', 'étee x.tpl', 'tee -x.tpl', 'tee - x.tpl', 'tee x.tpl!', '>"x.tpl"suffix']) compare(value);
+  for (const boundary of ['\r', '\r\n', '\u2028', '\u2029', '\u00a0', '\u0085', '\v']) compare('>x.tpl' + boundary + 'tail');
+  console.log(`DIFFERENTIAL template cases=${cases}`);
+});
+await test('linear private key differential', async () => {
+  const { matcher } = await privateRecognizer('detector.js', String.raw`
+    export const matcher = typeof privateKeyMatcher === 'function' ? privateKeyMatcher()
+      : /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;`);
+  const oracle = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
+  let cases = 0;
+  const matches = (expression, value) => {
+    expression.lastIndex = 0;
+    const result = [];
+    for (let match; (match = expression.exec(value));) result.push([match.index, match[0]]);
+    assert.equal(expression.lastIndex, 0, 'private key failed-exec lastIndex mismatch');
+    return result;
+  };
+  const compare = value => {
+    assert.deepEqual(matches(matcher, value), matches(oracle, value), `key mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  const pieces = ['-----BEGIN PRIVATE KEY-----', '-----END PRIVATE KEY-----', '-----BEGIN RSA PRIVATE KEY-----',
+    '-----END EC PRIVATE KEY-----', '-----BEGIN Xprivate KEY-----', '\n', 'x', '-----'];
+  exhaustiveStrings(pieces, 4, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 20000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 34;
+    for (let at = 0; at < length; at += 1) value += pieces[random() % pieces.length];
+    compare(value);
+  }
+  console.log(`DIFFERENTIAL privateKey cases=${cases}`);
+});
+await test('linear email differential', async () => {
+  const { optionalDetections } = await import(new URL('detector.js', recognizerRoot));
+  const oracle = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}\b/g;
+  let cases = 0;
+  const compare = value => {
+    const expected = [...value.matchAll(oracle)].map(match => ({ kind: 'email', value: match[0] }));
+    assert.deepEqual(optionalDetections(value, { emails: true }), expected, `email mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['a', '.', '-', '@', '_', '!'], 7, compare);
+  const random = seededRecognizerRandom();
+  const alphabet = 'aAz09._%+-@ !\né';
+  for (let trial = 0; trial < 40000; trial += 1) {
+    let value = '';
+    const length = 7 + random() % 74;
+    for (let at = 0; at < length; at += 1) value += alphabet[random() % alphabet.length];
+    compare(value);
+  }
+  const joins = ['', '-', '.', '%', '+', '_', 'é', '\ud800', ' ', '\n', ';', ']'];
+  for (let trial = 0; trial < 20000; trial += 1) {
+    const local = ['-', '..', '%+', 'x', '_', 'x-y'][random() % 6];
+    const tld = 'a'.repeat(1 + random() % 26);
+    compare(['a@b.co', joins[random() % joins.length], local, '@x.', tld,
+      joins[random() % joins.length], 'z@q.test'].join(''));
+  }
+  for (const value of ['a@b.co', 'a@b.co-foo.more', '.a@b.co', 'a@b-.co', 'a@b.c', 'a@b.' + 'a'.repeat(24),
+    'a@b.' + 'a'.repeat(25), 'a@b.co_ ', 'a@b.co9', 'a@b.co@x.yz', 'a@b.co\n', 'éa@b.coé',
+    ['a@b.co', '-@x.yz'].join('')]) compare(value);
+  console.log(`DIFFERENTIAL email cases=${cases}`);
+});
+const segmentAlphabet = ['A', 'a', 'B', 'y', 'I', 'd', 'é', 'É', 'ǅ', 'ª', '𝐀', '𝒂', 'ʰ', '\ud800', '\udc00', '1', ' ', '.', '\n', '\u0301'];
+function exhaustiveStrings(alphabet, depth, visit, prefix = '') {
+  visit(prefix);
+  if (!depth) return;
+  for (const letter of alphabet) exhaustiveStrings(alphabet, depth - 1, visit, prefix + letter);
+}
+function seededRecognizerRandom() {
+  let state = 0x6d2b79f5;
+  return () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return state >>> 0; };
+}
+await test('linear L3 word segment differential', async () => {
+  const { wordSegments } = await privateRecognizer('token-vault.js', 'export { wordSegments };');
+  const oracle = /^(?:\p{Lu}?\p{Ll}{2,}|\p{Lu}{2,}|By|Id)+$/u;
+  let cases = 0;
+  const compare = (value) => {
+    assert.equal(wordSegments(value), oracle.test(value), `segment mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(segmentAlphabet, 4, compare);
+  const random = seededRecognizerRandom();
+  for (let trial = 0; trial < 40000; trial += 1) {
+    const length = 7 + random() % 34;
+    let value = ''; let lowercase = 0;
+    for (let at = 0; at < length; at += 1) {
+      const letter = segmentAlphabet[random() % segmentAlphabet.length];
+      lowercase = /\p{Ll}/u.test(letter) ? lowercase + 1 : 0;
+      value += lowercase > 12 ? 'A' : letter;
+      if (lowercase > 12) lowercase = 0;
+    }
+    compare(value);
+  }
+  for (const [value, expected] of [
+    ['a'.repeat(31), true], ['a'.repeat(5000), true], ['Abc'.repeat(3000), true],
+    ['ABC'.repeat(3000), true], ['IdBy'.repeat(2000), true], ['aa\n', false], ['éé', false],
+  ]) { assert.equal(wordSegments(value), expected); cases += 1; }
+  console.log(`DIFFERENTIAL wordSegments cases=${cases}`);
+});
+await test('linear floor semantic locks', async () => {
+  const { registrationRefusalReason } = await import(new URL('token-vault.js', recognizerRoot));
+  for (const [value, reason] of [['GetUserById', 'low-distinctiveness'], ['AbCdEfGh', ''], ['IdBy', 'low-distinctiveness'], ['ByX', 'short']]) {
+    assert.equal(registrationRefusalReason(value, 'op-output'), reason);
+  }
+});
+await test('linear punctuation differential', async () => {
+  const { proseWords } = await privateRecognizer('detector.js', 'export { proseWords };');
+  let cases = 0;
+  const compare = (value) => {
+    const expected = value.trim().split(/\s+/).map(word => word.replace(/^[(["'`]+|[)"'.,;:!?`]+$/g, ''));
+    assert.deepEqual(proseWords(value), expected, `punctuation mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['(', '[', ')', '"', "'", '`', '.', ',', ';', ':', '!', '?', 'a', '\n'], 4, compare);
+  for (const value of ['""word""', '[[word..', '...a', 'a...\n', '(.)', '"', '', 'a b', 'a\r\nb']) compare(value);
+  console.log(`DIFFERENTIAL punctuation cases=${cases}`);
+});
+await test('linear trailing backslash differential', async () => {
+  const { boundaryCounter } = await privateRecognizer('references.js', String.raw`
+    export const boundaryCounter = typeof trailingBackslashes === 'function' ? trailingBackslashes
+      : physical => physical.length - physical.replace(/\\+$/, '').length;`);
+  let cases = 0;
+  const compare = (value) => {
+    assert.equal(boundaryCounter(value), value.length - value.replace(/\\+$/, '').length,
+      `backslash mismatch ${JSON.stringify(value)}`); cases += 1;
+  };
+  exhaustiveStrings(['\\', 'a', '\n', '\r', '𝐀'], 6, compare);
+  for (const value of ['\\'.repeat(10000), '\\'.repeat(10000) + 'x', 'x' + '\\'.repeat(10000), 'x\\\n', 'x\\\r\n']) compare(value);
+  console.log(`DIFFERENTIAL backslash cases=${cases}`);
+});
 process.exit(failures ? 1 : 0);

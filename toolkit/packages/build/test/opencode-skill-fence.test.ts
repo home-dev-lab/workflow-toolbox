@@ -5,10 +5,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { externalModelEnv, providerCredentialNames } from '../../../../plugin/bin/lib/external-model-env.mjs'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
+
+isolateOpencodeAdmission()
 
 const FENCE_MODULE = new URL('../../../../plugin/bin/lib/opencode-skill-fence.mjs', import.meta.url).href
 
@@ -474,8 +477,7 @@ describe('OpenCode Claude-skill fence', () => {
   it('keeps the envelope detached only where process-group signaling preserves piped output', () => {
     const source = readFileSync(fileURLToPath(new URL('../../../../plugin/bin/wt-opencode-envelope.mjs', import.meta.url)), 'utf8')
     expect(source).toContain("...(process.platform === 'win32' ? {} : { detached: true })")
-    expect(source).toContain("'System32', 'taskkill.exe'")
-    expect(source).toContain("['/PID', String(pid), '/T', '/F']")
+    expect(source).toContain('return reapProcessFamily(pid)')
   })
 
   it.runIf(process.platform === 'win32')('locks the Windows detached command-shim defect: exit survives but piped stdout is empty', async () => {
@@ -646,5 +648,26 @@ describe('OpenCode Claude-skill fence', () => {
 
     expect(() => pruneOpencodeSkillFenceCache({ stateDir: f.stateDir })).toThrow(/refusing unowned/)
     expect(readFileSync(nested, 'utf8')).toBe('keep')
+  })
+})
+
+// The Windows task-tree kill moved behind the host adapter: the envelope reaps through it, and the
+// adapter's real invocation runs taskkill from System32 with /T, forced on the reap path.
+describe('OpenCode envelope reap on Windows', () => {
+  it('runs taskkill from System32 as a tree kill in the adapter', () => {
+    const adapter = readFileSync(fileURLToPath(new URL('../../../../plugin/bin/lib/host/adapter.mjs', import.meta.url)), 'utf8')
+    expect(adapter).toContain("'System32', 'taskkill.exe'")
+    expect(adapter).toContain("['/PID', String(pid), '/T', ...(force ? ['/F'] : [])]")
+  })
+
+  it('reaps a Windows envelope child as a forced task tree through the host adapter', async () => {
+    // @ts-expect-error runtime .mjs helper
+    const { createHostAdapter } = await import('../../../../plugin/bin/lib/host/adapter.mjs')
+    // @ts-expect-error runtime .mjs helper
+    const { reapProcessFamily } = await import('../../../../plugin/bin/lib/host/process-signal-boundary.mjs')
+    const killTree = vi.fn(() => ({ status: 'ended', kind: 'process_tree' }))
+    const host = createHostAdapter({ platform: 'win32', invoke: { killTree } })
+    expect(reapProcessFamily(4242, host)).toBeNull()
+    expect(killTree).toHaveBeenCalledWith(4242, true)
   })
 })

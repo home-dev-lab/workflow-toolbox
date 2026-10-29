@@ -2,10 +2,10 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "process-group-terminate",
-    "capturedAt": "2026-09-20T09:08:09.414Z",
-    "command": "process.kill(-5896, SIGTERM)",
-    "runId": "35501457364",
-    "commitSha": "2ca53474daa3cf4368b62336ada74b15963023fd",
+    "capturedAt": "2026-10-12T01:03:12.591Z",
+    "command": "process.kill(-16687, SIGTERM)",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "macos-latest",
       "os": "macos26",
@@ -31,26 +31,26 @@
   },
   "operation": {
     "kind": "posix_process_group",
-    "pgid": 5896
+    "pgid": 16687
   },
   "pids": {
-    "childPid": 5896,
-    "grandchildPid": 5897
+    "childPid": 16687,
+    "grandchildPid": 16700
   },
   "termination": {
-    "command": "process.kill(-5896, SIGTERM)",
+    "command": "process.kill(-16687, SIGTERM)",
     "exitCode": 0,
     "signal": null,
     "error": null,
     "raw": "",
-    "sentAt": 1789895288886
+    "sentAt": 1791766992071
   },
   "outcome": {
     "child": {
       "status": "died",
       "processState": null,
       "observation": {
-        "command": "ps -o state= -p 5896",
+        "command": "ps -o state= -p 16687",
         "exitCode": 1,
         "signal": null,
         "error": null,
@@ -61,7 +61,7 @@
       "signalObserved": [
         {
           "signal": "SIGTERM",
-          "at": "2026-09-20T09:08:08.886Z"
+          "at": "2026-10-12T01:03:12.071Z"
         }
       ]
     },
@@ -69,7 +69,7 @@
       "status": "died",
       "processState": null,
       "observation": {
-        "command": "ps -o state= -p 5897",
+        "command": "ps -o state= -p 16700",
         "exitCode": 1,
         "signal": null,
         "error": null,
@@ -83,10 +83,10 @@
       "signalObserved": [
         {
           "signal": "SIGTERM",
-          "at": "2026-09-20T09:08:08.886Z"
+          "at": "2026-10-12T01:03:12.071Z"
         }
       ]
     },
-    "elapsedMilliseconds": 635
+    "elapsedMilliseconds": 627
   }
 }

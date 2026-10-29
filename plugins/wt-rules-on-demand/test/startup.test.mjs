@@ -82,6 +82,24 @@ function start({ config, project }, env = {}, source = 'startup') {
     env: cleanEnv({ CLAUDE_CONFIG_DIR: config, WT_ROD_QUALITY_SPAWN: '0', CLAUDE_PLUGIN_OPTION_ENABLED: 'false', CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1', ...env }),
   });
 }
+for (const source of ['startup', 'resume', 'clear', 'compact']) {
+  test(`agent-type notice is one line on ${source} and absent without a list or with the engine disabled`, async (t) => {
+    const s = await scope(t);
+    const env = { HOME: s.root, USERPROFILE: s.root, CLAUDE_PLUGIN_OPTION_ENABLED: 'true' };
+    const listed = start(s, { ...env, WT_ROD_NO_REFUSE_AGENT_TYPES: 'lean-probe, other' }, source);
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.equal(listed.stdout.match(/rules served after the act/g)?.length, 1, listed.stdout);
+    assert.match(listed.stdout, /^wt-rules-on-demand: rules served after the act for: lean-probe, other$/m);
+    const disabled = start(s, { ...env, CLAUDE_PLUGIN_OPTION_ENABLED: 'false', WT_ROD_NO_REFUSE_AGENT_TYPES: 'lean-probe' }, source);
+    assert.equal(disabled.status, 0, disabled.stderr);
+    assert.doesNotMatch(disabled.stdout, /rules served after the act/);
+    for (const value of [undefined, '', ' , , ']) {
+      const absent = start(s, { ...env, WT_ROD_NO_REFUSE_AGENT_TYPES: value }, source);
+      assert.equal(absent.status, 0, absent.stderr);
+      assert.doesNotMatch(absent.stdout, /rules served after the act/);
+    }
+  });
+}
 test('empty scopes produce no output and no quality job', async (t) => {
   const s = await scope(t);
   const run = start(s);

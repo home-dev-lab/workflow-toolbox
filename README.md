@@ -121,7 +121,16 @@ For a complete detached implementation or review, use the `external-lane` skill.
 
 Check adopted scripts with `node plugin/skills/adopt/scripts/install.mjs --set scripts --check --global --fail-on-drift`. This fails for stale, edited, symlinked, or hand-authored shipped-name files and missing canonical targets. SessionStart reports those script states in the active config's `scripts/` directory with reconciliation commands, and reports when an adopted scripts check could not run. A broken preferred installation refuses rather than launching a different copy.
 
+The waiter's `--timeout` is a separate wait budget: it returns `WAIT BUDGET ENDED` with exit 125,
+identifying a verified live worker, a surviving child, or explicitly unknown liveness. It leaves the
+lane running. `LANE DONE exit=<n>` propagates the host-record exit, so always read the outcome text
+alongside the code. See the `external-lane` skill for the full exit-code and process-evidence contract.
+
 ## Configuration
+
+Linux lane suite-lock brokers can use an [operator-configured offload command](docs/public/suite-lock-offload.md)
+when the local queue is long. It is disabled by default; the reference covers host configuration,
+the versioned command protocol, fallback behavior, and result provenance.
 
 `node plugin/bin/wt-config.mjs` prints every Workflow Toolbox option with its effective value,
 source, and manifest default; `--json` emits the same report for automation. Plugin options win
@@ -363,9 +372,20 @@ what happened and whether resuming is safe.
 | `skills/workflow-debugger` | **Diagnose** a finished or failed run from its journal: why an agent died, whether schema retries fired, whether resuming is safe. | Automatically, or `/workflow-toolbox:workflow-debugger` |
 | `skills/artifact-server` | **Link** registered project reports in chat or a Function Hooks pane through the default-on per-user artifact server, locally or over Tailscale. | Automatically, or `/workflow-toolbox:artifact-server` |
 | `hooks` | **Inspect** current sessions, cards, lanes, services, and helper processes with explicit availability when a host probe cannot run. | `/wir` or the `what is running` prompt-hint button |
-| `bin/wt-work-journal-hook.mjs` | **Record** project acts in a durable, hash-linked daily index; verify and show a bounded subject digest at session start; warn about unrecorded outward acts at Stop. | Automatically; [journal commands and storage boundary](docs/public/work-journal.md) |
+| `bin/wt-work-journal.mjs` | **Read** an existing work journal (retired: no hook records to it any more): show, digest, verify, restore and export closed days. | On demand; [journal commands and storage boundary](docs/public/work-journal.md) |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
-| `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config — on explicit request only, never automatically; each copy is fingerprinted so a later `--check` detects when the plugin has moved ahead. | Automatically when you ask, or `/workflow-toolbox:adopt` |
+| `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config on explicit request; existing proven-unedited stale copies refresh at SessionStart. Each copy is fingerprinted so a later `--check` detects drift. | Automatically when you ask, or `/workflow-toolbox:adopt` |
+
+Artifact server `stop`/`restart` require discovery and matching listener launch evidence,
+then re-read the recorded PID's birth identity immediately before signalling; uncertainty
+means nothing is signalled and restart refuses to launch a replacement. Linux birth identity
+uses the boot ID and process start ticks; unavailable birth identity (currently including
+macOS and Windows) refuses even with `--force`, which only overrides registered-session policy.
+Servers started before birth identity was recorded also require manual shutdown.
+POSIX numeric-PID signals retain a race between the final identity re-read and kernel delivery.
+Concurrent control commands share an atomic `control.d` claim through replacement readiness;
+after a controller crashes, confirm no control command remains and run
+`rmdir <artifact-state-dir>/control.d` before retrying.
 
 ### Bundled rules & the delegation ladder
 
@@ -394,7 +414,8 @@ request only. It writes versioned, fingerprinted, editable copies. `--check`
 stale, edited, symlinked, or hand-authored; `--install` writes absent copies
 and refreshes unedited ones; `--force` explicitly overwrites a copy you have
 edited; and `--replace-symlinks` replaces a symlinked target in place. The
-skill never writes through a symlink or silently destroys your edits. It can
+skill never writes through a symlink and refuses fingerprint-detected body edits without
+`--force`; normal install does not fingerprint edits on the banner line. It can
 also install project copies of the pilot agent definitions, which are needed
 because current Claude Code does not honor `observer:` frontmatter for
 plugin-installed agents. It also checks the active config profile's
@@ -411,11 +432,23 @@ and the [adopt skill](plugin/skills/adopt/SKILL.md) for the full
 contract — including how to **reconcile existing project rules** before adopting,
 so you don't end up with duplicate, drifting concerns.
 
+At SessionStart, the adoption hook refreshes existing fingerprint-proven unedited stale rule
+and agent copies through `--install --refresh-only`, publishes via a unique same-directory temp
+and rename, re-checks disk, and reports one line naming refreshed copies across both sets.
+This **experimental** refresh skips absent copies, detected body/head edits, noncanonical
+banner lines and settings. Duplicate, misplaced and unverified findings are excluded per file,
+even beside selected copies in the same directory. A final byte re-check narrows the race:
+an edit or removal between that check and rename can still be overwritten or recreated;
+there is no portable compare-and-swap. `WT_ADOPT_REFRESH=notice-only`
+keeps the existing read-only notices; PostToolUse performs no refresh. An adopted copy whose
+name is no longer shipped is reported with a quoted POSIX-shell removal command (Bash;
+Git Bash on Windows), never deleted automatically.
+
 The plugin also ships several OTHER agents (`fidelity-checker`, `index-groomer`,
 `leaf`, `lean`, `opencode-verifier`, `wave-fidelity-checker` as of this writing)
 that are registered directly by the plugin and need no adoption step at all —
 they're already callable as `workflow-toolbox:<name>` the moment the plugin is
-installed. Only the pilot suite above needs a project copy, for the
+installed. Only the pilot suite above needs an adopted copy (project or user config dir), for the
 `observer:` reason just explained. `adopt --set agents --check` (or
 `--install`) prints the current list of these already-available agents at the
 end of its run, so you never have to guess which of the two mechanisms
@@ -425,6 +458,28 @@ When an adopted copy is stale, the installer also slices `plugin/CHANGELOG.md`
 between the installed and current plugin versions so the user sees what shipped in
 that span: recent entries plus an honest count of omitted ones, and an explicit
 "no record" outcome when the installed version predates the oldest recorded heading.
+
+### Optional SSH signing retry
+
+`node plugin/skills/adopt/scripts/install.mjs --set ssh-sign-retry --install --global`
+installs a persistent per-user Node wrapper and configures an absent `gpg.ssh.program`.
+Omit `--global` inside a repository for repository-local configuration. Only stdin
+signing with a matched agent failure is retried, **once** (two attempts total, one
+second apart). Existing signers are preserved; `--set all` excludes this opt-in.
+
+Adoption locks only the config file it writes. After publication it uses Git, in the
+commit's configuration context, to check the intended effective signer and unchanged
+signing-key configuration. Invalid UTF-8 Git values explicitly refuse adoption before
+they can compare equal through lossy decoding. A mismatch restores the original file's
+identity, bytes, full mode, owner and ACLs using a retained hard link, and reports refusal
+without `WROTE`. A concurrent writer to an included config file during adoption is
+detected by this postcondition check only if it lands before the check and changes the
+effective values; after it, that is the user's own configuration change. Crash-stale
+locks require manual recovery, and an exit status of zero alone does not establish
+installation. Key file contents are not pinned between attempts. See the
+[adoption contract](plugin/skills/adopt/references/ssh-sign-retry.md) for diagnostic
+matches, legacy worktree migration, recovery and platform status. Linux fake-binary
+execution is tested; native Windows/macOS and real-agent signing remain unverified.
 
 ## The toolkit
 

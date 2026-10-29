@@ -19,6 +19,27 @@ import { requestDirectoryNote, requestPathRefusal } from '../../../../plugin/bin
 import { laneHostStateRoot } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
+it('binds admitted Astra execution to the snapshot and sends the already scanned prompt', async () => {
+  const f = fixture(true)
+  const executionRepo = join(f.repo, 'snapshot'); mkdirSync(executionRepo)
+  const sandbox = vi.fn((options: { cwd: string, args: string[] }) => { expect(options.cwd).toBe(executionRepo); throw new LaneSandboxRefusal('sealed before spawn') })
+  const adapter = { platform: 'linux', createCodexBrokerOwnership: (env: unknown) => ({ env, stop: vi.fn(), capture: vi.fn() }) }
+  const deps = createSecondOpinionDependencies(adapter, { resolveSandbox: sandbox })
+  deps.resolveCodexCompanion = () => '/sealed/scripts/codex-companion.mjs'
+  await runSecondOpinion({ ...f.options, repo: executionRepo, originalRepo: f.repo, route: 'astra', requestText: 'already scanned prompt', requestRendered: true }, deps, f.env)
+  expect(sandbox).toHaveBeenCalledWith(expect.objectContaining({ cwd: executionRepo, readonlyCwd: true }))
+  expect(sandbox.mock.calls[0]![0]).toMatchObject({ args: expect.arrayContaining(['already scanned prompt']) })
+})
+
+it('resolves the admitted Opus SDK from the original repository and executes its scanned prompt in the snapshot', async () => {
+  const f = fixture(false)
+  const executionRepo = join(f.repo, 'snapshot'); mkdirSync(executionRepo)
+  const query = vi.fn(async function* () { yield { type: 'result', result: 'sealed answer' } })
+  const deps = dependencies({ resolveSdkQuery: vi.fn(() => query) })
+  expect(await runSecondOpinion({ ...f.options, repo: executionRepo, originalRepo: f.repo, route: 'opus', requestText: 'already scanned prompt', requestRendered: true }, deps, f.env)).toBe(0)
+  expect(deps.resolveSdkQuery).toHaveBeenCalledWith(f.repo, f.env)
+  expect(query).toHaveBeenCalledWith(expect.objectContaining({ prompt: 'already scanned prompt', options: expect.objectContaining({ cwd: executionRepo }) }))
+})
 const roots: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()

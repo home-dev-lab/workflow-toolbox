@@ -150,8 +150,8 @@ const executableOf = value => {
   }
 };
 const scriptIs = (value, key) => (Array.isArray(scripts[key]) ? scripts[key] : [scripts[key]]).filter(name => typeof name === 'string').includes(path.basename(String(value || '')));
-const procRoot = typeof config.procRoot === 'string' ? config.procRoot : '/proc';
-const processScanAvailable = runtimePlatform === 'linux' && typeof config.procRoot === 'string';
+const procfs = createProcfs({ root: typeof config.procRoot === 'string' ? config.procRoot : undefined, platform: runtimePlatform, readFile: slice, readdir: listed });
+const processScanAvailable = procfs.available && (typeof config.procRoot === 'string' || config.processScan === true);
 const configuredClockTicks = Number(config.clockTicks);
 let clockTicks = Number.isFinite(configuredClockTicks) && configuredClockTicks > 0 ? configuredClockTicks : null;
 if (processScanAvailable && clockTicks === null) {
@@ -184,7 +184,7 @@ const processReadFailures = [];
 let processVanished = 0;
 function processGone(pid) {
   let gone = false;
-  try { fs.statSync(path.join(procRoot, pid)); } catch (error) { gone = error?.code === 'ENOENT'; }
+  try { procfs.processDirectoryStat(pid); } catch (error) { gone = error?.code === 'ENOENT'; }
   if (gone) processVanished += 1;
   return gone;
 }
@@ -237,7 +237,7 @@ function resolveActorFile(candidate) {
   return real && allowedRoots.some(root => under(root, real)) && infoUnrestricted(real)?.isFile() ? real : null;
 }
 function infoUnrestricted(file) { try { return fs.statSync(file); } catch { return null; } }
-procUptime = processScanAvailable ? Number((head(path.join(procRoot, 'uptime'), 128) || '').trim().split(/\s+/)[0]) : null;
+procUptime = processScanAvailable ? Number((procfs.readUptime(128) || '').trim().split(/\s+/)[0]) : null;
 
 function listed(dir, maxEntries = DIR_SCAN_CAP, reportCap = true) {
   let handle;
@@ -586,7 +586,7 @@ function formatAge(seconds) {
 }
 function processAge(pid) {
   if (!Number.isFinite(procUptime) || clockTicksAvailability.status !== 'available') return { seconds: null, text: UNKNOWN };
-  const stat = head(path.join(procRoot, String(pid), 'stat'), 4096);
+  const stat = procfs.readProcessStat(pid, 4096);
   const end = stat?.lastIndexOf(')');
   if (end === undefined || end < 0) return { seconds: null, text: UNKNOWN };
   const fields = stat.slice(end + 1).trim().split(/\s+/);
@@ -946,15 +946,15 @@ function briefFromArgs(args) {
   return null;
 }
 const processScanStartedAt = Date.now();
-const processListing = processScanAvailable ? listed(procRoot) : { entries: [], readable: false, capped: false };
+const processListing = processScanAvailable ? procfs.listProcesses() : { entries: [], readable: false, capped: false };
 const listedPids = processScanAvailable ? processListing.entries.filter(name => /^\d+$/.test(name)) : [];
 if (processScanAvailable) for (const pid of listedPids) {
   try {
-    const cmdline = slice(path.join(procRoot, pid, 'cmdline'), LOG_TAIL_BYTES);
+    const cmdline = procfs.readCommandLine(pid, LOG_TAIL_BYTES);
     if (cmdline === null) { if (processGone(pid)) continue; processReadFailures.push(pid + '/cmdline'); continue; }
     const args = cmdline.split('\0').filter(Boolean);
     if (!args.length) continue;
-    const status = slice(path.join(procRoot, pid, 'status'), 64 * 1024);
+    const status = procfs.readProcessStatus(pid, 64 * 1024);
     if (status === null) { if (processGone(pid)) continue; processReadFailures.push(pid + '/status'); continue; }
     const ppid = Number(status.match(/^PPid:\s*(\d+)/m)?.[1]);
     const processName = status.match(/^Name:\s*([^\n]+)/m)?.[1]?.trim() || '';
@@ -968,7 +968,7 @@ if (processScanAvailable) for (const pid of listedPids) {
     const modelAt = args.findIndex(arg => arg === '--model');
     const argumentWorktree = dirAt >= 0 ? args[dirAt + 1] : args.find(arg => arg.startsWith('--dir='))?.slice(6) || null;
     let rawWorktree = argumentWorktree;
-    if (!rawWorktree) try { rawWorktree = fs.realpathSync(path.join(procRoot, pid, 'cwd')); } catch {}
+    if (!rawWorktree) try { rawWorktree = procfs.resolveWorkingDirectory(pid); } catch {}
     if (!rawWorktree) continue;
     // The machine-wide process list normally contains runners for other projects. Ignore them
     // without degrading discovery for the configured roots.
@@ -1014,8 +1014,7 @@ function pidState(worktree) {
   if (pidResult === null) return UNKNOWN;
   const pid = Number(String(pidResult).trim());
   if (!Number.isSafeInteger(pid) || pid <= 1) return 'dead';
-  const processDir = path.join(procRoot, String(pid));
-  const cmdline = slice(path.join(processDir, 'cmdline'), LOG_TAIL_BYTES);
+  const cmdline = procfs.readCommandLine(pid, LOG_TAIL_BYTES);
   if (cmdline === null) return UNKNOWN;
   const args = cmdline.split('\0').filter(Boolean);
   const recognized = args.some(arg => executableOf(arg) === executables.opencode || scriptIs(arg, 'pilotRunner') || scriptIs(arg, 'laneWorker'));
@@ -1518,7 +1517,7 @@ function devCycleForCard(id, actors) {
 const sessionMap = new Map();
 const configRoot = canonicalDirectory(config.configDir);
 function sessionCwd(pid, worktree) {
-  if (pid) try { return fs.realpathSync(path.join(procRoot, String(pid), 'cwd')); } catch {}
+  if (pid) try { return procfs.resolveWorkingDirectory(pid); } catch {}
   // A worktree under the suite root belongs to that project even when its runner is detached (setsid SDK pilot, lane)
   // and no Claude ancestor or launcher session id survives: otherwise the project filter hides exactly those runs.
   if (worktree && under(suiteWorktreeRoot, worktree)) return path.dirname(path.resolve(config.suiteRoot));

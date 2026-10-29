@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, existsSync, rmSync, readFileSync, lstatSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, extname } from 'node:path'
 
 export function git(root, args, env = process.env, execute = execFileSync) {
   return execute('git', ['-C', root, ...args], { env: { ...env, GIT_NO_LAZY_FETCH: '1' },
@@ -14,17 +14,18 @@ export function resolveCommit(root, ref) {
 export function resolveBase(root, ref) {
   try {
     if (ref) return resolveCommit(root, ref)
-    const head = resolveCommit(root, 'HEAD'), develop = resolveCommit(root, 'develop')
-    const base = git(root, ['merge-base', head, develop]).trim()
-    if (git(root, ['branch', '--show-current']).trim() !== 'develop') return base
-    const parents = git(root, ['rev-list', '--parents', '-n', '1', head, '--']).trim().split(' ')
-    return base === parents[0] && parents.length > 2 ? parents[1] : base
+    const head = resolveCommit(root, 'HEAD')
+    const branch = git(root, ['branch', '--show-current']).trim()
+    if (['develop', 'main', 'master'].includes(branch)) {
+      const parents = git(root, ['rev-list', '--parents', '-n', '1', head, '--']).trim().split(' ')
+      if (parents.length > 1) return parents[1]
+      if (branch === 'develop') return head
+    }
+    return git(root, ['merge-base', head, resolveCommit(root, 'develop')]).trim()
   } catch { throw new Error('cannot resolve base; pass --base <ref> or WT_QUALITY_BASE (fetch develop history)') }
 }
 export function inScope(file) {
-  return /\.(mjs|js|ts|mts|cts)$/.test(file)
-    && !/(^|\/)(dist|node_modules|fixtures)\//.test(file)
-    && file !== 'plugin/bin/lib/vendor/yaml.mjs'
+  return /\.(mjs|cjs|jsx|js|tsx|ts|mts|cts)$/iu.test(file) || !extname(file)
 }
 function parseDiff(text) {
   const fields = text.split('\0').filter(Boolean), files = []
@@ -32,18 +33,16 @@ function parseDiff(text) {
     const status = fields[i++], old = fields[i++]
     const file = status.startsWith('R') ? fields[i++] : old
     if (!'DAMRT'.includes(status[0])) throw new Error(`unsupported diff status ${status}`)
-    if (status[0] !== 'D' && inScope(file)) files.push({ path: file, source: old, added: 'AT'.includes(status[0]) || !inScope(old) })
+    if (status[0] !== 'D' && inScope(file)) files.push({ path: file, source: old, added: 'ART'.includes(status[0]) || !inScope(old) })
   }
   return files
 }
-function clearIndexFlags(root, env) {
-  const flagged = git(root, ['ls-files', '-v', '-z'], env).split('\0')
-    .filter((entry) => /^[a-zS]/.test(entry)).map((entry) => entry.slice(2))
-  if (!flagged.length) return
-  // update-index applies one flag action per invocation.
-  for (const flag of ['--no-assume-unchanged', '--no-skip-worktree']) {
-    git(root, ['update-index', flag, '--', ...flagged], env)
-  }
+function clearIndexStatCache(root, env) {
+  // Copying an index changes its timestamp, invalidating Git's racy-stat safeguard.
+  // Round-trip only its tree: keep staged paths, discard stat data and index flags.
+  const tree = git(root, ['write-tree'], env).trim()
+  git(root, ['read-tree', '--empty'], env)
+  git(root, ['read-tree', tree], env)
 }
 export function changedFiles(root, base, subject) {
   if (subject) return parseDiff(git(root, ['diff', '-M', '--name-status', '-z', base, subject, '--']))
@@ -56,17 +55,22 @@ export function changedFiles(root, base, subject) {
       GIT_OBJECT_DIRECTORY: join(temp, 'objects'), GIT_ALTERNATE_OBJECT_DIRECTORIES: JSON.stringify(objects) }
     if (existsSync(index)) copyFileSync(index, env.GIT_INDEX_FILE)
     else git(root, ['read-tree', 'HEAD'], env)
-    clearIndexFlags(root, env)
-    const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(inScope)
+    clearIndexStatCache(root, env)
+    const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z'], env).split('\0')
+      .filter((file) => inScope(file) && lstatSync(join(root, file)).isFile() && codeShebang(root, undefined, file))
     if (untracked.length) git(root, ['add', '--intent-to-add', '--', ...untracked], env)
     return parseDiff(git(root, ['diff', '-M', '--name-status', '-z', base, '--'], env))
   } finally { rmSync(temp, { recursive: true, force: true }) }
 }
 export function isCodeSubject(root, ref, file) {
-  if (ref) return !git(root, ['ls-tree', '-z', ref, '--', file]).startsWith('120000 ')
+  if (ref) return !git(root, ['ls-tree', '-z', ref, '--', file]).startsWith('120000 ') && codeShebang(root, ref, file)
   const stat = lstatSync(join(root, file))
   if (stat.isSymbolicLink()) return false
   if (!stat.isFile()) throw new Error(`unsupported non-regular code file: ${file}`)
-  return true
+  return codeShebang(root, ref, file)
+}
+function codeShebang(root, ref, file) {
+  if (extname(file)) return true
+  return /^#![^\r\n]*(?:\/|\s)node(?:\s|$)/.test(readSubject(root, ref, file).split(/\r?\n/, 1)[0])
 }
 export const readSubject = (root, ref, file) => ref ? git(root, ['show', `${ref}:${file}`]) : readFileSync(join(root, file), 'utf8')

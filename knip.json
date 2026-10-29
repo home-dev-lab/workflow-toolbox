@@ -7,7 +7,8 @@
   "tags": ["-knipTestSeam"],
   "workspaces": {
     ".": {
-      "entry": ["plugin/bin/*.mjs", "plugin/hooks/hooks.js", "plugin/monitors/*.mjs", "plugin/skills/adopt/scripts/install.mjs", "toolkit/scripts/frontmatter-corpus-diff.mjs"],
+      // Adopt copies the standalone program and resolves the optional config module at run time.
+      "entry": ["plugin/bin/*.mjs", "plugin/bin/lib/host/adopt-ssh-sign-retry.mjs", "plugin/bin/lib/host/wt-ssh-sign-retry.mjs", "plugin/hooks/hooks.js", "plugin/monitors/*.mjs", "plugin/skills/adopt/scripts/install.mjs", "toolkit/scripts/frontmatter-corpus-diff.mjs"],
       "project": ["plugin/**/*.{mjs,js}"],
       "ignore": ["plugin/hooks/snapshot-program.js", "plugin/**/fixtures/**"]
     },

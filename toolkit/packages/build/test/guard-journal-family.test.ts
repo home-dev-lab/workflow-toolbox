@@ -2,6 +2,8 @@
 // warn is wired to the shared journal"), never an enumeration of today's guards. A hardcoded
 // list of guard filenames would stay green the day a 19th guard ships without instrumentation
 // — this test globs plugin/bin/*guard*.mjs itself, so a new file is covered automatically.
+// The notice-delivery scan covers every *-hook.mjs recording a warned decision. It cannot
+// see multi-line if conditions or silencing hidden in a helper; library tests carry behaviour.
 import { spawnSync } from 'node:child_process'
 import {
   existsSync,
@@ -43,6 +45,53 @@ const JUSTIFIED_EXCLUSIONS: Record<string, string> = {
 function allGuardFiles(): string[] {
   return readdirSync(BIN_DIR).filter((f) => /guard.*\.mjs$/.test(f) && f !== 'guard-journal.mjs')
 }
+
+const SUBAGENT_SILENCE_REASONS: Record<string, string> = {
+  'wt-propagation-reminder-hook.mjs':
+    'An edit reminder, not a hazard notice; per-turn reminder injection derailed workflow subagents.',
+  'wt-gate-evidence-guard-hook.mjs':
+    'Does not evaluate subagent commits; precision on delegate worktrees is unmeasured, so enabling that population needs separate work.',
+}
+
+function silencesSubagents(source: string): boolean {
+  const conditions = [...source.matchAll(/^\s*if\s*\(([^\n]*)\)\s*return\b/gm)]
+  return conditions.some(([, condition = '']) => {
+    // These checks return for a missing/invalid agent id, so they scope a hook TO subagents.
+    const positive = condition
+      .replace(/!\s*\b\w+\??\.agent_id\b/g, '')
+      .replace(/typeof\s+\w+\??\.agent_id\s*!==\s*['"]string['"]/g, '')
+      .replace(/\b\w+\??\.agent_id\s*===\s*(?:''|"")/g, '')
+    return /\b\w+\??\.agent_id\b/.test(positive)
+  })
+}
+
+function warnHooksWithSilencing(): string[] {
+  return readdirSync(BIN_DIR).filter((name) => {
+    if (!name.endsWith('-hook.mjs')) return false
+    const source = readFileSync(join(BIN_DIR, name), 'utf8')
+    return source.includes('recordGuardEvent') && /\bdecision\s*:\s*[^,}]*['"]warned['"]/.test(source) && silencesSubagents(source)
+  })
+}
+
+describe('guard notice family invariant — warnings reach the triggering subagent by default', () => {
+  it('every warn-recording hook has no subagent-silencing return without a stated reason', () => {
+    const unexplained = warnHooksWithSilencing().filter((name) => !SUBAGENT_SILENCE_REASONS[name]?.trim())
+    expect(unexplained, `warn hooks silence subagents without a stated reason: ${unexplained.join(', ')}`).toEqual([])
+  })
+
+  it('every stated silence reason is non-empty and still matches a warn hook with a silencing return', () => {
+    const matches = new Set(warnHooksWithSilencing())
+    for (const [name, reason] of Object.entries(SUBAGENT_SILENCE_REASONS)) {
+      expect(reason.trim(), `empty subagent silence reason: ${name}`).not.toBe('')
+      expect(matches.has(name), `stale subagent silence reason: ${name}`).toBe(true)
+    }
+  })
+
+  it('no hook retains the removed subagent opt-in option', () => {
+    const optedIn = readdirSync(BIN_DIR).filter((name) => name.endsWith('-hook.mjs') && /\breachSubagents\b/.test(readFileSync(join(BIN_DIR, name), 'utf8')))
+    expect(optedIn).toEqual([])
+  })
+})
 
 describe('guard-journal family invariant — every guard-hook file is wired', () => {
   it('every plugin/bin/*guard*.mjs file either imports the shared journal or has a named, justified exclusion', () => {

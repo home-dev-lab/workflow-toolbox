@@ -6,6 +6,7 @@ import { opReadArgv, opValueFrom } from './op-resolve.js';
 import { planReferences, renderReplacement } from './references.js';
 import { knownTokens, registrationRefusalReason, tokenize } from './token-vault.js';
 import { publishRefusals } from './journal.js';
+import { consoleNotice } from './console-notice.js';
 
 // A FAILED prefetch is remembered for a short window, keyed by account and reference.
 // Measured 2026-09-22 in a real session: ONE Bash command carrying ONE reference produced 42,716
@@ -61,11 +62,11 @@ async function resolveOnce($, key, ref, account) {
   // explicit reference is prefetched. process.run takes positional argv (run 8).
   try { result = await $.processRun(opReadArgv(ref, account, config().opBinary)); } catch {
     rememberFailure(key);
-    await $.uiLog('wt-secret-guard: op resolve failed to start (1 reference)');
+    await consoleNotice($, 'op-start-failed', 'wt-secret-guard: op resolve failed to start (1 reference)');
     return { token: null };
   }
   const value = opValueFrom(result);
-  if (result?.exitCode !== 0) { rememberFailure(key); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
+  if (result?.exitCode !== 0) { rememberFailure(key); await consoleNotice($, 'op-returned-nothing', `wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
   const resolved = await registerReference($, 'onepassword', value);
   if (!resolved.token) rememberFailure(key, resolved.reason);
   return resolved;
@@ -106,7 +107,7 @@ async function fileContent($, occurrence) {
     if (line === undefined) throw new Error('line missing');
     return line;
   } catch {
-    await $.uiLog('wt-secret-guard: file reference unavailable (1 reference)');
+    await consoleNotice($, 'file-unavailable', 'wt-secret-guard: file reference unavailable (1 reference)');
     return null;
   }
 }
@@ -132,11 +133,18 @@ function tokenReferenceReason(label, value) {
   return reason || (entry?.ephemeral ? 'unheld' : '');
 }
 
+function stripTrailingNewlines(value) {
+  // Exactly the terminal LF run, visited once; no retries at interior newlines.
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '\n') end -= 1;
+  return value.slice(0, end);
+}
+
 // The variants bash can produce from a bound value in a substitution: `"$(printf ...)"` and every
 // `$( )` remove ALL trailing newlines. Each variant is registered and masked with the value itself
 // (Astra H5 at f98cf712: a prefetch of `value\n\n` reached the output as `value`, unmasked).
 function substitutionVariants(kind, value) {
-  const stripped = value.replace(/\n+$/, '');
+  const stripped = stripTrailingNewlines(value);
   if (stripped === value) return [];
   const token = tokenize(kind, stripped);
   return knownTokens().get(token)?.ephemeral ? [] : [token];

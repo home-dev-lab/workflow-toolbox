@@ -2,17 +2,15 @@
 // its archive was written. L2: reassembly treats a repeated piece as a copy of that piece, never as more rows.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { hostStore, hookFixture, readerTotals } from './store-host-fake.mjs';
+import { hostStore, hookFixture, readerTotals, sandboxRoot } from './store-host-fake.mjs';
 import { emptyContext, splitUnit } from '../hooks/store-budget.js';
 import { archivedSegments, reassembleSplits, sumSessions } from '../scripts/delivery-join.mjs';
 import { readStoreArchives, withArchivedSessions } from '../scripts/store-archives.mjs';
 
 async function sandbox(t, prefix) {
-  const root = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, prefix);
   return root;
 }
 const AT = '2026-10-01T10:00:00.000Z';

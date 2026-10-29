@@ -26,6 +26,8 @@
 //                same plain-markdown prepend shape as the rules set.
 //   • scripts — fingerprinted thin launchers for the lane, waiter, arc and quota watchers.
 //               Runtime bodies and their libraries come from the installed plugin on each launch.
+//   • ssh-sign-retry — explicitly named opt-in, excluded from all: standalone Node program
+//                      plus an absent-only Git SSH signer setting (local, or --global).
 //   • docs — RETIRED. It installed the rules' rationale/field-case overflow into
 //            <cwd>/.claude/docs/wt. The shipped rules no longer point at any rationale
 //            file (the repository history is the record), so nothing is installed; a
@@ -71,7 +73,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { quoteRemedyWord } from '../../../bin/lib/remedy-quote.mjs'
-import { firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent } from '../../../bin/lib/host/adopt-placement.mjs'
+import { adoptRefreshHost, firstExistingPath, isOnDemandDir, onDemandEngineFiles, placementRoots as placementRootsFor, readRegularFileText, readRuleText, realDirOrParent, sshSignRetryDirectory } from '../../../bin/lib/host/adopt-placement.mjs'
 import { renderScriptShim, resolveAdoptedScript } from '../../../bin/lib/host/adopted-script-shim.mjs'
 
 // A consumer that closes our stdout early (e.g. `| head`) must not crash us.
@@ -373,12 +375,13 @@ const MANAGED_AUTONOMY = [
  *  .claude/agents/". Naming them is what tells the two apart (card: an adoptant asked
  *  why two already-available agents "hadn't been added" — they had, under their
  *  namespaced form, and nothing said so). */
-function discoverRegisteredAgents(root) {
+function discoverRegisteredAgents(root, requireReadable = false) {
   const dir = path.join(root, 'agents')
   let entries
   try {
     entries = fs.readdirSync(dir)
-  } catch {
+  } catch (error) {
+    if (requireReadable) throw error
     return [] // no bundle dir → nothing to report (graceful, mirrors discoverRuleItems)
   }
   return entries
@@ -544,9 +547,11 @@ const SETS = {
   agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
   autonomy: { kind: 'autonomy', srcDir: 'autonomy', defaultDir: '.claude', globalSubdir: '', resolveItems: () => MANAGED_AUTONOMY },
   scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }, { file: 'wt-lane-wait.mjs' }, { file: 'wt-arc-watch.mjs' }, { file: 'wt-quota-watch.mjs' }] },
+  'ssh-sign-retry': { kind: 'scripts', srcDir: path.join('bin', 'lib', 'host'), defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-ssh-sign-retry.mjs', standalone: true }] },
 }
 
-const MANAGED_SET_NAMES = Object.keys(SETS)
+// Optional host configuration is never pulled in by --set all or ambient refresh.
+const MANAGED_SET_NAMES = Object.keys(SETS).filter((name) => name !== 'ssh-sign-retry')
 
 // Retired set name: `--set docs` names it and exits non-zero, rather than failing as an unknown set.
 const RETIRED_DOCS_SET = 'docs'
@@ -755,7 +760,7 @@ function renderBanner(version, fp, stamp = null, file = '') {
  *  unedited installed file reproduces its stamped fingerprint. Markdown sets read their
  *  bundle source; scripts serialize the shared launcher template instead of copying bodies. */
 function itemContent(set, item, root) {
-  if (set.kind === 'scripts') return renderScriptShim(item.file)
+  if (set.kind === 'scripts' && !item.standalone) return renderScriptShim(item.file)
   const src = path.join(root, set.srcDir, item.file)
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   return fs.readFileSync(src, 'utf8')
@@ -772,7 +777,7 @@ function itemContent(set, item, root) {
  *  degrades to null and the caller falls back to the version comparison. */
 function shippedFingerprint(set, item, root, installedBody = null, preserveAgentFrontmatter = false) {
   try {
-    const rendered = set.kind === 'scripts' ? renderScriptShim(item.file) : fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8')
+    const rendered = set.kind === 'scripts' && !item.standalone ? renderScriptShim(item.file) : fs.readFileSync(path.join(root, set.srcDir, item.file), 'utf8')
     // A clean agent can legitimately retain an installer-preserved local frontmatter field.
     // Compare that copy to the current shipped definition with the same field retained, not to
     // the raw template which could never match it.
@@ -1060,6 +1065,8 @@ function adoptedFiles(set, dir, root) {
 }
 
 function existingAdoptionCandidates(name, set, root) {
+  // The shared signer must not rediscover a disposable project/config-profile copy.
+  if (name === 'ssh-sign-retry') return []
   const candidates = new Map()
   const add = (level, dir, placement = 'static') => {
     const resolved = path.resolve(dir)
@@ -1510,6 +1517,7 @@ const CLI_VALUE_OPTIONS = {
 
 const CLI_BOOLEAN_OPTIONS = {
   '--force': 'force',
+  '--refresh-only': 'refreshOnly',
   '--fail-on-drift': 'failOnDrift',
   '--refresh-triggers': 'refreshTriggers',
   '--keep-triggers': 'keepTriggers',
@@ -1533,6 +1541,8 @@ function defaultCliArgs() {
     dir: null,
     global: false,
     force: false,
+    refreshOnly: false,
+    refreshFiles: null,
     failOnDrift: false,
     refreshTriggers: false,
     keepTriggers: false,
@@ -1557,6 +1567,7 @@ function parseArgs(argv) {
     if (Object.hasOwn(CLI_MODE_OPTIONS, token)) args.mode = CLI_MODE_OPTIONS[token]
     else if (Object.hasOwn(CLI_BOOLEAN_OPTIONS, token)) args[CLI_BOOLEAN_OPTIONS[token]] = true
     else if (Object.hasOwn(CLI_VALUE_OPTIONS, token)) args[CLI_VALUE_OPTIONS[token]] = argv[++i]
+    else if (token === '--refresh-file') (args.refreshFiles ??= []).push(argv[++i])
     else if (token === '--diff') {
       args.mode = 'diff'
       args.diffFile = argv[++i]
@@ -1589,6 +1600,8 @@ const FLAG_EFFECTIVE_MODES = {
   dir: { cli: '--dir', modes: ['check', 'install', 'migrate', 'diff'] },
   global: { cli: '--global', modes: ['check', 'install', 'migrate', 'diff'] },
   force: { cli: '--force', modes: ['install'] },
+  refreshOnly: { cli: '--refresh-only', modes: ['install'] },
+  refreshFiles: { cli: '--refresh-file', modes: ['install'] },
   failOnDrift: { cli: '--fail-on-drift', modes: ['check'], sets: ['scripts', 'all'] },
   refreshTriggers: { cli: '--refresh-triggers', modes: ['install'] },
   keepTriggers: { cli: '--keep-triggers', modes: ['install'] },
@@ -2140,7 +2153,7 @@ function migratedStatus({ target, served }) {
 }
 
 function scriptTargetDecision(set, item, args, classification, decision) {
-  if (set.kind !== 'scripts') return decision
+  if (set.kind !== 'scripts' || item.standalone) return decision
   const resolved = resolveAdoptedScript(item.file)
   if (!resolved.target && (classification.state !== 'absent' || args.mode === 'install')) {
     return { status: `TARGET-MISSING (${resolved.lookup})`, write: false }
@@ -2223,21 +2236,57 @@ function managedWriteVerb(classification, force) {
   return 'REFRESHED'
 }
 
-function writeManagedFile(target, text, exclusive = false) {
+function publicationMatches(target, expected) {
+  if (expected === undefined) return true
+  try {
+    return adoptRefreshHost.fs.lstatSync(target).isFile() && adoptRefreshHost.fs.readFileSync(target).equals(Buffer.from(expected, 'utf8'))
+  } catch {
+    return false
+  }
+}
+
+function preserveManagedMode(target, fd) {
+  try {
+    const stat = adoptRefreshHost.fs.lstatSync(target)
+    if (stat.isFile()) adoptRefreshHost.fs.fchmodSync(fd, stat.mode & 0o7777)
+  } catch {
+    // Best effort: Windows honours only its read-only permission bit.
+  }
+}
+
+function writeManagedFile(target, text, expected = undefined) {
   assertPlacement(target)
-  fs.writeFileSync(target, text, exclusive ? { flag: 'wx' } : undefined)
+  const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}-${crypto.randomUUID()}.tmp`)
+  let fd
+  let ownsTemp = false
+  try {
+    fd = adoptRefreshHost.fs.openSync(temp, 'wx')
+    ownsTemp = true
+    fs.writeFileSync(fd, text)
+    preserveManagedMode(target, fd)
+    adoptRefreshHost.fs.closeSync(fd)
+    fd = undefined
+    if (!publicationMatches(target, expected)) return false
+    adoptRefreshHost.fs.renameSync(temp, target)
+    return true
+  } finally {
+    try { if (fd !== undefined) adoptRefreshHost.fs.closeSync(fd) } finally {
+      if (ownsTemp) fs.rmSync(temp, { force: true })
+    }
+  }
 }
 
 function replaceSymlinkAtomically(target, text) {
-  const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}.tmp`)
-  let ownsTemp = false
-  try {
-    writeManagedFile(temp, text, true)
-    ownsTemp = true
-    moveFileVerified(temp, target)
-  } finally {
-    if (ownsTemp) fs.rmSync(temp, { force: true })
-  }
+  return writeManagedFile(target, text)
+}
+
+function publishManagedItem(target, text, classification, args) {
+  if (classification.state === 'symlink') return replaceSymlinkAtomically(target, text)
+  return writeManagedFile(target, text, args.refreshOnly ? classification.raw : undefined)
+}
+
+function managedWriteOutcome(args, verb) {
+  return args.set === 'ssh-sign-retry' ? 'PREPARED' : verb
 }
 
 function writeManagedItem(set, dir, item, args, version, root, planned) {
@@ -2253,8 +2302,10 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
     )
   }
-  if (classification.state === 'symlink') replaceSymlinkAtomically(target, finalText)
-  else writeManagedFile(target, finalText)
+  if (!publishManagedItem(target, finalText, classification, args)) {
+    process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
+    return
+  }
   const verb = managedWriteVerb(classification, args.force)
   appendAdoptionJournal(dir, {
     timestamp: new Date().toISOString(),
@@ -2268,7 +2319,8 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
   const versions = classification.installedVer ? `v${classification.installedVer} -> v${version}` : `none -> v${version}`
   const headReport = triggers && (args.force || decisionRendersHead(planned)) && triggers.state !== 'current'
     ? ' · on-demand triggers refreshed from shipped spec' : triggerClause(triggers, item, dir)
-  process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})${headReport}\n`)
+  const outcome = managedWriteOutcome(args, verb)
+  process.stdout.write(`  ${item.file}: ${outcome} ${versions} -> ${target} (journal ${journalPath(dir)})${headReport}\n`)
 }
 
 function decisionRendersHead(planned) {
@@ -2303,7 +2355,10 @@ function writeTriggerHead(set, dir, item, planned, action) {
   const stamped = renderBanner(classification.installedVer, parsed.contentFp, stamp, item.file)
   const text = head + rest.replace(line, () => stamped)
   if (text === classification.raw) return
-  writeManagedFile(target, text)
+  if (!writeManagedFile(target, text, classification.raw)) {
+    process.stdout.write(`  ${item.file}: SKIPPED — changed during this run; re-run${triggerClause(triggers, item, dir)}\n`)
+    return
+  }
   let verb = 'TRIGGERS REFRESHED'
   if (action === 'keep') verb = 'TRIGGERS KEPT'
   else if (triggers.state === 'current') verb = 'TRIGGERS ENROLLED'
@@ -2316,13 +2371,36 @@ function writeTriggerHead(set, dir, item, planned, action) {
   process.stdout.write(`  ${item.file}: ${verb} (head only; body left at v${classification.installedVer}) -> ${target} (journal ${journalPath(dir)}) · on-demand triggers ${outcome}\n`)
 }
 
+function refreshRefusal(planned, set, file) {
+  if (planned.classification.state !== 'clean') return planned.classification.state
+  if (planned.migrationPending || planned.duplicate || planned.unverified) return planned.decision.status
+  const line = bannerLine(set, planned.classification.raw)
+  const parsed = parseBanner(line, file)
+  if (line !== renderBanner(parsed.version, parsed.contentFp, parsed.stamp, file)) return 'banner line edited'
+  if (planned.triggers && !['current', 'stale'].includes(planned.triggers.state)) return `trigger head ${planned.triggers.state}`
+  return null
+}
+
+function skipRefreshOnly(args, planned, set, item) {
+  if (!args.refreshOnly) return false
+  const reason = refreshRefusal(planned, set, item.file)
+  if (!reason) return false
+  process.stdout.write(`  ${item.file}: SKIPPED — refresh-only: ${reason}\n`)
+  return true
+}
+
+function triggerHeadNeedsRefresh(triggers) {
+  return triggers && (triggers.state === 'stale' || (triggers.state === 'current' && (triggers.stamp?.kind !== 'head' || triggers.stamp.head !== triggers.current)))
+}
+
 function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const planned = decideManagedItem(set, dir, item, args, version, root, alternateDirs)
   const { classification, decision, triggers } = planned
   if (args.mode === 'install') {
-    if (triggerHeadOnly(args, planned)) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
+    if (skipRefreshOnly(args, planned, set, item)) { /* The writer uses this exact classified snapshot. */ }
+    else if (triggerHeadOnly(args, planned)) writeTriggerHead(set, dir, item, planned, args.keepTriggers ? 'keep' : 'refresh')
     else if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
-    else if (triggers && (triggers.state === 'stale' || (triggers.state === 'current' && (triggers.stamp?.kind !== 'head' || triggers.stamp.head !== triggers.current)))) {
+    else if (triggerHeadNeedsRefresh(triggers)) {
       writeTriggerHead(set, dir, item, planned, 'refresh')
     }
     else process.stdout.write(`  ${item.file}: SKIPPED — ${decision.status}\n`)
@@ -2332,6 +2410,10 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
       printChangelogSpan(root, classification.installedVer, version)
     }
   }
+  return managedItemState(set, classification, planned, decision, triggers)
+}
+
+function managedItemState(set, classification, planned, decision, triggers) {
   return {
     anyAbsent: classification.state === 'absent' && !planned.migrated && !planned.unverified,
     anyUnverified: planned.unverified,
@@ -2348,7 +2430,7 @@ function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
 
 /** Process one set into `dir`. Returns the aggregate flags for the check-mode hint. */
 function processSet(set, dir, args, version, root, selectedItems = null) {
-  if (args.mode === 'install') fs.mkdirSync(dir, { recursive: true })
+  if (args.mode === 'install' && !args.refreshOnly) fs.mkdirSync(dir, { recursive: true })
   process.stdout.write(`[${set.kind}] target=${dir}\n`)
   const nestedDir = explicitNestedTarget(set, dir, args)
   const onDemandDir = siblingOnDemandDir(set, dir, args)
@@ -2357,9 +2439,7 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
   const demand = set.kind === 'rules' && inOnDemandStorage(dir)
   const items = demand ? allItems.filter((item) => isOnDemandRule(root, item)) : allItems
   // A group the implicit resolution did not assign this file to has nothing to say about it.
-  if (args.file && (!selectedItems || selectedItems.has(args.file)) && !items.some((item) => item.file === args.file)) {
-    fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
-  }
+  assertManagedSelection(args, selectedItems, items, set)
   const state = {
     anyAbsent: false,
     anyStale: false,
@@ -2373,31 +2453,89 @@ function processSet(set, dir, args, version, root, selectedItems = null) {
     anyScriptDrift: false,
   }
   for (const item of items.filter((candidate) =>
-    (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
+    managedSelectionIncludes(args, selectedItems, candidate))) {
     mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, alternateDirs))
   }
-  if (demand && args.mode === 'check' && !args.file) {
-    for (const item of allItems.filter((candidate) => !isOnDemandRule(root, candidate))) {
-      try {
-        const target = path.join(dir, item.file)
-        const status = classify(target, set).state
-        if (isMigratedStaticCopy(set, target)) {
-          process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
-          continue
-        }
-        const unverifiedReason = unverifiedOnDemandReason(set, target)
-        if (unverifiedReason) {
-          process.stdout.write(`  ${item.file}: ${unverifiedStatus(target, unverifiedReason)}\n`)
-          process.exitCode = 1
-        } else if (status !== 'absent') {
-          process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
-        }
-      } catch {
-        // An unreadable/non-file candidate cannot be diagnosed as a rule.
+  if (demand && args.mode === 'check' && !args.file) reportMigratedStaticItems(set, dir, root, allItems)
+  reportOrphans(set, dir, root, version, allItems, args)
+  return state
+}
+
+function managedSelectionIncludes(args, selectedItems, candidate) {
+  return (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)) &&
+    (!args.refreshFiles || args.refreshFiles.includes(candidate.file))
+}
+
+function assertManagedSelection(args, selectedItems, items, set) {
+  if (args.file && (!selectedItems || selectedItems.has(args.file)) && !items.some((item) => item.file === args.file)) {
+    fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
+  }
+}
+
+function reportMigratedStaticItems(set, dir, root, allItems) {
+  for (const item of allItems.filter((candidate) => !isOnDemandRule(root, candidate))) {
+    try {
+      const target = path.join(dir, item.file)
+      const status = classify(target, set).state
+      if (isMigratedStaticCopy(set, target)) {
+        process.stdout.write(`  ${item.file}: ON-DEMAND (static rule migrated here with its own on-demand head; left untouched)\n`)
+        continue
       }
+      const unverifiedReason = unverifiedOnDemandReason(set, target)
+      if (unverifiedReason) {
+        process.stdout.write(`  ${item.file}: ${unverifiedStatus(target, unverifiedReason)}\n`)
+        process.exitCode = 1
+      } else if (status !== 'absent') {
+        process.stdout.write(`  ${item.file}: MISPLACED (${status} static rule in on-demand directory)\n`)
+      }
+    } catch {
+      // An unreadable/non-file candidate cannot be diagnosed as a rule.
     }
   }
-  return state
+}
+
+function shippedTemplateFile(entry, root, set) {
+  return entry.isFile() || (entry.isSymbolicLink() && realFile(path.join(root, set.srcDir, entry.name)))
+}
+
+function orphanInventory(set, root, allItems) {
+  if (!['rules', 'agents'].includes(set.kind) || !allItems.length) return null
+  try {
+    const entries = adoptRefreshHost.fs.readdirSync(path.join(root, set.srcDir), { withFileTypes: true })
+    const present = entries.filter((entry) => shippedTemplateFile(entry, root, set) && entry.name.toLowerCase().endsWith('.md') &&
+      entry.name.toLowerCase() !== 'readme.md').map((entry) => entry.name)
+    if (!present.length) return null
+    const shipped = set.kind === 'agents' ? present : allItems.map((item) => item.file)
+    if (set.kind === 'agents') {
+      shipped.push(...discoverRegisteredAgents(root, true).map((name) => `${name}.md`))
+    }
+    return new Set(shipped.map((file) => file.toLowerCase()))
+  } catch {
+    return null
+  }
+}
+
+function isOrphanCandidate(file, shipped) {
+  return file.toLowerCase().endsWith('.md') && file.toLowerCase() !== 'readme.md' && !shipped.has(file.toLowerCase())
+}
+
+function reportOrphans(set, dir, root, version, allItems, args) {
+  if (args.mode !== 'check' || args.file) return
+  const shipped = orphanInventory(set, root, allItems)
+  if (!shipped) return
+  let entries
+  try { entries = adoptRefreshHost.fs.readdirSync(dir).sort() } catch { return }
+  for (const file of entries) {
+    if (!isOrphanCandidate(file, shipped)) continue
+    const target = path.join(dir, file)
+    try {
+      if (!adoptRefreshHost.fs.lstatSync(target).isFile() || !hasAdoptionBanner(set, target)) continue
+      const installed = parseBanner(bannerLine(set, adoptRefreshHost.fs.readFileSync(target, 'utf8')), file).version
+      process.stdout.write(`  ${file}: ORPHAN (adopted copy v${installed}; no file of this name is shipped by workflow-toolbox v${version})\n`)
+    } catch {
+      // A vanished or unreadable target cannot be diagnosed as an orphan.
+    }
+  }
 }
 
 // --- --migrate --dry-run --------------------------------------------------------------------
@@ -2897,6 +3035,7 @@ function executeMigration(dir, args) {
 }
 
 function commandTargetDir(args, set, globalRoot) {
+  if (set === SETS['ssh-sign-retry'] && !args.dir) return sshSignRetryDirectory()
   return path.resolve(
     args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
   )
@@ -2930,8 +3069,8 @@ function standardCommandContext(args) {
   if (args.set === RETIRED_DOCS_SET) {
     fail(`the '${RETIRED_DOCS_SET}' set is retired: the shipped rules no longer point at rationale files, so nothing is installed. A docs/wt/ copy installed earlier is left untouched and may be deleted.`)
   }
-  if (![...MANAGED_SET_NAMES, 'all'].includes(args.set)) {
-    fail(`unknown --set '${args.set}' (expected ${MANAGED_SET_NAMES.join(' | ')} | all)`)
+  if (![...Object.keys(SETS), 'all'].includes(args.set)) {
+    fail(`unknown --set '${args.set}' (expected ${Object.keys(SETS).join(' | ')} | all)`)
   }
   const root = pluginRoot()
   const version = currentVersion(root)
@@ -3017,7 +3156,12 @@ function managedSetGroups(set, fallbackDir, resolution, root) {
 // config dir IS the '.claude' layer already, so `globalSubdir` (its own field, NOT derived from
 // defaultDir's basename — see the SETS comment above) is appended instead.
 function managedSetFallbackDir(set, args, globalRoot) {
+  if (set === SETS['ssh-sign-retry'] && !args.dir) return sshSignRetryDirectory()
   return path.resolve(args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)))
+}
+
+function managedSettings(args, globalRoot, chosen, version) {
+  return args.refreshOnly ? { anyAbsent: false, anyProblem: false } : processSettings(globalRoot, chosen, args, version)
 }
 
 function runManagedCommand(args, context) {
@@ -3060,7 +3204,7 @@ function runManagedCommand(args, context) {
   if (args.mode === 'install' && state.anyTargetMissing) process.exitCode = 1
   if (args.failOnDrift && state.anyScriptDrift) process.exitCode = 1
 
-  const settingsResult = processSettings(globalRoot, chosen, args, version)
+  const settingsResult = managedSettings(args, globalRoot, chosen, version)
   state.anyAbsent = state.anyAbsent || settingsResult.anyAbsent
   state.anySettingsProblem = state.anySettingsProblem || settingsResult.anyProblem
 
@@ -3071,24 +3215,60 @@ function runManagedCommand(args, context) {
   renderCheckHints(args, state)
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2))
-  checkFlagModeAsymmetry(args)
+function checkRefreshSelection(args) {
+  if (!args.refreshFiles) return
+  if (!args.refreshOnly || args.mode !== 'install') {
+    fail('--refresh-file requires --install --refresh-only; pass one --refresh-file <managed filename> per selected copy')
+  }
+  if (args.refreshFiles.some((file) => !file || file.startsWith('--'))) {
+    fail('--refresh-file requires a managed filename after every occurrence')
+  }
+}
+
+function checkRefreshOnlyFlags(args) {
+  if (args.refreshOnly && (args.force || args.refreshTriggers || args.keepTriggers || args.replaceSymlinks)) {
+    fail('--refresh-only cannot be combined with --force, --refresh-triggers, --keep-triggers or --replace-symlinks')
+  }
+}
+
+async function configureOptionalSigning(args, context) {
+  if (args.set !== 'ssh-sign-retry' || args.refreshOnly) return
+  const set = SETS[args.set]
+  const item = set.resolveItems(context.root)[0]
+  const target = path.join(managedSetFallbackDir(set, args, context.globalRoot), item.file)
+  const installed = classify(target, set)
+  const ready = installed.state === 'clean' && installed.contentFp === shippedFingerprint(set, item, context.root)
+  const modulePath = path.join(context.root, 'bin', 'lib', 'host', 'adopt-ssh-sign-retry.mjs')
+  const { configureSshSignRetry } = await import(pathToFileURL(modulePath).href)
+  configureSshSignRetry({ target, global: args.global, mode: args.mode, ready })
+}
+
+function checkTriggerFlags(args) {
   if (args.refreshTriggers || args.keepTriggers) {
     if (!args.file || args.set !== 'rules') fail('--refresh-triggers and --keep-triggers require --set rules --install --file <file>')
     if (args.refreshTriggers && args.keepTriggers) fail('--refresh-triggers and --keep-triggers are mutually exclusive')
     if (args.force && args.keepTriggers) fail('--force --keep-triggers is refused; use the commands separately')
   }
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2))
+  checkRefreshSelection(args)
+  checkFlagModeAsymmetry(args)
+  checkRefreshOnlyFlags(args)
+  checkTriggerFlags(args)
   if (args.mode === 'migrate') return runMigrationCommand(args)
   if (args.mode === 'audit-overlap') return runAuditCommand(args)
   await ensureOnDemandEngine()
   const context = standardCommandContext(args)
   if (args.mode === 'diff') return runDiffCommand(args, context)
   runManagedCommand(args, context)
+  await configureOptionalSigning(args, context)
 }
 
 try {
   await main()
 } catch (err) {
-  fail(err && err.message ? err.message : String(err))
+  process.stderr.write(`adopt: ${err && err.message ? err.message : String(err)}\n`)
+  process.exitCode = 1
 }

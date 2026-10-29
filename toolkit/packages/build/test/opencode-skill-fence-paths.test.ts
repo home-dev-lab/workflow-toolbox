@@ -2,10 +2,36 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { runObserverLane } from '../../../../plugin/bin/lib/observer-lane.mjs'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
+import { laneSandboxContext, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
+// @ts-expect-error Standalone plugin helper has no declaration surface.
+import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
+
+isolateOpencodeAdmission()
+
+const laneContext = laneSandboxContext()
+function missingTrustedBwrap(): string | null {
+  if (!laneContext.inside) return null
+  try { trustedSystemExecutable('bwrap', process.env.PATH); return null } catch (error) {
+    if (error instanceof LaneSandboxRefusal) return (error as Error).message
+    throw error
+  }
+}
+const bwrapRefusal = missingTrustedBwrap()
+const sandboxResolverTests = new Set([
+  'uses one sanitized cwd/environment/config context for envelope probe and fan-out spawns',
+  'passes only Azure credentials through envelope fan-out spawns',
+  'uses one sanitized cwd/environment/config context for intercept probe and spawn',
+  'uses one sanitized cwd/environment/config context for observer probe and direct spawn [POSIX JSON-stream fixture]',
+  'passes only Azure credentials through the observer spawn [POSIX JSON-stream fixture]',
+])
+beforeEach((ctx) => {
+  if (sandboxResolverTests.has(ctx.task.name)) skipInsideLaneSandbox(ctx, bwrapRefusal, laneContext)
+})
 
 const ROOT = path.join(__dirname, '..', '..', '..', '..')
 const ENVELOPE = path.join(ROOT, 'plugin/bin/wt-opencode-envelope.mjs')
@@ -48,7 +74,7 @@ printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
   const home = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-home-'))); roots.push(home)
   writeFileSync(path.join(home, '.zprofile'), `export OPENCODE_CONFIG=${path.join(root, 'shell-startup-unsafe.json')}\n`)
   const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: hermeticPath([binDir]), WT_RECORD: record, WT_LANE_SANDBOX_WRITE: recordDir, WT_IDENTITY_MARKER: 'same', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_RECORD,WT_IDENTITY_MARKER', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), OPENAI_API_KEY: 'openai-key', GOOGLE_GENERATIVE_AI_API_KEY: 'google-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource', XDG_STATE_HOME: path.join(home, '.local/state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
-  return { root, bin, record, recordDir, env }
+  return { root, bin, record, recordDir, env: { ...env, CLAUDE_CONFIG_DIR: home, WT_OPENCODE_ENVELOPE_ADMISSION: undefined } }
 }
 
 describe('all toolbox-owned OpenCode launch paths', () => {

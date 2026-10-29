@@ -148,6 +148,8 @@ function priceDetails(model, tokens, table) {
   return { usd: amount, label, canonical, source: base.price_source, context_tokens: contextTokens, tier: price.selected_tier ?? null }
 }
 
+export { loadModelPrices }
+
 export function priceRunCost(cost, table = loadModelPrices()) {
   const priced = structuredClone(cost)
   const unknownModels = new Set()

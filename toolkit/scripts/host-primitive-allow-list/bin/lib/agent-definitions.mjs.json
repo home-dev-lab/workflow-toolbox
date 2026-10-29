@@ -1,0 +1,7 @@
+{
+  "fs import": 1,
+  "os import": 1,
+  "existsSync": 1,
+  "realpathSync": 1,
+  "homedir": 1
+}

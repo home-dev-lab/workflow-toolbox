@@ -80,7 +80,7 @@ function parseAnswer(answer) {
   return { verdict: 'undecidable', reason: 'invalid judge response', rawAnswer: String(answer).slice(0, 1000) };
 }
 
-export async function judgeCases({ casesFile, out, previous, model = 'haiku', concurrency = 2, runner = cliRunner, binary, configDir, rollbackConfigDir }) {
+export async function judgeCases({ casesFile, out, previous, model = 'sonnet', concurrency = 2, runner = cliRunner, binary, configDir, rollbackConfigDir }) {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) throw new Error('concurrency must be an integer from 1 to 16');
   const cases = await readRows(casesFile);
   const prior = previous ? await readRows(previous) : [];
@@ -124,6 +124,18 @@ const rate = (numerator, denominator) => {
   const small = denominator < 5 ? ' (small)' : '';
   return `${numerator}/${denominator} = ${(100 * numerator / denominator).toFixed(1)}%${small}`;
 };
+// What a guard built on the judge would act on: is there a violation or not. `followed` and `not applicable` both
+// mean "no violation", so the followed / not-applicable boundary (where labellers themselves disagree) does not count.
+function violationView(rows, truthOf) {
+  const side = (label) => label === 'not followed' ? 'violation' : label === 'undecidable' ? 'undecidable' : 'none';
+  const count = (predicate) => rows.filter(predicate).length;
+  const hit = (value) => count((row) => side(truthOf(row)) === value && side(row.verdict) === value);
+  const determinate = rows.filter((row) => side(truthOf(row)) !== 'undecidable');
+  return `violation detector (followed and not applicable = no violation): violation precision ${rate(hit('violation'), count((row) => side(row.verdict) === 'violation'))}; ` +
+    `violation recall ${rate(hit('violation'), count((row) => side(truthOf(row)) === 'violation'))}; ` +
+    `no-violation precision ${rate(hit('none'), count((row) => side(row.verdict) === 'none'))}; ` +
+    `decided ${rate(determinate.filter((row) => side(row.verdict) !== 'undecidable').length, determinate.length)} of agreed determinate cases`;
+}
 export async function scoreCases(judgesFile, labelFiles) {
   const judged = await readRows(judgesFile);
   const caseIds = new Set();
@@ -155,7 +167,7 @@ export async function scoreCases(judgesFile, labelFiles) {
       const correct = truth.filter((row) => row.verdict === value).length;
       return `${value}: precision ${rate(correct, predicted.length)}; recall ${rate(correct, truth.length)}`;
     });
-     return `${name}: labeller agreement ${rate(agreedIds.length, eligible.length)} (${eligible.length} multiply labelled / ${rows.length} judged; ${missing} labelled cases without a judge row); disagree: ${disagree.join(', ') || 'none'}\n  ${metrics.join('\n  ')}`;
+     return `${name}: labeller agreement ${rate(agreedIds.length, eligible.length)} (${eligible.length} multiply labelled / ${rows.length} judged; ${missing} labelled cases without a judge row); disagree: ${disagree.join(', ') || 'none'}\n  ${metrics.join('\n  ')}\n  ${violationView(agree, (row) => grouped.get(row.caseId)[0].label)}`;
   }).join('\n');
 }
 

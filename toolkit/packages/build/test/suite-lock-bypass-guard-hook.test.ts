@@ -314,18 +314,18 @@ describe('wt-suite-lock-bypass-guard-hook — state root moved under a locked ga
   const WIN32 = { WT_SUITE_LOCK_BYPASS_GUARD_PLATFORM: 'win32' }
 
   it.each([
-    ['HOME inline on pnpm test (linux)', 'HOME=/tmp/h pnpm test', LINUX],
-    ['HOME inline on pnpm test (darwin)', 'HOME=/tmp/h pnpm test', DARWIN],
+    ['XDG_STATE_HOME inline on pnpm test (linux)', 'XDG_STATE_HOME=/tmp/s pnpm test', LINUX],
+    ['XDG_STATE_HOME inline on pnpm test (darwin)', 'XDG_STATE_HOME=/tmp/s pnpm test', DARWIN],
     ['XDG_STATE_HOME on vitest run', 'XDG_STATE_HOME=/tmp/s pnpm vitest run a.test.ts', LINUX],
     ['XDG_STATE_HOME on win32', 'XDG_STATE_HOME=/tmp/s pnpm test', WIN32],
     ['exported LOCALAPPDATA before pnpm -r test on win32', 'export LOCALAPPDATA=/tmp/l; pnpm -r test', WIN32],
-    ['USERPROFILE on a bare vitest run on win32', 'USERPROFILE=/tmp/u vitest run', WIN32],
-    ['HOME on pnpm typecheck', 'HOME=/tmp/h pnpm typecheck', LINUX],
-    ['HOME on pnpm lint', 'env HOME=/tmp/h pnpm lint', LINUX],
+    ['LOCALAPPDATA on a bare vitest run on win32', 'LOCALAPPDATA=/tmp/l vitest run', WIN32],
+    ['XDG_STATE_HOME on pnpm typecheck', 'XDG_STATE_HOME=/tmp/s pnpm typecheck', LINUX],
+    ['XDG_STATE_HOME on pnpm lint', 'env XDG_STATE_HOME=/tmp/s pnpm lint', LINUX],
     ['XDG_STATE_HOME on pnpm quality', 'XDG_STATE_HOME=/tmp/s pnpm quality:host', LINUX],
-    ['HOME on a non-watch vitest without run', 'HOME=/tmp/h pnpm vitest a.test.ts', LINUX],
-    ['HOME on the wt-suite-lock-run runner', 'HOME=/tmp/h node plugin/bin/wt-suite-lock-run.mjs pnpm test', LINUX],
-    ['HOME through command -p', 'HOME=/tmp/h command -p pnpm test', LINUX],
+    ['XDG_STATE_HOME on a non-watch vitest without run', 'XDG_STATE_HOME=/tmp/s pnpm vitest a.test.ts', LINUX],
+    ['XDG_STATE_HOME on the wt-suite-lock-run runner', 'XDG_STATE_HOME=/tmp/s node plugin/bin/wt-suite-lock-run.mjs pnpm test', LINUX],
+    ['XDG_STATE_HOME through command -p', 'XDG_STATE_HOME=/tmp/s command -p pnpm test', LINUX],
     ['cmd set before a gate', 'cmd /c "set XDG_STATE_HOME=C:/t&& pnpm test"', LINUX],
     ['PowerShell $env: before a gate', `pwsh -c "$env:XDG_STATE_HOME = 'C:/t'; pnpm test"`, LINUX],
   ])('warns state-root-moved for %s', (_why, command, env) => {
@@ -342,11 +342,27 @@ describe('wt-suite-lock-bypass-guard-hook — state root moved under a locked ga
     ['vitest in watch mode', 'HOME=/tmp/h pnpm vitest watch', LINUX],
     ['USERPROFILE on linux, where it does not move the lock', 'USERPROFILE=/tmp/u vitest run', LINUX],
     ['LOCALAPPDATA on darwin', 'export LOCALAPPDATA=/tmp/l; pnpm -r test', DARWIN],
-    ['HOME on win32, where the home directory comes from USERPROFILE', 'HOME=/tmp/h pnpm test', WIN32],
+    ['HOME on win32, where the home comes from the OS', 'HOME=/tmp/h pnpm test', WIN32],
     ['HOME forwarded as itself', 'HOME="$HOME" pnpm test', LINUX],
   ])('stays silent for %s', (_why, command, env) => {
     expectSilent(command, { env })
   })
+
+})
+
+it.each(['linux', 'darwin', 'win32'])('allows HOME and USERPROFILE isolation on %s locked gates', (platform) => {
+  for (const command of [
+    'HOME=/tmp/h USERPROFILE=/tmp/u pnpm test',
+    'export HOME=/tmp/h; pnpm typecheck',
+    'env HOME=/tmp/h pnpm lint',
+    'HOME=/tmp/h node plugin/bin/wt-suite-lock-run.mjs pnpm test',
+    'cmd /c "set USERPROFILE=C:/private&& pnpm test"',
+    `pwsh -c "$env:HOME = 'C:/private'; pnpm quality"`,
+  ]) expectSilent(command, { env: { WT_SUITE_LOCK_BYPASS_GUARD_PLATFORM: platform } })
+  // A disabled detector is not proof that home isolation is safe: real relocations must still warn.
+  const env = { WT_SUITE_LOCK_BYPASS_GUARD_PLATFORM: platform }
+  expectWarned('HOME=/tmp/h USERPROFILE=/tmp/u XDG_STATE_HOME=/tmp/state pnpm test', 'state-root-moved', { env })
+  if (platform === 'win32') expectWarned('USERPROFILE=/tmp/u LOCALAPPDATA=C:/state pnpm test', 'state-root-moved', { env })
 })
 
 describe('wt-suite-lock-bypass-guard-hook — who is covered', () => {

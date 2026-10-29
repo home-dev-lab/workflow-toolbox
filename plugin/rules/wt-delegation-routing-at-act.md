@@ -2,127 +2,100 @@
 
 ## Every delegation hop costs an envelope — depth and chatter multiply it
 
-Delegation = model pass ingesting input + re-ingesting output of what was delegated. Cheap per
-hop, never free — multiplies along three axes:
+Delegation = model pass ingesting input + re-ingesting delegated output; cheap, never free.
+Three multiplying axes:
 
-- **Depth.** main → orchestrator → pilot → executor = three envelopes before a line of code is
-  written. Don't add a fourth level; a task seeming to need one means decomposition is wrong,
-  not depth limit.
-- **Chatter.** Every follow-up message to a live delegate re-runs its envelope, reloads whole
-  context. Five incremental corrections ≈ five complete briefs. Tell: second clarification to
-  same delegate within minutes — not diligence, means first brief was incomplete. Fix brief;
-  never stack messages on top.
-- **Fan-out width.** Each agent in a fan-out pays its own envelope — second, independent reason
-  never to add "one more reviewer to be safe".
+- **Depth.** main → orchestrator → pilot → executor = three envelopes before code. No fourth
+  level; apparent need means wrong decomposition, not wrong depth limit.
+- **Chatter.** Live-delegate follow-up reloads whole context, re-runs envelope. Five incremental corrections
+  ≈ five complete briefs. Second clarification to same delegate within minutes → incomplete first brief, not
+  diligence. Fix brief; never stack messages.
+- **Fan-out width.** Each agent pays envelope → independent reason never to add "one more
+  reviewer to be safe".
 
-Batch guidance into fewer complete messages; require same of every coordinator — reporting
-per-step instead of per-milestone pays the envelope to say nothing.
+Batch guidance into fewer complete messages; require every coordinator likewise. Per-step
+instead of per-milestone reporting pays envelope to say nothing.
 
 ## Picking the tier and effort at each spawn
 
 Compose pilot/orchestrator spawn (environment brief + model elevation) via
 `workflow-toolbox:pilot-wave` skill.
 
-Choose BOTH axes by task, never by identity or what session happens to run:
+Choose BOTH axes by task, never identity or whatever session happens to run:
 
-- Model tier: top-judgment (rarest — arbitration/adversarial verification strong tier can't
-  settle) · strong (hard reasoning, architecture, quality verification) · workhorse
-  (exploration, code mapping, implementation, targeted diff verification) · cheap
-  (summarization, classification, trivial grep/listing). Use workhorse, not cheap tier, for
-  code mapping — a wrong map costs more than the quota saved.
+- Model: top-judgment (rarest: arbitration/adversarial verification strong can't settle) ·
+  strong (hard reasoning, architecture, quality verification) · workhorse (exploration, code
+  mapping, implementation, targeted diff verification) · cheap (summarization, classification,
+  trivial grep/listing). Code mapping: workhorse, never cheap; wrong map costs more than quota saved.
 - Effort: low (mechanical/extraction) · medium (read-and-report, scoped audits) · high
   (implementation, code mapping, diff review, most verifiers) · xhigh (only genuinely-hard
-  judgment). Pin BOTH on the spawn itself: the Agent tool takes `model` and `effort` per call,
-  and they override an agent type's frontmatter, which only supplies the default when the call
-  omits them. A custom agent type is for what a call cannot set (a `tools` allow-list, a
-  system-prompt contract, an observer pairing), never for a model or effort pin alone.
+  judgment). Pin BOTH at spawn: the Agent tool takes `model` and `effort` per call;
+  they override an agent type's frontmatter, default only when omitted. Custom types for
+  call-inexpressible settings (`tools` allow-list, system-prompt contract, observer pairing),
+  never model/effort pin alone. Effort task-relative, never identity-/project-relative;
+  unpinned inheritance = bug, not pin. No blanket user/project effort default;
+  session dial governs arbiter's own reasoning only, never spawns.
 
-Never set a blanket subagent-model env var: it downgrades every hard task whose spawn forgot its
-pin, and its force switch overrides even an explicit per-spawn model:. Agent self-reports a
-different model than pinned → check settings `env` blocks for such a var.
+Never blanket subagent-model env var: downgrades unpinned hard tasks; force switch overrides
+even explicit model:. Agent reports model differing from pin → inspect settings `env` blocks.
 
-Effort is task-relative, never identity-/project-relative: pin it per spawn, never as a blanket
-user/project default — un-pinned inheritance is the bug, not the pin. Session-level
-effort dial governs arbiter's own reasoning only, never what it spawns.
+CODE complexity triage = code-reading judgment, not cheap classification: deterministic signals
+(diff size, files touched) FIRST, then ONE batched strong-tier triage call; verifiers static high floor.
 
-Complexity triage of a CODE task = code-reading judgment, not cheap-tier classification: gate
-on deterministic signals (diff size, files touched) first, then one batched strong-tier triage
-call; keep verifiers at a static high floor.
+Workhorse DOMINATED (higher unit cost, lower quality than stronger tier) → "workhorse = cheap"
+fails; route role to cross-family lane, avoid dominated tier entirely. Strong for quality,
+cheap for trivial work.
 
-Workhorse tier DOMINATED by a stronger one — costs more per unit for lower quality —
-"workhorse = cheap tier" assumption fails. Route that role to a cross-family lane instead,
-reserve strong tier for quality, keep cheap tier for trivial work, avoid dominated tier
-entirely.
+MECHANICAL escalation, never "use judgment": two failed attempts at same fix, one repeated
+diagnosis, or ~15–20 min without narrowing problem. Judgment silently unenforceable: wrong-hypothesis
+grinding feels busy, not stuck; counting fires regardless. Step-back (`wt-step-back-architectural.md`),
+never to the owner: list routes, the current route included while its attempts still narrow the problem;
+take best route or another tier. Retries normal; BLOCKED goes up only with no route left.
 
-MECHANICAL escalation trigger, never "use judgment": escalate after two failed attempts at same
-fix, one repeated diagnosis, or ~15–20 min without narrowing problem. Judgment-based clause is
-unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy, not stuck, so
-only a counting rule fires regardless. The escalation is a step-back (`wt-step-back-architectural.md`),
-never to the owner: list the routes, the current route included while its attempts still narrow the problem,
-then take the best one or another tier. Retries on a route are normal; a BLOCKED goes up only when no
-route is left.
+Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before committing.
+Arc complete → LEAVE idle: costs nothing, no shutdown request needed. Shutdown ending SPAWNING
+session NOT reproduced (0 of 8 delivered to finished in-process teammate, harness 2.1.276/2.1.284);
+never cite as cause. Terminated/quota-killed agent resumes transcript on next message → try resume
+before respawn. Never successor in same worktree before confirmed predecessor death: two writers
+corrupt tree. Before assuming stuck, check git status/file mtimes/HEAD, never nudge blindly.
 
-Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before
-committing. Arc complete → LEAVE the agent idle; an idle agent costs nothing and needs no shutdown request. A
-shutdown request ending the SPAWNING session is NOT reproduced: 0 of 8 delivered to a finished in-process
-teammate, on harness 2.1.276 and 2.1.284 — never cite it as a cause. Terminated/quota-killed
-agent resumes from transcript on next message — try resuming before respawning; never spawn a
-successor into same worktree before predecessor's death confirmed (two writers corrupt one
-tree). Before assuming agent stuck, check observable state (git status, file mtimes, HEAD)
-rather than nudging blindly.
+⚠ Silence ≠ death: legitimate waiting also writes nothing. RESPONSE discriminates, not duration.
+Check-in states observation, asks; never asserts death, costing live agent a corrective turn.
 
-⚠ But silence alone ≠ agent dead: a legitimately-waiting agent writes nothing, identical to one
-that died. Signal that discriminates = agent's RESPONSE, not how long it stayed quiet —
-check-in states observation, asks, rather than asserting death; asserting it forces a live
-agent to spend a turn correcting a wrong premise.
-
-Don't poll completion through a status/task-lookup tool: display name isn't an id such tools
-accept, a lookup finding nothing proves nothing. Wait for completion notification, or arm own
-watcher on a real signal (file changes, process state) for independent wake-up.
+Never poll completion through status/task lookup: display name not accepted id; absence proves
+nothing. Wait for notification or arm own real-signal watcher (file changes, process state)
+for independent wake-up.
 
 ## Four prohibitions that sharpen the ladder
 
-1. **Executing a fully-specified design = executor-lane work, not inline on a strong model.**
-   100%-specified, ratified design = IDEAL profile for the cheapest capable executor — a brief
-   saying "implement it inline" on a strong model is a deviation even when design is done.
-   Pilot arbitrates, gates, reviews; executor codes.
-2. **ONE full re-gate per delivery: integrating arbiter's, on the real tree.** Implementer gates
-   own worktree (its definition of done); intermediate coordinator does diff-read + targeted
-   checks — never an additional independent full suite. Triple gate = quality-theatre at full
-   price.
-3. **A delegation wrapper never pre-reads sources.** Hands paths/instructions to executor,
-   which reads for itself — a wrapper reading everything first burns coordinator-tier budget on
-   work executor repeats anyway, same leak family as a wrapper answering in executor's place.
-4. **A wrapper around an external model must never render its verdict itself.** An agent
-   encapsulating a call to a cross-family CLI/API can answer in that model's place with nothing
-   in the transcript showing the substitution happened — a verdict attributed to a decorrelated
-   model needs provenance checked per call, against execution evidence the call itself
-   produced, never trusted from wrapper's summary alone. Invoking the external tool directly
-   (not through a wrapper) is recommended precisely because invocation is then its own
-   provenance. Prohibition targets the intermediary substituting for the model, never the
-   directness of the call.
+1. **Executing a fully-specified design = executor-lane work, never inline on strong model.** 100%-specified,
+   ratified design IDEAL for cheapest capable executor; "implement it inline" on strong tier
+   remains deviation when design done. Pilot arbitrates/gates/reviews; executor codes.
+2. **ONE full re-gate/delivery: integrating arbiter, real tree.** Implementer gates own worktree
+   (definition of done); intermediate coordinator diff-reads + targeted checks, never extra
+   independent full suite. Triple gate = full-price quality-theatre.
+3. **Wrapper never pre-reads sources.** Pass paths/instructions; executor reads. Pre-reading
+   spends coordinator budget duplicating executor, same leak as answering in its place.
+4. **External-model wrapper never renders verdict itself.** Cross-family CLI/API wrapper can
+   substitute answer invisibly in transcript. Each decorrelated verdict: check provenance
+   against call's own execution evidence, never wrapper summary alone. Direct invocation
+   recommended: own provenance. Prohibition targets substitution, never call directness.
 
 ## A mandate is re-issued, not assumed
 
-A coordinator given a fixed list of items stops when list exhausted — nothing makes it pick up
-newly-appearing work on its own, and it shouldn't invent scope it wasn't given. Coordinator
-keeping going as new qualifying work appears → mandate must state an open scope plus a
-mechanical, fail-closed stop condition — not a list — so it can re-scan for work after each
-item without waiting to be reissued. Choose mode deliberately at issuance: fixed list for a
-bounded batch, open mandate for a mission expected to absorb work created along the way.
+Fixed-list coordinator stops at exhaustion, cannot pick up new work, must not invent scope.
+At issuance deliberately choose: fixed list for bounded batch; open scope + mechanical,
+fail-closed stop condition for mission absorbing new qualifying work, enabling re-scan after
+each item without reissuance — not a list.
 
 ## A cost or routing directive with no report-time check does not apply
 
-Stating a delegation/cost policy ("increments go through the cheaper lane by default") ≠ it
-being followed — a coordinator can silently ignore it under real pressure, nothing surfaces the
-gap until someone reads a transcript after the fact. So: every wave/card report names which
-tier/lane carried the IMPLEMENTATION and which the REVIEW, separately. A policy not verifiable
-at report time is not in force, however much everyone agreed with it in principle.
+Every wave/card report names IMPLEMENTATION and REVIEW tier/lane separately: stated policy
+("increments go through the cheaper lane by default") can be silently ignored under pressure,
+surfacing only in later transcript read. Without report-time verification, agreement ≠ policy in force.
 
 ## Lane consent, not lane availability
 
-A pilot without a NAMED and CONSENTED executor lane doesn't implement a heavy increment on its
-own tier — it splits: design/plan/arbitrate on own tier, spawn a cheaper sub-agent for the
-increment. Availability of a bridge on the machine is NOT consent to use it: consent composes
-account-level authorization (the ceiling) with project-level narrowing (never widening) — a
-refusal at either level wins, and default is OFF.
+No NAMED and CONSENTED lane → pilot splits heavy increment: own-tier design/plan/arbitration,
+cheaper sub-agent implementation. Bridge available ≠ consent: account authorization ceiling,
+project only narrows, never widens; refusal at either wins, default OFF.

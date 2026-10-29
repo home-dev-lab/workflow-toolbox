@@ -10,7 +10,7 @@ and print the offending commits plus a ready-to-run fix.
 Usage:
   node wt-check-commit-signatures.mjs [--repo <path>] [--range <git-range>]
     --repo <path>    git repo to check (default: cwd)
-    --range <range>  a git revision range (e.g. origin/main..HEAD); default: just HEAD
+    --range <range>  a git revision range (e.g. origin/main..HEAD); must not start with '-'; default: just HEAD
 
 Exit codes: 0 nothing to report · 1 unsigned commit(s) found (printed to stdout) · 2 usage/git error.
 `;
@@ -38,6 +38,7 @@ function parseArgs(argv) {
     else fail(`unknown argument: ${arg}`);
   }
 
+  if (out.range?.startsWith('-')) fail('--range must not start with "-"; expected a git revision range');
   return out;
 }
 
@@ -180,10 +181,11 @@ function main() {
   // established we exclude NOTHING and over-report — a noisy guard is recoverable, a mute one is
   // not.
   const targetRemote = remoteFromRange(args.repo, args.range);
-  const excludeArgs = targetRemote === null ? [] : ['--not', `--remotes=${targetRemote}`];
+  // Finish options before the untrusted revision; reset --not after the remote exclusion.
+  const excludeArgs = targetRemote === null ? [] : ['--not', `--remotes=${targetRemote}`, '--not'];
   const logArgs = args.range
-    ? ['log', '--format=%H%x09%G?%x09%s', args.range, ...excludeArgs]
-    : ['log', '-1', '--format=%H%x09%G?%x09%s', 'HEAD'];
+    ? ['log', '--format=%H%x09%G?%x09%s', ...excludeArgs, '--end-of-options', args.range, '--']
+    : ['log', '-1', '--format=%H%x09%G?%x09%s', '--end-of-options', 'HEAD', '--'];
   const logRes = runGit(args.repo, logArgs);
   if (logRes.status !== 0) {
     usageError(args.repo, logArgs, logRes, 'git log failed');

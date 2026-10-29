@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { withoutOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { materialiseAllowedSkills, opencodeChildEnv, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 
@@ -12,7 +13,7 @@ const installed = found.status === 0 ? (found.stdout.trim().split('\n')[0] ?? ''
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
 // the sandbox itself is locked in lane-sandbox.test.ts.
-const unfencedProcessEnv: NodeJS.ProcessEnv = { ...process.env, WT_LANE_SANDBOX: 'off' }
+const unfencedProcessEnv: NodeJS.ProcessEnv = { ...withoutOpencodeAdmission(), WT_LANE_SANDBOX: 'off' }
 beforeEach(() => { vi.stubEnv('WT_LANE_SANDBOX', 'off') })
 afterEach(() => { vi.unstubAllEnvs() })
 delete unfencedProcessEnv.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS
@@ -62,7 +63,7 @@ describe('installed OpenCode Claude-skill fence', () => {
       writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
       const launcher = path.join(ROOT, 'plugin', 'bin', 'wt-lane.mjs')
       expect(existsSync(launcher), `the launcher is not at ${launcher}`).toBe(true)
-      writeFileSync(path.join(lane, 'brief.md'), '# brief\n')
+      writeFileSync(path.join(lane, 'brief.md'), '# brief\n## Gates\npnpm test\n')
       const refused = spawnSync(process.execPath, [launcher, '--dir', lane, '--model', 'openai/gpt-5.6-luna', '--brief', path.join(lane, 'brief.md'), '--allow-no-git'], {
         encoding: 'utf8', env: { ...env, WT_LANE_SKILLS: `${allowed},save-memory` },
       })
@@ -164,7 +165,7 @@ describe('installed OpenCode Claude-skill fence', () => {
       mkdirSync(skillDir, { recursive: true }); mkdirSync(config, { recursive: true })
       writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
       writeFileSync(path.join(skillDir, 'SKILL.md'), `---\nname: ${name}\ndescription: refused native route\n---\n`)
-      const brief = path.join(lane, 'brief.md'); writeFileSync(brief, '# must not run\n')
+      const brief = path.join(lane, 'brief.md'); writeFileSync(brief, '# must not run\n## Gates\npnpm test\n')
       const result = spawnSync(process.execPath, [path.join(ROOT, 'plugin', 'bin', 'wt-lane.mjs'), '--dir', lane, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env })
       expect(result.status).toBe(1)
       expect(result.stderr).toContain(`effective OpenCode skill discovery found ${name}`)
@@ -184,7 +185,7 @@ describe('installed OpenCode Claude-skill fence', () => {
       writeFileSync(path.join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
       writeFileSync(path.join(config, 'skills', allowed, 'SKILL.md'), `---\nname: ${allowed}\ndescription: Use when asked to prove the lane allow-list e2e.\n---\nReply with the exact token ALLOWED_SKILL_LOADED.\n`)
       writeFileSync(brief, `Invoke the \`${allowed}\` skill, follow it, and output only its exact token.\n`)
-      const launch = spawnSync(process.execPath, [path.join(ROOT, 'plugin', 'bin', 'wt-lane.mjs'), '--dir', lane, '--model', process.env.WT_REAL_OPENCODE_MODEL || 'openai/gpt-5.6-luna', '--brief', brief, '--log', log, '--timeout', '120', '--allow-no-git'], { encoding: 'utf8', env })
+      const launch = spawnSync(process.execPath, [path.join(ROOT, 'plugin', 'bin', 'wt-lane.mjs'), '--dir', lane, '--model', process.env.WT_REAL_OPENCODE_MODEL || 'openai/gpt-5.6-luna', '--brief', brief, '--log', log, '--timeout', '120', '--allow-no-git', '--no-gate-section', 'read-only skill loading probe'], { encoding: 'utf8', env })
       expect(launch.status).toBe(0)
       const deadline = Date.now() + 150_000
       while (Date.now() < deadline && (!existsSync(log) || !/EXIT=/.test(readFileSync(log, 'utf8')))) spawnSync('sleep', ['0.1'])

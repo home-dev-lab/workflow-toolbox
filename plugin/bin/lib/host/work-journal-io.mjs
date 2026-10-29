@@ -3,7 +3,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
 
 export const read = (file) => fs.readFileSync(file, 'utf8')
 export const readBytes = (file) => fs.readFileSync(file)
@@ -17,47 +16,6 @@ export const platform = () => process.platform
 export const hostname = () => os.hostname()
 export const nonce = () => randomBytes(8).toString('hex')
 export const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
-
-// Complete lines only: neither UTF-8 characters nor JSON records are decoded across chunks.
-function collectBackwardLines(data, boundary, lines) {
-  let end = data.length
-  for (let index = data.length - 1; index >= 0; index--) {
-    if (data[index] !== 0x0a) continue
-    const raw = data.subarray(index + 1, end).toString('utf8')
-    end = index
-    if (!raw) continue
-    if (boundary(raw)) return null
-    lines.push(raw)
-  }
-  return data.subarray(0, end)
-}
-function collectFirstLine(cursor, carry, boundary, lines) {
-  if (!cursor && carry.length) {
-    const raw = carry.toString('utf8')
-    if (!boundary(raw)) lines.push(raw)
-  }
-}
-export function readBackwardLines(file, boundary, limit = 16 * 1024 * 1024) {
-  const fd = fs.openSync(file, 'r')
-  const lines = []
-  let carry = Buffer.alloc(0)
-  let used = 0
-  try {
-    let cursor = fs.fstatSync(fd).size
-    while (cursor > 0 && used < limit) {
-      const size = Math.min(64 * 1024, cursor, limit - used)
-      cursor -= size
-      const chunk = Buffer.allocUnsafe(size)
-      if (fs.readSync(fd, chunk, 0, size, cursor) !== size) throw new Error('transcript changed during tail read')
-      used += size
-      const data = Buffer.concat([chunk, carry])
-      carry = collectBackwardLines(data, boundary, lines)
-      if (carry === null) return { lines: lines.reverse(), limited: false }
-    }
-    collectFirstLine(cursor, carry, boundary, lines)
-    return { lines: lines.reverse(), limited: cursor > 0 }
-  } finally { fs.closeSync(fd) }
-}
 
 export function list(dir) {
   try { return fs.readdirSync(dir).sort() } catch (error) {
@@ -164,7 +122,7 @@ export function releaseLock(dir, owner) {
   syncDir(path.dirname(dir))
 }
 
-export function ownerAlive(owner) {
+function ownerAlive(owner) {
   if (!owner || owner.host !== hostname() || !Number.isInteger(owner.pid) || owner.pid <= 0) return 'unknown'
   try { process.kill(owner.pid, 0); return 'live' } catch (error) {
     return error.code === 'ESRCH' ? 'dead' : 'unknown'
@@ -204,12 +162,3 @@ export function unlockDead(dir) {
   try { removeDeadLock(dir) } finally { releaseLock(mutex, owner) }
 }
 
-export function git(repo, args, deadline) {
-  const remaining = Math.ceil(deadline - performance.now())
-  if (remaining <= 0) throw new Error('git-timeout')
-  // eslint-disable-next-line sonarjs/no-os-command-from-path -- Git is the local act ledger.
-  const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', timeout: remaining, maxBuffer: 8 * 1024 * 1024 })
-  if (result.error) throw new Error(result.error.code === 'ENOENT' ? 'git-missing' : 'git-timeout')
-  if (result.status !== 0) return null
-  return result.stdout.trim()
-}

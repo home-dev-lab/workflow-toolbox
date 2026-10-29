@@ -1,8 +1,9 @@
 // A host-faithful plugin store and a real-filesystem `$` for hook tests that must see the store limit and the archives.
 // The host contract (`$.store.set`): "Rejects ... a store over 4 MiB of JSON text in all"; measured on the real store
 // as the length of the compact JSON text of the WHOLE store object, with the message shape below.
-import { mkdir, readFile, readdir, stat, lstat, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, lstat, realpath, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { register, resetForSelftest } from '../hooks/hooks.js';
@@ -63,10 +64,83 @@ const fsOperations = {
   },
 };
 
+// The hook runs work in the background without awaiting it (hooks.js trackedEvent dispatches its flight-recorder writes,
+// scheduleFlights its harvest), so a call can return while a write into the sandbox is still running or still to come.
+// Every host call the fixture hands the hook ($.fs, $.store, $.ui, $.session, $.env, $.model) is tracked, so a sandbox
+// is removed only once the hook waits on nothing: the hooks set no timers, so a continuation is always chained on a
+// tracked host call or on a microtask. Outside this reach: a test that holds its own `next` open or aborts a call owns
+// that continuation and must settle it before the test ends.
+const pendingHostOps = new Set();
+export function trackHostOp(promise) {
+  pendingHostOps.add(promise);
+  const forget = () => { pendingHostOps.delete(promise); };
+  promise.then(forget, forget);
+  // Track the original, but leave the caller's rejection unhandled unless the caller handles it.
+  return promise.then((value) => value);
+}
+
+const tracked = (call) => (...args) => {
+  const result = call(...args);
+  return result && typeof result.then === 'function' ? trackHostOp(Promise.resolve(result)) : result;
+};
+// The same members, each call tracked; a non-function member is kept as it is.
+const trackedMembers = (surface) => Object.fromEntries(Object.entries(surface).map(([name, member]) =>
+  [name, typeof member === 'function' ? tracked(member) : member]));
+
+const SETTLE_LIMIT_MS = 10_000;
+// Plan-clock mocks must never disable the teardown's total bound on churning host calls.
+const teardownNow = performance.now.bind(performance);
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+const expiry = (ms) => {
+  let timer;
+  const promise = new Promise((resolve) => { timer = setTimeout(resolve, ms); });
+  return { promise, cancel: () => clearTimeout(timer) };
+};
+
+function abandonHostOps(limitMs) {
+  const abandoned = [...pendingHostOps];
+  // A forgotten call can still resume and touch its sandbox; abandoning it avoids poisoning later teardowns.
+  for (const promise of abandoned) pendingHostOps.delete(promise);
+  throw new Error(`${abandoned.length} host call(s) still pending after ${limitMs} ms`);
+}
+
+// Waits until a full event-loop turn passes with no host call pending: a call chained after another one starts in the
+// microtasks of the first one's settlement, so it is visible by the next turn. A call that never settles fails the
+// teardown after SETTLE_LIMIT_MS of the monotonic clock instead of hanging it.
+export async function settleHostOps(limitMs = SETTLE_LIMIT_MS) {
+  const deadline = teardownNow() + limitMs;
+  for (await nextTurn(); pendingHostOps.size > 0; await nextTurn()) {
+    if (teardownNow() >= deadline) abandonHostOps(limitMs);
+    const remaining = deadline - teardownNow();
+    const timeout = expiry(Math.max(0, remaining));
+    try {
+      const settled = await Promise.race([Promise.allSettled([...pendingHostOps]).then(() => true), timeout.promise.then(() => false)]);
+      if (!settled) abandonHostOps(limitMs);
+    } finally { timeout.cancel(); }
+  }
+}
+
+// Same retry policy as plugin/bin/lib/suite-lock.mjs: Windows EPERM/EBUSY can outlive our own writers.
+export const SANDBOX_REMOVE_OPTIONS = { recursive: true, force: true, maxRetries: 10, retryDelay: 20 };
+
+// Removes a sandbox once every host call has settled; a teardown that times out still removes it, then fails.
+export async function removeSandbox(root, { limitMs = SETTLE_LIMIT_MS, beforeDrain, beforeRemove, remove = rm } = {}) {
+  try { beforeDrain?.(); await settleHostOps(limitMs); }
+  finally { beforeRemove?.(); await remove(root, SANDBOX_REMOVE_OPTIONS); }
+}
+
+// A fresh sandbox directory, removed after the test once the hook's background writes have settled.
+export async function sandboxRoot(t, prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => removeSandbox(root));
+  return root;
+}
+
 // Only the recorded members exist; any other member reads as undefined, as on the host, so calling it is a TypeError.
 export const realFs = Object.freeze(Object.fromEntries(hostFsSurface.map((name) => {
-  if (typeof fsOperations[name] !== 'function') throw new Error(`missing fake for host fs member ${name}`);
-  return [name, fsOperations[name]];
+  const operation = fsOperations[name];
+  if (typeof operation !== 'function') throw new Error(`missing fake for host fs member ${name}`);
+  return [name, (...args) => trackHostOp(operation(...args))];
 })));
 
 export const bashRule = `---\non-demand:\n  triggers:\n    - kind: 'bash'\n      regex: 'git push'\n  compliance:\n    kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'\n---\nCheck destination.\n`;
@@ -78,8 +152,11 @@ export const exhaustedBudgetClock = () => { let t = 0; return () => (t += 5000);
 
 // One registered hook over a real config dir and project, with the given store. `triggerClock` is passed to register as
 // the regex budget's clock (default: the real Date.now). `messages` is `$.session.messages`: called with `{ as: 'api' }` (and
-// `agentId` for a sub-agent) it answers the conversation the next request is built from.
-export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [] } = {}) {
+// `agentId` for a sub-agent) it answers the conversation the next request is built from. `usage`, when given, is
+// `$.session.usage`; absent, the fixture has no such capability, as an older host. `clock`, when given, is `$.clock`;
+// absent, the host has no clock, so a host read has no deadline. `processRun` is `$.process.run`; absent, the host has
+// no such noun, as an older one.
+export async function hookFixture(root, store, { sessionId = 'sample-session', fs = realFs, hooks = { register, resetForSelftest }, triggerClock, messages = async () => [], usage, log, clock, processRun } = {}) {
   const config = join(root, 'config'), project = join(root, 'project');
   await mkdir(join(config, 'rules-on-demand'), { recursive: true });
   await mkdir(project, { recursive: true });
@@ -89,14 +166,17 @@ export async function hookFixture(root, store, { sessionId = 'sample-session', f
   const handlers = new Map();
   hooks.register((event, handler) => handlers.set(event, handler), { enabled: true }, triggerClock);
   const logs = [];
-  const $ = {
+  // `log`, when given, also receives each $.ui.log line (a test can hold the log open to widen a window).
+  const $ = Object.fromEntries(Object.entries({
     env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: config, HOME: root })[name] },
     fs,
-    ui: { log: async (line) => { logs.push(line); } },
+    ui: { log: async (line) => { logs.push(line); await log?.(line); } },
     store: store.api,
-    session: { id: async () => sessionId, messages, root: async () => project },
+    session: { id: async () => sessionId, messages, root: async () => project, ...(usage ? { usage } : {}) },
     model: { classify: async () => 'followed' },
-  };
+    ...(clock ? { clock } : {}),
+    ...(processRun ? { process: { run: processRun } } : {}),
+  }).map(([name, surface]) => [name, trackedMembers(surface)]));
   const call = (event, next = async () => ({})) => handlers.get('tool.call')($, { tool: 'Bash', cwd: project, ...event }, next);
   const identity = `user:${await realpath(join(config, 'rules-on-demand'))}:sample.md`;
   return { $, handlers, logs, call, config, project, identity, quality: join(config, 'plugins', 'data', 'wt-rules-on-demand', 'quality') };
@@ -106,7 +186,13 @@ export async function hookFixture(root, store, { sessionId = 'sample-session', f
 // 830 deliveries and ~560 agent contexts of 3-20k each, served ~7k, health ~1.2k), padded so the whole store is EXACTLY
 // at the limit. Rows carry padded evidence and agent contexts padded trigger errors: the byte shape is the measured
 // one with fewer rows, so the readers' own row-join cost stays small.
-export function atLimitStore(identity, { sessionId = 'sample-session', limit = HOST_STORE_LIMIT, verdictChars = 2_430_000, sessionChars = 1_750_000, evidenceChars = 2_000, segs = false } = {}) {
+function fullStoreOptions(options) {
+  const { sessionId = 'sample-session', limit = HOST_STORE_LIMIT, verdictChars = 2_430_000, sessionChars = 1_750_000, evidenceChars = 2_000, segs = false } = options;
+  return { sessionId, limit, verdictChars, sessionChars, evidenceChars, segs };
+}
+
+export function atLimitStore(identity, options = {}) {
+  const { sessionId, limit, verdictChars, sessionChars, evidenceChars, segs } = fullStoreOptions(options);
   const at = (n) => new Date(Date.parse('2026-09-30T00:00:00.000Z') + n * 1000).toISOString();
   const delivery = (n) => ({ rule: 'sample.md', ruleIdentity: identity, at: at(n), deliveryId: `oldtok-${n}`, deliverySeq: n, servingSeq: n });
   const lines = [];
@@ -134,6 +220,17 @@ export function atLimitStore(identity, { sessionId = 'sample-session', limit = H
   for (let i = 0; JSON.stringify(served).length < 6_800; i++) served[`other-rule-${i}.md`] = { count: i + 1, last: at(i), byChannel: { 'tool.call': i + 1 } };
   const health = { days: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`2026-09-${String(i + 10).padStart(2, '0')}`, { calls: 100, errors: 0, totalMs: 900, maxMs: 40, slow: 0 }])), lastErrors: [] };
   const store = { 'compliance-verdicts-jsonl': `${lines.join('\n')}\n`, sessions: { [sessionId]: { first: at(0), last: at(next), contexts } }, served, health };
+  fitVerdictLines(store, lines, limit);
+  return store;
+}
+
+function fitVerdictLines(store, lines, limit) {
+  // Whole-row generation overshoots its approximate budgets differently for each path identity.
+  // Keep the complete store below the cap before padding its final evidence to the exact limit.
+  while (JSON.stringify(store).length > limit && lines.length > 1) {
+    lines.pop();
+    store['compliance-verdicts-jsonl'] = `${lines.join('\n')}\n`;
+  }
   const missing = limit - JSON.stringify(store).length;
   if (missing < 0) throw new Error(`synthetic store already over the limit by ${-missing}`);
   // Pad the last verdict line's evidence: one ASCII character of evidence is one character of JSON text.
@@ -141,7 +238,6 @@ export function atLimitStore(identity, { sessionId = 'sample-session', limit = H
   lines[lines.length - 1] = JSON.stringify({ ...last, evidence: `${last.evidence}${'x'.repeat(missing)}` });
   store['compliance-verdicts-jsonl'] = `${lines.join('\n')}\n`;
   if (JSON.stringify(store).length !== limit) throw new Error('synthetic store is not exactly at the limit');
-  return store;
 }
 
 const script = (name) => fileURLToPath(new URL(`../scripts/${name}`, import.meta.url));

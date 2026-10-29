@@ -1,0 +1,10 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "os import": 1,
+  "readFileSync": 4,
+  "spawnSync": 1,
+  "realpathSync": 1,
+  "lstatSync": 1,
+  "homedir": 1
+}

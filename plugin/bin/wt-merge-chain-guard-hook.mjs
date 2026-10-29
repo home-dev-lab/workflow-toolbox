@@ -581,7 +581,8 @@ function noticeChainedCommit(input, raw) {
     session: input.session_id, agent: input.agent_id, evidence: hazard,
   })
   emitGuardNotice({
-    payload: input, reachSubagents: true,
+    // Hazard notices reach the triggering agent, including subagents, by default.
+    payload: input,
     stdoutJson: { hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       additionalContext: '[workflow-toolbox commit-chain guard] WARNING (not blocked): ' +

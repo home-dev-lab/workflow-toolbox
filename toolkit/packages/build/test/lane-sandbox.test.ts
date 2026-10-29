@@ -1,12 +1,15 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import childProcess, { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { accessSync, chmodSync, closeSync, constants, cpSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { EventEmitter } from 'node:events'
-import { tmpdir } from 'node:os'
-import { dirname, join, posix } from 'node:path'
+import { syncBuiltinESMExports } from 'node:module'
+import os, { tmpdir, userInfo } from 'node:os'
+import { dirname, join, posix, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hermeticPath } from './helpers/hermetic-path.js'
+import { isolateOpencodeAdmission } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
@@ -16,12 +19,16 @@ import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../.
 // the real half runs real bwrap children — filesystem, network, PID namespace — and skips, naming
 // why, where no working bubblewrap exists (CI macOS/Windows).
 
+isolateOpencodeAdmission()
+
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')
 
-interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
+interface SandboxPlan { kind: 'bwrap' | 'none', line: string, opencodeDataDir?: string | null, readable?: string[], writable?: string[], droppedBinds?: string[], relativeBinds?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, unreadable: (candidates: string[][], options?: Record<string, unknown>) => string[], wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
 type NoticeDestination = ((text: string) => void) | number | { write: (text: string) => unknown }
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
+interface SocketScanResult { status: number | null, signal: NodeJS.Signals | null, error?: NodeJS.ErrnoException, stdout: Buffer, stderr: Buffer }
+type SocketScanRunner = (command: string, args: string[], options: { timeout: number, maxBuffer: number }) => SocketScanResult
 interface SandboxModule {
   realFs: { isWindowsDriveMount?: DriveMountModule['isWindowsDriveMount'] }
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
@@ -30,10 +37,13 @@ interface SandboxModule {
   announceDroppedBinds: (plan: SandboxPlan, write?: NoticeDestination) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
+  trustedSystemExecutable: (name: string, searchPath: string) => string | null
   suiteLockCli: (fs?: { isFile: (f: string) => boolean, isExecutable?: (f: string) => boolean }) => string
+  socketMasks: (bindings: Array<{ inside: string, outside: string }>, socketDir: string | null, fs: SandboxModule['realFs'], searchPath: string, find: string, runFind?: SocketScanRunner) => string[]
   probeRequestPaths: (paths: string[], options: { wrap: (bin: string, args: string[]) => [string, string[]], execPath: string, env: Record<string, string | undefined> }) => Record<string, string | null>
 }
 interface SuiteLockModule {
+  suiteLeaseDomain: (options: Record<string, unknown>) => string
   readSuiteLock: (options: Record<string, unknown>) => { root: string }
   acquireSuiteLock: (options: Record<string, unknown>) => Promise<{ root: string }>
   operatorReleaseSuiteLock: (options: Record<string, unknown>) => { released: boolean, reason?: string }
@@ -299,11 +309,112 @@ function listening(fs: FakeFs, spawned?: Array<{ command: string, args: string[]
   }
 }
 
-function plan(overrides: Record<string, unknown> = {}): SandboxPlan {
+function plan(overrides: Record<string, unknown> = {}, pinFixtureLock = true): SandboxPlan {
   const fs = (overrides.fs as FakeFs | undefined) ?? fakeFs()
   const base = { profile: 'opencode', bin: '/opt/opencode/bin/opencode', args: ['run', 'x'], cwd: '/work/tree', env: { HOME, PATH: '/usr/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }
-  return sandbox.resolveLaneSandbox({ ...base, ...overrides })
+  // Existing fake plans explicitly own their fixture lock; real-home regressions opt out below.
+  let env = (overrides.env ?? base.env) as NodeJS.ProcessEnv
+  if (pinFixtureLock && !env.WT_SUITE_LOCK_DIR) {
+    const state = posix.isAbsolute(env.XDG_STATE_HOME ?? '') ? env.XDG_STATE_HOME! : posix.join(env.HOME || '/nonexistent', '.local', 'state')
+    env = { ...env, WT_SUITE_LOCK_DIR: posix.join(state, 'wt-suite-lock') }
+  }
+  return sandbox.resolveLaneSandbox({ ...base, ...overrides, env })
 }
+
+it.skipIf(process.platform !== 'linux').each([
+  {},
+  { XDG_STATE_HOME: '/shared-state' },
+  { WT_SUITE_LOCK_DIR: '/shared-lock' },
+  { XDG_STATE_HOME: '/other-state', WT_SUITE_LOCK_DIR: '/shared-lock' },
+])('pins the broker and read-only mask to the real host lock with caller HOME: %j', (overrides) => {
+  const fs = fakeFs()
+  const env = { HOME: '/private-home', PATH: '/usr/bin', ...overrides }
+  const expected = suiteLock.suiteLeaseDomain({ env: overrides, home: userInfo().homedir, platform: 'linux' })
+  let brokerRoot: string | undefined
+  const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+    if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerRoot = options.env?.WT_SUITE_LOCK_DIR
+    return listening(fs)(command, args)
+  }
+  const p = plan({ fs, env, spawnFn }, false)
+  try {
+    expect(brokerRoot, 'broker must acquire the real host lock').toBe(expected)
+    const args = p.wrap('/bin/true', [])[1]
+    const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+    expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), expected])
+    expect(flat(args, '--bind-try')).not.toContain(expected)
+    expect(args[args.indexOf('WT_SUITE_LOCK_BROKER') + 1]).toMatch(/\/lock\/broker\.sock$/)
+  } finally { p.dispose() }
+})
+
+it.skipIf(process.platform !== 'linux')('ignores relative XDG state and launches with the account lock root', () => {
+  const fs = fakeFs()
+  const expected = suiteLock.suiteLeaseDomain({ env: {}, home: userInfo().homedir, platform: 'linux' })
+  let brokerRoot: string | undefined
+  const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+    if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerRoot = options.env?.WT_SUITE_LOCK_DIR
+    return listening(fs)(command, args)
+  }
+  const p = plan({ fs, env: { HOME: '/private-home', PATH: '/usr/bin', XDG_STATE_HOME: 'state' }, spawnFn }, false)
+  try {
+    expect(p.kind).toBe('bwrap')
+    expect(brokerRoot).toBe(expected)
+    const args = p.wrap('/bin/true', [])[1]
+    const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+    expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), expected])
+    expect(flat(args, '--bind-try')).not.toContain(expected)
+  } finally { p.dispose() }
+})
+
+describe('suite broker launch authority', () => {
+  it('routes deadline queries through private parent IPC', () => {
+    const fs = fakeFs(), relay = { kill() {}, pid: 1 }
+    const spawnFn = vi.fn((_command: string, args: string[]) => { fs.ensureFile(socketOf(args)!); return relay })
+    const p = plan({ fs, spawnFn }) as SandboxPlan & { suiteBroker?: unknown }
+    try {
+      expect(spawnFn).toHaveBeenCalledWith(expect.any(String), expect.any(Array), expect.objectContaining({ stdio: ['ignore', 'ignore', 'inherit', 'ipc'] }))
+      expect(p.suiteBroker).toBe(relay)
+    } finally { p.dispose() }
+  })
+  it('carries private IPC through downstream attachment into the real deadline worker', () => {
+    const script = join(ROOT, 'toolkit/packages/build/test/lane-broker-deadline.selftest.mjs')
+    const result = spawnSync(process.execPath, ['--test', '--test-name-pattern=^transport: downstream', script], { encoding: 'utf8', timeout: 15_000 })
+    expect(result.status, result.stdout + result.stderr).toBe(0)
+    expect(result.stdout).toMatch(/pass 1\b/)
+    expect(result.stdout).toMatch(/skipped 0\b/)
+  })
+})
+
+describe('suite broker capability authority', () => {
+  it('binds each broker and its lane to a fresh launch capability', () => {
+    const tokens: string[] = []
+    for (let i = 0; i < 2; i++) {
+      const fs = fakeFs(); let brokerToken: string | undefined
+      const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+        if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerToken = options.env?.WT_SUITE_LOCK_LANE_TOKEN
+        return listening(fs)(command, args)
+      }
+      const p = plan({ fs, spawnFn, env: { HOME, PATH: '/usr/bin', WT_SUITE_LOCK_LANE_TOKEN: 'caller-chosen' } })
+      try {
+        expect(brokerToken).toMatch(/^[a-f0-9]{64}$/)
+        const args = p.wrap('/bin/true', [])[1]
+        const index = args.indexOf('WT_SUITE_LOCK_LANE_TOKEN')
+        expect(index).toBeGreaterThan(0); expect(args[index + 1]).toBe(brokerToken)
+        tokens.push(brokerToken!)
+      } finally { p.dispose() }
+    }
+    expect(tokens[0]).not.toBe(tokens[1])
+  })
+  it('passes the host launch worktree as root independently of client arguments', () => {
+    const fs = fakeFs()
+    const spawned: Array<{ command: string, args: string[] }> = []
+    const p = plan({ fs, spawnFn: listening(fs, spawned), args: ['run', '--', '--root', '/untrusted'] })
+    try {
+      const broker = spawned.find((entry) => entry.args[0]?.endsWith('lane-suite-lock-broker.mjs'))!
+      expect(broker.args[broker.args.indexOf('--root') + 1]).toBe('/work/tree')
+      expect(broker.args).not.toContain('/untrusted')
+    } finally { p.dispose() }
+  })
+})
 
 describe('lane sandbox caller argument and notice regressions', () => {
   it.each([
@@ -442,6 +553,19 @@ describe('lane sandbox caller argument and notice regressions', () => {
       expect(p.readable).not.toContain(`/work/tree/${String(option)}`)
       expect(p.readable).toContain('/outside/a.md')
     } finally { p.dispose() }
+  })
+})
+
+describe('trusted system executable provenance', () => {
+  it.skipIf(process.platform === 'win32')('refuses a uniquely named untrusted executable on a writable PATH and names its path', () => {
+    const root = tempRoot('untrusted-executable')
+    const name = `wt-untrusted-probe-${randomBytes(16).toString('hex')}`
+    const bin = join(root, name)
+    writeFileSync(bin, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    chmodSync(bin, 0o755)
+    const find = () => sandbox.trustedSystemExecutable(name, root)
+    expect(find).toThrow(sandbox.LaneSandboxRefusal)
+    expect(find).toThrow(`untrusted ${name} at ${bin};`)
   })
 })
 
@@ -612,7 +736,100 @@ describe('lane sandbox plan — availability and pass-through', () => {
   })
 })
 
-describe('lane sandbox plan — filesystem allow-list', () => {
+async function socketScanFixture() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-scan-')))
+  roots.push(root)
+  const source = join(root, 'tree'), alias = join(root, 'alias')
+  mkdirSync(source)
+  for (let directory = 0; directory < 32; directory++) {
+    const dir = join(source, `d-${directory}`); mkdirSync(dir)
+    for (let file = 0; file < 64; file++) writeFileSync(join(dir, `f-${file}`), '')
+  }
+  const names = ['first.sock', 'd-15/middle.sock', 'd-31/late\nsocket.sock']
+  for (const name of names) {
+    const server = net.createServer(); servers.push(server)
+    const socket = join(source, name), local = relative(process.cwd(), socket)
+    // Keep the shorter spelling within sockaddr_un's limit on deeply nested checkouts and macOS.
+    const address = Buffer.byteLength(local) < Buffer.byteLength(socket) ? local : socket
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen(address, resolve))
+  }
+  symlinkSync(source, alias)
+  return { source, alias, names }
+}
+
+function timedOutScan(stdout = Buffer.alloc(0)): SocketScanResult {
+  return { status: null, signal: 'SIGTERM', error: Object.assign(new Error('spawnSync find ETIMEDOUT'), { code: 'ETIMEDOUT' }), stdout, stderr: Buffer.alloc(0) }
+}
+
+function registerSlowSocketScanTests() {
+  it.skipIf(process.platform === 'win32').each([
+    [11_000, [10_000, 30_000]], [31_000, [10_000, 30_000, 90_000]],
+  ] as const)('masks every socket after an IO-delayed %ims walk, discarding partial attempts', async (duration, expectedBudgets) => {
+    const { source, alias, names } = await socketScanFixture()
+    const bindings = [{ outside: alias, inside: '/bound/read' }, { outside: source, inside: '/bound/write' }, { outside: join(source, names[2]!), inside: '/bound/single.sock' }]
+    const budgets: number[] = []
+    const walker: SocketScanRunner = (command, args, options) => {
+      expect(command).toBe('/usr/bin/find'); expect(args.slice(1)).toEqual(['-type', 's', '-print0'])
+      expect([source, join(source, names[2]!)]).toContain(args[0])
+      budgets.push(options.timeout)
+      // Execute find on the synthetic tree; charge virtual IO time against its real budget.
+      const result = spawnSync(command, args, options)
+      expect(result.status, String(result.stderr)).toBe(0)
+      return options.timeout < Number(duration) ? timedOutScan(Buffer.from(`${source}/stale.sock\0`)) : result
+    }
+    const masks = sandbox.socketMasks(bindings, null, sandbox.realFs, '/usr/bin', '/usr/bin/find', walker)
+    const expected = [...names.flatMap((name) => [join('/bound/read', name), join('/bound/write', name)]), '/bound/single.sock']
+    expect(masks.filter((_, index) => index % 3 === 2).sort()).toEqual(expected.sort())
+    expect(masks.filter((_, index) => index % 3 !== 2)).toEqual(expected.flatMap(() => ['--ro-bind', '/dev/null']))
+    expect(budgets).toEqual([...expectedBudgets, ...expectedBudgets, ...expectedBudgets])
+  })
+}
+
+function registerFailedSocketScanTests() {
+  const partial = Buffer.from('/synthetic/first.sock\0')
+  const cases: Array<[string, SocketScanResult, number[]]> = [
+    ['timeout exhaustion', timedOutScan(partial), [10_000, 30_000, 90_000]],
+    ['permission denied', { status: 1, signal: null, stdout: partial, stderr: Buffer.from('find: Permission denied\n') }, [10_000]],
+    ['nonzero exit without stderr', { status: 1, signal: null, stdout: partial, stderr: Buffer.alloc(0) }, [10_000]],
+    ['signal', { status: null, signal: 'SIGKILL', stdout: partial, stderr: Buffer.alloc(0) }, [10_000]],
+    ...['ENOBUFS', 'ENOENT'].map((code): [string, SocketScanResult, number[]] => [code, { ...timedOutScan(partial), error: Object.assign(new Error(code), { code }) }, [10_000]]),
+  ]
+  it.skipIf(process.platform === 'win32').each(cases)('refuses an incomplete socket walk: %s', (_name, result, expectedBudgets) => {
+    const source = tempRoot('incomplete-scan'), budgets: number[] = []
+    const walker: SocketScanRunner = (_command, _args, options) => { budgets.push(options.timeout); return result }
+    let refusal: unknown
+    try { sandbox.socketMasks([{ outside: source, inside: '/bound' }], null, sandbox.realFs, '/usr/bin', '/usr/bin/find', walker) } catch (error) { refusal = error }
+    expect(refusal).toBeInstanceOf(sandbox.LaneSandboxRefusal)
+    expect(String(refusal)).toContain(`cannot enumerate unix sockets under ${source}`)
+    expect(String(refusal)).toContain(`scan budget ${expectedBudgets.at(-1)} ms`)
+    expect(budgets).toEqual(expectedBudgets)
+  })
+}
+
+function registerSocketScanLaunchTests() {
+  it.skipIf(process.platform === 'win32')('refuses the production launch and cleans up before starting bridges when the scan cannot finish', () => {
+    const root = tempRoot('scan-launch'), home = join(root, 'home'), work = join(root, 'work'), run = join(root, 'run')
+    for (const directory of [home, work, run]) mkdirSync(directory)
+    const spawnFn = vi.fn(), budgets: number[] = []
+    const find = vi.spyOn(childProcess, 'spawnSync').mockImplementation((() => timedOutScan()) as unknown as typeof spawnSync)
+    syncBuiltinESMExports()
+    try {
+      find.mockImplementation(((_command: string, _args: string[], options: { timeout: number }) => { budgets.push(options.timeout); return timedOutScan() }) as typeof spawnSync)
+      expect(() => plan({ ...posixPlanner(root), bin: '/usr/bin/node', env: { HOME: home, PATH: '/usr/bin' }, optionEnv: { WT_LANE_HOST_STATE: join(root, 'host-state') }, cwd: work, runtimeParent: run, fs: sandbox.realFs, find: '/usr/bin/find', socat: null, spawnFn })).toThrow(sandbox.LaneSandboxRefusal)
+      expect(budgets).toEqual([10_000, 30_000, 90_000])
+      expect(spawnFn).not.toHaveBeenCalled()
+      expect(readdirSync(run)).toEqual([])
+    } finally { find.mockRestore(); syncBuiltinESMExports() }
+  })
+}
+
+describe('bounded complete socket scans', () => {
+  registerSlowSocketScanTests()
+  registerFailedSocketScanTests()
+  registerSocketScanLaunchTests()
+})
+
+function registerSocketMaskTests() {
   it.skipIf(!BWRAP_WORKS)('masks sockets under aliased directory sources and single-socket binds (requires usable root-owned bwrap)', async () => {
     const root = tempRoot('socket-alias'); const home = join(root, 'home'); const work = join(root, 'work'); const source = join(root, 'source'); const alias = join(root, 'alias'); const run = join(root, 'run')
     for (const dir of [home, work, source, run]) mkdirSync(dir)
@@ -644,6 +861,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(spawnSync('/usr/bin/bwrap', args, { timeout: 10_000 }).status).toBe(0)
     } finally { p.dispose() }
   })
+}
+
+function registerConfigSymlinkTests() {
   it.skipIf(process.platform === 'win32')('rejects a real global-config symlink into the worktree and never binds its {file:} key (POSIX planner)', () => {
     const root = tempRoot('config-target'); const home = join(root, 'home'); const work = join(root, 'work'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
@@ -671,6 +891,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(p.egressHosts).not.toContain('attacker.example')
     } finally { p.dispose() }
   })
+}
+
+function registerWritableConfigTests() {
   it('does not trust a symlinked global config or its {file:} reference in a lane tree', () => {
     const config = `${HOME}/.config/opencode`
     const target = '/work/tree/provider.json'
@@ -693,6 +916,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     p.dispose()
   })
 
+}
+
+function registerLateOverlayTests() {
   it('refuses an egress log whose lexical parent is lane-writable even if it resolves outside', () => {
     const fs = fakeFs({}, [HOME, '/work/tree', '/work/tree/logs', '/safe'], { '/work/tree/logs': '/safe' })
     expect(() => plan({ fs, optionEnv: { WT_LANE_EGRESS_LOG: '/work/tree/logs/egress.jsonl' } })).toThrow(/refusing WT_LANE_EGRESS_LOG/)
@@ -729,6 +955,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     }
   })
 
+}
+
+function registerExecutableOverlayTests() {
   it('refuses a kept executable link whose target cannot be mounted instead of silently changing PATH priority', () => {
     const link = `${HOME}/.local/bin/codex`
     const target = `${HOME}/codex`
@@ -759,6 +988,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(ro).not.toContain('/srv/Tools')
   })
 
+}
+
+function registerBindSpellingTests() {
   it('accepts an ordinary non-overlapping bind after unconditional case folding', () => {
     const bin = '/srv/Tools/cli'
     const [, args] = plan({ bin, fs: fakeFs({ [bin]: 'cli' }, [HOME, '/work/tree', '/srv/Tools', '/data/other']), paths: { writable: ['/data/other'] } }).wrap(bin, [])
@@ -785,6 +1017,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     p.dispose()
   })
 
+}
+
+function registerDroppedBindTests() {
   it('reports a dropped OpenCode -f path named by the caller without refusing the launch', () => {
     const p = plan({ args: ['run', '-f', HOME], fs: fakeFs({}, [HOME, '/work/tree']) })
     try {
@@ -826,6 +1061,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     } finally { p.dispose() }
   })
 
+}
+
+function registerCodexPathTests() {
   it('writes one stderr notice for dropped caller-named binds on a sandboxed OpenCode plan', () => {
     const p = plan({ paths: { readable: [HOME, HOME] }, fs: fakeFs({}, [HOME, '/work/tree']) })
     const lines: string[] = []
@@ -862,6 +1100,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(args[args.indexOf('PATH') + 1]).toBe('/run/wt-lane/bin:/usr/local/bin:/usr/bin')
   })
 
+}
+
+function registerCodexExecutableTests() {
   it('skips a nonexecutable first hit and selects only an executable realpath', () => {
     const first = '/opt/first/codex'; const second = '/opt/second/codex'
     const fs = fakeFs({ [first]: 'no exec', [second]: 'selected' }, [HOME, '/work/tree', '/opt/first', '/opt/second'])
@@ -889,6 +1130,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/good/bin:/usr/bin' }, fs })).toThrow(/realpath is covered by a later bind or is not mounted/)
   })
 
+}
+
+function registerToolchainMountTests() {
   it('recreates a symlinked executable inside the sandbox so its real directory and sibling helper are visible', () => {
     const invoked = '/links/tool'
     const real = '/real/bin/tool'
@@ -920,6 +1164,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(args.slice(args.indexOf('--') + 1)).toContain('/opt/opencode/bin/opencode')
   })
 
+}
+
+function registerPrivateOpenCodeTests() {
   it('gives OpenCode a PRIVATE per-run data/cache/state and never binds the shared cache/share writable (M1)', () => {
     const share = `${HOME}/.local/share/opencode`; const cache = `${HOME}/.cache/opencode`; const state = `${HOME}/.local/state/opencode`
     const fs = fakeFs({ [`${share}/auth.json`]: 'secret-token', [`${cache}/models.json`]: '{}' }, [share, cache, state, `${cache}/packages`, `${cache}/bin`])
@@ -943,13 +1190,22 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(ro).not.toContain(`${HOME}/missing`)
   })
 
+}
+
+function registerSuiteBrokerTests() {
   // Linux-only by nature: it compares the plan's POSIX bind with suite-lock.mjs's own resolution, which
   // uses the HOST's native path module (backslashes on Windows, where no plan is ever built).
   it.skipIf(process.platform !== 'linux')('routes suite locks through a host broker and masks the machine-wide lock root read-only', () => {
     const fs = fakeFs()
-    const p = plan({ fs })
+    let brokerRoot: string | undefined
+    const spawnFn = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      if (args[0]?.endsWith('lane-suite-lock-broker.mjs')) brokerRoot = options.env?.WT_SUITE_LOCK_DIR
+      return listening(fs)(command, args)
+    }
+    const p = plan({ fs, spawnFn }, false)
     const [, args] = p.wrap('opencode', [])
-    const lockRoot = suiteLock.readSuiteLock({ env: {}, home: HOME, platform: 'linux' }).root
+    const lockRoot = suiteLock.readSuiteLock({ env: {}, home: userInfo().homedir, platform: 'linux' }).root
+    expect(brokerRoot).toBe(lockRoot)
     expect(flat(args, '--bind-try')).not.toContain(lockRoot)
     expect(args.slice(args.indexOf('WT_SUITE_LOCK_BROKER') - 1, args.indexOf('WT_SUITE_LOCK_BROKER') + 2)).toEqual(['--setenv', 'WT_SUITE_LOCK_BROKER', expect.stringMatching(/\/lock\/broker\.sock$/)])
     const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
@@ -964,6 +1220,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     }
   })
 
+}
+
+function registerSuiteRunnerTests() {
   it('resolves the suite-lock runner a lane runs to the plugin bin/ file that exists, and refuses when it is absent', () => {
     const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
     expect(sandbox.suiteLockCli()).toBe(cli)
@@ -1001,6 +1260,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     }
   })
 
+}
+
+function registerExtraBindTests() {
   it('adds operator paths and refuses, by name, the root, home, and its ancestors', () => {
     const p = plan({ optionEnv: { WT_LANE_SANDBOX_READ: `~/.config/extra${delimiter}/${delimiter}relative`, WT_LANE_SANDBOX_WRITE: `/scratch${delimiter}${HOME}` }, fs: fakeFs({}, [HOME, '/work/tree', `${HOME}/.config/extra`, '/scratch']) })
     const [, args] = p.wrap('opencode', [])
@@ -1021,6 +1283,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries ${extras.slice(0, 3).join(', ')}`)
   })
 
+}
+
+function registerHostStateNoticeTests() {
   it.skipIf(process.platform === 'win32' || sandbox.insideChildUserNamespace() === true)('reports a caller-named writable ancestor of aliased host state while keeping an allowed caller bind (skipped on Windows and inside a child user namespace, where the host-state override is ignored)', () => {
     const env = { HOME: '/home/owner', PATH: '/usr/bin', WT_LANE_HOST_STATE: '/alias/missing', XDG_CONFIG_HOME: '/state' }
     const fs = fakeFs({}, ['/home/owner', '/work/tree', '/state', '/state/opencode', '/data/other'], { '/alias': '/state' })
@@ -1043,6 +1308,24 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     sandbox.announceUnsandboxedLane(plan(), (t) => lines.push(t))
     expect(lines).toEqual([`workflow-toolbox: ${none.line}\n`])
   })
+}
+
+describe('lane sandbox plan — filesystem allow-list', () => {
+  registerSocketMaskTests()
+  registerConfigSymlinkTests()
+  registerWritableConfigTests()
+  registerLateOverlayTests()
+  registerExecutableOverlayTests()
+  registerBindSpellingTests()
+  registerDroppedBindTests()
+  registerCodexPathTests()
+  registerCodexExecutableTests()
+  registerToolchainMountTests()
+  registerPrivateOpenCodeTests()
+  registerSuiteBrokerTests()
+  registerSuiteRunnerTests()
+  registerExtraBindTests()
+  registerHostStateNoticeTests()
 })
 
 describe('lane sandbox plan — git pointers (H1/H2)', () => {
@@ -1114,10 +1397,13 @@ describe('lane sandbox plan — codex home (H3)', () => {
       expect(JSON.parse(readFileSync(auth, 'utf8'))).toEqual({ ...fresh, OPENAI_API_KEY: 'host' })
     } finally { p.dispose() }
   })
+})
+
+describe('lane sandbox plan — codex home (H3), per-run CODEX_HOME', () => {
   it('keeps ~/.codex read-only, runs on a per-run CODEX_HOME, copies auth in, and offers a writeback', () => {
     const codexHome = `${HOME}/.codex`
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: 'tok', [`${codexHome}/hooks.json`]: '{}' }, [HOME, '/work/tree', codexHome])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CLAUDE_PLUGIN_DATA: '/run/lane/codex-broker' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { authWriteback?: { from: string, to: string } }
+    const p = plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CLAUDE_PLUGIN_DATA: '/run/lane/codex-broker' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { authWriteback?: { from: string, to: string } }
     const [, args] = p.wrap('/usr/bin/node', [])
     // ~/.codex is never a writable host bind; a per-run home is remapped onto it (outside != inside).
     expect(flat(args, '--bind-try')).not.toContain(codexHome)
@@ -1206,52 +1492,74 @@ describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans le
 // path of a bind or a remap, a tmpfs, or a created --dir. A host path the sandbox never binds (the
 // per-run runtime dir under /run/user/<uid>, hidden by design) is absent in there, and the CLI fails
 // on it — codex exited 1 on "CODEX_HOME points to ... but that path does not exist" (0.188.0).
-describe('lane sandbox plan — every --setenv path exists inside the sandbox', () => {
-  const MOUNT_FLAGS = new Set(['--bind', '--bind-try', '--ro-bind', '--ro-bind-try', '--dev-bind', '--dev-bind-try'])
-  const beforeCommand = (args: string[]) => args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
-  function insideRoots(args: string[]): { mounts: string[], dirs: string[] } {
-    const mounts: string[] = []
-    const dirs: string[] = []
-    for (let i = 0; i < args.length; i += 1) {
-      if (MOUNT_FLAGS.has(args[i]!)) mounts.push(args[i + 2]!)
-      else if (['--tmpfs', '--proc', '--dev'].includes(args[i]!)) mounts.push(args[i + 1]!)
-      else if (args[i] === '--dir') dirs.push(args[i + 1]!)
+const MOUNT_FLAGS = new Set(['--bind', '--bind-try', '--ro-bind', '--ro-bind-try', '--dev-bind', '--dev-bind-try'])
+const beforeCommand = (args: string[]) => args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
+function insideRoots(args: string[]): { mounts: string[], dirs: string[] } {
+  const mounts: string[] = []
+  const dirs: string[] = []
+  for (let i = 0; i < args.length; i += 1) {
+    if (MOUNT_FLAGS.has(args[i]!)) mounts.push(args[i + 2]!)
+    else if (['--tmpfs', '--proc', '--dev'].includes(args[i]!)) mounts.push(args[i + 1]!)
+    else if (args[i] === '--dir') dirs.push(args[i + 1]!)
+  }
+  return { mounts, dirs }
+}
+function setenvPaths(args: string[]): Array<[string, string]> {
+  return args.flatMap((v, i) => (v === '--setenv' && String(args[i + 2]).startsWith('/') ? [[args[i + 1]!, args[i + 2]!] as [string, string]] : []))
+}
+function expectAllInside(args: string[]) {
+  const prefix = beforeCommand(args)
+  const { mounts, dirs } = insideRoots(prefix)
+  const pairs = setenvPaths(prefix)
+  expect(pairs.length).toBeGreaterThan(0)
+  for (const [name, value] of pairs) {
+    if (name === 'PATH') {
+      expect(dirs).toContain(value.split(':')[0])
+      continue
     }
-    return { mounts, dirs }
+    const inside = dirs.includes(value) || mounts.some((root) => value === root || value.startsWith(`${root}/`))
+    expect(inside, `--setenv ${name} ${value} is not under any inside path (${[...mounts, ...dirs].join(', ')})`).toBe(true)
   }
-  function setenvPaths(args: string[]): Array<[string, string]> {
-    return args.flatMap((v, i) => (v === '--setenv' && String(args[i + 2]).startsWith('/') ? [[args[i + 1]!, args[i + 2]!] as [string, string]] : []))
-  }
-  function expectAllInside(args: string[]) {
-    const prefix = beforeCommand(args)
-    const { mounts, dirs } = insideRoots(prefix)
-    const pairs = setenvPaths(prefix)
-    expect(pairs.length).toBeGreaterThan(0)
-    for (const [name, value] of pairs) {
-      if (name === 'PATH') {
-        expect(dirs).toContain(value.split(':')[0])
-        continue
-      }
-      const inside = dirs.includes(value) || mounts.some((root) => value === root || value.startsWith(`${root}/`))
-      expect(inside, `--setenv ${name} ${value} is not under any inside path (${[...mounts, ...dirs].join(', ')})`).toBe(true)
-    }
-  }
-  const codexHome = `${HOME}/.codex`
-  const codexPlan = (env: Record<string, string>) => {
-    const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: JSON.stringify({ tokens: { a: 1 } }) }, [HOME, '/work/tree', codexHome])
-    return sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', ...env }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/user/1000', fs })
-  }
+}
+const SETENV_CODEX_HOME = `${HOME}/.codex`
+const codexPlan = (env: Record<string, string>) => {
+  const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${SETENV_CODEX_HOME}/auth.json`]: JSON.stringify({ tokens: { a: 1 } }) }, [HOME, '/work/tree', SETENV_CODEX_HOME])
+  return plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', ...env }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/user/1000', fs })
+}
+
+describe('lane sandbox plan — every --setenv path exists inside the sandbox (codex)', () => {
+  it.each(['/home/account', 'C:\\Users\\owner'])('builds the portable Codex plan with account home %s', (accountHome) => {
+    const account = os.userInfo()
+    const lookup = vi.spyOn(os, 'userInfo').mockReturnValue({ ...account, homedir: accountHome })
+    syncBuiltinESMExports()
+    try {
+      expect(userInfo().homedir).toBe(accountHome)
+      // codexPlan always supplies its fake filesystem and listening spawn, even on a red run.
+      const p = codexPlan({})
+      try {
+        expect(p.kind).toBe('bwrap')
+        const args = p.wrap('/usr/bin/node', [])[1]
+        expectAllInside(args)
+        const lockRoot = `${HOME}/.local/state/wt-suite-lock`
+        const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+        expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), lockRoot])
+        expect(flat(args, '--bind-try')).not.toContain(lockRoot)
+      } finally { p.dispose() }
+    } finally { lookup.mockRestore(); syncBuiltinESMExports() }
+  })
 
   it('codex: CODEX_HOME names the remapped ~/.codex, never the per-run dir under the runtime parent', () => {
     for (const env of [{}, { CLAUDE_PLUGIN_DATA: '/data/codex-broker' }]) {
       const [, args] = codexPlan(env).wrap('/usr/bin/node', [])
       expectAllInside(args)
       const value = args[args.indexOf('CODEX_HOME') + 1]!
-      expect(value).toBe(codexHome)
+      expect(value).toBe(SETENV_CODEX_HOME)
       expect(value.startsWith('/run/user/1000/')).toBe(false)
     }
   })
+})
 
+describe('lane sandbox plan — every --setenv path exists inside the sandbox (user CODEX_HOME, opencode)', () => {
   it('codex with a user-set CODEX_HOME exports none (the user value passes through unchanged)', () => {
     const [, args] = codexPlan({ CODEX_HOME: '/opt/codexhome' }).wrap('/usr/bin/node', [])
     expect(args.includes('CODEX_HOME')).toBe(false)
@@ -1271,6 +1579,20 @@ describe('lane sandbox plan — every --setenv path exists inside the sandbox', 
       expect(remapInside('/oc-state')).toEqual([`${'XDG_STATE_HOME' in env ? '/xdg/state' : `${HOME}/.local/state`}/opencode`])
     }
   })
+})
+
+it('exposes the host-side private OpenCode data directory for close-time capture', () => {
+  const p = plan()
+  try {
+    const [, args] = p.wrap('opencode', ['run'])
+    const outside = args.find((value) => value.startsWith('/run/lane/') && value.endsWith('/oc-share'))
+    expect(outside).toBeTypeOf('string')
+    expect(p.opencodeDataDir).toBe(outside)
+  } finally { p.dispose() }
+})
+
+it('exposes no private OpenCode data directory on an unsandboxed launch', () => {
+  expect(plan({ optionEnv: { WT_LANE_SANDBOX: 'off' } }).opencodeDataDir).toBeNull()
 })
 
 describe('lane sandbox plan — network endpoints (H4)', () => {
@@ -1329,19 +1651,19 @@ describe('lane sandbox plan — network endpoints (H4)', () => {
 
 // Round 3, defect 1: a remote provider (openai/* on OAuth) was unreachable because only loopback
 // baseURLs were bridged. Invariant: a lane reaches exactly the endpoints ITS model needs.
-describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
-  const config = `${HOME}/.config/opencode`
-  const share = `${HOME}/.local/share/opencode`
-  const CLIPROXY = '{ // comment with a URL-like // inside\n "provider": { "antigravity": { "options": { "baseURL": "http://127.0.0.1:8317/v1", }, }, }, }'
-  type Spawned = Array<{ command: string, args: string[] }>
-  function egressPlan(model: string | null, auth: Record<string, unknown>, extra: Record<string, unknown> = {}) {
-    const spawned: Spawned = []
-    const fs = fakeFs({ [`${config}/opencode.jsonc`]: CLIPROXY, [`${share}/auth.json`]: JSON.stringify(auth) }, [config, share, HOME, '/work/tree'])
-    const p = plan({ fs, args: ['run', 'x', ...(model ? ['--model', model] : [])], spawnFn: listening(fs, spawned), ...extra }) as SandboxPlan & { egressHosts?: string[] }
-    return { p, spawned, args: p.wrap('opencode', ['run'])[1] }
-  }
-  const setenv = (args: string[], name: string) => args.flatMap((v, i) => (v === '--setenv' && args[i + 1] === name ? [args[i + 2]!] : []))
+const EGRESS_CONFIG = `${HOME}/.config/opencode`
+const EGRESS_SHARE = `${HOME}/.local/share/opencode`
+const CLIPROXY = '{ // comment with a URL-like // inside\n "provider": { "antigravity": { "options": { "baseURL": "http://127.0.0.1:8317/v1", }, }, }, }'
+type Spawned = Array<{ command: string, args: string[] }>
+function egressPlan(model: string | null, auth: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  const spawned: Spawned = []
+  const fs = fakeFs({ [`${EGRESS_CONFIG}/opencode.jsonc`]: CLIPROXY, [`${EGRESS_SHARE}/auth.json`]: JSON.stringify(auth) }, [EGRESS_CONFIG, EGRESS_SHARE, HOME, '/work/tree'])
+  const p = plan({ fs, args: ['run', 'x', ...(model ? ['--model', model] : [])], spawnFn: listening(fs, spawned), ...extra }) as SandboxPlan & { egressHosts?: string[] }
+  return { p, spawned, args: p.wrap('opencode', ['run'])[1] }
+}
+const setenv = (args: string[], name: string) => args.flatMap((v, i) => (v === '--setenv' && args[i + 1] === name ? [args[i + 2]!] : []))
 
+describe('lane sandbox plan — per-model egress (round 3, defect 1), OpenAI hosts', () => {
   it('an openai/* OAuth lane gets an egress proxy allowing ONLY chatgpt.com and auth.openai.com, reached through the bridge', () => {
     const { p, spawned, args } = egressPlan('openai/gpt-5.6-luna', { openai: { type: 'oauth' } })
     expect(p.egressHosts).toEqual(['chatgpt.com', 'auth.openai.com'])
@@ -1361,7 +1683,9 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
   it('an API-key openai lane is allowed api.openai.com only', () => {
     expect(egressPlan('openai/gpt-5.6-luna', { openai: { type: 'api' } }).p.egressHosts).toEqual(['api.openai.com'])
   })
+})
 
+describe('lane sandbox plan — per-model egress (round 3, defect 1), other providers', () => {
   it('a loopback provider model is relayed, gets no proxy and no proxy variables', () => {
     const { p, spawned, args } = egressPlan('antigravity/some-model', {})
     expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }])
@@ -1386,7 +1710,7 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     const spawned: Spawned = []
     const codexHome = `${HOME}/.codex`
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: JSON.stringify({ OPENAI_API_KEY: null, tokens: { a: 1 } }) }, [HOME, '/work/tree', codexHome])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs, spawned), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
+    const p = plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs, spawned), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
     expect(p.egressHosts).toEqual(['chatgpt.com', 'auth.openai.com'])
   })
 
@@ -1435,7 +1759,7 @@ describe('lane sandbox plan — egress from lane-proof configuration only (round
 
   it('codex reads the auth store of CODEX_HOME when it is set', () => {
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { a: 1 } }), '/opt/codexhome/auth.json': JSON.stringify({ OPENAI_API_KEY: 'k' }) }, [HOME, '/work/tree', `${HOME}/.codex`, '/opt/codexhome'])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/opt/codexhome' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
+    const p = plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/opt/codexhome' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
     expect(p.egressHosts).toEqual(['api.openai.com'])
   })
 })
@@ -1451,7 +1775,7 @@ describe('lane sandbox plan — config and auth stay read-only (round 4, LOW 4)'
     const cfg = '/work/tree/xdg'
     expect(() => plan({ env: { HOME, PATH: '/usr/bin', XDG_CONFIG_HOME: cfg }, fs: fakeFs({}, [HOME, '/work/tree', cfg, `${cfg}/opencode`]) })).toThrow(sandbox.LaneSandboxRefusal)
     const fs = fakeFs({ '/usr/local/bin/codex': 'x' }, [HOME, '/work/tree', '/data', '/data/codex'])
-    expect(() => sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/data/codex', CLAUDE_PLUGIN_DATA: '/data' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs })).toThrow(/overlaps \/data\/codex/)
+    expect(() => plan({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/data/codex', CLAUDE_PLUGIN_DATA: '/data' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs })).toThrow(/overlaps \/data\/codex/)
   })
 })
 

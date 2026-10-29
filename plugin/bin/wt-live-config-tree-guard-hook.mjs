@@ -46,7 +46,7 @@
 import { existsSync, readFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve, sep } from 'node:path'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const CLAUDE_DIR_SEGMENT = /^\.claude(-.*)?$/
 
@@ -158,20 +158,18 @@ function diagnose() {
   )
 }
 
-function main() {
-  if (process.argv.includes('--diagnose')) return diagnose()
-
-  const input = readInput()
-  if (input.hook_event_name !== 'PreToolUse') return
-  if (input.tool_name !== 'Bash') return
-
+function commandInput(input) {
   const cmd = typeof input.tool_input?.command === 'string' ? input.tool_input.command : ''
-  if (!cmd) return
+  if (!cmd) return null
   const cwd = typeof input.cwd === 'string' ? input.cwd : ''
+  return { cmd, cwd }
+}
 
-  const mode = resolveMode()
-  if (mode === 'off') return
+function effectiveVerdict(mode, verdict) {
+  return mode === 'warn' && verdict === 'deny' ? 'warn' : verdict
+}
 
+function findLiveChange(cmd, cwd, mode) {
   let worst = null
   let hitSeg = ''
   let hitDir = ''
@@ -191,7 +189,7 @@ function main() {
     if (!v) continue
     const dir = targetDir(seg, effectiveCwd)
     if (!dir || !isGuardedDir(dir)) continue
-    const effective = mode === 'warn' && v === 'deny' ? 'warn' : v
+    const effective = effectiveVerdict(mode, v)
     if (effective === 'deny') {
       worst = 'deny'
       hitSeg = seg
@@ -204,9 +202,11 @@ function main() {
       hitDir = dir
     }
   }
-  if (!worst) return
+  return { worst, hitSeg, hitDir }
+}
 
-  const why = [
+function liveChangeReason(hitDir) {
+  return [
     `This targets a LIVE ambient rules directory (${hitDir}) — read by every session on this`,
     `machine at session start AND at every compaction. Switching it changes the standing`,
     `instructions of sessions that are mid-arc, silently, including this one at its next`,
@@ -220,29 +220,31 @@ function main() {
     `  invisible to it — that half is not mechanised. Run this hook with --diagnose to check`,
     `  whether it is active for your environment.`,
   ].join('\n')
+}
 
-  if (worst === 'deny') {
-    recordGuardEvent({
-      guard: 'wt-live-config-tree-guard-hook.mjs',
-      decision: 'blocked',
-      session: input.session_id,
-      agent: input.agent_id,
-      class: 'live-config-tree',
-      reason: hitSeg,
-      cwd: hitDir,
-    })
-    writeSync(
-      1,
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
-          permissionDecisionReason: `LIVE CONFIG TREE — refused: ${hitSeg}\n\n${why}`,
-        },
-      }),
-    )
-    return
-  }
+function denyLiveChange(input, hitSeg, hitDir, why) {
+  recordGuardEvent({
+    guard: 'wt-live-config-tree-guard-hook.mjs',
+    decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
+    class: 'live-config-tree',
+    reason: hitSeg,
+    cwd: hitDir,
+  })
+  writeSync(
+    1,
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `LIVE CONFIG TREE — refused: ${hitSeg}\n\n${why}`,
+      },
+    }),
+  )
+}
+
+function warnLiveChange(input, hitSeg, hitDir, why) {
   recordGuardEvent({
     guard: 'wt-live-config-tree-guard-hook.mjs',
     decision: 'warned',
@@ -252,13 +254,32 @@ function main() {
     reason: hitSeg,
     cwd: hitDir,
   })
-  if (typeof input.agent_id === 'string' && input.agent_id) return
-  writeSync(
-    1,
-    JSON.stringify({
+  emitGuardNotice({
+    payload: input,
+    stdoutJson: {
       systemMessage: `⚠ LIVE CONFIG TREE — this changes the running rules for every session:\n    ${hitSeg}\n\n${why}`,
-    }),
-  )
+    },
+  })
+}
+
+function main() {
+  if (process.argv.includes('--diagnose')) return diagnose()
+  const input = readInput()
+  if (input.hook_event_name !== 'PreToolUse') return
+  if (input.tool_name !== 'Bash') return
+  const command = commandInput(input)
+  if (!command) return
+  const { cmd, cwd } = command
+  const mode = resolveMode()
+  if (mode === 'off') return
+  const { worst, hitSeg, hitDir } = findLiveChange(cmd, cwd, mode)
+  if (!worst) return
+  const why = liveChangeReason(hitDir)
+  if (worst === 'deny') {
+    denyLiveChange(input, hitSeg, hitDir, why)
+    return
+  }
+  warnLiveChange(input, hitSeg, hitDir, why)
 }
 
 try {

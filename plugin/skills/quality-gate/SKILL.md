@@ -12,7 +12,9 @@ Enter `toolkit/`.
 
 Run `pnpm quality` without another Vitest suite running.
 
-Run `pnpm quality:delta` before a release.
+Run `pnpm quality:delta` before a release, after a full coverage run on the same tree (`pnpm certify` or `pnpm quality:coverage`).
+
+If it refuses a stale coverage artifact, run `pnpm quality:coverage`, then run the delta again.
 
 Paste its Markdown table under the release entry's `### Quality` heading.
 

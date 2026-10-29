@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { stripGeneratedFrontmatter, triggersHash } from './rule-lifecycle-lib.mjs';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
+import { instructionContent } from './prefix-size.mjs';
 
 const judged = new Set(['check', 'bash-command', 'tool-input', 'turn-correlation']);
 // Required evidence for each measure. [] means rule text alone; health growth and
@@ -239,7 +240,7 @@ export function measureRules(input = {}) {
     const noise = received.filter((delivery) => !unresolved.includes(delivery) && !samples.some((row) => applicable(row) && related(row, delivery)));
     const contextsUnknownTiming = effective.filter((entry) => entry.rules.includes(id) && !entry.at?.some((stamp) => Number.isFinite(Date.parse(stamp)))).length;
     const contexts = effective.filter((entry) => entry.rules.includes(id) && entry.at?.some((stamp) => Number.isFinite(Date.parse(stamp)) && Date.parse(stamp) >= now - days * 86400000 && Date.parse(stamp) <= now)).length;
-    const staticBytes = Buffer.byteLength(bodyOf(rule.text)) * contexts;
+    const staticBytes = Buffer.byteLength(instructionContent(bodyOf(rule.text)).content) * contexts;
     const servedBytes = received.every((delivery) => Number.isFinite(delivery.bytes)) ? received.reduce((sum, delivery) => sum + delivery.bytes, 0) : null;
     const drifted = drift(rule, ledger[id], pluginRulesDir);
     const threshold = Number(/rollback-threshold:\s*['"]?([\d.]+)/.exec(rule.text)?.[1] ?? .8);

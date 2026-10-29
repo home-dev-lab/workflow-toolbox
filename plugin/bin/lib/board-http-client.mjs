@@ -1,3 +1,5 @@
+import { hasDependsOnLine, parseDependsOn } from './depends-on-parser.mjs'
+
 export { resolveBoardPointer } from './host/board-pointer.mjs'
 
 export class BoardUnavailable extends Error {
@@ -17,6 +19,78 @@ function transportFailure(detail, status) {
 }
 
 const TEXT_TOLERANT_TOOLS = new Set(['add_label_to_card', 'remove_label_from_card', 'add_comment', 'move_card'])
+
+function routingIdentifier(value, label) {
+  const id = String(value ?? '')
+  // The lifecycle's existing identifier contract permits numeric board ids and filename-safe tokens.
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new BoardUnavailable(`invalid ${label}`)
+  return id
+}
+
+// JSON's escape token is a language constant, not the host's path separator.
+const JSON_BACKSLASH = String.fromCharCode(92)
+function provenanceValue(value) {
+  return JSON.stringify(String(value)).replaceAll('\u2028', () => `${JSON_BACKSLASH}u2028`).replaceAll('\u2029', () => `${JSON_BACKSLASH}u2029`)
+}
+
+function independentRoutedDescription(description) {
+  if (typeof description !== 'string') return false
+  const declarations = description.split(/\r\n|[\r\n\u2028\u2029]/).filter(hasDependsOnLine)
+  const parsed = parseDependsOn(description)
+  return declarations.length === 1 && declarations[0].trim() === 'Depends-on: none'
+    && parsed.ids.length === 0 && parsed.unparseable.length === 0
+}
+
+function routedDescription({ originCardId, sessionTag, l4Reason, timestamp }) {
+  const description = ['Depends-on: none', '', '## Provenance',
+    `Origin card: ${provenanceValue(routingIdentifier(originCardId, 'origin card id'))}`,
+    `run/session: ${provenanceValue(sessionTag)}`,
+    `L4 reason: ${provenanceValue(l4Reason)}`,
+    `timestamp: ${provenanceValue(timestamp)}`,
+  ].join('\n')
+  if (!independentRoutedDescription(description)) throw new BoardUnavailable('invalid assembled routed dependency description; no card created')
+  return description
+}
+
+function cardDescription(card) {
+  return card?.description ?? card?.card?.description
+}
+
+async function verifiedRoutedDescription(created, cardId, call) {
+  let description = cardDescription(created)
+  if (typeof description !== 'string') {
+    try {
+      const readBack = await call('get_card', { cardId })
+      description = cardDescription(readBack)
+    } catch (error) {
+      return { dependencyVerified: false, dependencyVerificationReason: `created card ${cardId} read-back failed: ${error.message}; do not retry creation` }
+    }
+  }
+  if (!independentRoutedDescription(description)) {
+    return { description, dependencyVerified: false, dependencyVerificationReason: `created card ${cardId} dependency verification failed: expected exactly one canonical Depends-on: none declaration; do not retry creation` }
+  }
+  return { description, dependencyVerified: true }
+}
+
+async function createIndependentRoutedCard({ boardContract, originCardId, sessionTag, timestamp, title, l4Reason, risk, effort, type }, call) {
+  const description = routedDescription({ originCardId, sessionTag, timestamp, l4Reason })
+  const listId = routingIdentifier(boardContract.listId, 'list id')
+  const labelIds = [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]
+  // Once creation returns an id, retain it and attempt all four labels even if dependency verification fails.
+  const created = await call('create_card', { listId, name: title, description, dependsOn: 'none' })
+  const cardId = String(created?.id ?? created?.card?.id ?? '')
+  if (!cardId) throw new BoardUnavailable('create_card returned no card id')
+  const dependencyEvidence = await verifiedRoutedDescription(created, cardId, call)
+  const labelFailures = []
+  for (const labelId of labelIds) {
+    try {
+      await call('add_label_to_card', { cardId, labelId: String(labelId) })
+    } catch (error) {
+      labelFailures.push({ labelId: String(labelId), error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return { ...created, id: cardId, ...dependencyEvidence, labelFailures }
+}
 
 // Live Planka MCP shapes measured 2026-09-19: get_card, create_card, get_board, find_cards,
 // move_card, and add_comment returned JSON; add_label_to_card returned plain text (including a
@@ -121,27 +195,8 @@ export function createBoardClient({ url, boardId, boardIdMissingReason, fetch: r
       return call('move_card', { cardId: String(id), listId: target.id })
     },
     async addComment(id, text) { return call('add_comment', { cardId: String(id), text }) },
-    async createRoutedCard({ boardContract, originCardId, sessionTag, timestamp, title, l4Reason, risk, effort, type }) {
-      // The Planka MCP `create_card` schema is closed (listId, name, description, dependsOn, dueDate, position):
-      // labels are NOT create_card fields — an unknown field is refused by the server. The four labels the board
-      // rules require (priority, type, effort, category) are therefore added one call each, after creation.
-      const created = await call('create_card', {
-        listId: boardContract.listId,
-        name: title,
-        description: `## Provenance\nOrigin card: ${originCardId}; run/session: ${sessionTag}; L4 reason: ${l4Reason}; timestamp: ${timestamp}`,
-        dependsOn: { cardId: String(originCardId) },
-      })
-      const cardId = String(created?.id ?? created?.card?.id ?? '')
-      if (!cardId) throw new BoardUnavailable('create_card returned no card id')
-      const labelFailures = []
-      for (const labelId of [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]) {
-        try {
-          await call('add_label_to_card', { cardId, labelId: String(labelId) })
-        } catch (error) {
-          labelFailures.push({ labelId: String(labelId), error: error instanceof Error ? error.message : String(error) })
-        }
-      }
-      return { ...created, id: cardId, labelFailures }
+    async createRoutedCard(args) {
+      return createIndependentRoutedCard(args, call)
     },
     async resolveRoutedCard(card) {
       await call('add_comment', { cardId: String(card.id), text: 'Closed by the originating pilot run: the contested item was completed in scope.' })

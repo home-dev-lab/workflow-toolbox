@@ -1,12 +1,24 @@
 {
   "name": "wt-secret-guard",
-  "version": "0.1.4",
+  "version": "0.1.7",
   "description": "Function-hook secret scrubber for prompts, assistant text, tool results, and raw outbound tool inputs",
   "author": {
     "name": "Frederic Thomas",
     "email": "fthomas@apache.org"
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|mcp__plugin_atrium_atrium__speak|mcp__plugin_atrium_atrium__amend_held_message|mcp__plugin_atrium_atrium__edit_message|mcp__atrium__speak",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/redaction-token-write-warn.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

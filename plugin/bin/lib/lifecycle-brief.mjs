@@ -1,5 +1,7 @@
 // Owns lifecycle lane brief composition; it must not inspect or mutate lifecycle state.
 import { PLAN_SHAPE } from './lifecycle-plan-shape.mjs'
+import path from 'node:path'
+import { hasSelectedChanges, snapshotSelectedTree } from './lifecycle-selection.mjs'
 
 const INDEPENDENT_ROLES = { critic: 'critic', review: 'reviewer', refutation: 'refuter' }
 const PLAN_STAGE_SEVERITY_POLICY = `
@@ -102,30 +104,14 @@ ${phase === 'critic' ? '- [blocking|non-blocking][missing|overbuild|unverifiable
 ${digestSection}`
 }
 
-export function prospectivePatch(root, constructionBase, git, maxBuffer) {
-  const run = (args, difference = false) => {
-    try { return git('git', args, { cwd: root, encoding: 'utf8', maxBuffer }) }
-    catch (error) {
-      if (difference && error?.status === 1 && error.stdout !== undefined) return String(error.stdout)
-      throw error
-    }
-  }
-  const deleted = run(['diff', '--name-only', '--diff-filter=D', '-z', constructionBase, '--']).split('\0').filter(Boolean)
-  const untracked = run(['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean).sort()
+export function prospectivePatch(root, constructionBase, git, maxBuffer, baseline = new Map()) {
+  const tree = snapshotSelectedTree(root, path.join(root, '.lane', 'prospective.index'), baseline, git, maxBuffer)
+  const run = (args) => git('git', args, { cwd: root, encoding: 'utf8', maxBuffer })
+  const deleted = run(['diff', '--name-only', '--diff-filter=D', '-z', constructionBase, tree, '--']).split('\0').filter(Boolean)
   const header = ['# Prospective commit patch', `# Construction base: ${constructionBase}`, '# Deleted paths:', ...(deleted.length > 0 ? deleted.map((name) => `# - ${JSON.stringify(name)}`) : ['# - (none)']), ''].join('\n')
-  const parts = []
-  let bytes = 0
-  const append = (output) => {
-    bytes += Buffer.byteLength(output)
-    if (bytes > maxBuffer) throw new Error(`prospective patch exceeds ${maxBuffer}-byte limit`)
-    parts.push(output)
-  }
-  append(header)
-  append(run(['diff', '--binary', '--find-renames', constructionBase, '--']))
-  for (const name of untracked) append(run(['diff', '--no-index', '--binary', '--', '/dev/null', name], true))
-  const patch = parts.join('')
-  const dirty = run(['status', '--porcelain=v1', '-z', '--untracked-files=all']).length > 0
-  if (dirty && !/^diff --git /m.test(patch)) throw new Error('dirty tree produced no substantive patch')
+  const patch = header + run(['diff', '--binary', '--find-renames', constructionBase, tree, '--'])
+  if (Buffer.byteLength(patch) > maxBuffer) throw new Error(`prospective patch exceeds ${maxBuffer}-byte limit`)
+  if (hasSelectedChanges(root, baseline, git) && !/^diff --git /m.test(patch)) throw new Error('dirty tree produced no substantive patch')
   return patch
 }
 

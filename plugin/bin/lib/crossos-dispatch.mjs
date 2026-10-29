@@ -1,11 +1,19 @@
 import { commandIO } from './host/command-io.mjs'
 import { EVIDENCE_FIELDS, ciBranchFor, matchesHostPath, verdictFromEvidence } from './crossos-verdict.mjs'
-import { isAbsolute } from 'node:path'
+import { JOBS_PER_PAGE, readJobPages, workflowJobNames } from './crossos-evidence.mjs'
+import { isAbsolute, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const LIST = '.github/cross-os-host-layer.json'
 const RESULTS = { 0: 'green', 1: 'red', 2: 'error', 3: 'mismatch', 4: 'timeout', 5: 'pending' }
 const failure = (message, code = 2) => Object.assign(new Error(message), { code })
 const lines = (text) => text.trim().split('\n').filter(Boolean)
+// Every run ID and commit read from storage or from gh output is checked before any gh or git argv uses it.
+const RUN_ID = /^[1-9]\d*$/
+const COMMIT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
+const validRunId = (id) => RUN_ID.test(String(id))
+const DISPATCHER = fileURLToPath(new URL('../wt-crossos-dispatch.mjs', import.meta.url))
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`
 
 function extractFailedTests(log) {
   const failures = new Map()
@@ -29,6 +37,12 @@ function extractFailedTests(log) {
   return [...failures.values()]
 }
 
+function childValue(flag, value) {
+  const forwarded = ['--merge', '--ref', '--base', '--remote', '--workflow', '--repo-slug']
+  if (forwarded.includes(flag) && value.startsWith('-')) throw failure(`${flag} must not start with "-"`)
+  return value
+}
+
 function options(argv) {
   const command = argv[0]
   if (!['decide', 'run', 'collect', 'release-check'].includes(command)) throw failure('usage: decide|run|collect|release-check [options]')
@@ -39,7 +53,7 @@ function options(argv) {
     if (flag === '--dry-run') { out.dryRun = true; continue }
     // Own properties only: `names` is a plain object, so `constructor` / `toString` would otherwise pass as options.
     if (!Object.hasOwn(names, flag) || !argv[index + 1]) throw failure(`unknown or missing option: ${flag}`)
-    out[names[flag]] = argv[++index]
+    out[names[flag]] = childValue(flag, argv[++index])
   }
   if (['decide', 'run', 'collect'].includes(command) && !out.merge) throw failure('--merge is required')
   if (!Number.isFinite(Number(out.timeoutMin)) || Number(out.timeoutMin) <= 0) throw failure('--timeout-min must be positive')
@@ -53,8 +67,30 @@ function checked(io, cwd, program, args) {
 }
 const git = (ctx, ...args) => checked(ctx.io, ctx.cwd, 'git', args)
 const gh = (ctx, ...args) => JSON.parse(checked(ctx.io, ctx.cwd, 'gh', args))
-const shaOf = (ctx, ref) => git(ctx, 'rev-parse', '--verify', `${ref}^{commit}`)
+const shaOf = (ctx, ref) => checkDevelopAncestry(ctx, git(ctx, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`))
 const recordPath = (ctx, sha) => ctx.io.join(ctx.store, `${sha}.json`)
+
+function checkDevelopAncestry(ctx, sha) {
+  // Historical collection/release evidence remains valid after develop advances.
+  if (!['decide', 'run'].includes(ctx.args.command)) return sha
+  let develop
+  try { develop = git(ctx, 'rev-parse', '--verify', '--end-of-options', 'refs/heads/develop^{commit}') }
+  catch { throw failure('cannot resolve local develop ref refs/heads/develop; restore it with: git branch develop <current-develop-tip>; then retry with a preview merge') }
+  const result = ctx.io.run('git', ['merge-base', '--is-ancestor', develop, sha], { cwd: ctx.cwd })
+  if (result.status === 0) return sha
+  if (result.status !== 1) throw failure(`cannot verify develop ancestry for ${sha}: git merge-base --is-ancestor failed (${result.status}): ${result.stderr.trim()}; repair local Git history and retry`)
+  const repository = ctx.io.run('git', ['rev-parse', '--show-toplevel'], { cwd: ctx.cwd })
+  // Git terminates this output with LF, including on Windows; a preceding CR belongs to the path.
+  const root = repository.status === 0 ? shellQuote(repository.stdout.replace(/\n$/, '')) : '<repository>'
+  const rootDiagnostic = repository.status === 0 ? '' : `\nCannot resolve selected repository root: ${repository.stderr.trim()}\nReplace <repository> with an absolute repository path, shell-quoted.`
+  throw failure(`commit ${sha} does not contain current local develop tip ${develop}; refusing ${ctx.args.command}.${rootDiagnostic}
+Build a preview merge containing develop and the feature branch, then dispatch that merge (POSIX shell; Git Bash on Windows):
+Use an absolute path for <dir>, and shell-quote both replacements:
+git -C ${root} worktree add --detach <dir> develop
+git -C <dir> merge --no-ff <branch>
+node ${shellQuote(DISPATCHER)} run --repo <dir> --merge HEAD`)
+}
+
 function reportSuccessfulDiagnostics(ctx, jobs) {
   for (const job of jobs) {
     let log
@@ -65,6 +101,72 @@ function reportSuccessfulDiagnostics(ctx, jobs) {
     for (const item of diagnostic) ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`)
   }
 }
+// `gh run view --job --log` refuses while the run is in progress (gh 2.45: "run N is still in progress; logs will be
+// available when it is complete"), so an early log comes from the REST job endpoints. The raw log has no step column:
+// each line goes to the step that ran during that second (step times have one-second precision). In the second where
+// one step ends and the next starts, the EARLIER step wins: test runners print their failures last, and a failure
+// misread as gating fails closed. The result is shaped like gh's own `job<TAB>step<TAB>line`, so extractFailedTests
+// reads both. The final summary still reads gh's own log after completion.
+function earlyJobLog(ctx, job) {
+  const base = `repos/${ctx.slug}/actions/jobs/${job.databaseId}`
+  const steps = (JSON.parse(checked(ctx.io, ctx.cwd, 'gh', ['api', base])).steps ?? [])
+    .filter((step) => step.conclusion !== 'skipped' && step.started_at)
+    .map((step) => ({ name: step.name, start: Date.parse(step.started_at), end: step.completed_at ? Date.parse(step.completed_at) : Infinity }))
+  return checked(ctx.io, ctx.cwd, 'gh', ['api', `${base}/logs`]).split('\n').map((line) => {
+    const second = Math.floor(Date.parse(line.slice(0, line.indexOf(' '))) / 1000) * 1000
+    const started = steps.filter((candidate) => candidate.start <= second)
+    const step = (started.find((candidate) => candidate.end >= second) ?? started.at(-1))?.name ?? '(unknown step)'
+    return `${job.name}\t${step}\t${line}`
+  }).join('\n')
+}
+
+const OS_NAMES = ['ubuntu', 'windows', 'macos']
+const concluded = (job) => (job.status ? job.status === 'completed' : Boolean(job.conclusion))
+const byCompletion = (a, b) => String(a.completedAt ?? '').localeCompare(String(b.completedAt ?? ''))
+
+function announceJob(ctx, record, job, count, total) {
+  const verdict = job.conclusion === 'success' ? 'green' : `red conclusion=${job.conclusion}`
+  ctx.print(`EARLY JOB ${job.name}: ${verdict} (${count}/${total} concluded)`)
+  if (job.conclusion === 'success') return []
+  let gating = []
+  try { gating = extractFailedTests(earlyJobLog(ctx, job)).filter((item) => item.gating) }
+  catch (error) { ctx.print(`EARLY LOG UNAVAILABLE ${job.name}: ${error.message}`) }
+  if (!gating.length) ctx.print(`EARLY TEST ${job.name} (none extracted — read ${record.url}/job/${job.databaseId})`)
+  for (const item of gating) ctx.print(`EARLY TEST ${job.name} [gating step: ${item.step}] ${item.test}`)
+  return gating
+}
+
+function announceOs(ctx, record, os, jobs, failures) {
+  const failed = jobs.filter((job) => job.conclusion !== 'success')
+  ctx.print(`EARLY OS ${os}: ${failed.length ? 'red' : 'green'} (${jobs.map((job) => job.name).join(', ')})`)
+  if (!failed.length) return
+  const tests = failed.flatMap((job) => failures.get(job.databaseId) ?? [])
+  const jobLines = failed.map((job) => '- ' + job.name + ': ' + job.conclusion).join('\n')
+  const testLines = tests.map((item) => '- ' + item.test + ' (gating step: ' + item.step + ')').join('\n') || '- None extracted; read the failed job logs.'
+  const draft = `# Cross-OS failure on ${record.sha} (${os})\n\nEarly draft, written when ${os} concluded; the complete draft is ${record.sha}.card.md, written when the run completes.\n\nRun: ${record.url}\n\n${jobLines}\n\nBlocking failed tests (gating steps):\n${testLines}\n`
+  const path = ctx.io.join(ctx.store, `${record.sha}.${os}.card.md`)
+  ctx.io.mkdirp(ctx.store)
+  ctx.io.writeText(path, draft)
+  ctx.print(`EARLY CARD DRAFT ${os}: ${path}`)
+}
+
+// Reports each job, then each OS, the moment it concludes, so a slow OS never delays reading the others. Every line is
+// advisory: one OS that cannot be reported never stops the others, and the final summary is unchanged.
+function announceConcluded(ctx, record, run, seen) {
+  const jobs = run.jobs ?? []
+  const fresh = jobs.filter((job) => concluded(job) && !seen.jobs.has(job.databaseId)).sort(byCompletion)
+  for (const job of fresh) {
+    seen.jobs.add(job.databaseId)
+    seen.failures.set(job.databaseId, announceJob(ctx, record, job, seen.jobs.size, jobs.length))
+  }
+  for (const os of OS_NAMES) {
+    const osJobs = jobs.filter((job) => String(job.name).toLowerCase().includes(os))
+    if (seen.os.has(os) || !osJobs.length || !osJobs.every(concluded)) continue
+    seen.os.add(os)
+    try { announceOs(ctx, record, os, osJobs, seen.failures) } catch (error) { ctx.print(`EARLY REPORT UNAVAILABLE ${os}: ${error.message}`) }
+  }
+}
+
 function save(ctx, record) {
   const text = `${JSON.stringify(record, null, 2)}\n`
   ctx.io.mkdirp(ctx.store)
@@ -74,9 +176,13 @@ function save(ctx, record) {
     ctx.io.writeText(ctx.io.join(ctx.args.evidenceDir, `${record.sha}.json`), text)
   }
 }
+// A record whose runId is not a positive integer reads as a missing record: it never reaches `gh run view`.
 function readRecord(ctx, sha) {
   const file = recordPath(ctx, sha)
-  return ctx.io.exists(file) ? JSON.parse(ctx.io.readText(file)) : null
+  if (!ctx.io.exists(file)) return null
+  const record = JSON.parse(ctx.io.readText(file))
+  if (record?.sha !== sha) throw failure(`record SHA mismatch: requested=${sha} recorded=${record?.sha}`, 3)
+  return record?.runId === undefined || validRunId(record.runId) ? record : null
 }
 
 function decide(ctx, sha, announce = true, listSource) {
@@ -141,7 +247,8 @@ function authorizedPush(ctx, args, content, verifyReceipt) {
     }
     const stale = ctx.io.readText(auth)
     const commits = JSON.parse(stale).commits ?? []
-    const already = commits.filter((sha) => ctx.io.run('git', ['merge-base', '--is-ancestor', sha, `${ctx.args.remote}/main`], { cwd: ctx.cwd }).status === 0).length
+    const ancestor = (sha) => COMMIT_ID.test(sha) && ctx.io.run('git', ['merge-base', '--is-ancestor', sha, `${ctx.args.remote}/main`], { cwd: ctx.cwd }).status === 0
+    const already = commits.filter(ancestor).length
     throw failure(`authorization exists: ${auth} mtime=${ctx.io.mtime(auth)} commits=${commits.join(',')} already-on-${ctx.args.remote}/main=${already}; remove with: rm '${auth}'`)
   }
   const cleanup = () => { if (owned && ctx.io.exists(auth) && ctx.io.readText(auth) === content) ctx.io.removeFile(auth) }
@@ -165,8 +272,18 @@ function runList(ctx, branch) {
   return gh(ctx, 'run', 'list', '-R', ctx.slug, '--workflow', ctx.args.workflow, '--branch', branch, '--json', 'databaseId,url,event,headBranch,headSha,status,conclusion')
 }
 
-function freshEvidence(ctx, runId) {
-  return gh(ctx, 'run', 'view', String(runId), '-R', ctx.slug, '--json', EVIDENCE_FIELDS)
+function freshEvidence(ctx, runId, sha) {
+  const run = gh(ctx, 'run', 'view', String(runId), '-R', ctx.slug, '--json', EVIDENCE_FIELDS)
+  // Leave malformed identity evidence to the verdict's existing mismatch checks.
+  if (!COMMIT_ID.test(run.headSha)) return run
+  // A foreign run must not supply the workflow roster or jobs used for collection.
+  if (sha && verdictFromEvidence(run, sha).verdict === 'unchecked') return run
+  const source = git(ctx, 'show', `${run.headSha}:.github/workflows/${ctx.args.workflow}`)
+  run.expectedJobs = workflowJobNames(source)
+  // Fetch each REST page with version-independent gh arguments, then validate the
+  // complete count and unique identities before judging the run.
+  run.jobs = readJobPages((page) => gh(ctx, 'api', `repos/${ctx.slug}/actions/runs/${runId}/jobs?filter=latest&per_page=${JOBS_PER_PAGE}&page=${page}`))
+  return run
 }
 
 async function discoverRun(ctx, record) {
@@ -174,7 +291,7 @@ async function discoverRun(ctx, record) {
   checked(ctx.io, ctx.cwd, 'gh', ['workflow', 'run', ctx.args.workflow, '-R', ctx.slug, '--ref', record.branch])
   let fresh = []
   for (let attempt = 0; attempt < 90; attempt++) {
-    fresh = runList(ctx, record.branch).filter((run) => !prior.has(run.databaseId) && run.event === 'workflow_dispatch')
+    fresh = runList(ctx, record.branch).filter((run) => !prior.has(run.databaseId) && run.event === 'workflow_dispatch' && validRunId(run.databaseId))
     if (fresh.length) break
     await ctx.io.sleep(2000)
   }
@@ -186,60 +303,88 @@ async function discoverRun(ctx, record) {
   save(ctx, record)
 }
 
-async function collect(ctx, record) {
-  if (!record.runId) throw failure(`no run id recorded for ${record.sha}`)
+// Polls GitHub until the run completes; returns the run, or null once the deadline passed (record marked timed_out).
+async function pollUntilCompleted(ctx, record) {
   const deadline = ctx.io.now() + Number(ctx.args.timeoutMin) * 60000
-  let run
+  const seen = { jobs: new Set(), os: new Set(), failures: new Map() }
   for (;;) {
-    run = freshEvidence(ctx, record.runId)
-    if (run.status === 'completed') break
+    const run = freshEvidence(ctx, record.runId, record.sha)
+    const identity = verdictFromEvidence(run, record.sha)
+    if (identity.verdict === 'unchecked') {
+      if (run.status === 'completed') return run
+      throw failure(`run ${record.runId} ${identity.reason}`, 3)
+    }
+    // Early lines are advisory: a failure here must never change the verdict nor strand the temporary branch.
+    try { announceConcluded(ctx, record, run, seen) } catch (error) { ctx.print(`EARLY REPORT UNAVAILABLE: ${error.message}`) }
+    if (run.status === 'completed') return run
     if (ctx.io.now() >= deadline) {
       record.status = 'timed_out'; save(ctx, record)
-      ctx.print(`TIMEOUT: branch kept; collect with node plugin/bin/wt-crossos-dispatch.mjs collect --merge ${record.sha}`)
-      return 4
+      ctx.print(`TIMEOUT: branch kept; collect with (POSIX shell; Git Bash on Windows):\nnode ${shellQuote(DISPATCHER)} collect --repo ${shellQuote(resolve(ctx.cwd))} --merge ${record.sha} --repo-slug ${shellQuote(ctx.slug)} --workflow ${shellQuote(ctx.args.workflow)}`)
+      return null
     }
     await ctx.io.sleep(30000)
   }
+}
+
+// Prints the failed jobs and their extracted tests; returns the gating and diagnostic failures.
+function reportFailedJobs(ctx, record, failingJobs) {
+  const tests = []
+  const diagnostics = []
+  for (const job of failingJobs) {
+    const url = `${record.url}/job/${job.databaseId}`
+    ctx.print(`FAILED JOB ${job.name}: ${url}`)
+    let log = ''
+    try { log = checked(ctx.io, ctx.cwd, 'gh', ['run', 'view', '-R', ctx.slug, '--job', String(job.databaseId), '--log']) }
+    catch (error) { ctx.print(`JOB LOG UNAVAILABLE ${job.name}: ${error.message}`) }
+    const found = extractFailedTests(log)
+    const gating = found.filter((item) => item.gating)
+    if (!gating.length) ctx.print(`FAILED TEST (none extracted — read ${url})`)
+    for (const item of gating) { ctx.print(`FAILED TEST [gating step: ${item.step}] ${item.test}`); tests.push(item) }
+    const diagnostic = found.filter((item) => !item.gating)
+    if (diagnostic.length) ctx.print(`DIAGNOSTIC FAILURES (did not block): ${job.name}`)
+    for (const item of diagnostic) { ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`); diagnostics.push(item) }
+  }
+  return { tests, diagnostics }
+}
+
+function reportRedRun(ctx, record, failingJobs) {
+  const { tests, diagnostics } = reportFailedJobs(ctx, record, failingJobs)
+  const blockingNames = tests.map((item) => `${item.test} [${item.step}]`).join('; ') || '(none extracted)'
+  const blocker = `BLOCKER: host-layer merge ${record.sha} is red on cross-os run ${record.runId}; gating failed tests: ${blockingNames}; open a card and fix before release`
+  ctx.print(blocker)
+  const jobLines = failingJobs.map((job) => '- ' + job.name).join('\n')
+  const testLines = tests.map((item) => `- ${item.test} (gating step: ${item.step})`).join('\n')
+  const diagnosticLines = diagnostics.map((item) => `- ${item.test} (diagnostic step: ${item.step})`).join('\n')
+  const draft = `# Cross-OS failure on ${record.sha}\n\nRun: ${record.url}\n\n${jobLines}\n\nBlocking failed tests (gating steps):\n${testLines || '- None extracted; read the failed job logs.'}\n\nDiagnostic failures (did not block):\n${diagnosticLines || '- None.'}\n`
+  ctx.io.writeText(ctx.io.join(ctx.store, `${record.sha}.card.md`), draft)
+}
+
+function printRunSummary(ctx, run, incomplete, matrixIncomplete) {
+  for (const job of run.jobs ?? []) ctx.print(`JOB ${job.name}: ${job.conclusion}`)
+  if (incomplete) ctx.print(`${matrixIncomplete ? 'MATRIX INCOMPLETE' : 'MATRIX COMPLETE'}: ${incomplete}`)
+  else reportSuccessfulDiagnostics(ctx, run.jobs ?? [])
+}
+
+function concludeRun(ctx, record, run) {
+  const { verdict, reason, incomplete: matrixIncomplete } = verdictFromEvidence(run, record.sha)
+  if (verdict === 'unchecked') throw failure(`run ${record.runId} ${reason}`, 3)
+  record.status = run.status; record.conclusion = run.conclusion
+  save(ctx, record)
+  const incomplete = verdict === 'green' ? null : reason
+  printRunSummary(ctx, run, incomplete, matrixIncomplete)
+  if (incomplete) reportRedRun(ctx, record, (run.jobs ?? []).filter((job) => job.conclusion !== 'success'))
+  save(ctx, record)
+  return incomplete ? 1 : 0
+}
+
+async function collect(ctx, record) {
+  if (!record.runId) throw failure(`no run id recorded for ${record.sha}`)
+  const run = await pollUntilCompleted(ctx, record)
+  if (!run) return 4
   let originalError
   let result
   try {
-    record.status = run.status; record.conclusion = run.conclusion
-    save(ctx, record)
-    const { verdict, reason, incomplete: matrixIncomplete } = verdictFromEvidence(run, record.sha)
-    if (verdict === 'unchecked') throw failure(`run ${record.runId} ${reason}`, 3)
-    const incomplete = verdict === 'green' ? null : reason
-    const failingJobs = (run.jobs ?? []).filter((job) => job.conclusion !== 'success')
-    for (const job of run.jobs ?? []) ctx.print(`JOB ${job.name}: ${job.conclusion}`)
-    if (incomplete) ctx.print(`${matrixIncomplete ? 'MATRIX INCOMPLETE' : 'MATRIX COMPLETE'}: ${incomplete}`)
-    else reportSuccessfulDiagnostics(ctx, run.jobs ?? [])
-    if (incomplete) {
-      const tests = []
-      const diagnostics = []
-      for (const job of failingJobs) {
-        const url = `${record.url}/job/${job.databaseId}`
-        ctx.print(`FAILED JOB ${job.name}: ${url}`)
-        let log = ''
-        try { log = checked(ctx.io, ctx.cwd, 'gh', ['run', 'view', '-R', ctx.slug, '--job', String(job.databaseId), '--log']) }
-        catch (error) { ctx.print(`JOB LOG UNAVAILABLE ${job.name}: ${error.message}`) }
-        const found = extractFailedTests(log)
-        const gating = found.filter((item) => item.gating)
-        if (!gating.length) ctx.print(`FAILED TEST (none extracted — read ${url})`)
-        for (const item of gating) { ctx.print(`FAILED TEST [gating step: ${item.step}] ${item.test}`); tests.push(item) }
-        const diagnostic = found.filter((item) => !item.gating)
-        if (diagnostic.length) ctx.print(`DIAGNOSTIC FAILURES (did not block): ${job.name}`)
-        for (const item of diagnostic) { ctx.print(`FAILED TEST [diagnostic step: ${item.step}] ${item.test}`); diagnostics.push(item) }
-      }
-      const blockingNames = tests.map((item) => `${item.test} [${item.step}]`).join('; ') || '(none extracted)'
-      const blocker = `BLOCKER: host-layer merge ${record.sha} is red on cross-os run ${record.runId}; gating failed tests: ${blockingNames}; open a card and fix before release`
-      ctx.print(blocker)
-      const jobLines = failingJobs.map((job) => '- ' + job.name).join('\n')
-      const testLines = tests.map((item) => `- ${item.test} (gating step: ${item.step})`).join('\n')
-      const diagnosticLines = diagnostics.map((item) => `- ${item.test} (diagnostic step: ${item.step})`).join('\n')
-      const draft = `# Cross-OS failure on ${record.sha}\n\nRun: ${record.url}\n\n${jobLines}\n\nBlocking failed tests (gating steps):\n${testLines || '- None extracted; read the failed job logs.'}\n\nDiagnostic failures (did not block):\n${diagnosticLines || '- None.'}\n`
-      ctx.io.writeText(ctx.io.join(ctx.store, `${record.sha}.card.md`), draft)
-    }
-    save(ctx, record)
-    result = incomplete ? 1 : 0
+    result = concludeRun(ctx, record, run)
   } catch (error) {
     originalError = error
   } finally {
@@ -261,7 +406,7 @@ async function run(ctx, sha) {
   if (!ctx.args.dryRun) git(ctx, 'fetch', ctx.args.remote, 'main')
   const branch = ciBranchFor(sha)
   if (!ctx.args.dryRun && git(ctx, 'ls-remote', '--heads', ctx.args.remote, `refs/heads/${branch}`)) throw failure(`branch already exists: ${branch}`)
-  const commits = lines(git(ctx, 'rev-list', `${ctx.args.remote}/main..${sha}`))
+  const commits = lines(git(ctx, 'rev-list', '--end-of-options', `${ctx.args.remote}/main..${sha}`, '--'))
   const auth = ctx.io.join(ctx.gitDir, 'wt-push-authorized.json')
   if (ctx.args.dryRun) {
     ctx.print(`DRY-RUN branch=${branch} commits=${commits.join(',')} auth=${auth}`)
@@ -294,7 +439,7 @@ function releaseCheck(ctx) {
     if (shown.status !== 0) throw failure(`missing ${source}; override with --paths-file <file>`)
     data = shown.stdout
   }
-  const commits = lines(git(ctx, 'rev-list', '--topo-order', `${base}..${ref}`))
+  const commits = lines(git(ctx, 'rev-list', '--topo-order', '--end-of-options', `${base}..${ref}`, '--'))
   let verdict = null
   for (const sha of commits) {
     const decision = decide(ctx, sha, false, { source, data })

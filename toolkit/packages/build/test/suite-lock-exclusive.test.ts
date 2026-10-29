@@ -126,10 +126,10 @@ it('refuses a stale inherited marker immediately with its lease id and status re
   const lease = await acquireSuiteLock({ root: directory, env: envFor(directory) })
   const marker = `${directory}|${lease.holder.leaseId}`
   releaseSuiteLock(lease)
-  const started = Date.now()
+  const started = performance.now()
   const result = spawnSync(process.execPath, [CLI, 'run', '--wait-s', '10', '--', process.execPath, '-e', ''], { env: { ...envFor(directory), WT_SUITE_LEASE: marker }, encoding: 'utf8', timeout: 2500 })
   expect(result.status, result.stderr).toBe(75)
-  expect(Date.now() - started).toBeLessThan(2500)
+  expect(performance.now() - started).toBeLessThan(2500)
   expect(result.stderr).toContain(`suite lease ${lease.holder.leaseId} from WT_SUITE_LEASE is no longer held`)
   expect(result.stderr).toContain('wt-suite-lock status')
 }, 4000)

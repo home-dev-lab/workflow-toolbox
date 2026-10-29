@@ -6,7 +6,7 @@ import { appendEvent, publish, publishRefusals } from './journal.js';
 import { scrubPromptStorage, scrubToolUseStorage } from './prompt-storage-host.js';
 import { resolveReference as resolveRuntimeReference, rewriteReferences } from './reference-runtime.js';
 import { planReferences } from './references.js';
-import { scrub, scrubSettled } from './scrub.js';
+import { scrub, scrubAssembled, scrubSettled } from './scrub.js';
 import { applySecretReadGuard } from './secret-read-guard.js';
 import { verdictForBash, verdictForPath } from './secret-read-policy.js';
 import { knownTokens, replacementFor, testState, tokenize } from './token-vault.js';
@@ -15,6 +15,7 @@ import { maskAssistantRender, maskTurnStep } from './assistant-stream.js';
 import { REDACTION_NOTE } from './constants.js';
 import { handleOwnerRelease, redactConfirmationCodes, releaseGrammarRefusal } from './owner-release.js';
 import { planOwnerChannel } from './owner-channel.js';
+import { consoleNotice } from './console-notice.js';
 
 export { configure, testState, tokenize };
 
@@ -25,7 +26,7 @@ const journalHost = ($) => ({
   fsRead: (path) => $.fs.read(path), fsWrite: (path, text) => $.fs.write(path, text), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root, configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'),
   sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(), uiLog: (text) => $.ui.log(text),
 });
-const referenceHost = ($) => ({ processRun: (argv, init) => $.process.run(argv, init), fsRead: (path) => $.fs.read(path), uiLog: (text) => $.ui.log(text) });
+const referenceHost = ($) => ({ ...journalHost($), processRun: (argv, init) => $.process.run(argv, init), fsRead: (path) => $.fs.read(path), uiLog: (text) => $.ui.log(text) });
 const storageHost = ($) => ({
   configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'), sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(),
   fsRead: (path) => $.fs.read(path), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root,
@@ -65,6 +66,15 @@ function withNotes(result, rewrites, tokenised = false) {
   return { ...result, text: typeof result.text === 'string' ? `${result.text}\n${notes.join('\n')}` : notes.join('\n') };
 }
 
+// The host builds what the model reads of a tool result from its `result`, never from a hook's `text` (measured:
+// a note appended there did not reach the model). The notes go in `context`, which the model reads after the
+// result. Any refusal, an empty one included, is returned as it came: the host types a refusal as `{ deny }` alone.
+function withResultNotes(result, rewrites, tokenised = false) {
+  if (!result || typeof result !== 'object' || result.deny !== undefined || (!rewrites && !tokenised)) return result;
+  const context = Array.isArray(result.context) ? result.context : [];
+  return { ...result, context: scrubAssembled([...context, ...noteLines(rewrites, tokenised)]) };
+}
+
 async function scrubInbound($, event, next) {
   const privateText = typeof event.text === 'string' ? redactConfirmationCodes(event.text) : event.text;
   if (privateText !== event.text) event = { ...event, text: privateText };
@@ -73,7 +83,7 @@ async function scrubInbound($, event, next) {
   let text = event.text;
   for (const { kind, value, secret = value } of found) text = text.split(value).join(tokenize(kind, secret));
   const notice = inboundNotice(found);
-  await publish(journalHost($)); await $.ui.log(notice);
+  await publish(journalHost($));
   return next({ ...event, text: `${text}\n\n${notice}` });
 }
 
@@ -84,16 +94,15 @@ async function scrubInbound($, event, next) {
 // beneath, goes back that way. An errored answer whose result is unchanged keeps core's own record; the host
 // compares serialised values, and scrub rebuilds every object, so identity would call an untouched one changed.
 // The refusal carries the error itself (`result`), never a display `text` that may be empty or unrelated, and
-// the assembled refusal is scrubbed once more: joining the context could rebuild a held value no single piece held.
+// the assembled refusal, notes included, is scrubbed once more: joining could rebuild a held value no single piece held.
 function erroredAnswer(original, cleaned, rewrites = 0) {
   const answer = cleaned.value;
-  const unchanged = () => withNotes(answer, rewrites, cleaned.changed);
+  const unchanged = () => withResultNotes(answer, rewrites, cleaned.changed);
   if (!isErrorAnswer(answer)) return unchanged();
   if (JSON.stringify(answer.result ?? null) === JSON.stringify(original?.result ?? null)) return unchanged();
   const body = typeof answer.result === 'string' ? answer.result : JSON.stringify(answer.result ?? '');
   const context = Array.isArray(answer.context) ? answer.context.map((item) => (typeof item === 'string' ? item : JSON.stringify(item))) : [];
-  const assembled = scrubSettled([body, ...context].join('\n\n'), '', true, new Set(), { complete: true });
-  return { deny: [assembled.value, ...noteLines(rewrites, true)].join('\n') };
+  return { deny: scrubAssembled([[body, ...context].join('\n\n'), ...noteLines(rewrites, true)].join('\n')) };
 }
 
 function isErrorAnswer(answer) { return answer && answer.deny === undefined && answer.isError === true; }
@@ -105,7 +114,6 @@ async function scrubToolResult($, event, next) {
   const cleaned = scrubSettled(response, '', true, new Set(), { complete: true });
   const answer = erroredAnswer(response, cleaned);
   await publish(journalHost($));
-  if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
   return answer;
 }
 
@@ -130,7 +138,7 @@ async function refuseRawOutbound($, event) {
   // Described before the findings are tokenised below: a pattern match must read as its detector, not as a held value.
   const described = describeFindings(event, classified.findings);
   const replacements = classified.findings.map(({ kind, value, secret = value }) => ({ raw: value, token: tokenize(kind, secret) }));
-  if (event.agentId) await $.ui.log('wt-secret-guard: denied subagent input; subagent transcript location is unmeasured, so persisted input could not be repaired.');
+  if (event.agentId) await consoleNotice(journalHost($), 'denied-subagent-input', 'wt-secret-guard: denied subagent input; subagent transcript location is unmeasured, so persisted input could not be repaired.');
   else await scrubToolUseStorage(storageHost($), replacements, event.tool_use_id);
   await appendEvent(journalHost($), {
     surface: classified.surface, action: 'refused', kinds: classified.findings.map(({ kind }) => kind), count: classified.findings.length,
@@ -150,10 +158,9 @@ async function guardedOutbound($, event, next) {
   if (owner) {
     // The forwarded body is already clean: a failed notice or storage repair is reported, never a reason to block.
     try {
-      if (event.agentId) await $.ui.log('wt-secret-guard: forwarded with body redaction; subagent persisted input was not repaired.');
+      if (event.agentId) await appendEvent(journalHost($), { surface: 'mcp', action: 'storage-unrepaired', count: owner.count, toolUseId: event.tool_use_id });
       else await scrubToolUseStorage(storageHost($), owner.replacements, event.tool_use_id, undefined, true);
-      await $.ui.log(`wt-secret-guard: forwarded with ${owner.count} values replaced.`);
-    } catch { /* ui.log is void and may throw; forwarding does not depend on it. */ }
+    } catch { /* Storage repair is best-effort; clean forwarding does not depend on it. */ }
     return scrubToolResult($, owner.forwarded, next);
   }
   const refusal = await refuseRawOutbound($, event);
@@ -166,7 +173,7 @@ async function warnHookAttachment($, event, next) {
   await publish(journalHost($));
   if (event.origin?.kind === 'hook' && event.origin?.event === 'SessionStart' && cleaned.changed) {
     await appendEvent(journalHost($), { surface: 'attachment', action: 'warned', dedupeKey: `attachment:${event.index ?? 'session-start'}` });
-    await $.ui.log('wt-secret-guard: detected and scrubbed a SessionStart hook attachment; model-side propagation of attachment rewrites is unproven. Remove the value from the source hook or consumer store.');
+    await consoleNotice(journalHost($), 'session-start-attachment', 'wt-secret-guard: detected and scrubbed a SessionStart hook attachment; model-side propagation of attachment rewrites is unproven. Remove the value from the source hook or consumer store.');
   }
   return next(cleaned.value);
 }
@@ -178,7 +185,6 @@ async function submitScrubbedPrompt($, event, next) {
     ? [...knownTokens()].filter(([, entry]) => (!entry.ephemeral || detected.has(entry.value)) && event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
     : [];
   await publish(journalHost($));
-  if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
   const noted = withNotes(cleaned.value, 0);
   const result = await next(cleaned.changed ? { ...noted, context: [...(noted.context ?? []), REDACTION_NOTE] } : noted);
   if (cleaned.changed && replacements.length && event.origin?.kind) {
@@ -188,7 +194,7 @@ async function submitScrubbedPrompt($, event, next) {
 }
 
 async function submitPrompt($, event, next) {
-  const release = handleOwnerRelease(event, (line) => $.ui.log(line));
+  const release = handleOwnerRelease(event, journalHost($).uiLog);
   if (!release.handled) return submitScrubbedPrompt($, event, next);
   if (release.released) await appendEvent(journalHost($), { surface: 'prompt', action: 'released', kinds: [release.released.kind] });
   await publish(journalHost($));
@@ -242,7 +248,6 @@ async function executeBash($, next, audit, references, originalCommand, original
       const cleaned = scrubSettled(response, rewrite.command, true, substituted, { complete: true });
       const answer = erroredAnswer(response, cleaned, rewrite.count);
       await publish(audit);
-      if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
       return answer;
 }
 

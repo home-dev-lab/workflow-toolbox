@@ -5,8 +5,8 @@ import { refuseRepository, sha256 } from './work-journal-paths.mjs'
 import { createBoardClient, resolveBoardPointer } from './board-http-client.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 
-export const taskFilePath = (ctx) => path.join(ctx.root, '.claude', 'progress.md')
-export function boardPointer(ctx) {
+const taskFilePath = (ctx) => path.join(ctx.root, '.claude', 'progress.md')
+function boardPointer(ctx) {
   const pointer = resolveBoardPointer(ctx.root)
   if (!pointer?.boardId) return null
   return { ...io.json(pointer.path), boardId: pointer.boardId }

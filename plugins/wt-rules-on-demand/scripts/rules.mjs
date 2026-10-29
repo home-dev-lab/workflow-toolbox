@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { migrateRule, migrationPreflight, readSpec, revertRule, retireRule, triggersHash } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
-import { Worker } from 'node:worker_threads';
+import { timeRegex } from './regex-timing.mjs';
 import { argumentEvidence, bounded } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { discoverFiles } from './discover-files.mjs';
@@ -42,28 +42,33 @@ function usage() {
   process.exit(2);
 }
 
-async function timedPatterns(rule, corpus, boundMs) {
+function isTimingRegex(regex) {
+  return regex && typeof regex.test === 'function' && typeof regex.source === 'string';
+}
+function triggerTimingPatterns(rule) {
   const patterns = [];
   for (const [index, trigger] of rule.triggers.entries()) for (const [key, regex] of Object.entries(trigger))
-    if (regex && typeof regex.test === 'function' && typeof regex.source === 'string') patterns.push([`trigger-${index}-${key}`, regex]);
-  const compliance = rule.compliance;
-  if (compliance) for (const [key, regex] of Object.entries(compliance)) {
-    if (regex && typeof regex.test === 'function' && typeof regex.source === 'string') patterns.push([`compliance-${key}`, regex]);
-    if (Array.isArray(regex)) for (const [index, part] of regex.entries()) if (part && typeof part.test === 'function' && typeof part.source === 'string') patterns.push([`compliance-${key}-${index}`, part]);
+    if (isTimingRegex(regex)) patterns.push([`trigger-${index}-${key}`, regex]);
+  return patterns;
+}
+function appendComplianceTimingPatterns(patterns, compliance) {
+  for (const [key, regex] of Object.entries(compliance)) {
+    if (isTimingRegex(regex)) patterns.push([`compliance-${key}`, regex]);
+    if (Array.isArray(regex)) for (const [index, part] of regex.entries())
+      if (isTimingRegex(part)) patterns.push([`compliance-${key}-${index}`, part]);
   }
+}
+async function timedPatterns(rule, corpus, boundMs) {
+  const patterns = triggerTimingPatterns(rule);
+  const compliance = rule.compliance;
+  if (compliance) appendComplianceTimingPatterns(patterns, compliance);
   const slow = [];
   for (const [patternId, regex] of patterns) {
     if (!corpus.length) break;
     let operation = 'test';
     if (patternId === 'compliance-id') operation = 'exec';
     else if (patternId === 'compliance-value' || patternId === 'compliance-matchBlock') operation = 'matchAll';
-    const result = await new Promise((done) => {
-      const worker = new Worker(new URL('./regex-timing-worker.mjs', import.meta.url), { workerData: { source: regex.source, flags: regex.flags, corpus, boundMs, operation } });
-      const timer = setTimeout(() => { void worker.terminate(); done({ error: 'timing worker deadline exceeded' }); }, Math.max(500, boundMs * 5, corpus.length / 10));
-      worker.once('message', (value) => { clearTimeout(timer); done(value); });
-      worker.once('error', (error) => { clearTimeout(timer); void worker.terminate(); done({ error: error.message }); });
-      worker.once('exit', (code) => { if (code !== 0) { clearTimeout(timer); done({ error: `timing worker exited ${code}` }); } });
-    });
+    const result = await timeRegex({ source: regex.source, flags: regex.flags, corpus, boundMs, operation });
     if (result.error) slow.push({ status: 'error', patternId, reason: result.error });
     else if (result.ms !== null && result.ms >= boundMs) slow.push({ status: 'slow', patternId, ms: result.ms });
   }

@@ -1,6 +1,8 @@
 import path from 'node:path'
 import { effectiveModel } from './pilot-model-config.mjs'
 import { readText, readLines, entries } from './host/model-fallback-files.mjs'
+import { scanFile } from './model-fallback-scan.mjs'
+import { trackerState, snapshotTrackerState } from './model-fallback-state.mjs'
 
 const normalize = (value) => typeof value === 'string' ? value.replace(/\[\d+m\]$/, '') : null
 const family = (value) => /claude-(opus|sonnet|haiku|fable)-/i.exec(value ?? '')?.[1] ?? null
@@ -12,79 +14,115 @@ const same = (requested, served, env) => {
   return aliases.has(resolved) && new RegExp(`claude-${resolved}-`, 'i').test(normalize(served) ?? '')
 }
 
-export function createModelTracker(requested = null, env = process.env) {
-  const runs = []; const fallbacks = []; const refusals = []; const notices = []
-  const seenMessages = new Set()
-  const seenRefusals = new Set()
+function recordRun(state, message, model, time, position) {
+  const id = message.id
+  if (id && state.seenMessages.has(id)) return
+  if (id) state.seenMessages.add(id)
+  const last = state.runs.at(-1)
+  if (last?.model === model) last.calls += 1
+  else state.runs.push({ model, calls: 1, time, position })
+  state.lastFromRun.set(model, position)
+  state.lastServedPosition = position
+}
+
+function recordRefusal(state, record, message, model, time, position) {
+  if (message?.stop_reason !== 'refusal') return
+  if (message.id && state.seenRefusals.has(message.id)) return
+  if (message.id) state.seenRefusals.add(message.id)
+  state.refusals.push({ model, time, uuid: record.uuid, position })
+}
+
+// Informational safeguard text is the only classifier signal in some SDK streams and
+// in transcripts without an assistant refusal. This text key is version-fragile.
+function recordNotice(state, record, time, position) {
+  if (record.type === 'system' && record.subtype === 'informational' && /safeguards stopped/i.test(record.content ?? '')) {
+    state.notices.push({ time, parentUuid: record.parentUuid, position, lastServedPosition: state.lastServedPosition })
+  }
+}
+
+// Both descriptions of a fallback: the structured system record and the assistant content item.
+const fallbackItem = (message) => message?.content?.find?.((entry) => entry.type === 'fallback')
+const itemEnds = (item) => [item.from?.model, item.to?.model]
+
+function transition(record, message) {
+  const structured = record.type === 'system' && record.subtype === 'model_refusal_fallback'
+  const item = fallbackItem(message)
+  if (!structured && !item) return null
+  const [from, to] = (structured ? [record.originalModel, record.fallbackModel] : itemEnds(item)).map(normalize)
+  return from && to ? { structured, item, from, to, source: structured ? 'system' : 'assistant' } : null
+}
+
+const describesPrevious = (state, previous, change) => previous?.from === change.from && previous?.to === change.to
+  && previous.source !== change.source && (state.lastFromRun.get(change.from) ?? 0) <= previous.position
+
+const fallbackEvent = (record, message, change, time, position) => ({ from: change.from, to: change.to, time,
+  category: change.structured ? record.apiRefusalCategory ?? null : null, requestId: record.requestId ?? null, source: change.source, position, messageId: message?.id })
+
+// Adjacent descriptions of one transition can have different requestIds. The
+// structured record wins; distinct transitions without ids are not collapsed.
+function recordFallback(state, record, message, change, time, position) {
+  const previous = state.fallbacks.at(-1)
+  if (describesPrevious(state, previous, change)) {
+    if (change.structured) Object.assign(previous, { time, category: record.apiRefusalCategory ?? null, requestId: record.requestId ?? null, source: 'system' })
+  } else if (!(change.item && message.id && state.fallbacks.some((event) => event.messageId === message.id))) state.fallbacks.push(fallbackEvent(record, message, change, time, position))
+}
+
+function observeRecord(state, record) {
+  const position = ++state.position
+  const time = record.timestamp ?? 'unknown time'
+  if (record.type === 'system' && record.subtype === 'init') state.initialModel = normalize(record.model)
+  const message = record.type === 'assistant' ? record.message : null
+  const model = normalize(message?.model)
+  if (model && model !== '<synthetic>') recordRun(state, message, model, time, position)
+  recordRefusal(state, record, message, model, time, position)
+  recordNotice(state, record, time, position)
+  const change = transition(record, message)
+  if (change) recordFallback(state, record, message, change, time, position)
+}
+
+function trackerResult(state, requested, env, unreadable) {
+  const { runs, fallbacks, refusals, notices } = state
+  const stops = [...refusals]
+  for (const notice of notices) {
+    const linked = stops.findLast((entry) => entry.position < notice.position && entry.position >= notice.lastServedPosition)
+    if (linked) linked.notice = true
+    else stops.push({ model: null, time: notice.time, notice: true })
+  }
+  return { requested, initialModel: state.initialModel, runs, fallbacks, refusals: stops, notices, unknown: unreadable || !(runs.length || stops.length || fallbacks.length), env }
+}
+
+export function createModelTracker(requested = null, env = process.env, snapshot = null) {
+  const state = trackerState(snapshot)
   let unreadable = false
-  let position = 0
-  let initialModel = null
-  let lastServedPosition = 0
-  let lastFromRun = new Map()
   function observe(record) {
     if (!record || typeof record !== 'object') return
     if (record.parent_tool_use_id != null) return
-    position++
-    const time = record.timestamp ?? 'unknown time'
-    if (record.type === 'system' && record.subtype === 'init') initialModel = normalize(record.model)
-    const message = record.type === 'assistant' ? record.message : null
-    const model = normalize(message?.model)
-    if (model && model !== '<synthetic>') {
-      const id = message.id
-      const fresh = !id || !seenMessages.has(id)
-      if (fresh) {
-        if (id) seenMessages.add(id)
-        if (runs.at(-1)?.model === model) runs.at(-1).calls += 1
-        else runs.push({ model, calls: 1, time, position })
-        lastFromRun.set(model, position)
-      }
-      if (fresh) lastServedPosition = position
-    }
-    if (message?.stop_reason === 'refusal' && (!message.id || !seenRefusals.has(message.id))) {
-      if (message.id) seenRefusals.add(message.id)
-      refusals.push({ model, time, uuid: record.uuid, position })
-    }
-    // Informational safeguard text is the only classifier signal in some SDK streams and
-    // in transcripts without an assistant refusal. This text key is version-fragile.
-    if (record.type === 'system' && record.subtype === 'informational' && /safeguards stopped/i.test(record.content ?? '')) {
-      notices.push({ time, parentUuid: record.parentUuid, position, lastServedPosition })
-    }
-    const structured = record.type === 'system' && record.subtype === 'model_refusal_fallback'
-    const item = message?.content?.find?.((entry) => entry.type === 'fallback')
-    if (structured || item) {
-      const from = normalize(structured ? record.originalModel : item.from?.model)
-      const to = normalize(structured ? record.fallbackModel : item.to?.model)
-      if (from && to) {
-        // Adjacent descriptions of one transition can have different requestIds. The
-        // structured record wins; distinct transitions without ids are not collapsed.
-        const previous = fallbacks.at(-1)
-        if (previous?.from === from && previous?.to === to && previous.source !== (structured ? 'system' : 'assistant')
-          && (lastFromRun.get(from) ?? 0) <= previous.position) {
-          if (structured) Object.assign(previous, { time, category: record.apiRefusalCategory ?? null, requestId: record.requestId ?? null, source: 'system' })
-        } else if (!(item && message.id && fallbacks.some((event) => event.messageId === message.id))) fallbacks.push({ from, to, time, category: structured ? record.apiRefusalCategory ?? null : null, requestId: record.requestId ?? null, source: structured ? 'system' : 'assistant', position, messageId: message?.id })
-      }
-    }
+    observeRecord(state, record)
   }
-  function result() {
-    const stops = [...refusals]
-    for (const notice of notices) {
-      const linked = stops.findLast((entry) => entry.position < notice.position && entry.position >= notice.lastServedPosition)
-      if (linked) linked.notice = true
-      else stops.push({ model: null, time: notice.time, notice: true })
-    }
-    return { requested, initialModel, runs, fallbacks, refusals: stops, notices, unknown: unreadable || !(runs.length || stops.length || fallbacks.length), env }
+  // snapshot(): plain JSON of every observation-derived field; taken before result(), which marks
+  // refusal entries. A transcript read failure (markUnknown) is deliberately not part of it.
+  return {
+    observe,
+    result: () => trackerResult(state, requested, env, unreadable),
+    snapshot: () => snapshotTrackerState(state),
+    restored: Boolean(snapshot),
+    markUnknown() { unreadable = true },
   }
-  return { observe, result, markUnknown() { unreadable = true } }
 }
 
-export function analyseTranscript(file, { requested = null, env = process.env, targetsOnly = false, chunkSize } = {}) {
+// The one matching rule for targets-only reads: a line can describe a fallback only if it contains this.
+export const TARGET_NEEDLE = 'fallback'
+
+const observeLine = (tracker) => (line) => {
+  try { tracker.observe(JSON.parse(line)) } catch { /* corrupt lines do not mask good observations */ }
+}
+
+export function analyseTranscript(file, { requested = null, env = process.env, targetsOnly = false, chunkSize, io } = {}) {
   const tracker = createModelTracker(requested, env)
+  const onLine = observeLine(tracker)
   try {
-    for (const line of readLines(file, chunkSize)) {
-      if (!line.trim()) continue
-      if (targetsOnly && !line.includes('fallback')) continue
-      try { tracker.observe(JSON.parse(line)) } catch { /* corrupt lines do not mask good observations */ }
-    }
+    if (targetsOnly) scanFile(file, TARGET_NEEDLE, { io, chunkSize, onLine })
+    else for (const line of readLines(file, chunkSize)) if (line.trim()) onLine(line)
   } catch { tracker.markUnknown() }
   return tracker.result()
 }

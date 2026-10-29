@@ -28,6 +28,22 @@ function hold(reason, consecutiveBlocks, blockMax, extras = {}) {
   }
 }
 
+function passesWithoutReading(mandateKind, unrefreshable) {
+  return unrefreshable || mandateKind === 'absent' || mandateKind === 'expired'
+}
+
+function unrefreshableReason(unrefreshable, mandateKind) {
+  return unrefreshable && (mandateKind === 'live' || mandateKind === 'unknown') ? { reason: 'snapshot-unrefreshable' } : {}
+}
+
+function validateDecisionInputs(now, staleAfterMs, blockMax, inFlightCapMs, mandateKind) {
+  if (!finiteNumber(now)) throw new Error('now must be a finite number')
+  if (!finiteNumber(staleAfterMs) || staleAfterMs < 0) throw new Error('staleAfterMs must be a non-negative number')
+  if (!finiteNumber(blockMax) || blockMax < 1) throw new Error('blockMax must be >= 1')
+  if (!finiteNumber(inFlightCapMs) || inFlightCapMs < 0) throw new Error('inFlightCapMs must be a non-negative number')
+  if (!['absent', 'unknown', 'expired', 'live'].includes(mandateKind)) throw new Error('mandateKind is invalid')
+}
+
 /**
  * @typedef {{
  *   status: 'present',
@@ -56,6 +72,7 @@ function hold(reason, consecutiveBlocks, blockMax, extras = {}) {
  *   staleSnapshotAt?: number | null,
  *   blockMax?: number,
  *   inFlightCapMs?: number,
+ *   unrefreshable?: boolean,
  * }} input
  * @returns {{
  *   block: boolean,
@@ -81,14 +98,11 @@ export function decide({
   staleSnapshotAt = null,
   blockMax = 3,
   inFlightCapMs = 10 * 60_000,
+  unrefreshable,
 }) {
-  if (!finiteNumber(now)) throw new Error('now must be a finite number')
-  if (!finiteNumber(staleAfterMs) || staleAfterMs < 0) throw new Error('staleAfterMs must be a non-negative number')
-  if (!finiteNumber(blockMax) || blockMax < 1) throw new Error('blockMax must be >= 1')
-  if (!finiteNumber(inFlightCapMs) || inFlightCapMs < 0) throw new Error('inFlightCapMs must be a non-negative number')
-  if (!['absent', 'unknown', 'expired', 'live'].includes(mandateKind)) throw new Error('mandateKind is invalid')
+  validateDecisionInputs(now, staleAfterMs, blockMax, inFlightCapMs, mandateKind)
 
-  if (mandateKind === 'absent' || mandateKind === 'expired') return pass(0)
+  if (passesWithoutReading(mandateKind, unrefreshable)) return pass(0, unrefreshableReason(unrefreshable, mandateKind))
 
   if (snapshot === null || snapshot?.status === 'never') return pass(0)
   if (snapshot?.status === 'invalid') return pass(0)

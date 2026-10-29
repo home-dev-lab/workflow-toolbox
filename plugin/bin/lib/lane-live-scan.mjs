@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path, { basename, join } from 'node:path'
 import { classifyLane, readCurrentSupervisions } from './lane-supervisor-core.mjs'
+import { DEFAULT_PROC_ROOT, readProcfsProcessTable } from './host/procfs.mjs'
 
 export const ACTIVITY_MAX_ENTRIES = 4000
 export const ACTIVITY_WINDOW_MIN = 12
@@ -304,7 +305,7 @@ function scanWindowsLaneProcesses(spawnSyncImpl, win32Path) {
 // /proc is Linux-only. Other platforms, or an unreadable process table, produce an explicit
 // unknown so callers never confuse "could not inspect lanes" with "all lanes are idle".
 export function scanLiveLaneProcesses({
-  procRoot = '/proc',
+  procRoot = DEFAULT_PROC_ROOT,
   platform = process.platform,
   readdirImpl = readdirSync,
   readFileImpl = readFileSync,
@@ -315,9 +316,9 @@ export function scanLiveLaneProcesses({
   if (platform === 'darwin') return scanDarwinLaneProcesses(spawnSyncImpl)
   if (platform !== 'linux') return { status: 'unknown', processes: [] }
 
-  let entries
+  let table
   try {
-    entries = readdirImpl(procRoot)
+    table = readProcfsProcessTable({ root: procRoot, platform, readdir: readdirImpl, readFile: readFileImpl })
   } catch {
     return { status: 'unknown', processes: [] }
   }
@@ -325,7 +326,7 @@ export function scanLiveLaneProcesses({
   const processes = []
   let numericEntries = 0
   let capped = false
-  for (const entry of entries) {
+  for (const entry of table.entries) {
     const pid = typeof entry === 'string' ? entry : entry.name
     if (!/^\d+$/.test(pid)) continue
     numericEntries += 1
@@ -334,7 +335,7 @@ export function scanLiveLaneProcesses({
       break
     }
     try {
-      const args = Buffer.from(readFileImpl(join(procRoot, pid, 'cmdline'))).toString('utf8').split('\0').filter(Boolean)
+      const args = Buffer.from(table.readCommandLine(pid)).toString('utf8').split('\0').filter(Boolean)
       const dir = laneDirFromArgs(args)
       if (dir) processes.push({ pid, dir, command: args.map((arg) => basename(arg)).slice(0, 2).join(' ') })
     } catch {

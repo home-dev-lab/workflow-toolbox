@@ -1,17 +1,22 @@
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import path from 'node:path'
-import { artifactStateDir, pidAlive } from './artifact-server.mjs'
+import { pidAlive } from './artifact-server.mjs'
+import { suiteLockDir } from './host/suite-lock-dir.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
-import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, readAdmissionCounter, readLightCounter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
-import { connectSuiteLockBroker, createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
+import { discardDirectory, heartbeatTicket, abandonEmptyLockDir, ensureLightCounter, ensureP0Counter, readAdmissionCounter, readLightCounter, readP0Counter, readQueueSnapshot, reclaimInFlight, recordAdmissionGrant, recordLightGrant, recordP0Grant, putLockBack, readHolderIn, removeDirectoryOlderThan, removeTicket, setLockAside } from './host/suite-lock-queue.mjs'
+import { connectSuiteLockBroker } from './host/suite-lock-host.mjs'
 import { displayArgv } from './suite-lock-display.mjs'
-import { orderSuiteLockTickets } from './suite-lock-order.mjs'
+import { BOUNDED_P0_ORDER_VERSION, orderSuiteLockTickets } from './suite-lock-order.mjs'
 import { parseSuiteLockPriority, suiteLockPriority } from './suite-lock-priority.mjs'
-import { brokerProgressPlace, isBrokerQueueEvent, suiteQueueAdvanced } from './suite-lock-progress.mjs'
+import { observeSuiteQueuePlace, suiteQueueAdvanced } from './suite-lock-progress.mjs'
+import { negotiateSuiteOffload } from './suite-lock-offload-client.mjs'
+import { requestBrokerLease } from './suite-lock-broker-client.mjs'
 import { suiteLockStatusSnapshot } from './suite-lock-status.mjs'
-export { LIGHT_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
+import { suiteJournalEvent } from './suite-lock-journal.mjs'
+import { acquireJournalLease, finishBrokerLease, journalHolder, journalWaiterRecord, takeJournalTicket as takeTicket } from './suite-lock-journal-lifecycle.mjs'
+import { staticLaneEnabled, staticLeaseRoot, staticRunCommand, withStaticLaneSnapshot } from './suite-lock-static.mjs'
+export { LIGHT_BYPASS_MAX_GRANTS, P0_BYPASS_MAX_GRANTS } from './suite-lock-order.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -53,13 +58,6 @@ function positiveSeconds(value, name) {
   return number
 }
 
-function suiteLockDir(env = process.env, home = homedir(), platform = process.platform) {
-  if (typeof env.WT_SUITE_LOCK_DIR === 'string' && env.WT_SUITE_LOCK_DIR.length > 0) {
-    return path.resolve(env.WT_SUITE_LOCK_DIR)
-  }
-  return path.join(path.dirname(artifactStateDir(env, home, platform)), 'wt-suite-lock')
-}
-
 export function readSuiteLock(options = {}) {
   const root = options.root ?? suiteLockDir(options.env, options.home, options.platform)
   const lockDir = path.join(root, 'lock.d')
@@ -79,9 +77,9 @@ export function readSuiteLockStatus(options = {}) {
   const tickets = readQueueSnapshot(path.join(current.root, 'queue.d'), now).map((ticket) => ({
     number: ticket.number, record: ticket.holder, stale: ticketIsStale(ticket, options),
   }))
-  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env)
+  const snapshot = suiteLockStatusSnapshot(current, tickets, readLightCounter(current.root), now, options.env ?? process.env, readP0Counter(current.root))
   if (current.held) snapshot.stale = holderIsStale(current, options)
-  return snapshot
+  return withStaticLaneSnapshot(snapshot, options.env ?? process.env, now, (ticket) => ticketIsStale(ticket, options))
 }
 
 // A holder recorded in ANOTHER PID namespace cannot be judged by its PID number, which is
@@ -209,11 +207,11 @@ function queuePlace(queueDir, mine, mineRecord, counter, options) {
     }
     live.push({ number, record: ticket.holder })
   }
-  const ordered = orderSuiteLockTickets(live, counter, now).tickets
+  const ordered = orderSuiteLockTickets(live, counter, now, readP0Counter(path.dirname(queueDir))).tickets
   const preceding = ordered.slice(0, ordered.findIndex((ticket) => ticket.number === mine))
   const ahead = preceding.length
-  return { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
-    admissions: readAdmissionCounter(path.dirname(queueDir)) }
+  return observeSuiteQueuePlace(options, { ahead, aheadExcludingRelease: preceding.filter((other) => other.record?.priority !== 'release').length, total: live.length,
+    admissions: readAdmissionCounter(path.dirname(queueDir)) })
 }
 
 // true: acquired. false: the lock is held. 'reclaim': a reclaimer is in flight, so the acquisition is
@@ -304,8 +302,20 @@ function reclaimStaleHolder(root, lockDir, options) {
   return outcome === RECLAIM_BUSY ? false : outcome
 }
 
-function waiterRecord(options, counter, priority) {
-  return {
+// The P0 counter a P1/P2 ticket records at queue time (see P0_BYPASS_MAX_GRANTS). Never a failure of the
+// acquisition: without a readable counter the ticket records nothing, is not P0-passable, and ages as before.
+function p0QueueFields(root, priority) {
+  if (priority !== 'P1' && priority !== 'P2') return {}
+  try {
+    const counter = ensureP0Counter(root)
+    return { p0GrantsAtQueue: counter.grants, p0GrantsGeneration: counter.generation }
+  } catch {
+    return {}
+  }
+}
+
+function waiterRecord(options, counter, priority, p0Fields) {
+  return journalWaiterRecord({
     pid: process.pid,
     argv: options.argv ?? process.argv,
     cwd: options.cwd ?? process.cwd(),
@@ -313,10 +323,12 @@ function waiterRecord(options, counter, priority) {
     level: priority === 'release' ? 0 : Number(priority[1]),
     ...(priority === 'release' ? { priority: 'release' } : {}),
     ...(options.light === true ? { light: true } : { lightGrantsAtQueue: counter.grants, lightGrantsGeneration: counter.generation }),
+    levelOrderVersion: BOUNDED_P0_ORDER_VERSION,
+    ...p0Fields,
     platform: options.platform ?? process.platform,
     pidNamespace: options.pidNamespace ?? currentPidNamespace(),
     startTime: options.startTime ?? processStartTime(process.pid),
-  }
+  }, options, priority)
 }
 
 function describeWait(place, current, record) {
@@ -360,6 +372,8 @@ function confirmAdmission(state, holder, place, options) {
     }
     if (record.light === true) recordLightGrant(root)
     throwIfAborted(options.signal)
+    // A count that cannot be written resets the P0 counter; only a failed reset fails the admission (lease handed back).
+    if (record.level === 0 && record.priority !== 'release') recordP0Grant(root, options.p0GrantSeams)
     recordAdmissionGrant(root)
     return { lease }
   } catch (error) {
@@ -375,9 +389,12 @@ function pollQueue(state, options) {
   heartbeatTicket(queueDir, ticket, record)
   const place = queuePlace(queueDir, ticket, record, readLightCounter(root), options)
   if (place.ahead === 0) {
-    const holder = { ...record, leaseId: createSuiteLockLeaseId(), startedAt: options.startedAt ?? new Date().toISOString() }
+    const holder = journalHolder(record, options, suiteLockNow(options))
     delete holder.lightGrantsAtQueue // queue-only: what a full suite records to bound how often light runs pass it
     delete holder.lightGrantsGeneration
+    delete holder.p0GrantsAtQueue // queue-only: what a P1/P2 ticket records to bound how often declared P0 passes it
+    delete holder.p0GrantsGeneration
+    delete holder.levelOrderVersion // queue-only: the order reads it from waiting tickets, never from the holder
     options.beforeAcquire?.() // test seam: runs between the placement and the attempt
     const taken = tryTakeLock(lockDir, holder, options.beforePublish)
     if (taken === true) return confirmAdmission(state, holder, place, options)
@@ -390,8 +407,12 @@ function pollQueue(state, options) {
   // First in line and the holder released between my attempt and this read: try again now.
   if (place.ahead === 0 && !current.held) return { again: true, place }
   // Only the head of the queue reclaims (acquisition also withdraws while reclaim.d exists, see tryTakeLock).
-  if (place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) return { again: true, place }
+  if (headReclaimed(place, current, root, lockDir, options)) return { again: true, place }
   return { place, current }
+}
+
+function headReclaimed(place, current, root, lockDir, options) {
+  return place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)
 }
 
 function acquisitionPriority(options, env) {
@@ -408,7 +429,7 @@ function acquisitionPriority(options, env) {
   return sandboxed && !options.root ? 'P1' : suiteLockPriority({ priority: explicit }, env)
 }
 
-export async function acquireSuiteLock(options = {}) {
+async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
   const priority = acquisitionPriority(options, env)
   throwIfAborted(options.signal)
@@ -437,7 +458,7 @@ export async function acquireSuiteLock(options = {}) {
   let lastHolderId = null
   let holderPriority
   mkdirSync(root, { recursive: true, mode: 0o700 })
-  const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority)
+  const record = waiterRecord(options, options.light === true ? null : ensureLightCounter(root), priority, p0QueueFields(root, priority))
   const ticket = await retryTransient(() => takeTicket(queueDir, record), HEAD_OF_QUEUE_POLL_MS)
   const state = { root, lockDir, queueDir, ticket, record }
 
@@ -501,6 +522,15 @@ export async function acquireSuiteLock(options = {}) {
   }
 }
 
+function inheritStaticLease(options, domain, id) {
+  acquisitionPriority(options, options.env ?? process.env)
+  throwIfAborted(options.signal)
+  return { inherited: true, holder: { leaseId: id }, domain }
+}
+
+const acquireJournalledSuiteLock = (options = {}) => acquireJournalLease(acquireSuiteLock, options, suiteLeaseDomain(options), coveredSuiteLease, inheritStaticLease)
+export { acquireJournalledSuiteLock as acquireSuiteLock }
+
 // A broker from an older release refuses the `light` field with its generic request refusal: retry
 // once without it (the run queues without priority) rather than fail a run only asking for priority.
 // The exact refusal text of a broker from before priority; the current broker's text extends it (and names `light`).
@@ -509,138 +539,43 @@ const OLDER_BROKER_REFUSAL = 'error argv must be an array of strings (only argv 
 const isOlderBrokerRefusal = (line) => line === OLDER_BROKER_REFUSAL || line.startsWith(`${OLDER_BROKER_REFUSAL};`)
 
 async function acquireBrokerSuiteLock(socketPath, options) {
-  if (options.light !== true) return requestBrokerSuiteLock(socketPath, options)
+  options = await negotiateSuiteOffload(socketPath, options, readBrokerSuiteLock)
+  if (options.light !== true && !options.offloadRequest) return requestBrokerSuiteLock(socketPath, options)
   try {
     return await requestBrokerSuiteLock(socketPath, options)
   } catch (error) {
     if (error?.code !== 'WT_SUITE_LOCK_BROKER_OLDER') throw error
-    process.stderr.write('wt-suite-lock: the lane broker is older and does not take priority requests; this run queues without priority\n')
-    return requestBrokerSuiteLock(socketPath, { ...options, light: false })
+    process.stderr.write(options.offloadRequest ? 'wt-suite-lock: the lane broker is older and does not take offload requests; this run queues locally\n' : 'wt-suite-lock: the lane broker is older and does not take priority requests; this run queues without priority\n')
+    const lease = await requestBrokerSuiteLock(socketPath, { ...options, light: false, offloadRequest: undefined })
+    // The grant is exclusive, whatever was requested: the run's watcher reads this, not the request.
+    return { ...lease, holder: { ...lease.holder, light: false } }
   }
 }
 
 // The light runs `pnpm typecheck|lint|quality` (and `-r typecheck`): the one small table lane runners
 // classify by, since a lane calls the runner with a bare command and no flags.
-const LIGHT_SCRIPTS = new Set(['typecheck', 'lint', 'quality'])
 // A lane `vitest run <file>` is NOT in the table on purpose: Vitest filters by substring, so a file-shaped
 // argument does not bound the selection, and the resolved config can enable coverage.
 
 export function lightRunCommand(argv) {
-  if (!Array.isArray(argv)) return false
-  const [tool, ...rest] = argv
-  if (tool !== 'pnpm' && tool !== 'npm') return false
-  if (rest[0] === 'run') rest.shift()
-  else if (tool === 'pnpm' && rest[0] === '-r') rest.shift()
-  return rest.length === 1 && LIGHT_SCRIPTS.has(rest[0])
+  return ['pnpm', 'npm'].includes(argv?.[0]) && staticRunCommand(argv) && !argv.at(-1).includes(':')
 }
 
 function requestBrokerSuiteLock(socketPath, options) {
-  const waitS = positiveSeconds(options.waitS ?? suiteLockWaitSeconds(options.env), '--wait-s')
-  throwIfAborted(options.signal)
-  return new Promise((resolve, reject) => {
-    const socket = connectSuiteLockBroker(socketPath)
-    let buffer = ''
-    let settled = false
-    let granted = false
-    let released = false
-    let resolveLost
-    let timer
-    let bestAhead = Infinity
-    let lastHolderId = null
-    let holderPriority
-    let notifyHandover = false
-    // Resolves with the REASON the granted lease was lost: the broker's own error text (its hold bound)
-    // when one arrives after the grant, 'broker gone' when the socket closes. The first reason wins.
-    // After a hold bound the socket stays OPEN: the broker releases the lock when it closes, which the
-    // holder does (releaseSuiteLock) only once its command tree has stopped.
-    const lost = new Promise((done) => { resolveLost = done })
-    const lose = (reason) => { if (!released) resolveLost(reason) }
-    const fail = (error) => {
-      socket.destroy()
-      if (settled) {
-        lose('broker gone')
-        return
-      }
-      settled = true
-      clearTimeout(timer)
-      options.signal?.removeEventListener?.('abort', abort)
-      reject(error)
-    }
-    // The broker enforces the no-progress budget; the client allows a transport/response margin
-    // so a zero-wait refusal still carries the broker's named holder rather than a blind timer.
-    const restartTimer = (seconds) => {
-      clearTimeout(timer)
-      timer = setTimeout(() => {
-        const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}: holder unknown; inspect with wt-suite-lock status`)
-        timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
-        fail(timeout)
-      }, seconds * 1000 + 2000)
-    }
-    restartTimer(waitS)
-    const abort = () => fail(abortError())
-    options.signal?.addEventListener?.('abort', abort, { once: true })
-    socket.once('connect', () => { if (!settled) socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS, ...(options.light === true ? { light: true } : {}) })}\n`) })
-    socket.on('data', (chunk) => {
-      buffer += String(chunk)
-      while (buffer.includes('\n')) {
-        const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
-        if (settled && !granted) { socket.destroy(); return }
-        if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
-        else if (isBrokerQueueEvent(line)) {
-          // Only the host's service-evidence renewal may renew at an unchanged/worse place.
-          const renewed = line.startsWith('renew ')
-          const place = brokerProgressPlace(line.slice(line.indexOf(' ') + 1))
-          if (!settled && place && (place.aheadExcludingRelease < bestAhead || notifyHandover || renewed)) {
-            const improved = place.aheadExcludingRelease < bestAhead
-            if (improved) bestAhead = place.aheadExcludingRelease
-            if (improved || renewed) restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
-            notifyHandover = false
-            options.onProgress?.(place)
-          }
-        }
-        else if (line.startsWith('handover ')) {
-          const [holderId, priority] = line.slice(9).split(' ')
-          if (!settled && /^[A-Za-z0-9-]{1,128}$/.test(holderId)) {
-            holderPriority = priority
-            if (holderId !== lastHolderId && (lastHolderId || priority === 'release')) {
-              restartTimer(waiterBudget(waitS, Math.max(waitS, DEFAULT_SUITE_LOCK_STALE_S), bestAhead, holderPriority))
-              notifyHandover = Boolean(lastHolderId)
-            }
-            lastHolderId = holderId
-          }
-        }
-        else if (line.startsWith('error ') && granted) lose(line.slice(6))
-        else if (line.startsWith('error ')) {
-          const error = new Error(`suite lock broker ${socketPath}: ${line.slice(6)}; inspect with wt-suite-lock status`)
-          if (line.includes('timed out waiting')) error.code = 'WT_SUITE_LOCK_TIMEOUT'
-          else if (options.light === true && isOlderBrokerRefusal(line)) error.code = 'WT_SUITE_LOCK_BROKER_OLDER'
-          // A saturated broker refuses a request it cannot queue: a named refusal, like a timeout (exit 75).
-          else if (line.startsWith('error busy: ')) error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
-          fail(error)
-        }
-        else if (line.startsWith('granted ') && !settled) {
-          settled = true; granted = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
-          resolve({ broker: socketPath, socket, holder: { leaseId: line.slice(8) }, lost, markReleased: () => { released = true } })
-        }
-      }
-    })
-    socket.once('error', (error) => fail(new Error(`suite lock broker ${socketPath}: ${error.message}`)))
-    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else lose('broker gone') })
-    if (options.signal?.aborted) fail(abortError())
-  })
+  return requestBrokerLease(socketPath, options, { positiveSeconds, suiteLockWaitSeconds, throwIfAborted, abortError,
+    waiterBudget, isOlderBrokerRefusal, staleS: DEFAULT_SUITE_LOCK_STALE_S })
 }
 
-export function releaseSuiteLock(lease) {
+export function releaseSuiteLock(lease, outcome = { exit: 0 }) {
   if (lease?.inherited) return true
   if (lease?.broker) {
-    lease.markReleased?.()
-    if (!lease.socket.destroyed) lease.socket.end()
-    return true
+    return finishBrokerLease(lease, outcome)
   }
   const current = readSuiteLock({ root: lease.root })
   if (!current.held) return true
   if (!sameInstance(current.holder, lease.holder)) return false
   rmSync(lease.lockDir, REMOVE_WITH_RETRY)
+  suiteJournalEvent(lease.journal, 'release', outcome)
   return true
 }
 
@@ -677,24 +612,35 @@ export function suiteLeaseDomain({ root, env = process.env, home, platform } = {
 
 export function suiteLeaseMarker(lease) {
   const domain = lease.domain ?? (lease.broker ? 'broker:' + lease.broker : lease.root)
-  return `${domain}|${lease.holder.leaseId}`
+  const token = lease.staticDomain ? `static:${lease.holder.leaseId}` : lease.holder.leaseId
+  return `${lease.staticDomain && !lease.broker ? path.dirname(domain) : domain}|${token}`
 }
 
-function coveredSuiteLease(env, domain) {
-  const marker = env.WT_SUITE_LEASE
+function suiteLeaseToken(marker, domain) {
   const prefix = `${domain}|`
   if (typeof marker !== 'string' || !marker.startsWith(prefix)) return null
-  const id = marker.slice(prefix.length)
-  if (!id) return null
-  if (domain.startsWith('broker:')) return id // The connection-owning ancestor stops its tree on loss.
+  const token = marker.slice(prefix.length)
+  const staticToken = token.startsWith('static:')
+  const id = staticToken ? token.slice(7) : token
+  return id ? { token, staticToken, id } : null
+}
+
+function coveredSuiteLease(env, domain, staticRequest) {
+  const parsed = suiteLeaseToken(env.WT_SUITE_LEASE, domain)
+  if (!parsed) return null
+  const { token, staticToken, id } = parsed
+  // The connection-owning ancestor stops its tree on loss. A typed static grant
+  // only covers static children; exclusive work must acquire the main queue.
+  if (domain.startsWith('broker:')) return staticToken && !staticRequest ? null : token
   if (readSuiteLock({ root: domain }).holder?.leaseId === id) return id
+  if (readSuiteLock({ root: staticLeaseRoot(domain) }).holder?.leaseId === id) return staticRequest ? `static:${id}` : null
   const error = new Error(`suite lease ${id} from WT_SUITE_LEASE is no longer held; inspect with wt-suite-lock status`)
   error.code = 'WT_SUITE_LOCK_UNAVAILABLE'
   throw error
 }
 
 export async function hasSuiteLeaseAsync(env = process.env, options = {}) {
-  return Boolean(coveredSuiteLease(env, suiteLeaseDomain({ ...options, env })))
+  return Boolean(coveredSuiteLease(env, suiteLeaseDomain({ ...options, env }), options.static === true && staticLaneEnabled(env)))
 }
 
 export function operatorReleaseSuiteLock(options = {}) {

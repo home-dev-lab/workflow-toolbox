@@ -4,17 +4,17 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
-import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
+import { MAX_CRITIC_ROUNDS, PHASES, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
-import { phaseLaunchPlan } from './lifecycle-launch.mjs'
+import { phaseLaunchPlan, readRegularFile } from './lifecycle-launch.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 import { createBoardClient } from './board-http-client.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryInstructions } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
 import { bindPilotDecision, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotBinding, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
@@ -25,7 +25,12 @@ import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 import { createAccountGate } from './sdk-account-check.mjs'
 import { phaseManifest, phaseOpener, phaseRules } from './pilot-phase-session.mjs'
 import { bindingDecisionsSection } from './lifecycle-dod-dispute.mjs'
-import { withRepositoryGuide as withGuidePointer } from './sdk-role-profile.mjs'
+import { assertCleanPilotStart } from './lifecycle-selection.mjs'
+import { resolveLifecycleGates } from './lifecycle-gates.mjs'
+import { validateParentWakeOptions, wakeCommandLine } from './pilot-parent-wake.mjs'
+import { configuredParentWakes, parentWakeEnvironment, recordParentWakeSummary } from './pilot-parent-wake-launch.mjs'
+import { hostAdapter } from './host/adapter.mjs'
+import { finalizePilotLifecycle, observeBlockedRun } from './pilot-blocked-run.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -46,13 +51,15 @@ const NEXT_BY_PHASE = {
   plan: `write the plan matching ${PLAN_SHAPE_DESCRIPTION}, then transition plan`,
   critic: `write the critic brief, run the critic lane, then transition critic; if critic round ${MAX_CRITIC_ROUNDS} requests blocking changes, transition with outcome changes-requested; the server routes a spent bound to report`,
   tdd: 'write the tdd brief, run the tdd lane, then transition tdd',
-  verify: 'run the three gates, then transition verify',
   review: 'write the review brief, run the review lane, then transition review; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
   refutation: 'write the refutation brief, run the refutation lane, then transition refutation; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
   report: 'write the pilot report, then transition report',
 }
 // The plan->critic edge refuses any other shape, so a route that plans learns it before its first plan, not from a refusal.
 const planShapeLine = (route) => (route === 'FULL' ? ` When you write the plan, it must match ${PLAN_SHAPE_DESCRIPTION}.` : '')
+const nextPhaseTask = (phase, root) => phase === 'verify'
+  ? `run every required gate ${[...resolveLifecycleGates(root)].join('|')}, then transition verify with outcome passed only when all exits are 0; for outcome failed supply canonical findings gate <name> EXIT=<actual exit> for required red gates or exact extracted failed-test names. Adapter detection or empty extraction cannot block attested gate recovery: use gate test EXIT=<actual exit> when names are unavailable. The runner carries every red gate, available failed-test names, and receipt paths to the TDD fix context`
+  : NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'
 const PLANKA_TOOLS = new Set([
   'mcp__planka__get_card',
   'mcp__planka__get_comments',
@@ -61,37 +68,30 @@ const PLANKA_TOOLS = new Set([
   'mcp__planka__move_card',
   'mcp__planka__add_label_to_card',
 ])
+const PILOT_VALUE_FLAGS = new Map([
+  ['--card', 'card'], ['--card-file', 'cardFile'], ['--dir', 'dir'], ['--profile-env', 'profileEnv'],
+  ['--contract', 'contract'], ['--board-contract', 'boardContract'], ['--mailbox', 'mailbox'],
+  ['--knowledge-base-index', 'knowledgeBaseIndex'], ['--archive-root', 'archiveRoot'],
+  ['--parent-session', 'parentSession'], ['--parent-mode', 'parentMode'], ['--parent-session-bare-reason', 'parentSessionBareReason'],
+])
 
-export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false }
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i]
-    if (arg === '--card') options.card = argv[++i] ?? null
-    else if (arg === '--card-file') options.cardFile = argv[++i] ?? null
-    else if (arg === '--dir') options.dir = argv[++i] ?? null
-    else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
-    else if (arg === '--expect-account') {
-      options.expectAccount = argv[++i] ?? null
-      if (!options.expectAccount?.trim() || options.expectAccount.startsWith('--')) return { error: '--expect-account requires an e-mail' }
-    }
-    else if (arg === '--contract') options.contract = argv[++i] ?? null
-    else if (arg === '--board-contract') options.boardContract = argv[++i] ?? null
-    else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
-    else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
-    else if (arg === '--archive-root') options.archiveRoot = argv[++i] ?? null
-    else if (arg === '--plugin-dir') {
-      const pluginDir = argv[++i] ?? ''
-      if (!isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
-      options.pluginDirs.push(resolve(pluginDir))
-    }
-    else if (arg === '--timeout') { options.timeout = Number(argv[++i]); options.timeoutExplicit = true }
-    else if (arg === '--hard') options.hard = true
-    else if (arg === '--help' || arg === '-h') return { help: true }
-    else return { error: `unknown argument: ${arg}` }
-  }
-  if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
-  if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
-  if (options.timeout !== null && (!Number.isFinite(options.timeout) || options.timeout <= 0)) return { error: '--timeout must be a positive number of seconds' }
+// A piece-test option: the run ends at the boundary leaving this phase. `report` is the end already.
+const STOP_AFTER_PHASES = PHASES.filter((phase) => phase !== 'report')
+
+// LITE goes discovery -> tdd and verify -> report (lifecycle-state-machine.mjs), so plan, critic, review and
+// refutation are never left: a stop there would let the whole run through without stopping.
+const ROUTE_LEAVES = Object.freeze({ LITE: Object.freeze(['discovery', 'tdd', 'verify']), FULL: STOP_AFTER_PHASES })
+
+function assertStopAfterReachable(route, stopAfter) {
+  if (stopAfter && !ROUTE_LEAVES[route].includes(stopAfter)) throw new Error(`--stop-after ${stopAfter} is never reached on the ${route} route; it leaves only these phases: ${ROUTE_LEAVES[route].join(', ')}`)
+}
+
+function assignStopAfter(options, value) {
+  options.stopAfter = value ?? null
+  if (!STOP_AFTER_PHASES.includes(options.stopAfter)) return { error: `--stop-after must be one of: ${STOP_AFTER_PHASES.join(', ')}` }
+}
+
+function resolvePilotPaths(options) {
   options.dir = resolve(options.dir)
   options.contract = resolve(options.contract ?? join(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md'))
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
@@ -100,6 +100,44 @@ export function parsePilotRunnerArgs(argv) {
   if (options.archiveRoot) options.archiveRoot = resolve(options.archiveRoot)
   if (options.boardContract) options.boardContract = resolve(options.boardContract)
   return options
+}
+
+function derivePilotRoute(cardText, options) {
+  const routing = deriveRoute(cardText)
+  assertStopAfterReachable(routing.route, options.stopAfter)
+  return routing
+}
+
+export function parsePilotRunnerArgs(argv) {
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, expectAccount: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false, stopAfter: null }
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    const valueKey = PILOT_VALUE_FLAGS.get(arg)
+    if (valueKey) options[valueKey] = argv[++i] ?? null
+    else if (arg === '--expect-account') {
+      options.expectAccount = argv[++i] ?? null
+      if (!options.expectAccount?.trim() || options.expectAccount.startsWith('--')) return { error: '--expect-account requires an e-mail' }
+    }
+    else if (arg === '--plugin-dir') {
+      const pluginDir = argv[++i] ?? ''
+      if (!isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
+      options.pluginDirs.push(resolve(pluginDir))
+    }
+    else if (arg === '--timeout') { options.timeout = Number(argv[++i]); options.timeoutExplicit = true }
+    else if (arg === '--stop-after') {
+      const error = assignStopAfter(options, argv[++i])
+      if (error) return error
+    }
+    else if (arg === '--hard') options.hard = true
+    else if (arg === '--help' || arg === '-h') return { help: true }
+    else return { error: `unknown argument: ${arg}` }
+  }
+  const parentError = validateParentWakeOptions(options)
+  if (parentError) return { error: parentError }
+  if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
+  if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
+  if (options.timeout !== null && (!Number.isFinite(options.timeout) || options.timeout <= 0)) return { error: '--timeout must be a positive number of seconds' }
+  return resolvePilotPaths(options)
 }
 
 export function loadBoardContract(value, readFile = readFileSync) {
@@ -235,11 +273,12 @@ function assertPilotInitReceipt(message, sdkRole) {
   if (missing.length > 0) throw new Error(RECEIPT_ERROR + JSON.stringify({ missingTools: missing, tools: initTools }))
 }
 
-function reconciledCostReport({ reportContent, cost, archive, report, dir }) {
+function reconciledCostReport({ reportContent, cost, archive, report, dir, parentWakes }) {
   if (reportContent.includes('<!-- run-cost -->')) {
     assertCostReportMatches({ report: reportContent, cost, reportPath: archive ? join(archive, 'pilot-report.md') : report, costPath: archive ? join(archive, 'cost.json') : join(dir, '.lane', 'cost.json') })
   }
-  return appendCostReport(reportContent, cost)
+  const wakeNote = parentWakes.length > 0 ? '\nParent wake usage: separately reported in summary.parent_wakes; excluded from pilot totals.\n' : ''
+  return appendCostReport(reportContent + wakeNote, cost)
 }
 
 function costPublicationFailure(error, archive, priorError, log) {
@@ -329,7 +368,7 @@ function describeExecutorVariants(models, env, defaultExecutor) {
   }))
 }
 // The request is lane-visible; the answer and binding are host-state records.
-function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {} }) {
+function parentDecisionChannel({ runId, stateFile, cli, log, root, wake, overrides = {} }) {
   const minutes = Math.ceil((overrides.waitMs ?? DOD_DECISION_WAIT_MS) / 60_000)
   const readDecisions = overrides.readDecisions ?? (() => readPilotDecisions(stateFile))
   const command = (suffix) => pilotDecisionCommand(cli, runId, process.execPath, root, undefined, suffix)
@@ -338,10 +377,11 @@ function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {
     onDecisionRequest: ({ criteria, requestId, deadline }) => {
       registerPilotDecisionRequest(stateFile, { requestId, criteria, deadline })
     },
-    onPublished: ({ file, criteria, requestId }) => {
+    onPublished: ({ file, criteria, requestId, deadline }) => {
       const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
       const answer = command(` --request '${requestId}' --dod <n> --reading <text>`)
       log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes within ${minutes} min (otherwise ${FALLBACK_RULE}):\n${answer}`)
+      wake.start({ runId, requestId, criteria, deadline, requestFile: file, command: wakeCommandLine(answer, hostAdapter.platform) })
     },
     rollbackDecisionRequest: ({ criteria, requestId }) => unregisterPilotDecisionRequest(stateFile, { criteria, requestId }),
     onBound: (dispute) => {
@@ -381,6 +421,19 @@ function announceDecisionBoundary(env, log) {
 
 function assertPluginDirs(pluginDirs) {
   if ((pluginDirs ?? []).some((pluginDir) => !isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
+}
+function assertRunnerOptions(options) {
+  assertPluginDirs(options.pluginDirs)
+  const error = validateParentWakeOptions(options)
+  if (error) throw new Error(error)
+}
+
+function pilotModelSetup({ options, effectiveEnv, env, profileEnv, exists, resolvePilotModels }) {
+  const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
+  const models = resolvePilotModels({ env, settingsEnv: profileEnv })
+  const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
+  const modelVariant = model.variant ?? resolveRoleVariant(options.hard ? 'sdkPilotHard' : 'sdkPilot', model.effective, { env, settingsEnv: profileEnv })
+  return { knowledgeBase, model, modelVariant }
 }
 
 function assertCardFile(cardFile) {
@@ -504,7 +557,7 @@ function continuationContent(runtime) {
   for (const dispute of binding) injectedDecisions.add(`${dispute.requestId}:${dispute.criterion}`)
   return lifecycleState.partial && phase === 'report'
     ? partialInstruction(lifecycleState.partial)
-    : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.${bindingNotice(binding)}`
+    : `The run is not complete: current phase ${phase}; next: ${nextPhaseTask(phase, runtime.options.dir)}. Continue.${bindingNotice(binding)}`
 }
 
 function continuationMessage(runtime, content) {
@@ -542,16 +595,18 @@ function mailboxOrDecision(runtime) {
 async function* phaseFollowUps(runtime, current) {
   const { exists, report, pastBoundary, sleep, lifecycleServer } = runtime
   while (phasePromptActive(runtime, current)) {
-    if (runtime.awaitingFidelityReceipt && exists(report)) { runtime.completed = true; return }
+    if (phaseFollowUpsEnded(runtime, current, exists, report)) return
     if (pastBoundary(current)) {
       if (boundaryPromptEnd(runtime, current)) return
       await sleep(POLL_MS)
       continue
     }
     await waitForPlanBinding(lifecycleServer)
+    if (observeBlockedRun(runtime, current)) return
     if (runtime.pendingTurnEnds > 0) {
       advanceContinuation(runtime)
       await waitForPlanBinding(lifecycleServer)
+      if (observeBlockedRun(runtime, current)) return
       const content = continuationContent(runtime)
       yield continuationMessage(runtime, content)
       if (runtime.incompleteReason) return
@@ -561,6 +616,11 @@ async function* phaseFollowUps(runtime, current) {
     if (message) yield message
     else await sleep(POLL_MS)
   }
+}
+
+function phaseFollowUpsEnded(runtime, current, exists, report) {
+  if (runtime.awaitingFidelityReceipt && exists(report)) { runtime.completed = true; return true }
+  return observeBlockedRun(runtime, current)
 }
 
 function recordSessionCall(current, record, messageId) {
@@ -690,14 +750,34 @@ function consumePhaseMessage(runtime, message, current) {
   if (message.type === 'result') consumePhaseResult(runtime, message, current)
 }
 
+// Every way a session ends past its boundary goes through here, so the next phase opens exactly once
+// and the designed close is logged once, whichever path reaches it first.
+function phaseHandOff(log) {
+  return (current, endedBy) => {
+    current.ended_by ??= endedBy
+    if (!current.handedOff) log(`phase session ${current.index} closed after phase ${current.phase} accepted`)
+    current.handedOff = true
+  }
+}
+
 function closeSessionError(runtime, current, sessionAbort, error) {
   const { handOff, log } = runtime
+  const detail = error instanceof Error ? error.message : String(error)
+  if (runtime.blockedStop && sessionAbort.signal.aborted) {
+    current.closing_error = detail
+    log(`blocked session ${current.index}: ${current.closing_error}`)
+    return
+  }
   // Only a runner-owned no-result abort or the SDK's boundary-interrupted result permits handoff.
   const ownAbort = current.ended_by === 'no_result' && sessionAbort.signal.aborted
-  if (!ownAbort && !current.interruptedResult) throw error
+  if (current.deniedAt === null || (!ownAbort && !current.interruptedResult)) {
+    // Startup failures retain the account gate's sanitized logging.
+    if (runtime.initReceiptSeen) log(`phase session ${current.index}: SDK stream error: ${detail}`)
+    throw error
+  }
+  current.closing_error = detail
+  // handOff logs the designed close once, whichever path reaches it first.
   if (!ownAbort) handOff(current, 'boundary-deny')
-  current.closing_error = error instanceof Error ? error.message : String(error)
-  log(`phase session ${current.index}: ${current.closing_error}`)
 }
 
 async function runPhaseSession(runtime, current, prompts, mcpServer) {
@@ -712,6 +792,7 @@ async function runPhaseSession(runtime, current, prompts, mcpServer) {
     const stream = await runtime.account.open(() => query({ prompt: runtime.account.gatePrompt(prompts), options: sessionQueryOptions(current, mcpServer, sessionAbort) }), abortController)
     for await (const message of stream) consumePhaseMessage(runtime, message, current)
     if (!runtime.initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
+    if (observeBlockedRun(runtime)) return
     // A stream ending after a result past the boundary hands off even without another prompt poll.
     if (!runtime.completed && current.resultAfterBoundary) handOff(current, boundaryEnd(current))
   } catch (error) {
@@ -725,18 +806,25 @@ async function runPhaseSession(runtime, current, prompts, mcpServer) {
   }
 }
 
-export async function runPilot(options, dependencies) {
-  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
+function pilotDependencies(dependencies) {
+  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync } = dependencies
+  return { query, resolvePilotModels, now, sleep, setTimer, clearTimer, env, writeFile, exists, readFile, ...pilotLifecycleDependencies(dependencies) }
+}
+
+function pilotLifecycleDependencies({ oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) }) {
+  return { oldLifecycleHook, lifecycleOptions, log }
+}
+
+function initializePilotConfiguration(context) {
+  let { options } = context
+  const { env, log, setTimer, clearTimer, exists, resolvePilotModels, readFile, dependencies } = context
   const profileEnv = loadProfileEnv(options.profileEnv)
-  assertPluginDirs(options.pluginDirs)
+  assertRunnerOptions(options)
   // One account gate per SDK query: every phase session spawns a CLI that reads the login again.
-  const accountGate = (retryUnavailable = false) => createAccountGate({ expectAccount: options.expectAccount, launchEnv: env, profileEnv, log, timers: { setTimer, clearTimer }, retryUnavailable })
-  let account = accountGate()
-  const effectiveEnv = { ...env, ...profileEnv }
-  const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
-  const models = resolvePilotModels({ env, settingsEnv: profileEnv })
-  const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
-  const modelVariant = model.variant ?? resolveRoleVariant(options.hard ? 'sdkPilotHard' : 'sdkPilot', model.effective, { env, settingsEnv: profileEnv })
+  const accountGate = (retryUnavailable = false) => createAccountGate({ expectAccount: context.options.expectAccount, launchEnv: env, profileEnv, log, timers: { setTimer, clearTimer }, retryUnavailable })
+  const account = accountGate()
+  const effectiveEnv = parentWakeEnvironment(options, { ...env, ...profileEnv }, dependencies, log)
+  const { knowledgeBase, model, modelVariant } = pilotModelSetup({ options, effectiveEnv, env, profileEnv, exists, resolvePilotModels })
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
   // called directly did not — the first real wave died on a `path` of undefined.
   const contractPath = options.contract ?? resolve(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md')
@@ -751,15 +839,19 @@ export async function runPilot(options, dependencies) {
   const cardText = readFile(options.cardFile, 'utf8')
   const boardContract = loadBoardContract(options.boardContract, readFile)
   assertCardDefinitionOfDone(cardText)
-  const routing = deriveRoute(cardText)
+  const routing = derivePilotRoute(cardText, options)
+  Object.assign(context, { options, profileEnv, accountGate, account, effectiveEnv, knowledgeBase, model,
+    modelVariant, contract, rules, systemPrompt, cardText, boardContract, routing })
+}
+
+function initializePilotRoute(context) {
+  let { options } = context
+  const { boardContract, routing, contract, log, dependencies, env, profileEnv, model, modelVariant, now, effectiveEnv } = context
   const contractWarning = missingBoardContractWarning(boardContract, routing.route, contract)
   if (contractWarning) log(contractWarning)
   const timeoutExplicit = options.timeoutExplicit === true
   const timeoutSeconds = options.timeout ?? ROUTE_TIMEOUTS[routing.route]
-  if (timeoutExplicit && timeoutSeconds < ROUTE_EXPECTED_SECONDS[routing.route]) {
-    const reference = routing.route === 'FULL' ? 'FULL runs here have taken up to 3 h 11' : 'LITE runs are budgeted for 1 h 30'
-    log(`warning: ${routing.route} timeout ${timeoutSeconds}s is below the route's expected duration; ${reference}`)
-  }
+  announcePilotTimeout(timeoutExplicit, timeoutSeconds, routing, log)
   options = { ...options, timeout: timeoutSeconds, timeoutExplicit }
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
   log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} variant=${modelVariant.value} variant_origin=${modelVariant.origin} executor=${executorProfile.executor}${executorProfile.executors ? ' executors=' + Object.entries(executorProfile.executors).map(([role, family]) => role + ':' + family).join(',') : ''}`)
@@ -776,38 +868,31 @@ export async function runPilot(options, dependencies) {
   announceDecisionBoundary(effectiveEnv, log)
   const decisionStateFile = initializePilotDecisionStore(runId, decisionStoreOptions)
   const decisionCli = pilotDecisionCli()
-  const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
-  const turns = []
-  const messages = []
-  const modelUsage = {}
-  const transcript = []
-  const tools = []
-  let turnTools = []
-  let mailboxLines = 0
-  const injectedDecisions = new Set()
-  let completed = false
-  let injectedTurns = 0
-  let silenceInjections = 0
-  let pendingTurnEnds = 0
-  let consecutiveContinuations = 0
-  let acceptedLifecycleResults = 0
-  let acceptedAtLastContinuation = 0
-  let incompleteReason = null
-  let longestToolCall = null
-  const startedTools = new Map()
-  let streamIndex = 0
-  let lastAssistantUsageIndex = -1
-  let lastResultIndex = -1
-  const lifecycleCalls = new Map()
-  let awaitingFidelityReceipt = false
-  let initReceiptSeen = false
-  let servedModel
-  let servedModelFirstTurn
-  let firstAssistantSeen = false
-  let streamError = null
-  let sdkStreamError = null
-  let timeoutBoundary = null
-  let graceAborted = false
+  Object.assign(context, { options, executorProfile, report, usagePath, summaryPath, transcriptPath, started,
+    runId, defaultDecisionStateRoot, decisionStateRoot, decisionStateFile, decisionCli })
+}
+
+function announcePilotTimeout(timeoutExplicit, timeoutSeconds, routing, log) {
+  if (timeoutExplicit && timeoutSeconds < ROUTE_EXPECTED_SECONDS[routing.route]) {
+    const reference = routing.route === 'FULL' ? 'FULL runs here have taken up to 3 h 11' : 'LITE runs are budgeted for 1 h 30'
+    log(`warning: ${routing.route} timeout ${timeoutSeconds}s is below the route's expected duration; ${reference}`)
+  }
+}
+
+function initialPilotState() {
+  return {
+    totals: { input: 0, cache_creation: 0, cache_read: 0, output: 0 }, turns: [], messages: [], modelUsage: {}, transcript: [], tools: [],
+    turnTools: [], mailboxLines: 0, injectedDecisions: new Set(), completed: false, injectedTurns: 0, silenceInjections: 0,
+    pendingTurnEnds: 0, consecutiveContinuations: 0, acceptedLifecycleResults: 0, acceptedAtLastContinuation: 0,
+    incompleteReason: null, blockedStop: null, longestToolCall: null, startedTools: new Map(), streamIndex: 0,
+    lastAssistantUsageIndex: -1, lastResultIndex: -1, lifecycleCalls: new Map(), awaitingFidelityReceipt: false,
+    initReceiptSeen: false, servedModel: undefined, servedModelFirstTurn: undefined, firstAssistantSeen: false,
+    streamError: null, sdkStreamError: null, timeoutBoundary: null, graceAborted: false,
+  }
+}
+
+function initializePilotSdk(context) {
+  const { options, dependencies, effectiveEnv, log, exists, report, oldLifecycleHook } = context
   const pluginRoot = resolve(MODULE_DIR, '../..')
   const configuredPlugins = options.pluginDirs ?? []
   const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, loadedCodePaths: dependencies.loadedCodePaths, adapterOptions: { log } })
@@ -815,12 +900,18 @@ export async function runPilot(options, dependencies) {
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
   // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
-  if (exists(report)) throw new Error(`SDK pilot preflight failed: ${report} already exists; a stale report would satisfy completion`)
+  assertCleanPilotStart(options.dir); if (exists(report)) throw new Error(`SDK pilot preflight failed: ${report} already exists; a stale report would satisfy completion`)
   if (exists(oldLifecycleHook ?? join(pluginRoot, 'hooks-modules', 'sdk-pilot-lifecycle'))) throw new Error('SDK pilot preflight failed: old lifecycle hook is still present')
   // `.lane/` (a directory pattern) only matches an EXISTING directory: create it before asking git,
   // or a fresh worktree fails the preflight (real wave a2adf9e2).
   mkdirSync(join(options.dir, '.lane'), { recursive: true })
   try { execFileSync('git', ['check-ignore', '.lane'], { cwd: options.dir, stdio: 'ignore' }) } catch { throw new Error('SDK pilot preflight failed: .lane must be git-ignored') }
+  Object.assign(context, { pluginRoot, sdkRole })
+  initializePilotBoard(context)
+}
+
+function initializePilotBoard(context) {
+  const { effectiveEnv, dependencies, boardContract } = context
   const boardUrl = resolveWorkflowToolboxOption('planka_mcp_url', { env: effectiveEnv }).value
   const board = dependencies.board ?? (boardContract && boardUrl ? createBoardClient({ url: boardUrl, boardId: boardContract.boardId }) : null)
   const routeFinding = boardContract
@@ -829,86 +920,115 @@ export async function runPilot(options, dependencies) {
       : async () => { throw new Error('board unavailable: planka_mcp_url is not configured') }
     : null
   const resolveRoutedFinding = boardContract && board && typeof board.resolveRoutedCard === 'function' ? (card) => board.resolveRoutedCard(card) : null
+  Object.assign(context, { boardUrl, routeFinding, resolveRoutedFinding })
+}
+
+function initializePilotLifecycle(context) {
+  const { options, query, effectiveEnv, accountGate, log, dependencies, runId, decisionStateFile, decisionCli,
+    decisionStateRoot, defaultDecisionStateRoot, env, lifecycleOptions, routing, executorProfile, profileEnv,
+    knowledgeBase, cardText, rules, boardContract, routeFinding, resolveRoutedFinding, sdkRole, state, now } = context
   const abortController = new AbortController()
-  let timeoutGraceTimer = null
+  const parentWakes = configuredParentWakes(options, { query, env: effectiveEnv, accountGate, log, now }, dependencies)
+  context.timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
-  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, wake: parentWakes, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, stopAfterPhase: options.stopAfter, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { state.timeoutBoundary = stopped; state.incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const phaseSessions = []
+  Object.assign(context, { abortController, parentWakes, archiveRoot, lifecycleServer, phaseSessions })
+}
+
+function initializePilotUsage(context) {
+  const { phaseSessions, state, usagePath, writeFile } = context
+  const { messages, totals, modelUsage, turns, tools } = state
   // A session aborted after assistant usage but before its result leaves usage no result covers.
-  const usageUnclosed = () => lastAssistantUsageIndex > lastResultIndex || phaseSessions.some((item) => item.uncovered && item.ended_by === 'no_result')
+  const usageUnclosed = () => state.lastAssistantUsageIndex > state.lastResultIndex || phaseSessions.some((item) => item.uncovered && item.ended_by === 'no_result')
   const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: usageEvidence(messages, totals, turns.length, usageUnclosed()).fresh_tokens, tool_names: [...new Set(tools)] })
   const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)
+  Object.assign(context, { usageUnclosed, currentUsage, persistUsage })
+}
+
+function initializePilotTimeout(context) {
+  const { setTimer, lifecycleServer, state, log, abortController, options } = context
   const timeoutTimer = setTimer(() => {
     if (lifecycleServer.requestStop('timeout')) {
-      incompleteReason = 'timeout'
+      state.incompleteReason = 'timeout'
       log(`timeout requested; waiting up to ${TIMEOUT_BOUNDARY_GRACE_MS / 60_000} min for the ${lifecycleServer.state().phase} phase boundary`)
-      timeoutGraceTimer = setTimer(() => {
-        if (!timeoutBoundary) {
+      context.timeoutGraceTimer = setTimer(() => {
+        if (!state.timeoutBoundary) {
           log('timeout boundary grace elapsed; aborting the SDK run')
-          graceAborted = true
+          state.graceAborted = true
           abortController.abort()
         }
       }, TIMEOUT_BOUNDARY_GRACE_MS)
     }
   }, options.timeout * 1000)
+  context.timeoutTimer = timeoutTimer
+}
 
-  async function* prompt() {
+async function* pilotPrompt(context) {
+    const { sdkRole, options, knowledgeBase, routing, cardText } = context
     const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${GROUNDING_INITIAL_PROMPT} ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.${planShapeLine(routing.route)}`
-    yield { type: 'user', message: { role: 'user', content: withRepositoryGuide(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
-    yield* phaseFollowUps(phaseRuntime, session)
-  }
+    yield { type: 'user', message: { role: 'user', content: withRepositoryInstructions(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
+    yield* phaseFollowUps(context.phaseRuntime, context.session)
+}
 
   // One SDK query per lifecycle phase (card: phase sessions). A session is bound to the phase it opened in; once the
   // lifecycle has left that phase, the session gets nothing more, its next tool call is denied with an interrupt,
   // and at its turn end the runner opens the live phase in a fresh query primed with a runner-built opener.
-  const accountSessions = []
-  const deliveredNotes = []
-  let session = null
+function initializePilotSessions(context) {
+  const { lifecycleServer, log } = context
+  context.accountSessions = []
+  context.deliveredNotes = []
+  context.session = null
   const pastBoundary = (current) => {
     const phase = lifecycleServer.state().phase
     return phase !== current.phase && phase !== 'awaiting_fidelity'
   }
-  // Every way a session ends past its boundary goes through here, so the next phase opens exactly once.
-  const handOff = (current, endedBy) => {
-    current.ended_by ??= endedBy
-    current.handedOff = true
-  }
+  const handOff = phaseHandOff(log)
   const boundaryEnd = (current) => (current.deniedAt === null ? 'turn-end' : 'boundary-deny')
-  function openSession() {
+  Object.assign(context, { pastBoundary, handOff, boundaryEnd })
+}
+
+function openPilotSession(context) {
+    const { lifecycleServer, phaseSessions, now, state } = context
     const timeline = lifecycleServer.timeline()
-    session = { index: phaseSessions.length + 1, phase: lifecycleServer.state().phase, round: timeline.phases.at(-1)?.round ?? null, started_at: new Date(now()).toISOString(), ended_at: null, ended_by: null, calls: 0, first_call: null, last_call: null, last_message_id: null, late_turn_ends: 0, noResultTimer: null, resultAfterBoundary: false, interruptedResult: false, uncovered: false, calls_after_boundary: [], denied_after_boundary: [], permission_denials: 0, terminal_reason: null, model_usage: {}, handedOff: false, deniedAt: null, closed: false, abort: () => {} }
+    const session = { index: phaseSessions.length + 1, phase: lifecycleServer.state().phase, round: timeline.phases.at(-1)?.round ?? null, started_at: new Date(now()).toISOString(), ended_at: null, ended_by: null, calls: 0, first_call: null, last_call: null, last_message_id: null, late_turn_ends: 0, noResultTimer: null, resultAfterBoundary: false, interruptedResult: false, uncovered: false, calls_after_boundary: [], denied_after_boundary: [], permission_denials: 0, terminal_reason: null, model_usage: {}, handedOff: false, deniedAt: null, closed: false, abort: () => {} }
+    context.session = session
     phaseSessions.push(session)
-    pendingTurnEnds = 0
-    consecutiveContinuations = 0
-    acceptedAtLastContinuation = acceptedLifecycleResults
+    state.pendingTurnEnds = 0
+    state.consecutiveContinuations = 0
+    state.acceptedAtLastContinuation = state.acceptedLifecycleResults
     return session
-  }
+}
 
   // The first message of a later phase session: what that phase needs, never the earlier conversation.
-  function phaseOpening(current) {
+function pilotPhaseOpening(context, current) {
+    const { lifecycleServer, state: { injectedDecisions }, deliveredNotes, options, cardText, sdkRole, knowledgeBase } = context
     const lifecycleState = lifecycleServer.state()
     const ledger = lifecycleServer.ledger()
     for (const dispute of ledger.dodDisputes.filter((item) => item.resolution)) injectedDecisions.add(`${dispute.requestId}:${dispute.criterion}`)
     const notes = deliveredNotes.length > 0 ? `## Mailbox notes delivered earlier in this run\n\n${deliveredNotes.map((note) => `${MAILBOX_PREFIX}${note}`).join('\n\n')}` : ''
     const notice = [lifecycleState.partial && current.phase === 'report' ? partialInstruction(lifecycleState.partial) : '', bindingDecisionsSection(ledger.dodDisputes).trim(), notes].filter(Boolean).join('\n\n')
     const content = phaseOpener({
-      cardId: options.card, dir: options.dir, cardText, phase: current.phase, task: NEXT_BY_PHASE[current.phase] ?? 'continue the lifecycle',
+      cardId: options.card, dir: options.dir, cardText, phase: current.phase, task: nextPhaseTask(current.phase, options.dir),
       lspLine: sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`, knowledgeBasePath: knowledgeBase.path,
       manifest: phaseManifest({ phase: current.phase, laneDir: join(options.dir, '.lane'), ledger, timeline: lifecycleServer.timeline() }),
       rules: phaseRules(lifecycleServer.acceptedTransitions(), current.phase), notice,
     })
-    return { type: 'user', message: { role: 'user', content: withGuidePointer(options.dir, content) } }
-  }
-  async function* phasePrompt(current) {
+    return { type: 'user', message: { role: 'user', content: withRepositoryInstructions(options.dir, content) } }
+}
+async function* pilotPhasePrompt(context, current) {
+    const { lifecycleServer, phaseRuntime } = context
     // A plan session never opens on an unbound DoD dispute: the opener carries the binding.
     await waitForPlanBinding(lifecycleServer)
-    yield phaseOpening(current)
+    yield pilotPhaseOpening(context, current)
     yield* phaseFollowUps(phaseRuntime, current)
-  }
+}
 
-  const sessionQueryOptions = (current, mcpServer, sessionAbort) => composeSdkRoleQueryOptions({
+function pilotSessionQueryOptions(context, current, mcpServer, sessionAbort) {
+  const { model, modelVariant, systemPrompt, options, boardUrl, effectiveEnv, sdkRole } = context
+  return composeSdkRoleQueryOptions({
     model: model.value,
     effort: modelVariant.value,
     systemPrompt,
@@ -917,7 +1037,15 @@ export async function runPilot(options, dependencies) {
     cwd: options.dir,
     // No Planka endpoint configured means no board tools, never a guessed local port.
     mcpServers: { ...(boardUrl ? { planka: { type: 'http', url: boardUrl } } : {}), [LIFECYCLE_MCP_KEY]: mcpServer },
-    canUseTool: async (toolName, input) => {
+    canUseTool: async (toolName, input) => pilotSessionPermission(context, current, toolName, input),
+    permissionMode: 'default',
+    env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+    abortController: sessionAbort,
+  }, sdkRole)
+}
+
+function pilotSessionPermission(context, current, toolName, input) {
+       const { pastBoundary, now, setTimer, handOff, lifecycleServer, options, knowledgeBase, sdkRole } = context
       if (pastBoundary(current)) {
         if (current.deniedAt === null) {
           current.deniedAt = now()
@@ -932,87 +1060,112 @@ export async function runPilot(options, dependencies) {
         return { behavior: 'deny', message: `session boundary: the lifecycle left phase ${current.phase}; phase ${lifecycleServer.state().phase} runs in a fresh session. End your turn now.`, interrupt: true }
       }
       return lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path, profile: sdkRole.profile })
-    },
-    permissionMode: 'default',
-    env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
-    abortController: sessionAbort,
-  }, sdkRole)
+}
 
+function initializePilotRuntime(context) {
+  const { model, effectiveEnv, query, now, sleep, exists, readFile, writeFile, log, options, report, sdkRole,
+    lifecycleServer, deliveredNotes, pastBoundary, handOff, boundaryEnd, phaseSessions, persistUsage,
+    abortController, clearTimer, accountSessions, state } = context
+  const { injectedDecisions, messages, totals, modelUsage, turns, tools, transcript, startedTools, lifecycleCalls } = state
+  const sessionQueryOptions = (...args) => pilotSessionQueryOptions(context, ...args)
   const modelTracker = createModelTracker(model.value, effectiveEnv)
   // Accessors share the runner's live state without changing callback receivers or async boundaries.
   const phaseRuntime = {
-    query, now, sleep, exists, readFile, log, options, report, sdkRole, model, modelTracker,
+    query, now, sleep, exists, readFile, writeFile, log, options, report, sdkRole, model, modelTracker,
     lifecycleServer, injectedDecisions, deliveredNotes, pastBoundary, handOff, boundaryEnd,
     messages, totals, modelUsage, phaseSessions, turns, tools, transcript, startedTools, lifecycleCalls, persistUsage,
-    sessionQueryOptions, abortController, clearTimer, accountSessions,
-    get account() { return account },
-    get timeoutBoundary() { return timeoutBoundary },
-    get completed() { return completed }, set completed(value) { completed = value },
-    get awaitingFidelityReceipt() { return awaitingFidelityReceipt }, set awaitingFidelityReceipt(value) { awaitingFidelityReceipt = value },
-    get pendingTurnEnds() { return pendingTurnEnds }, set pendingTurnEnds(value) { pendingTurnEnds = value },
-    get acceptedLifecycleResults() { return acceptedLifecycleResults }, set acceptedLifecycleResults(value) { acceptedLifecycleResults = value },
-    get acceptedAtLastContinuation() { return acceptedAtLastContinuation }, set acceptedAtLastContinuation(value) { acceptedAtLastContinuation = value },
-    get consecutiveContinuations() { return consecutiveContinuations }, set consecutiveContinuations(value) { consecutiveContinuations = value },
-    get injectedTurns() { return injectedTurns }, set injectedTurns(value) { injectedTurns = value },
-    get incompleteReason() { return incompleteReason }, set incompleteReason(value) { incompleteReason = value },
-    get mailboxLines() { return mailboxLines }, set mailboxLines(value) { mailboxLines = value },
-    get streamIndex() { return streamIndex }, set streamIndex(value) { streamIndex = value },
-    get initReceiptSeen() { return initReceiptSeen }, set initReceiptSeen(value) { initReceiptSeen = value },
-    get servedModel() { return servedModel }, set servedModel(value) { servedModel = value },
-    get firstAssistantSeen() { return firstAssistantSeen }, set firstAssistantSeen(value) { firstAssistantSeen = value },
-    get servedModelFirstTurn() { return servedModelFirstTurn }, set servedModelFirstTurn(value) { servedModelFirstTurn = value },
-    get lastAssistantUsageIndex() { return lastAssistantUsageIndex }, set lastAssistantUsageIndex(value) { lastAssistantUsageIndex = value },
-    get lastResultIndex() { return lastResultIndex }, set lastResultIndex(value) { lastResultIndex = value },
-    get turnTools() { return turnTools }, set turnTools(value) { turnTools = value },
-    get longestToolCall() { return longestToolCall }, set longestToolCall(value) { longestToolCall = value },
+    sessionQueryOptions, abortController, clearTimer, accountSessions, readBlockedFile: readRegularFile, writeBlockedFile: (file, content) => atomicWrite(file, content, writeFile),
+    get account() { return context.account },
+    get timeoutBoundary() { return state.timeoutBoundary },
   }
+  bindPilotRuntimeState(phaseRuntime, state)
+  Object.assign(context, { modelTracker, phaseRuntime })
+}
+
+function bindPilotRuntimeState(runtime, state) {
+  const fields = ['completed', 'awaitingFidelityReceipt', 'pendingTurnEnds', 'acceptedLifecycleResults',
+    'acceptedAtLastContinuation', 'consecutiveContinuations', 'injectedTurns', 'incompleteReason', 'blockedStop',
+    'mailboxLines', 'streamIndex', 'initReceiptSeen', 'servedModel', 'firstAssistantSeen', 'servedModelFirstTurn',
+    'lastAssistantUsageIndex', 'lastResultIndex', 'turnTools', 'longestToolCall']
+  for (const field of fields) Object.defineProperty(runtime, field, {
+    enumerable: true, configurable: true, get: () => state[field], set: (value) => { state[field] = value },
+  })
+}
+
+async function executePilotSessions(context) {
+  const { phaseRuntime, lifecycleServer, accountGate, log, state, clearTimer, timeoutTimer, parentWakes, modelTracker } = context
   try {
-    await runPhaseSession(phaseRuntime, openSession(), prompt(), lifecycleServer)
-    while (session.handedOff && !completed && !timeoutBoundary && !incompleteReason) {
-      account = accountGate(true)
-      const next = openSession()
+    await runPhaseSession(phaseRuntime, openPilotSession(context), pilotPrompt(context), lifecycleServer)
+    while (context.session.handedOff && !state.completed && !state.timeoutBoundary && !state.incompleteReason) {
+      context.account = accountGate(true)
+      const next = openPilotSession(context)
       log(`phase session ${next.index}: ${next.phase}`)
-      await runPhaseSession(phaseRuntime, next, phasePrompt(next), lifecycleServer.sessionServer(next.index))
+      await runPhaseSession(phaseRuntime, next, pilotPhasePrompt(context, next), lifecycleServer.sessionServer(next.index))
     }
   } catch (error) {
+    const { timeoutBoundary, graceAborted, initReceiptSeen, incompleteReason } = state
     const failure = classifyStreamFailure(error, { timeoutBoundary, graceAborted, initReceiptSeen, incompleteReason })
-    sdkStreamError = failure.sdkStreamError
+    state.sdkStreamError = failure.sdkStreamError
     if (timeoutBoundary || graceAborted) {
-      streamError = failure.streamError
-      incompleteReason = failure.incompleteReason
+      state.streamError = failure.streamError
+      state.incompleteReason = failure.incompleteReason
     } else {
       // Outside a timeout the account gate owns the outcome: a refusal is not rethrown and names the account;
       // any other error keeps the classification above (rethrown, "sdk stream error" once init was seen).
-      streamError = account.errorToRethrow(error)
-      incompleteReason = await account.reasonAfterError(error, { initReceiptSeen, incompleteReason })
+      state.streamError = context.account.errorToRethrow(error)
+      state.incompleteReason = await context.account.reasonAfterError(error, { initReceiptSeen, incompleteReason })
     }
   } finally {
     for (const warning of modelWarnings(modelTracker.result(), { name: 'pilot' })) log(warning)
     clearTimer(timeoutTimer)
-    if (timeoutGraceTimer !== null) clearTimer(timeoutGraceTimer)
+    if (context.timeoutGraceTimer !== null) clearTimer(context.timeoutGraceTimer)
+    await parentWakes.finish()
   }
+  return finalizePilotRun(context)
+}
+
+function finalizePilotRun(context) {
+  const { phaseRuntime, currentUsage, exists, report, lifecycleServer, model, now, state } = context
+  const { awaitingFidelityReceipt, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen } = state
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
+   observeBlockedRun(phaseRuntime)
    const usage = currentUsage()
   const completedNormally = awaitingFidelityReceipt && exists(report)
-  let finalizationError = null
-  if (!completedNormally) {
-    try { lifecycleServer.finalizePartial(incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt') } catch (error) { finalizationError = error }
-  }
-  let lifecycleSummary = {}
-  try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
+  const finalized = finalizePilotLifecycle(phaseRuntime, completedNormally)
+  context.finalizationError = finalized.error
+  const lifecycleSummary = finalized.summary
   const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
+  Object.assign(context, { usage, completedNormally, lifecycleSummary, partial, deferred, servedModelAgreementValue, ended })
+  publishPilotSummary(context)
+  computePilotCost(context)
+  publishPilotCost(context)
+  return finishPilotRun(context)
+}
+
+function publishPilotSummary(context) {
+  const { lifecycleSummary, routing, options, started, ended, partial, deferred, usageUnclosed, model, modelVariant,
+    executorProfile, env, profileEnv, lifecycleServer, servedModelAgreementValue, account, exists, report, completedNormally,
+    phaseSessions, accountSessions, parentWakes, usagePath, usage, writeFile, summaryPath, transcriptPath, boardContract, state } = context
+  const { messages, totals, turns, injectedTurns, silenceInjections, longestToolCall, startedTools, sdkStreamError,
+    servedModel, servedModelFirstTurn, awaitingFidelityReceipt, incompleteReason, transcript } = state
    const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, ...usageEvidence(messages, totals, turns.length, usageUnclosed()), injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, ...toolCallFields(longestToolCall, startedTools, ended), budget: budgetReceipt(started, ended, options.timeout), sdk_stream_error: sdkStreamError, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }, executorProfile.executor), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, account: account.summary(), report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   // One SDK query per lifecycle phase: each session's own calls, how it ended, and its account verdict.
   summary.phase_sessions = phaseSessions.map((item) => ({ session: item.index, ...Object.fromEntries(PHASE_SESSION_FIELDS.map((field) => [field, item[field] ?? null])) }))
   summary.handoffs = phaseSessions.filter((item) => item.handedOff).length
   summary.account_sessions = accountSessions
+  recordParentWakeSummary(summary, parentWakes, options)
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
   writeWorktreeRetentionMarker({ root: options.dir, cardId: options.card, partial, boardId: boardContract?.boardId ?? null, retainedAt: new Date(ended).toISOString() })
+  context.summary = summary
+}
+
+function computePilotCost(context) {
+  const { options, started, ended, routing, dependencies, summary } = context
   let cost
   try {
     cost = computeRunCost({ laneDir: join(options.dir, '.lane'), worktree: options.dir, startedAt: started, endedAt: ended, route: options.hard ? 'HARD' : routing.route, ...(dependencies.costSessions === undefined ? {} : { sessions: dependencies.costSessions }) })
@@ -1020,6 +1173,12 @@ export async function runPilot(options, dependencies) {
     cost = unknownRunCost({ route: options.hard ? 'HARD' : routing.route, worktree: options.dir, reason: `cost computation failed: ${error instanceof Error ? error.message : String(error)}` })
   }
   summary.cost = summaryCost(cost)
+  context.cost = cost
+}
+
+function publishPilotCost(context) {
+  const { cost, writeFile, options, summaryPath, summary, exists, report, readFile, modelVariant, lifecycleSummary,
+    parentWakes, usage, state: { transcript }, log } = context
   try {
     const costContent = `${JSON.stringify(cost, null, 2)}\n`
     writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
@@ -1027,7 +1186,7 @@ export async function runPilot(options, dependencies) {
     let costReport = null
     if (exists(report)) {
       const reportContent = `${readFile(report, 'utf8').trimEnd()}\n\nvariant=${modelVariant.value} origin=${modelVariant.origin} forced=false\n`
-      costReport = reconciledCostReport({ reportContent, cost, archive: lifecycleSummary.archive?.path, report, dir: options.dir })
+      costReport = reconciledCostReport({ reportContent, cost, archive: lifecycleSummary.archive?.path, report, dir: options.dir, parentWakes: parentWakes.receipts })
       writeFile(report, costReport)
     }
     const archive = lifecycleSummary.archive?.path
@@ -1039,12 +1198,32 @@ export async function runPilot(options, dependencies) {
       if (costReport !== null) writeFile(join(archive, 'pilot-report.md'), costReport)
     }
   } catch (error) {
-    finalizationError = costPublicationFailure(error, lifecycleSummary.archive?.path, finalizationError, log)
+    context.finalizationError = costPublicationFailure(error, lifecycleSummary.archive?.path, context.finalizationError, log)
   }
+}
+
+function finishPilotRun(context) {
+  const { archiveRoot, runId, options, routing, cost, started, ended, lifecycleSummary, log, model,
+    state: { servedModel, streamError }, usage, summary, completedNormally, partial, deferred } = context
+  let { finalizationError } = context
   const costIndexError = appendCostIndex({ archiveRoot, runId, card: options.card, route: options.hard ? 'HARD' : routing.route, cost, started, ended, archive: lifecycleSummary.archive?.path, log })
   finalizationError ||= costIndexError
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   if (finalizationError) throw finalizationError
   if (streamError) throw streamError
   return { usage, summary, exitCode: completedPilotExitCode(completedNormally, partial, deferred) }
+}
+
+export async function runPilot(options, dependencies) {
+  const context = { options, dependencies, ...pilotDependencies(dependencies) }
+  initializePilotConfiguration(context)
+  initializePilotRoute(context)
+  context.state = initialPilotState()
+  initializePilotSdk(context)
+  initializePilotLifecycle(context)
+  initializePilotUsage(context)
+  initializePilotTimeout(context)
+  initializePilotSessions(context)
+  initializePilotRuntime(context)
+  return executePilotSessions(context)
 }

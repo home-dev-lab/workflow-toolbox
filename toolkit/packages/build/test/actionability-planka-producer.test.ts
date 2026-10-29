@@ -311,7 +311,7 @@ describe('actionability-planka-producer-core', () => {
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
     expect(res.status).toBe(0)
-    expect(JSON.parse(res.stdout)).toEqual({ count: 12, offsets: [0, 10] })
+    expect(JSON.parse(res.stdout)).toEqual({ count: 12, offsets: [0] })
   })
 
   it('computeSnapshot: counts a card actionable only when every dependency resolves to Done, and names its scope', () => {
@@ -909,7 +909,7 @@ describe('producer output is consumable by the real consumer decide()', () => {
     }, env)
 
     expect(consumer.status).toBe(0)
-    const additionalContext = JSON.parse(consumer.stdout).hookSpecificOutput.additionalContext as string
+    const additionalContext = JSON.parse(consumer.stdout).systemMessage as string
     expect(additionalContext).toContain('payload-diverted-or-too-large')
     expect(additionalContext).toContain(`node "${REFRESH_CLI}"`)
     expect(additionalContext).not.toContain('wire the producer')
@@ -964,7 +964,7 @@ describe('shipped dependency parser and gate (regression locks)', () => {
     runProducerHook({ hook_event_name: 'PostToolUse', tool_name: 'mcp__planka__get_board',
       tool_input: { boardId: 'b1' }, tool_response: { content: [{ type: 'text', text: 'not JSON' }] }, cwd: project.cwd }, project.env)
     expect(readProjectState(project.stateDir, project.cwd)?.lastReason).toBe('payload-unparseable')
-    const text = JSON.parse(stop(project, 'shipped-t5')).hookSpecificOutput.additionalContext as string
+    const text = JSON.parse(stop(project, 'shipped-t5')).systemMessage as string
     expect(text).toContain('payload-unparseable')
     expect(text.split(`node "${REFRESH_CLI}"`)).toHaveLength(2)
     expect(text).not.toContain('could not read the board')
@@ -1015,21 +1015,20 @@ describe('shipped dependency parser and gate (regression locks)', () => {
     expect(readFailureRecords(project.stateDir).at(-1)?.detail).toContain('descriptions are missing')
   })
 
-  // Root ignores file modes, so a read-only file does not make the write fail there.
-  it.skipIf(process.getuid?.() === 0)('C3: a snapshot file that cannot be written records snapshot-write-failed, and the hold names that file (skipped as root: root ignores the read-only mode)', () => {
+  // Windows read-only replacement differs; the failing-rename seam is locked separately.
+  it.skipIf(process.platform === 'win32')('C3: POSIX atomic rename can replace a read-only previous snapshot', () => {
     const project = scaffoldProject('c3-snapshot-dir', { withParser: false })
     const snapshotFile = join(project.stateDir, `${slug(project.cwd)}.json`)
-    // An older, read-only snapshot: the producer's write fails for real (EACCES), and the gate can still
-    // read the old file, so the hold is rendered from the recorded failure.
+    // Atomic replacement needs a writable parent, rather than write access to the old file.
     mkdirSync(project.stateDir, { recursive: true })
     writeFileSync(snapshotFile, JSON.stringify({ at: Date.now() - 3 * 60 * 60_000, actionable: 0, next: '', workPossible: true,
       reason: '', blockedUntil: null, inFlightUntil: null }), 'utf8')
     chmodSync(snapshotFile, 0o444)
     produce(project, [{ name: 'Next', cards: [{ id: '100020', name: 'Ready', description: 'Depends-on: none' }] }])
-    expect(readProjectState(project.stateDir, project.cwd)).toMatchObject({ lastOutcome: 'unavailable', lastReason: 'snapshot-write-failed' })
-    expect(readFailureRecords(project.stateDir).map((r) => r.reason)).toContain('snapshot-write-failed')
+    expect(readProjectState(project.stateDir, project.cwd)).toMatchObject({ lastOutcome: 'snapshot-written' })
+    expect(readSnapshot(project.stateDir, project.cwd)).toMatchObject({ actionable: 1 })
     const text = JSON.parse(stop(project, 'c3-snapshot-dir')).hookSpecificOutput.additionalContext as string
-    expect(text).toContain(snapshotFile)
+    expect(text).toContain('1 actionable item(s) remain')
   })
 
   it('C3: a producer-state write failure after a good snapshot write is not reported as a snapshot write failure', () => {
@@ -1084,7 +1083,7 @@ describe('shipped dependency parser and gate (regression locks)', () => {
     const state = readProjectState(project.stateDir, project.cwd)
     expect(state).toMatchObject({ lastOutcome: 'unreachable', lastReason: 'board-unreachable' })
     expect(Number(state?.heartbeatAt)).toBeGreaterThanOrEqual(before)
-    const text = JSON.parse(stop(project, 'c9-unreachable')).hookSpecificOutput.additionalContext as string
+    const text = JSON.parse(stop(project, 'c9-unreachable')).systemMessage as string
     expect(text).toContain('board-unreachable')
     expect(text).toContain('Check that the board endpoint answers')
     expect(text).not.toContain('stale')
@@ -1114,7 +1113,7 @@ describe('shipped dependency parser and gate (regression locks)', () => {
     const result = refreshAgainst(project, `async () => ({ ok: false, status: 503, headers: { get: () => null }, text: async () => '' })`)
     expect(result.status).toBe(1)
     expect(readProjectState(project.stateDir, project.cwd)).toMatchObject({ lastOutcome: 'unreachable', lastReason: 'board-unreachable' })
-    const text = JSON.parse(stop(project, 'd3-http-503')).hookSpecificOutput.additionalContext as string
+    const text = JSON.parse(stop(project, 'd3-http-503')).systemMessage as string
     expect(text).toContain('Check that the board endpoint answers')
     expect(text.split('\n')).toHaveLength(1)
   })
@@ -1124,7 +1123,7 @@ describe('shipped dependency parser and gate (regression locks)', () => {
     const result = refreshAgainst(project, toolAnswer('<html>proxy error page</html>'))
     expect(result.status).toBe(1)
     expect(readProjectState(project.stateDir, project.cwd)).toMatchObject({ lastOutcome: 'unavailable', lastReason: 'board-read-failed', lastDetail: 'malformed MCP result JSON' })
-    const text = JSON.parse(stop(project, 'd3-not-json')).hookSpecificOutput.additionalContext as string
+    const text = JSON.parse(stop(project, 'd3-not-json')).systemMessage as string
     expect(text).toContain('board-read-failed')
     expect(text).toContain('The board endpoint answered with an unreadable result (malformed MCP result JSON)')
     expect(text).not.toContain('Check that the board endpoint answers')
@@ -1143,7 +1142,7 @@ describe('shipped dependency parser and gate (regression locks)', () => {
     ].join('\n'))
     expect(result.status).toBe(1)
     expect(readProjectState(project.stateDir, project.cwd)).toMatchObject({ lastReason: 'board-read-failed' })
-    const text = JSON.parse(stop(project, 'd3-rpc-error')).hookSpecificOutput.additionalContext as string
+    const text = JSON.parse(stop(project, 'd3-rpc-error')).systemMessage as string
     expect(text).toContain('Invalid params: boardId')
     expect(text).not.toContain('Check that the board endpoint answers')
   })

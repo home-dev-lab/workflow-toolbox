@@ -3,13 +3,12 @@ import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } 
 import path from 'node:path'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
-import { withRepositoryGuide } from './sdk-role-profile.mjs'
+import { originalSecondOpinionRepo, secondOpinionPrompt } from './second-opinion-prompt.mjs'
 import { announceUnsandboxedLane, LaneSandboxRefusal, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 import { requestNamedPaths, requestDirectoryNote, requestPathRefusal, unreadEscape } from './host/second-opinion-request-paths.mjs'
 import { classifyProviderRefusal, createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
 
-const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 // The Claude fallback always runs Opus at xhigh; the caller's --effort drives only the Astra route.
 const OPUS_EFFORT = 'xhigh'
@@ -17,6 +16,7 @@ export { requestNamedPaths }
 function signalExitCode(reason) {
   if (reason === 'SIGHUP') return 129
   if (reason === 'SIGINT') return 130
+  if (reason === 'SIGQUIT') return 131
   if (reason === 'SIGTERM') return 143
   return null
 }
@@ -227,126 +227,106 @@ export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveSdkQuery,
 })
 
-export async function runSecondOpinion(options, dependencies, env = process.env) {
-  const request = readFileSync(options.request, 'utf8')
-  const consent = resolveConsent(options.repo, env)
-  const route = options.route ?? 'auto'
+function secondOpinionRequest(options) {
+  return options.requestText ?? readFileSync(options.request, 'utf8')
+}
 
-  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Opus run.
-  if (!['auto', 'astra', 'opus'].includes(route)) {
-    return refuse(options.out, `unknown route ${JSON.stringify(route)}; use auto, astra, or opus.`, 2)
-  }
+function refuseUnconsentedAstra(options, consent) {
+  return refuse(options.out, consent.outcome === 'unknown'
+    ? 'Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.'
+    : 'Astra requires active GPT lane consent.', 1)
+}
 
-  if (route === 'astra' && consent.outcome !== 'true') {
-    return refuse(options.out, consent.outcome === 'unknown'
-      ? 'Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.'
-      : 'Astra requires active GPT lane consent.', 1)
-  }
-
-  // A second opinion exists to escape the session's own model-family biases, so `auto` never
-  // picks a Claude model: without a consented external lane, the second opinion is the user.
-  // Only an explicit `--route opus` runs the Claude consult.
-  if (route === 'auto' && consent.outcome !== 'true') {
-    // The remedy names the level that refused: `wt-lane-consent --on` writes only the account
-    // setting, so a project that narrows consent needs its own `--project <repo> --on`.
-    const accountOff = consent.account.state !== 'true'
-    const projectNarrows = consent.project.state === 'not_true'
-    const reasons = []
-    const remedies = []
-    if (consent.outcome === 'unknown') {
-      reasons.push('the consent setting could not be read (check executor_lane_consent in the plugin settings of this profile and project)')
-    } else {
-      if (accountOff) {
-        reasons.push('GPT lane consent is off for this account')
-        remedies.push('wt-lane-consent --on')
-      }
-      if (projectNarrows) {
-        reasons.push('this project narrows GPT lane consent')
-        remedies.push(`wt-lane-consent --project ${quoteRemedyWord(options.repo)} --on`)
-      }
+// A second opinion exists to escape the session's own model-family biases, so `auto` never
+// picks a Claude model: without a consented external lane, the second opinion is the user.
+// Only an explicit `--route opus` runs the Claude consult.
+function refuseUnconsentedAuto(options, consent) {
+  // The remedy names the level that refused: `wt-lane-consent --on` writes only the account
+  // setting, so a project that narrows consent needs its own `--project <repo> --on`.
+  const accountOff = consent.account.state !== 'true'
+  const projectNarrows = consent.project.state === 'not_true'
+  const reasons = []
+  const remedies = []
+  if (consent.outcome === 'unknown') {
+    reasons.push('the consent setting could not be read (check executor_lane_consent in the plugin settings of this profile and project)')
+  } else {
+    if (accountOff) {
+      reasons.push('GPT lane consent is off for this account')
+      remedies.push('wt-lane-consent --on')
     }
-    return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reasons.join(', and ')}. `
-      + 'A same-family consult cannot counter this session\'s own biases, so ask the user for the second opinion instead.'
-      + (remedies.length ? ` To route it to GPT-6 Astra, run: ${remedies.join(' && ')}` : ''), 1)
+    if (projectNarrows) {
+      reasons.push('this project narrows GPT lane consent')
+      remedies.push(`wt-lane-consent --project ${quoteRemedyWord(originalSecondOpinionRepo(options))} --on`)
+    }
+  }
+  return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reasons.join(', and ')}. `
+    + 'A same-family consult cannot counter this session\'s own biases, so ask the user for the second opinion instead.'
+    + (remedies.length ? ` To route it to GPT-6 Astra, run: ${remedies.join(' && ')}` : ''), 1)
+}
+
+function appendAstraResult(options, result) {
+  if (result.sandbox) appendLine(options.out, result.sandbox)
+  // Each note on its own line right under the sandbox line, before the answer.
+  for (const note of result.notes ?? []) appendLine(options.out, note)
+  appendOutput(options.out, result.stdout)
+  appendOutput(options.out, result.stderr)
+  for (const line of result.cleanup ?? []) appendLine(options.out, line)
+}
+
+function finishAstraOpinion(options, result) {
+  const code = signalExitCode(result.interrupted) ?? result.status
+  if (classifyProviderRefusal(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) appendLine(options.out, 'OUTCOME=refused-by-classifier provider=openai category=cyber')
+  appendLine(options.out, `EXIT=${code}`)
+  return code
+}
+
+async function runAstraOpinion(options, dependencies, env, request) {
+  const companion = dependencies.resolveCodexCompanion(env)
+  if (!companion) {
+    return refuse(options.out, 'GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.', 1)
   }
 
-  if (route === 'astra' || route === 'auto') {
-    const companion = dependencies.resolveCodexCompanion(env)
-    if (!companion) {
-      return refuse(options.out, 'GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.', 1)
-    }
-
-    writeFileSync(options.out, 'ROUTE=gpt-astra\n')
-    let result
-    try {
-      result = await dependencies.runCodex({
-        companion,
-        cwd: options.repo,
-        effort: options.effort,
-        request: `${TOOL_NOTE}\n\n${request}`,
-        namedPaths: requestNamedPaths(request, env.HOME ?? ''),
-        env,
-        signal: options.signal,
-      })
-      if (result.sandbox) appendLine(options.out, result.sandbox)
-      // Each note on its own line right under the sandbox line, before the answer.
-      for (const note of result.notes ?? []) appendLine(options.out, note)
-      appendOutput(options.out, result.stdout)
-      appendOutput(options.out, result.stderr)
-      for (const line of result.cleanup ?? []) appendLine(options.out, line)
-    } catch (error) {
-      result = { status: 1 }
-      appendLine(options.out, error instanceof Error ? error.message : String(error))
-    }
-
-    const code = signalExitCode(result.interrupted) ?? result.status
-    if (classifyProviderRefusal(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) appendLine(options.out, 'OUTCOME=refused-by-classifier provider=openai category=cyber')
-    appendLine(options.out, `EXIT=${code}`)
-    return code
-  }
-
-  writeFileSync(options.out, 'ROUTE=claude-opus\n')
-
-  let query
+  writeFileSync(options.out, 'ROUTE=gpt-astra\n')
+  let result
   try {
-    query = dependencies.resolveSdkQuery(options.repo, env)
-  } catch (error) {
-    appendLine(options.out, `REFUSED: Claude Agent SDK unavailable; ${sdkRemedy(error)}`)
-    appendLine(options.out, 'EXIT=1')
-    return 1
-  }
-
-  let answer = ''
-  let failed = false
-  const modelTracker = createModelTracker('opus', env)
-  try {
-    const stream = query({
-      prompt: withRepositoryGuide(options.repo, request),
-      options: {
-        model: 'opus',
-        effort: OPUS_EFFORT,
-        cwd: options.repo,
-        tools: ['Read', 'Glob', 'Grep'],
-        settingSources: [],
-        permissionMode: 'default',
-        abortController: options.abortController,
-        canUseTool: async (toolName) => ['Read', 'Glob', 'Grep'].includes(toolName)
-          ? { behavior: 'allow' }
-          : { behavior: 'deny', message: 'second-opinion is read-only' },
-        env,
-      },
+    result = await dependencies.runCodex({
+      companion,
+      cwd: options.repo,
+      effort: options.effort,
+      request: secondOpinionPrompt(options, request, 'astra'),
+      namedPaths: requestNamedPaths(request, env.HOME ?? ''),
+      env,
+      signal: options.signal,
     })
-    for await (const message of stream) {
-      modelTracker.observe(message)
-      if (message.type === 'result') {
-        if (message.is_error) failed = true
-        if (typeof message.result === 'string') answer = message.result
-      }
-    }
+    appendAstraResult(options, result)
   } catch (error) {
-    failed = true
-    answer = error instanceof Error ? error.message : String(error)
+    result = { status: 1 }
+    appendLine(options.out, error instanceof Error ? error.message : String(error))
   }
+
+  return finishAstraOpinion(options, result)
+}
+
+function opusStream(query, options, request, env) {
+  return query({
+    prompt: secondOpinionPrompt(options, request, 'opus'),
+    options: {
+      model: 'opus',
+      effort: OPUS_EFFORT,
+      cwd: options.repo,
+      tools: ['Read', 'Glob', 'Grep'],
+      settingSources: [],
+      permissionMode: 'default',
+      abortController: options.abortController,
+      canUseTool: async (toolName) => ['Read', 'Glob', 'Grep'].includes(toolName)
+        ? { behavior: 'allow' }
+        : { behavior: 'deny', message: 'second-opinion is read-only' },
+      env,
+    },
+  })
+}
+
+function finishOpusOpinion(options, modelTracker, answer, failed) {
   if (!answer.trim()) {
     failed = true
     answer = 'Claude Opus returned no answer.'
@@ -358,4 +338,52 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   const code = signalExitCode(options.signal?.aborted ? options.signal.reason : null) ?? (failed ? 1 : 0)
   appendLine(options.out, `EXIT=${code}`)
   return code
+}
+
+async function runOpusOpinion(options, dependencies, env, request) {
+  writeFileSync(options.out, 'ROUTE=claude-opus\n')
+
+  let query
+  try {
+    query = dependencies.resolveSdkQuery(originalSecondOpinionRepo(options), env)
+  } catch (error) {
+    appendLine(options.out, `REFUSED: Claude Agent SDK unavailable; ${sdkRemedy(error)}`)
+    appendLine(options.out, 'EXIT=1')
+    return 1
+  }
+
+  let answer = ''
+  let failed = false
+  const modelTracker = createModelTracker('opus', env)
+  try {
+    const stream = opusStream(query, options, request, env)
+    for await (const message of stream) {
+      modelTracker.observe(message)
+      if (message.type === 'result') {
+        if (message.is_error) failed = true
+        if (typeof message.result === 'string') answer = message.result
+      }
+    }
+  } catch (error) {
+    failed = true
+    answer = error instanceof Error ? error.message : String(error)
+  }
+  return finishOpusOpinion(options, modelTracker, answer, failed)
+}
+
+export async function runSecondOpinion(options, dependencies, env = process.env) {
+  const request = secondOpinionRequest(options)
+  const consent = resolveConsent(originalSecondOpinionRepo(options), env)
+  const route = options.route ?? 'auto'
+
+  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Opus run.
+  if (!['auto', 'astra', 'opus'].includes(route)) {
+    return refuse(options.out, `unknown route ${JSON.stringify(route)}; use auto, astra, or opus.`, 2)
+  }
+  if (route === 'astra' && consent.outcome !== 'true') {
+    return refuseUnconsentedAstra(options, consent)
+  }
+  if (route === 'auto' && consent.outcome !== 'true') return refuseUnconsentedAuto(options, consent)
+  if (route === 'astra' || route === 'auto') return runAstraOpinion(options, dependencies, env, request)
+  return runOpusOpinion(options, dependencies, env, request)
 }

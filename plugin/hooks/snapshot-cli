@@ -54,7 +54,7 @@ async function main() {
     suiteLockRoot: values.get('suite-lock-root') || join(stateRoot, 'wt-suite-lock'),
     suiteRoot: values.get('suite-root') || join(process.cwd(), '.claude'),
     extraRoots,
-    procRoot: values.get('proc-root') || '/proc',
+    procRoot: values.get('proc-root') || undefined,
     plankaBaseUrl: values.get('planka-base-url') || '',
     plankaConfigFile: values.get('planka-config-file') || '',
     linkBase: values.get('link-base') || '',

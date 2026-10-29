@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -33,7 +34,7 @@ function mkDir(): string {
   return r
 }
 function run(args: string[]): { out: string; status: number | null } {
-  const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: sealedPluginCliEnv(mkDir()) })
   return { out: (res.stdout ?? '') + (res.stderr ?? ''), status: res.status }
 }
 
@@ -45,7 +46,7 @@ function run(args: string[]): { out: string; status: number | null } {
 function writeCleanFlatCopy(claudeDir: string): void {
   const scratch = mkDir()
   const res = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--install', '--dir', join(scratch, 'wt')], {
-    encoding: 'utf8',
+    encoding: 'utf8', env: sealedPluginCliEnv(scratch),
   })
   if (res.status !== 0) throw new Error(`fixture setup failed: ${res.stdout}${res.stderr}`)
   const body = readFileSync(join(scratch, 'wt', RULE), 'utf8')

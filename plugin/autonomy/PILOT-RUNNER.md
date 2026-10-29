@@ -23,10 +23,59 @@ Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; 
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
-With `settingSources: []` still in force, each SDK session's initial prompt points to the root
-`CLAUDE.md` and `AGENTS.md` files that exist and tells the agent to read them before planning or
-changing code. The prompt carries absolute paths only, never guide contents, and names a shared
-symlink target once.
+With `settingSources: []` still in force, the pilot's first prompt and each Claude executor lane prompt carry a "Repository
+contributor instructions" section built only from the repository's own committed files. It never reads
+the user's `~/.claude` rules nor the session's project rules (`.claude/rules`); the runner as a whole is
+not machine-independent, because it still reads the knowledge-base index and the optional project rules
+manifest.
+
+- **Source.** A pinned commit, read through `git ls-tree` and `git cat-file` with the hardened git flags,
+  never the working tree. The pilot's first prompt reads `HEAD` before any lane runs. Each Claude executor
+  lane is launched with `--repo-commit <sha>` (7 to 64 hex characters, anything else is refused), the
+  commit the run was constructed from, so a lane that rewrites its worktree's `.git` or `CLAUDE.md`
+  cannot change what the next lane receives; the plan-phase checks use the same commit. No symlink,
+  FIFO or device on disk can be followed.
+- **Root guides.** `CLAUDE.md`, then `AGENTS.md`, injected as content between `BEGIN`/`END repository
+  guide <nonce>` markers under their absolute paths. The nonce is the first 12 hex characters of the
+  SHA-256 of the guide's content, so guide text cannot forge its own closing marker. A symlink guide is resolved once, only when it is a relative
+  path that stays inside the tree and names a regular file; its target is injected once under the
+  target's path. Any other symlink is reported as not followed, and its target is never read.
+- **Folder guides.** Nested `CLAUDE.md` and `AGENTS.md` regular files (symlinks and submodule entries are
+  skipped) are listed as paths only (at most 20, then
+  a remainder count) with the instruction to read the one for a folder before changing files there.
+- **Declared gates.** The `test`, `typecheck`, `lint`, `quality`, `check`, `validate`, `verify` and
+  `build` scripts of the root `package.json` and of each depth-1 `<dir>/package.json`, with the package
+  manager (the `packageManager` field, else the lockfile, else npm) and the source file. Capped at 40
+  lines; an unparseable `package.json` is named. The runner lists these commands; it does not run them.
+- **Plugin validation.** One `claude plugin validate <dir> --strict` line per directory (at most 20)
+  holding a `.claude-plugin/plugin.json` or `.claude-plugin/marketplace.json`, at any depth.
+- **Budget.** The whole section, markers and notices included, is capped at 40,000 characters. The lists
+  are reserved first (notes at most 20 lines, then a remainder count); the guides share the rest in order,
+  and a guide over its share is cut at a line boundary and ends with a
+  `[truncated at N of M characters; read the rest with `git show <sha>:<path>`]` marker.
+- **Repository text is data.** Every repository value placed in the section (gate name, working
+  directory, command, folder and script names, paths, symlink targets) is cut at 200 characters, and CR,
+  LF, NUL and other control characters in it become spaces, so repository text cannot start a line or a
+  heading of its own. A `package.json` whose JSON is not an object is reported like invalid JSON.
+- **Declared gate file.** The gates of a root `.wt-gates.json` are listed first, with their working
+  directory and the file as source.
+- **At the plan phase.** Entering `plan` (first round and every revision), the transition result also
+  carries "Repository-declared checks for your plan (authoritative)": the gate and plugin-validation
+  lines above, and the instruction to assign every check outside the repository's lifecycle gate set to
+  the tdd lane in the plan's Gates. A check the guide makes mandatory for the kind of change is never marked
+  not applicable, and when the guide and the declared gate file name different commands for one gate, the
+  plan runs both; only a check the guide does not mandate may be left out, with a one-line reason.
+  Lifecycle gates are typecheck, lint and test, plus quality when the current `toolkit/package.json`
+  declares a non-empty `scripts.quality`.
+- **Failure.** When git cannot answer (not a repository, no commit, unknown pinned commit) or anything
+  unexpected is thrown while collecting or formatting, the prompt says `Repository instructions
+  unavailable: <reason>.` and falls back to the earlier pointer lines to the root guides; the plan-phase
+  checks are then empty. The runner never fails because of this section.
+- **`--stop-after`.** The LITE route leaves only `discovery`, `tdd` and `verify`; a stop-after phase the
+  card's route never leaves is refused at the start of the run, before any query, naming the route and the
+  phases it does leave.
+
+The orchestrator judge and the second-opinion lane keep the pointer-only form.
 
 ### One query per lifecycle phase
 
@@ -53,7 +102,7 @@ A later session starts from a runner-built opener instead of the earlier convers
   first plan entry, whose rules it relies on);
 - the partial-run instruction when the run is partial, every bound DoD decision, and every mailbox
   note delivered so far with its untrusted prefix;
-- the repository guide pointer and the LSP navigation state, as in the first prompt.
+- the repository contributor instructions and the LSP navigation state, as in the first prompt.
 
 A plan session opens only after any open DoD dispute is bound. Each session checks the account again;
 in a later session a check that failed to run (it threw or timed out) is retried once, a mismatch never
@@ -164,13 +213,37 @@ form and Node path APIs for resolution and real-path containment on each host.
 | plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, non-empty `## Gates`, `## Quality coverage` with non-empty `Changed artefacts:` and `Seams:` lines (`Seams: none: <reason>` is allowed), and `## State and recovery` with non-empty `Ownership:`, `Writers:`, `Terminal paths:` and `Published data:` lines (`Published data: N/A: <reason>` is allowed), or only `N/A: <reason>` when no state or data boundary is touched. When card Definition-of-done criteria are present, it also requires `## Card terms: reading chosen` (one `- <term>: <reading>` line per ambiguous card term, or the documented `none` line) and `## Acceptance` quoting every folded criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. Checked headings are exact, case-insensitive, with optional trailing colon/spaces; labels may be bulleted or bold. Missing or empty sections/labels, bare `N/A`, and missing/reworded criteria are refused with a named diagnostic and example. The critic checks the truth of each answer, including reasoned exemptions. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd -> verify | Attested lane receipt and non-empty report. The initial FULL `tdd-brief.md` has the plan `## Tasks` block byte-identically; later TDD fix briefs carry runner-owned review findings and focused-gate instructions. |
-| verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
+| verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test`, plus `quality` when the current `toolkit/package.json` declares a non-empty string `scripts.quality`, have receipts ending `EXIT=0`, newer than the latest lane receipt, matching the current tree signature, and become a digest snapshot. |
+| verify -> tdd (or partial report on recurrence) | Run **all** currently required gates. Every receipt must be present, parseable, attested, digest-verified, current-tree-bound and newer than the latest lane, with at least one nonzero exit. Findings are canonical `gate <name> EXIT=<actual exit>` markers for required red gates or exact extracted failed-test names. Passing/undeclared gates, mismatched exits and invented names are refused. Every red gate and available extracted name is carried into `.lane/review-findings.md` with actual gate identity and log path. Absent/ambiguous adapters or empty extraction permit attested `gate test EXIT=<actual exit>` recovery; they never permit invented names. Existing non-convergence accounting applies. |
+
+When exact failed-test names are available, the test gate marker remains receipt context in the
+snapshot and TDD findings, while convergence counts the exact names. This avoids treating a common
+`gate test EXIT=1` summary as a recurring defect when distinct failed names shrink across fixes.
+Without extracted names the attested test marker is itself the blocking finding; non-test gate
+markers remain blocking. The pilot submits plain canonical markers, and the runner records those
+same markers without diagnostic fingerprints. Runner-derived blocking markers carry an explicit
+recurrence exemption: they count toward blocking-count convergence but do not trigger the "same
+finding returned" identity check. Two consecutive failed rounds can return to TDD; a third round
+with blocking count 1 stops for failing to set a new minimum. Extracted test names and critic,
+review, and refutation findings retain identity recurrence safeguards. A marker-shaped finding
+that does not identify an actual red gate is accepted only if it is an exact extracted name from
+the red test receipt; otherwise it is refused.
 | review -> refutation, tdd, or report | Attested lane receipt and report verdict. `clear` reaches refutation; blocking `changes-requested` writes `review-findings.md` and reaches a TDD fix. Mechanical non-convergence reaches a partial report. |
 | refutation -> report, tdd, or partial report | Attested lane receipt and report verdict. `clear` reaches report; blocking `changes-requested` reaches a TDD fix unless non-convergence fires. |
-| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
+| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion as a `- ` bullet with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. That classification is re-derived from each draft this edge judges: a refused draft never leaves a partial the corrected draft must carry, and a criterion the parser cannot find is a schema refusal, never an unmet criterion. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
+
+The runner preflight refuses staged changes or tracked modifications: commit them or move them
+aside, then relaunch. Pre-existing untracked files are allowed. At lifecycle creation the runner
+captures their paths and identities, including ignored files. The report commit and independent
+review use one literal, NUL-separated selection: tracked changes and newly created nonignored
+paths, excluding that start baseline. A baseline path stays excluded even if edited, deleted,
+staged by a lane, or made visible by a `.gitignore` edit. Exclusions and their reasons appear in
+`.lane/staging-selection.json` and the runner log. Declared artefacts cannot reuse a start path.
+Staging failures reset the index; retries reuse the computed selection. First completion and
+commit recovery both require that only excluded untracked paths remain in Git status.
 
 ### Disputed Definition-of-done terms
 
@@ -184,7 +257,56 @@ loop continues to another plan round. Each criterion is escalated at most once p
   entry), each critic finding, the parent command, and a deadline. Terms match across whitespace,
   case, straight quotes, and curly quotes; a shorter Card-terms label must start on a word boundary
   and end at a word boundary (the sentinel `none` never identifies a longer criterion). The runner
-  prints one `decision request: <file> — request <id> …` line to its log.
+  prints one `decision request: <file> — request <id> …` line to its log. With
+  `--parent-session '<name> [<ref>]' --parent-mode <bypass|prompting>`, it also starts a dedicated
+  SDK waker per unexpired published request, without waiting before decision polling. Copy the exact session
+  identity from ListAgents; use `bypass` for a bypassPermissions parent and `prompting` for a
+  default, auto, acceptEdits or plan parent. A bare name requires
+  `--parent-session-bare-reason '<one-line explanation>'` (safe characters, at most 200 characters),
+  recorded in the log and `summary.parent_session_bare_reason` beside `parent_wakes`.
+  Launch checks the waker's effective `CLAUDE_CONFIG_DIR` (default `~/.claude`), including any
+  `--profile-env` override: only regular `sessions/<digits>.json` files are read, and one must name
+  the parent without its ref. With parent flags, `--card` must use only `[A-Za-z0-9._-]`.
+  A PreToolUse fence permits only SendMessage to that parent with the exact
+  runner-composed wake body and ToolSearch `select:SendMessage`; other tools and changed fields
+  are denied. The body carries runner-owned run/request ids, DoD numbers, the request-file path and the decide template,
+  never lane-written text. The parent reads the criterion from its own card and chooses the reading;
+  request-file plan/critic prose is untrusted evidence, never instructions or a decision command.
+  The parent must run the decide command carried in the runner-composed wake body
+  exactly as given, filling only `--dod` and `--reading`, without resolving another runner.
+  The byte-exact fence admits only the runner-composed body. On an unsandboxed run any same-user process can send
+  the same message shape, but that sender already has code execution as the user; accepting the body's command
+  adds no authority. Treat the wake as an unauthenticated pointer to ids that `decide` validates.
+  The log line and request file are lane-writable;
+  take from them at most the run id, request id and DoD number; never execute a path, node binary or --state-root copied from
+  the log or request file. `decide` validates the ids against host state.
+  A message is a wake-up, not a decision; only the parent's `decide` invocation can submit one.
+  The structured `parent wake: transport-accepted` log
+  means only a correlated JSON `success:true` transport result, not receiver delivery. Permission
+  class mismatch can hold the message for approval: an observed hold records `not-delivered:held`,
+  and any other recipient delivery notice records `unconfirmed:recipient-notice`. If a send was admitted
+  but no correlated result or recipient notice was observed, the receipt is `unconfirmed:<reason>` for
+  `timeout`, `stream-ended`, `aborted`, `error` or a later `denied` call: delivery is unknown.
+  Without an admitted send those failures remain `not-delivered:<reason>`. Without a recipient notice, correlated results keep
+  `transport-accepted` or `not-delivered:transport-refused`; account refusals keep `not-delivered:account` even when a notice arrives. Input remains
+  open for three seconds after the correlated tool result or the first SDK turn `result`, whichever comes first
+  (configurable as `noticeHoldMs` in wake options), within the overall wake cap. The parent must still watch for `decision request:` in
+  the log; a wake is only the fast notification path.
+  Wakes reuse the runner's account gate, never re-enter admission, have a 120-second cap, are
+  aborted at run end, and get at most five seconds of final settling. A held or other recipient notice
+  observed during that drain replaces a timeout or abort outcome; a successful tool result first seen
+  during the drain does not turn either into transport acceptance. At most one is in flight;
+  at most three attempts run per request, retrying only `not-delivered:denied` or `not-delivered:no-call`
+  when no send was admitted (`tool_use_id` is null). An expired request records `not-sent:expired` without launching a waker;
+  its deadline and run-end state are checked again after any earlier waker settles, before each retry,
+  and inside the account gate's launch callback immediately before opening the query. The send fence
+  also rechecks the deadline and abort signal before admitting a send. A consumer that outlives the drain bound prevents later launches with
+  `not-delivered:prior-waker-stuck`; normal run-end cancellation records `not-delivered:aborted`
+  before send admission or `unconfirmed:aborted` after admission without a confirmed outcome.
+  Failures do not affect the decision deadline or run outcome. Model, assistant-id
+  token totals, outcome, account verdict, 1-based `attempt` and any denied tool's name are recorded in
+  `summary.parent_wakes[]` separately from pilot totals; retry log lines append `attempt=<n>`.
+  Bare-name exceptions permit name reuse after a parent exits; the wake grants nothing.
 - **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading
   <text>`. The command atomically writes the SDK runner's per-run state under the host state directory
   (`XDG_STATE_HOME` or the platform equivalent), outside every lane sandbox bind. Mailbox and lane-file
@@ -257,7 +379,9 @@ at `medium`, hard code `opus` at `medium`. Explicit effort overrides take preced
 Each executor role's selected model determines its launcher independently: a provider/model uses a GPT lane,
 while a harness alias uses the Claude SDK. GPT models require lane consent even when another role runs on Claude.
 Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
-toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
+toolkit's `pnpm typecheck`, `pnpm lint`, conditional `pnpm quality`, or `pnpm test`. The list is resolved
+at each use from the current package scripts. Gate processes disable pnpm dependency verification
+before scripts run; their receipts warn about paths changed during a gate without deleting or excluding them.
 The gate, like the orchestrator's host gates, runs without the runner's own `WT_*` configuration
 (`WT_AGENT_SDK_PATH`, `WT_EXECUTOR_*_MODEL`, `WT_PLANKA_MCP_URL`, ...), so how the runner was launched
 cannot change the delivery's verdict; only `WT_SUITE_LOCK*`, `WT_TEST_MODE` and `WT_VITEST_MAX_WORKERS`
@@ -356,6 +480,20 @@ keeps `reason: timeout` in the summary and lifecycle partial, preserves its mess
 SDK exception before the grace abort remains a stream error. Supervised executor lanes retain their
 owner decision path and identity-aware abandon control for wedged lane processes.
 
+After a lane timeout, lifecycle `run { kind: 'control', decision: 'extend'|'abandon' }`
+checks whether that lane has already finished, then submits any needed decision and waits on the
+same launch. Submission is not application: the supervisor can turn an extension into abandonment
+at its ceiling. A second decision point returns TIMEOUT with ownership retained. For first-round
+critics, one control call acts on the whole pair; explicit retry relaunches both. No selector exists. Terminal
+lanes release ownership even when receipt publication fails, allowing a fresh launch.
+
+An ownership or receipt refusal after a routed finding, with no lifecycle progress since that
+route, stops the pilot when its current phase has no owned lane left. The runner aborts the SDK
+session, writes `.lane/blocked-report.md`
+and `blocked_on` in `.lane/summary.json` before partial archival, and preserves those local records
+through archive or cost-publication failures. The blocked report identifies the routed card,
+refusal, phase, and observation time.
+
 Timeout delivery itself has no shell, signal, process-table, or filesystem-injection dependency:
 `pilot-runner-core.mjs` uses the cross-platform Node timer and `AbortController`, and
 `lifecycle-state-machine.mjs` receives the request in process. A phase running an executor still uses
@@ -448,14 +586,33 @@ start, never by archive path. Malformed usage exits 2.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--board-contract <json file>`, `--knowledge-base-index`, repeatable
 `--plugin-dir <absolute-path>`, `--profile-env`, `--expect-account <email>`, `--contract`,
-`--hard`, `--mailbox`, and `--timeout <seconds>`; `--lane-silence` is not accepted. The runner uses Node path semantics on
+`--hard`, `--mailbox`, `--parent-session '<name> [<hex-ref>]'`, `--parent-mode <bypass|prompting>`,
+`--parent-session-bare-reason <one-line text>`, `--timeout <seconds>`, and `--stop-after <phase>`;
+the parent identity and mode must be paired; the reason is required for a bare name; `--lane-silence` is not accepted.
+`--stop-after` is a piece-test option: `discovery`, `plan`, `critic`, `tdd`, `verify`, `review` or
+`refutation` ends the run at the boundary leaving that phase, with the usual partial report (reason
+`stop-after <phase>`), so one changed phase can be replayed without a whole run. The runner uses Node path semantics on
 Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
-authorizing reads. It never enables `allowDangerouslySkipPermissions`.
+authorizing reads. Phase sessions never enable `allowDangerouslySkipPermissions`. The sole scoped
+exception is the dedicated waker for a `--parent-mode bypass` parent: only SendMessage and
+ToolSearch are exposed, with the exact-destination/body PreToolUse fence still enforced. A prompting
+waker uses default permissions and the same fence in `canUseTool`. Wakers have no plugins,
+`settingSources: []`, no MCP servers, ClaudeAI MCP disabled, and `persistSession: false`.
 The board contract is `{ boardId, listId, labels: { priority: {P0,P1,P2}, type:
 {bug,chore,feature,research}, effort: {S,M,L}, category } }`. `route_finding` is the only card-creation
-surface: the runner makes one `create_card` MCP call with the three selected label ids, category,
-`dependsOn: {cardId: <origin>}`, and a `## Provenance` line containing origin, session, L4 reason, and
-timestamp. It records `routed_cards` in `lifecycle.json` and the archive manifest. A contested item
+surface: the runner makes one `create_card` MCP call with `dependsOn: 'none'` and exactly one canonical
+`Depends-on: none` description line. Origin card is provenance only. All interpolated provenance
+values (origin, session, L4 reason, timestamp) are losslessly quoted as JSON strings on individual
+physical lines, escaping CR/LF and U+2028/U+2029; identifier fields use the existing identifier contract.
+Before creation the assembled description must have exactly one canonical none declaration and the
+shipped dependency parser must return no IDs or malformed declarations; local refusal makes zero
+create calls. The returned description, or a `get_card` read-back if absent, is independently checked.
+A failed read-back/declaration check preserves the created card ID; creation is not retried and origin
+dependencies are not mutated. After creation the three selected label IDs and category are applied
+with four separate `add_label_to_card` calls even when dependency verification fails. Each card is
+recorded in `routed_cards` in `lifecycle.json` and the archive manifest with `dependencyVerified`
+and, when false, `dependencyVerificationReason`. The tool result names the card and explicitly
+reports unverified dependencies. A contested item
 completed in-run gets a runner comment and move to `NotDoing`; maintained disagreement stays named.
 Configured plugin directories are passed as local SDK plugins beside `pilot-guard`; the initialization
 receipt must name every one or the pilot run is refused. No plugin name or host path is built in.
@@ -465,7 +622,7 @@ receipt must name every one or the pilot run is refused. No plugin name or host 
 Main freezes and verifies evidence with `wt-pilot-fidelity.mjs`. Run `freeze` with the worktree,
 bundle directory, card, session, base, head, and lane files; then run `verify --require-same-tree
 --require-head`. The v2 manifest has typed entries, a snapshot id, and a length-prefixed signature;
-freeze and verify admit only `typecheck`, `lint`, and `test` gate logs, lifecycle-enum lane/report
+freeze and verify admit `typecheck`, `lint`, `quality`, and `test` gate log formats, lifecycle-enum lane/report
 phases, and integer `EXIT=` values; they also reject unknown kinds, malformed top-level scalars,
 extra fields, duplicate names, incoherent commit heads, unsafe containment, and malformed evidence.
 Every unmatched file, including another `.lane/*.log`, requires explicit `--other-file` input.

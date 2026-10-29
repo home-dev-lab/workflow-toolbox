@@ -88,6 +88,46 @@ async function tree(root) {
   return entries.sort((a, b) => a[0].localeCompare(b[0]));
 }
 
+const legacyVerdict = JSON.stringify({ rule: 'sample.md', verdict: 'not followed' }) + '\n';
+async function qualityEnvironment(root, config) {
+  const home = join(root, 'home');
+  const storeDir = join(config, 'plugins/store');
+  const ambientStoreDir = join(home, '.claude/plugins/store');
+  for (const directory of [storeDir, ambientStoreDir]) await mkdir(directory, { recursive: true });
+  await writeFile(join(storeDir, 'wt-rules-on-demand_fixture.json'), '{}');
+  const ambientStore = join(ambientStoreDir, 'wt-rules-on-demand_fixture.json');
+  // A legacy default store makes accidental fallback observable even when it exits successfully.
+  await writeFile(ambientStore, JSON.stringify({ 'compliance-verdicts-jsonl': legacyVerdict }));
+  return { ambientStore, env: cleanEnv({ HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: config }) };
+}
+
+test('project rollback resolves default stores and archives inside its temporary home', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rod-default-inputs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = join(root, 'project');
+  await mkdir(join(project, '.claude/rules-on-demand'), { recursive: true });
+  await writeFile(join(project, '.claude/rules-on-demand/sample.md'), 'Sample\n');
+  const verdicts = join(root, 'verdicts.jsonl');
+  await writeFile(verdicts, '');
+  const { env, ambientStore } = await qualityEnvironment(root, join(root, 'config'));
+  const fallback = cleanEnv({ HOME: env.HOME, USERPROFILE: env.USERPROFILE });
+  const run = (env) => spawnSync(process.execPath, [rollback, '--project', project, '--dry-run', '--json', '--verdicts', verdicts], { encoding: 'utf8', env });
+  const legacyOnly = run(fallback);
+  assert.equal(legacyOnly.status, 0, legacyOnly.stderr);
+  assert.match(legacyOnly.stderr, /legacy rows skipped: 1/);
+  const archives = join(env.HOME, '.claude/plugins/data/wt-rules-on-demand/quality');
+  await mkdir(archives, { recursive: true });
+  await writeFile(join(archives, 'compliance-verdicts-archive-1000-1.jsonl'), legacyVerdict);
+  await writeFile(ambientStore, 'not-json');
+  const unreadable = run(fallback);
+  assert.equal(unreadable.status, 1, unreadable.stderr);
+  assert.match(unreadable.stderr, /legacy rows skipped: 1/);
+  assert.deepEqual(JSON.parse(unreadable.stdout)[0].unreadableStores.map((row) => row.path), [ambientStore]);
+  const pinned = run(env);
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.equal(pinned.stderr, '');
+});
+
 ruleTest('safe trigger spec migrates unchanged real rule body, reverts and retires into archive', async (t, realRule) => {
   const root = await sandbox(t, realRule);
   const spec = await readSpec(realSpec);
@@ -361,21 +401,23 @@ test('quality report identifies explicitly unproven migrations without editing t
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
   const config = join(root, 'config');
+  const { env } = await qualityEnvironment(root, config);
   const projects = join(config, 'projects');
   await mkdir(join(project, '.claude/rules'), { recursive: true });
   await mkdir(projects, { recursive: true });
   await writeFile(join(project, '.claude/rules/sample.md'), 'Check agent model.\n');
-  await migrateRule(project, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'check', check: 'agent-model' } }, { noProofReason: 'no historical transcript', unproven: true });
+  await migrateRule(project, 'sample.md', { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'check', check: 'agent-model' } }, { noProofReason: 'no historical transcript', unproven: true }, { configDir: config });
   const file = join(project, '.claude/rules-on-demand/sample.md');
   const before = await readFile(file);
   const ledgerBefore = await readFile(join(project, '.claude/rules-on-demand-ledger.jsonl'));
   await writeFile(join(project, '.claude/rules-on-demand-ledger.jsonl'), Buffer.concat([ledgerBefore, Buffer.from('not-json\n')]));
   await writeFile(join(projects, 'sample.jsonl'), JSON.stringify({ type: 'assistant', cwd: project, timestamp: new Date().toISOString(), message: { content: [{ type: 'tool_use', id: 'fixture-agent', name: 'Agent', input: { model: 'sonnet' } }] } }) + '\n');
   const data = join(config, 'plugins/data/wt-rules-on-demand/quality');
-   const run = spawnSync(process.execPath, [quality, '--project', project, '--config-dir', config, '--data-dir', data], { encoding: 'utf8', timeout: 60_000, env: cleanEnv() });
+   const run = spawnSync(process.execPath, [quality, '--project', project, '--config-dir', config, '--data-dir', data], { encoding: 'utf8', timeout: 60_000, env });
   assert.equal(run.status, 0, run.stderr);
   const report = JSON.parse(await readFile(join(data, 'latest.json'), 'utf8'));
   assert.equal(report.ok, true);
+  assert.deepEqual(report.rollbackNotes, [], 'quality must not read the ambient legacy store');
   assert.equal(report.coverage.malformedLedgerLines, 1);
   assert.ok(!(await readdir(data)).some((name) => name.endsWith('.tmp')));
   assert.deepEqual(report.unproven, [{ scope: 'project', rule: 'sample.md', reason: 'no historical transcript' }]);
@@ -388,6 +430,7 @@ test('automatic quality pipeline reports would-revert but leaves entire rule tre
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
   const config = join(root, 'config');
+  const { env } = await qualityEnvironment(root, config);
   await mkdir(join(project, '.claude/rules'), { recursive: true });
   await mkdir(join(config, 'projects'), { recursive: true });
   await writeFile(join(project, '.claude/rules/sample.md'), 'Choose a model.\n');
@@ -412,9 +455,10 @@ test('automatic quality pipeline reports would-revert but leaves entire rule tre
   const exposureMtime = new Date(Date.now() + 1000);
   await utimes(join(exposureDir, 'sample.jsonl'), exposureMtime, exposureMtime);
   const data = join(config, 'plugins/data/wt-rules-on-demand/quality');
-   const run = spawnSync(process.execPath, [quality, '--project', project, '--config-dir', config, '--data-dir', data], { encoding: 'utf8', timeout: 60_000, env: cleanEnv() });
+   const run = spawnSync(process.execPath, [quality, '--project', project, '--config-dir', config, '--data-dir', data], { encoding: 'utf8', timeout: 60_000, env });
   assert.equal(run.status, 0, run.stderr);
   const report = JSON.parse(await readFile(join(data, 'latest.json'), 'utf8'));
+  assert.deepEqual(report.rollbackNotes, [], 'quality must not read the ambient legacy store');
   assert.equal(report.rollback[0]?.action, 'would revert');
   assert.deepEqual(await readFile(file), before);
   assert.deepEqual(await readFile(ledgerFile), ledgerBefore);

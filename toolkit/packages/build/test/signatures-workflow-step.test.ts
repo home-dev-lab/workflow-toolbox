@@ -73,10 +73,10 @@ function initSignableRepo(tag: string): string {
   const signingKey = createSigningKey(root, 'fixture-key')
   git(root, ['init', '-q', '-b', 'main'])
   git(root, ['config', 'user.name', 'Test'])
-  git(root, ['config', 'user.email', 'webdoublefx@gmail.com'])
+  git(root, ['config', 'user.email', 'signer@example.invalid'])
   git(root, ['config', 'gpg.format', 'ssh'])
   git(root, ['config', 'user.signingkey', signingKey.keyPath])
-  writeFileSync(join(root, 'allowed_signers'), `webdoublefx@gmail.com ${signingKey.publicKey}\n`)
+  writeFileSync(join(root, 'allowed_signers'), `signer@example.invalid ${signingKey.publicKey}\n`)
   git(root, ['config', 'gpg.ssh.allowedSignersFile', join(root, 'allowed_signers')])
   cpSync(PLUGIN_BIN, join(root, 'plugin', 'bin'), { recursive: true })
   return root
@@ -133,14 +133,16 @@ describe('signatures.yml verification step — trusted PR policy and checker', (
     expect(yaml).not.toContain('CHECKER=plugin/bin/wt-check-commit-signatures.mjs')
     expect(yaml).not.toContain('gpg.ssh.allowedSignersFile "$GITHUB_WORKSPACE/.github/allowed_signers"')
   })
+})
 
+describe('signatures.yml verification step — trusted allowed-signers policy', () => {
   it('configures Git to use the trusted allowed-signers pathname rather than the PR policy', () => {
     const root = initSignableRepo('trusted-policy')
     const before = commit(root, 'f.txt', 'a', 'base signed', true)
     const attacker = createSigningKey(root)
     git(root, ['config', 'user.signingkey', `${attacker.keyPath}.pub`])
     const tip = commit(root, 'f.txt', 'ab', 'PR signed', true)
-    const attackerPolicy = `webdoublefx@gmail.com ${attacker.publicKey}\n`
+    const attackerPolicy = `other@example.invalid ${attacker.publicKey}\n`
 
     // The PR checkout permits this key, but its replacement trusted policy does not.
     writeFileSync(join(root, 'allowed_signers'), attackerPolicy)
@@ -163,7 +165,9 @@ describe('signatures.yml verification step — trusted PR policy and checker', (
     expect(accepted.code).toBe(0)
     expect(accepted.out).toContain('carry a good signature')
   })
+})
 
+describe('signatures.yml verification step — trusted checker', () => {
   it('runs the trusted checker even when the PR checkout replaces its checker with a no-op', () => {
     const root = initSignableRepo('trusted-checker')
     const before = commit(root, 'f.txt', 'a', 'base signed', true)

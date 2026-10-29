@@ -67,3 +67,28 @@ test('delivery join removes repeated window verdicts and notes unjudged windows'
   assert.equal(report.unjudged, 1);
   assert.match(report.note, /1 deliveries without a verdict/);
 });
+
+test('report counts applicability labels and later rows while accepting legacy records', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rod-applicability-report-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const store = join(root, 'store.json'), config = join(root, 'config');
+  const rows = [
+    { verdict: 'followed', applicability: 'applicable', later: false },
+    { verdict: 'not followed', applicability: 'applicable', later: true, servedDeliveryId: 't-1' },
+    { verdict: 'not applicable', applicability: 'not applicable', later: true, servedDeliveryId: null },
+    { verdict: 'not applicable', applicability: 'no act' },
+    { verdict: 'unregistered check', applicability: 'unknown' },
+    { verdict: 'not applicable' },
+  ].map((row, i) => ({ rule: 'r.md', verdictId: `t-${i + 2}`, sessionId: 's', ...row }));
+  await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': rows.map(JSON.stringify).join('\n') }));
+  const cli = fileURLToPath(new URL('../scripts/compliance-report.mjs', import.meta.url));
+  const run = (...flags) => spawnSync(process.execPath, [cli, '--store', store, '--config-dir', config, ...flags], { encoding: 'utf8', env: cleanEnv() });
+  const result = run('--json');
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout)['r.md'];
+  assert.deepEqual(report.applicability, { applicable: 2, 'not applicable': 1, 'no act': 1, unknown: 2 });
+  assert.equal(report.later, 2);
+  assert.equal(report.injections, 6);
+  assert.match(run().stdout, /applicability A\/NA\/none\/\?\tlater/);
+  assert.match(run().stdout, /\t2\/1\/1\/2\t2\n/);
+});

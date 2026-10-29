@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { git, resolveBase, resolveCommit, changedFiles, isCodeSubject, readSubject } from './quality-changed-git.mjs'
 import { createLinter, lintText } from './quality-changed-lint.mjs'
 import { regressions } from './quality-changed-measure.mjs'
+import { selectChangedScope } from './quality-changed-scope.mjs'
 
 function parseArgs(argv) {
   const options = { base: process.env.WT_QUALITY_BASE, subject: undefined }
@@ -15,25 +16,28 @@ function parseArgs(argv) {
   }
   return options
 }
-async function compare(eslint, root, base, subject, file) {
+async function compare(eslint, root, base, subject, file, checkerRoot) {
   const text = readSubject(root, subject, file.path)
   const previous = file.added ? '' : git(root, ['show', `${base}:${file.source}`])
-  const current = await lintText(eslint, root, file.path, text)
-  const before = await lintText(eslint, root, file.path, previous)
-  return [...current.fatal, ...regressions(file.path, current.rules, before.rules)]
+  const current = await lintText(eslint, checkerRoot, file.path, text)
+  const before = await lintText(eslint, checkerRoot, file.path, previous)
+  return [...current.fatal, ...regressions(file.path, current.rules, before.rules, current.functions, before.functions)]
 }
 export async function runCli(argv) {
-  if (process.env.WT_QUALITY_CHANGED === 'skip') { console.log('quality:changed SKIPPED (WT_QUALITY_CHANGED=skip)'); return 0 }
   try {
     const options = parseArgs(argv)
-    const root = git(dirname(fileURLToPath(import.meta.url)), ['rev-parse', '--show-toplevel']).trim()
+    const checkerRoot = git(dirname(fileURLToPath(import.meta.url)), ['rev-parse', '--show-toplevel']).trim()
+    const root = process.env.WT_CERTIFICATION_INPUT_ROOT ?? checkerRoot
     const base = resolveBase(root, options.base)
     const subject = options.subject ? resolveCommit(root, options.subject) : undefined
     const files = changedFiles(root, base, subject).filter((file) => isCodeSubject(root, subject, file.path))
-    const eslint = createLinter(root), problems = []
-    for (const file of files) problems.push(...await compare(eslint, root, base, subject, file))
+    const { selected, skipped } = await selectChangedScope(checkerRoot, files)
+    const eslint = createLinter(checkerRoot), problems = []
+    for (const file of selected) problems.push(...await compare(eslint, root, base, subject, file, checkerRoot))
     for (const problem of problems) console.log(problem)
-    console.log(`quality:changed ${files.length} files checked; ${problems.length} regressions`)
+    for (const file of skipped) console.log(`quality:changed skipped ${file.path} — ${file.reason}`)
+    console.log(`quality:changed ${selected.length} files checked; ${problems.length} regressions; ${skipped.length} files skipped`)
+    if (!problems.length && process.env.WT_CERTIFICATION_NONCE) console.log(`WT_OWNER_CHECKED=${process.env.WT_CERTIFICATION_NONCE}`)
     return problems.length ? 1 : 0
   } catch (error) { console.error(`quality:changed TOOL ERROR: ${error.message.replace(/[\r\n]/g, ' ')}; pass --base <ref> or WT_QUALITY_BASE`); return 2 }
 }

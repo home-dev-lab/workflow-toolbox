@@ -55,6 +55,15 @@ it('round-trips canonical typed fidelity evidence', () => {
   expect(verifyFidelityBundle({ root, dir: bundle, requireCleanTree: true, requireHead: true })).toMatchObject({ card: '186', session: 'sdk-1' })
 })
 
+it('SDK quality lock: round-trips a typed quality receipt', () => {
+  const { root, manifest } = fixture()
+  writeFileSync(join(root, '.lane', 'quality.log'), 'quality\nEXIT=0\n')
+  const bundle = mkdtempSync(join(tmpdir(), 'wt-quality-fidelity-')); roots.push(bundle)
+  const frozen = freezeFidelityBundle({ root, outDir: bundle, card: 'fixture', session: 'quality', base: manifest.base, head: manifest.head, files: ['.lane/quality.log'] })
+  expect(frozen.files[0]).toMatchObject({ kind: 'gate', exit: '0' })
+  expect(verifyFidelityBundle({ root, dir: bundle })).toMatchObject({ session: 'quality' })
+})
+
 it('requires the fidelity base to be a full commit SHA that exists in the repository', () => {
   const { root, bundle, manifest, files } = fixture()
   const symbolic = mkdtempSync(join(tmpdir(), 'wt-fidelity-symbolic-base-')); roots.push(symbolic)

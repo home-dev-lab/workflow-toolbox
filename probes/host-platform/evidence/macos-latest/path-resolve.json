@@ -2,10 +2,10 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "path-resolve",
-    "capturedAt": "2026-09-20T09:08:13.991Z",
+    "capturedAt": "2026-10-12T01:03:17.210Z",
     "command": "node path-resolve.mjs /Users/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/macos-latest/path-resolve.json",
-    "runId": "35501457364",
-    "commitSha": "2ca53474daa3cf4368b62336ada74b15963023fd",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "macos-latest",
       "os": "macos26",
@@ -31,19 +31,19 @@
   },
   "tempDirectory": {
     "reportedRoot": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T",
-    "createdPath": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx",
+    "createdPath": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-pneSrX",
     "machineEvidence": {
       "status": "measured",
-      "input": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx",
-      "realpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx"
+      "input": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-pneSrX",
+      "realpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-pneSrX"
     }
   },
   "symlinkedDirectory": {
     "creation": "measured",
     "status": "measured",
-    "input": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx/directory-link",
-    "realpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx/target",
-    "targetRealpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx/target"
+    "input": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-pneSrX/directory-link",
+    "realpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-pneSrX/target",
+    "targetRealpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-pneSrX/target"
   },
   "windows83ShortForm": {
     "status": "not_applicable",

@@ -1,0 +1,21 @@
+{
+  "fs import": 1,
+  "os import": 1,
+  "readFileSync": 18,
+  "writeFileSync": 2,
+  "copyFileSync": 2,
+  "mkdirSync": 4,
+  "readdirSync": 7,
+  "homedir": 2,
+  "statSync": 5,
+  "existsSync": 4,
+  "realpathSync": 1,
+  "hard-coded path separator": 1,
+  "lstatSync": 5,
+  "readlinkSync": 3,
+  "appendFileSync": 1,
+  "rmSync": 1,
+  "unlinkSync": 2,
+  "symlinkSync": 1,
+  "renameSync": 1
+}

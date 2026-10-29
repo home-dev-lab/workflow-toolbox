@@ -10,6 +10,162 @@ to `true`. Claude Code exports this option to the startup hook as
 quality check. When rules exist but the switch is off, startup reports their count.
 See [TRIGGERS.md](TRIGGERS.md).
 
+## Agent types that are never refused
+
+Set `WT_ROD_NO_REFUSE_AGENT_TYPES` to the exact agent type names whose tool calls
+should skip this plugin's refusal round. Matching rules are still delivered
+with the call's result. The trade-off is that the rule arrives **after the act**
+and cannot guide that first action. The main loop is never affected; unlisted
+and unknown agent types keep the usual refusal behavior.
+
+Put the list in the project's `.claude/settings.json`, or in
+`.claude/settings.local.json` for a personal, uncommitted choice:
+
+```json
+{ "env": { "WT_ROD_NO_REFUSE_AGENT_TYPES": "my-agent,other-agent" } }
+```
+
+The value is one comma-separated string. Names are trimmed, case-sensitive,
+and matched exactly; empty entries are ignored. There are no patterns or
+wildcards: `"*"` matches only an agent type literally named `*`. An absent or
+empty variable means no exemptions. Each project sets its own list; a project
+without the variable keeps every refusal.
+
+This uses an environment variable because the host ignores plugin options from
+project settings. Project `env` values apply once the folder is trusted. There
+is no plugin option for this list. The hooks module has no Node.js globals, so
+it reads the variable through the host's environment API when a call matches a
+before-act rule, never at load time. A disabled engine reads nothing.
+
+While the engine is enabled, every SessionStart (including resume, clear, and
+compact) with a non-empty list prints
+`wt-rules-on-demand: rules served after the act for: my-agent, other-agent`
+with the configured names. An empty or absent list, or a disabled engine,
+prints no such line.
+
+Types are learned from `agent.spawn`, including workflow agents and resumed
+agents, whether or not the setting is present. Spawn arrival order determines
+which completed report wins, and recording never waits on configuration. Calls
+from a resume identity keep their refusals while any resume for that id is
+starting. While more than 256 resumes are starting at once, no call is waived
+until the excess settles. A completion that arrives after the record it should
+be ordered against was evicted cannot be ordered, so it clears that identity's
+type instead of recording one. After a module reload, a subagent or teammate spawned earlier can be
+resolved through `$.agent.list()`. Workflow agents are not in that list, so
+one spawned before the module loaded stays subject to refusal unless a later
+spawn or resume supplies its type. Identity tracking keeps up to 256 identities,
+dropping the earliest recorded first; an evicted identity also needs this fallback.
+Only non-empty string types are cached. Concurrent lookups for one identity
+share a request. At most 32 list requests may be outstanding on the host: a
+request that passed its deadline keeps its slot until the host settles it, and
+overflow keeps the refusal without another request. A deadline frees the waiting
+call, never the slot: if 32 requests never settle, every later unknown identity
+keeps its refusals, with or without a host clock. Failed, empty, or timed-out
+lookups back off for 1 second, doubling after each failure to a 60-second cap.
+Success clears the backoff. Pending lookups and retry deadlines together retain
+at most 256 identities, and a deadline is never dropped before it passes: when
+all are live, a new identity keeps its refusal without a request. Lookups only
+fill gaps: they cannot overwrite spawn evidence or record while a resume is
+starting.
+
+Immediately before selecting the refusal or starting the act, one synchronous
+decision checks the current parsed set and current type evidence. A waiver
+requires a non-main call, a non-empty configured set containing its recorded
+type, and no spawn in flight for that id. Stale or failed environment reads
+keep refusals. Older reads cannot overwrite newer applied settings; learned
+types survive setting changes because membership is checked at the decision.
+The decision reads nothing from the host, and its log line is written only after
+the act has been handed to the host, so no host callback runs between the
+decision and the act. Each waived refusal is logged once for that call, without
+awaiting the log.
+
+## Rules served at sub-agent start
+
+Set `WT_ROD_PRESERVE_RULES` to give chosen agent types chosen rules before
+their first action. A `SubagentStart` command hook places those rules in the
+sub-agent's first context, in exactly the form the engine serves them, so the
+engine counts them as already served in that agent's conversation: the agent's
+first matching action is not refused, and the rule guided it from the start.
+
+Put the list in the project's `.claude/settings.json`, or in
+`.claude/settings.local.json` for a personal, uncommitted choice, in the `env`
+block:
+
+```json
+{ "env": { "WT_ROD_PRESERVE_RULES": "ssh-host-mover=repo-state-check-at-act,outbound-pronouns-at-act;ssh-host-gate=repo-state-check-at-act;ssh-host-reviewer=repo-state-check-at-act" } }
+```
+
+Where the host reads that `env` block, as observed in test sessions run in
+print mode: Claude Code applied a project's `.claude/settings.json` `env` only
+when the session started in the folder holding that `.claude` directory. A
+session started in a subdirectory of it, inside a git repository or not, saw
+neither variable. So start sessions from that folder, or set the variable in a
+settings file such a session does read. The same holds for
+`WT_ROD_NO_REFUSE_AGENT_TYPES`.
+
+The value is `type=rule[,rule...]`, with entries separated by `;`. Agent types
+are trimmed, case-sensitive, and matched exactly; there are no patterns or
+wildcards (`*` matches only a type literally named `*`). Rule names are
+trimmed and get `.md` appended when it is missing. A type listed twice merges
+its rules in first-seen order, duplicates dropped. Entries without `=`, with an
+empty type, or with no rule names are ignored. Each rule resolves the way the
+engine resolves it for this session: the nearest project copy wins over outer
+project copies and over the user copy, project copies are found from the
+directory the session started in, and a copy equal to a loaded static rule is
+not served again. When the sub-agent's own working directory differs from that
+directory, the rule is resolved from both, because the engine may resolve from
+either; it is placed only when both give the same text. A directory the hook
+cannot read counts as empty, as it does for the engine.
+
+The rule text is read from its file at every sub-agent start, so an edit
+applies to the next sub-agent. An agent type that is not listed, an unknown
+type, an empty or absent variable, or a disabled engine gets nothing at all.
+
+The whole injected text is kept within 9,500 characters (about 2,400 tokens),
+because the host replaces a hook context over 10,000 characters with a file
+path and a preview, which the engine could not recognise as served. Rules are
+added in the configured order; a rule that does not fit the remaining space is
+skipped whole, never cut, and a later, smaller rule may still fit. A final line
+names the listed rules that were not placed and why, up to its 600-character
+cap, then `+<K> more`. What happens to each at the act:
+
+| Reason in the note | At the act |
+| --- | --- |
+| `over budget` | Served as usual, refusal included |
+| `contains a system-reminder tag the host rewrites` | Served as usual, refusal included |
+| `differs between the session root and the agent directory` | Served as usual, refusal included |
+| `not found` | The engine has no such file to serve either |
+| `static copy is loaded instead` | The engine does not serve it either; the static copy is already loaded |
+| `unreadable: <reason>` | The engine does not serve that file either |
+
+When a listed type gets no rule at all, that line alone is injected, so the
+miss shows in the agent's transcript. If the hook itself fails, it injects
+nothing and writes one line to stderr, which reaches only the host's debug log;
+the spawn always proceeds.
+
+After a sub-agent's conversation is compacted, the injected copy is gone. What
+follows depends on the host: if it reports that agent's compaction to the
+engine, the rule counts as unserved again and the next matching action is
+refused once. If it does not, the rule is neither in the agent's context nor
+refused until the engine's state for that agent resets. The host injects the
+hook's context again only when the hook runs again for that agent, on a resume.
+
+While the engine is enabled, every SessionStart with a non-empty list prints
+one line such as
+`wt-rules-on-demand: rules served at sub-agent start for: ssh-host-mover (2 rules), ssh-host-gate (1 rule)`,
+capped at 400 characters with `+<K> more`.
+
+How the two agent-type variables combine for one agent type:
+
+| Listed in `WT_ROD_PRESERVE_RULES` | Listed in `WT_ROD_NO_REFUSE_AGENT_TYPES` | What the agent gets |
+| --- | --- | --- |
+| yes | no | Its listed rules before its first action; any other matching rule is refused once, as usual |
+| no | yes | No rule at start; every matching rule arrives with the result, after the act |
+| yes | yes | Its listed rules before its first action; any other matching rule arrives after the act |
+| no | no | The usual behaviour: each matching rule is refused once, then served |
+
+## Delivery and lifecycle
+
 A separate command hook announces when the host unloads the rules-on-demand
 engine because its hooks worker was terminated: no at-act rule is then served
 or refused. It announces on the next user prompt, session start, or Agent, Task
@@ -176,11 +332,36 @@ only `-at-act` halves belong here. A duplicate static/on-demand basename is
 reported as loaded twice and the on-demand copy is not served only when their normalised bodies match. Different bodies with the same basename are reported and served.
 
 `before-first-act: true` refuses the first matching call with the rule text;
-retrying passes. Ride-along rules accompany the result; declarative Bash-command
+retrying passes. Refusal, ride-along and prompt delivery omit only a recognized
+first-line adopt provenance stamp and its following one or two line breaks;
+all other body text, including HTML comments and named markers, is preserved.
+Ride-along rules accompany the result; declarative Bash-command
 and tool-input checks measure that call, and model classification includes it.
 The rule cannot guide that call's already-completed action. A model compliance
 classifier is measurement-only and often answers “not applicable”. The
-`agent-model` check counts a spawn without a `model` argument as not followed
+served text is not injected again for later matching acts in the same context,
+but those acts are still measured. Each later matching act of a model rule
+opens a window with that act and the same configured following-call budget;
+closing it costs one more `$.model.classify` call. The refused attempt is not
+an executed act: its retry supplies the initial window's evidence and does not
+open a duplicate later window.
+
+Every stored verdict has an `applicability` label: `applicable` for followed or
+not followed, `not applicable` for an observed act exempted by the check or
+judge, `no act` for an empty check window, and `unknown` for other outcomes.
+An empty model window records `no act` without calling the judge. Initial
+records have `later: false`; later-act records have `later: true` and
+`servedDeliveryId`, linking to the injection that delivered the text. This
+later window's `injectedAt` timestamps the start of its measurement.
+Named checks and
+turn-correlation open no delivery window, so their first record in a context
+is the initial one and each later record is `later: true`. The delivery
+reference is `null` for text recovered from conversation history or delivered
+without a delivery id. The compliance report shows
+the four applicability counts and the later-record count per rule. Legacy
+not-applicable rows have unknown applicability because their cause is ambiguous.
+
+The `agent-model` check counts a spawn without a `model` argument as not followed
 even when an agent definition pins it.
 `gate-background` recognises a fixed build-command vocabulary. A refusal on an
 Agent spawn inside a subagent was missed in one real session (under investigation).
@@ -284,7 +465,7 @@ the compliance store or rollback archives:
 
 ```sh
 node scripts/judge-cases.mjs extract --projects-dir <config-dir>/projects --rules-dir <rules-dir> --out <judge-output-dir>
-node scripts/judge-cases.mjs judge --cases <path-printed-by-extract> --out <judge-output-dir> --model haiku
+node scripts/judge-cases.mjs judge --cases <path-printed-by-extract> --out <judge-output-dir> --model sonnet
 node scripts/judge-cases.mjs score --judges <path-printed-by-judge> --labels labels-a.jsonl --labels labels-b.jsonl
 ```
 
@@ -302,11 +483,20 @@ ambiguous ownership or missing evidence is code-decided `undecidable`.
 For each governed call the excerpt includes its preceding prompt and assistant
 text, arguments and result, with compaction markers and line-numbered gaps.
 Arguments/results are capped at 1,200 characters each and the excerpt at 12,000
-characters; the case records truncation and dropped-act count. Only the model
+characters; the case records `truncated` (anything cut), and separately
+`excerptBudgetHit` (the 12,000-character budget dropped later lines, or cut a
+first line longer than the whole budget) and `itemsCut` (how many single items
+were cut at 1,200 characters, counted where the cut is made), plus the
+dropped-act count. Most cut excerpts lose only item tails, not whole lines. Only the model
 can return `not applicable`, on non-empty evidence; code never decides a negative.
 The extract summary compares raw served blocks to cases produced, including
 serves beyond the quality scanner's refusal bound.
-`judge` defaults to concurrency 2 (override `--concurrency`) and writes under
+`judge` defaults to the `sonnet` model (override `--model`) and to concurrency 2
+(override `--concurrency`). On labelled real transcripts, `haiku` called most
+cases it decided wrongly, including violations where none occurred, so it is no
+longer the default. The judge is still measurement-only: on held-out labelled
+cases `sonnet` is right on most cases it decides, but it leaves many cases
+undecidable from the excerpt and finds few of the real violations. It writes under
 `<config-dir>/plugins/data/wt-rules-on-demand/judge/` unless `--out` chooses a
 directory. Every extract and judge run creates a new exclusive file in a fresh
 run directory and prints its path. To resume, pass the previous judge file as
@@ -323,7 +513,12 @@ model overrides, hooks, plugins, or config directory. Existing files and
 symlinked output directories are refused. Labels have
 `caseId`, `label` and `labeller` (include `rule` for per-rule reporting when a
 case lacks a judge row); score counts every multiply-labelled case for agreement,
-but only agreed cases with judge rows for precision/recall. A judge file with
+but only agreed cases with judge rows for precision/recall. It also prints a
+violation-detector line, in which `followed` and `not applicable` both count as
+no violation: violation precision and recall, no-violation precision, and the
+share of determinate cases the judge decided. A violation called on a case the
+labellers agreed is `undecidable` counts against violation precision: a warning
+the evidence cannot support is a false alarm. A judge file with
 multiple predictions for one case (for example, changed evidence or two model
 runs) must be split before scoring.
 
@@ -334,7 +529,12 @@ injection) and `servingSeq` (the serving call's admission). Its journal entry
 and any window verdict share those fields. Every verdict has a `verdictId` and
 `actSeq` (the deciding call's admission, or a lifecycle close sequence). A
 per-act verdict can list windows it ended in `discharged`; turn end, compaction
-and eviction record a context `lastClose`. Sequence numbers are process-local;
+and eviction record a context `lastClose`; a compaction also counts in the
+context's `resets` by reason (`compaction` when the host dispatched
+`session.compact`, `compaction-detected` when the main loop found a new
+compaction boundary in the session's transcript, `session-changed` when the
+session id changed under the main loop, after `/clear`). Sequence numbers are
+process-local;
 the ID prefix identifies that process's registration. No new store key is used.
 
 The readers join by ID and session before counting. Identical `verdictId`s

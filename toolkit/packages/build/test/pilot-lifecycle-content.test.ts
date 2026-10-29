@@ -46,7 +46,7 @@ describe('pilot lifecycle template', () => {
     expect(PILOT).toMatch(/same finding returns \(anchor plus\s+file plus normalized claim/)
     expect(PILOT).toMatch(/two\s+consecutive blocking passes fail to set a new minimum/)
     expect(PILOT).toContain('Clear passes remain recorded but do not set')
-    expect(PILOT).toContain('A red run returns its failing test names as another TDD fix round')
+    expect(PILOT).toContain('A red run returns every attested red gate as `gate <name> EXIT=<actual exit>`')
     expect(PILOT).toMatch(/VERIFY then runs the tests the card's change affects/)
     expect(PILOT).toMatch(/change to shared test infrastructure[\s\S]{0,120}runs the full suite instead/)
     expect(PILOT).toMatch(/full suite runs once per integration batch/)
@@ -54,5 +54,13 @@ describe('pilot lifecycle template', () => {
     expect(PILOT).toContain('There is no fixed round cap')
     expect(PILOT).toContain('targeted tests, typecheck, and lint')
     expect(PILOT).not.toContain('review → harden')
+  })
+})
+
+describe('pilot lane wait template', () => {
+  it('reads a lane wait by its outcome word and treats DIED as unproven death', () => {
+    expect(PILOT).toMatch(/wt-lane-wait\.mjs --dir <worktree> --pid/)
+    expect(PILOT).toMatch(/outcome\s+word, never the exit status/)
+    expect(PILOT).toMatch(/LANE DIED[\s\S]{0,200}not proof that the lane\s+stopped/)
   })
 })

@@ -1,8 +1,12 @@
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { ensureLaneHostDir, laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
+import { createProcfs, DEFAULT_PROC_ROOT, procfsProcessExists } from './host/procfs.mjs'
 import { quoteRemedyWord } from './remedy-quote.mjs'
+import { signalProcess } from './host/process-signal-boundary.mjs'
+import { scanWorktree } from './host/lane-worktree-scan.mjs'
+import { bestEffortLaneDiagnostic } from './host/lane-diagnostics.mjs'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 500
@@ -142,12 +146,11 @@ function processStartSeconds(value) {
   return Math.floor(milliseconds / 1000)
 }
 
-function processExists(pid, { platform = laneHostPlatform, procRoot = '/proc', spawnSync: execFile = spawnSync, timeoutMs } = {}) {
-  if (platform === 'linux') return existsSync(path.join(procRoot, String(pid)))
+function processExists(pid, { platform = laneHostPlatform, procRoot = DEFAULT_PROC_ROOT, spawnSync: execFile = spawnSync, timeoutMs } = {}) {
+  if (platform === 'linux') return procfsProcessExists(pid, { root: procRoot, platform })
   if (platform === 'darwin') {
     const result = darwinProcessTable(execFile, Number(pid))
-    if (result.status === 'unavailable') return null
-    return result.status === 0 && result.value.has(Number(pid))
+    return darwinProcessExists(result, pid)
   }
   if (platform === 'win32') {
     const result = powershellProcess(pid, execFile, timeoutMs)
@@ -157,14 +160,23 @@ function processExists(pid, { platform = laneHostPlatform, procRoot = '/proc', s
   return null
 }
 
-function processState(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
+function darwinProcessExists(result, pid) {
+  if (result.status === 'unavailable') return null
+  return result.status === 0 && result.value.has(Number(pid))
+}
+
+function darwinProcessState(result, pid) {
+  return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
+}
+
+function processState(pid, { platform = process.platform, procRoot = DEFAULT_PROC_ROOT, spawnSync: execFile = spawnSync } = {}) {
   if (platform === 'darwin') {
     const result = darwinProcessTable(execFile, Number(pid))
-    return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
+    return darwinProcessState(result, pid)
   }
   if (platform !== 'linux') return null
   try {
-    const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+    const stat = createProcfs({ root: procRoot, platform }).readProcessStat(pid, 'utf8')
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]
   } catch { return null }
 }
@@ -183,58 +195,140 @@ function identityStatus(expected, { inspect, platform, procRoot, processExists: 
   return 'unknown'
 }
 
-export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc', processExists: exists = processExists, processState: state = processState } = {}) {
+export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = DEFAULT_PROC_ROOT, processExists: exists = processExists, processState: state = processState } = {}) {
+  return classifyLaneRecord(record, { inspect, platform, procRoot, processExists: exists, processState: state })
+}
+
+function classifyLaneRecord(record, probes) {
   if (!record || typeof record !== 'object' || typeof record.runId !== 'string') {
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
   if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
-  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, startTimeApproximate: record.workerStartTimeApproximate, image: record.workerImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
+  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, startTimeApproximate: record.workerStartTimeApproximate, image: record.workerImage }, probes)
   const child = record.childPid === null && record.childArgv === null
     ? 'not-spawned'
-    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, startTimeApproximate: record.childStartTimeApproximate, image: record.childImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
-  if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
-  if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
-  if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
-  if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
+    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, startTimeApproximate: record.childStartTimeApproximate, image: record.childImage }, probes)
+  return classifyLaneIdentities(record, worker, child, probes.platform)
+}
+
+function classifyLaneIdentities(record, worker, child, platform) {
+  const early = classifyGoneOrLaunching(record, worker, child)
+  if (early) return early
   if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
-  if (worker === 'unknown' || child === 'unknown') {
-    const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
-      ? `worker identity ${record.workerIdentity}`
-      : child === 'unknown' && typeof record.childIdentity === 'string'
-        ? `child identity ${record.childIdentity}`
-        : null
-    return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
-  }
+  if (worker === 'unknown' || child === 'unknown') return classifyUnknownIdentity(record, worker, child, platform)
   if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
     return { status: record.state, reason: record.state, worker, child }
   }
   return { status: 'unknown', reason: 'inconsistent-record', worker, child }
 }
 
-export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, procRoot = '/proc', processExists: exists = processExists, processState: state = processState, journal = () => {}, source = 'unknown', markTerminal = null, ownedChild = null, recordWorktree = null } = {}) {
+function classifyGoneOrLaunching(record, worker, child) {
+  if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
+  if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
+  return classifyGoneWorker(worker, child)
+}
+
+function classifyGoneWorker(worker, child) {
+  if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
+  if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
+  return null
+}
+
+function classifyUnknownIdentity(record, worker, child, platform) {
+  const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
+    ? `worker identity ${record.workerIdentity}`
+    : child === 'unknown' && typeof record.childIdentity === 'string'
+      ? `child identity ${record.childIdentity}`
+      : null
+  return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
+}
+
+function terminationOptions(options) {
+  const { inspect = inspectProcess, kill = signalProcess, graceMs = 1000, platform = process.platform, procRoot = DEFAULT_PROC_ROOT } = options
+  return { inspect, kill, graceMs, platform, procRoot, ...terminationControlOptions(options) }
+}
+
+function terminationControlOptions({ processExists: exists = processExists, processState: state = processState, journal = () => {}, source = 'unknown', markTerminal = null, ownedChild = null, recordWorktree = null }) {
+  return { exists, state, journal, source, markTerminal, ownedChild, recordWorktree }
+}
+
+function terminationClassification(record, { inspect, platform, procRoot, exists, state }) {
+  return classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
+}
+
+export function terminateLane(record, options = {}) {
+  const settings = terminationOptions(options)
+  const { source, ownedChild } = settings
   const event = { event: 'termination-signaled', runId: record.runId, source, workerPid: record.workerPid, childPid: record.childPid, pid: record.childPid, argv: argvSummary(record.childArgv ?? []), worktree: record.worktree, owner: record.owner ?? null, reason: 'verified lane process group' }
-  // The worker owns this ChildProcess handle and its detached group. This path deliberately does
-  // not consult /proc and never sends SIGKILL to the group leader (itself).
-  if (source === 'worker' && ownedChild?.pid === record.childPid) {
-    journal(event)
-    if (markTerminal) markTerminal('terminating')
-    try {
-      if (platform === 'win32') ownedChild.kill('SIGTERM')
-      else kill(-record.workerPid, 'SIGTERM')
-    } catch (error) {
-      if (error?.code !== 'ESRCH') return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict: { status: 'unknown' } }
-    }
-    if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-    try { kill(record.childPid, 0); ownedChild.kill('SIGKILL') } catch (error) { if (error?.code !== 'ESRCH') return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict: { status: 'unknown' } } }
-    if (markTerminal) markTerminal('terminal')
-    journal({ ...event, event: 'terminated', reason: 'terminated' })
-    return { killed: true, reason: 'terminated', verdict: { status: 'gone', reason: 'worker-owned-child-ended' } }
-  }
-  const verdict = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
+  if (source === 'worker' && ownedChild?.pid === record.childPid) return terminateOwnedLane(record, settings, event)
+  const verdict = terminationClassification(record, settings)
   if (verdict.status === 'gone') return { killed: false, reason: 'already-gone', verdict }
-  if (!['running', 'decision-needed', 'terminal', 'worker-gone-child-alive'].includes(verdict.status)) {
-    return { killed: false, reason: verdict.reason, verdict }
+  if (!['running', 'decision-needed', 'terminal', 'worker-gone-child-alive'].includes(verdict.status)) return { killed: false, reason: verdict.reason, verdict }
+  const refused = verifyLaneTermination(record, settings, event, verdict)
+  if (refused) return refused
+  return terminateVerifiedLaneGroup(record, settings, event, verdict)
+}
+
+function ownedTerminationSignal(record, { kill, platform, ownedChild }) {
+  try {
+    if (platform === 'win32') ownedChild.kill('SIGTERM')
+    else kill(-record.workerPid, 'SIGTERM')
+  } catch (error) {
+    if (error?.code !== 'ESRCH') return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict: { status: 'unknown' } }
   }
+  return null
+}
+
+function ownedTerminationForce(record, { kill, ownedChild }) {
+  try { kill(record.childPid, 0); ownedChild.kill('SIGKILL') } catch (error) {
+    if (error?.code !== 'ESRCH') return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict: { status: 'unknown' } }
+  }
+  return null
+}
+
+// The worker owns the child handle and detached group. Its own leader is never force-signalled.
+function terminateOwnedLane(record, settings, event) {
+  const { journal, markTerminal, graceMs } = settings
+  const refused = ownedTerminationSignal(record, settings)
+  if (refused) return refused
+  if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
+  const failed = ownedTerminationForce(record, settings)
+  if (failed) return failed
+  bestEffortLaneDiagnostic('termination journal', () => journal(event))
+  if (markTerminal) {
+    bestEffortLaneDiagnostic('terminal state', () => markTerminal('terminating'))
+    bestEffortLaneDiagnostic('terminal state', () => markTerminal('terminal'))
+  }
+  bestEffortLaneDiagnostic('termination journal', () => journal({ ...event, event: 'terminated', reason: 'terminated' }))
+  return { killed: true, reason: 'terminated', verdict: { status: 'gone', reason: 'worker-owned-child-ended' } }
+}
+
+function terminationWorktreeRefusal(record, child, recordWorktree) {
+  if (child && !child.cwd) return 'child-cwd-unreadable'
+  let recordRoot
+  let sourceRoot
+  let childCwd
+  try { recordRoot = realpathSync(record.worktree); sourceRoot = realpathSync(recordWorktree) } catch { return 'record-worktree-mismatch' }
+  if (recordRoot !== sourceRoot) return 'record-worktree-mismatch'
+  try { childCwd = child ? realpathSync(child.cwd) : null } catch { return 'child-cwd-unreadable' }
+  const relative = child ? path.relative(recordRoot, childCwd) : null
+  return child && terminationCwdOutside(relative) ? 'child-cwd-outside-worktree' : null
+}
+
+function terminationCwdOutside(relative) {
+  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+}
+
+function terminationIdentityChanged(record, worker, child) {
+  return (worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, cwd: record.workerCwd }, worker))
+    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, cwd: record.childCwd }, child))
+}
+
+function terminationGroupChanged(record, worker, child) {
+  return (worker?.groupId && worker.groupId !== record.workerPid) || (child?.groupId && child.groupId !== record.workerPid)
+}
+
+function verifyLaneTermination(record, { inspect, platform, source, recordWorktree, journal }, event, verdict) {
   const worker = inspect(record.workerPid, { platform, captureCwd: true })
   const child = inspect(record.childPid, { platform, captureCwd: true })
   const refuse = (reason) => {
@@ -243,23 +337,16 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
   }
   if (platform === 'win32') return refuse('external-tree-termination-unavailable-win32')
   if (['control', 'watcher'].includes(source)) {
-    if (child && !child.cwd) return refuse('child-cwd-unreadable')
-    let recordRoot
-    let sourceRoot
-    let childCwd
-    try { recordRoot = realpathSync(record.worktree); sourceRoot = realpathSync(recordWorktree) } catch { return refuse('record-worktree-mismatch') }
-    if (recordRoot !== sourceRoot) return refuse('record-worktree-mismatch')
-    try { childCwd = child ? realpathSync(child.cwd) : null } catch { return refuse('child-cwd-unreadable') }
-    const relative = child ? path.relative(recordRoot, childCwd) : null
-    if (child && (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) return refuse('child-cwd-outside-worktree')
+    const reason = terminationWorktreeRefusal(record, child, recordWorktree)
+    if (reason) return refuse(reason)
   }
-  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, cwd: record.workerCwd }, worker))
-    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, cwd: record.childCwd }, child))) {
-    return { killed: false, reason: 'identity-changed', verdict }
-  }
-  if ((worker?.groupId && worker.groupId !== record.workerPid) || (child?.groupId && child.groupId !== record.workerPid)) {
-    return { killed: false, reason: 'process-group-changed', verdict }
-  }
+  if (terminationIdentityChanged(record, worker, child)) return { killed: false, reason: 'identity-changed', verdict }
+  if (terminationGroupChanged(record, worker, child)) return { killed: false, reason: 'process-group-changed', verdict }
+  return null
+}
+
+function terminateVerifiedLaneGroup(record, settings, event, verdict) {
+  const { journal, markTerminal, kill } = settings
   journal(event)
   if (markTerminal) markTerminal('terminating')
   const signal = (name) => {
@@ -268,30 +355,44 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
       throw error
     }
   }
-  try {
-    if (!signal('SIGTERM')) {
-      if (markTerminal) markTerminal('terminal')
-      return { killed: false, reason: 'already-gone', verdict }
-    }
-    if (markTerminal) markTerminal('terminal')
-    if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-    const afterTerm = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
-    if (afterTerm.status === 'gone') {
-      journal({ ...event, event: 'terminated', reason: 'terminated' })
-      return { killed: true, reason: 'terminated', verdict: afterTerm }
-    }
-    if (afterTerm.status === 'unknown' && afterTerm.reason === 'identity-unreadable') return { killed: false, reason: 'identity-unreadable-after-sigterm', verdict: afterTerm }
-    if (!signal('SIGKILL')) return { killed: true, reason: 'terminated', verdict: afterTerm }
-    if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-    const afterKill = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
-    if (afterKill.status === 'gone') {
-      journal({ ...event, event: 'terminated', reason: 'terminated' })
-      return { killed: true, reason: 'terminated', verdict: afterKill }
-    }
-    return { killed: false, reason: 'still-alive-after-sigkill', verdict: afterKill }
-  } catch (error) {
+  try { return endVerifiedLaneGroup(record, settings, event, verdict, signal) } catch (error) {
     return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict }
   }
+}
+
+function endVerifiedLaneGroup(record, settings, event, verdict, signal) {
+  const { markTerminal, graceMs } = settings
+  if (!signal('SIGTERM')) {
+    if (markTerminal) markTerminal('terminal')
+    return { killed: false, reason: 'already-gone', verdict }
+  }
+  if (markTerminal) markTerminal('terminal')
+  if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
+  const afterTerm = terminationClassification(record, settings)
+  const done = afterLaneTerm(settings, event, afterTerm)
+  if (done) return done
+  return forceVerifiedLaneGroup(record, settings, event, afterTerm, signal)
+}
+
+function afterLaneTerm({ journal }, event, afterTerm) {
+  if (afterTerm.status === 'gone') {
+    journal({ ...event, event: 'terminated', reason: 'terminated' })
+    return { killed: true, reason: 'terminated', verdict: afterTerm }
+  }
+  if (afterTerm.status === 'unknown' && afterTerm.reason === 'identity-unreadable') return { killed: false, reason: 'identity-unreadable-after-sigterm', verdict: afterTerm }
+  return null
+}
+
+function forceVerifiedLaneGroup(record, settings, event, afterTerm, signal) {
+  const { graceMs, journal } = settings
+  if (!signal('SIGKILL')) return { killed: true, reason: 'terminated', verdict: afterTerm }
+  if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
+  const afterKill = terminationClassification(record, settings)
+  if (afterKill.status === 'gone') {
+    journal({ ...event, event: 'terminated', reason: 'terminated' })
+    return { killed: true, reason: 'terminated', verdict: afterKill }
+  }
+  return { killed: false, reason: 'still-alive-after-sigkill', verdict: afterKill }
 }
 
 function inspectDarwinProcess(pid, execFile, captureCwd) {
@@ -312,22 +413,39 @@ function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts,
   return { pid, argv: Array.isArray(recordedArgv) ? recordedArgv : [], startTime, image: { name, path: typeof result.value.Path === 'string' && result.value.Path ? result.value.Path : null }, groupId: null, cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1, reportEvidence = null } = {}) {
+function defaultInspectionTimeout(platform) {
+  return platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined
+}
+
+function defaultInspectionAttempts(platform, recordedArgv) {
+  return platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1
+}
+
+export function inspectProcess(pid, { procRoot = DEFAULT_PROC_ROOT, platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = defaultInspectionTimeout(platform), recordedArgv = null, attempts = defaultInspectionAttempts(platform, recordedArgv), reportEvidence = null } = {}) {
+  return inspectProcessOnPlatform(pid, procRoot, platform, execFile, { captureCwd, timeoutMs, recordedArgv, attempts, reportEvidence })
+}
+
+function inspectProcessOnPlatform(pid, procRoot, platform, execFile, { captureCwd, timeoutMs, recordedArgv, attempts, reportEvidence }) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
   if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
   if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv, attempts, reportEvidence)
   if (platform !== 'linux') return null
+  const procfs = createProcfs({ root: procRoot, platform })
+  return inspectLinuxProcess(pid, procfs)
+}
+
+function inspectLinuxProcess(pid, procfs) {
   try {
-    const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
-    const cwd = readlinkSync(path.join(procRoot, String(pid), 'cwd'))
-    const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+    const argv = procfs.readCommandLine(pid).toString().split('\0').filter(Boolean)
+    const cwd = procfs.readWorkingDirectory(pid)
+    const stat = procfs.readProcessStat(pid, 'utf8')
     const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
     if (rest[0] === 'Z') return null
     return { pid: Number(pid), argv, cwd, groupId: Number(rest[2]), startTime: Number(rest[19]) }
   } catch {
     try {
-      const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
-      const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+      const argv = procfs.readCommandLine(pid).toString().split('\0').filter(Boolean)
+      const stat = procfs.readProcessStat(pid, 'utf8')
       const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
       if (rest[0] === 'Z') return null
       return { pid: Number(pid), argv, cwd: null, groupId: Number(rest[2]), startTime: Number(rest[19]) }
@@ -358,7 +476,12 @@ export function processEvidenceStatus(pid, { platform = process.platform, inspec
   return status
 }
 
+function hasQueueDependentBound(record) {
+  return record?.unattendedMaxSeconds === null && ['suite-lock-no-progress', 'suite-lock-wait-or-hold'].includes(record?.queueWaitBound)
+}
+
 export function laneHardBoundAt(record) {
+  if (hasQueueDependentBound(record)) return null
   const timeoutAt = Date.parse(record?.timeoutAt)
   const timeoutMs = Number(record?.timeoutSeconds) * 1000
   const graceMs = Number(record?.decisionGraceSeconds) * 1000
@@ -392,43 +515,27 @@ function directoryEntries(dir) {
   try { return readdirSync(dir, { withFileTypes: true }) } catch { return null }
 }
 
-export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
-  if (maxEntries < 0) return { at: null, bounded: true, status: 'unknown' }
-  const skipped = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
-  const stack = [root]
-  let latest = 0
-  let latestPath = null
-  let visited = 0
-  while (stack.length) {
-    const dir = stack.pop()
-    const entries = directoryEntries(dir)
-    if (entries === null) continue
-    for (const entry of entries) {
-      if (++visited > maxEntries) return { at: null, bounded: true, status: 'unknown' }
-      if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))) continue
-      const full = path.join(dir, entry.name)
-      try {
-        const stat = statSync(full)
-        if (stat.mtimeMs > latest) { latest = stat.mtimeMs; latestPath = full }
-        if (entry.isDirectory()) stack.push(full)
-      } catch {}
-    }
-  }
-  return { at: latest || null, path: latestPath, bounded: false, status: 'known' }
+export function latestWorktreeWrite(root, options) {
+  return scanWorktree(root, options)
 }
 
 export function appendSupervisorJournal(dataDir, event) {
-  mkdirSync(dataDir, { recursive: true })
-  const journal = path.join(dataDir, 'lane-supervisor.jsonl')
   try {
-    if (statSync(journal).size >= JOURNAL_MAX_BYTES) {
-      rmSync(`${journal}.1`, { force: true })
-      renameSync(journal, `${journal}.1`)
+    mkdirSync(dataDir, { recursive: true })
+    const journal = path.join(dataDir, 'lane-supervisor.jsonl')
+    try {
+      if (statSync(journal).size >= JOURNAL_MAX_BYTES) {
+        rmSync(`${journal}.1`, { force: true })
+        renameSync(journal, `${journal}.1`)
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
     }
+    appendFileSync(journal, `${JSON.stringify({ version: 1, time: new Date().toISOString(), ...event })}\n`)
   } catch (error) {
-    if (error?.code !== 'ENOENT') throw error
+    bestEffortLaneDiagnostic('supervisor journal', () => { throw error })
+    throw error
   }
-  appendFileSync(journal, `${JSON.stringify({ version: 1, time: new Date().toISOString(), ...event })}\n`)
 }
 
 export function writeJsonAtomic(file, value) {

@@ -31,6 +31,8 @@
 // rule the harness adds after the version this was written against. The PermissionRequest half
 // of the hook covers what this prediction misses.
 
+import { toGitBashPath } from './git-bash-path.mjs'
+
 const NAME = '[A-Za-z_][A-Za-z0-9_]*'
 // A variable reference as the first thing in a word: `$D`, `${D}`, `${D-}`, `${D:-}`, `${D:-""}`,
 // `${D:-$E}` — every form that can still expand to empty. `${D:?}` is deliberately absent.
@@ -63,52 +65,44 @@ export function blankHeredocBodies(text) {
   return heredocSource(text).text
 }
 
+// Deliberately a small language, not a partial Bash parser: one standalone, leading
+// cat (optionally writing a literal path) or git commit -F - with one terminal redirect.
+const HEREDOC_CAT_COMMAND = String.raw`cat(?:[ \t]+>[ \t]*[A-Za-z0-9_./-]+)?`
+const HEREDOC_COMMAND_PREFIX = String.raw`(?:${HEREDOC_CAT_COMMAND}|git[ \t]+commit[ \t]+-F[ \t]+-)`
+const HEREDOC_DELIMITER_WORD = String.raw`(?:(\w+)|'(\w+)'|"(\w+)")`
+const CERTAIN_HEREDOC = new RegExp(String.raw`^[ \t]*${HEREDOC_COMMAND_PREFIX}[ \t]+<<(-?)[ \t]*${HEREDOC_DELIMITER_WORD}[ \t]*$`)
+const SIMPLE_ARGUMENT = String.raw`(?:[A-Za-z0-9_./*+-]+|\$${NAME}[A-Za-z0-9_./*+-]*|"\$${NAME}"[A-Za-z0-9_./*+-]*)`
+const SIMPLE_COMMAND = new RegExp(String.raw`^[ \t]*([A-Za-z0-9_./+-]+)(?:[ \t]+${SIMPLE_ARGUMENT})*[ \t]*$`)
+const COMPOUND_WORDS = new Set([
+  'case', 'coproc', 'do', 'done', 'elif', 'else', 'esac', 'fi', 'for', 'function',
+  'if', 'in', 'select', 'then', 'time', 'until', 'while',
+])
+
+function certainFollowingCommand(line) {
+  if (/^[ \t]*$/.test(line)) return true
+  const match = SIMPLE_COMMAND.exec(line)
+  return match !== null && !COMPOUND_WORDS.has(match[1])
+}
+
+/** Authorise blanking only after classifying the WHOLE input. Any uncertainty returns
+ * the original bytes, including bodies tentatively identified before a later bad line.
+ * No escapes, CR, backticks or expansions other than plain $NAME are admitted anywhere;
+ * this also excludes executable substitutions in otherwise expanding heredoc bodies. */
 function heredocSource(text) {
-  const lines = String(text ?? '').split('\n')
-  const pending = []
-  const nested = []
-  let offset = 0
-  const out = lines.map((line) => {
-    const start = offset
-    offset += line.length + 1
-    if (pending.length) {
-      const first = pending[0]
-      const probe = first.tabs ? line.replace(/^\t+/, '') : line
-      if (probe === first.delim) { pending.shift(); return ' '.repeat(line.length) }
-      if (!first.quoted) {
-        for (const sub of parseStatements(line).nested) nested.push({ ...sub, start: start + sub.start, reparsed: true })
-      }
-      return ' '.repeat(line.length)
-    }
-    let quote = null
-    for (let i = 0; i < line.length; i += 1) {
-      const c = line[i]
-      if (c === '\\') { i += 1; continue }
-      if (quote) {
-        if (c === quote) quote = null
-        continue
-      }
-      if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) break
-      if (c === '"' || c === "'") {
-        quote = c
-        continue
-      }
-      if (c !== '<' || line[i + 1] !== '<' || line[i + 2] === '<') continue
-      let j = i + 2
-      const tabs = line[j] === '-'
-      if (tabs) j += 1
-      while (line[j] === ' ' || line[j] === '\t') j += 1
-      const match = /^(?:\\.|[^\s;|&<>])+/u.exec(line.slice(j))
-      if (!match) continue
-      const raw = match[0]
-      pending.push({ delim: shellUnquote(raw), tabs, quoted: /["'\\]/.test(raw) })
-      // The cursor intentionally skips the delimiter word after consuming it.
-      // eslint-disable-next-line sonarjs/updated-loop-counter
-      i = j + raw.length - 1
-    }
-    return line
-  })
-  return { text: out.join('\n'), nested }
+  const src = String(text ?? '')
+  const unchanged = { text: src, nested: [] }
+  if (/[\r\\`]/.test(src) || /\$(?![A-Za-z_])/.test(src)) return unchanged
+  const lines = src.split('\n')
+  const opener = CERTAIN_HEREDOC.exec(lines[0])
+  if (!opener) return unchanged
+  const delimiter = opener[2] ?? opener[3] ?? opener[4]
+  const end = lines.findIndex((line, i) => i > 0 &&
+    (opener[1] ? line.replace(/^\t+/, '') : line) === delimiter)
+  if (end < 0 || !lines.slice(end + 1).every(certainFollowingCommand)) return unchanged
+  return {
+    text: lines.map((line, i) => i > 0 && i < end ? ' '.repeat(line.length) : line).join('\n'),
+    nested: [],
+  }
 }
 
 /** Splits a command into statements and words, quote-aware. Command substitutions, backtick spans
@@ -676,21 +670,8 @@ export function scanRmCriticalPath(command, { cwd = null, home = null, env = {} 
   const text = String(command ?? '')
   if (!/\brm(?:dir)?\b/.test(text)) return []
   const hits = []
-  scanScript(text, { cwd: gitBashPath(cwd), home: gitBashPath(home), env: env ?? {} }, 0, hits)
+  scanScript(text, { cwd: toGitBashPath(cwd), home: toGitBashPath(home), env: env ?? {} }, 0, hits)
   return hits
-}
-
-/**
- * The hook's cwd and home come from the host: on win32 they read `C:\Users\x`. The Bash commands
- * it judges run in Git Bash, which spells the same directory `/c/Users/x`. Comparing the two
- * forms would miss every home or working-directory target, so a drive-letter path is rewritten
- * to the Git Bash form. A POSIX path is returned unchanged.
- */
-function gitBashPath(path) {
-  if (typeof path !== 'string') return path
-  const drive = /^([A-Za-z]):(?:[\\/]|$)/.exec(path)
-  if (!drive) return path
-  return `/${drive[1].toLowerCase()}/${path.slice(2).replace(/\\/g, '/').replace(/^\/+/, '')}`
 }
 
 /** Does `command` invoke rm/rmdir with a target the critical-path check could stop on? A target

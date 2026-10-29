@@ -1,0 +1,110 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "git-bash-path-spelling",
+    "capturedAt": "2026-10-19T01:48:10.925Z",
+    "command": "node git-bash-path-spelling.mjs D:\\a\\workflow-toolbox\\workflow-toolbox\\probes\\host-platform\\evidence\\windows-latest\\git-bash-path-spelling.json",
+    "runId": "39186949167",
+    "commitSha": "9d325e2021b98a67462ddca7e2f74b558360473a",
+    "runnerImage": {
+      "label": "windows-latest",
+      "os": "win25-vs2026",
+      "version": "20261007.264.1"
+    },
+    "osRelease": {
+      "platform": "win32",
+      "release": "10.0.26100",
+      "version": "Windows Server 2025 Datacenter",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.21.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "command": "pwsh -NoProfile -NonInteractive -Command $PSVersionTable.PSVersion.ToString()",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "7.6.6\r\n"
+      }
+    }
+  },
+  "measurements": {
+    "hostDirectory": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-bash-path-MDxzqt",
+    "shell": {
+      "pwd": {
+        "label": "cd <host directory, forward slashes> && pwd",
+        "script": "cd 'C:/Users/RUNNER~1/AppData/Local/Temp/wt-host-bash-path-MDxzqt' && pwd",
+        "exitCode": 0,
+        "spawnError": null,
+        "stdout": "/tmp/wt-host-bash-path-MDxzqt\n",
+        "stderr": ""
+      },
+      "pwdWindows": {
+        "label": "cd <host directory> && pwd -W",
+        "script": "cd 'C:/Users/RUNNER~1/AppData/Local/Temp/wt-host-bash-path-MDxzqt' && pwd -W",
+        "exitCode": 0,
+        "spawnError": null,
+        "stdout": "C:/Users/runneradmin/AppData/Local/Temp/wt-host-bash-path-MDxzqt\n",
+        "stderr": ""
+      },
+      "driveSpellingCd": {
+        "label": "cd <drive-letter Git Bash spelling> && pwd",
+        "script": "cd '/c/Users/RUNNER~1/AppData/Local/Temp/wt-host-bash-path-MDxzqt' && pwd",
+        "exitCode": 0,
+        "spawnError": null,
+        "stdout": "/c/Users/RUNNER~1/AppData/Local/Temp/wt-host-bash-path-MDxzqt\n",
+        "stderr": ""
+      },
+      "driveless": {
+        "label": "cd /tmp && pwd && pwd -W",
+        "script": "cd /tmp && pwd && pwd -W",
+        "exitCode": 0,
+        "spawnError": null,
+        "stdout": "/tmp\nC:/Users/runneradmin/AppData/Local/Temp\n",
+        "stderr": ""
+      }
+    },
+    "nodeReads": [
+      {
+        "label": "native host spelling",
+        "file": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-bash-path-MDxzqt\\vitest.config.ts",
+        "status": "read-marker"
+      },
+      {
+        "label": "forward-slash host spelling",
+        "file": "C:/Users/RUNNER~1/AppData/Local/Temp/wt-host-bash-path-MDxzqt/vitest.config.ts",
+        "status": "read-marker"
+      },
+      {
+        "label": "shell pwd spelling, raw",
+        "file": "/tmp/wt-host-bash-path-MDxzqt/vitest.config.ts",
+        "status": "read-failed",
+        "code": "ENOENT"
+      },
+      {
+        "label": "shell pwd spelling, path.normalize",
+        "file": "\\tmp\\wt-host-bash-path-MDxzqt\\vitest.config.ts",
+        "status": "read-failed",
+        "code": "ENOENT"
+      },
+      {
+        "label": "drive-letter Git Bash spelling, raw",
+        "file": "/c/Users/RUNNER~1/AppData/Local/Temp/wt-host-bash-path-MDxzqt/vitest.config.ts",
+        "status": "read-failed",
+        "code": "ENOENT"
+      }
+    ],
+    "nodePathStrings": {
+      "sep": "\\",
+      "joinPosixLiteral": "\\host\\run.log",
+      "normalizePosixLiteral": "\\x\\toolkit",
+      "resolvePosixLiteral": "D:\\repo\\toolkit",
+      "isAbsoluteGitBashDrive": true,
+      "normalizeGitBashDrive": "\\c\\Users\\x"
+    }
+  }
+}

@@ -227,21 +227,6 @@ export function derivePushTargets(input) {
   return parsePushCommand(input?.tool_input?.command, input.cwd || process.cwd())
 }
 
-// Same shell segmentation and tokenization as pushes; recorder callers need repository targets,
-// never a second shell parser. Only executable heads count, not quoted mentions or heredoc data.
-export function parseGitCommands(command, cwd = process.cwd()) {
-  const commands = []
-  let current = cwd
-  for (const segment of splitCommandSegments(stripHeredocs(String(command || '')))) {
-    const tokens = invocationTokens(segment)
-    if (!tokens) continue
-    if (tokens[0] === 'cd' && tokens.length === 2) { current = path.resolve(current, tokens[1]); continue }
-    const invocation = gitInvocation(tokens, current)
-    if (invocation) commands.push({ ...invocation, args: tokens.slice(invocation.index + 1) })
-  }
-  return commands
-}
-
 export function derivePushChecks(input) {
   const seen = new Set()
   return derivePushTargets(input).flatMap((target) => {

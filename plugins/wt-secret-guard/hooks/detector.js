@@ -1,5 +1,93 @@
 import { registrationRefusalReason } from './token-vault.js';
 
+function jwtPrefixAt(text, at) {
+  return text.startsWith('eyJ', at) && !/[A-Za-z0-9_]/.test(text[at - 1] ?? '')
+    && /[A-Za-z0-9_-]/.test(text[at + 3] ?? '');
+}
+
+function jwtField(text, start) {
+  let end = start; let prefix = -1; let wordEnd = start;
+  while (/[A-Za-z0-9_-]/.test(text[end] ?? '')) {
+    if (prefix < 0 && jwtPrefixAt(text, end)) prefix = end;
+    if (/[A-Za-z0-9_]/.test(text[end])) wordEnd = end + 1;
+    end += 1;
+  }
+  return { start, end, prefix, wordEnd };
+}
+
+function jwtMatchFrom(text, start) {
+  // All eyJ starts in a field share its two following fields. Examine a field
+  // once as a first field; lookahead scans overlap at most three fields. The
+  // last word endpoint implements the greedy final run followed by \b.
+  for (let at = start; at < text.length;) {
+    const first = jwtField(text, at);
+    at = first.end + 1;
+    if (first.prefix < 0 || text[first.end] !== '.') continue;
+    const second = jwtField(text, first.end + 1);
+    if (second.start === second.end || text[second.end] !== '.') continue;
+    const third = jwtField(text, second.end + 1);
+    if (third.wordEnd === third.start) continue;
+    const match = [text.slice(first.prefix, third.wordEnd)];
+    match.index = first.prefix;
+    return match;
+  }
+  return null;
+}
+
+function jwtMatcher() {
+  return {
+    lastIndex: 0,
+    exec(text) {
+      const match = jwtMatchFrom(text, this.lastIndex);
+      this.lastIndex = match ? match.index + match[0].length : 0;
+      return match;
+    },
+  };
+}
+
+function privateKeyMatcher() {
+  return {
+    lastIndex: 0,
+    exec(text) {
+      // The first BEGIN pairs with the first subsequent END. If there is no END,
+      // later BEGINs cannot match either; never restart the whole suffix scan.
+      const begin = /-----BEGIN [A-Z ]*PRIVATE KEY-----/g;
+      const end = /-----END [A-Z ]*PRIVATE KEY-----/g;
+      begin.lastIndex = this.lastIndex;
+      const opening = begin.exec(text);
+      if (!opening) { this.lastIndex = 0; return null; }
+      end.lastIndex = begin.lastIndex;
+      const closing = end.exec(text);
+      if (!closing) { this.lastIndex = 0; return null; }
+      this.lastIndex = end.lastIndex;
+      const match = [text.slice(opening.index, this.lastIndex)];
+      match.index = opening.index;
+      return match;
+    },
+  };
+}
+
+// A lazy `(\S.*?)[ \t]*$` capture retries the trailing blanks at every extension: quadratic on a blank
+// run. The greedy `(\S.*)$` ends at the same line end in one pass; dropping the capture's trailing spaces
+// and tabs then gives the old capture exactly, and match[0] keeps its old span.
+function trailingBlankCapture(expression) {
+  return {
+    get lastIndex() { return expression.lastIndex; },
+    set lastIndex(value) { expression.lastIndex = value; },
+    exec(text) {
+      const match = expression.exec(text);
+      if (match) match[1] = withoutTrailingBlanks(match[1]);
+      return match;
+    },
+  };
+}
+
+function withoutTrailingBlanks(value) {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === ' ' || value[end - 1] === '\t')) end -= 1;
+  return value.slice(0, end);
+}
+
 const patterns = [
   ['github-classic', /\bghp_[A-Za-z0-9]{36}\b/g],
   ['github-fine-grained', /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g],
@@ -7,17 +95,17 @@ const patterns = [
   ['openai-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/g],
   ['slack-token', /\bxox[abp]-[A-Za-z0-9-]{10,}\b/g],
   ['brave-api-key', /(?<![A-Za-z0-9_-])BSA[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])/g],
-  ['jwt', /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g],
-  ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
+  ['jwt', jwtMatcher()],
+  ['private-key', privateKeyMatcher()],
   // The key-based kinds below match on ONE line ([ \t], never \s) and capture the value in a group: a
   // detection is the value itself, never the key, the indentation or a following line (card
   // the over-wide capture case - "token:\n    type" became a held value and refused every text sharing it).
   ['assignment', /\b(?:password|token|secret)[ \t]*=[ \t]*(?![=])(?:"([^"]+)"|'([^']+)'|([^\s;,)}"']+))/gi],
-  ['op-output', /^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*?)[ \t]*$/gim],
+  ['op-output', trailingBlankCapture(/^[ \t]*(?:password|token|secret|credential)[ \t]*:[ \t]*(\S.*)$/gim)],
   // A QUOTED key with a quoted value: a JSON body or a Python dict - `{"password": "..."}`. No other
   // pattern matches it: `assignment` needs `=` and `op-output` needs an unquoted key at a line start.
   ['key-value', /(["'])(?:password|token|secret)\1[ \t]*:[ \t]*(?:"([^"\n]+)"|'([^'\n]+)')/gi],
-  ['environment-dump', /^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*?)[ \t]*$/gm],
+  ['environment-dump', trailingBlankCapture(/^[ \t]*(?:\+[ \t]*)?(?:export[ \t]+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)[ \t]*=[ \t]*(\S.*)$/gm)],
 ];
 
 // Below this length a captured value is not distinctive: masking it would mask every "true" or "0" in
@@ -35,7 +123,65 @@ function capturedValue(match) {
 const sha = /\b[a-f0-9]{40}\b/gi;
 const uuid = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
 const secretToken = /\bsecret:[a-z-]+#[a-f0-9]{6}\b/gi;
-const email = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,24}\b/g;
+const EMAIL_LOCAL = /[A-Za-z0-9._%+-]/;
+const EMAIL_LABEL = /[A-Za-z0-9-]/;
+const ASCII_WORD = /[A-Za-z0-9_]/;
+
+function emailTldEnd(text, start) {
+  let end = start;
+  while (end - start < 24 && /[A-Za-z]/.test(text[end] ?? '')) end += 1;
+  return end - start >= 2 && !ASCII_WORD.test(text[end] ?? '') ? end : 0;
+}
+
+function emailDomainEnd(text, start) {
+  if (!emailAlnumAt(text, start)) return 0;
+  let at = start;
+  while (EMAIL_LABEL.test(text[at] ?? '')) at += 1;
+  if (!emailAlnumAt(text, at - 1)) return 0;
+  let end = 0;
+  while (text[at] === '.') {
+    at += 1;
+    end = emailTldEnd(text, at) || end;
+    const labelStart = at;
+    while (EMAIL_LABEL.test(text[at] ?? '')) at += 1;
+    if (at === labelStart) break;
+  }
+  return end;
+}
+
+function emailAlnumAt(text, at) {
+  return /[A-Za-z0-9]/.test(text[at] ?? '');
+}
+
+function emailLocalRun(text, start) {
+  let at = start;
+  let boundary = -1;
+  while (EMAIL_LOCAL.test(text[at] ?? '')) {
+    if (boundary < 0 && emailBoundaryAt(text, at)) boundary = at;
+    at += 1;
+  }
+  return { at, boundary };
+}
+
+function emailBoundaryAt(text, at) {
+  return ASCII_WORD.test(text[at]) !== ASCII_WORD.test(text[at - 1] ?? '');
+}
+
+function emailDetections(text) {
+  // One maximal local run per @; all starts in it share the same domain result.
+  // Domain labels have disjoint delimiters. The last valid TLD implements the
+  // regex's greedy repetition, and the first ASCII word boundary its first start
+  // (including word-to-punctuation after a preceding global match).
+  // A domain ends before the next @, so these scans visit each unit O(1) times.
+  const found = [];
+  for (let at = 0; at < text.length;) {
+    const run = emailLocalRun(text, at);
+    const end = text[run.at] === '@' && run.boundary >= 0 ? emailDomainEnd(text, run.at + 1) : 0;
+    if (end) found.push({ kind: 'email', value: text.slice(run.boundary, end) });
+    at = end || run.at + 1;
+  }
+  return found;
+}
 const ipv4 = /(?<![0-9.])(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}(?![0-9.])/g;
 const ipv6Candidate = /(?<![0-9A-Fa-f:])[0-9A-Fa-f]*:[0-9A-Fa-f:]+(?![0-9A-Fa-f:])/g;
 
@@ -124,8 +270,18 @@ function uncertainOrOpCommand(command) {
   return OP_COMMAND.test(normalized) || OP_COMMAND.test(command);
 }
 
+function stripProsePunctuation(word) {
+  // The global regex removes the anchored prefix first, then the suffix of the
+  // original word. Separate scans preserve that order, including overlaps.
+  let start = 0;
+  while (start < word.length && '(["\'`'.includes(word[start])) start += 1;
+  let end = word.length;
+  while (end > start && ')"\'.,;:!?`'.includes(word[end - 1])) end -= 1;
+  return word.slice(start, end);
+}
+
 function proseWords(value) {
-  return value.trim().split(/\s+/).map((word) => word.replace(/^[(["'`]+|[)"'.,;:!?`]+$/g, ''));
+  return value.trim().split(/\s+/).map(stripProsePunctuation);
 }
 
 function completeLine(text, match, options) {
@@ -277,8 +433,7 @@ export function optionalDetections(text, options = {}) {
   if (typeof text !== 'string') return [];
   const found = [];
   if (options.emails) {
-    email.lastIndex = 0;
-    for (let match; (match = email.exec(text));) found.push({ kind: 'email', value: match[0] });
+    for (const item of emailDetections(text)) found.push(item);
   }
   if (options.ipAddresses) {
     ipv4.lastIndex = 0;

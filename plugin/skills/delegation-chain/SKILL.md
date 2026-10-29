@@ -31,6 +31,9 @@ body after each compaction.
 
 Open [references/downward-chain.md](references/downward-chain.md) before choosing a spawn shape or correlating a delegate identity.
 
+Before spawning a card pilot, read `pilot-wave`, section "Which pilot": spawn the harness pilot by
+default; launch the EXPERIMENTAL SDK pilot only on an explicit request for an SDK trial.
+
 ## 2. The upward chain — what actually reaches the spawner, and what silently doesn't
 
 - **A delegate's plain text reaches nobody.** The harness's own tool description says so

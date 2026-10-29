@@ -3,12 +3,15 @@ import { createServer, request as httpRequest, type Server } from 'node:http'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+// @ts-expect-error standalone Node selftest shares its regression cases with Vitest
+import { registerArtifactCspTests } from './artifact-server-csp.selftest.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, atomicWriteJson, chooseRemoteUrl, deriveArtifactPort, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, atomicWriteJson, checkArtifactUrl, chooseRemoteUrl, deriveArtifactPort, detectTailscale, parseTailscaleServeUrl, parseWindowsCheck, probeArtifactServer, registrationPidStatus, windowsCheckScript } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { wslCheckFixture } from './helpers/wsl-check-fixture.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SERVER = join(REPO_ROOT, 'plugin/bin/wt-artifact-server.mjs')
@@ -34,6 +37,9 @@ const STOP_DETACHED_WAIT_MS = 10_000
 // One monitor and up to four spawned servers (initial attempt plus three retries) stop sequentially.
 const MONITORED_SERVER_TEARDOWN_BOUND_MS = STOP_CHILD_WAIT_MS + 4 * STOP_DETACHED_WAIT_MS + FALLBACK_DISCOVERY_MARGIN_MS
 const MONITORED_SERVER_TEST_BOUND_MS = MONITORED_SERVER_STARTUP_CAP_MS + MONITORED_SERVER_TEARDOWN_BOUND_MS
+// The selftest includes three deliberate 5 s command timeouts; its worst isolated run was ~21 s.
+// A 75 s bound exceeds three times the full-precision measured total plus 12 s of startup/cleanup margin.
+const TAILNET_SELFTEST_BOUND_MS = 75_000
 const FALLBACK_DISCOVERY_BOUND_MS = CANDIDATE_PROBE_MS * FALLBACK_CANDIDATES + FALLBACK_READINESS_MS + FALLBACK_DISCOVERY_MARGIN_MS
 const PAUSED_CLAIM_HOLD_MS = 7_000
 const OLD_CLAIM_STALE_BOUND_MS = 3_000
@@ -43,6 +49,12 @@ const PAUSED_HOLDER_COMPLETION_BOUND_MS = PAUSED_CLAIM_HOLD_MS + FALLBACK_DISCOV
 const PAUSED_HOLDER_TEST_BOUND_MS = OLD_CLAIM_STALE_BOUND_MS + CLAIM_OBSERVATION_MARGIN_MS + CONTENDER_OBSERVATION_MS + PAUSED_HOLDER_COMPLETION_BOUND_MS + FALLBACK_DISCOVERY_MARGIN_MS
 // Hosted Windows completed the six-monitor race but retained a process handle beyond the old 2 s removal window.
 const WINDOWS_TEMP_REMOVE_RETRIES = { maxRetries: 100, retryDelay: 100 }
+// Linux can exercise all adapter branches with real processes; other hosts exercise their native refusal.
+const CONTROL_PLATFORMS = process.platform === 'linux' ? ['linux', 'darwin', 'win32'] : [process.platform]
+
+describe('HTML CSP opt-ins', () => {
+  registerArtifactCspTests({ before: beforeAll, after: afterAll, test: it })
+})
 
 function temporaryDir(tag: string) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))
@@ -315,11 +327,26 @@ function readState(stateHome: string): Discovery | null {
 
 function baseEnv(stateHome: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const bin = temporaryDir('tailscale-default-absent')
+  const preload = join(bin, 'no-host-standard-installs.cjs')
+  writeFileSync(preload, `
+const fs = require('node:fs')
+const { syncBuiltinESMExports } = require('node:module')
+const exists = fs.existsSync
+const hostInstalls = new Set([
+  '/mnt/c/Program Files/Tailscale/tailscale.exe',
+  '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+])
+fs.existsSync = (file) => hostInstalls.has(String(file)) ? false : exists(file)
+syncBuiltinESMExports()
+`)
   return {
     ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: stateHome,
     WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
+    // Interop fixtures replace PATH and must declare WSL independently of the real host.
+    WSL_DISTRO_NAME: extra.PATH ? 'fixture' : process.env.WSL_DISTRO_NAME,
     WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1',
     WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1', ...extra,
+    NODE_OPTIONS: `${extra.NODE_OPTIONS ?? process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}`,
   }
 }
 
@@ -571,12 +598,14 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
   return state
 }
 
-// `freshConnection` opens a new socket for the request instead of reusing a pooled keep-alive socket of Node's global agent
-// (keep-alive by default since Node 19), which a server that is closing its side can reset under load.
-function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET', options: { freshConnection?: boolean } = {}): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
+// Every request opens its own socket (`agent: false`), never a pooled keep-alive socket of Node's global agent
+// (keep-alive by default since Node 19). Tests kill servers and reuse ports, so a pooled socket can belong to a dead
+// or closing server and the next request on it reads `ECONNRESET` (the suspected cause of the bare `read ECONNRESET`
+// failures on hosted Windows runners; not reproduced locally).
+function rawRequest(port: number, pathname: string, host?: string, connectHost = '127.0.0.1', method = 'GET'): Promise<{ status: number, body: string, headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolvePromise, reject) => {
     const headers = host === undefined ? {} : { Host: host }
-    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined, ...(options.freshConnection ? { agent: false } : {}) }, (response) => {
+    const req = httpRequest({ host: connectHost, port, path: pathname, method, headers, setHost: host !== undefined, agent: false }, (response) => {
       let body = ''
       response.setEncoding('utf8')
       response.on('data', (chunk) => { body += chunk })
@@ -590,6 +619,331 @@ function rawRequest(port: number, pathname: string, host?: string, connectHost =
 async function health(state: Discovery) {
   const response = await rawRequest(state.port, '/__wt-artifact-server/health', `localhost:${state.port}`)
   return JSON.parse(response.body) as { service: string, version: string, uid: number | string, pid: number, port: number, registeredSessions: number }
+}
+
+// The stand-in must stay silent whatever the runner's NODE_OPTIONS: the CI diagnostic step sets --trace-exit,
+// which makes any node child print its exit stack on stderr.
+function envWithoutNodeOptions() {
+  const env = { ...process.env }
+  delete env.NODE_OPTIONS
+  return env
+}
+
+type Handler = Parameters<typeof createServer>[1]
+async function probeAgainst(handler: Handler, timeout: number, beforeCleanup: () => Promise<void> = async () => {}) {
+  const server = createServer(handler)
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  const { port } = server.address() as { port: number }
+  let timer: NodeJS.Timeout | undefined
+  const pending = new Promise<'pending'>((resolve) => { timer = setTimeout(() => resolve('pending'), timeout * 4 + 2_000) })
+  const started = Date.now()
+  try {
+    const result = await Promise.race([probeArtifactServer(port, timeout), pending])
+    const elapsed = Date.now() - started
+    await beforeCleanup()
+    return { result, elapsed }
+  } finally {
+    clearTimeout(timer)
+    server.closeAllConnections()
+    await closeServer(server)
+  }
+}
+
+function pausedStopPreload(stateHome: string, pid: number) {
+  const preload = join(stateHome, 'pause-on-term.cjs')
+  const spawns = join(stateHome, 'replacement-spawns.log')
+  writeFileSync(preload, `
+const { appendFileSync } = require('node:fs')
+const childProcess = require('node:child_process')
+const { syncBuiltinESMExports } = require('node:module')
+const kill = process.kill.bind(process)
+process.kill = (pid, signal) => kill(pid, pid === ${pid} && signal === 'SIGTERM' ? 'SIGSTOP' : signal)
+const spawn = childProcess.spawn
+childProcess.spawn = (...args) => {
+  appendFileSync(${JSON.stringify(spawns)}, 'spawn\\n')
+  return spawn(...args)
+}
+syncBuiltinESMExports()
+`)
+  return { preload, spawns }
+}
+
+function controlPlatformEnv(stateHome: string, env: NodeJS.ProcessEnv, platform: string) {
+  const preload = join(stateHome, 'control-platform.mjs')
+  const spawns = join(stateHome, 'control-spawns.log')
+  const identities = join(stateHome, 'control-identities.jsonl')
+  const adapterUrl = new URL('../../../../plugin/bin/lib/host/adapter.mjs', import.meta.url).href
+  writeFileSync(preload, `
+import { appendFileSync } from 'node:fs'
+import childProcess from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+import { createHostAdapter, hostAdapter } from ${JSON.stringify(adapterUrl)}
+Object.assign(hostAdapter, createHostAdapter({ platform: ${JSON.stringify(platform)} }))
+const identity = hostAdapter.readProcessIdentity
+hostAdapter.readProcessIdentity = (pid) => {
+  const result = identity(pid)
+  appendFileSync(${JSON.stringify(identities)}, JSON.stringify(result) + '\\n')
+  return result
+}
+const spawn = childProcess.spawn
+childProcess.spawn = (...args) => {
+  appendFileSync(${JSON.stringify(spawns)}, 'spawn\\n')
+  return spawn(...args)
+}
+syncBuiltinESMExports()
+`)
+  return { env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}` }, spawns, identities }
+}
+
+function expectIdentityRefusal(result: Awaited<ReturnType<typeof runCli>>, control: ReturnType<typeof controlPlatformEnv>, platform: string) {
+  expect(result.code).toBe(1)
+  expect(result.stdout).toBe('')
+  expect(result.stderr).toBe("artifact server: could not verify the server's identity; nothing was stopped\n")
+  expect(jsonReceipts(control.identities).at(-1)).toEqual({ status: 'unknown', reason: `PROCESS_IDENTITY_UNAVAILABLE on ${platform}` })
+  expect(spawnReceipts(control.spawns), 'identity refusal must not spawn a second server').toHaveLength(0)
+}
+
+describe.each(CONTROL_PLATFORMS)('artifact stop confirmation with a real paused process (%s adapter)', (platform) => {
+  it.each(['stop', 'restart'])('%s respects platform identity availability while the original PID lives', async (command) => {
+    const stateHome = temporaryDir('paused-stop-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    const server = spawn(process.execPath, [SERVER, 'serve'], { env, stdio: 'ignore' })
+    children.add(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    const { preload, spawns } = pausedStopPreload(stateHome, state.pid)
+    const control = controlPlatformEnv(stateHome, env, platform)
+    try {
+      const result = await runCli([command, '--force'], { ...control.env, NODE_OPTIONS: `${control.env.NODE_OPTIONS} --require=${JSON.stringify(preload)}` })
+      expect(pidAlive(state.pid)).toBe(true)
+      if (platform !== 'linux') {
+        expectIdentityRefusal(result, control, platform)
+        expect((await health(state)).pid).toBe(state.pid)
+        expect(readState(stateHome)?.pid).toBe(state.pid)
+        return
+      }
+      expect((await probeArtifactServer(state.port, 200)).kind).toBe('unknown')
+      expect(result.stdout, 'a live paused server must not be reported stopped').toBe('')
+      expect(result.stderr).toBe(`artifact server: verified PID ${state.pid} did not stop\n`)
+      expect(result.code).toBe(1)
+      expect(existsSync(spawns), 'restart must not spawn while the verified PID lives').toBe(false)
+    } finally {
+      if (platform === 'linux') {
+        process.kill(state.pid, 'SIGCONT')
+        const stopped = await runCli(['stop', '--force'], control.env)
+        expect(stopped.code, stopped.stderr).toBe(0)
+        expect(stopped.stdout).toBe('artifact server: stopped\n')
+        await waitFor(() => pidAlive(state.pid) ? null : true)
+      } else await stopChild(server)
+    }
+  }, 30_000)
+})
+
+function drainingResponsePreload(stateHome: string) {
+  const preload = join(stateHome, 'draining-response.cjs')
+  writeFileSync(preload, `
+const { Server } = require('node:http')
+const emit = Server.prototype.emit
+Server.prototype.emit = function (event, ...args) {
+  if (event === 'request' && args[0].url === '/drain') {
+    args[1].writeHead(200)
+    args[1].write('unfinished response')
+    return true
+  }
+  return emit.call(this, event, ...args)
+}
+`)
+  return preload
+}
+
+async function holdDrainingResponse(port: number) {
+  const request = httpRequest({ host: '127.0.0.1', port, path: '/drain', agent: false })
+  await new Promise<void>((resolve, reject) => {
+    request.once('response', (response) => { response.resume(); resolve() })
+    request.once('error', reject)
+    request.end()
+  })
+  return request
+}
+
+describe.each(CONTROL_PLATFORMS)('artifact stop confirmation with a real draining response (%s adapter)', (platform) => {
+  it.each(['stop', 'restart'])('%s respects platform identity availability while the original response drains', async (command) => {
+    const stateHome = temporaryDir('draining-stop-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(reservation.port) })
+    const preload = drainingResponsePreload(stateHome)
+    const server = spawn(process.execPath, [SERVER, 'serve'], {
+      env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}` }, stdio: 'ignore',
+    })
+    children.add(server)
+    const state = await waitForState(stateHome, () => true, 15_000, { track: false })
+    const request = await holdDrainingResponse(state.port)
+    const control = controlPlatformEnv(stateHome, env, platform)
+    try {
+      const result = await runCli([command, '--force'], control.env)
+      if (platform !== 'linux') {
+        expectIdentityRefusal(result, control, platform)
+        expect((await health(state)).pid).toBe(state.pid)
+        expect(pidAlive(state.pid)).toBe(true)
+        expect(readState(stateHome)?.pid).toBe(state.pid)
+        return
+      }
+      expect((await probeArtifactServer(state.port, 200)).kind).toBe('free')
+      expect(pidAlive(state.pid), 'the old process must still be draining').toBe(true)
+      expect(result.code, 'a closed listener is not process-exit evidence').toBe(1)
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toBe(`artifact server: verified PID ${state.pid} did not stop\n`)
+      expect(readState(stateHome)?.pid).toBe(state.pid)
+      expect(spawnReceipts(control.spawns), 'a draining process must not get a replacement').toHaveLength(0)
+    } finally {
+      request.destroy()
+      if (platform === 'linux') await waitFor(() => pidAlive(state.pid) ? null : true)
+      else await stopChild(server)
+    }
+  }, 30_000)
+})
+
+describe('health probe settles on a broken reply', () => {
+  it('settles as unknown as soon as the server dies after sending headers and part of the body', async () => {
+    const cut: Handler = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json', 'content-length': '200' })
+      response.write('{"service":', () => response.socket?.destroy())
+    }
+    const { result, elapsed } = await probeAgainst(cut, 2_000)
+    expect(result).toEqual({ kind: 'unknown' })
+    expect(elapsed, 'the cut reply was only noticed by a timer').toBeLessThan(1_000)
+  })
+
+  it('settles as unknown within its timeout and closes the socket when the server trickles bytes without finishing', async () => {
+    let bytes = 0
+    let serverSawClose = false
+    let closedBeforeCleanup = false
+    const trickle: Handler = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      const tick = setInterval(() => { if (!response.destroyed) response.write(' ', () => { bytes++ }) }, 50)
+      response.on('close', () => { serverSawClose = true; clearInterval(tick) })
+    }
+    // Read the flag before the fixture's own cleanup closes every connection, so only the probe can have set it.
+    const settleWindow = async () => { closedBeforeCleanup = await waitFor(() => serverSawClose ? true : null, 15_000).then(() => true, () => false) }
+    const { result, elapsed } = await probeAgainst(trickle, 300, settleWindow)
+    expect(result).toEqual({ kind: 'unknown' })
+    expect(bytes, 'bytes kept arriving, so the idle timer never fired').toBeGreaterThanOrEqual(3)
+    expect(elapsed, 'the probe outlived its own timeout').toBeLessThan(300 + 500)
+    expect(closedBeforeCleanup, 'the probe left its socket open').toBe(true)
+  })
+})
+
+describe('health probe budget', () => {
+  it('honours the timeout as the whole budget: a complete slow reply reads within it, and unknown past it', async () => {
+    const slow: Handler = (_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.write('{')
+      setTimeout(() => response.write('"service":"x"'), 120)
+      setTimeout(() => response.end('}'), 240)
+    }
+    expect((await probeAgainst(slow, 1_000)).result).toEqual({ kind: 'foreign' })
+    expect((await probeAgainst(slow, 200)).result).toEqual({ kind: 'unknown' })
+  })
+
+  it('settles as unknown when a connected server never answers', async () => {
+    const { result, elapsed } = await probeAgainst(() => {}, 300)
+    expect(result).toEqual({ kind: 'unknown' })
+    expect(elapsed).toBeLessThan(300 + 500)
+  })
+
+  it('rejects an invalid port at once and leaves no timer that throws or holds the process', () => {
+    const script = "import('./plugin/bin/lib/artifact-server.mjs').then((m) => m.probeArtifactServer(-1, 5000)).then(() => console.log('RESOLVED'), (error) => console.log('REJECTED', error.code))"
+    const started = Date.now()
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: join(fileURLToPath(new URL('.', import.meta.url)), '../../../..'), encoding: 'utf8', timeout: 15_000 })
+    expect(run.stdout.trim()).toBe('REJECTED ERR_SOCKET_BAD_PORT')
+    expect(run.stderr, 'a timer fired after the rejection').not.toMatch(/ReferenceError|before initialization/)
+    expect(run.status).toBe(0)
+    expect(Date.now() - started, 'a 5 s timer kept the process alive').toBeLessThan(4_000)
+  })
+})
+
+describe('test requests and health probes open fresh connections', () => {
+  async function connectionsFor(send: (port: number) => Promise<unknown>) {
+    let connections = 0
+    const server = createServer((_request, response) => response.end('{}'))
+    server.on('connection', () => { connections++ })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+    const { port } = server.address() as { port: number }
+    try {
+      await send(port)
+      await send(port)
+      return connections
+    } finally {
+      server.closeAllConnections()
+      await closeServer(server)
+    }
+  }
+
+  it('opens a fresh connection for every test request', async () => {
+    expect(await connectionsFor((port) => rawRequest(port, '/')), 'a second request reused a pooled keep-alive socket').toBe(2)
+  })
+
+  it('opens a fresh connection for every health probe', async () => {
+    expect(await connectionsFor((port) => probeArtifactServer(port, 2_000)), 'a second probe reused a pooled keep-alive socket').toBe(2)
+  })
+})
+
+function latePublishedState(stateHome: string): Discovery {
+  const server = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+  children.add(server)
+  if (!server.pid) throw new Error('stand-in server has no pid')
+  writeFileSync(join(stateHome, 'server-processes.log'), `${server.pid}\n`)
+  return {
+    version: 'test', pid: server.pid, port: 48765, baseUrl: 'http://127.0.0.1:48765',
+    remoteUrl: null, roots: [], startedAt: new Date().toISOString(),
+  }
+}
+
+function publishState(stateHome: string, state: Discovery) {
+  mkdirSync(serverStateDir(stateHome), { recursive: true })
+  writeFileSync(statePath(stateHome), JSON.stringify(state))
+}
+
+function waitForMonitorLine(monitor: ChildProcess, line: string): Promise<void> {
+  const output = childOutput(monitor)
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      monitor.stdout?.removeListener('data', onData)
+      monitor.removeListener('exit', onExit)
+      monitor.removeListener('error', onError)
+    }
+    const onData = () => {
+      if (!output.stdout().includes(line)) return
+      cleanup()
+      resolve()
+    }
+    const onExit = () => {
+      cleanup()
+      reject(new Error(`monitor exited before writing ${JSON.stringify(line)}`))
+    }
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+    monitor.stdout?.on('data', onData)
+    monitor.once('exit', onExit)
+    monitor.once('error', onError)
+    onData()
+    if (monitor.exitCode !== null || monitor.signalCode !== null) onExit()
+  })
+}
+
+function waitForMonitorExit(monitor: ChildProcess): Promise<void> {
+  if (monitor.exitCode !== null || monitor.signalCode !== null) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    monitor.once('exit', () => {
+      monitor.removeListener('error', reject)
+      resolve()
+    })
+    monitor.once('error', reject)
+  })
 }
 
 describe('review test infrastructure', () => {
@@ -632,70 +986,16 @@ describe('review test infrastructure', () => {
       .rejects.toThrow(/monitor reported ARTIFACT SERVER NOT STARTED: no available port.*last stdout=.*ARTIFACT SERVER NOT STARTED: no available port.*server-processes=\[\].*last state=null/)
     expect(monitor.exitCode).toBeNull()
   }, MONITORED_SERVER_TEST_BOUND_MS)
+})
 
+describe('review test infrastructure', () => {
   it('rejects an undiscovered server wait when a silent monitor exits', async () => {
     const stateHome = temporaryDir('monitor-silent-exit')
-    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'], env: envWithoutNodeOptions() })
     children.add(monitor)
     await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor exited code=0 signal=null; last stdout="<none>"; last stderr="<none>"; server-processes=\[\]; last state=null/)
   }, MONITORED_SERVER_TEST_BOUND_MS)
-
-  function latePublishedState(stateHome: string): Discovery {
-    const server = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
-    children.add(server)
-    if (!server.pid) throw new Error('stand-in server has no pid')
-    writeFileSync(join(stateHome, 'server-processes.log'), `${server.pid}\n`)
-    return {
-      version: 'test', pid: server.pid, port: 48765, baseUrl: 'http://127.0.0.1:48765',
-      remoteUrl: null, roots: [], startedAt: new Date().toISOString(),
-    }
-  }
-
-  function publishState(stateHome: string, state: Discovery) {
-    mkdirSync(serverStateDir(stateHome), { recursive: true })
-    writeFileSync(statePath(stateHome), JSON.stringify(state))
-  }
-
-  function waitForMonitorLine(monitor: ChildProcess, line: string): Promise<void> {
-    const output = childOutput(monitor)
-    return new Promise((resolve, reject) => {
-      const cleanup = () => {
-        monitor.stdout?.removeListener('data', onData)
-        monitor.removeListener('exit', onExit)
-        monitor.removeListener('error', onError)
-      }
-      const onData = () => {
-        if (!output.stdout().includes(line)) return
-        cleanup()
-        resolve()
-      }
-      const onExit = () => {
-        cleanup()
-        reject(new Error(`monitor exited before writing ${JSON.stringify(line)}`))
-      }
-      const onError = (error: Error) => {
-        cleanup()
-        reject(error)
-      }
-      monitor.stdout?.on('data', onData)
-      monitor.once('exit', onExit)
-      monitor.once('error', onError)
-      onData()
-      if (monitor.exitCode !== null || monitor.signalCode !== null) onExit()
-    })
-  }
-
-  function waitForMonitorExit(monitor: ChildProcess): Promise<void> {
-    if (monitor.exitCode !== null || monitor.signalCode !== null) return Promise.resolve()
-    return new Promise((resolve, reject) => {
-      monitor.once('exit', () => {
-        monitor.removeListener('error', reject)
-        resolve()
-      })
-      monitor.once('error', reject)
-    })
-  }
 
   it('accepts publication by a recorded live server after RETRY STOPPED', async () => {
     const stateHome = temporaryDir('retry-stopped-live-server')
@@ -721,7 +1021,9 @@ describe('review test infrastructure', () => {
     await stopChild(server)
     await waiting
   }, MONITORED_SERVER_TEST_BOUND_MS)
+})
 
+describe('review test infrastructure', () => {
   it('accepts publication by a recorded live server after silent monitor exit', async () => {
     const stateHome = temporaryDir('exited-monitor-live-server')
     const state = latePublishedState(stateHome)
@@ -753,7 +1055,9 @@ describe('review test infrastructure', () => {
       { timeout: 5_000, windowsHide: true, stdio: 'ignore' },
     ]])
   })
+})
 
+describe('review test infrastructure', () => {
   it('classifies a Windows registration as gone only from conclusive absence evidence', () => {
     expect(registrationPidStatus(123, {
       platform: 'win32', signal: () => {}, inspect: () => null, processExists: () => false,
@@ -788,13 +1092,102 @@ describe('review test infrastructure', () => {
       inspect: () => ({ ...identity, startTime: 500 }), processExists: () => true,
     })).toBe('gone')
   })
+})
 
+describe('review test infrastructure', () => {
   it('allows the shared Windows process-read precision for approximate registration starts', () => {
     const identity = { pid: 123, argv: ['node', 'monitor'], startTime: 100, startTimeApproximate: true }
     expect(registrationPidStatus(123, {
       platform: 'win32', signal: () => {}, expectedIdentity: identity,
       inspect: () => ({ ...identity, startTime: 1_600 }), processExists: () => true,
     })).toBe('running')
+  })
+})
+
+async function artifactPage(source: string, file = 'document.md') {
+  const project = temporaryDir('page-title-project')
+  const root = temporaryDir('page-title-root')
+  const stateHome = temporaryDir('page-title-state')
+  writeFileSync(join(root, file), source)
+  const reservation = await reservePort()
+  const port = reservation.port
+  await closeServer(reservation.server)
+  spawnEnsure(project, baseEnv(stateHome, {
+    WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
+  }))
+  await waitForState(stateHome, (state) => state.roots.some((entry) => entry.name === 'artifacts'))
+  const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)
+  expect(response.status).toBe(200)
+  return { title: response.body.match(/<title>(.*?)<\/title>/)?.[1], port, root }
+}
+
+describe('artifact page titles', () => {
+  it.each([1, 2, 3, 4, 5, 6])('uses the first ATX heading at level %i', async (level) => {
+    const { title } = await artifactPage(`Intro\n${'#'.repeat(level)} First heading\n# Later heading`)
+    expect(title).toBe('First heading')
+  })
+
+  it('strips inline Markdown and closing hashes, then trims the heading', async () => {
+    const { title } = await artifactPage('##   **bold** *em* _other_ __strong__ `code` [text](https://example.com)   ###  ')
+    expect(title).toBe('bold em other strong code text')
+  })
+
+  it.each([
+    'Just prose', '#hashtag', '```md\n# Code heading\n```\nMore prose',
+    '~~~~\n# Code heading\n~~~\n## Still code\n~~~~',
+  ])('falls back to the basename without a heading: %s', async (source) => {
+    const { title } = await artifactPage(source, 'fallback.md')
+    expect(title).toBe('fallback.md')
+  })
+
+  it('skips fenced headings before selecting the first real heading', async () => {
+    const { title } = await artifactPage('```\n# Code heading\n```\n   ### Real heading ###')
+    expect(title).toBe('Real heading')
+  })
+
+  it('escapes HTML-special characters exactly once', async () => {
+    const { title } = await artifactPage('# A & B <tag> "quoted" \'single\'')
+    expect(title).toBe('A &amp; B &lt;tag&gt; &quot;quoted&quot; &#39;single&#39;')
+  })
+
+  it('caps the trimmed title at 120 code points without splitting a surrogate pair', async () => {
+    const { title } = await artifactPage(`# \`   ${'a'.repeat(119)}🚀Z   \`   ###`)
+    expect(title).toBe(`${'a'.repeat(119)}🚀`)
+    expect([...title!]).toHaveLength(120)
+  })
+
+  it.each(['txt', 'log', 'json'])('uses the basename for a %s file', async (extension) => {
+    expect((await artifactPage('plain text', `notes.${extension}`)).title).toBe(`notes.${extension}`)
+  })
+})
+
+describe('artifact directory titles', () => {
+  it('puts the directory name before its path in a directory listing title', async () => {
+    const { port } = await artifactPage('plain text')
+    const response = await rawRequest(port, '/artifacts/', `localhost:${port}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toContain('<title>artifacts/ — /artifacts/</title>')
+    expect(response.body).toContain('<h1>Index of /artifacts/</h1>')
+  })
+
+  it('uses a slash as the root index title', async () => {
+    const { port } = await artifactPage('plain text')
+    const response = await rawRequest(port, '/', `localhost:${port}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toContain('<title>/</title>')
+  })
+
+  it('distinguishes differently named directories including a nested directory', async () => {
+    const { port, root } = await artifactPage('plain text')
+    mkdirSync(join(root, 'a', 'b'), { recursive: true })
+    const titles = []
+    for (const directory of ['a', 'a/b']) {
+      const response = await rawRequest(port, `/artifacts/${directory}/`, `localhost:${port}`)
+      expect(response.status).toBe(200)
+      titles.push(response.body.match(/<title>(.*?)<\/title>/)?.[1])
+      expect(response.body).toContain(`<h1>Index of /artifacts/${directory}/</h1>`)
+    }
+    expect(titles).toEqual(['a/ — /artifacts/a/', 'b/ — /artifacts/a/b/'])
   })
 })
 
@@ -1630,6 +2023,30 @@ describe('owner decision 2: discovery and one instance', () => {
   }, 40_000)
 })
 
+async function expectForcedControls(stateHome: string, first: Discovery, project: string, control: ReturnType<typeof controlPlatformEnv>, platform: string) {
+  const restarted = await runCli(['restart', '--force'], control.env, project)
+  if (platform !== 'linux') {
+    expectIdentityRefusal(restarted, control, platform)
+    expectIdentityRefusal(await runCli(['stop', '--force'], control.env), control, platform)
+    expect(pidAlive(first.pid)).toBe(true)
+    expect(readState(stateHome)?.pid).toBe(first.pid)
+    expect((await health(first)).pid).toBe(first.pid)
+    return
+  }
+  expect(restarted.code, restarted.stderr).toBe(0)
+  expect(restarted.stdout).toBe(`artifact server: restarted on ${first.port}\n`)
+  const second = await waitForState(stateHome, (state) => state.pid !== first.pid)
+  expect(second.pid).not.toBe(first.pid)
+  expect(pidAlive(first.pid)).toBe(false)
+  expect(spawnReceipts(control.spawns), 'successful restart launches exactly one replacement').toHaveLength(1)
+  const restartedServer = inspectProcess(second.pid, { captureCwd: true, spawnSync: spawnSync.bind(null) }) as ProcessIdentity | null
+  expect(restartedServer?.cwd).toBe(realpathSync(serverStateDir(stateHome)))
+  const stopped = await runCli(['stop', '--force'], control.env)
+  expect(stopped.code, stopped.stderr).toBe(0)
+  expect(stopped.stdout).toBe('artifact server: stopped\n')
+  await waitFor(() => pidAlive(second.pid) ? null : true)
+}
+
 describe('owner decision 3: session lifetime and operator controls', () => {
   it('reports EADDRINUSE on a taken port and serves successfully once that port is free', async () => {
     const stateHome = temporaryDir('serve-port-collision')
@@ -1658,7 +2075,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     expect(server.exitCode).toBe(process.platform === 'win32' ? 1 : 0)
     expect(output.stderr()).toBe('')
   }, 20_000)
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('reports EADDRINUSE for a second serve without disrupting the live artifact server', async () => {
     const stateHome = temporaryDir('serve-existing-server')
     const reservation = await reservePort()
@@ -1675,7 +2094,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     expect(readState(stateHome)).toEqual(state)
     expect((await health(state)).pid).toBe(server.pid)
   }, 20_000)
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('tolerates a transient discovery miss and uses a bounded removal retry while the server stops', async () => {
     const stateHome = temporaryDir('removed-state-home')
     const reservation = await reservePort()
@@ -1701,7 +2122,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
 
     await waitFor(() => pidAlive(server.pid!) ? null : true, 500)
   })
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('[V3-idle-registration][V3-last-deregistration] keeps an idle registered session alive past grace and stops immediately after clean removal', async () => {
     const { project } = projectWithRoots('clean-stop')
     const stateHome = temporaryDir('clean-stop-state')
@@ -1717,7 +2140,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     await stopChild(monitor)
     await waitFor(() => pidAlive(state.pid) ? null : true, 300)
   })
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('[V3-dead-pid-grace] removes a dead registration and stops after grace', async () => {
     const { project } = projectWithRoots('dead-stop')
     const stateHome = temporaryDir('dead-stop-state')
@@ -1736,7 +2161,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     })
     expect(readdirSync(registrationsPath(stateHome)), `sweep diagnostic=${sweepDiagnostic(stateHome)}`).toHaveLength(0)
   })
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('restarts a lost server while its session registration remains live', async () => {
     const { project } = projectWithRoots('lost-server-restart')
     const stateHome = temporaryDir('lost-server-restart-state')
@@ -1773,7 +2200,9 @@ describe('owner decision 3: session lifetime and operator controls', () => {
       return registration.pid === monitor.pid
     })).toBe(true)
   }, 15_000)
+})
 
+describe('owner decision 3: session lifetime and operator controls', () => {
   it('reports one bounded retry stop when a lost server cannot restart', async () => {
     const { project } = projectWithRoots('lost-server-bounded')
     const stateHome = temporaryDir('lost-server-bounded-state')
@@ -1811,8 +2240,10 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     }
     // Windows worst 13936 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 18000 ms).
   }, 35_000)
+})
 
-  it('[V3-stop-refused][V3-force] refuses stop/restart with registrations and allows both with --force', async () => {
+describe('owner decision 3: session lifetime and operator controls', () => {
+  it.each(CONTROL_PLATFORMS)('[V3-stop-refused][V3-force] respects registrations and platform identity availability (%s adapter)', async (platform) => {
     const { project } = projectWithRoots('controls')
     const stateHome = temporaryDir('controls-state')
     const reservation = await reservePort()
@@ -1822,30 +2253,81 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     const monitor = spawnEnsure(project, env)
     const first = await waitForState(stateHome)
     await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
+    const control = controlPlatformEnv(stateHome, env, platform)
 
     for (const command of ['stop', 'restart']) {
-      const refused = spawnSync(process.execPath, [SERVER, command], { encoding: 'utf8', env })
-      expect(refused.status, command).not.toBe(0)
+      const refused = await runCli([command], control.env)
+      expect(refused.code, command).not.toBe(0)
       expect(refused.stderr, command).toMatch(/registered session/i)
       expect(pidAlive(first.pid)).toBe(true)
     }
 
-    const restarted = spawnSync(process.execPath, [SERVER, 'restart', '--force'], { cwd: project, encoding: 'utf8', env, timeout: 5_000 })
-    expect(restarted.status).toBe(0)
-    const second = await waitForState(stateHome, (state) => state.pid !== first.pid)
-    expect(second.pid).not.toBe(first.pid)
-    // The restarted server must not inherit the operator's cwd either (process cwd is unreadable on Windows).
-    if (process.platform !== 'win32') {
-      const restartedServer = inspectProcess(second.pid, { captureCwd: true, spawnSync: spawnSync.bind(null) }) as ProcessIdentity | null
-      expect(restartedServer?.cwd).toBe(realpathSync(serverStateDir(stateHome)))
-    }
-
-    const stopped = spawnSync(process.execPath, [SERVER, 'stop', '--force'], { encoding: 'utf8', env, timeout: 5_000 })
-    expect(stopped.status).toBe(0)
-    await waitFor(() => pidAlive(second.pid) ? null : true)
+    await expectForcedControls(stateHome, first, project, control, platform)
     await stopChild(monitor)
   })
 })
+
+async function startRootIndexProxy(port: number) {
+  // An upstream failure must be ANSWERED, never left as an unhandled rejection: the client below has no timeout, so an
+  // unanswered request only ends at the test timeout (measured 20 s on a hosted Windows run, `read ECONNRESET`), with the
+  // cause unnamed. The upstream request uses a fresh connection, not a pooled keep-alive socket.
+  const proxy = createServer(async (_request, response) => {
+    try {
+      const upstream = await rawRequest(port, '/', `localhost:${port}`, '127.0.0.1', 'GET')
+      response.writeHead(upstream.status, { 'content-type': 'text/html' })
+      response.end(upstream.body)
+    } catch (error) {
+      response.writeHead(502, { 'content-type': 'text/plain' })
+      response.end(`upstream request failed: ${(error as Error).message}`)
+    }
+  })
+  await new Promise<void>((resolve, reject) => {
+    proxy.once('error', reject)
+    proxy.listen(0, '127.0.0.1', resolve)
+  })
+  const proxyAddress = proxy.address()
+  if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy has no TCP port')
+  return { proxy, proxyAddress }
+}
+
+function expectDuplicateRootNameRefused(project: string, reports: string, worktrees: string) {
+  const duplicate = spawnSync(process.execPath, [ENSURE], {
+    cwd: project, encoding: 'utf8', timeout: 3_000,
+    env: baseEnv(temporaryDir('duplicate-state'), {
+      WT_ARTIFACT_SERVER_ROOTS: `same=${reports}${delimiter}same=${worktrees}`,
+    }),
+  })
+  expect(duplicate.status).not.toBe(0)
+  expect(duplicate.stderr).toMatch(/duplicate root name/i)
+}
+
+async function expectFirstProjectLeft(stateHome: string, expected: { projectOne: string, projectTwo: string, firstName: string, secondName: string | undefined }) {
+  const left = await waitForState(stateHome, (state) => state.roots.length === 1 && state.roots[0]?.path === join(expected.projectTwo, '.claude', 'reports'))
+    .catch((error) => { throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`) })
+  expect(left.roots[0]!.name).toBe(expected.secondName)
+  expect(left.mounts).toEqual(expect.arrayContaining([
+    { name: expected.firstName, path: join(expected.projectOne, '.claude', 'reports') },
+    { name: expected.secondName, path: join(expected.projectTwo, '.claude', 'reports') },
+  ]))
+  if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+}
+
+async function expectRejoinedNames(stateHome: string, expected: { projectOne: string, projectTwo: string, firstName: string, secondName: string | undefined }) {
+  const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
+  expect(rejoined.roots.find((root) => root.path === join(expected.projectOne, '.claude', 'reports'))?.name).toBe(expected.firstName)
+  expect(rejoined.roots.find((root) => root.path === join(expected.projectTwo, '.claude', 'reports'))?.name).toBe(expected.secondName)
+}
+
+function twoProjectsWithOneReportEach() {
+  const projectOne = join(temporaryDir('stable-one'), 'project')
+  const projectTwo = join(temporaryDir('stable-two'), 'project')
+  for (const project of [projectOne, projectTwo]) mkdirSync(join(project, '.claude', 'reports'), { recursive: true })
+  const reportOne = join(projectOne, '.claude', 'reports', 'one.txt')
+  const reportTwo = join(projectTwo, '.claude', 'reports', 'two.txt')
+  writeFileSync(reportOne, 'one')
+  writeFileSync(reportTwo, 'two')
+  return { projectOne, projectTwo, reportOne }
+}
 
 describe('review decisions: filesystem roots and URLs', () => {
   it('[V1] extends a colliding short hash instead of dropping a root', () => {
@@ -1859,7 +2341,9 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(roots.map((root: { name: string }) => root.name)).toEqual(['reports', 'reports-abcdef', 'reports-abcdef2'])
     expect(new Set(roots.map((root: { name: string }) => root.name)).size).toBe(3)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[E-01] registers with owner-only per-session files and exposes no HTTP controls', async () => {
     const project = temporaryDir('multi-project')
     const rootA = temporaryDir('root-a')
@@ -1890,7 +2374,9 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect((await rawRequest(port, '/__wt-artifact-server/deregister?session=x', `localhost:${port}`)).status).toBe(404)
     // Windows worst 14464 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 20000 ms).
   }, 37_000)
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('keeps root-index links inside a proxy path while preserving the unprefixed destination', async () => {
     const project = temporaryDir('relative-index-project')
     const root = temporaryDir('relative-index-root')
@@ -1902,26 +2388,7 @@ describe('review decisions: filesystem roots and URLs', () => {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `reports=${root}`,
     }))
     await waitForState(stateHome, (state) => state.roots.length === 1)
-
-    // An upstream failure must be ANSWERED, never left as an unhandled rejection: the client below has no timeout, so an
-    // unanswered request only ends at the test timeout (measured 20 s on a hosted Windows run, `read ECONNRESET`), with the
-    // cause unnamed. The upstream request uses a fresh connection, not a pooled keep-alive socket.
-    const proxy = createServer(async (_request, response) => {
-      try {
-        const upstream = await rawRequest(port, '/', `localhost:${port}`, '127.0.0.1', 'GET', { freshConnection: true })
-        response.writeHead(upstream.status, { 'content-type': 'text/html' })
-        response.end(upstream.body)
-      } catch (error) {
-        response.writeHead(502, { 'content-type': 'text/plain' })
-        response.end(`upstream request failed: ${(error as Error).message}`)
-      }
-    })
-    await new Promise<void>((resolve, reject) => {
-      proxy.once('error', reject)
-      proxy.listen(0, '127.0.0.1', resolve)
-    })
-    const proxyAddress = proxy.address()
-    if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy has no TCP port')
+    const { proxy, proxyAddress } = await startRootIndexProxy(port)
     try {
       const index = await rawRequest(proxyAddress.port, '/serve-mount/', `localhost:${proxyAddress.port}`)
       expect(index.status, index.body).toBe(200)
@@ -1934,7 +2401,9 @@ describe('review decisions: filesystem roots and URLs', () => {
       await closeServer(proxy)
     }
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[A-01] defaults to project-unique reports/worktrees names and chooses the longest URL root', async () => {
     const { project, reports, worktrees } = projectWithRoots('defaults')
     const nestedCwd = join(project, 'packages', 'nested')
@@ -1971,17 +2440,11 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(status.stdout).toContain(`baseUrl: ${state.baseUrl}`)
     expect(status.stdout).toContain('remoteUrl: null')
     expect(status.stdout).toContain(`${prefix}-reports=${reports}`)
-
-    const duplicate = spawnSync(process.execPath, [ENSURE], {
-      cwd: project, encoding: 'utf8', timeout: 3_000,
-      env: baseEnv(temporaryDir('duplicate-state'), {
-        WT_ARTIFACT_SERVER_ROOTS: `same=${reports}${delimiter}same=${worktrees}`,
-      }),
-    })
-    expect(duplicate.status).not.toBe(0)
-    expect(duplicate.stderr).toMatch(/duplicate root name/i)
+    expectDuplicateRootNameRefused(project, reports, worktrees)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[A-01] lets default roots from different projects coexist', async () => {
     const one = projectWithRoots('coexist-one')
     const two = projectWithRoots('coexist-two')
@@ -2002,7 +2465,9 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(state.roots.map((root) => root.name)).toContain(oneName)
     expect(state.roots.map((root) => root.name)).toContain(twoName)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[A-01] adds stable hash suffixes when projects share a basename', async () => {
     const parentOne = temporaryDir('same-name-one')
     const parentTwo = temporaryDir('same-name-two')
@@ -2026,17 +2491,11 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(reportNames).toContain('project-reports')
     expect(reportNames.filter((name) => /^project-reports-[0-9a-f]{6}$/.test(name))).toHaveLength(1)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it('[V2] keeps first-assigned mount URLs when projects join, leave, and rejoin', async () => {
-    const parentOne = temporaryDir('stable-one')
-    const parentTwo = temporaryDir('stable-two')
-    const projectOne = join(parentOne, 'project')
-    const projectTwo = join(parentTwo, 'project')
-    for (const project of [projectOne, projectTwo]) mkdirSync(join(project, '.claude', 'reports'), { recursive: true })
-    const reportOne = join(projectOne, '.claude', 'reports', 'one.txt')
-    const reportTwo = join(projectTwo, '.claude', 'reports', 'two.txt')
-    writeFileSync(reportOne, 'one')
-    writeFileSync(reportTwo, 'two')
+    const { projectOne, projectTwo, reportOne } = twoProjectsWithOneReportEach()
     const stateHome = temporaryDir('stable-state')
     const reservation = await reservePort()
     const port = reservation.port
@@ -2062,24 +2521,17 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(secondName).not.toBe(firstName)
 
     await requestCleanMonitorStop(monitorOne, shutdownOne)
-    const left = await waitForState(stateHome, (state) => state.roots.length === 1 && state.roots[0]?.path === join(projectTwo, '.claude', 'reports'))
-      .catch((error) => { throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`) })
-    expect(left.roots[0]!.name).toBe(secondName)
-    expect(left.mounts).toEqual(expect.arrayContaining([
-      { name: firstName, path: join(projectOne, '.claude', 'reports') },
-      { name: secondName, path: join(projectTwo, '.claude', 'reports') },
-    ]))
-    if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+    await expectFirstProjectLeft(stateHome, { projectOne, projectTwo, firstName, secondName })
 
     spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
-    const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
-    expect(rejoined.roots.find((root) => root.path === join(projectOne, '.claude', 'reports'))?.name).toBe(firstName)
-    expect(rejoined.roots.find((root) => root.path === join(projectTwo, '.claude', 'reports'))?.name).toBe(secondName)
+    await expectRejoinedNames(stateHome, { projectOne, projectTwo, firstName, secondName })
     expect(artifactUrl(reportOne, { env: baseEnv(stateHome) })).toBe(firstUrl)
     expect((await rawRequest(port, `/${secondName}/two.txt`, `localhost:${port}`)).status).toBe(200)
     await stopChild(monitorTwo)
   })
+})
 
+describe('review decisions: filesystem roots and URLs', () => {
   it.skipIf(process.platform === 'win32')('[E-01] refuses an insecure or foreign-owned state directory [POSIX mode-bit enforcement]', () => {
     const { project } = projectWithRoots('insecure-state')
     const stateHome = temporaryDir('insecure-state-home')
@@ -2092,32 +2544,54 @@ describe('review decisions: filesystem roots and URLs', () => {
   })
 })
 
-describe('owner decision 5: Tailscale access', () => {
-  function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent', cwd: string) {
-    const bin = temporaryDir(`tailscale-${mode}`)
-    const serveStatus = mode === 'https'
-      ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-      : mode === 'https-path'
-        ? 'https://host.tailnet.ts.net\n|-- /reports proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-        : mode === 'https-port'
-          ? 'https://host.tailnet.ts.net:8443\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-          : mode === 'hijack'
-            ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:9999\nhttps://other.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
-            : 'No serve config'
-    // execFileSync cannot directly execute a Windows .cmd file. Every case pins Node as the real
-    // executable and places its command scripts in the fixture cwd, preserving the Tailscale argv.
-    // A spawned server runs from its state directory, so server-level cases pass that directory.
-    mkdirSync(cwd, { recursive: true, mode: 0o700 })
-    const failed = 'process.exitCode = 1\n'
-    writeFileSync(join(cwd, 'ip'), mode === 'absent' ? failed : mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')\n")
-    writeFileSync(join(cwd, 'status'), mode === 'absent' ? failed : "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
-    writeFileSync(join(cwd, 'serve'), mode === 'absent' ? failed : `process.stdout.write(\`${serveStatus}\`)\n`)
-    return {
-      bin: realpathSync(bin),
-      env: { WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath },
-    }
-  }
+it('locks PATH-independent tailnet resolution, status and recovery', async () => {
+  const file = fileURLToPath(new URL('./artifact-server-tailnet.selftest.mjs', import.meta.url))
+  const child = spawn(process.execPath, ['--test', file], { stdio: ['ignore', 'pipe', 'pipe'] })
+  children.add(child)
+  const output = childOutput(child)
+  const code = await new Promise((resolve) => child.once('close', resolve))
+  expect(code, `${output.stdout()}\n${output.stderr()}`).toBe(0)
+}, TAILNET_SELFTEST_BOUND_MS)
 
+it.each(['', '  ', '.', undefined])('reports the missing hostname in a native partial result (%j)', (dnsName) => {
+  const result = detectTailscale(48001, (_command: string, args: string[]) => {
+    if (args[0] === 'ip') return '100.64.0.1\n'
+    if (args[0] === 'status') return JSON.stringify({ Self: { DNSName: dnsName } })
+    return 'No serve config'
+  }, { platform: 'linux', wsl: false, env: {} })
+  expect(result.ip).toBe('100.64.0.1')
+  expect(result.dnsName).toBeNull()
+  expect(result.remoteUrl).toBe('http://100.64.0.1:48001')
+  expect(result.detection.status, 'an IP-only result must not claim hostname availability').toBe('unavailable')
+  expect(result.detection.reason).toMatch(/hostname unavailable.*no DNS name/)
+})
+
+function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent', cwd: string) {
+  const bin = temporaryDir(`tailscale-${mode}`)
+  const serveStatus = mode === 'https'
+    ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+    : mode === 'https-path'
+      ? 'https://host.tailnet.ts.net\n|-- /reports proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+      : mode === 'https-port'
+        ? 'https://host.tailnet.ts.net:8443\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+        : mode === 'hijack'
+          ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:9999\nhttps://other.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+          : 'No serve config'
+  // execFileSync cannot directly execute a Windows .cmd file. Every case pins Node as the real
+  // executable and places its command scripts in the fixture cwd, preserving the Tailscale argv.
+  // A spawned server runs from its state directory, so server-level cases pass that directory.
+  mkdirSync(cwd, { recursive: true, mode: 0o700 })
+  const failed = 'process.exitCode = 1\n'
+  writeFileSync(join(cwd, 'ip'), mode === 'absent' ? failed : mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')\n")
+  writeFileSync(join(cwd, 'status'), mode === 'absent' ? failed : "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
+  writeFileSync(join(cwd, 'serve'), mode === 'absent' ? failed : `process.stdout.write(\`${serveStatus}\`)\n`)
+  return {
+    bin: realpathSync(bin),
+    env: { WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath },
+  }
+}
+
+describe('owner decision 5: Tailscale access', () => {
   it('parses the URL token from the captured Tailscale Serve header', () => {
     const served = [
       'https://desktop-ug8o6r2.tailc54ed8.ts.net (tailnet only)',
@@ -2130,7 +2604,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(parseTailscaleServeUrl('https://% invalid\n|-- / proxy http://127.0.0.1:48375', 'desktop-ug8o6r2.tailc54ed8.ts.net', 48375))
       .toBeNull()
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('runs every Tailscale fixture through a real executable', () => {
     const cwd = temporaryDir('tailscale-windows-executable')
     const { env } = tailscaleStub('present', cwd)
@@ -2141,7 +2617,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(result.status).toBe(0)
     expect(result.stdout.trim()).toBe('127.0.0.1')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('[B-02] accepts MagicDNS, rejects an evil Host, and reports the tailnet URL', async () => {
     const { project } = projectWithRoots('tailscale')
     const stateHome = temporaryDir('tailscale-state')
@@ -2166,7 +2644,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(refused.body).not.toContain('host.tailnet.ts.net')
     expect(refused.body).not.toContain('127.0.0.1')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('[B-02] sets remoteUrl to null when the stubbed tailscale binary is absent', async () => {
     const { project } = projectWithRoots('no-tailscale')
     const stateHome = temporaryDir('no-tailscale-state')
@@ -2184,7 +2664,9 @@ describe('owner decision 5: Tailscale access', () => {
     const status = await runCli(['status'], baseEnv(stateHome))
     expect(status.stdout).toMatch(/tailnetDetection: unavailable.*configured tailscale binary failed.*exit=1/i)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports the configured Tailscale timeout and measured elapsed time', async () => {
     const { project } = projectWithRoots('tailscale-timeout')
     const stateHome = temporaryDir('tailscale-timeout-state')
@@ -2203,10 +2685,12 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor })
     expect(state.tailnetDetection).toEqual({
       status: 'unavailable',
-      reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGTERM, code=ETIMEDOUT, timeout=5000ms/),
+      reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGKILL, code=ETIMEDOUT, timeout=5000ms/),
     })
   }, MONITORED_SERVER_TEST_BOUND_MS)
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('distinguishes a successful no-tailnet result from a failed lookup', async () => {
     const { project } = projectWithRoots('no-tailnet-result')
     const stateHome = temporaryDir('no-tailnet-result-state')
@@ -2219,7 +2703,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.remoteUrl).toBeNull()
     expect(state.tailnetDetection).toEqual({ status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('[B-02] uses the HTTPS MagicDNS URL only when the stub reports a matching Serve proxy', async () => {
     const { project, reports } = projectWithRoots('tailscale-https')
     const artifact = join(reports, 'phone.md')
@@ -2240,7 +2726,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(remote.status).toBe(0)
     expect(remote.stdout.trim()).toBe(`https://host.tailnet.ts.net/${basename(project)}-reports/phone.md`)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('includes a path-mounted Serve mapping in the HTTPS artifact URL', async () => {
     const { project } = projectWithRoots('tailscale-https-path')
     const stateHome = temporaryDir('tailscale-https-path-state')
@@ -2253,7 +2741,9 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/reports')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('preserves a non-default HTTPS port from the Serve mapping', async () => {
     const { project } = projectWithRoots('tailscale-https-port')
     const stateHome = temporaryDir('tailscale-https-port-state')
@@ -2266,7 +2756,9 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net:8443')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('does not claim a MagicDNS name whose mapping belongs to another service', async () => {
     const { project } = projectWithRoots('tailscale-hijack')
     const stateHome = temporaryDir('tailscale-hijack-state')
@@ -2279,43 +2771,45 @@ describe('owner decision 5: Tailscale access', () => {
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.1:${reservation.port}`)
   })
+})
 
-  // A Windows tailscale.exe reached from WSL, as shell stubs: `serve` prints `serveStatus`, `powershell.exe` resolves
-  // the executable and answers an Invoke-WebRequest check with `checkLine`, recording its arguments in `ps-args`.
-  // `failing` names one tailscale subcommand (`serve status`, `status --json`) that exits 1 instead of answering.
-  function wslInteropStub(serveStatus: string, checkLine = 'STATUS=200', failing = '') {
-    const bin = temporaryDir('tailscale-wsl-bin')
-    const windowsTailscale = join(bin, 'windows-tailscale.exe')
-    writeFileSync(windowsTailscale, `#!/bin/sh\nif [ "$1 $2" = "${failing}" ]; then exit 1; fi\nif [ "$1 $2" = "ip -4" ]; then printf "127.0.0.2\\n"; exit 0; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then printf '%s' "${serveStatus}"; exit 0; fi\nexit 1\n`)
-    writeFileSync(join(bin, 'powershell.exe'), `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done > ${JSON.stringify(join(bin, 'ps-args'))}\ncase "$*" in *Invoke-WebRequest*) printf '%s\\r\\n' ${JSON.stringify(checkLine)} ;; *) printf "C:\\\\Resolved\\\\tailscale.exe\\r\\n" ;; esac\n`)
-    writeFileSync(join(bin, 'wslpath'), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(windowsTailscale)}\n`)
-    for (const file of readdirSync(bin)) chmodSync(join(bin, file), 0o755)
-    return bin
+// A Windows tailscale.exe reached from WSL, as shell stubs: `serve` prints `serveStatus`, `powershell.exe` resolves
+// the executable and answers an Invoke-WebRequest check with `checkLine`, recording its arguments in `ps-args`.
+// `failing` names one tailscale subcommand (`serve status`, `status --json`) that exits 1 instead of answering.
+function wslInteropStub(serveStatus: string, checkLine = 'STATUS=200', failing = '') {
+  const bin = temporaryDir('tailscale-wsl-bin')
+  const windowsTailscale = join(bin, 'windows-tailscale.exe')
+  writeFileSync(windowsTailscale, `#!/bin/sh\nif [ "$1 $2" = "${failing}" ]; then exit 1; fi\nif [ "$1 $2" = "ip -4" ]; then printf "127.0.0.2\\n"; exit 0; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then printf '%s' "${serveStatus}"; exit 0; fi\nexit 1\n`)
+  writeFileSync(join(bin, 'powershell.exe'), `#!/bin/sh\nfor arg in "$@"; do printf '%s\\n' "$arg"; done > ${JSON.stringify(join(bin, 'ps-args'))}\ncase "$*" in *Invoke-WebRequest*) printf '%s\\r\\n' ${JSON.stringify(checkLine)} ;; *) printf "C:\\\\Resolved\\\\tailscale.exe\\r\\n" ;; esac\n`)
+  writeFileSync(join(bin, 'wslpath'), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(windowsTailscale)}\n`)
+  for (const file of readdirSync(bin)) chmodSync(join(bin, file), 0o755)
+  return bin
+}
+
+// `configured` pins the Windows executable directly (as `Tailscale.EXE`) instead of resolving it through PowerShell.
+async function startWslInteropServer(tag: string, serveStatus: (port: number) => string, options: { failing?: string, configured?: boolean } = {}) {
+  const { project, reports } = projectWithRoots(tag)
+  const artifact = join(reports, 'plan.html')
+  writeFileSync(artifact, '<p>plan</p>')
+  const stateHome = temporaryDir(`${tag}-state`)
+  const reservation = await reservePort()
+  await closeServer(reservation.server)
+  const bin = wslInteropStub(serveStatus(reservation.port), 'STATUS=200', options.failing)
+  let configured: string | undefined
+  if (options.configured) {
+    configured = join(bin, 'Tailscale.EXE')
+    writeFileSync(configured, readFileSync(join(bin, 'windows-tailscale.exe')))
+    chmodSync(configured, 0o755)
+    rmSync(join(bin, 'powershell.exe'))
   }
+  spawnEnsure(project, baseEnv(stateHome, {
+    PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: configured, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+  }))
+  const state = await waitForState(stateHome, (value) => value.roots.length > 0)
+  return { artifact, stateHome, port: reservation.port, state }
+}
 
-  // `configured` pins the Windows executable directly (as `Tailscale.EXE`) instead of resolving it through PowerShell.
-  async function startWslInteropServer(tag: string, serveStatus: (port: number) => string, options: { failing?: string, configured?: boolean } = {}) {
-    const { project, reports } = projectWithRoots(tag)
-    const artifact = join(reports, 'plan.html')
-    writeFileSync(artifact, '<p>plan</p>')
-    const stateHome = temporaryDir(`${tag}-state`)
-    const reservation = await reservePort()
-    await closeServer(reservation.server)
-    const bin = wslInteropStub(serveStatus(reservation.port), 'STATUS=200', options.failing)
-    let configured: string | undefined
-    if (options.configured) {
-      configured = join(bin, 'Tailscale.EXE')
-      writeFileSync(configured, readFileSync(join(bin, 'windows-tailscale.exe')))
-      chmodSync(configured, 0o755)
-      rmSync(join(bin, 'powershell.exe'))
-    }
-    spawnEnsure(project, baseEnv(stateHome, {
-      PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: configured, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
-    }))
-    const state = await waitForState(stateHome, (value) => value.roots.length > 0)
-    return { artifact, stateHome, port: reservation.port, state }
-  }
-
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('offers no URL under WSL interop without a serve route, and names the command that creates it', async () => {
     const { artifact, stateHome, port, state } = await startWslInteropServer('tailscale-wsl', () => 'No serve config')
     const route = `tailscale serve --bg --set-path /artifacts http://127.0.0.1:${port}`
@@ -2332,7 +2826,9 @@ describe('owner decision 5: Tailscale access', () => {
     const status = await runCli(['status'], baseEnv(stateHome))
     expect(status.stdout).toContain('tailnetVia: windows-interop')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('keeps the HTTPS serve route under WSL interop without probing it from WSL', async () => {
     const { state } = await startWslInteropServer('tailscale-wsl-route',
       (port) => `https://host.tailnet.ts.net (tailnet only)\n|-- /artifacts proxy http://127.0.0.1:${port}\n`)
@@ -2340,14 +2836,18 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.tailnetVia).toBe('windows-interop')
     expect(state.tailnetDetection).toEqual({ status: 'available', reason: null })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('classifies a configured Windows executable as Windows interop, whatever the case of .exe', async () => {
     const { state } = await startWslInteropServer('tailscale-wsl-configured', () => 'No serve config', { configured: true })
     expect(state.tailnetVia).toBe('windows-interop')
     expect(state.remoteUrl).toBeNull()
     expect(state.tailnetDetection?.status).toBe('no-serve-route')
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('offers no URL and no route advice under WSL interop when the serve or DNS status cannot be read', async () => {
     for (const { failing, reason } of [
       { failing: 'serve status', reason: 'could not read tailscale serve status (exit 1); no URL offered' },
@@ -2358,15 +2858,17 @@ describe('owner decision 5: Tailscale access', () => {
       expect(state.tailnetDetection).toEqual({ status: 'unavailable', reason })
     }
   })
+})
 
-  // A configured Node tailscale stub whose `ip -4` answers an address this host does not own, so binding it fails.
-  function unownedAddressStub(cwd: string, serveStatus: string) {
-    mkdirSync(cwd, { recursive: true, mode: 0o700 })
-    writeFileSync(join(cwd, 'ip'), "process.stdout.write('192.0.2.1\\n')\n")
-    writeFileSync(join(cwd, 'status'), "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
-    writeFileSync(join(cwd, 'serve'), `process.stdout.write(${JSON.stringify(serveStatus)})\n`)
-  }
+// A configured Node tailscale stub whose `ip -4` answers an address this host does not own, so binding it fails.
+function unownedAddressStub(cwd: string, serveStatus: string) {
+  mkdirSync(cwd, { recursive: true, mode: 0o700 })
+  writeFileSync(join(cwd, 'ip'), "process.stdout.write('192.0.2.1\\n')\n")
+  writeFileSync(join(cwd, 'status'), "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
+  writeFileSync(join(cwd, 'serve'), `process.stdout.write(${JSON.stringify(serveStatus)})\n`)
+}
 
+describe('owner decision 5: Tailscale access', () => {
   it('keeps an HTTPS serve route when the tailnet address cannot be bound', async () => {
     const { project } = projectWithRoots('tailscale-unbound-https')
     const stateHome = temporaryDir('tailscale-unbound-https-state')
@@ -2378,7 +2880,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/artifacts')
     expect(state.tailnetDetection).toEqual({ status: 'available', reason: null })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('drops the http tailnet URL, with its reason, when the tailnet address cannot be bound', async () => {
     const { project } = projectWithRoots('tailscale-unbound-http')
     const stateHome = temporaryDir('tailscale-unbound-http-state')
@@ -2391,7 +2895,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(state.tailnetDetection?.status).toBe('unavailable')
     expect(state.tailnetDetection?.reason).toContain(`could not listen on the tailnet address 192.0.2.1:${reservation.port}`)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('chooses the remote URL from the serve route, then the route the host can offer', () => {
     expect(chooseRemoteUrl({ httpsUrl: 'https://h.ts.net/artifacts', ip: '100.1.2.3', port: 48375, via: 'windows-interop' }))
       .toEqual({ remoteUrl: 'https://h.ts.net/artifacts', status: 'available', reason: null })
@@ -2410,7 +2916,9 @@ describe('owner decision 5: Tailscale access', () => {
         'Create the route: tailscale serve --bg --set-path /artifacts http://127.0.0.1:48375, then restart the artifact server (wt-artifact-server restart --force)',
     })
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('quotes the checked URL as a PowerShell literal and reads the check result', () => {
     const script = windowsCheckScript("https://h.ts.net/a/it's\u2019.html", 8) as string
     expect(script).toContain("-Uri 'https://h.ts.net/a/it''s\u2019\u2019.html'")
@@ -2420,33 +2928,35 @@ describe('owner decision 5: Tailscale access', () => {
     expect(parseWindowsCheck('ERROR=The operation has timed out.\r\n')).toEqual({ verdict: 'unreachable', reason: 'The operation has timed out.', from: 'windows' })
     expect(parseWindowsCheck('')).toEqual({ verdict: 'unverified', reason: 'powershell.exe printed no check result' })
   })
+})
 
-  // A published state whose remote URL is `remoteUrl`, pointing at a root holding one artifact; the tailscale
-  // binary is the Node stub configured in `cwd`, whose `ip -4` succeeds unless `tailscaleFails`. `tailnetVia`
-  // is recorded in the state when given, as a current server writes it.
-  function checkFixture(tag: string, remoteUrl: (port: number) => string | null, port: number, tailscaleFails = false, tailnetVia?: string) {
-    const root = temporaryDir(`${tag}-root`)
-    const artifact = join(root, 'plan.html')
-    writeFileSync(artifact, '<p>plan</p>')
-    const stateHome = temporaryDir(`${tag}-state`)
-    mkdirSync(serverStateDir(stateHome), { recursive: true, mode: 0o700 })
-    atomicWriteJson(statePath(stateHome), {
-      version: 'x', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl: remoteUrl(port),
-      roots: [{ name: 'reports', path: root }], startedAt: new Date().toISOString(), ...(tailnetVia ? { tailnetVia } : {}),
-    })
-    const cwd = temporaryDir(`${tag}-tailscale`)
-    writeFileSync(join(cwd, 'ip'), tailscaleFails ? 'process.exitCode = 1\n' : "process.stdout.write('127.0.0.1\\n')\n")
-    return { artifact, cwd, env: baseEnv(stateHome) }
-  }
+// A published state whose remote URL is `remoteUrl`, pointing at a root holding one artifact; the tailscale
+// binary is the Node stub configured in `cwd`, whose `ip -4` succeeds unless `tailscaleFails`. `tailnetVia`
+// is recorded in the state when given, as a current server writes it.
+function checkFixture(tag: string, remoteUrl: (port: number) => string | null, port: number, tailscaleFails = false, tailnetVia?: string) {
+  const root = temporaryDir(`${tag}-root`)
+  const artifact = join(root, 'plan.html')
+  writeFileSync(artifact, '<p>plan</p>')
+  const stateHome = temporaryDir(`${tag}-state`)
+  mkdirSync(serverStateDir(stateHome), { recursive: true, mode: 0o700 })
+  atomicWriteJson(statePath(stateHome), {
+    version: 'x', pid: process.pid, port, baseUrl: `http://localhost:${port}`, remoteUrl: remoteUrl(port),
+    roots: [{ name: 'reports', path: root }], startedAt: new Date().toISOString(), ...(tailnetVia ? { tailnetVia } : {}),
+  })
+  const cwd = temporaryDir(`${tag}-tailscale`)
+  writeFileSync(join(cwd, 'ip'), tailscaleFails ? 'process.exitCode = 1\n' : "process.stdout.write('127.0.0.1\\n')\n")
+  return { artifact, cwd, env: baseEnv(stateHome) }
+}
 
-  async function answeringServer() {
-    const server = createServer((_request, response) => { response.writeHead(200); response.end('ok') })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const address = server.address()
-    if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
-    return { server, port: address.port }
-  }
+async function answeringServer() {
+  const server = createServer((_request, response) => { response.writeHead(200); response.end('ok') })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
+  return { server, port: address.port }
+}
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports a reachable remote URL from the native tailscale side with exit 0, the URL alone on stdout', async () => {
     const { server, port } = await answeringServer()
     try {
@@ -2463,7 +2973,9 @@ describe('owner decision 5: Tailscale access', () => {
       await closeServer(server)
     }
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports an unreachable remote URL with exit 4', async () => {
     const reservation = await reservePort()
     await closeServer(reservation.server)
@@ -2473,7 +2985,9 @@ describe('owner decision 5: Tailscale access', () => {
     expect(result.stderr).toBe('check: unreachable (ECONNREFUSED, from native)\n')
     expect(result.code).toBe(4)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('reports an unverified check with exit 5 when tailscale cannot be reached, and keeps usage at exit 2', async () => {
     const { artifact, cwd, env } = checkFixture('check-unverified', () => 'https://host.tailnet.ts.net/artifacts', 48_001, true)
     const result = await runCli(['url', artifact, '--remote', '--check'], env, cwd)
@@ -2484,23 +2998,36 @@ describe('owner decision 5: Tailscale access', () => {
     expect(usage.code).toBe(2)
     expect(usage.stderr).toContain('[--check]')
   })
+})
 
-  it.skipIf(process.platform !== 'linux')('checks a remote URL through Windows PowerShell under WSL interop, passing the URL as a quoted literal', async () => {
-    const { artifact, env } = checkFixture('check-windows', () => 'https://host.tailnet.ts.net/artifacts', 48_001)
-    const bin = wslInteropStub('No serve config', 'STATUS=200')
-    const reached = await runCli(['url', artifact, '--remote', '--check'], { ...env, PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: undefined }, bin)
+describe('owner decision 5: Tailscale access', () => {
+  it('checks a remote URL through Windows PowerShell under WSL interop, passing the URL as a quoted literal', async () => {
+    const url = 'https://host.tailnet.ts.net/artifacts/reports/plan.html'
+    const { artifact, env } = checkFixture('check-windows', () => 'https://host.tailnet.ts.net/artifacts', 48_001, false, 'windows-interop')
+    const bin = temporaryDir('check-windows-bin')
+    const reachedFixture = wslCheckFixture(bin, env, 'STATUS=200')
+    // Resolve an older state through explicit WSL/runner/filesystem seams, even on a non-WSL host.
+    expect(await checkArtifactUrl(url, reachedFixture.options)).toEqual({ verdict: 'reachable', status: 200, from: 'windows' })
+    expect(reachedFixture.commands).toEqual(['tailscale', 'tailscale.exe', 'powershell.exe', 'wslpath', '/fixture/tailscale.exe', 'powershell.exe'])
+    expect(readdirSync(bin).some((name) => /^tailscale(?:\.exe)?$/i.test(name))).toBe(false)
+    const reached = await runCli(['url', artifact, '--remote', '--check'], reachedFixture.env, bin)
     expect(reached.stdout).toBe('https://host.tailnet.ts.net/artifacts/reports/plan.html\n')
     expect(reached.stderr).toBe('check: reachable (HTTP 200, from windows)\n')
     expect(reached.code).toBe(0)
-    const args = readFileSync(join(bin, 'ps-args'), 'utf8')
+    const args = reachedFixture.args()
     expect(args).toContain("-Uri 'https://host.tailnet.ts.net/artifacts/reports/plan.html'")
     expect(args.split('\n').slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command'])
-    const timedOutBin = wslInteropStub('No serve config', 'ERROR=The operation has timed out.')
-    const failed = await runCli(['url', artifact, '--remote', '--check'], { ...env, PATH: timedOutBin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: undefined }, timedOutBin)
+    const timedOutBin = temporaryDir('check-windows-timeout-bin')
+    const failedFixture = wslCheckFixture(timedOutBin, env, 'ERROR=The operation has timed out.')
+    expect(await checkArtifactUrl(url, failedFixture.options)).toEqual({ verdict: 'unreachable', reason: 'The operation has timed out.', from: 'windows' })
+    const failed = await runCli(['url', artifact, '--remote', '--check'], failedFixture.env, timedOutBin)
+    expect(failed.stdout).toBe(`${url}\n`)
     expect(failed.stderr).toBe('check: unreachable (The operation has timed out., from windows)\n')
     expect(failed.code).toBe(4)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform !== 'linux')('checks from the side the server recorded, never from a fresh resolution', async () => {
     const recordedWindows = checkFixture('check-recorded-windows', () => 'https://host.tailnet.ts.net/artifacts', 48_001, false, 'windows-interop')
     const windowsBin = wslInteropStub('No serve config', 'STATUS=200')
@@ -2519,14 +3046,18 @@ describe('owner decision 5: Tailscale access', () => {
       await closeServer(server)
     }
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it.skipIf(process.platform === 'win32')('reports an unverified check naming PowerShell when the recorded Windows side cannot be reached', async () => {
     const { artifact, cwd, env } = checkFixture('check-recorded-no-powershell', () => 'https://host.tailnet.ts.net/artifacts', 48_001, false, 'windows-interop')
     const result = await runCli(['url', artifact, '--remote', '--check'], { ...env, PATH: temporaryDir('no-powershell') }, cwd)
     expect(result.stderr).toMatch(/^check: unverified \(powershell\.exe did not complete the check \(/)
     expect(result.code).toBe(5)
   })
+})
 
+describe('owner decision 5: Tailscale access', () => {
   it('names the recorded detection reason when there is no remote URL, and stays generic for an older state', async () => {
     const { artifact, cwd, env } = checkFixture('no-remote-reason', () => null, 48_001)
     const older = await runCli(['url', artifact, '--remote'], env, cwd)

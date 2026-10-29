@@ -1,10 +1,15 @@
-# Daily work journal
+# Daily work journal (retired)
+
+**Retired.** The journal's recording hooks were removed: nothing records new acts, and no
+session start or Stop prints journal notices any more. Commits already live in Git. The
+CLI stays so an existing journal remains readable: `show`, `digest`, `verify`, `restore`,
+`unlock` and `export-closed` work on what was recorded before the removal. The rest of this
+page describes that existing journal; the "What is recorded" section is kept as a record of
+what the retired hooks used to capture.
 
 The journal is a mechanical index of completed acts: local time, subject, one sentence and
-a link to the detail. Hooks and one shared writer maintain it; an agent never writes lines
-from memory. It is recent-activity context, not a task backlog. Board-based projects retire
-their old Markdown task file after a verified, lossless archive; projects without a board
-keep that file and receive a session-start onboarding reminder.
+a link to the detail. An agent never wrote lines from memory. It was recent-activity
+context, not a task backlog.
 
 ## Storage and access
 
@@ -27,9 +32,9 @@ profile/project keying and refusal inside a repository still apply. Do not put t
 in lane briefs. CLI commands require `CLAUDECODE=1`, which proves a Claude Code process,
 not main-session authentication.
 
-## What is recorded
+## What was recorded (retired hooks)
 
-Shipped defaults cover Git commits, merges, cherry-picks, reverts and pulls from the HEAD
+The retired hooks covered Git commits, merges, cherry-picks, reverts and pulls from the HEAD
 reflog; push confirmation from remote-tracking ref movement; newly created tags; pull-request
 URLs; and Planka moves whose returned card is in the cached Done list. Other default
 recorders admit main calls; Done also admits subagents and unknown actors because delegated
@@ -40,13 +45,13 @@ a success marker. Pushes of tags, untracked refs and unchanged tracking refs are
 never a claimed success. More than 200 reflog acts in a call fails visibly rather than silently
 aggregating them. Scripts calling a board over HTTP have no tool-hook surface.
 
-Projects declare `<project>/.claude/work-journal.json` with `recorders`, `disable` and `outward` arrays.
+Projects declared `<project>/.claude/work-journal.json` (no longer read) with `recorders`, `disable` and `outward` arrays.
 Recorders merge by `id`; invalid configuration falls back to defaults with a loud warning.
 Generic recorders use `kind: "tool"`, a `tag`, a regex `tool` in the registered `Bash` or
 `mcp__.*` families, an optional regex `command` on executable command heads, `sentence`,
 `link`, optional `subject` and `actors`. Templates such as `{{tool_input.channel}}` and
 `{{tool_response.url}}` read scalars only. Unobservable tool families are rejected loudly.
-Disabling a default recorder does not disable its outward-act Stop warning.
+Disabling a default recorder did not disable its outward-act Stop warning.
 
 ## Commands
 
@@ -63,21 +68,15 @@ Run `node <plugin-root>/bin/wt-work-journal.mjs --help` for the full syntax.
   The digest is deterministic and capped at 7,000 UTF-16 characters. Fields are sanitized
   and limited by code point; kinds are limited to three plus a count. Budget trimming
   removes oldest condensed days first, then the least recent subjects of the older detail
-  day, then the newer day, and always includes a trim marker. SessionStart puts integrity
-  and other notices first, caps configuration warnings to five lines of 300 characters,
-  and gives the digest the remaining space within a 9,500-character total. CLI `digest`
-  verifies first and prints a loud warning on failure; a broken selected live chain refuses
-  the digest. Its anchored, contiguous read covers the window and the last two worked
-  day files through the newest file, including rollback timestamps in later-dated files.
-  SessionStart still separately reads the full chain for verification and recovery; the
-  digest's smaller read does not reduce total SessionStart I/O.
+  day, then the newer day, and always includes a trim marker. CLI `digest` verifies first
+  and prints a loud warning on failure; a broken selected live chain refuses the digest.
+  Its anchored, contiguous read covers the window and the last two worked day files
+  through the newest file, including rollback timestamps in later-dated files.
 - `verify` checks the chain across daily files, durable head, two-way day inventory and
-  mirror equality: exit 0 intact, 1 broken, 2 unreadable. Hooks never block the session on
-  an internal error; they print a loud notice. Stop is warn-only probation until the owner
-  labels the first twenty live warnings from transcripts and per-act outcome records.
+  mirror equality: exit 0 intact, 1 broken, 2 unreadable.
 - `setup-board` resolves the pointer's Done list through the board client and caches it.
-  Set the pointer's `mcpUrl` or the configured Planka MCP endpoint; this CLI may network,
-  hooks never do. Run it again if the pointer changes.
+  Set the pointer's `mcpUrl` or the configured Planka MCP endpoint; this CLI may network.
+  The cache only served the retired Done recorder.
 - `unsynced "sentence" --detail-file <file>` (or full detail on stdin) archives and verifies
   the full narrative before adding an index line. `unsynced --list` reads open details;
   `resolve <hash>` records successful reconciliation with the board.

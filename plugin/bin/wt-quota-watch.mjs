@@ -52,6 +52,7 @@
 // recovers on its own as soon as a probe (or the cache) succeeds again.
 
 import { spawn } from 'node:child_process'
+import { retainProcessOwner } from './lib/host/process-signal-boundary.mjs'
 import { existsSync, readFileSync, writeFileSync, writeSync, appendFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -536,14 +537,7 @@ function readWatchInstances() {
 }
 
 function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    // EPERM means the process EXISTS but belongs to someone else — alive for our purposes.
-    return err?.code === 'EPERM'
-  }
+  return retainProcessOwner(pid)
 }
 
 const watchCwd = process.cwd()

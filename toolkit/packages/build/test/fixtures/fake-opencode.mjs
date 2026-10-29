@@ -73,6 +73,10 @@ async function runAction() {
     write('spawned', 'spawned')
     return
   }
+  if (action === 'lock-priority-env') {
+    write('lock-priority-env', process.env.WT_SUITE_LOCK_PRIORITY ?? 'unset')
+    return
+  }
   if (action === 'suite-lock-cmd') {
     write('suite-lock-cmd', process.env.WT_SUITE_LOCK_CMD ?? 'unset')
     return

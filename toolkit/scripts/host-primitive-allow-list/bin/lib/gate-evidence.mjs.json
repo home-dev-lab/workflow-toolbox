@@ -1,0 +1,9 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "execFileSync": 1,
+  "existsSync": 1,
+  "readFileSync": 2,
+  "mkdirSync": 1,
+  "writeFileSync": 1
+}

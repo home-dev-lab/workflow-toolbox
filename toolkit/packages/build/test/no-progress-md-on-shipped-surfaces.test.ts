@@ -18,7 +18,7 @@ describe('retired Markdown task file stays retired on shipped surfaces', () => {
     const files = result.stdout.split('\0').filter((file) => file && !deleted.has(file))
     expect(files.length).toBeGreaterThan(200)
     const hits = files.filter((file) => !file.includes('/test/') && file !== 'plugin/CHANGELOG.md'
-      && !/^plugin\/bin\/(?:wt-work-journal(?:-hook)?\.mjs|lib\/(?:host\/)?work-journal[^/]*\.mjs)$/.test(file))
+      && !/^plugin\/bin\/(?:wt-work-journal\.mjs|lib\/(?:host\/)?work-journal[^/]*\.mjs)$/.test(file))
       .filter((file) => readFileSync(resolve(root, file), 'utf8').includes('progress.md'))
     expect(hits).toEqual([])
   })

@@ -2,6 +2,8 @@
 // Residual: the host stamps scripted keystrokes into the session's own terminal as
 // composer, so a session able to drive its own pane is not stopped by origin alone.
 import { isIssuedToken, knownTokens, randomId, releaseRefusalReason, releaseToken, reserveTokenId } from './token-vault.js';
+import { OWNER_CHANNEL_ADAPTERS } from './owner-channel.js';
+import { base64Utf8 } from './outbound-tools.js';
 
 const confirmations = new Map();
 const privateCodes = new Set();
@@ -27,8 +29,74 @@ function expireConfirmations(now) {
 
 export function releaseGrammarRefusal(event) {
   if (confirmationKeyCollision(event)) return { deny: 'wt-secret-guard refused confirmation-code key collision.' };
-  return /wt-secret-guard\s+release/i.test(JSON.stringify(event))
+  const strings = [...eventStrings(event)];
+  if (strings.some(({ value }) => redactConfirmationCodes(value) !== value)) {
+    return { deny: 'wt-secret-guard refused tool input carrying an active confirmation code.' };
+  }
+  const grammar = strings.filter(({ value }) => grammarCount(value));
+  return grammar.length && !releaseLineAllowance(event, strings, grammar)
     ? { deny: 'wt-secret-guard refused tool input carrying owner-release grammar.' } : null;
+}
+
+// Inspect decoded values AND keys; JSON escaping must not hide control separators.
+const SCALAR_TYPES = new Set(['string', 'number', 'bigint', 'boolean']);
+
+function* eventStrings(event) {
+  yield* placedStrings(event, { body: false, hostTool: false }, true);
+}
+
+// A root `text` value is the body; a root `tool` value is the host's tool name.
+function rootPlace(root, name) {
+  return { body: root && name === 'text', hostTool: root && name === 'tool' };
+}
+
+function* placedStrings(value, place, root) {
+  if (SCALAR_TYPES.has(typeof value)) { yield { value: String(value), key: false, ...place }; return; }
+  if (!value || typeof value !== 'object') return;
+  for (const [name, child] of Object.entries(value)) {
+    const childPlace = rootPlace(root, name);
+    yield { value: name, body: false, key: true, hostTool: childPlace.hostTool };
+    yield* placedStrings(child, childPlace, false);
+  }
+}
+
+function grammarCount(text) {
+  // Compatibility normalization broadens refusal only, never the literal allowance.
+  return [...stripIgnorables(text.normalize('NFKC')).matchAll(/wt-secret-guard(?:\s|\u0085)*release/giu)].length;
+}
+
+function privateMaterial(strings) {
+  return strings.some(({ value, hostTool }) => redactConfirmationCodes(value) !== value || (!hostTool && heldMaterial(value)));
+}
+
+function heldMaterial(value) {
+  const ranges = [...value.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)]
+    .filter((match) => isIssuedToken(match[0])).map((match) => [match.index, match.index + match[0].length]);
+  return [...knownTokens().values()].some((entry) => !entry.ephemeral && entry.value
+    && [entry.value, base64Utf8(entry.value)].some((needle) => rawHeldOccurrence(value, needle, ranges)));
+}
+
+function rawHeldOccurrence(value, needle, ranges) {
+  for (let at = value.indexOf(needle); at >= 0; at = value.indexOf(needle, at + 1)) {
+    if (!ranges.some(([from, to]) => at >= from && at + needle.length <= to)) return true;
+  }
+  return false;
+}
+
+function stripIgnorables(value) {
+  return value.replace(/[\p{Default_Ignorable_Code_Point}\p{Cf}]/gu, '');
+}
+
+function releaseLineAllowance(event, strings, grammar) {
+  if (!OWNER_CHANNEL_ADAPTERS.has(event.tool) || typeof event.text !== 'string') return false;
+  if (grammar.length !== 1 || !grammar[0].body || grammarCount(event.text) !== 1) return false;
+  if (privateMaterial(strings)) return false;
+  const match = /(?:^|\n)(wt-secret-guard release (secret:[a-z-]+#[a-f0-9]{6}))(?=\r?\n|$)/.exec(event.text);
+  if (!match || !isIssuedToken(match[2])) return false;
+  // The owner supplies any confirmation separately, even when it is not active here.
+  const idStart = match.index + match[0].length - 6;
+  const outsideId = event.text.slice(0, idStart) + '[issued token id]' + event.text.slice(idStart + 6);
+  return !/\b[a-f0-9]{6}\b/iu.test(stripIgnorables(outsideId));
 }
 
 export function confirmationKeyCollision(value) {

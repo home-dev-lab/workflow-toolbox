@@ -17,6 +17,19 @@ export function configDirectory(env) {
   return env.CLAUDE_CONFIG_DIR || (env.HOME || env.USERPROFILE ? `${env.HOME || env.USERPROFILE}/.claude` : null);
 }
 
+// A file the plugin ships, from the URL of a module one folder below the plugin's directory (`file:///x/hooks/hooks.js`,
+// `file:///C:/x/hooks/hooks.js`, `file://server/share/x/hooks/hooks.js`): `<plugin directory>/<relative>`, or null for
+// any other URL. The host loads a hooks module from the plugin's own directory, so its URL locates the plugin.
+export function shippedFile(moduleUrl, relative) {
+  const match = /^file:\/\/([^/]*)(\/.*)\/[^/]+\/[^/]+$/.exec(String(moduleUrl));
+  if (!match) return null;
+  let directory;
+  try { directory = decodeURIComponent(match[2]); } catch { return null; }
+  if (/^\/[A-Za-z]:\//.test(directory)) directory = directory.slice(1);
+  else if (match[1] && match[1] !== 'localhost') directory = `//${match[1]}${directory}`;
+  return `${directory}/${relative}`;
+}
+
 export function agentLoop(agentId) {
   return agentId || 'main';
 }

@@ -2,14 +2,14 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "memory-available",
-    "capturedAt": "2026-09-22T23:06:31.027Z",
+    "capturedAt": "2026-10-12T01:03:07.017Z",
     "command": "node memory-available.mjs /home/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/ubuntu-latest/memory-available.json",
-    "runId": "35795762873",
-    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "ubuntu-latest",
       "os": "ubuntu24",
-      "version": "20260907.300.1"
+      "version": "20261004.327.1"
     },
     "osRelease": {
       "platform": "linux",
@@ -18,7 +18,7 @@
       "arch": "x64"
     },
     "tools": {
-      "node": "v24.20.0",
+      "node": "v24.21.0",
       "procps": {
         "command": "ps --version",
         "exitCode": 0,
@@ -34,13 +34,13 @@
   },
   "osMemory": {
     "status": "measured",
-    "freeBytes": 15319212032,
-    "totalBytes": 16766418944
+    "freeBytes": 15276822528,
+    "totalBytes": 16766410752
   },
   "linux": {
     "status": "measured",
     "source": "/proc/meminfo",
-    "raw": "MemAvailable:   14960168 kB"
+    "raw": "MemAvailable:   14918772 kB"
   },
   "macos": {
     "status": "not_applicable",

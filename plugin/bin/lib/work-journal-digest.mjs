@@ -1,6 +1,6 @@
 // Read-only projection. The core binds its readers and preserves the digestJournal export.
 
-export const DIGEST_MAX_CHARS = 7000
+const DIGEST_MAX_CHARS = 7000
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/
 // Code-unit order, never locale order: the digest must be identical on every host.
 function compare(a, b) {
@@ -8,7 +8,7 @@ function compare(a, b) {
   return a < b ? -1 : 1
 }
 
-export function field(value, max) {
+function field(value, max) {
   const text = String(value ?? '').toWellFormed().replace(/[\p{Cc}\u2028\u2029]/gu, ' ')
   return Array.from(text).slice(0, max).join('').trim()
 }

@@ -1,15 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hostStore, hookFixture, readerTotals } from './store-host-fake.mjs';
+import { hostStore, hookFixture, readerTotals, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_ARCHIVE, VERDICTS } from '../hooks/store-budget.js';
 import { readStoreArchives, withArchivedSessions } from '../scripts/store-archives.mjs';
 
 test('same-pid, same-millisecond reloads preserve two different deliveries and verdicts', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'rod-delivery-reload-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, 'rod-delivery-reload-');
   const RealDate = Date;
   const instant = RealDate.parse('2026-10-01T10:00:00.000Z');
   globalThis.Date = class extends RealDate {
@@ -68,8 +65,7 @@ test('same-pid, same-millisecond reloads preserve two different deliveries and v
 });
 
 test('the delivery token carries 52 random bits, not fewer', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'rod-delivery-bits-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, 'rod-delivery-bits-');
   const realRandom = Math.random;
   // The largest value Math.random can return at 52-bit resolution: a 52-bit draw maps it to 2^52 - 1, a narrower one cannot.
   Math.random = () => (2 ** 52 - 1) / 2 ** 52;

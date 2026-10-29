@@ -1,0 +1,8 @@
+{
+  "child_process require": 1,
+  "os require": 1,
+  "hard-coded path separator": 1,
+  "homedir": 2,
+  "process.platform": 1,
+  "spawnSync": 1
+}

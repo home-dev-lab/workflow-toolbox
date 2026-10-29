@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -25,7 +26,7 @@ function mkDir(): string {
   return r
 }
 function run(args: string[], dir: string): string {
-  const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [SCRIPT, ...args, '--dir', dir], { encoding: 'utf8', env: sealedPluginCliEnv(dir) })
   return (res.stdout ?? '') + (res.stderr ?? '')
 }
 

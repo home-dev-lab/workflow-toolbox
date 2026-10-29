@@ -3,17 +3,15 @@
 // of their segment are joined. K4: a property over random split boundaries and orders, and the eid stamp at write time.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { hostStore, hookFixture, readerTotals, exhaustedBudgetClock } from './store-host-fake.mjs';
+import { hostStore, hookFixture, readerTotals, exhaustedBudgetClock, sandboxRoot } from './store-host-fake.mjs';
 import { STORE_ARCHIVE, archiveTexts, splitUnit } from '../hooks/store-budget.js';
 import { archivedSegments, sumSessions } from '../scripts/delivery-join.mjs';
 import { readStoreArchives } from '../scripts/store-archives.mjs';
 
 async function sandbox(t, prefix) {
-  const root = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await sandboxRoot(t, prefix);
   return root;
 }
 const AT = '2026-10-01T10:00:00.000Z';

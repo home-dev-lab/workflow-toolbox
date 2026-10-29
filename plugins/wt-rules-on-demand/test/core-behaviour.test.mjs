@@ -102,6 +102,7 @@ test('model classifier failure closes as unknown with error reason', async () =>
   const f = fixture(makeRule("    kind: 'model'\n    model: 'synthetic'\n    prompt: 'assess'\n    window: '2'\n    on-close: 'not applicable'", bashTrigger));
   f.$.model.classify = async () => { throw new Error('classifier unavailable'); };
   await f.event('prompt.submit', { text: 'audit' });
+  await f.event('tool.call', { tool: 'Read', file_path: 'notes.txt' });
   await f.event('turn.complete');
   assert.deepEqual(f.verdicts().map((row) => [row.verdict, row.reason]), [['unknown', 'classifier unavailable']]);
 });

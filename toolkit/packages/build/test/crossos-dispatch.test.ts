@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 // @ts-expect-error JS quality scanner
 import { scanHostPrimitives } from '../../../scripts/host-primitive-census.mjs'
 // @ts-expect-error JS scheduling policy
@@ -10,22 +11,68 @@ import { spawningTestFiles } from '../../../scripts/spawning-test-files.mjs'
 // @ts-expect-error host adapter is a JS module
 import { commandIO } from '../../../../plugin/bin/lib/host/command-io.mjs'
 // @ts-expect-error JS plugin entrypoint
-import { dispatch } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
+import { dispatch as liveDispatch } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
 // @ts-expect-error JS plugin module
-import { ciBranchFor, matchesHostPath, verdictFromEvidence } from '../../../../plugin/bin/lib/crossos-verdict.mjs'
+import { ciBranchFor, matchesHostPath, verdictFromEvidence as liveVerdictFromEvidence } from '../../../../plugin/bin/lib/crossos-verdict.mjs'
 
 const root = resolve(import.meta.dirname, '../../../..')
 const fixtureDir = join(import.meta.dirname, 'fixtures/crossos-dispatch')
 const temporary: string[] = []
+const historicalJobs = ['ubuntu-latest', 'windows-latest', 'macos-latest'].map((os) => `matrix (${os})`)
+const historicalWindowsJobs = ['matrix (ubuntu-latest)', 'matrix (macos-latest)', 'matrix (windows-latest, 1)', 'matrix (windows-latest, 2)']
+// Supply the independently fixed roster of the two historical pure-test fixtures.
+// Current-roster regressions call the real verdict directly in crossos-evidence.test.ts.
+function verdictFromEvidence(run: unknown, sha: string) {
+  const evidence = run as { jobs?: { name?: string }[] } | null | undefined
+  const jobs = evidence?.jobs
+  const sharded = Array.isArray(jobs) && jobs.some((job) => job.name?.startsWith('matrix (windows-latest,'))
+  return liveVerdictFromEvidence(run && typeof run === 'object' ? { ...run, expectedJobs: sharded ? historicalWindowsJobs : historicalJobs } : run, sha)
+}
+// The historical scenarios below predate the current matrix. Adapt their gh view
+// fixture to REST pages while retaining each scenario's injected job outcomes.
+async function dispatch(argv: string[], options: { io?: typeof commandIO; print: (line: string) => void }) {
+  const io = options.io ?? commandIO
+  let lastJobs: Record<string, unknown>[] = []
+  let displayFailed = false
+  const print = (line: string) => {
+    if (io.failEarlyPrintOnce && !displayFailed && line.startsWith('EARLY JOB ')) { displayFailed = true; throw new Error('display unavailable') }
+    options.print(line)
+  }
+  return liveDispatch(argv, { ...options, print, io: { ...io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program === 'gh' && args[0] === 'api' && args[1]?.includes('/actions/runs/')) {
+      const jobs = lastJobs.map((job, index) => ({ ...job, id: job.databaseId ?? index + 1, completed_at: job.completedAt }))
+      return { status: 0, stdout: JSON.stringify({ total_count: jobs.length, jobs }), stderr: '' }
+    }
+    const result = io.run(program, args, opts)
+    if (program === 'gh' && args[1] === 'view' && !args.includes('--job') && result.status === 0) lastJobs = JSON.parse(result.stdout).jobs ?? []
+    return result
+  } } })
+}
 const sealedHome = mkdtempSync(join(tmpdir(), 'crossos-seal-'))
 const env = { ...process.env, HOME: sealedHome, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ALLOW_PROTOCOL: 'file', GIT_TERMINAL_PROMPT: '0' }
 afterAll(() => rmSync(sealedHome, { recursive: true, force: true }))
 afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }) })
 function git(cwd: string, ...args: string[]) {
-  const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' })
+  // This helper prepares fixture state. Product pushes use commandIO.push and
+  // explicit guard probes use spawnSync, so setup can skip the installed hook.
+  const argv = args[0] === 'push' ? ['push', '--no-verify', ...args.slice(1)] : args
+  const result = spawnSync('git', argv, { cwd, env, encoding: 'utf8' })
   if (result.status !== 0) throw new Error(result.stderr)
   return result.stdout.trim()
 }
+
+describe('cross-OS fixture publication', () => {
+  it('prepares a completed-run branch without launching the installed push guard', () => {
+    const f = publicFixture(); const auth = authPathOf(f.dir)
+    const branch = ciBranchFor(f.host)
+    writeFileSync(auth, JSON.stringify({ commits: [f.host] }))
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/${branch}`)
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/${branch}`)).toBe(`${f.host}\trefs/heads/${branch}`)
+    expect(readdirSync(join(f.dir, '.git')).filter((name) => name.startsWith('wt-push-authorized.consumed-')),
+      'fixture publication must not launch the installed push guard').toEqual([])
+    expect(existsSync(auth), 'fixture publication must leave guard authorization unconsumed').toBe(true)
+  })
+})
 // The fixture repository is reached through a NON-canonical path, the way macOS (/var -> /private/var) and Windows
 // runners (8.3 short names in TEMP) present it: git reports the canonical path, the test holds the other spelling.
 // On POSIX a symlink reproduces that on every runner; Windows runners already present a short-name TEMP.
@@ -40,18 +87,23 @@ function scratchDir() {
 function authPathOf(dir: string) {
   return join(git(dir, 'rev-parse', '--absolute-git-dir'), 'wt-push-authorized.json')
 }
-function fixture() {
-  const dir = scratchDir()
+function fixture(workflowSource = JSON.stringify({ jobs: { matrix: { strategy: {
+  matrix: { include: ['ubuntu-latest', 'windows-latest', 'macos-latest'].map((os) => ({ os })) },
+} } } }), directory?: string) {
+  const dir = directory ?? scratchDir()
   git(dir, 'init', '-q', '-b', 'main')
   git(dir, 'config', 'user.name', 'Fixture')
   git(dir, 'config', 'user.email', 'fixture@example.test')
   git(dir, 'config', 'commit.gpgsign', 'false')
   mkdirSync(join(dir, '.github'))
   copyFileSync(join(root, '.github/cross-os-host-layer.json'), join(dir, '.github/cross-os-host-layer.json'))
+  mkdirSync(join(dir, '.github/workflows'))
+  writeFileSync(join(dir, '.github/workflows/cross-os.yml'), workflowSource)
   writeFileSync(join(dir, 'README.md'), 'base')
   git(dir, 'add', '.')
   git(dir, 'commit', '-qm', 'base')
   const base = git(dir, 'rev-parse', 'HEAD')
+  git(dir, 'branch', 'develop', base)
   mkdirSync(join(dir, 'plugin/bin'), { recursive: true })
   writeFileSync(join(dir, 'plugin/bin/host.mjs'), 'host')
   git(dir, 'add', '.')
@@ -118,7 +170,371 @@ function loggedGh(f: ReturnType<typeof fixture>, log: string, failingJob = 'matr
   } }
   return io
 }
+// Narrows the authorized commit list to one wrong commit so the real hook refuses. The range is matched by
+// content, not position: options such as `--end-of-options` may precede it. `state.narrowed` proves it fired.
+function narrowedRangeIO(fake: ReturnType<typeof fakeGh>, base: string) {
+  const state = { narrowed: 0 }
+  const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program !== 'git' || args[0] !== 'rev-list' || !args.some((arg) => arg.startsWith('public/main..'))) return fake.io.run(program, args, opts)
+    state.narrowed++
+    return { status: 0, stdout: `${base}\n`, stderr: '' }
+  } }
+  return { io, state }
+}
 
+// New ancestry scenarios stay entirely local, including the non-dry-run refusal path.
+function localOnlyIO() {
+  return { ...commandIO, run(program: string, args: string[], opts: { cwd: string }) {
+    expect(program, 'ancestry checks must not call gh').toBe('git')
+    expect(['fetch', 'push', 'ls-remote']).not.toContain(args[0])
+    const result = spawnSync(program, args, { ...opts, env, encoding: 'utf8' })
+    return { status: result.status ?? 2, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+  }, push() { throw new Error('ancestry scenarios must not push') } }
+}
+const developCommands = [['decide'], ['run'], ['run', '--dry-run']].map((argv) => ({ command: argv.join(' '), argv }))
+function advanceDevelop(f: ReturnType<typeof fixture>, from: string) {
+  git(f.dir, 'checkout', '-q', '--detach', from)
+  git(f.dir, 'commit', '--allow-empty', '-qm', 'advance develop')
+  const tip = git(f.dir, 'rev-parse', 'HEAD')
+  git(f.dir, 'branch', '-f', 'develop', tip)
+  return tip
+}
+const shellArgument = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+function executeRecoveryRecipe(text: string, cwd: string, preview: string, branch: string) {
+  const commands = text.split('\n').filter((line) => /^(?:# )?(?:git |node )/.test(line))
+  expect(commands, 'refusal must print three executable recovery commands').toHaveLength(3)
+  let finalOutput = ''
+  for (const [index, printed] of commands.entries()) {
+    const command = printed.replaceAll('<dir>', shellArgument(preview)).replaceAll('<branch>', shellArgument(branch))
+    const result = spawnSync('bash', ['-c', command + (index === 2 ? ' --dry-run --repo-slug owner/repo' : '')], {
+      cwd, env: { ...env, GIT_MERGE_AUTOEDIT: 'no' }, encoding: 'utf8',
+    })
+    expect(result.status, `${command}\n${result.stdout}\n${result.stderr}`).toBe(0)
+    finalOutput = result.stdout
+  }
+  return finalOutput
+}
+
+function recoveryFixture(directory?: string) {
+  const f = fixture(undefined, directory)
+  const tip = advanceDevelop(f, f.base)
+  git(f.dir, 'update-ref', 'refs/remotes/public/main', f.base)
+  return { ...f, tip, outside: fixture().dir, preview: join(scratchDir(), 'preview merge') }
+}
+
+describe('cross-OS recovery path bytes', () => {
+  it.skipIf(process.platform === 'win32')('preserves a real repository root ending in carriage return', async () => {
+    const directory = join(scratchDir(), 'selected\r'); mkdirSync(directory)
+    const f = recoveryFixture(directory); const out = output(); const io = localOnlyIO()
+    const rootOutput = io.run('git', ['rev-parse', '--show-toplevel'], { cwd: f.dir }).stdout
+    expect(rootOutput.endsWith('\r\n')).toBe(true)
+    expect(await liveDispatch(['decide', '--repo', f.dir, '--merge', f.host], { io, print: out.print })).toBe(2)
+    const text = out.lines.join('\n')
+    expect(text, 'printed root must retain the filename carriage return').toContain(`git -C ${shellArgument(rootOutput.slice(0, -1))} worktree add`)
+    expect(executeRecoveryRecipe(text, f.outside, f.preview, f.host)).toContain('RESULT: dry-run')
+    expect(git(f.preview, 'merge-base', '--is-ancestor', f.tip, 'HEAD')).toBe('')
+  })
+
+  it.each(['ordinary', 'carriage return', 'line feed'])('removes only Git LF from a %s root spelling', async (suffix) => {
+    const f = recoveryFixture(); const out = output(); const local = localOnlyIO()
+    const selected = `C:/selected ' $repo; &${suffix === 'carriage return' ? '\r' : suffix === 'line feed' ? '\n' : ''}`
+    const io = { ...local, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'git' && args.includes('--show-toplevel')) return { status: 0, stdout: `${selected}\n`, stderr: '' }
+      return local.run(program, args, opts)
+    } }
+    expect(await liveDispatch(['decide', '--repo', f.dir, '--merge', f.host], { io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain(`git -C ${shellArgument(selected)} worktree add --detach <dir> develop`)
+  })
+})
+
+describe('cross-OS recovery without a worktree', () => {
+  it.each(['bare', 'administrative'])('keeps the ancestry refusal and usable recipe for a %s repository', async (kind) => {
+    const f = recoveryFixture(); const out = output()
+    const selected = kind === 'bare' ? join(scratchDir(), 'selected.git') : join(f.dir, '.git')
+    if (kind === 'bare') git(f.dir, 'clone', '-q', '--bare', f.dir, selected)
+    expect(await liveDispatch(['decide', '--repo', selected, '--merge', f.host], { io: localOnlyIO(), print: out.print })).toBe(2)
+    const text = out.lines.join('\n')
+    expect(text).toContain(`commit ${f.host} does not contain current local develop tip ${f.tip}; refusing decide.`)
+    expect(text).toContain('Cannot resolve selected repository root: fatal: this operation must be run in a work tree')
+    expect(text).toContain('Replace <repository> with an absolute repository path, shell-quoted.')
+    expect(text).toContain('git -C <repository> worktree add --detach <dir> develop')
+    expect(out.lines.at(-1)).toBe('RESULT: error')
+    expect(executeRecoveryRecipe(text.replaceAll('<repository>', shellArgument(f.dir)), f.outside, f.preview, f.host)).toContain('RESULT: dry-run')
+  })
+})
+
+describe('cross-OS installed recovery', () => {
+  it('executes recovery with the dispatcher installed under a shell-special path', () => {
+    const f = recoveryFixture()
+    const installed = join(scratchDir(), "installed ' $tool; &", 'bin')
+    cpSync(join(root, 'plugin/bin'), installed, { recursive: true })
+    const result = spawnSync(process.execPath, [join(installed, 'wt-crossos-dispatch.mjs'), 'decide', '--repo', f.dir, '--merge', f.host], {
+      cwd: f.outside, env, encoding: 'utf8',
+    })
+    expect(result.status, result.stdout + result.stderr).toBe(2)
+    expect(executeRecoveryRecipe(result.stdout, f.outside, f.preview, f.host), 'installed dispatcher must execute as one shell argument').toContain('RESULT: dry-run')
+  })
+})
+
+describe('cross-OS printed recovery', () => {
+  it.each(['absolute', 'relative'])('executes the printed recipe from another repository with a %s repo path', async (mode) => {
+    const directory = join(scratchDir(), "target ' $repo; &" + (process.platform === 'win32' ? '' : ' '))
+    mkdirSync(directory)
+    const f = fixture(undefined, directory); const outside = fixture(); const out = output()
+    const tip = advanceDevelop(f, f.base)
+    const branch = "feature's-$topic"
+    git(f.dir, 'branch', branch, f.host)
+    git(f.dir, 'update-ref', 'refs/remotes/public/main', f.base)
+    const preview = join(scratchDir(), "preview ' $merge; &")
+    const before = git(outside.dir, 'worktree', 'list', '--porcelain')
+    const previous = process.cwd()
+    process.chdir(outside.dir)
+    try {
+      const repo = mode === 'absolute' ? f.dir : relative(outside.dir, f.dir)
+      expect(await liveDispatch(['decide', '--repo', repo, '--merge', f.host], { io: localOnlyIO(), print: out.print })).toBe(2)
+    } finally { process.chdir(previous) }
+    const finalOutput = executeRecoveryRecipe(out.lines.join('\n'), outside.dir, preview, branch)
+    expect(finalOutput, 'printed dispatcher must run the recovered preview').toContain('RESULT: dry-run')
+    expect(git(preview, 'merge-base', '--is-ancestor', tip, 'HEAD')).toBe('')
+    expect(git(preview, 'merge-base', '--is-ancestor', f.host, 'HEAD')).toBe('')
+    expect(git(preview, 'rev-list', '--parents', '-n', '1', 'HEAD').split(' ')).toHaveLength(3)
+    expect(git(outside.dir, 'worktree', 'list', '--porcelain')).toBe(before)
+  })
+})
+
+describe('cross-OS develop ancestry refusal', () => {
+  const cases = developCommands.flatMap((command) => ['host behind', 'docs behind', 'diverged'].map((history) => ({ ...command, history })))
+  it.each(cases)('$command refuses $history before dispatch or skip', async ({ argv, history }) => {
+    const f = fixture(); const out = output()
+    const tip = advanceDevelop(f, history === 'diverged' ? f.base : f.docs)
+    const sha = history === 'docs behind' ? f.docs : f.host
+    const code = await liveDispatch([...argv, '--merge', sha, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print })
+    expect(code, 'stale commit must be refused before deciding or dispatching').toBe(2)
+    const text = out.lines.join('\n')
+    expect(text).toContain(`does not contain current local develop tip ${tip}`)
+    expect(text).toContain('worktree add --detach <dir> develop')
+    expect(text).toContain('git -C <dir> merge --no-ff <branch>')
+    expect(text).toContain('run --repo <dir> --merge HEAD')
+    expect(out.lines.at(-1)).toBe('RESULT: error')
+    expect(out.lines.some((line) => line.startsWith('DECISION:'))).toBe(false)
+    expect(existsSync(join(f.dir, '.git/wt-crossos'))).toBe(false)
+  })
+  it.each(developCommands)('$command refuses a missing local develop even with a tag and remote refs', async ({ argv }) => {
+    const f = fixture(); const out = output()
+    git(f.dir, 'branch', '-D', 'develop')
+    git(f.dir, 'tag', 'develop', f.base)
+    git(f.dir, 'update-ref', 'refs/remotes/origin/develop', f.base)
+    git(f.dir, 'update-ref', 'refs/remotes/public/develop', f.base)
+    const code = await liveDispatch([...argv, '--merge', f.docs, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print })
+    expect(code, 'missing local develop must refuse').toBe(2)
+    expect(out.lines.join('\n')).toContain('cannot resolve local develop ref refs/heads/develop')
+    expect(out.lines.join('\n')).toContain('git branch develop <current-develop-tip>')
+    expect(out.lines.at(-1)).toBe('RESULT: error')
+    expect(existsSync(join(f.dir, '.git/wt-crossos'))).toBe(false)
+  })
+})
+
+describe('cross-OS develop ancestry acceptance', () => {
+  it.each(developCommands.flatMap((command) => ['equal', 'ancestor', 'second parent'].map((history) => ({ ...command, history }))))(
+    '$command accepts develop as $history and keeps docs skip behavior', async ({ argv, history }) => {
+      const f = fixture(); const out = output()
+      let sha = f.docs
+      if (history === 'equal') git(f.dir, 'branch', '-f', 'develop', sha)
+      if (history === 'second parent') {
+        advanceDevelop(f, f.base)
+        git(f.dir, 'checkout', '-q', '--detach', f.docs)
+        git(f.dir, 'merge', '--no-ff', '-qm', 'preview merge', 'develop')
+        sha = git(f.dir, 'rev-parse', 'HEAD')
+      }
+      const code = await liveDispatch([...argv, '--merge', sha, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print })
+      expect(code, out.lines.join('\n')).toBe(0)
+      expect(out.lines.at(-1)).toBe('RESULT: skip')
+    })
+  it('keeps the host dry-run when a preview merge contains the current develop tip', async () => {
+    const f = fixture(); const out = output()
+    advanceDevelop(f, f.base)
+    git(f.dir, 'checkout', '-q', '--detach', 'develop')
+    git(f.dir, 'merge', '--no-ff', '-qm', 'preview merge', f.host)
+    const sha = git(f.dir, 'rev-parse', 'HEAD')
+    git(f.dir, 'update-ref', 'refs/remotes/public/main', f.base)
+    expect(await liveDispatch(['run', '--dry-run', '--merge', sha, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: localOnlyIO(), print: out.print }), out.lines.join('\n')).toBe(0)
+    expect(out.lines.join('\n')).toContain(`DECISION: run merge=${sha}`)
+    expect(out.lines.at(-1)).toBe('RESULT: dry-run')
+    expect(existsSync(join(f.dir, '.git/wt-crossos'))).toBe(false)
+  })
+})
+
+describe('cross-OS develop ancestry Git errors', () => {
+  it('refuses an ancestry check error rather than treating it as an ancestor or a stale tip', async () => {
+    const f = fixture(); const out = output(); const local = localOnlyIO()
+    const io = { ...local, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'git' && args[0] === 'merge-base') return { status: 128, stdout: '', stderr: 'history unavailable' }
+      return local.run(program, args, opts)
+    } }
+    expect(await liveDispatch(['decide', '--merge', f.docs, '--repo', f.dir], { io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain('cannot verify develop ancestry')
+    expect(out.lines.join('\n')).toContain('history unavailable; repair local Git history and retry')
+    expect(out.lines.some((line) => line.startsWith('DECISION:'))).toBe(false)
+  })
+})
+
+describe('option-like child-process values', () => {
+  const flags = ['--merge', '--ref', '--base', '--remote', '--workflow', '--repo-slug']
+  it.each(flags.flatMap((flag) => ['--help', '-h', '--all', '--'].map((value) => [flag, value])))('%s %s is refused before any child runs', async (flag, value) => {
+    const out = output()
+    const io = { ...commandIO, run() { throw new Error('child must not run') } }
+    expect(await dispatch(['release-check', flag, value], { io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain(`${flag} must not start with "-"`)
+  })
+})
+
+type Fixture = ReturnType<typeof fixture>
+type Fake = ReturnType<typeof fakeGh>
+type Out = ReturnType<typeof output>
+const progressTestName = 'packages/build/test/sdk-pilot-lifecycle-server.test.ts > runner-hosted SDK pilot lifecycle > the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]'
+// Step times recover the step. Every line falls in one second shared by three steps: a skipped step, the test step
+// that ends there, and a diagnostic step that starts there. The lines belong to the test step, so they stay gating.
+const progressSteps = { steps: [
+  { name: 'Set up job', conclusion: 'success', started_at: '2026-09-26T19:00:00Z', completed_at: '2026-09-26T19:00:01Z' },
+  { name: 'Typecheck', conclusion: 'skipped', started_at: '2026-09-26T19:56:27Z', completed_at: '2026-09-26T19:56:27Z' },
+  { name: 'Test (macOS shard 2/2)', conclusion: 'failure', started_at: '2026-09-26T19:56:27Z', completed_at: '2026-09-26T19:56:27Z' },
+  { name: 'Diagnose artifact-server fork (Windows)', conclusion: 'success', started_at: '2026-09-26T19:56:27Z', completed_at: '2026-09-26T19:56:30Z' },
+] }
+function progressJob(databaseId: number, name: string, conclusion: string, completedAt: string) {
+  return { databaseId, name, status: conclusion ? 'completed' : 'in_progress', conclusion, completedAt }
+}
+// GitHub lists jobs in matrix order, not conclusion order: the first poll sees three concluded jobs out of order.
+function progressPolls() {
+  const early = [progressJob(41, 'matrix (windows-latest, 1)', 'success', '2026-10-02T07:33:34Z'), progressJob(42, 'matrix (ubuntu-latest)', 'failure', '2026-10-02T07:34:24Z'), progressJob(43, 'matrix (macos-latest)', 'success', '2026-10-02T07:34:35Z')]
+  const pending = progressJob(44, 'matrix (windows-latest, 2)', '', '')
+  return [
+    { status: 'in_progress', conclusion: '', jobs: [early[2], early[1], early[0], pending] },
+    { status: 'in_progress', conclusion: '', jobs: [early[2], early[1], early[0], pending] },
+    { status: 'completed', conclusion: 'failure', jobs: [early[2], early[1], early[0], progressJob(44, 'matrix (windows-latest, 2)', 'success', '2026-10-02T07:38:06Z')] },
+  ]
+}
+type Gh = { status: number; stdout: string; stderr: string }
+function progressApi(args: string[], fetches: string[], rawLog: string): Gh {
+  fetches.push(`api ${args[1]}`)
+  if (args[1] === 'repos/owner/repo/actions/jobs/42') return { status: 0, stdout: JSON.stringify(progressSteps), stderr: '' }
+  if (args[1] === 'repos/owner/repo/actions/jobs/42/logs') return { status: 0, stdout: rawLog, stderr: '' }
+  return { status: 1, stdout: '', stderr: `unexpected ${args[1]}` }
+}
+function progressJobLog(args: string[], fetches: string[], log: string, inProgress: boolean): Gh {
+  fetches.push(`view ${args[args.indexOf('--job') + 1]}`)
+  // As gh 2.45 does: no job log at all while the run is in progress.
+  if (inProgress) return { status: 1, stdout: '', stderr: 'run 23 is still in progress; logs will be available when it is complete' }
+  return { status: 0, stdout: log, stderr: '' }
+}
+function progressIo(fake: Fake, out: Out, log: string) {
+  // The REST log of the same job: `<timestamp> <text>` lines with no job or step column (GitHub prepends a byte-order mark).
+  const rawLog = `\uFEFF${log.split('\n').filter(Boolean).map((line) => line.split('\t').slice(2).join('\t')).join('\n')}\n`
+  const polls = progressPolls(); const fetches: string[] = []; let poll = 0
+  const run = (program: string, args: string[], opts: { cwd: string }): Gh => {
+    if (program === 'gh' && args[0] === 'api') return progressApi(args, fetches, rawLog)
+    if (program === 'gh' && args.includes('--job')) return progressJobLog(args, fetches, log, poll < polls.length)
+    const result = fake.io.run(program, args, opts)
+    if (program !== 'gh' || args[1] !== 'view' || !result.stdout.includes('headSha')) return result
+    const state = polls[Math.min(poll++, polls.length - 1)]
+    return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), ...state }) }
+  }
+  return { io: { ...fake.io, sleep: async () => { out.lines.push('SLEEP') }, run }, fetches }
+}
+function expectEarlyReportsInConclusionOrder(out: Out, draft: string) {
+  const at = (line: string) => { const index = out.lines.indexOf(line); expect(index, `${line}\n---\n${out.lines.join('\n')}`).toBeGreaterThanOrEqual(0); return index }
+  // Conclusion order, all printed on the first poll, before any wait for the second Windows shard.
+  const ordered = [
+    at('EARLY JOB matrix (windows-latest, 1): green (1/4 concluded)'),
+    at('EARLY JOB matrix (ubuntu-latest): red conclusion=failure (2/4 concluded)'),
+    at(`EARLY TEST matrix (ubuntu-latest) [gating step: Test (macOS shard 2/2)] ${progressTestName}`),
+    at('EARLY JOB matrix (macos-latest): green (3/4 concluded)'),
+    at('EARLY OS ubuntu: red (matrix (ubuntu-latest))'),
+    at(`EARLY CARD DRAFT ubuntu: ${draft}`),
+    at('EARLY OS macos: green (matrix (macos-latest))'),
+    out.lines.indexOf('SLEEP'),
+    // Windows is reported only once its last shard concludes, after the waits.
+    at('EARLY JOB matrix (windows-latest, 2): green (4/4 concluded)'),
+    at('EARLY OS windows: green (matrix (windows-latest, 1), matrix (windows-latest, 2))'),
+    // The final summary is unchanged and reads gh's own log once the run has completed.
+    at('JOB matrix (ubuntu-latest): failure'),
+    at(`FAILED TEST [gating step: Test (macOS shard 2/2)] ${progressTestName}`),
+    out.lines.length - 1,
+  ]
+  expect(ordered).toEqual([...ordered].sort((x, y) => x - y))
+}
+async function reportsProgressScenario(f: Fixture) {
+  const fake = fakeGh(f); const out = output()
+  const { io, fetches } = progressIo(fake, out, readFileSync(join(fixtureDir, 'sample-job-log-excerpt.txt'), 'utf8'))
+  expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print }), out.lines.join('\n')).toBe(1)
+  return { out, fetches }
+}
+
+const windowsMixedLog = [
+  'matrix (windows-latest)\tTest (Windows)\t2026-09-28T10:00:00Z FAIL packages/build/test/launcher.test.ts > suite > first',
+  'matrix (windows-latest)\tTest (Windows)\t2026-09-28T10:00:01Z FAIL packages/build/test/launcher.test.ts > suite > second',
+  'matrix (windows-latest)\tDiagnose artifact-server fork (Windows)\t2026-09-28T10:01:00Z FAIL packages/build/test/artifact-server.test.ts > owner decision > timeout',
+].join('\n')
+function expectWindowsMixedDraft(draft: string) {
+  const [blocking, diagnostic] = draft.split('Diagnostic failures (did not block):')
+  expect(blocking).toContain('launcher.test.ts > suite > first')
+  expect(blocking).toContain('launcher.test.ts > suite > second')
+  expect(blocking).not.toContain('artifact-server.test.ts')
+  expect(diagnostic).toContain('artifact-server.test.ts > owner decision > timeout')
+}
+function failingEarlyReportIo(fake: Fake) {
+  let polls = 0
+  return { ...fake.io, failEarlyPrintOnce: true, writeText(path: string, text: string, exclusive?: boolean) {
+    if (path.endsWith('.ubuntu.card.md')) throw new Error('disk full')
+    return commandIO.writeText(path, text, exclusive)
+  }, run(program: string, args: string[], opts: { cwd: string }) {
+    const result = fake.io.run(program, args, opts)
+    if (program !== 'gh' || args[1] !== 'view' || args.includes('--job')) return result
+    const run = JSON.parse(result.stdout)
+    // A first in-progress poll lets the test inject a display failure in the early report.
+    if (polls++ === 0) return { ...result, stdout: JSON.stringify({ ...run, status: 'in_progress', conclusion: '' }) }
+    // Ubuntu, the first OS reported, fails too, and its early draft cannot be written.
+    run.jobs = run.jobs.map((job: { name: string }) => (job.name.includes('ubuntu') ? { ...job, conclusion: 'failure' } : job))
+    return { ...result, stdout: JSON.stringify(run) }
+  } }
+}
+function unavailableViewIo(fake: Fake) {
+  return { ...fake.io, run(program: string, argv: string[], opts: { cwd: string }) {
+    if (program === 'gh' && argv[1] === 'view') return { status: 1, stdout: '', stderr: 'unavailable' }
+    return fake.io.run(program, argv, opts)
+  } }
+}
+function completedRunWithJobsIo(fake: Fake, f: Fixture, jobs: unknown[]) {
+  return { ...fake.io, run(program: string, argv: string[], opts: { cwd: string }) {
+    if (program === 'gh' && argv[1] === 'view' && !argv.includes('--job')) return { status: 0, stdout: JSON.stringify({ event: 'workflow_dispatch', headBranch: `card/ci-${f.host.slice(0, 12)}`, headSha: f.host, status: 'completed', conclusion: 'success', jobs }), stderr: '' }
+    return fake.io.run(program, argv, opts)
+  } }
+}
+function timedOutBranchIo(fake: Fake, auth: string) {
+  const state = { pending: true }; const authAtDelete: unknown[] = []
+  let clock = 100000
+  const io = { ...fake.io, now: () => clock += 1000, push(args: string[], cwd: string) {
+    if (args.includes('--delete')) authAtDelete.push(JSON.parse(readFileSync(auth, 'utf8')))
+    return commandIO.push(args, cwd)
+  }, run(program: string, args: string[], opts: { cwd: string }) {
+    const result = fake.io.run(program, args, opts)
+    if (state.pending && program === 'gh' && args[1] === 'view' && !args.includes('--job')) return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), status: 'in_progress', conclusion: '', jobs: [] }) }
+    return result
+  } }
+  return { io, authAtDelete, state }
+}
+// Records every gh argv; answers `gh run list` with one new workflow_dispatch row whose databaseId is `id`.
+function runListIdIO(f: ReturnType<typeof fixture>, id: unknown) {
+  const calls: string[][] = []
+  let dispatched = false
+  const fake = fakeGh(f)
+  const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program === 'gh') calls.push(args)
+    if (program === 'gh' && args[0] === 'workflow') dispatched = true
+    if (program === 'gh' && args[1] === 'list') return { status: 0, stdout: JSON.stringify(dispatched ? [{ databaseId: id, url: `https://github.com/owner/repo/actions/runs/${String(id)}`, event: 'workflow_dispatch', headBranch: `card/ci-${f.host.slice(0, 12)}`, headSha: f.host, status: 'in_progress' }] : []), stderr: '' }
+    return fake.io.run(program, args, opts)
+  } }
+  return { io, calls }
+}
 describe('cross-OS dispatch', () => {
   it('reconciles every primitive and spawning test with a live host-layer glob', () => {
     const entries = JSON.parse(readFileSync(join(root, '.github/cross-os-host-layer.json'), 'utf8')).entries
@@ -189,12 +605,7 @@ describe('cross-OS dispatch', () => {
 
   it('labels Windows gating tests as blockers and a diagnostic-only test as non-blocking', async () => {
     const f = publicFixture(); const out = output()
-    const log = [
-      'matrix (windows-latest)\tTest (Windows)\t2026-09-28T10:00:00Z FAIL packages/build/test/launcher.test.ts > suite > first',
-      'matrix (windows-latest)\tTest (Windows)\t2026-09-28T10:00:01Z FAIL packages/build/test/launcher.test.ts > suite > second',
-      'matrix (windows-latest)\tDiagnose artifact-server fork (Windows)\t2026-09-28T10:01:00Z FAIL packages/build/test/artifact-server.test.ts > owner decision > timeout',
-    ].join('\n')
-    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, log), print: out.print })).toBe(1)
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: loggedGh(f, windowsMixedLog), print: out.print })).toBe(1)
     expect(out.lines.filter((line) => line.startsWith('FAILED TEST [gating'))).toEqual([
       'FAILED TEST [gating step: Test (Windows)] packages/build/test/launcher.test.ts > suite > first',
       'FAILED TEST [gating step: Test (Windows)] packages/build/test/launcher.test.ts > suite > second',
@@ -205,11 +616,7 @@ describe('cross-OS dispatch', () => {
     expect(blocker).toContain('launcher.test.ts > suite > first')
     expect(blocker).toContain('launcher.test.ts > suite > second')
     expect(blocker).not.toContain('artifact-server')
-    const draft = readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')
-    expect(draft.split('Diagnostic failures (did not block):')[0]).toContain('launcher.test.ts > suite > first')
-    expect(draft.split('Diagnostic failures (did not block):')[0]).toContain('launcher.test.ts > suite > second')
-    expect(draft.split('Diagnostic failures (did not block):')[0]).not.toContain('artifact-server.test.ts')
-    expect(draft.split('Diagnostic failures (did not block):')[1]).toContain('artifact-server.test.ts > owner decision > timeout')
+    expectWindowsMixedDraft(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8'))
     expect(out.lines.at(-1)).toBe('RESULT: red')
   })
 
@@ -308,22 +715,13 @@ describe('cross-OS dispatch', () => {
   })
 
   it('retains a timed-out branch for collect, then deletes it with deletion-only authorization', async () => {
-    const f = publicFixture(); const fake = fakeGh(f); const out = output(); let pending = true
+    const f = publicFixture(); const out = output()
     const auth = authPathOf(f.dir)
-    const authAtDelete: unknown[] = []
-    let clock = 100000
-    const io = { ...fake.io, now: () => clock += 1000, push(args: string[], cwd: string) {
-      if (args.includes('--delete')) authAtDelete.push(JSON.parse(readFileSync(auth, 'utf8')))
-      return commandIO.push(args, cwd)
-    }, run(program: string, args: string[], opts: { cwd: string }) {
-      const result = fake.io.run(program, args, opts)
-      if (pending && program === 'gh' && args[1] === 'view' && !args.includes('--job')) return { ...result, stdout: JSON.stringify({ status: 'in_progress', conclusion: '', jobs: [] }) }
-      return result
-    } }
+    const { io, authAtDelete, state } = timedOutBranchIo(fakeGh(f), auth)
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo', '--timeout-min', '0.000001'], { io, print: out.print })).toBe(4)
     expect(JSON.parse(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.json`), 'utf8')).status).toBe('timed_out')
     expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).not.toBe('')
-    pending = false
+    state.pending = false
     expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(0)
     expect(authAtDelete).toEqual([{ maxCount: 0 }])
     expect(existsSync(auth)).toBe(false)
@@ -366,12 +764,9 @@ describe('cross-OS dispatch', () => {
 
   it('removes its authorization after the hook refuses a push', async () => {
     const f = publicFixture(); const out = output()
-    const fake = fakeGh(f)
-    const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
-      if (program === 'git' && args[0] === 'rev-list' && args[1]?.startsWith('public/main..')) return { status: 0, stdout: `${f.base}\n`, stderr: '' }
-      return fake.io.run(program, args, opts)
-    } }
+    const { io, state } = narrowedRangeIO(fakeGh(f), f.base)
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
+    expect(state.narrowed).toBe(1)
     expect(out.lines.join('\n')).toContain('git push public')
     expect(existsSync(authPathOf(f.dir))).toBe(false)
   })
@@ -414,6 +809,34 @@ describe('cross-OS dispatch', () => {
     expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
     expect(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')).toContain('matrix (macos-latest)')
     expect(() => readFileSync(authPathOf(f.dir))).toThrow()
+  })
+
+  it('reports each job and each OS as it concludes, before the slowest Windows shard, and keeps the final result', async () => {
+    const f = publicFixture()
+    const { out, fetches } = await reportsProgressScenario(f)
+    const draft = join(f.dir, '.git/wt-crossos', `${f.host}.ubuntu.card.md`)
+    expectEarlyReportsInConclusionOrder(out, draft)
+    expect(out.lines.filter((line) => line.startsWith('EARLY OS ')).length).toBe(3)
+    expect(readFileSync(draft, 'utf8')).toContain(progressTestName)
+    expect(existsSync(join(f.dir, '.git/wt-crossos', `${f.host}.macos.card.md`))).toBe(false)
+    expect(fetches).toEqual(['api repos/owner/repo/actions/jobs/42', 'api repos/owner/repo/actions/jobs/42/logs', 'view 42'])
+    expect(out.lines.join('\n')).toContain(`BLOCKER: host-layer merge ${f.host} is red on cross-os run 23; gating failed tests: ${progressTestName} [Test (macOS shard 2/2)]`)
+    expect(out.lines.at(-1)).toBe('RESULT: red')
+  })
+
+  it('keeps the verdict and deletes the branch when an early report fails', async () => {
+    const f = publicFixture(); const out = output()
+    const io = failingEarlyReportIo(fakeGh(f, 'failure'))
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print }), out.lines.join('\n')).toBe(1)
+    expect(out.lines.filter((line) => line.startsWith('EARLY REPORT UNAVAILABLE: '))).toHaveLength(1)
+    expect(out.lines).toContain('EARLY REPORT UNAVAILABLE ubuntu: disk full')
+    // One OS that cannot be reported never stops the others.
+    expect(out.lines).toContain('EARLY OS windows: green (matrix (windows-latest))')
+    expect(out.lines).toContain('EARLY OS macos: red (matrix (macos-latest))')
+    expect(existsSync(join(f.dir, '.git/wt-crossos', `${f.host}.macos.card.md`))).toBe(true)
+    expect(out.lines.join('\n')).toContain('BLOCKER: host-layer merge')
+    expect(out.lines.at(-1)).toBe('RESULT: red')
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
   })
 
   it('refuses an existing authorization with its metadata and does not remove it', async () => {
@@ -497,12 +920,7 @@ describe('cross-OS dispatch', () => {
     const args = ['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs]
     expect(await dispatch(args, { io: fakeGh(f, 'failure').io, print: output().print })).toBe(1)
     expect(await dispatch(args, { io: fakeGh(f, '', 'in_progress').io, print: output().print })).toBe(5)
-    const fake = fakeGh(f)
-    const io = { ...fake.io, run(program: string, argv: string[], opts: { cwd: string }) {
-      if (program === 'gh' && argv[1] === 'view') return { status: 1, stdout: '', stderr: 'unavailable' }
-      return fake.io.run(program, argv, opts)
-    } }
-    expect(await dispatch(args, { io, print: output().print })).toBe(2)
+    expect(await dispatch(args, { io: unavailableViewIo(fakeGh(f)), print: output().print })).toBe(2)
   })
 
   it.each([
@@ -512,11 +930,8 @@ describe('cross-OS dispatch', () => {
   ])('rejects a successful conclusion with %s in release-check and collect', async (_reason, jobs) => {
     const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
     writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'cross-os.yml', branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
-    const fake = fakeGh(f); const out = output()
-    const io = { ...fake.io, run(program: string, argv: string[], opts: { cwd: string }) {
-      if (program === 'gh' && argv[1] === 'view' && !argv.includes('--job')) return { status: 0, stdout: JSON.stringify({ event: 'workflow_dispatch', headBranch: `card/ci-${f.host.slice(0, 12)}`, headSha: f.host, status: 'completed', conclusion: 'success', jobs }), stderr: '' }
-      return fake.io.run(program, argv, opts)
-    } }
+    const out = output()
+    const io = completedRunWithJobsIo(fakeGh(f), f, jobs)
     expect(await dispatch(['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs], { io, print: out.print })).toBe(1)
     expect(out.lines.join('\n')).toContain('MATRIX INCOMPLETE:')
     const auth = authPathOf(f.dir)
@@ -595,6 +1010,87 @@ describe('cross-OS dispatch', () => {
   })
 })
 
+describe('cross-OS historical collection', () => {
+  it.each(['advanced', 'absent'])('collects a timed-out run with develop %s and deletion-only authorization', async (develop) => {
+    const f = publicFixture(); const out = output(); const auth = authPathOf(f.dir)
+    const { io, authAtDelete, state } = timedOutBranchIo(fakeGh(f), auth)
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo', '--timeout-min', '0.000001'], { io, print: out.print })).toBe(4)
+    if (develop === 'advanced') {
+      const tip = advanceDevelop(f, f.docs)
+      expect(spawnSync('git', ['merge-base', '--is-ancestor', tip, f.host], { cwd: f.dir, env }).status).toBe(1)
+    } else git(f.dir, 'branch', '-D', 'develop')
+    state.pending = false; out.lines.length = 0
+    expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print }), out.lines.join('\n')).toBe(0)
+    expect(out.lines.join('\n')).not.toMatch(/does not contain current local develop|cannot resolve local develop/)
+    expect(out.lines.at(-1)).toBe('RESULT: green run=23')
+    expect(authAtDelete).toEqual([{ maxCount: 0 }])
+    expect(existsSync(auth)).toBe(false)
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
+  })
+})
+
+describe('cross-OS historical release verdict', () => {
+  it.each(['advanced', 'absent'])('uses the newest host-layer run with develop %s regardless of an older green or red', async (develop) => {
+    const f = publicFixture(); const out = output(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    writeFileSync(join(f.dir, 'plugin/bin/host.mjs'), 'second host change')
+    git(f.dir, 'commit', '-qam', 'second host change')
+    const latest = git(f.dir, 'rev-parse', 'HEAD')
+    if (develop === 'advanced') {
+      const tip = advanceDevelop(f, latest)
+      expect(spawnSync('git', ['merge-base', '--is-ancestor', tip, latest], { cwd: f.dir, env }).status).toBe(1)
+    } else git(f.dir, 'branch', '-D', 'develop')
+    const args = ['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', latest]
+    const record = (sha: string, runId: number, conclusion: string) => writeFileSync(join(store, `${sha}.json`), JSON.stringify({ sha, runId, workflow: 'cross-os.yml', status: 'completed', conclusion }))
+    record(f.host, 10, 'success'); record(latest, 11, 'failure')
+    expect(await dispatch(args, { io: fakeGh(f, 'failure').io, print: out.print }), out.lines.join('\n')).toBe(1)
+    expect(out.lines.join('\n')).not.toMatch(/does not contain current local develop|cannot resolve local develop/)
+    expect(out.lines.at(-1)).toBe('RESULT: red run=11')
+    out.lines.length = 0
+    record(f.host, 10, 'failure'); record(latest, 11, 'success')
+    expect(await dispatch(args, { io: fakeGh(f).io, print: out.print }), out.lines.join('\n')).toBe(0)
+    expect(out.lines.join('\n')).not.toMatch(/does not contain current local develop|cannot resolve local develop/)
+    expect(out.lines.at(-1)).toBe('RESULT: green run=11')
+  })
+})
+
+// Stored and listed run IDs, and the authorized commit list: kept apart from the cross-OS describe, whose function
+// length is already at its quality ratchet.
+describe('cross-OS dispatch: stored and listed IDs', () => {
+  it.each(['--help', '--help=true'])('a stored run id %s is never passed to gh and reads as a missing record', async (runId) => {
+    const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos')
+    const args = ['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo']
+    const missing = output()
+    const missingCode = await dispatch(args, { io: fakeGh(f).io, print: missing.print })
+    mkdirSync(store)
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId, workflow: 'cross-os.yml', branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
+    const fake = fakeGh(f); const out = output()
+    expect(await dispatch(args, { io: fake.io, print: out.print })).toBe(missingCode)
+    expect(out.lines).toEqual(missing.lines)
+    expect(fake.calls.some((argv) => argv.some((arg) => arg.startsWith('--help')))).toBe(false)
+  })
+
+  it('skips a gh run list row whose id is not a positive integer, and never views it', async () => {
+    const f = publicFixture(); const out = output()
+    const { io, calls } = runListIdIO(f, '-x')
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(3)
+    expect(calls.some((argv) => argv[1] === 'view' && argv.includes('-x'))).toBe(false)
+    expect(out.lines.join('\n')).toContain('found 0')
+  })
+
+  it('never passes a non-commit entry of the authorization file to git, and refuses it as stale', async () => {
+    const f = publicFixture(); const out = output(); const path = authPathOf(f.dir)
+    writeFileSync(path, JSON.stringify({ commits: ['--help'] }))
+    const fake = fakeGh(f); const gitCalls: string[][] = []
+    const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'git') gitCalls.push(args)
+      return fake.io.run(program, args, opts)
+    } }
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
+    expect(gitCalls.some((argv) => argv.includes('--help'))).toBe(false)
+    expect(out.lines.join('\n')).toContain('authorization exists')
+    expect(readFileSync(path, 'utf8')).toContain('--help')
+  })
+})
 describe('green only from positive evidence', () => {
   const sha = 'a'.repeat(40)
   const positive = () => ({
@@ -674,4 +1170,142 @@ describe('green only from positive evidence', () => {
     // Stored evidence for another commit is foreign even when everything else is perfect.
     expect(verdictFromEvidence({ ...positive(), headSha: 'c'.repeat(40), headBranch: ciBranchFor('c'.repeat(40)) }, sha).verdict).toBe('unchecked')
   })
+})
+
+function pagedWorkflowScenario(defect: string) {
+  const source = parse(readFileSync(join(root, '.github/workflows/cross-os.yml'), 'utf8')) as { jobs: Record<string, unknown> }
+  const names = ['matrix (ubuntu-latest, 1)', 'matrix (ubuntu-latest, 2)', 'matrix (ubuntu-latest, 3)',
+    'matrix (macos-latest)', 'matrix (windows-latest, 1, 75)', 'matrix (windows-latest, 2, 75)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage']
+  if (defect === 'paginated') {
+    for (let index = 1; index <= 100; index++) {
+      names.push(`extra-${index}`)
+      source.jobs[`extra-${index}`] = { 'runs-on': 'ubuntu-latest', steps: [{ run: 'true' }] }
+    }
+  }
+  const f = fixture(JSON.stringify(source))
+  const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+  writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'cross-os.yml' }))
+  // Working-tree edits must not supply the roster of an already dispatched SHA.
+  writeFileSync(join(f.dir, '.github/workflows/cross-os.yml'), 'jobs: {}')
+  const selected = names.filter((name) => defect === 'all Ubuntu' ? !name.startsWith('matrix (ubuntu') : name !== defect)
+  const jobs = selected.map((name, index) => ({ id: index + 1, name, conclusion: 'success' }))
+  const fake = fakeGh(f)
+  const io = { ...fake.io, run(program: string, args: string[], opts: { cwd: string }) {
+    if (program !== 'gh' || args[0] !== 'api') return fake.io.run(program, args, opts)
+    if (defect === 'legacy gh' && args.includes('--slurp')) return { status: 1, stdout: '', stderr: 'unknown flag: --slurp' }
+    const page = Number(new URL(args[1]!, 'https://api.github.com/').searchParams.get('page'))
+    expect(args).toEqual(['api', `repos/owner/repo/actions/runs/23/jobs?filter=latest&per_page=100&page=${page}`])
+    const listed = defect === 'partial page' ? jobs.slice(0, 3) : jobs.slice((page - 1) * 100, page * 100)
+    return { status: 0, stdout: JSON.stringify({ total_count: jobs.length, jobs: listed }), stderr: '' }
+  } }
+  return { f, io }
+}
+
+function recordedCollection() {
+  const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+  const path = join(store, `${f.host}.json`)
+  const record = { sha: f.host, runId: 23, workflow: 'cross-os.yml', branch: ciBranchFor(f.host), url: 'https://github.com/owner/repo/actions/runs/23', status: 'timed_out' }
+  writeFileSync(path, JSON.stringify(record))
+  const deletes: string[][] = []
+  const io = { ...fakeGh(f).io, push(args: string[]) { deletes.push(args); return { status: 0, stdout: '', stderr: '' } } }
+  return { f, store, path, record, io, deletes, args: ['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'] }
+}
+
+describe('cross-OS collection identity', () => {
+  const fields = ['headSha', 'headBranch', 'event']
+  it.each(fields.flatMap((field) => ['completed', 'in_progress'].map((status) => ({ field, status }))))(
+    'refuses foreign $field on a $status run before reporting jobs or writing cards', async ({ field, status }) => {
+      const c = recordedCollection(); const out = output(); const evidenceReads: string[][] = []; let clock = 0
+      const io = { ...c.io, now: () => clock += 1000, run(program: string, args: string[], opts: { cwd: string }) {
+        if ((program === 'git' && args[0] === 'show') || (program === 'gh' && (args[0] === 'api' || args.includes('--job')))) evidenceReads.push(args)
+        const result = c.io.run(program, args, opts)
+        if (program !== 'gh' || args[1] !== 'view' || args.includes('--job')) return result
+        const run = JSON.parse(result.stdout)
+        const foreign = { headSha: c.f.docs, headBranch: ciBranchFor(c.f.docs), event: 'push' }
+        return { ...result, stdout: JSON.stringify({ ...run, [field]: foreign[field as keyof typeof foreign], status, conclusion: 'failure', jobs: [
+          { databaseId: 43, name: 'matrix (ubuntu-latest)', status: 'completed', conclusion: 'failure' },
+        ] }) }
+      } }
+      const code = await dispatch([...c.args, '--timeout-min', '0.000001'], { io, print: out.print })
+      expect(readdirSync(c.store).filter((name) => name.endsWith('.card.md')), 'foreign runs must not write failure cards').toEqual([])
+      expect(code, out.lines.join('\n')).toBe(3)
+      expect(out.lines.at(-1)).toBe('RESULT: mismatch')
+      expect(out.lines.join('\n')).toContain(`evidence is not about ${c.f.host}`)
+      expect(out.lines.some((line) => /^(EARLY JOB|EARLY OS|BLOCKER|FAILED JOB)/.test(line))).toBe(false)
+      expect(evidenceReads, 'foreign runs must not supply workflow rosters, jobs, or logs').toEqual([])
+      expect(JSON.parse(readFileSync(c.path, 'utf8')).status).toBe('timed_out')
+      expect(c.deletes).toEqual(status === 'completed' ? [['push', 'public', '--delete', c.record.branch]] : [])
+    })
+})
+
+describe('cross-OS stored record identity', () => {
+  it.each(['foreign', 'missing', 'malformed'])('refuses a %s embedded record SHA before contacting GitHub', async (kind) => {
+    const c = recordedCollection(); const out = output(); const calls: string[][] = []
+    const sha = kind === 'foreign' ? c.f.docs : kind === 'missing' ? undefined : 'not-a-commit'
+    const text = JSON.stringify({ ...c.record, sha }); writeFileSync(c.path, text)
+    const io = { ...c.io, run(program: string, args: string[], opts: { cwd: string }) {
+      if (program === 'gh') calls.push(args)
+      return c.io.run(program, args, opts)
+    } }
+    expect(await dispatch(c.args, { io, print: out.print }), 'record SHA must match the requested commit').toBe(3)
+    expect(out.lines.join('\n')).toContain(`record SHA mismatch: requested=${c.f.host} recorded=${sha}`)
+    expect(out.lines.at(-1)).toBe('RESULT: mismatch')
+    expect(calls).toEqual([])
+    expect(c.deletes).toEqual([])
+    expect(readFileSync(c.path, 'utf8')).toBe(text)
+    expect(readdirSync(c.store)).toEqual([`${c.f.host}.json`])
+  })
+})
+
+function recoveryArgv(text: string, cwd: string) {
+  const command = text.split('\n').find((line) => line.startsWith('node '))
+    ?? text.split('collect with ')[1]?.split('\n')[0]
+  expect(command, 'timeout must print an executable recovery command').toBeTruthy()
+  const capture = `node() { command node -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"; }; ${command}`
+  const result = spawnSync('bash', ['-c', capture], { cwd, env, encoding: 'utf8' })
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  return JSON.parse(result.stdout) as string[]
+}
+
+describe('cross-OS timeout recovery', () => {
+  it.each(['absolute', 'relative'])('executes recovery from outside the selected worktree with a %s repo path', async (mode) => {
+    const c = recordedCollection(); const out = output(); const outside = scratchDir()
+    const selected = join(scratchDir(), "selected ' $repo; &")
+    git(c.f.dir, 'worktree', 'add', '--detach', selected, c.f.host)
+    const previous = process.cwd(); let clock = 0
+    process.chdir(outside)
+    try {
+      const repo = mode === 'absolute' ? selected : relative(outside, selected)
+      const io = { ...c.io, ...fakeGh(c.f, '', 'in_progress').io, now: () => clock += 1000 }
+      expect(await dispatch(['collect', '--merge', c.f.host, '--repo', repo, '--repo-slug', 'owner/repo', '--workflow', 'cross-os.yml', '--timeout-min', '0.000001'], { io, print: out.print })).toBe(4)
+      const argv = recoveryArgv(out.lines.join('\n'), outside)
+      expect(isAbsolute(argv[0]!), 'recovery dispatcher path must be absolute').toBe(true)
+      expect(existsSync(argv[0]!)).toBe(true)
+      expect(argv[0]).toBe(join(root, 'plugin/bin/wt-crossos-dispatch.mjs'))
+      const recoveredRepo = argv[argv.indexOf('--repo') + 1]!
+      expect(isAbsolute(recoveredRepo), 'recovery repository path must be absolute').toBe(true)
+      expect(git(recoveredRepo, 'rev-parse', '--absolute-git-dir'), 'recovery must pin the selected repository').toBe(git(selected, 'rev-parse', '--absolute-git-dir'))
+      expect(argv[argv.indexOf('--repo-slug') + 1]).toBe('owner/repo')
+      expect(argv[argv.indexOf('--workflow') + 1]).toBe('cross-os.yml')
+      expect(out.lines.join('\n')).toContain('POSIX shell; Git Bash on Windows')
+      const recovered = output()
+      expect(await dispatch(argv.slice(1), { io: c.io, print: recovered.print }), recovered.lines.join('\n')).toBe(0)
+      expect(recovered.lines.at(-1)).toBe('RESULT: green run=23')
+      expect(JSON.parse(readFileSync(c.path, 'utf8')).branchDeleted).toBe(true)
+      expect(existsSync(join(outside, '.git'))).toBe(false)
+    } finally { process.chdir(previous) }
+  })
+})
+
+describe('live dispatcher roster and paginated jobs', () => {
+  it.each(['none', 'matrix (ubuntu-latest, 2)', 'matrix (windows-latest, 3, 75)', 'ubuntu-coverage', 'all Ubuntu', 'partial page', 'legacy gh', 'paginated'])(
+    'reads the dispatched SHA and every jobs page: %s', async (defect) => {
+      const { f, io } = pagedWorkflowScenario(defect)
+      const out = output()
+      const code = await liveDispatch(['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs], { io, print: out.print })
+      const green = ['none', 'legacy gh', 'paginated'].includes(defect)
+      expect(code, out.lines.join('\n')).toBe(green ? 0 : defect === 'partial page' ? 2 : 1)
+      if (defect === 'partial page') expect(out.lines.join('\n')).toContain('Incomplete jobs listing: expected')
+      else expect(out.lines.join('\n')).toContain(green ? 'RESULT: green' : 'MATRIX INCOMPLETE: missing job')
+    })
 })

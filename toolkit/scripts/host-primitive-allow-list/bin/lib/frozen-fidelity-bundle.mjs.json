@@ -1,0 +1,13 @@
+{
+  "child_process import": 1,
+  "fs import": 1,
+  "execFileSync": 2,
+  "lstatSync": 2,
+  "readFileSync": 4,
+  "realpathSync": 3,
+  "readlinkSync": 1,
+  "mkdirSync": 2,
+  "writeFileSync": 2,
+  "readdirSync": 1,
+  "hard-coded path separator": 2
+}

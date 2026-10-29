@@ -23,8 +23,16 @@ const GATE_NEEDS = {
 }
 
 describe('gate environment', () => {
+  it('SDK gate side-effect lock: disables pnpm dependency verification even when inherited as true', () => {
+    expect(gateEnvironment({ pnpm_config_verify_deps_before_run: 'true' }).pnpm_config_verify_deps_before_run).toBe('false')
+  })
+  it('SDK gate side-effect lock: neutralizes inherited uppercase pnpm configuration', () => {
+    expect(gateEnvironment({ PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: 'true' })).toMatchObject({
+      pnpm_config_verify_deps_before_run: 'false', PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN: 'false',
+    })
+  })
   it('drops every runner WT_* key and keeps what a gate needs', () => {
-    expect(gateEnvironment({ ...RUNNER_ONLY, ...GATE_NEEDS })).toEqual(GATE_NEEDS)
+    expect(gateEnvironment({ ...RUNNER_ONLY, ...GATE_NEEDS })).toEqual({ ...GATE_NEEDS, pnpm_config_verify_deps_before_run: 'false' })
   })
 
   it('does not mutate the environment it reads', () => {

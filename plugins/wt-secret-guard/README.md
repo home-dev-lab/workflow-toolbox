@@ -121,7 +121,7 @@ Two consequences worth knowing before you type one:
 
 `maskIpAddresses` and `maskEmails` are boolean plugin options and both default to `false`. Enable either option to mask that value class in submitted prompts and Bash, Read, and MCP tool results. IPv4 and IPv6 addresses are covered.
 
-`secretFileReadWarnings` defaults to `true`. The guard evaluates the original Bash command before reference rewriting and also evaluates Read and NotebookRead paths. A guarded read still executes in this measurement release, but its result carries `WOULD BLOCK; executed in measurement mode`. Set the option to `false` only to diagnose noisy warnings; disabling it is recorded without storing the command or path.
+`secretFileReadWarnings` defaults to `true`. The guard evaluates the original Bash command before reference rewriting and also evaluates Read and NotebookRead paths. A guarded read still executes in this measurement release; the model then reads `WOULD BLOCK; executed in measurement mode` right after the tool's result. When the call was refused for another reason, which can happen before anything ran, the refusal text ends with `WOULD BLOCK; this command can read a credential file` instead. Set the option to `false` only to diagnose noisy warnings; disabling it is recorded without storing the command or path.
 
 Raw outbound values are refused rather than silently changing a requested destination. Exact reference spans (`op://`, `secret:env:`, `secret:file:`, `${NAME}`, and existing redaction tokens) pass unchanged, but do not exempt adjacent raw values. Bash token rehydration and `secret:file:` expansion bind encoded data to fixed shell code rather than evaluating the secret as shell source. The executed child still receives the raw value. This can expose the value through process metadata or child output; returned output is scrubbed, but operating-system process inspection is outside the guard.
 
@@ -147,9 +147,13 @@ wt-secret-guard release secret:<kind>#<id>
 
 The guard swallows the prompt and displays eligibility, the effect, and a random six-character confirmation code **through its UI log only**. Confirm within five minutes with the same whole prompt followed by that code. Both steps require engine-attested `composer` or `bridge` origin; SDK, peer, task, plugin and unstamped inputs cannot release anything. Wrong or expired confirmations change nothing. The code is withheld from model-visible prompt text and scrubbed results; it is never a tool result, context entry or refusal message issued by the release handler.
 
+While a confirmation is pending, any tool input containing its code, in any field or case, is refused until the code is used, replaced or expires.
+
 Confirmation stops masking and refusing that value for the rest of this session and fully removes its vault entries. Later generic detections still mask it with its key but cannot re-hold it. A later accepting trusted registration restores protection. Trusted provenance is monotonic, including when a file or 1Password reference resolves an already-held generic value, and a trusted entry is never releasable. Unknown, unheld or ambiguous tokens cannot be released. The journal records the release kind only, and the persisted held table is republished even when empty.
 
-Each confirmation has one attempt; a wrong code consumes it. Codes are redacted case-insensitively after value masking and leave the redaction set when used, expired or replaced. Supported tool inputs carrying `wt-secret-guard release` are refused with a value-free reason. **Residual:** the host stamps scripted keystrokes into the session's own terminal as `composer`, so a session able to drive its own pane is not stopped by origin alone. The tool grammar check does not reconstruct an assembled or encoded command. Released identifiers are tombstoned for the session and never name a later value.
+Each confirmation has one attempt; a wrong code consumes it. Codes are redacted case-insensitively after value masking and leave the redaction set when used, expired or replaced. A tool input carrying an active confirmation code is refused on every tool, with or without release grammar, including decoded keys and scalar spellings; the reason never includes the code. Tool inputs carrying `wt-secret-guard release` are refused with a value-free reason, with one narrow exception: `mcp__plugin_atrium_atrium__speak` and `mcp__atrium__speak` may send exactly one first-part release line in their root string `text` field. The line must use the exact lowercase spelling and single ASCII spaces shown above, name a token issued in this session with no ambiguous held-value spelling, and end after the token. No release grammar may appear in another field or key. Numbers, bigints and booleans are inspected as their string spellings. No content string value or key, including body text and metadata, may contain a raw held value or base64 of a non-ephemeral held value, even a short value touching other characters. Occurrences wholly inside an issued token's own spelling are exempt from this held-value scan; the root `tool` field is the host's tool name and is not scanned for held values. Ephemeral entries are not held values. After removing every Unicode Default_Ignorable_Code_Point and format character, no standalone six-hex word may occur anywhere in `text` except the token's own id in the allowed line. Unicode whitespace (including NEL), default-ignorable or format characters inside the grammar, and compatibility lookalikes are checked as refusal grammar, never accepted as the literal line. Ordinary body redaction and outbound classification still apply; the token stays literal, and sending it does not create, consume or confirm a pending release. Issued trusted or ephemeral tokens are not thereby made releasable.
+
+**Residuals:** these adapters do not authenticate an owner recipient: the line can reach any room the adapter permits. A hostile instruction can make the session send a release request for a true secret disguised as a false positive, but cannot release it through a tool or an inbound Atrium message. Confirmation confirms the owner's intent, not that the value is actually a false positive. The host stamps scripted keystrokes into the session's own terminal as `composer`, so a session able to drive its own pane is not stopped by origin alone. Origin attestation and UI-only code isolation remain host assumptions; existing code-redaction checks can expose candidate-membership information. The tool grammar check does not reconstruct an assembled or encoded command. Released identifiers are tombstoned for the session and never name a later value.
 
 ### Atrium message-body redaction
 
@@ -158,6 +162,41 @@ Each confirmation has one attempt; a wrong code consumes it. Codes are redacted 
 This assumes Atrium treats redaction tokens as literal message text; it does not establish the recipient's identity or authorize downstream token rehydration. A successful rewrite is reported as **forwarded with values replaced**, with best-effort in-place repair of the persisted main-session input. Repair failure is reported truthfully and does not prevent forwarding the already-clean body. Subagent input is redacted but its persisted transcript is not repaired.
 
 Clean messages pass unchanged, including long numbers containing a short held PIN. Storage repair replaces individual secret spans with JSON-escaped tokens, pads by bytes, and validates the modified record before writing. A token too large for its stored span refuses repair and leaves the original record intact; the failure notice says a raw value may remain.
+
+## Redaction tokens in persisted writes (warn-only)
+
+A classic PreToolUse command hook counts redaction-token-shaped strings in Write content,
+Edit replacement text, MultiEdit replacements, NotebookEdit insert/replace source, Bash
+commands that may invoke a git commit (the entire command text), bounded message files, and supported Atrium speak/amend/edit inputs (including
+the speak alias). It does not scan other Bash commands, where an issued token can intentionally
+be rehydrated. Notebook deletion persists no text. Unreadable, non-regular, oversized (over
+1 MiB), editor, template, dynamically expanded and piped message sources are classified as unscannable.
+Any `--dry-run` word suppresses commit findings. Detection is a conservative linear word scan;
+mixed commands and quoted invocation text may warn. Message files use the hook working directory
+and literal global `git -C` options; stdin redirects use the hook working directory alone.
+Relative paths are unscannable when `cd ` or `(` precedes the commit word, because shell directory changes are not modeled.
+
+Deliberate quotations are exempt only in the guard's own tests, fixtures and docs: paths
+resolved against the hook working directory below `/plugins/wt-secret-guard/` in a source tree or
+`/wt-secret-guard/<version>/` in an installed cache, where the version has three numeric components.
+Below that location they require a `test/`, `tests/`,
+`fixtures/` or `docs/` segment, a `*.test.*` or `*.selftest.*` basename, or `README.md` or
+`CHANGELOG.md`. Resolution is lexical; symlinks are not resolved. Findings are still counted for
+exempt files. Implementation files are not exempt.
+The exemption is lexical by path name and cannot prove directory ownership; another directory with the same layout is exempt too.
+
+The hook **never blocks**. Its context arrives on the model's next request, after the write
+has run, and asks it to repair the file, commit message, card or chat message now. Replace each
+token with the plain word intended, or use a neutral paraphrase/removal if unknown; never guess
+a hidden value. The warning includes only counts and fixed labels, never a token or secret.
+Check a file with `grep -nE 'secret:[a-z-]+#[a-f0-9]{6}' <file>` and repair each hit.
+
+Promote an individual surface to denial only over the **same seven-day window after deployment**:
+at least 20 de-duplicated **executed** firings from at least five distinct sessions, found by replaying
+the session transcripts and each adjudicated from masked context, with zero false firings. A false
+firing is a deliberate quote, or matched text that was not a token the guard produced. Zero false
+firings out of 20 still permits a false-firing rate of about 14% (one-sided 95%). Atrium surfaces go
+first, file surfaces last. A future refusal must name the grep-and-repair command that satisfies it.
 
 ## Context limitation
 

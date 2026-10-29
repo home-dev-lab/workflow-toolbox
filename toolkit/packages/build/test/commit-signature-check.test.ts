@@ -30,16 +30,7 @@ function mkRoot(tag: string) {
   return root
 }
 
-function makeFakeGitEnv(tag: string, vars: Record<string, string | undefined> = {}) {
-  const root = mkRoot(tag)
-  const bin = join(root, 'bin')
-  const repo = join(root, 'repo')
-  mkdirSync(bin, { recursive: true })
-  mkdirSync(repo, { recursive: true })
-  const gitPath = join(bin, 'git')
-  writeFileSync(
-    gitPath,
-    String.raw`#!/usr/bin/env node
+const FAKE_GIT_SHIM = String.raw`#!/usr/bin/env node
 const args = process.argv.slice(2)
 const stripRepo = (argv) => argv[0] === '-C' ? argv.slice(2) : argv
 const rest = stripRepo(args)
@@ -88,6 +79,10 @@ if (rest[0] === 'config' && rest[1] === '--get' && rest[2] === 'user.signingkey'
 }
 if (rest[0] === 'log') {
   if (process.env.FAKE_GIT_TRACE) require('node:fs').appendFileSync(process.env.FAKE_GIT_TRACE, JSON.stringify(rest) + '\n')
+  // macOS/Windows can open help elsewhere and return success with no captured output.
+  const end = rest.indexOf('--end-of-options')
+  const options = end < 0 ? rest : rest.slice(0, end)
+  if (options.includes('--help') || options.includes('-h')) process.exit(0)
   if (process.env.FAKE_GIT_BAD_RANGE === '1') {
     err('fatal: bad revision range')
     process.exit(128)
@@ -97,9 +92,15 @@ if (rest[0] === 'log') {
 }
 err('unexpected fake git args: ' + JSON.stringify(rest))
 process.exit(99)
-`,
-    { mode: 0o755 },
-  )
+`
+
+function makeFakeGitEnv(tag: string, vars: Record<string, string | undefined> = {}) {
+  const root = mkRoot(tag)
+  const bin = join(root, 'bin')
+  const repo = join(root, 'repo')
+  mkdirSync(bin, { recursive: true })
+  mkdirSync(repo, { recursive: true })
+  writeFileSync(join(bin, 'git'), FAKE_GIT_SHIM, { mode: 0o755 })
   writeFileSync(join(bin, 'git.cmd'), '@node "%~dp0git" %*\r\n')
   return {
     repo,
@@ -113,6 +114,17 @@ process.exit(99)
 
 function runCli(args: string[], env: NodeJS.ProcessEnv) {
   return spawnSync('node', [CLI, ...args], { encoding: 'utf8', env })
+}
+
+// The traced `git log` excludes only the target remote, and the range sits after `--end-of-options`.
+function expectPublicScopedLog(trace: string) {
+  const traced = readFileSync(trace, 'utf8')
+  expect(traced).toContain('--remotes=public')
+  const argv = JSON.parse(traced.trim()) as string[]
+  expect(argv.slice(argv.indexOf('--end-of-options'))).toEqual(['--end-of-options', expect.stringContaining('public/main..'), '--'])
+  expect(argv.slice(argv.indexOf('--not'), argv.indexOf('--end-of-options'))).toEqual(['--not', '--remotes=public', '--not'])
+  // and never the unscoped form, which is what hid the 62
+  expect(traced).not.toMatch(/"--remotes"(?!=)/)
 }
 
 function runHook(payload: unknown, env: NodeJS.ProcessEnv) {
@@ -195,6 +207,20 @@ describe('commit-signature-core', () => {
     })
     expect(report.offenders).toEqual([])
     expect(report.reasons).toHaveLength(1)
+  })
+})
+
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs option-like ranges [fake git is a script shim that bare spawnSync cannot execute on Windows]', () => {
+  it.each(['--help', '-h', '--all', '--'])('refuses option-like range %s even when git help succeeds silently', (range) => {
+    const trace = makeTraceFile('option-range')
+    const { repo, env } = makeFakeGitEnv('option-range', {
+      FAKE_GIT_COMMIT_GPGSIGN: 'true', FAKE_GIT_TRACE: trace,
+    })
+    const res = runCli(['--repo', repo, '--range', range], env)
+    expect(res.status, `stdout: ${res.stdout} stderr: ${res.stderr}`).toBe(2)
+    expect(res.stderr).toContain('--range must not start with "-"')
+    expect(res.stdout).toBe('')
+    expect(() => readFileSync(trace)).toThrow()
   })
 })
 
@@ -452,10 +478,7 @@ describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures-hook.m
       env,
     )
     expect(res.status).toBe(0)
-    const traced = readFileSync(trace, 'utf8')
-    expect(traced).toContain('--remotes=public')
-    // and never the unscoped form, which is what hid the 62
-    expect(traced).not.toMatch(/"--remotes"(?!=)/)
+    expectPublicScopedLog(trace)
   })
 
   it('derives the outgoing range from the branch upstream for git push with no explicit remote', () => {

@@ -13,7 +13,7 @@ const posixProcessTable = () => {
 
 const windowsProcessTable = () => {
   const script = [
-    '$now = Get-Date',
+    '$now = Get-Date;',
     'Get-CimInstance Win32_Process | ForEach-Object {',
     '  [ordered]@{ pid = $_.ProcessId; ppid = $_.ParentProcessId;',
     "    processGroup = [ordered]@{ status = 'unsupported'; nearestConcept = 'process tree rooted at a PID' };",

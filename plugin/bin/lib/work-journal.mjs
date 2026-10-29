@@ -121,14 +121,6 @@ export function withJournalLock(ctx, operation, { waitMs = 2000 } = {}) {
   }
   try { return operation() } finally { io.releaseLock(lock, owner) }
 }
-export function lockNotice(ctx) {
-  const lock = path.join(ctx.store, 'lock')
-  if (!io.exists(lock)) return null
-  const owner = io.json(path.join(lock, 'owner.json'))
-  const state = io.ownerAlive(owner)
-  if (state === 'dead' || (!owner && Date.now() - io.stat(lock).mtimeMs > 60000)) return 'journal lock needs inspection; run wt-work-journal.mjs unlock (no automatic reclaim)'
-  return `journal busy: lock owner ${state}; acts remain pending`
-}
 
 function quarantineTail(ctx) {
   const newest = journalDays(ctx.store).at(-1)
@@ -195,14 +187,14 @@ export function recoverJournal(ctx, { recentOnly = false } = {}) {
 function checkActDetails(value, text) {
   if (!text || !value.link || !value.subject) throw new Error('journal act needs sentence, subject and detail link')
 }
-export function makeAct(ctx, value) {
+function makeAct(ctx, value) {
   if (!/^[a-z][a-z0-9-]{0,23}$/.test(value.kind || '')) throw new Error('invalid journal kind')
   const text = String(value.text || '').replace(/\s+/g, ' ').trim().slice(0, 200)
   checkActDetails(value, text)
   return { id: value.id || io.nonce(), at: value.at || localTime(ctx.now), kind: value.kind, subject: String(value.subject), text,
     link: String(value.link), src: String(value.src || 'cli'), rec: String(value.rec || 'cli'), actor: value.actor || 'main' }
 }
-export function writeOutcome(ctx, act, outcome, hashes = []) {
+function writeOutcome(ctx, act, outcome, hashes = []) {
   io.append(path.join(ctx.store, 'outcomes', `${dayOf(ctx.now)}.ndjson`), `${JSON.stringify({ src: act.src, rec: act.rec, actId: act.id, outcome, hashes })}\n`)
 }
 export function readOutcomes(ctx) {
@@ -264,7 +256,7 @@ function foldPending(ctx, chain) {
   }
   return seen
 }
-export function appendJournalActs(ctx, values, options = {}) {
+function appendJournalActs(ctx, values, options = {}) {
   initializeJournal(ctx)
   const acts = values.map((value) => makeAct(ctx, value))
   const queued = acts.map((act) => ({ act, pending: path.join(ctx.store, 'pending', `${act.at.replace(/[^0-9]/g, '')}-${act.id}.json`) }))

@@ -142,26 +142,29 @@ function hasImprovement(before, after) {
 }
 
 function blockRelease(input, reason) {
-  recordGuardEvent({
-    guard: 'wt-plugin-release-record-guard-hook.mjs',
-    decision: 'blocked',
-    session: input.session_id,
-    agent: input.agent_id,
-    class: 'release-quality-record-missing',
-    reason,
-  })
-  emitGuardNotice({
+  const emitted = emitGuardNotice({
     payload: input,
+    subagentDeny: true,
     stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: `[workflow-toolbox release quality guard] ${reason}\n` +
-          'Run `pnpm quality:delta` to generate the changelog table and `pnpm quality:baseline` ' +
+          'Run `pnpm quality:coverage` (or `pnpm certify`) on this tree before `pnpm quality:delta`: ' +
+          'the delta reads the coverage artifact and refuses one measured at another tree. ' +
+          'Then run `pnpm quality:delta` to generate the changelog table and `pnpm quality:baseline` ' +
           'after tightening at least one ratchet. To accept a measured exception, add the commit ' +
           'trailer `gates: quality-skipped — <reason>`.',
       },
     },
+  })
+  recordGuardEvent({
+    guard: 'wt-plugin-release-record-guard-hook.mjs',
+    decision: emitted ? 'blocked' : 'silent',
+    session: input.session_id,
+    agent: input.agent_id,
+    class: 'release-quality-record-missing',
+    reason,
   })
 }
 

@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HOST_USER_CONFIG_TYPES } from './fixtures/what-is-running/host-user-config-types.mjs'
+import { sealedClaudeEnv } from '../../../test-support/claude-config-isolation'
 
 // The host validates a plugin's hooks module statically before it loads it, and refuses the WHOLE module
 // on one call shape it does not accept. Measured 2026-09-23 on Claude Code 2.1.280: a `$.env.get(name)` with
@@ -18,15 +19,21 @@ import { HOST_USER_CONFIG_TYPES } from './fixtures/what-is-running/host-user-con
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLAUDE = process.env.WT_CLAUDE_BIN || 'claude'
+// The real binary runs on a throw-away config dir and home with no credential variable: started on the
+// developer's config dir, that dir's login file lost its tokens in the same second (card 1884998532654433637).
+const sealed = sealedClaudeEnv()
+afterAll(() => sealed.cleanup())
 
+// `plugin/launch-agents` is a plugin of its own (its own manifest, its own guard hooks), nested inside `plugin/`.
 const pluginDirs = [
   join(REPO_ROOT, 'plugin'),
+  join(REPO_ROOT, 'plugin', 'launch-agents'),
   ...readdirSync(join(REPO_ROOT, 'plugins'), { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => join(REPO_ROOT, 'plugins', entry.name)),
 ].filter((dir) => existsSync(join(dir, '.claude-plugin', 'plugin.json')))
 
-const probe = spawnSync(CLAUDE, ['--version'], { encoding: 'utf8', timeout: 30_000 })
+const probe = spawnSync(CLAUDE, ['--version'], { env: sealed.env, encoding: 'utf8', timeout: 30_000 })
 const unavailable = probe.error
   ? `the \`${CLAUDE}\` binary is not available here (${(probe.error as NodeJS.ErrnoException).code ?? probe.error.message}); the host validator cannot run, so no plugin is certified loadable by this run`
   : probe.status !== 0
@@ -35,14 +42,14 @@ const unavailable = probe.error
 
 describe('every shipped plugin passes the host validator (claude plugin validate --strict)', () => {
   it('finds the plugins it must validate', () => {
-    expect(pluginDirs.map((dir) => relative(REPO_ROOT, dir).replaceAll('\\', '/'))).toEqual(expect.arrayContaining(['plugin', 'plugins/wt-secret-guard']))
+    expect(pluginDirs.map((dir) => relative(REPO_ROOT, dir).replaceAll('\\', '/'))).toEqual(expect.arrayContaining(['plugin', 'plugin/launch-agents', 'plugins/wt-secret-guard']))
   })
 
   for (const dir of pluginDirs) {
     const name = dir.slice(REPO_ROOT.length)
     it(`${name} is accepted by the host validator`, (context) => {
       if (unavailable) context.skip(unavailable)
-      const run = spawnSync(CLAUDE, ['plugin', 'validate', dir, '--strict'], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000 })
+      const run = spawnSync(CLAUDE, ['plugin', 'validate', dir, '--strict'], { cwd: REPO_ROOT, env: sealed.env, encoding: 'utf8', timeout: 120_000 })
       const output = `${run.stdout ?? ''}${run.stderr ?? ''}`
       expect(run.error, output).toBeUndefined()
       expect(run.status, output).toBe(0)
@@ -76,7 +83,7 @@ describe('the userConfig type list the offline selftest uses matches the install
           author: { name: 'probe' },
           userConfig: { probe_option: { type, title: 'Probe', description: 'Probe option' } },
         }))
-        const run = spawnSync(CLAUDE, ['plugin', 'validate', join(root, type), '--strict'], { encoding: 'utf8', timeout: 120_000 })
+        const run = spawnSync(CLAUDE, ['plugin', 'validate', join(root, type), '--strict'], { env: sealed.env, encoding: 'utf8', timeout: 120_000 })
         const output = `${run.stdout ?? ''}${run.stderr ?? ''}`
         verdicts[type] = run.status === 0 && /Validation passed/.test(output)
           ? 'accepted'

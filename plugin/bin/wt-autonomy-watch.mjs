@@ -12,7 +12,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync, readlinkSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, writeSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded } from './lib/service-flag.mjs'
@@ -21,6 +21,7 @@ import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { parseQueueSnapshot } from './lib/queue-snapshot-contract.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
+import { hostProcfs } from './lib/host/procfs.mjs'
 
 const HELP = `wt-autonomy-watch — wakes an autonomous session (one that declared a mandate via
 wt-autonomy-arm.mjs) when it still has actionable queued work, nothing else in flight, and has
@@ -195,7 +196,7 @@ function nearAncestorsOf(pid, depth) {
   const out = new Set()
   let current = Number(pid)
   for (let i = 0; i < depth && current > 1; i += 1) {
-    const stat = readFileSync(`/proc/${current}/stat`, 'utf8')
+    const stat = hostProcfs.readProcessStat(current, 'utf8')
     const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
     if (!Number.isInteger(ppid) || ppid <= 1) break
     out.add(ppid)
@@ -229,7 +230,7 @@ function externalLaneRunning(cwd) {
       if (selfAndAncestors.has(pid)) continue
       let candidateCwd
       try {
-        candidateCwd = readlinkSync(`/proc/${pid}/cwd`)
+        candidateCwd = hostProcfs.readWorkingDirectory(pid)
       } catch {
         continue
       }

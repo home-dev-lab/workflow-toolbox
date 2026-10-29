@@ -22,5 +22,5 @@ export function readCurrentRuleText(file, tool) {
 }
 
 export function writeRuleDecision(output) {
-  fs.writeSync(1, JSON.stringify({ hookSpecificOutput: output }))
+  fs.writeSync(1, JSON.stringify({ hookSpecificOutput: { ...output, hookEventName: 'PreToolUse' } }))
 }

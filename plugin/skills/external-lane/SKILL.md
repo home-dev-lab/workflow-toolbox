@@ -5,6 +5,10 @@ description: Use when asked to delegate an implementation/review to an external 
 
 # External lane
 
+Timeout receipts are matchable in the host-owned run log: `LANE_BOUND` gives the limits, `LANE_DECISION_NEEDED` announces the decision deadline, and `LANE_EXTENDED` records the extension count, source, next deadline, and last activity. The unattended bound is `(max-extensions + 1) × (timeout + decision-grace)` seconds, or **22,800 seconds (6 h 20 min)** with the defaults, plus startup and termination overhead. `--idle-window <seconds>` defaults to 1200: a lane with known silence beyond that window gets default abandon at its timeout and a `LANE_NOT_EXTENDED reason=idle` receipt. Explicit owner extensions still work while extensions remain.
+
+The worker's idle watchdog remains observe-only until calibrated. `LANE_IDLE_WARN` appears once per silent stretch, based on log growth, worktree writes, and live descendants; resumed activity re-arms it. Opt into stopping with `--idle-timeout <positive seconds>` (default 0/off): it writes `LANE_IDLE_STOP`, `TERMINATION=idle`, and `EXIT=126`. Timeout abandonment writes `TERMINATION=timeout` and the same exit code. Unknown process evidence or a bounded/unknown write scan produces `LANE_IDLE_UNKNOWN` and a recorded reason, never an idle warning or stop. Read the supervision record's `idle.maxSilentSeconds` when collecting calibration evidence. After 30 lanes ending `EXIT=0` have supplied that measurement, set the future default idle timeout above the largest measured silence; until then enforcement requires the explicit flag.
+
 Use an external lane for a complete implementation or review, not a five-minute harness task.
 
 1. Create a dedicated Git worktree and a brief file at .lane/brief.md inside it. Paste the definition of done verbatim, list invariants and exact gates, require detached gates with `EXIT=` markers, require a lane report, and end with `## Lessons for the memory`.
@@ -12,6 +16,29 @@ Use an external lane for a complete implementation or review, not a five-minute 
 3. Launch: `node "$CLAUDE_CONFIG_DIR/scripts/wt-lane.mjs" --dir <worktree> --model <provider/model> --brief <worktree>/.lane/brief.md --timeout 5400`. The shim picks up installed executable updates on the next launch. `--timeout` is an owner decision bound, not a kill timer; `--decision-grace 300` controls how long the owner has before the default, and `--max-extensions 3` bounds repeated extension defaults before abandon. Configure `lane_models` and `lane_skills` in the plugin's Claude Code settings; both accept comma- or newline-separated values. `WT_LANE_MODELS` and `WT_LANE_SKILLS` remain environment fallbacks when their plugin option is absent. A plugin option always wins over its env fallback. The launcher copies only declared skills into `.lane/` and exposes them with a lane-local `OPENCODE_CONFIG` `skills.paths` file; `save-memory` and `planka-tracking` are always refused because lanes cannot write shared memory or boards. The lane runs at low priority by default (`--priority normal` opts out): niceness 19 on Linux and macOS, below-normal CPU priority on Windows, plus the idle I/O class on Linux only; the run log's `stage=priority` line says what was applied or why it degraded. There is no attachment flag: `--attach` (either form) is refused with exit 2 because attachments were removed; compose any extra text into the brief file, or expose a read-only path with `WT_LANE_SANDBOX_READ`.
 4. Monitor with the allow-covered waiter: `Monitor({command: 'node <configDir>/scripts/wt-lane-wait.mjs --dir <wt>'})`. The matching rule is `Bash(node <configDir>/scripts/wt-lane-wait.mjs:*)`; an allow rule covers the command a Monitor runs. It waits for the host-owned supervision record's terminal state and exit code; an `EXIT=` in the lane's stdout is display-only. A report is input, not proof.
 5. Read the report and diff-read the worktree. Run real required gates on that tree, detached with independent `EXIT=` logs. Never re-gate less than once on the real tree. Then commit and merge normally.
+
+### Waiter outcomes and process evidence
+
+The waiter's `--timeout` caps only the wait. `WAIT BUDGET ENDED: lane pid <N> still running`
+exits **125**, leaving the lane alive. If identity cannot be verified it prints `liveness unknown (<reason>)`;
+if only the child survives it names the gone worker and the running child. Neither outcome proves completion.
+`LANE DONE exit=<n>` displays the terminal host-record exit and passes through integers in 0–255, including
+124 or 125; integers outside that range return 1. Read the outcome text as well as the code.
+`LANE DIED exit=unknown` exits 1; argument or supervision errors exit 2.
+The supervisor records its own deadline as `state=decision-needed`, `reason=timeout-bound`, and `timeoutAt`;
+this is a live decision point. Non-running budget lines include `state=<state>`; `state=decision-needed`
+also includes `timeoutAt` and `decisionDueAt`, and `state=terminating` identifies pending termination.
+Timeout abandonment is a terminal `state=abandoned` record: `LANE DONE exit=126 cause=timeout`.
+Abandonment causes come only from `decisionSource`: grace-default/extension-ceiling → timeout, idle → idle,
+owner → owner, grace-error → grace-error. A stale `reason=timeout-bound` does not determine the cause.
+The waiter never prints `LANE TIMEOUT`; a recorded exit 124 alone does not establish a timeout.
+
+- Worker identity: macOS uses `ps` argv/start time and excludes zombies; Windows uses PowerShell `Get-Process`
+  start time/image with recorded argv. Unavailable or ambiguous identity is **unknown** on either platform.
+- Child identity: the same macOS/Windows probes check the recorded child independently; an unreadable child
+  is **unknown**, and a verified surviving child is reported separately from a gone worker.
+- Existence/state fallback: macOS uses the `ps` process table and zombie state; Windows uses `Get-Process`
+  existence and has no POSIX zombie-state evidence. Probe failure is **unknown**, never assumed alive or dead.
 
 On Linux the lane runs in a bubblewrap sandbox isolated in filesystem, PID table and network: only the worktree, the toolchain, and the CLI's own config and credentials are visible, never `~/.ssh`, `~/.claude`, `/run/user/<uid>` or other processes; the git pointer files are read-only; OpenCode runs on private per-run data/cache/state; and the lane reaches only its configured local model endpoint, no other host loopback service. The run log's `stage=sandbox` line records the writable and readable sets. When a lane genuinely needs another path, set `WT_LANE_SANDBOX_READ` or `WT_LANE_SANDBOX_WRITE` (colon-separated absolute paths) in the environment that runs `wt-lane.mjs`; never disable the sandbox to fix a missing path. A present-but-failing `bwrap` refuses the launch; only `WT_LANE_SANDBOX=off` runs unsandboxed, and it says so in one line.
 

@@ -6,12 +6,13 @@ import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
 import { claudeExecutorEnv, executorSandboxCredentials } from './lib/claude-executor-env.mjs'
 import { ensureLaneHostDir } from './lib/host/lane-host-dir.mjs'
+import { usageDirectory } from './lib/host/opencode-session-store.mjs'
 import { resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { createModelTracker, modelWarnings } from './lib/model-fallback-core.mjs'
 import { appendWarnings } from './lib/host/model-fallback-files.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, isPreInitNotice, prepareSdkRole, withRepositoryInstructions } from './lib/sdk-role-profile.mjs'
 
 const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
@@ -21,6 +22,10 @@ function finish(log, code) {
     if (/^EXIT=\d+$/.test(tail)) return
   } catch {}
   appendFileSync(log, `EXIT=${code}\n`)
+}
+
+function executorRepositoryPrompt(options, launch) {
+  return withRepositoryInstructions(options.dir, launch.prompt, { commit: options.repoCommit ?? undefined })
 }
 
 async function worker(options) {
@@ -63,7 +68,7 @@ async function worker(options) {
       abortController,
       env: claudeExecutorEnv(process.env),
     }, sdkRole)
-    const stream = query({ prompt: withRepositoryGuide(options.dir, launch.prompt), options: queryOptions })
+    const stream = query({ prompt: executorRepositoryPrompt(options, launch), options: queryOptions })
     for await (const message of stream) {
       modelTracker.observe(message)
       if (!initReceiptSeen && isPreInitNotice(message)) continue
@@ -98,7 +103,7 @@ async function worker(options) {
     const text = `${warnings.join('\n')}\n`
     try { appendWarnings(options.log, launch.report, text) } catch { /* diagnostic writes must not lose usage or EXIT */ }
   }
-  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ model: servedModel, totals, served_models: observed.runs.map((run) => run.model), fallbacks: observed.fallbacks, safeguard_notices: observed.notices }, null, 2)}\n`)
+  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ receipt_for: path.basename(`${options.log}.usage.json`), directory: usageDirectory(options.dir), model: servedModel, totals, served_models: observed.runs.map((run) => run.model), fallbacks: observed.fallbacks, safeguard_notices: observed.notices }, null, 2)}\n`)
   if (terminalCode === null) finish(options.log, code)
   return terminalCode ?? code
 }

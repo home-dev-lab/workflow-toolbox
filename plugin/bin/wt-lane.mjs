@@ -22,11 +22,15 @@ import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, ma
 import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'
 import { appendLaunchFailure, awaitChildSpawn, spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
 import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
+import { laneBoundLine, unattendedMaxSeconds, validateLaneTiming } from './lib/lane-deadline-core.mjs'
+import { createLaneDeadline } from './lib/host/lane-deadline-worker.mjs'
+import { appendLaneReceipt } from './lib/host/lane-diagnostics.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 const DEFAULT_DECISION_GRACE = 300
 const DEFAULT_MAX_EXTENSIONS = 3
+const DEFAULT_IDLE_WINDOW = 1200
 const DEFAULT_MAX_BRIEF_AGE = 600
 const DEFAULT_MIN_AVAILABLE_MIB = 1024
 const DECISION_TRANSITION_BOUND_MS = 5_000
@@ -46,13 +50,115 @@ async function loadIntegrationModule() {
 
 const ATTACH_REMOVED = '--attach was removed: compose the extra text into the brief file, or expose a read-only path to the lane with WT_LANE_SANDBOX_READ'
 
+export const BRIEF_GATE_RUNNABLES = Object.freeze([
+  'gate-chain.sh', 'run-quality.mjs', 'pnpm test', 'pnpm typecheck', 'pnpm lint',
+  'pnpm quality', 'pnpm exec vitest run', 'node --test', '.selftest.mjs', '.test.mjs', '.test.ts',
+])
+// `pnpm run <script>` runs the same script as `pnpm <script>`, so a gate line is matched with `run` folded away.
+// A script named `exec` is not folded: `pnpm run exec vitest` runs that script, not the pnpm exec command.
+const PNPM_RUN_FORM = /\bpnpm run (?!exec\b)/g
+const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
+const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
+
+function isRunnableGateLine(line) {
+  const folded = line.replace(/\s+/g, ' ').replace(PNPM_RUN_FORM, 'pnpm ')
+  return BRIEF_GATE_RUNNABLES.some((command) => folded.includes(command))
+}
+
+function hasBriefGateSection(text) {
+  let inGates = false
+  for (const line of text.split(/\r?\n/)) {
+    if (/^##\s+/.test(line)) {
+      inGates = /^##\s+Gates\b/i.test(line)
+      continue
+    }
+    if (inGates && isRunnableGateLine(line)) return true
+  }
+  return false
+}
+
+export function briefGateSectionRefusal(text, { owner, role, noGateSectionReason, brief = '<path>' } = {}) {
+  if (owner === 'pilot' || ['critic', 'review', 'refutation'].includes(role) || noGateSectionReason?.trim()) return null
+  if (hasBriefGateSection(text)) return null
+  return `wt-lane: Refused: brief ${brief} has no gate section. Add these lines with the repository's gate command:\n## Gates\nRun detached, by exit code each: bash <gate-chain.sh> --dir <worktree>/toolkit --out <log-dir> --stamp <stamp> -- typecheck lint quality test\nRecognised runnable gates: ${BRIEF_GATE_RUNNABLES.join(', ')} (each pnpm script also as pnpm run <script>).\nExemptions: ${GATE_SECTION_EXEMPTIONS}.`
+}
+
+function laneGateSectionChoiceError(out) {
+  if (!Object.hasOwn(out, 'noGateSectionReason')) return null
+  const reason = out.noGateSectionReason?.trim()
+  if (!reason || reason.startsWith('--')) return '--no-gate-section requires a non-empty reason for read-only work'
+  out.noGateSectionReason = reason
+  return null
+}
+
+function launchBriefRefusal(briefEvidence, opts) {
+  if (briefEvidence.ageMs > opts.maxBriefAge * 1000 && !opts.acknowledgeStaleBrief) {
+    return { code: 1, message: `wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.` }
+  }
+  const refusal = briefGateSectionRefusal(briefEvidence.bytes.toString('utf8'), opts)
+  return refusal ? { code: 2, message: refusal } : null
+}
+
+function launchRecoveryCondition(reason) {
+  if (reason === 'owner process liveness is unknown') return 'its liveness probe returns a known answer; unknown liveness never authorises recovery'
+  return reason === 'owner process is still running'
+    ? 'its recorded owner has exited or its PID start time has changed'
+    : `its owner identity is readable or its age exceeds ${LAUNCH_LOCK_MAX_AGE_MS / 1000}s`
+}
+
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal]\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml or package-lock.json has no matching install; --allow-missing-install skips that check (a docs-only lane). Yarn projects are not checked.\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
+}
+
+// The suite-lock level a lane's host broker queues its gates at. Release stays reserved to the main session.
+const LOCK_PRIORITY_REFUSED = Symbol('refused lock priority')
+function laneLockPriority(value) {
+  const level = value.toUpperCase()
+  return ['P0', 'P1', 'P2'].includes(level) ? level : LOCK_PRIORITY_REFUSED
+}
+
+/**
+ * An env carrying a declared --lock-priority. Used twice: for the worker, which hands its env to the host-side
+ * suite-lock broker (lane-sandbox.mjs, the broker bridge, which reads WT_SUITE_LOCK_PRIORITY); and for the opencode
+ * child, whose env filter would otherwise drop it. Without the flag the env is returned unchanged, so the ambient
+ * level (else P1) applies as before.
+ */
+export function laneWorkerEnv(env, lockPriority) {
+  return lockPriority ? { ...env, WT_SUITE_LOCK_PRIORITY: lockPriority } : env
+}
+
+// The worker argv that carries a declared --lock-priority to the detached worker; nothing when none was declared.
+const laneLockPriorityArgs = (lockPriority) => lockPriority ? ['--lock-priority', lockPriority] : []
+// WT_SUITE_LOCK_PRIORITY is a name the launcher owns on the opencode child only when declared: an ambient value stays filtered.
+const laneLockPriorityEnvNames = (lockPriority) => lockPriority ? ['WT_SUITE_LOCK_PRIORITY'] : []
+
+// The option values parse() checks after reading argv, in the order it always checked them; normalises
+// --lock-priority in place. Returns the first refusal, or null.
+function laneChoiceError(out) {
+  return laneGateSectionChoiceError(out) ?? laneOwnerChoiceError(out) ?? laneRunChoiceError(out)
+}
+
+function laneOwnerChoiceError(out) {
+  if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB'
+  if (!['session', 'pilot'].includes(out.owner)) return '--owner must be session or pilot'
+  if (out.owner === 'pilot' && !out.ownerToken) return OWNER_TOKEN_REQUIRED
+  if (out.role && !['pilot', 'pilotHard', 'orchestrator', 'sdkPilot', 'sdkPilotHard', 'sdkOrchestrator', 'critic', 'code', 'review', 'refutation'].includes(out.role)) return '--role is not a known variant role'
+  if (!['low', 'normal'].includes(out.priority)) return '--priority must be low or normal'
+  return null
+}
+
+function laneRunChoiceError(out) {
+  if (out.lockPriority !== null) out.lockPriority = laneLockPriority(out.lockPriority)
+  if (out.lockPriority === LOCK_PRIORITY_REFUSED) return '--lock-priority must be P0, P1 or P2; release is reserved to the main session'
+  if (out.runId && !/^\d+-\d+$/.test(out.runId)) return 'internal run id is malformed'
+  // opencode's built-in effort axis; an unknown name falls back SILENTLY to the default on the opencode side, so it is validated here.
+  if (out.variant !== undefined && out.variant !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(out.variant)) return '--variant must be a plain variant name'
+  return null
 }
 
 export function parse(argv) {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low' }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, idleWindow: DEFAULT_IDLE_WINDOW, idleTimeout: 0, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, allowMissingInstall: false, runId: null, priority: 'low', lockPriority: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -60,10 +166,12 @@ export function parse(argv) {
     else if (arg === '--brief') out.brief = argv[++i] ?? null
     else if (arg === '--max-brief-age') out.maxBriefAge = Number(argv[++i])
     else if (arg === '--acknowledge-stale-brief') out.acknowledgeStaleBrief = true
-    else if (arg === '--brief-receipt') out.briefReceipt = argv[++i] ?? null
+    else if (Object.hasOwn(BRIEF_VALUE_OPTIONS, arg)) out[BRIEF_VALUE_OPTIONS[arg]] = argv[++i] ?? null
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
     else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
+    else if (arg === '--idle-window') out.idleWindow = Number(argv[++i])
+    else if (arg === '--idle-timeout') out.idleTimeout = Number(argv[++i])
     else if (arg === '--min-available-mib') out.minAvailableMib = Number(argv[++i])
     else if (arg === '--owner') out.owner = argv[++i] ?? null
     else if (arg === '--owner-token') out.ownerToken = argv[++i] ?? null
@@ -75,24 +183,17 @@ export function parse(argv) {
     else if (arg === '--allow-no-git') out.allowNoGit = true
     else if (arg === '--allow-missing-install') out.allowMissingInstall = true
     else if (arg === '--priority') out.priority = argv[++i] ?? null
+    else if (arg === '--lock-priority') out.lockPriority = String(argv[++i] ?? '')
     else if (arg === '--attach' || arg.startsWith('--attach=')) return { error: ATTACH_REMOVED }
     else if (arg === '--run-id') out.runId = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
   if (!out.dir || !out.model || !out.brief) return { error: 'missing required --dir, --model, or --brief' }
-  if (!Number.isFinite(out.maxBriefAge) || out.maxBriefAge <= 0) return { error: '--max-brief-age must be a positive number of seconds' }
-  if (!Number.isFinite(out.timeout) || out.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
-  if (!Number.isFinite(out.decisionGrace) || out.decisionGrace < 0) return { error: '--decision-grace must be a non-negative number of seconds' }
-  if (!Number.isSafeInteger(out.maxExtensions) || out.maxExtensions < 0) return { error: '--max-extensions must be a non-negative integer' }
-  if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return { error: '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB' }
-  if (!['session', 'pilot'].includes(out.owner)) return { error: '--owner must be session or pilot' }
-  if (out.owner === 'pilot' && !out.ownerToken) return { error: OWNER_TOKEN_REQUIRED }
-  if (out.role && !['pilot', 'pilotHard', 'orchestrator', 'sdkPilot', 'sdkPilotHard', 'sdkOrchestrator', 'critic', 'code', 'review', 'refutation'].includes(out.role)) return { error: '--role is not a known variant role' }
-  if (!['low', 'normal'].includes(out.priority)) return { error: '--priority must be low or normal' }
-  if (out.runId && !/^\d+-\d+$/.test(out.runId)) return { error: 'internal run id is malformed' }
-  // opencode's built-in effort axis; an unknown name falls back SILENTLY to the default on the opencode side, so it is validated here.
-  if (out.variant !== undefined && out.variant !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(out.variant)) return { error: '--variant must be a plain variant name' }
+  const timingError = validateLaneTiming(out)
+  if (timingError) return { error: timingError }
+  const choiceError = laneChoiceError(out)
+  if (choiceError) return { error: choiceError }
   out.dir = path.resolve(out.dir)
   out.requestedDir = out.dir
   try { out.dir = realpathSync(out.dir) } catch { /* preserve the existing not-a-directory diagnostic */ }
@@ -248,13 +349,14 @@ function terminateWindowsTree(pid) {
   spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { timeout: 5_000, windowsHide: true, stdio: 'ignore' })
 }
 
-export function briefEvidenceLines(receipt, upper = false) {
+export function briefEvidenceLines(receipt, upper = false, noGateSectionReason = null) {
   if (!upper) return [`brief=${receipt.path}`, `brief_age=${receipt.age}`, `brief_heading=${receipt.heading}`, `brief_sha256=${receipt.sha256}`]
   return [
     `BRIEF_PATH=${receipt.path}`,
     `BRIEF_AGE=${receipt.age}`,
     `BRIEF_HEADING=${receipt.heading}`,
     `BRIEF_SHA256=${receipt.sha256}`,
+    ...(noGateSectionReason ? [`NO_GATE_SECTION_REASON=${JSON.stringify(noGateSectionReason)}`] : []),
   ]
 }
 
@@ -397,6 +499,13 @@ export function writeLaneStage(file, stage, { reset = false, runId = null, heade
   } catch { /* best effort diagnostic */ }
 }
 
+function workerLogIsTerminal(log) {
+  try {
+    const tail = readLaneLog(log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
+    return /^EXIT=\d+$/.test(tail)
+  } catch { return false }
+}
+
 // The launcher's own identity when the provider cannot read it: on win32 the spawn-time estimate
 // is flagged approximate (sameIdentity allows a bounded skew); elsewhere the start time is unknown.
 export function fallbackLauncherIdentity() {
@@ -515,10 +624,8 @@ async function main() {
       process.stderr.write(`wt-lane: --brief is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
       return 2
     }
-    if (briefEvidence.ageMs > opts.maxBriefAge * 1000 && !opts.acknowledgeStaleBrief) {
-      process.stderr.write(`wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.\n`)
-      return 1
-    }
+    const briefRefusal = launchBriefRefusal(briefEvidence, opts)
+    if (briefRefusal) { process.stderr.write(`${briefRefusal.message}\n`); return briefRefusal.code }
   }
   if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
   if (!worker && !opts.allowMissingInstall) {
@@ -550,7 +657,7 @@ async function main() {
     launchLock = path.join(paths.dir, 'launch.lock')
     const recoveryLock = path.join(paths.dir, 'launch.lock.recovery')
     mkdirSync(paths.dir, { recursive: true })
-    writeLaneStage(opts.log, 'inspect-launcher-start', { reset: true, runId, header: briefEvidenceLines(briefEvidence, true) })
+    writeLaneStage(opts.log, 'inspect-launcher-start', { reset: true, runId, header: briefEvidenceLines(briefEvidence, true, opts.noGateSectionReason) })
     const launcherInspect = (pid, options = {}) => inspectLauncherProcess(consentModules.inspectProcess, pid, { ...options, platform: process.platform })
     const identity = launcherInspect(process.pid, { recordedArgv: process.argv }) ?? fallbackLauncherIdentity()
     writeLaneStage(opts.log, 'inspect-launcher-done')
@@ -560,12 +667,12 @@ async function main() {
       try { owner = JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) } catch {}
       let age
       try { age = Date.now() - statSync(lockPath).mtimeMs } catch (error) { if (error?.code === 'ENOENT') return { retry: true }; throw error }
-      if (!owner || !Number.isSafeInteger(owner.pid)) return age > LAUNCH_LOCK_MAX_AGE_MS
+      if (!owner || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return age > LAUNCH_LOCK_MAX_AGE_MS
         ? { stale: true, owner, reason: `owner record is unreadable after ${LAUNCH_LOCK_MAX_AGE_MS}ms` }
         : { stale: false, owner, reason: 'owner record is not ready' }
-      try { process.kill(owner.pid, 0) } catch (error) {
-        if (error?.code === 'ESRCH') return { stale: true, owner, reason: 'owner process is gone' }
-      }
+      const liveness = hostAdapter.readProcessLiveness(owner.pid)
+      if (liveness.status === 'gone') return { stale: true, owner, reason: 'owner process is gone' }
+      if (liveness.status === 'unknown') return { stale: false, owner, reason: 'owner process liveness is unknown' }
       const actual = launcherInspect(owner.pid, { recordedArgv: owner.argv })
       if (actual && !consentModules.sameIdentity(owner, actual)) return { stale: true, owner, reason: 'owner pid was reused' }
       if (actual && consentModules.sameIdentity(owner, actual)) return { stale: false, owner, reason: 'owner process is still running' }
@@ -580,9 +687,7 @@ async function main() {
     }
     const refusal = (lockPath, status) => {
       const activity = lockPath === recoveryLock ? 'another lane launch is recovering an abandoned launch lock' : 'another lane launch is in progress'
-      const condition = status.reason === 'owner process is still running'
-        ? 'its recorded owner has exited or its PID start time has changed'
-        : `its owner identity is readable or its age exceeds ${LAUNCH_LOCK_MAX_AGE_MS / 1000}s`
+      const condition = launchRecoveryCondition(status.reason)
       process.stderr.write(`wt-lane: Refused: ${activity}: ${lockPath} (${status.reason}); the next launch recovers this path once ${condition}\n`)
     }
     const acquire = () => {
@@ -696,13 +801,17 @@ async function main() {
 
   // Resolved (and refused when absent) by the loaded plugin runtime; see suiteLockCli in lib/host/lane-sandbox.mjs.
   const suiteLockCli = consentModules.suiteLockCli
-  const childEnv = consentModules.opencodeChildEnv(process.env, opts.model)
+  // The env filter drops WT_SUITE_LOCK_PRIORITY; a declared --lock-priority is set again on the child, so a gate with no
+  // host broker in its path (sandbox off, macOS, Windows) queues at it. Behind a broker it is inert (the client forces P1
+  // and the broker reads no level from the request): the worker env carries it to the broker instead.
+  const childEnv = laneWorkerEnv(consentModules.opencodeChildEnv(process.env, opts.model), opts.lockPriority)
   childEnv.WT_SUITE_LOCK_CMD = suiteLockCli
   if (allowlist.allowed.length) childEnv.OPENCODE_CONFIG = allowedSkills.configPath
   const opencodeBinary = fence.binary ?? 'opencode'
   writeLaneStage(opts.log, 'effective-discovery-start')
   // Names the launcher sets itself: the child environment allow-list passes them, never inherits them.
-  const ownedNames = ['OPENCODE_CONFIG', 'WT_SUITE_LOCK_CMD']
+  // WT_SUITE_LOCK_PRIORITY passes the child's env filter only when declared: an ambient value stays filtered, as before.
+  const ownedNames = ['OPENCODE_CONFIG', 'WT_SUITE_LOCK_CMD', ...laneLockPriorityEnvNames(opts.lockPriority)]
   // Inside the Linux lane sandbox the lock DIRECTORY is bound read-write by the sandbox itself. The
   // CLI that WT_SUITE_LOCK_CMD runs reads beyond bin/ at import (lib/artifact-server.mjs reads
   // .claude-plugin/plugin.json), so the whole plugin root it ships in is bound read-only here.
@@ -725,14 +834,14 @@ async function main() {
       chmodSync(briefSnapshotDir, 0o700)
       writeFileSync(briefSnapshot, briefEvidence.bytes, { flag: 'wx', mode: 0o400 })
       const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256 }), 'utf8').toString('base64url')
-      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, '--priority', opts.priority, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--idle-window', String(opts.idleWindow), '--idle-timeout', String(opts.idleTimeout), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, '--priority', opts.priority, ...laneLockPriorityArgs(opts.lockPriority), ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       appendVariantLog(opts.log, variant)
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
       const spawnedAt = Date.now()
       // The worker's stderr goes to the host-owned lane log: a worker that refuses or throws before
       // its first stage would otherwise vanish with the launcher already reporting success.
-      const child = spawnWithLaneLogStderr(opts.log, (stdio) => spawn(process.execPath, workerArgs, { detached: true, stdio }))
+      const child = spawnWithLaneLogStderr(opts.log, (stdio) => spawn(process.execPath, workerArgs, { detached: true, stdio, env: laneWorkerEnv(process.env, opts.lockPriority) }))
       writeLaneStage(opts.log, 'worker-identity-capture-start')
       const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: process.execPath, expectedArgv: child.spawnargs, spawnedAt })
       if (process.platform === 'win32' && !captured.identity) {
@@ -792,7 +901,7 @@ async function main() {
   writeLaneStage(opts.log, applyLanePriority(opts.priority))
   const childSpawnedAt = Date.now()
   const child = await spawnAndReportOpencode({
-    spawnOpencode: () => consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames),
+    spawnOpencode: () => consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, usageReceipt: `${opts.log}.usage.json`, stdio: ['ignore', fd, fd], sandboxPaths: { ...suiteLockSandboxPaths, readable: [...suiteLockSandboxPaths.readable, transientBriefDir] } }, process.platform, ownedNames),
     onChild: (child) => child.once('close', (code, signal) => { earlyChildClose = [code, signal] }),
     onSpawn: () => { workerSpawnedChild = true },
     cleanup: () => removeReadableLaneBrief(transientBriefDir),
@@ -805,10 +914,7 @@ async function main() {
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const journal = (event) => { try { consentModules.appendSupervisorJournal(dataDir, event) } catch { /* supervision must remain bounded when its audit sink is unavailable */ } }
   const appendWorkerStage = (stage) => {
-    try {
-      const tail = readLaneLog(opts.log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
-      if (/^EXIT=\d+$/.test(tail)) return
-    } catch { /* append the diagnostic below when the existing log is unreadable */ }
+    if (workerLogIsTerminal(opts.log)) return
     appendFileSync(fd, `${new Date().toISOString()} stage=${stage}\n`)
   }
   // Sandboxed or not is a launch fact: a reader of the log or the record can always tell which.
@@ -852,10 +958,13 @@ async function main() {
   }
   rmSync(decisionFile, { force: true })
   const firstTimeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
-  writeState({ timeoutAt: firstTimeoutAt, decisionTransitionDueAt: new Date(Date.parse(firstTimeoutAt) + DECISION_TRANSITION_BOUND_MS).toISOString() })
+  writeState({ timeoutAt: firstTimeoutAt, decisionTransitionDueAt: new Date(Date.parse(firstTimeoutAt) + DECISION_TRANSITION_BOUND_MS).toISOString(), unattendedMaxSeconds: unattendedMaxSeconds(opts), idleWindowSeconds: opts.idleWindow, idleTimeoutSeconds: opts.idleTimeout, extensions: [] })
+  appendLaneReceipt(fd, laneBoundLine(opts, currentState.unattendedMaxSeconds))
   consentModules.writeJsonAtomic(statePaths.pointer, { version: 1, runId })
   journal({ event: 'launched', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner })
   let finished = false
+  let deadline = null
+  const clearDeadline = () => deadline?.clear()
   const finish = (code, receiptLines = []) => {
     if (finished) return
     finished = true
@@ -867,13 +976,14 @@ async function main() {
   // the worker is the group leader (detached) and opencode lives in that group, so a signal sent to
   // the worker's pid alone used to kill the launcher and leave the lane running, invisible.
   const endGroup = (code, { writeReceipt = true, receiptLines = [], terminal = null } = {}) => {
+    clearDeadline()
     if (writeReceipt) finish(code, receiptLines)
     process.removeAllListeners('SIGTERM'); process.removeAllListeners('SIGINT')
     process.on('SIGTERM', () => {}); process.on('SIGINT', () => {})
     consentModules.terminateLane(currentState, { graceMs: GRACE_MS, journal, source: 'worker', ownedChild: child, ...(terminal ? { markTerminal: (stage) => writeState(stage === 'terminal' ? { ...terminal, exit: code } : { ...terminal, state: 'terminating' }) } : {}) })
   }
   terminateWorker = (code) => {
-    clearTimeout(timer); clearTimeout(graceTimer); cleanupBrief()
+    clearDeadline(); cleanupBrief()
     let ownerDecision = false
     ownerDecision = ['terminating', 'abandoned'].includes(currentState.state) && currentState.decisionSource === 'owner'
     endGroup(code, { terminal: ownerDecision ? null : { state: 'abandoned', decision: 'abandon', decisionSource: 'signal', decidedAt: new Date().toISOString() } })
@@ -883,81 +993,14 @@ async function main() {
     if (opts.briefReceipt) rmSync(opts.brief, { force: true })
     if (opts.briefCleanupDir && briefEvidence.path.startsWith(`${opts.briefCleanupDir}${path.sep}`)) rmSync(opts.briefCleanupDir, { recursive: true, force: true })
   }
-  let timer
-  let graceTimer
   if (pendingTermination !== null) terminateWorker(pendingTermination)
-  let extensionCount = 0
-  const enterDecision = (reason = 'timeout-bound', extra = {}) => {
-    clearTimeout(graceTimer)
-    const timeoutAt = scheduledTimeoutAt ?? new Date().toISOString()
-    const activity = consentModules.latestWorktreeWrite(opts.dir)
-    const evidence = { lastWriteAt: activity.status === 'known' && activity.at ? new Date(activity.at).toISOString() : 'unknown', activityStatus: activity.status, activityBounded: activity.bounded, logTail: consentModules.readLogTail(opts.log), process: consentModules.processEvidenceStatus(child.pid) }
-    const defaultDecision = extensionCount < opts.maxExtensions ? 'extend' : 'abandon'
-    writeState({ state: 'decision-needed', timeoutAt, decisionDueAt: new Date(Date.now() + opts.decisionGrace * 1000).toISOString(), extensionCount, defaultDecision, evidence, reason, ...extra })
-    journal({ event: 'decision-needed', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason, evidence: { ...evidence, timeoutAt, extensionCount, defaultDecision } })
-    graceTimer = setTimeout(() => {
-      try {
-        const current = currentState
-        if (current.runId !== runId || current.state !== 'decision-needed' || current.timeoutAt !== timeoutAt) return
-        if (defaultDecision === 'extend') {
-          extensionCount += 1
-          writeState({ state: 'running', decision: 'extend', decisionSource: 'grace-default', decidedAt: new Date().toISOString(), extensionCount, evidence })
-          journal({ event: 'decision', decision: 'extend', source: 'grace-default', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: 'no owner decision within grace' })
-          armTimeout(opts.timeout)
-        } else {
-          journal({ event: 'decision', decision: 'abandon', source: 'grace-default', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: 'extension ceiling reached' })
-          cleanupBrief()
-          endGroup(126, { receiptLines: ['TERMINATION=timeout'], terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'grace-default', decidedAt: new Date().toISOString(), extensionCount, evidence } })
-        }
-      } catch (error) {
-        process.stderr.write(`wt-lane: grace transition failed: ${error instanceof Error ? error.message : String(error)}\n`)
-        cleanupBrief()
-        endGroup(126, { terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'grace-error', exit: 126 } })
-      }
-    }, opts.decisionGrace * 1000)
-    graceTimer.unref()
-  }
-  const armTimeout = (seconds) => {
-    clearTimeout(timer)
-    clearTimeout(graceTimer)
-    scheduledTimeoutAt = new Date(Date.now() + seconds * 1000).toISOString()
-    writeState({ state: 'running', timeoutAt: scheduledTimeoutAt, decisionTransitionDueAt: new Date(Date.parse(scheduledTimeoutAt) + DECISION_TRANSITION_BOUND_MS).toISOString(), extensionCount })
-    timer = setTimeout(enterDecision, seconds * 1000)
-    timer.unref()
-  }
-  let scheduledTimeoutAt = firstTimeoutAt
-  armTimeout(opts.timeout)
-  const decisions = setInterval(() => {
-    let decision
-    try { decision = JSON.parse(readFileSync(decisionFile, 'utf8')) } catch { return }
-    let current
-    current = currentState
-    if (decision.runId !== runId || decision.timeoutAt !== current.timeoutAt || current.state !== 'decision-needed' || !['extend', 'abandon'].includes(decision.decision)) return
-    rmSync(decisionFile, { force: true })
-    clearTimeout(graceTimer)
-    if (decision.decision === 'extend') {
-      const effective = extensionCount < opts.maxExtensions ? 'extend' : 'abandon'
-      journal({ event: 'decision', decision: effective, source: effective === 'extend' ? 'owner' : 'extension-ceiling', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: decision.reason ?? null })
-      if (effective === 'extend') {
-        extensionCount += 1
-        writeState({ state: 'running', decision: 'extend', decisionSource: 'owner', decidedAt: new Date().toISOString(), extensionCount })
-        armTimeout(Number.isFinite(decision.extendSeconds) && decision.extendSeconds > 0 ? Math.min(decision.extendSeconds, 86400) : opts.timeout)
-      } else {
-        cleanupBrief(); endGroup(126, { receiptLines: ['TERMINATION=timeout'], terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'extension-ceiling', decidedAt: new Date().toISOString(), extensionCount } })
-      }
-    } else {
-      journal({ event: 'decision', decision: 'abandon', source: 'owner', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: decision.reason ?? null })
-      clearInterval(decisions)
-      cleanupBrief(); endGroup(126, { terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'owner', decidedAt: new Date().toISOString(), extensionCount } })
-    }
-  }, 100)
-  decisions.unref()
-  child.on('error', () => { clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions); cleanupBrief(); finish(1) })
+  else deadline = createLaneDeadline({ opts, runId, child, args, childPid: child.pid, launchedAtMs: Date.parse(baseState.launchedAt), firstTimeoutAt, transitionBoundMs: DECISION_TRANSITION_BOUND_MS, decisionFile, modules: consentModules, current: () => currentState, writeState, journal, cleanupBrief, endGroup, appendLine: (line) => !finished && appendLaneReceipt(fd, line) })
+  child.on('error', () => { clearDeadline(); cleanupBrief(); finish(1) })
   let closeHandled = false
   const onChildClose = (code, signal) => {
     if (closeHandled) return
     closeHandled = true
-    clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions)
+    clearDeadline()
     const killedBy = signal ? identifySignalCause(child.pid, signal, { startedAt: childSpawnedAt }) : null
     const exit = signal ? signalExit(signal) : (code ?? 1)
     appendVariantReport(opts, variant)

@@ -2,10 +2,10 @@
   "provenance": {
     "schemaVersion": 1,
     "probe": "memory-available",
-    "capturedAt": "2026-09-22T23:06:41.685Z",
+    "capturedAt": "2026-10-12T01:03:17.318Z",
     "command": "node memory-available.mjs /Users/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/macos-latest/memory-available.json",
-    "runId": "35795762873",
-    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runId": "38190362728",
+    "commitSha": "fb55967e826c10b185c987d4f463b7c8dc8e071c",
     "runnerImage": {
       "label": "macos-latest",
       "os": "macos26",
@@ -31,7 +31,7 @@
   },
   "osMemory": {
     "status": "measured",
-    "freeBytes": 161447936,
+    "freeBytes": 199901184,
     "totalBytes": 7516192768
   },
   "linux": {
@@ -45,9 +45,9 @@
       "command": "vm_stat",
       "exitCode": 0,
       "signal": null,
-      "durationMilliseconds": 5.906084,
+      "durationMilliseconds": 9.055333,
       "error": null,
-      "stdout": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                     6989.\nPages active:                                 188442.\nPages inactive:                               188445.\nPages speculative:                              2913.\nPages throttled:                                   0.\nPages wired down:                              53350.\nPages purgeable:                                1752.\n\"Translation faults\":                        4846283.\nPages copy-on-write:                          458737.\nPages zero filled:                           1504463.\nPages reactivated:                             82573.\nPages purged:                                   4765.\nFile-backed pages:                            233315.\nAnonymous pages:                              146485.\nPages stored in compressor:                    65896.\nPages occupied by compressor:                  17835.\nDecompressions:                                18481.\nCompressions:                                  92830.\nPageins:                                      381440.\nPageouts:                                       4220.\nSwapins:                                           0.\nSwapouts:                                          0.\n",
+      "stdout": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                     6992.\nPages active:                                 183123.\nPages inactive:                               180435.\nPages speculative:                              5288.\nPages throttled:                                   0.\nPages wired down:                              58700.\nPages purgeable:                                1708.\n\"Translation faults\":                       10956101.\nPages copy-on-write:                         1640711.\nPages zero filled:                           2453981.\nPages reactivated:                            109744.\nPages purged:                                   8588.\nFile-backed pages:                            213449.\nAnonymous pages:                              155397.\nPages stored in compressor:                    81947.\nPages occupied by compressor:                  23307.\nDecompressions:                                53004.\nCompressions:                                 136934.\nPageins:                                      447264.\nPageouts:                                       7130.\nSwapins:                                           0.\nSwapouts:                                          0.\n",
       "stderr": ""
     },
     "pageSizeBytes": "16384",
@@ -56,7 +56,7 @@
       "command": "sysctl hw.memsize",
       "exitCode": 0,
       "signal": null,
-      "durationMilliseconds": 6.118833,
+      "durationMilliseconds": 7.146292,
       "error": null,
       "stdout": "hw.memsize: 7516192768\n",
       "stderr": ""
@@ -66,9 +66,9 @@
       "command": "memory_pressure -Q",
       "exitCode": 0,
       "signal": null,
-      "durationMilliseconds": 5.511375,
+      "durationMilliseconds": 10.695916,
       "error": null,
-      "stdout": "The system has 7516192768 (458752 pages with a page size of 16384).\nSystem-wide memory free percentage: 84%\n",
+      "stdout": "The system has 7516192768 (458752 pages with a page size of 16384).\nSystem-wide memory free percentage: 81%\n",
       "stderr": ""
     },
     "note": "Raw vm_stat fields are retained so free, inactive, speculative, and purgeable can be recomputed without assuming whether fields overlap."

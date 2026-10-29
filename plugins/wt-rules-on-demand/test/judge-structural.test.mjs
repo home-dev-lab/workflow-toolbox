@@ -236,7 +236,7 @@ test('owned excerpts alone cannot bypass overlapping serves or id-less attachmen
   const git = (...args) => {
     // The fixture requires the installed git binary to create readable history in its temporary repo.
     // eslint-disable-next-line sonarjs/no-os-command-from-path
-    const run = spawnSync('git', ['-C', f.rules, ...args], { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_DATE: '2025-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T00:00:00Z' } });
+    const run = spawnSync('git', ['-C', f.rules, ...args], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_COUNT: '0', GIT_AUTHOR_DATE: '2025-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2025-01-01T00:00:00Z' } });
     assert.equal(run.status, 0, run.stderr);
   };
   git('init', '-q'); git('add', 'r.md'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'rule');

@@ -234,14 +234,9 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
       'Known-issues documents this SessionStart post-adoption environment-drift light under Shipped Hooks, Guards & Monitors.',
   },
   {
-    script: 'plugin/bin/wt-work-journal-hook.mjs',
-    status: 'mapped',
-    reason: 'The work-journal guide documents mechanical act recorders, integrity recovery, the bounded digest and warn-only Stop pairing.',
-  },
-  {
     script: 'plugin/bin/wt-work-journal.mjs',
     status: 'mapped',
-    reason: 'The work-journal guide documents readers, board setup, reconciliation, verified retirement, restore, unlock and closed-day export.',
+    reason: 'The work-journal guide documents the retired journal\'s readers, verification, restore, unlock and closed-day export, plus board setup, reconciliation and verified retirement.',
   },
   {
     script: 'plugin/bin/wt-session-env-dedup-hook.mjs',
@@ -276,7 +271,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-cache-keepalive.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this opt-in cache refresh monitor, its transcript clock, provider thresholds, cap, and journal under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues and the monitor guide document this default-on cache refresh monitor, its compaction and freshness gates, settings inputs, cap, and journal.',
   },
   {
     script: 'plugin/bin/wt-observer.mjs',
@@ -725,6 +720,10 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
 
 export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
+    sources: ['plugin/bin/wt-cache-keepalive.mjs', 'plugin/bin/lib/cache-keepalive-policy.mjs', 'plugin/bin/lib/host/cache-keepalive-settings.mjs', 'plugin/bin/lib/host/cache-keepalive-transcript.mjs'],
+    docs: ['docs/public/known-issues.md', 'plugin/monitors/README.md'],
+  },
+  {
     // AgentType probing + the leaf fence + lean routing (availability gates,
     // probe prompts, graceful degradation semantics).
     sources: [
@@ -769,11 +768,17 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/lib/lane-opencode-attribution.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/bin/lib/host/lane-sandbox.mjs', 'plugin/bin/lib/host/hardened-git.mjs', 'plugin/bin/lib/host/pid-namespace.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/lib/lane-opencode-attribution.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/bin/lib/lane-deadline-core.mjs', 'plugin/bin/lib/host/lane-deadline-worker.mjs', 'plugin/bin/lib/host/lane-idle-worker.mjs', 'plugin/bin/lib/host/lane-sandbox.mjs', 'plugin/bin/lib/host/hardened-git.mjs', 'plugin/bin/lib/host/pid-namespace.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
     sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/wt-suite-lock-run.mjs', 'plugin/bin/lib/suite-lock.mjs', 'plugin/bin/lib/host/suite-lock-queue.mjs'],
+    docs: ['docs/public/known-issues.md'],
+  },
+  {
+    // The concurrent-test guard decides lock coverage through these modules; its known-issues
+    // entry states the coverage rules, the record fields and the cross-platform behaviour.
+    sources: ['plugin/bin/wt-concurrent-test-guard-hook.mjs', 'plugin/bin/lib/test-run-lock-coverage.mjs', 'plugin/bin/lib/git-bash-path.mjs', 'plugin/bin/lib/host/test-run-lock-host.mjs'],
     docs: ['docs/public/known-issues.md'],
   },
   {
@@ -1133,7 +1138,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     // The shipped hooks/guards/monitors written up in the "Shipped Hooks, Guards &
     // Monitors" section — none had a doc surface before.
-    sources: ['plugin/bin/wt-work-journal.mjs', 'plugin/bin/wt-work-journal-hook.mjs', 'plugin/bin/lib/work-journal.mjs', 'plugin/bin/lib/work-journal-paths.mjs', 'plugin/bin/lib/work-journal-recorders.mjs', 'plugin/bin/lib/work-journal-git.mjs', 'plugin/bin/lib/work-journal-hook-core.mjs', 'plugin/bin/lib/work-journal-lifecycle.mjs', 'plugin/bin/lib/work-journal-commands.mjs', 'plugin/bin/lib/host/work-journal-io.mjs', 'plugin/config/work-journal-recorders.json'],
+    sources: ['plugin/bin/wt-work-journal.mjs', 'plugin/bin/lib/work-journal.mjs', 'plugin/bin/lib/work-journal-paths.mjs', 'plugin/bin/lib/work-journal-commands.mjs', 'plugin/bin/lib/host/work-journal-io.mjs'],
     docs: ['docs/public/work-journal.md', 'docs/public/known-issues.md', 'README.md', 'plugin/hooks/README.md', 'plugin/skills/deep-grounding/SKILL.md', 'plugin/skills/planka-tracking/SKILL.md'],
   },
   {

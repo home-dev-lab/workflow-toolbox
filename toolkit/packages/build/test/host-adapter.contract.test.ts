@@ -3,10 +3,13 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, syml
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { exerciseExitedChild, exerciseRealFamily } from './helpers/host-family.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { readLinuxProcProcesses } from '../../../../plugin/bin/lib/host/linux.mjs'
+import { readLinuxIdleProcProcesses, readLinuxProcProcesses } from '../../../../plugin/bin/lib/host/linux.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { activityEvidence } from '../../../../plugin/bin/lib/lane-deadline-core.mjs'
 
 const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
 const COMMITTED_EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
@@ -20,7 +23,7 @@ const snapshotSamples = {
   darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, startTime: Date.parse('Tue Nov 14 22:13:20 2023'), startIdentity: Date.parse('Tue Nov 14 22:13:20 2023'), command: '/sbin/launchd' },
   win32: { pid: 4, ppid: 0, elapsedMs: 46_000, startTime: 1_700_000_000_000, startIdentity: 1_700_000_000_000, command: 'System' },
 } as const
-const procStat = (pid: number, command: string, startTicks: number) => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 ${startTicks} 20\n`
+const procStat = (pid: number, command: string, startTicks: number, userTicks = '11', systemTicks = '12') => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 ${userTicks} ${systemTicks} 0 0 15 16 17 18 ${startTicks} 20\n`
 
 function evidenceHost(platform: typeof platforms[number]) {
   return createHostAdapter({
@@ -35,17 +38,35 @@ function evidenceHost(platform: typeof platforms[number]) {
 
 const contractHost = (platform: typeof platforms[number]) => useRealHost ? createHostAdapter({ platform }) : evidenceHost(platform)
 
-describe('host adapter evidence contract', () => {
-  const assertions = useRealHost ? 5 : 15
-  const contract = (name: string, appliesTo: readonly string[], run: (platform: typeof platforms[number]) => void) => {
-    it(`${name} [${appliesTo.join(',')}]`, () => {
-      for (const platform of activePlatforms) {
-        if (!appliesTo.includes(platform)) continue
-        run(platform)
-      }
-    })
-  }
+// The product bounds a Windows process read at 5 s (plugin/bin/lib/host/win32.mjs); a cold runner can exceed it once.
+// The real-host contract retries a timed-out read, never any other failure.
+const REAL_READ_ATTEMPTS = 3
+const timedOut = (read: { supported: boolean, reason?: string }) => !read.supported && /\bETIMEDOUT$/.test(read.reason ?? '')
+function readWithTimeoutRetry<T extends { supported: boolean, reason?: string }>(read: () => T, attempts = REAL_READ_ATTEMPTS): T {
+  let result = read()
+  for (let attempt = 1; attempt < attempts && timedOut(result); attempt++) result = read()
+  return result
+}
 
+let assertions = 0
+let namedSkips = 0
+const skippedPlatforms = new Set<string>()
+function contract(name: string, appliesTo: readonly string[], run: (platform: typeof platforms[number]) => void | Promise<void>, timeout = 20_000) {
+  it(`${name} [${appliesTo.join(',')}]`, () => {
+    const pending: Promise<void>[] = []
+    for (const platform of platforms) {
+      if (!activePlatforms.includes(platform) || !appliesTo.includes(platform)) {
+        namedSkips++; skippedPlatforms.add(platform); continue
+      }
+      assertions++
+      const result = run(platform)
+      if (result) pending.push(result)
+    }
+    return pending.length ? Promise.all(pending) : undefined
+  }, timeout)
+}
+
+function registerEvidenceContracts() {
   it('replays only committed host evidence', () => {
     expect(EVIDENCE_ROOT).toBe(COMMITTED_EVIDENCE_ROOT)
   })
@@ -53,13 +74,15 @@ describe('host adapter evidence contract', () => {
   contract('reports evidence provenance for every question', platforms, (platform) => {
     const host = contractHost(platform)
     if (useRealHost) expect(host.platform).toBe(platform)
-    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '35501457364' })
+    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '38190362728' })
   })
+}
 
+function registerMemoryContracts() {
   it.each([
-    ['linux', { mib: 14609, source: 'MemAvailable from /proc/meminfo' }],
-    ['darwin', { mib: 3099, source: 'free, inactive, and speculative pages from vm_stat' }],
-    ['win32', { mib: 13699, source: 'free memory from os.freemem()' }],
+    ['linux', { mib: 14569, source: 'MemAvailable from /proc/meminfo' }],
+    ['darwin', { mib: 3011, source: 'free, inactive, and speculative pages from vm_stat' }],
+    ['win32', { mib: 13598, source: 'free memory from os.freemem()' }],
   ] as const)('reads recorded available memory on %s', (platform, expected) => {
     expect(evidenceHost(platform).readAvailableMemory()).toEqual(expected)
   })
@@ -79,7 +102,9 @@ describe('host adapter evidence contract', () => {
     expect(createHostAdapter({ platform: 'freebsd', invoke: { freeMemory: () => 2 * 1024 * 1024 * 1024 } }).readAvailableMemory())
       .toEqual({ mib: 2048, source: 'free memory from os.freemem() on freebsd' })
   })
+}
 
+function registerRelationshipContracts() {
   it('bounds Windows process-table reads', () => {
     const run = vi.fn((command: string, args: string[], options?: { timeout: number }) => {
       void command; void args; void options
@@ -93,16 +118,20 @@ describe('host adapter evidence contract', () => {
 
   contract('answers pid to parent-pid from the captured process table', platforms, (platform) => {
     const result = contractHost(platform).readProcessRelationships()
-    if (platform === 'win32') {
-      expect(result).toEqual({ status: 'unavailable', processes: [], reason: 'process table command exited 1' })
+    if (useRealHost) {
+      expect(result.status).toBe('known')
+      expect(result.processes.find((row: { pid: number }) => row.pid === process.pid)?.parentPid).toBe(process.ppid)
     } else {
       expect(result.status).toBe('known')
       expect(result.processes.length).toBeGreaterThan(1)
       expect(result.processes.every((row: { pid: number, parentPid: number }) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.parentPid))).toBe(true)
-      expect(result.processes.find((row: { pid: number }) => row.pid === 1)?.parentPid).toBe(0)
+      // The root of the captured tree: init on POSIX, the System process (pid 4) on Windows.
+      expect(result.processes.find((row: { pid: number }) => row.pid === (platform === 'win32' ? 4 : 1))?.parentPid).toBe(0)
     }
   })
+}
 
+function registerInjectedSnapshots() {
   it.each(platforms)('parses process discovery from an injected %s invocation', (platform) => {
     const outputs = {
       linux: '1 0 46 /sbin/init\n',
@@ -131,6 +160,18 @@ describe('host adapter evidence contract', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
+  it.each(platforms)('names idle evidence unknown when the %s command snapshot has no CPU counters', (platform) => {
+    const outputs = {
+      linux: '1 0 46 /sbin/init\n',
+      darwin: '1 0 Tue Nov 14 22:13:20 2023 05:46 /sbin/launchd\n',
+      win32: '4 0 46000 1700000000000 System\r\n',
+    }
+    const host = createHostAdapter({ platform, invoke: { run: () => ({ status: 0, stdout: outputs[platform], stderr: '', error: null }) } })
+    expect(activityEvidence({ snapshot: host.readProcessSnapshot(), worktree: { status: 'known' }, rootPid: snapshotSamples[platform].pid })).toMatchObject({ status: 'unknown', reason: `process CPU time unavailable for pid ${snapshotSamples[platform].pid}` })
+  })
+}
+
+function registerLinuxIdentityContracts() {
   it('never combines a Linux PID identity with a reused process command', () => {
     const stats = [
       procStat(42, 'broker-a', 100),
@@ -148,7 +189,6 @@ describe('host adapter evidence contract', () => {
       observedAt: 20_000,
     })).toEqual({ processes: [], unknownPids: [42] })
   })
-
   it('reports a live but unreadable Linux PID as unknown', () => {
     const readFile = vi.fn((file: string) => {
       if (file === '/proc/uptime') return '10 1\n'
@@ -162,7 +202,33 @@ describe('host adapter evidence contract', () => {
       observedAt: 20_000,
     })).toEqual({ processes: [], unknownPids: [42] })
   })
+}
 
+describe('Linux process CPU counters', () => {
+  const readLinuxProcProcesses = readLinuxIdleProcProcesses
+  it.each([
+    ['11', '12', 23],
+    ['0', '0', 0],
+    ['invalid', '12', null],
+    ['-1', '12', null],
+    ['11', 'Infinity', null],
+  ])('reads user=%s system=%s without inventing a zero', (user, system, cpuTicks) => {
+    let reads = 0
+    const snapshot = readLinuxProcProcesses({
+      readLink: () => String(process.pid),
+      readFile: (file: string) => {
+        if (file === '/proc/uptime') return '10 1\n'
+        if (file.endsWith('/stat')) return procStat(42, 'model (worker)', 100, ++reads === 1 ? '0' : user, reads === 1 ? '0' : system)
+        return 'model\0'
+      },
+      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      observedAt: 20_000,
+    })
+    expect(snapshot.processes).toEqual([expect.objectContaining({ pid: 42, startIdentity: 100, command: 'model', cpuTicks })])
+  })
+})
+
+function registerOtherPlatformSnapshots() {
   it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {
     const run = vi.fn(() => ({ status: 0, stdout: '1 0 12 /sbin/init\n', stderr: '', error: null }))
     const host = createHostAdapter({ platform, invoke: { run } })
@@ -201,6 +267,9 @@ describe('host adapter evidence contract', () => {
     }
   })
 
+}
+
+function registerSnapshotContracts() {
   // A failed read names its command and cause; a zero exit that still carries an invocation error (an output
   // overflow can truncate the table) is a failed read, never a complete table.
   const failedReads = [
@@ -213,7 +282,28 @@ describe('host adapter evidence contract', () => {
     expect(host.readProcessSnapshot()).toEqual({ supported: false, processes: [], reason: `process discovery failed: ${command} ${cause}` })
   })
 
+  it('retries a timed-out real-host read and never a different failure', () => {
+    const timeout = { supported: false, reason: 'process discovery failed: powershell.exe ETIMEDOUT' }
+    const ok = { supported: true }
+    const slowOnce = vi.fn().mockReturnValueOnce(timeout).mockReturnValue(ok)
+    expect(readWithTimeoutRetry(slowOnce)).toBe(ok)
+    expect(slowOnce).toHaveBeenCalledTimes(2)
+    const refused = { supported: false, reason: 'process discovery failed: powershell.exe exited 1' }
+    const other = vi.fn().mockReturnValue(refused)
+    expect(readWithTimeoutRetry(other)).toBe(refused)
+    expect(other).toHaveBeenCalledTimes(1)
+    const always = vi.fn().mockReturnValue(timeout)
+    expect(readWithTimeoutRetry(always)).toBe(timeout)
+    expect(always).toHaveBeenCalledTimes(REAL_READ_ATTEMPTS)
+  })
+
   contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {
+    if (useRealHost) {
+      const result = readWithTimeoutRetry(() => contractHost(platform).readProcessSnapshot())
+      expect(result.supported, result.reason).toBe(true)
+      expect(result.processes.find((row: { pid: number }) => row.pid === process.pid)?.ppid).toBe(process.ppid)
+      return
+    }
     const expected = platform === 'win32'
       ? 'captured host evidence has no invocation for powershell.exe -NoProfile -NonInteractive -Command $now = Get-Date'
       : platform === 'darwin'
@@ -221,7 +311,9 @@ describe('host adapter evidence contract', () => {
         : 'captured host evidence has no invocation for ps -eo pid=,ppid=,etimes=,args='
     expect(() => evidenceHost(platform).readProcessSnapshot()).toThrow(expected)
   })
+}
 
+function registerPathContracts() {
   contract('resolves the captured symlinked directory to its canonical target', platforms, (platform) => {
     const host = contractHost(platform)
     if (!useRealHost) {
@@ -237,7 +329,9 @@ describe('host adapter evidence contract', () => {
       expect(host.resolveCanonicalPath(link)).toEqual({ status: 'resolved', path: realpathSync.native(target) })
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
+}
 
+function registerFamilyContracts() {
   contract('ends the captured process family using the native host concept', platforms, (platform) => {
     const host = contractHost(platform)
     if (!useRealHost) {
@@ -245,17 +339,55 @@ describe('host adapter evidence contract', () => {
       expect(host.endProcessFamily(sample.childPid)).toEqual({ status: 'ended', kind: platform === 'win32' ? 'process_tree' : 'posix_process_group' })
       return
     }
-    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { detached: true, stdio: 'ignore' })
-    if (!child.pid) throw new Error('host contract fixture did not start')
-    try {
-      expect(host.endProcessFamily(child.pid)).toEqual({ status: 'ended', kind: platform === 'win32' ? 'process_tree' : 'posix_process_group' })
-    } finally { try { process.kill(child.pid, 'SIGKILL') } catch {} }
-  })
+    return exerciseRealFamily(host, false)
+  }, 30_000)
 
-  it('prints the declared applicability and skip count', () => {
-    const skips = useRealHost ? 10 : 0
-    expect(assertions + skips).toBe(15)
-    const skippedPlatforms = useRealHost ? platforms.filter((platform) => platform !== process.platform).join(',') : 'none'
-    process.stdout.write(`host adapter contract: assertions=${assertions} named_skips=${skips} skipped_platforms=${skippedPlatforms}\n`)
+  contract('force-ends both members of a process family', platforms, (platform) => {
+    if (useRealHost) return exerciseRealFamily(contractHost(platform), true)
+    const kind = platform === 'win32' ? 'process_tree' : 'posix_process_group'
+    const killGroup = vi.fn(() => ({ status: 'ended', kind }))
+    const killTree = vi.fn(() => ({ status: 'ended', kind }))
+    const host = createHostAdapter({ platform, invoke: { killGroup, killTree } })
+    expect(host.forceEndProcessFamily(42)).toEqual({ status: 'ended', kind })
+    if (platform === 'win32') expect(killTree).toHaveBeenCalledWith(42, true)
+    else expect(killGroup).toHaveBeenCalledWith(42, 'SIGKILL')
+  }, 30_000)
+}
+
+function registerLivenessContracts() {
+  contract('observes the test process alive and an exited child gone', platforms, (platform) => {
+    const kill = vi.fn(() => true)
+    const host = useRealHost ? contractHost(platform) : createHostAdapter({ platform, invoke: { kill } })
+    expect(host.readProcessLiveness(process.pid)).toEqual({ status: 'alive' })
+    if (!useRealHost) {
+      kill.mockImplementation(() => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }) })
+      expect(host.readProcessLiveness(42)).toEqual({ status: 'gone' })
+      expect(kill).toHaveBeenLastCalledWith(42, 0)
+      return
+    }
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' })
+    return exerciseExitedChild(host, child)
   })
+}
+
+function registerApplicabilityCounts() {
+  it('prints the declared applicability and skip count', () => {
+    expect(assertions).toBeGreaterThan(0)
+    expect([...skippedPlatforms].every((platform) => !activePlatforms.includes(platform as typeof platforms[number]))).toBe(true)
+    process.stdout.write(`host adapter contract: assertions=${assertions} named_skips=${namedSkips} skipped_platforms=${[...skippedPlatforms].join(',') || 'none'}\n`)
+  })
+}
+
+describe('host adapter evidence contract', () => {
+  registerEvidenceContracts()
+  registerMemoryContracts()
+  registerRelationshipContracts()
+  registerInjectedSnapshots()
+  registerLinuxIdentityContracts()
+  registerOtherPlatformSnapshots()
+  registerSnapshotContracts()
+  registerPathContracts()
+  registerFamilyContracts()
+  registerLivenessContracts()
+  registerApplicabilityCounts()
 })

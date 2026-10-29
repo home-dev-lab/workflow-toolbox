@@ -4,8 +4,6 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { journalFixture } from './fixtures/work-journal.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import * as api from '../../../../plugin/bin/lib/work-journal.mjs'
-// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { sessionStart } from '../../../../plugin/bin/lib/work-journal-lifecycle.mjs'
 
 type Row = { ts?: string; fileDay?: string; subject?: string; kind?: string; text?: string }
 const fixtures: ReturnType<typeof journalFixture>[] = []
@@ -153,31 +151,6 @@ it('field limits: twelve subjects, three kinds plus count, code-point subject an
   }
 })
 
-it('session total: bounds worst-case notices and emits the digest last', () => {
-  const f = fixture(); f.board()
-  const ctx = seed(f, [...windowRows(30, '😀中e\u0301'.repeat(100)), row('2026-06-02', { kind: 'unsynced', subject: 'board' })])
-  for (const day of Array.from({ length: 9 }, (_, i) => api.dayOf(new Date(2026, 4, 20 + i, 12)))) writeFileSync(join(ctx.archive, 'days', `${day}.ndjson`), '')
-  writeFileSync(join(f.project, '.claude', 'progress.md'), '# Tasks')
-  mkdirSync(join(ctx.store, 'lock'))
-  writeFileSync(join(ctx.store, 'lock', 'owner.json'), JSON.stringify({ pid: process.pid, nonce: 'held' }))
-  mkdirSync(join(ctx.store, 'pending'))
-  writeFileSync(join(ctx.store, 'pending', 'old.json'), '{}')
-  vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 7200000)
-  vi.spyOn(api, 'verifyJournal').mockReturnValue({ ...api.verifyJournal(ctx), errors: Array.from({ length: 9 }, (_, i) => `error-${i} ${'😀\n'.repeat(2000)}`) })
-  vi.spyOn(api, 'withJournalLock').mockImplementation(() => { throw new Error('busy; act queued') })
-  const message: string = sessionStart(ctx, {}, { warnings: Array.from({ length: 8 }, (_, i) => `warning-${i} ${'😀\n'.repeat(2000)}`) })
-  expect(message.length).toBeLessThanOrEqual(9500)
-  expect(wellFormed(message)).toBe(true)
-  expect(message).not.toContain('warning-5')
-  const start = message.indexOf('Work journal — detail')
-  expect(start).toBeGreaterThan(message.indexOf('retire-progress'))
-  expect(start).toBeGreaterThan(message.indexOf('journal busy'))
-  expect(start).toBeGreaterThan(message.indexOf('pending journal acts'))
-  expect(start).toBeGreaterThan(message.indexOf('more integrity errors'))
-  expect(start).toBeGreaterThan(message.indexOf('unsynced entries'))
-  expect(message.slice(start)).not.toContain('LOUD:')
-  expectShapes(message.slice(start))
-})
 
 it('refusal: rejects a forged line inside the selected window', () => {
   const f = fixture()

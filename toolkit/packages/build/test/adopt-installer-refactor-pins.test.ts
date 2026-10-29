@@ -167,8 +167,8 @@ describe('adopt installer refactor pins', () => {
     mkdirSync(sourceDir)
     cpSync(join(PLUGIN, 'agent-templates/pilot.md'), join(sourceDir, 'pilot.md'))
     const source = readFileSync(fixture.script, 'utf8')
-    expect(source).toContain('moveFileVerified(temp, target)')
-    writeFileSync(fixture.script, source.replace('moveFileVerified(temp, target)', "throw new Error('PINNED RENAME FAILURE')"))
+    expect(source).toContain('adoptRefreshHost.fs.renameSync(temp, target)')
+    writeFileSync(fixture.script, source.replace('adoptRefreshHost.fs.renameSync(temp, target)', "throw new Error('PINNED RENAME FAILURE')"))
     const targetDir = tempDir()
     const linkTarget = join(tempDir(), 'pilot.md')
     const targetBytes = 'target stays intact\n'
@@ -181,7 +181,7 @@ describe('adopt installer refactor pins', () => {
     )
 
     expect(result.status).toBe(1)
-    expect(result.stdout).toContain('PINNED RENAME FAILURE')
+    expect(result.stderr).toContain('PINNED RENAME FAILURE')
     expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
     expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
     expect(readFileSync(linkTarget, 'utf8')).toBe(targetBytes)
@@ -199,7 +199,7 @@ describe('adopt installer refactor pins', () => {
     writeFileSync(linkTarget, targetBytes)
     symlinkSync(linkTarget, join(targetDir, 'pilot.md'))
     const source = readFileSync(fixture.script, 'utf8')
-    const tempDeclaration = 'const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}.tmp`)'
+    const tempDeclaration = 'const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}-${crypto.randomUUID()}.tmp`)'
     expect(source).toContain(tempDeclaration)
     writeFileSync(fixture.script, source.replace(tempDeclaration, `const temp = ${JSON.stringify(linkTarget)}`))
 
@@ -209,7 +209,7 @@ describe('adopt installer refactor pins', () => {
     )
 
     expect(result.status).toBe(1)
-    expect(result.stdout).toContain('EEXIST')
+    expect(result.stderr).toContain('EEXIST')
     expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
     expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
     expect(existsSync(linkTarget)).toBe(true)
