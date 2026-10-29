@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The memory index probe warns within the final 15% of its applied byte ceiling, alongside the existing line-headroom notice, without changing findings or exit codes.
 - Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
 - Retain every artifact-server health responder until proven exited, coalesce unknown process observations, and carry self-read birth evidence across monitor handoffs.
 - Bind artifact-server attachments to identity-bracketed health observations, permanently retire exited instances, and use recorded birth identity for CLI stop/restart confirmation.
