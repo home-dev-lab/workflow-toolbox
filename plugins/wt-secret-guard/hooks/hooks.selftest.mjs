@@ -5011,7 +5011,6 @@ for (const [shape, build, raw, held] of [
   ['array object', (key) => ({ rows: [{ deep: [{ [key]: 'array' }] }] }), heldKeyFixture, true],
   ['detector credential', (key) => ({ [key]: 'detected' }), aws, false],
   ['base64 held', (key) => ({ [encodedKeyFixture(key)]: 'encoded' }), heldKeyFixture, true],
-  ['base64 detector', (key) => ({ [encodedKeyFixture(key)]: 'encoded detector' }), aws, false],
 ]) {
   await test(`structured tool result key ${shape} is scrubbed`, () => freshVault(async () => {
     if (held) tokenize('fixture', raw);
@@ -5096,4 +5095,28 @@ await test('structured tool result key embedded base64 held form is scrubbed', (
   const returned = await structuredKeyResult({ result: { [`prefix${encoded}suffix`]: 'clean' } });
   assert.equal(JSON.stringify(returned).includes(encoded), false, 'embedded key leaked base64 fixture');
 }));
+await test('structured tool result key base64 detector remains unchanged unless held', () => freshVault(async () => {
+  const { scrub } = await import('./scrub.js');
+  const fields = { [encodedKeyFixture(aws)]: 'encoded detector' };
+  assert.deepEqual(await structuredKeyResult(fields), fields, 'unheld encoded detector key changed');
+  assert.deepEqual(scrub(fields, ''), { value: fields, changed: false });
+}));
+for (const [shape, value] of [['object value', { id: 'c2VjcmV0PTE=' }], ['plain string', 'c2VjcmV0PTE=']]) {
+  await test(`round 2 opaque id ${shape} remains unchanged`, () => freshVault(async () => {
+    const { scrub } = await import('./scrub.js');
+    const result = scrub(value, '');
+    assert.deepEqual(result.value, value, `round 2 opaque id ${shape} was rewritten`);
+    assert.equal(result.changed, false, `round 2 opaque id ${shape} changed flag was true`);
+  }));
+}
+for (const shape of ['key', 'value']) {
+  await test(`round 2 held base64 ${shape} stays scrubbed`, () => freshVault(async () => {
+    const { scrub } = await import('./scrub.js');
+    const token = tokenize('fixture', heldKeyFixture);
+    const encoded = encodedKeyFixture(heldKeyFixture);
+    const value = shape === 'key' ? { [encoded]: 'control' } : { clean: encoded };
+    const expected = shape === 'key' ? { [token]: 'control' } : { clean: token };
+    assert.deepEqual(scrub(value, ''), { value: expected, changed: true }, `round 2 held base64 ${shape} leaked`);
+  }));
+}
 process.exit(failures ? 1 : 0);

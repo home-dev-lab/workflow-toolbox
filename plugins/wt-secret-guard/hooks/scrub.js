@@ -1,4 +1,6 @@
 // Functional core: recursively mask values without performing host I/O.
+// Scrubbing an integer-like held key can reorder fields because JavaScript enumerates integer-like keys first.
+// A held value equal to a protocol field name (for example isError) renames that field too.
 import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
 import { base64Utf8 } from './outbound-tools.js';
@@ -38,7 +40,7 @@ function replaceKnown(text, command, includeOptional, substituted, vaultOccurren
     ...findOptional(text, includeOptional, options),
   ];
   for (const detection of found) for (const [from, to] of occurrences(text, detection.value)) spans.push({ from, to, detection });
-  encodedSpans(text, command, includeOptional, eligible, detectionOptions, spans);
+  encodedSpans(text, eligible, spans);
   clipIssuedTokens(text, spans);
   if (!spans.length) return { value: text, changed: false };
   spans.sort((left, right) => left.from - right.from || right.to - left.to);
@@ -50,27 +52,12 @@ function findOptional(text, includeOptional, options) {
   return includeOptional ? optionalDetections(text, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }) : [];
 }
 
-function encodedSpans(text, command, includeOptional, eligible, detectionOptions, spans) {
+function encodedSpans(text, eligible, spans) {
   // Match held encodings even inside a larger key, without treating surrounding bytes as base64.
   for (const [token, entry] of knownTokens()) {
     if (entry.ephemeral || entry.value.length > text.length || !eligible({ ...entry, token })) continue;
     for (const [from, to] of occurrences(text, base64Utf8(entry.value))) spans.push({ from, to, token });
   }
-  for (const match of text.matchAll(/[A-Za-z0-9+/]{4,}={0,2}/g)) {
-    const decoded = decodedBase64(match[0]);
-    if (decoded === null) continue;
-    const found = [...detections(decoded, command, undefined, detectionOptions), ...findOptional(decoded, includeOptional, config())];
-    for (const detection of found) spans.push({ from: match.index, to: match.index + match[0].length, detection: { ...detection, secret: detection.secret ?? detection.value } });
-  }
-}
-
-function decodedBase64(text) {
-  try {
-    const bytes = Uint8Array.from(atob(text), (character) => character.charCodeAt(0));
-    const decoded = new TextDecoder().decode(bytes);
-    // Reject malformed UTF-8 and noncanonical encodings rather than guessing at their text.
-    return base64Utf8(decoded).replace(/=+$/, '') === text.replace(/=+$/, '') ? decoded : null;
-  } catch { return null; }
 }
 
 function activateOptional(activeCategories, includeOptional, options) {
