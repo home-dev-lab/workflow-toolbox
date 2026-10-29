@@ -844,6 +844,28 @@ function stripScriptBanner(text) {
   return text.slice(0, first + 1) + text.slice(secondEnd + 1).replace(/^\n+/, '')
 }
 
+function renderTriggerHead(onDemandHead, triggers, force) {
+  let writtenHead = onDemandHead
+  let stamp = null
+  if (triggers) {
+    writtenHead = force || ['current', 'stale', 'missing'].includes(triggers.state) ? triggers.spec.head : onDemandHead
+    stamp = writtenHead === triggers.spec.head
+      ? { kind: 'head', head: triggers.current }
+      : triggers.stamp
+  }
+  return { writtenHead, stamp }
+}
+
+function renderItemText(set, content, b, writtenHead) {
+  let text
+  if (set.kind === 'agents') text = insertAgentBanner(content, b)
+  else if (writtenHead) text = `${writtenHead}${b}\n\n${content}`
+  else if (set.kind === 'scripts' && content.startsWith('#!')) {
+    text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
+  } else text = `${b}\n\n${content}`
+  return text
+}
+
 /** The full installed file: content + a banner stamped with the fingerprint of the content
  *  ACTUALLY WRITTEN. When `oldContent` is given (the file about to be overwritten, agents set
  *  only), any local single-line frontmatter field it carries — one the shipped def does not
@@ -859,21 +881,9 @@ function renderItem(set, item, version, root, oldContent = null, triggers = null
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
   const onDemandHead = set.kind === 'rules' ? onDemandFrontmatter(oldContent ?? '') : null
-  let writtenHead = onDemandHead
-  let stamp = null
-  if (triggers) {
-    writtenHead = force || ['current', 'stale', 'missing'].includes(triggers.state) ? triggers.spec.head : onDemandHead
-    stamp = writtenHead === triggers.spec.head
-      ? { kind: 'head', head: triggers.current }
-      : triggers.stamp
-  }
+  const { writtenHead, stamp } = renderTriggerHead(onDemandHead, triggers, force)
   const b = renderBanner(version, fingerprint(content), stamp, item.file)
-  let text
-  if (set.kind === 'agents') text = insertAgentBanner(content, b)
-  else if (writtenHead) text = `${writtenHead}${b}\n\n${content}`
-  else if (set.kind === 'scripts' && content.startsWith('#!')) {
-    text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
-  } else text = `${b}\n\n${content}`
+  const text = renderItemText(set, content, b, writtenHead)
   return { text, preserved }
 }
 
@@ -2166,6 +2176,51 @@ function scriptDrift(set, classification, decision) {
     /^(?:STALE|EDITED|AHEAD|SYMLINK|TARGET-MISSING|PRESENT \(no toolbox banner)/.test(decision.status)
 }
 
+function duplicateItemDecision(set, target, item, alternateDirs, decision) {
+  let duplicate = false
+  if (alternateDirs.nested && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(alternateDirs.nested, item.file))) {
+    duplicate = true
+    decision = { status: `DUPLICATE (also present in ${alternateDirs.nested}/${item.file})`, write: false }
+  }
+  if (alternateDirs.onDemand && hasAdoptionBanner(set, path.join(alternateDirs.onDemand, item.file))) {
+    duplicate = true
+    decision = { status: `DUPLICATE (adopted copy already present in ${path.join(alternateDirs.onDemand, item.file)})`, write: false }
+  }
+  return { decision, duplicate }
+}
+
+function onDemandItemDecision(set, dir, item, root, classification, decision, duplicate) {
+  const migrated = classification.state === 'absent' ? migratedOnDemandCopy(set, dir, item, root) : null
+  if (migrated) {
+    duplicate = false
+    decision = { status: migratedStatus(migrated), write: false }
+  }
+  // Head not confirmed (engine missing, unloadable, or rejecting): fail CLOSED. The engine that actually runs
+  // may serve the copy, so a static twin could double-load.
+  const unverified = classification.state === 'absent' && !migrated ? unverifiedOnDemandCopy(set, dir, item, root) : null
+  if (unverified) {
+    duplicate = false
+    decision = { status: unverifiedStatus(unverified.target, unverified.reason), write: false }
+  }
+  return { decision, duplicate, migrated, unverified }
+}
+
+function triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, item, dir) {
+  if (args.refreshTriggers || args.keepTriggers) {
+    if (!canWriteTriggerHead(triggers, legacyDecision, classification, args)) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
+  }
+  if (triggers && !legacyDecision && !contentless(classification)) {
+    decision = { ...decision, status: triggerStatus(decision.status, triggers, item, dir) }
+  }
+  return decision
+}
+
+function managedItemStale(classification, version, shippedFp, currentContentFp) {
+  return classification.state === 'clean' &&
+    ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
+      (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
+}
+
 function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const target = path.join(dir, item.file)
   const classification = classify(target, set)
@@ -2180,40 +2235,15 @@ function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
     currentContentFp,
   })
   decision = scriptTargetDecision(set, item, args, classification, decision)
-  let duplicate = false
-  if (alternateDirs.nested && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(alternateDirs.nested, item.file))) {
-    duplicate = true
-    decision = { status: `DUPLICATE (also present in ${alternateDirs.nested}/${item.file})`, write: false }
-  }
-  if (alternateDirs.onDemand && hasAdoptionBanner(set, path.join(alternateDirs.onDemand, item.file))) {
-    duplicate = true
-    decision = { status: `DUPLICATE (adopted copy already present in ${path.join(alternateDirs.onDemand, item.file)})`, write: false }
-  }
-  const migrated = classification.state === 'absent' ? migratedOnDemandCopy(set, dir, item, root) : null
-  if (migrated) {
-    duplicate = false
-    decision = { status: migratedStatus(migrated), write: false }
-  }
-  // Head not confirmed (engine missing, unloadable, or rejecting): fail CLOSED. The engine that actually runs
-  // may serve the copy, so a static twin could double-load.
-  const unverified = classification.state === 'absent' && !migrated ? unverifiedOnDemandCopy(set, dir, item, root) : null
-  if (unverified) {
-    duplicate = false
-    decision = { status: unverifiedStatus(unverified.target, unverified.reason), write: false }
-  }
+  const duplicates = duplicateItemDecision(set, target, item, alternateDirs, decision)
+  const onDemand = onDemandItemDecision(set, dir, item, root, classification, duplicates.decision, duplicates.duplicate)
+  decision = onDemand.decision
+  const { duplicate, migrated, unverified } = onDemand
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
   const triggers = managedTriggerState(set, dir, item, args, root, classification)
-  if (args.refreshTriggers || args.keepTriggers) {
-    if (!canWriteTriggerHead(triggers, legacyDecision, classification, args)) fail(`--${args.refreshTriggers ? 'refresh' : 'keep'}-triggers requires a spec-backed managed on-demand copy: ${target}`)
-  }
-  if (triggers && !legacyDecision && !contentless(classification)) {
-    decision = { ...decision, status: triggerStatus(decision.status, triggers, item, dir) }
-  }
-  const stale =
-    classification.state === 'clean' &&
-    ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
-      (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
+  decision = triggerItemDecision(args, triggers, legacyDecision, classification, target, decision, item, dir)
+  const stale = managedItemStale(classification, version, shippedFp, currentContentFp)
   return { target, classification, decision, triggers, stale, migrationPending: !!legacyDecision, duplicate, migrated: !!migrated && !legacyDecision,
     unverified: !!unverified && !legacyDecision }
 }

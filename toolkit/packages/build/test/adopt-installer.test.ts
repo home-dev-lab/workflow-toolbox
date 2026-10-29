@@ -1144,7 +1144,7 @@ describe('adopt installer — static spec-backed placement', () => {
   })
 })
 
-describe('adopt installer — spec-backed on-demand trigger heads', () => {
+describe('adopt installer — trigger provenance', () => {
   it.each([
     '<!-- installed from workflow-toolbox v0.189.1 · content sha256:f3eafead0d07 head sha256:735fd0df79d7 by the adopt skill kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill — editable copy. -->',
     ' <!-- installed from workflow-toolbox v0.0.1 · content sha256:d32f269f3009 head sha256:735fd0df79d7 by the adopt skill — editable copy. -->',
@@ -1174,7 +1174,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     run(['--set', 'rules', '--install', '--file', ACT], dir)
     expect(installedHead(readFileSync(file, 'utf8'))).toBe(installedHead(edited))
   })
+})
 
+describe('adopt installer — mutated trigger provenance', () => {
   it.each([
     ['head plus kept (review #1)', (line: string) => line.replace(' by the adopt skill', ' kept sha256:735fd0df79d7 spec sha256:943497e58261 by the adopt skill')],
     ['leading space (review #2)', (line: string) => ` ${line}`],
@@ -1210,6 +1212,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     }
   })
 
+})
+
+describe('adopt installer — trigger status', () => {
   it('an accepted kept head is visible on an otherwise current or stale body status', () => {
     const { dir, file } = actFixture()
     writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
@@ -1244,6 +1249,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(run(['--set', 'rules', '--check'], nested)).toContain('on-demand triggers unresolved')
   })
 
+})
+
+describe('adopt installer — legacy trigger banners', () => {
   it('head-only commands work on a pre-fingerprint banner and later spec changes refresh the accepted shipped head', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1270,6 +1278,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(run(['--set', 'rules', '--check'], dir)).not.toContain('on-demand triggers unresolved')
   })
 
+})
+
+describe('adopt installer — trigger enrollment', () => {
   it('restamps a current head with an old valid stamp before the next spec change', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1292,6 +1303,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(resolved).toContain('TRIGGERS REFRESHED')
     expect(resolved.split('\n').find((line) => line.includes(`${ACT}:`))).not.toContain('on-demand triggers unresolved')
   })
+})
+
+describe('adopt installer — simultaneous trigger refresh', () => {
   it('reports a resolved head after simultaneous body and head refresh, including keep and automatic refresh', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1314,6 +1328,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     const afterKeep = runCopied(copy.script, ['--install', '--file', ACT], dir)
     expect(afterKeep).not.toContain('behind the shipped spec')
   })
+})
+
+describe('adopt installer — shipped trigger specs', () => {
   it('renders all shipped specs byte-for-byte like the lifecycle renderer', () => {
     const copy = copiedPlugin()
     for (const name of readdirSync(join(REPO_ROOT, 'plugin/rules')).filter((n) => n.endsWith('-at-act.spec.json'))) {
@@ -1348,6 +1365,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: UP-TO-DATE`)
   })
 
+})
+
+describe('adopt installer — stale trigger heads', () => {
   it('refreshes a stale head even with an edited body, without changing the body or its banner version', () => {
     const { dir, file } = actFixture()
     const copy = copiedPlugin()
@@ -1362,6 +1382,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(runCopied(copy.script, ['--check'], dir)).toContain(`${ACT}: EDITED`)
   })
 
+})
+
+describe('adopt installer — unresolved trigger heads', () => {
   it('reports edited and unverified heads with exact remedies and preserves their stamps through a stale-body refresh', () => {
     for (const stamped of [true, false]) {
       const { dir, file, head } = actFixture()
@@ -1388,6 +1411,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     }
   })
 
+})
+
+describe('adopt installer — explicit trigger choices', () => {
   it('explicit refresh and keep are head-only; a changed spec reopens an accepted keep', () => {
     const { dir, file } = actFixture()
     writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL') + '\nBODY EDIT\n')
@@ -1419,6 +1445,9 @@ describe('adopt installer — spec-backed on-demand trigger heads', () => {
     expect(readFileSync(file, 'utf8')).not.toContain('BODY EDIT')
   })
 
+})
+
+describe('adopt installer — trigger journal and CRLF', () => {
   it('head-only journal entries cannot replace the previous body baseline for --diff', () => {
     const { dir, file } = actFixture()
     run(['--set', 'rules', '--install', '--file', ACT], dir)
