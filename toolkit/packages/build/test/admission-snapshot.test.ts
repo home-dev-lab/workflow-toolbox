@@ -114,6 +114,7 @@ function admissionSeam(root: string) {
   return `
           import fs from 'node:fs';
           export async function boundedAdmission(...args) {
+            args[1] = { ...args[1], WT_TEST_ADMISSION_CALLER_PID: String(process.pid) };
             const result = await realBoundedAdmission(...args);
             if (result === null && fs.existsSync(${JSON.stringify(join(root, 'race'))})) {
               fs.writeFileSync(${JSON.stringify(join(root, 'repo', 'late-private.txt'))}, 'alice.example.person@example.test');
@@ -274,7 +275,7 @@ function snapshotLocks(kind: Kind) {
 
 function cleanupLocks(kind: Kind) {
   it.skipIf(process.platform === 'win32')('cleans the snapshot when a pending policy is interrupted', () => {
-    const f = fixture(kind, `process.kill(process.ppid, 'SIGTERM'); return new Promise(() => {})`)
+    const f = fixture(kind, `process.kill(Number(process.env.WT_TEST_ADMISSION_CALLER_PID), 'SIGTERM'); return new Promise(() => {})`)
     expectRefused(f, 'interrupted during admission', f.module)
   })
   it('removes a partial snapshot when copying fails and never uses the live directory', () => {
@@ -576,7 +577,7 @@ it.skipIf(process.platform === 'win32')('cleans the verifier snapshot on SIGQUIT
 })
 
 it.skipIf(process.platform === 'win32').each(kinds)('interrupts pending %s admission on SIGQUIT', kind => {
-  const f = fixture(kind, `process.kill(process.ppid, 'SIGQUIT'); return new Promise(() => {})`)
+  const f = fixture(kind, `process.kill(Number(process.env.WT_TEST_ADMISSION_CALLER_PID), 'SIGQUIT'); return new Promise(() => {})`)
   expectRefused(f, 'interrupted during admission', f.module)
 })
 
