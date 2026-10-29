@@ -52,7 +52,7 @@ function lineContext(text, item) {
   const start = text.lastIndexOf('\n', item.keyStart - 1) + 1;
   const prefix = text.slice(0, start);
   const header = /(?:^|\n)[ \t]*\[[^\]\n]+\][ \t]*\r?(?:\n|$)/.test(prefix);
-  const indent = text.slice(start).match(/^[\p{Zs}\t]*/u)[0].length;
+  const indent = text.slice(start).split('\n', 1)[0].match(/^\s*/u)[0].length;
   const colon = text.slice(item.keyStart, item.valueStart).includes(':');
   return { header, indent, deeper: header || colon || Boolean(quoteAt(text, item.valueStart)) };
 }
@@ -65,7 +65,7 @@ function nextDeeper(text, at, indent) {
     const end = newline < 0 ? text.length : newline;
     const line = text.slice(cursor, end);
     if (/^\s*(?:[#;][^\n]*)?$/.test(line)) { skipped.push([cursor, end]); cursor = end + 1; continue; }
-    const width = line.match(/^[\p{Zs}\t]*/u)[0].length;
+    const width = line.match(/^\s*/u)[0].length;
     return width > indent ? { cursor, skipped } : null;
   }
   return null;
@@ -92,12 +92,12 @@ export function valueExtent(text, item, candidates = []) {
     skipped.push(...next.skipped);
     at = next.cursor;
   }
-  // Develop can capture a contextual key as well as a short value.
+  // Project out only the recognised key prefix, retaining the full writer end.
   return finishedExtent(text, item, at, skipped);
 }
 
 function finishedExtent(text, item, at, skipped) {
-  const start = item.base ? Math.min(item.valueStart, item.captureStart) : item.valueStart;
+  const start = item.valueStart;
   const end = Math.max(at, item.base ? item.captureEnd : at);
   let content = text.slice(start, end);
   for (const [from, to] of skipped.reverse()) content = content.slice(0, from - start) + ' '.repeat(to - from) + content.slice(to - start);
@@ -181,7 +181,8 @@ export function boundaryFindings(text) {
   for (const item of candidates) {
     const extent = valueExtent(text, item, candidates);
     if (referenceProof(extent.text)) continue;
-    found.push(...(item.base ? [item.finding] : residueFindings(extent.text, item.kind, extent.start)));
+    const genuine = item.base && !referenceProof(item.finding.value);
+    found.push(...(genuine ? [item.finding] : residueFindings(extent.text, item.kind, extent.start)));
   }
   for (const element of xmlElements(text)) {
     if (!referenceProof(element.text, 'xml')) found.push(...residueFindings(element.text, 'xml-element', element.start));

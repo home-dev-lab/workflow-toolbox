@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { classifyOutbound } from './outbound-tools.js';
 import { classifyOutbound as baseClassify } from './fixtures/base-outbound-tools.frozen.mjs';
 import { rows, objectRows } from './fixtures/value-boundary-rows.mjs';
+import { contextualMatches } from './detector.js';
+import { blankReferences, discoverCandidates, referenceProof, valueExtent } from './value-boundary.js';
 
 const findings = async (content, classify = classifyOutbound) => (await classify({}, { tool: 'Write', content })).findings;
 const groupOf = (id) => id.match(/^(?:AR|AF|CTL|SEED|[A-Z]|7)/)[0];
@@ -10,7 +12,7 @@ export function* variants(source = rows) {
   for (const [id, , content] of source.filter((row) => row[1] !== 'X')) {
     yield [id, content];
     for (const ending of ['\n', '\r\n', '\r']) for (const header of ['', '[s]\n']) {
-      for (const indent of ['  ', '\t', '\u00a0']) for (const gap of ['\n', '\n# gap\n']) {
+      for (const indent of ['  ', '\t', '\u00a0', '\f', '\v']) for (const gap of ['\n', '\n# gap\n']) {
         for (const quoted of [false, true]) for (const tail of ['', ', Q7m9Ab12']) {
           const reference = quoted ? '"${VARIANT}"' : '${VARIANT}';
           const next = `${header}${content}${gap}${indent}${reference}${tail}`.replace(/\r?\n/g, ending);
@@ -35,20 +37,20 @@ async function probeLocks(f) {
     for (const [id, want, input] of objectRows) {
       const result = await classifyOutbound({}, { tool: 'mcp__fixture__send', ...input });
       assert.equal(result.findings.length > 0, want === 'R', id);
-      if (id.startsWith('AR6 ')) assert.deepEqual(result, await baseClassify({}, { tool: 'mcp__fixture__send', ...input }), 'object key finding changed');
+      if (id.startsWith('AR6 ')) assert.ok(result.findings.some((item) => item.value === 'Q7m9Ab12'), 'object key credential was not held');
     }
   }));
 }
 
 async function containmentLock(f) {
-  await f.test('VB blanked capture containment', () => f.freshVault(async () => {
-    const { discoverCandidates, valueExtent } = await import('./value-boundary.js');
+  await f.test('VB blanked value-bearing capture containment', () => f.freshVault(async () => {
     let count = 0;
     for (const [, text] of variants()) {
       const candidates = discoverCandidates(text);
       for (const item of candidates.filter((candidate) => candidate.base)) {
         const extent = valueExtent(text, item, candidates);
-        assert.ok(extent.start <= item.captureStart && extent.end >= item.captureEnd, 'extent lost base capture');
+        assert.equal(extent.start, item.valueStart, 'proof did not start at detector valueStart');
+        assert.ok(extent.start <= Math.max(item.valueStart, item.captureStart) && extent.end >= item.captureEnd, 'extent lost value-bearing base capture');
         count += 1;
       }
     }
@@ -62,19 +64,18 @@ async function preservedValues(text) {
   const candidates = discoverCandidates(text);
   for (const item of await findings(text, baseClassify)) {
     const original = candidates.find((candidate) => candidate.base && candidate.kind === item.kind && candidate.finding.value === item.value);
-    if (!original || referenceProof(valueExtent(text, original, candidates).text)) continue;
+    if (!original || referenceProof(original.finding.value) || referenceProof(valueExtent(text, original, candidates).text)) continue;
     assert.ok(current.some((next) => next.kind === item.kind && next.value === item.value), 'uncancelled base finding changed');
   }
 }
 
 async function findingLocks(f) {
-  await f.test('VB no complete reference is held', () => f.freshVault(async () => {
-    const { referenceProof } = await import('./value-boundary.js');
+  await f.test('VB no reference-derived finding is a complete reference', () => f.freshVault(async () => {
     for (const [id, text] of variants()) for (const item of await findings(text)) {
-      assert.equal(referenceProof(item.value, 'decoded'), false, `complete reference became a finding: ${id} ${JSON.stringify(item.value)}`);
+      assert.equal(referenceProof(item.value), false, `reference-derived finding stayed a reference: ${id} ${JSON.stringify(item.value)}`);
     }
   }));
-  await f.test('VB uncancelled base values are unchanged', () => f.freshVault(async () => {
+  await f.test('VB genuine uncancelled base values are unchanged', () => f.freshVault(async () => {
     for (const [, text] of variants()) await preservedValues(text);
   }));
   await f.test('VB raw residue values and short fallback', () => f.freshVault(async () => {
@@ -84,25 +85,59 @@ async function findingLocks(f) {
   }));
 }
 
+function* differentialCases() {
+  for (const [id, text] of variants()) yield [id, { tool: 'Write', content: text }];
+  for (const [id, want, input] of objectRows) {
+    const key = Object.keys(input)[0];
+    for (const [, text] of variants([[id, want, input[key]]])) yield [id, { tool: 'mcp__fixture__send', [key]: text }];
+  }
+}
+
+function occurrenceProofs(key, text) {
+  const candidates = discoverCandidates(text);
+  const direct = candidates.filter((item) => item.base).map((item) => ({
+    kind: item.kind, value: item.finding.value, proof: valueExtent(text, item, candidates),
+  }));
+  const prefix = `${key}: `;
+  for (const item of contextualMatches(prefix + blankReferences(text))) {
+    if (direct.some((entry) => entry.value === item.value)) continue;
+    const shifted = Object.fromEntries(['keyStart', 'valueStart', 'captureStart', 'captureEnd'].map((name) => [name, item[name] - prefix.length]));
+    const proof = item.keyStart < prefix.length
+      ? { text: item.valueStart === prefix.length && referenceProof(text, 'decoded') ? text : '', mode: 'decoded' }
+      : valueExtent(text, { ...item, ...shifted, base: true }, candidates);
+    direct.push({ kind: item.kind, value: text, proof });
+  }
+  return direct;
+}
+
+function justifyFlip(event, before, id) {
+  const [key, text] = Object.entries(event).find(([name]) => name !== 'tool');
+  const evidence = occurrenceProofs(key, text);
+  for (const item of before) {
+    const occurrences = evidence.filter((entry) => entry.kind === item.kind && entry.value === item.value);
+    assert.ok(occurrences.length, `independent base finding cancelled: ${id}`);
+    for (const entry of occurrences) assert.ok(referenceProof(entry.proof.text, entry.proof.mode), `unproven base occurrence cancelled: ${id}`);
+  }
+  return evidence.length;
+}
+
 async function differentialLock(f) {
-  await f.test('VB frozen base refusal differential', () => f.freshVault(async () => {
-    let count = 0;
-    const regressions = [];
-    for (const [id, text] of variants()) {
-      const before = await findings(text, baseClassify);
-      if (before.length && !(await findings(text)).length) regressions.push(id);
+  await f.test('VB frozen base credential differential and occurrence proofs', () => f.freshVault(async () => {
+    const required = new Set([...rows, ...objectRows].filter((row) => row[1] === 'R').map((row) => row[0]));
+    const flips = [];
+    let count = 0; let credentials = 0; let exempted = 0; let proofs = 0;
+    for (const [id, event] of differentialCases()) {
+      const planted = required.has(id) || JSON.stringify(event).includes('Q7m9Ab12');
+      const before = (await baseClassify({}, event)).findings;
+      if (planted) credentials += 1;
+      if (before.length && !(await classifyOutbound({}, event)).findings.length) {
+        if (planted) flips.push(id);
+        else { proofs += justifyFlip(event, before, id); exempted += 1; }
+      }
       count += 1;
     }
-    for (const [id, want, input] of objectRows) {
-      const key = Object.keys(input)[0];
-      for (const [, text] of variants([[id, want, input[key]]])) {
-        const event = { tool: 'mcp__fixture__send', [key]: text };
-        if ((await baseClassify({}, event)).findings.length && !(await classifyOutbound({}, event)).findings.length) regressions.push(id);
-        count += 1;
-      }
-    }
-    console.log(`VB DIFFERENTIAL=${count} BASE_REFUSED_TIP_WRITTEN=${regressions.length} IDS=${[...new Set(regressions)].join('|')}`);
-    assert.equal(regressions.length, 0, 'base refused inputs became written (includes required false-positive removals)');
+    console.log(`VB DIFFERENTIAL=${count} CREDENTIAL_BEARING=${credentials} CREDENTIAL_FLIPS=${flips.length} JUSTIFIED_FLIPS=${exempted} OCCURRENCE_PROOFS=${proofs}`);
+    assert.equal(flips.length, 0, `credential-bearing base refusals became written: ${[...new Set(flips)].join('|')}`);
   }));
 }
 
@@ -153,6 +188,53 @@ async function commentLineLock(f) {
   }));
 }
 
+async function continuationLocks(f) {
+  for (const [name, text] of [
+    ['form feed', '[s]\npassword="${HOME}"\n\fQ7m9Ab12\n'],
+    ['vertical tab', '[s]\npassword="${HOME}"\n\vQ7m9Ab12\n'],
+    ['short reference', '[s]\npassword="${A}"\n  Q7m9Ab12'],
+    ['outside extent tail', 'db:\n  password: "${DB_PASSWORD}"\n  user: bob\n\n  ${VARIANT}, Q7m9Ab12'],
+  ]) await f.test(`VB credential continuation ${name}`, () => f.freshVault(async () => {
+    assert.ok((await findings(text, baseClassify)).length, 'base must refuse control');
+    assert.ok((await findings(text)).length, `${name} credential escaped refusal`);
+  }));
+  await f.test('VB short JSON references project only the key prefix', () => f.freshVault(async () => {
+    assert.equal((await findings('{"password":"${A}","token":"${B}"}')).length, 0, 'short reference fallback included key syntax');
+  }));
+}
+
+async function sequence(f, content, later, refused = true) {
+  const event = typeof content === 'string' ? { tool: 'Write', content } : { tool: 'mcp__fixture__send', ...content };
+  const initial = (await classifyOutbound({}, event)).findings;
+  assert.ok(initial.length, 'initial credential must be refused');
+  for (const item of initial) f.tokenize(item.kind, item.secret ?? item.value);
+  assert.equal(Boolean((await findings(later)).length), refused, `later ${later} protection verdict`);
+  return initial;
+}
+
+async function provenanceLocks(f) {
+  const reference = 'secret:' + 'env:A1B2C3';
+  for (const [name, content, later, refused] of [
+    ['reference continuation residue', '[service]\npassword="${HOME}"\n    Q7m9Ab12\n', 'Q7m9Ab12', true],
+    ['genuine quoted comma credential', 'password="ab,cd12"', 'ab,cd12', true],
+    ['object key credential', { 'password=Q7m9Ab12': '${HOME}' }, 'Q7m9Ab12', true],
+    ['reference spelling not held', `[s]\npassword="${reference}"\n  Q7m9Ab12`, reference, false],
+  ]) await f.test(`VB provenance ${name}`, () => f.freshVault(async () => {
+    const initial = await sequence(f, content, later, refused);
+    if (name === 'genuine quoted comma credential') assert.ok(initial.some((item) => item.value === later), 'genuine base credential bytes changed');
+    else for (const item of initial) assert.equal(referenceProof(item.value), false, 'reference-derived finding retained reference');
+  }));
+  await f.test('VB trusted held reference is never filtered', () => f.freshVault(async () => {
+    f.tokenize('file', '${HOME}');
+    assert.ok((await findings('${HOME}')).some((item) => item.secret === '${HOME}'), 'trusted held reference leaked');
+  }));
+  await f.test('VB key-origin fallback never drops base evidence', () => f.freshVault(async () => {
+    const event = { tool: 'mcp__fixture__send', 'password=': '${HOME}' };
+    assert.ok((await baseClassify({}, event)).findings.length, 'base key-origin control');
+    assert.ok((await classifyOutbound({}, event)).findings.length, 'key-origin fallback evidence was dropped');
+  }));
+}
+
 export async function runValueBoundaryLocks(fixture) {
-  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock]) await run(fixture);
+  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock, continuationLocks, provenanceLocks]) await run(fixture);
 }

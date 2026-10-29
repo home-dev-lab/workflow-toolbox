@@ -48,11 +48,18 @@ function pushDetectedFindings(found, value, key, path, options) {
 }
 
 function pushKeyFindings(found, { value, key, path, candidate, baseDirect }) {
+  const keyEvidence = detections(key, '', undefined, { prose: false });
   for (const item of detections(`${key}: ${candidate}`, '', undefined, { prose: false })) {
     if (baseDirect.some(({ value: directValue }) => directValue === item.value)) continue;
     // A match in the object key is evidence independent of the decoded child.
     const inKey = detections(`${key}: `, '', undefined, { prose: false }).some((entry) => entry.kind === item.kind && entry.value === item.value);
-    if (inKey || !referenceProof(value, 'decoded')) found.push({ ...item, value, secret: value, path, index: 0 });
+    if (inKey) {
+      const origins = keyEvidence.filter((entry) => entry.kind === item.kind);
+      if (!origins.length) origins.push({ kind: item.kind, value: key });
+      for (const evidence of origins) {
+        found.push({ ...evidence, secret: evidence.secret ?? evidence.value, path, index: key.indexOf(evidence.value) });
+      }
+    } else if (!referenceProof(value, 'decoded')) found.push({ ...item, value, secret: value, path, index: 0 });
   }
 }
 
