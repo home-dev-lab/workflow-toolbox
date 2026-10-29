@@ -516,6 +516,27 @@ describe('lane operator release boundary', () => {
   })
 })
 
+describe('lane priority without a sandbox broker', () => {
+  const laneLevels = [
+    { declared: null, ambient: undefined, level: 2 },
+    ...['P0', 'P1', 'P2'].flatMap((priority) => [
+      { declared: null, ambient: priority, level: Number(priority.slice(1)) },
+      { declared: priority, ambient: priority === 'P0' ? 'P2' : 'P0', level: Number(priority.slice(1)) },
+    ]),
+  ]
+  it.each(laneLevels.flatMap((entry) => [false, true].map((light) => ({ ...entry, light }))))('a lane without a broker acquires its effective level ($declared, ambient $ambient, light=$light)', async ({ declared, ambient, level, light }) => {
+    const { laneWorkerEnv } = await loadPluginModule('plugin/bin/wt-lane.mjs')
+    const root = temp()
+    const env = laneWorkerEnv(envFor(root, { WT_SUITE_LOCK_PRIORITY: ambient }), declared)
+    const lease = await lock.acquireSuiteLock({ env, light })
+    try {
+      expect(lease.broker).toBeUndefined()
+      expect(lease.holder.level, 'unsandboxed lane acquisition must use the host-resolved priority').toBe(level)
+      expect(lock.readSuiteLock({ root }).holder.level).toBe(level)
+    } finally { lock.releaseSuiteLock(lease) }
+  })
+})
+
 describe('declaration and isolated environments', () => {
   it('ordinary non-lane acquisition still defaults to P1', async () => {
     const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root) })
