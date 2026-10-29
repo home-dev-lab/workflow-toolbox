@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The memory index probe warns within the final 15% of its applied byte ceiling, alongside the existing line-headroom notice, without changing findings or exit codes.
 - Admission runner and supervisor now use one-way module dependencies, preserving detached-process cleanup and existing admission results without a circular import.
 - Admission on Linux installs a child subreaper before executing policy, then kills and reaps detached descendants, including double-forked daemons, before returning. Cleanup survives Node-supervisor death and needs neither pidfds nor unrelated procfs records. Unavailable containment (including macOS and Windows) refuses before policy execution; abnormal containment-owner exit reports an explicit unknown.
 - The admission containment owner now ignores interrupt, terminate, hangup and quit signals so it cannot be stopped before its contained descendants are cleaned up, and its shutdown steps are time-bounded so a stuck child cannot hang admission.
