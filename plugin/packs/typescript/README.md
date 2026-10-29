@@ -70,6 +70,28 @@ The language servers are not vendored. Install a backend separately with:
 npm i -g typescript-language-server typescript
 ```
 
+### CPU budget
+
+On POSIX hosts, the Node backend runs in its own process group. Its launcher samples every direct
+`tsserver.js` / `_tsserver.js` child every five seconds, independently of the server's event loop.
+100% means one CPU core, regardless of the host's core count. More than 100% for 120 consecutive
+sampled seconds stops the backend group with `SIGKILL`, covering the transport and its servers
+together. Allow up to two sampling intervals around that window, plus OS scheduling latency.
+Initial indexing and long requests share this budget; there is no additional startup grace.
+
+Linux reads cumulative user/system CPU ticks from `/proc`, using `/usr/bin/getconf CLK_TCK` for
+their unit. macOS reads cumulative CPU time and process birth/group identity with `/bin/ps` in
+the C locale. Windows and other platforms report **unavailable**; the CPU budget is unenforced
+there. Unreadable or malformed OS measurements also report unavailable, never zero CPU, and
+break the evidence of consecutive over-budget time.
+
+Before stopping, the launcher rechecks the backend's birth identity, the offending server and
+the dedicated process group. Diagnostics go to stderr; stdout remains LSP protocol bytes.
+Reopen the client's LSP connection after a budget stop. The launcher does not replay an existing
+connection into a replacement server.
+
+### Navigation
+
 Navigation is not requested by this pack. To opt in, a human may paste: "Use the available LSP
 navigation tools to look up this symbol and its references."
 
