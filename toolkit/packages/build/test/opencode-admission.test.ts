@@ -560,7 +560,13 @@ it('does not launch siblings after an immediate first-task integrity refusal', (
     import { writeFileSync } from 'node:fs';
     import { syncBuiltinESMExports } from 'node:module';
     const spawn = cp.spawn;
-    cp.spawn = (...args) => { writeFileSync(${JSON.stringify(f.marker)}, 'spawned'); return spawn(...args); };
+    cp.spawn = (...args) => {
+      // Count sealed model-launch attempts, not admission's local cleanup helper.
+      if (args[0] === process.execPath && args[1]?.[0] === ${JSON.stringify(join(f.root, 'fake-opencode.mjs'))}) {
+        writeFileSync(${JSON.stringify(f.marker)}, 'spawned');
+      }
+      return spawn(...args);
+    };
     syncBuiltinESMExports();`)
   const result = launch(f, f.module)
   expect(result.status, result.stdout + result.stderr).toBe(3)
