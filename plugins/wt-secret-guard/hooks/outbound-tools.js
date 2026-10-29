@@ -2,6 +2,7 @@
 import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
 import { isIssuedToken, knownTokens, replacementFor } from './token-vault.js';
+import { boundaryFindings, isContextual, referenceProof } from './value-boundary.js';
 
 const REFERENCE = /(?:op:\/\/[^\s"']+|secret:(?:env|file|1p):[^\s"']+|\$\{[A-Za-z_][A-Za-z0-9_]*\}|secret:[a-z-]+#[a-f0-9]{6})/gi;
 const SURFACE = {
@@ -34,18 +35,29 @@ export function base64Utf8(value) {
   return btoa(binary);
 }
 
-function pushStringFindings(found, value, key, path, options) {
+function pushDetectedFindings(found, value, key, path, options) {
   const candidate = withoutReferences(value);
-  const direct = detections(candidate).map((item) => {
+  const baseDirect = detections(candidate);
+  const direct = baseDirect.filter((item) => !isContextual(item.kind)).map((item) => {
     const start = candidate.indexOf(item.value);
     return start < 0 ? { ...item, path } : { ...item, value: value.slice(start, start + item.value.length), path, index: start };
   });
+  direct.push(...boundaryFindings(value).map((item) => ({ ...item, path })));
   found.push(...direct, ...optionalDetections(candidate, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }));
-  if (key) {
-    for (const item of detections(`${key}: ${candidate}`, '', undefined, { prose: false })) {
-      if (!direct.some(({ value: directValue }) => directValue === item.value)) found.push({ ...item, value, secret: value, path, index: 0 });
-    }
+  if (key) pushKeyFindings(found, { value, key, path, candidate, baseDirect });
+}
+
+function pushKeyFindings(found, { value, key, path, candidate, baseDirect }) {
+  for (const item of detections(`${key}: ${candidate}`, '', undefined, { prose: false })) {
+    if (baseDirect.some(({ value: directValue }) => directValue === item.value)) continue;
+    // A match in the object key is evidence independent of the decoded child.
+    const inKey = detections(`${key}: `, '', undefined, { prose: false }).some((entry) => entry.kind === item.kind && entry.value === item.value);
+    if (inKey || !referenceProof(value, 'decoded')) found.push({ ...item, value, secret: value, path, index: 0 });
   }
+}
+
+function pushStringFindings(found, value, key, path, options) {
+  pushDetectedFindings(found, value, key, path, options);
   // A known value is ignored only where an occurrence lies ENTIRELY inside a token's spelling: a token can
   // contain a vault value (`secret`, a kind name), and flagging it refused the token itself (Astra M7 at
   // f98cf712). An occurrence that straddles a token-shaped run is still raw text and stays flagged
