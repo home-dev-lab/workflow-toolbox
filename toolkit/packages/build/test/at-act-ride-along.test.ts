@@ -19,6 +19,11 @@ const { parseRuntimeRule } = await import(engine('hooks/runtime-rule.js')) as {
 const { triggerMatches } = await import(engine('hooks/trigger-match.js')) as {
   triggerMatches: (trigger: Trigger, item: Item, onError: (error: unknown) => never) => boolean,
 }
+type Handler = (host: object, event: Input, next: () => Promise<Input>) => Promise<Input>
+const { register, resetForSelftest } = await import(engine('hooks/hooks.js')) as {
+  register: (on: (event: string, handler: Handler) => void, options: { enabled: boolean }) => void,
+  resetForSelftest: () => void,
+}
 const RULES_DIR = fileURLToPath(new URL('../../../../plugin/rules/', import.meta.url))
 const VERIFY = 'wt-verify-by-ground-truth-at-act'
 const WORKTREE = 'wt-concurrent-sessions-worktree-at-act'
@@ -30,6 +35,39 @@ const matching = (rule: Rule, tool: string, input: Input = {}) => rule.triggers.
   (error) => { throw new Error(JSON.stringify(error)) },
 ))
 const refuses = (rule: Rule, tool: string, input: Input = {}) => matching(rule, tool, input).some((trigger) => trigger.beforeFirstAct)
+
+async function deliveryFixture() {
+  const text = frontmatter(await readSpec(join(RULES_DIR, `${VERIFY}.spec.json`))) + 'Read the result.\n'
+  resetForSelftest()
+  const handlers = new Map<string, Handler>()
+  const store = new Map<string, unknown>()
+  register((event, handler) => { handlers.set(event, handler) }, { enabled: true })
+  const host = {
+    env: { get: async (key: string) => key === 'CLAUDE_CONFIG_DIR' ? '/synthetic-config' : undefined },
+    fs: {
+      list: async (dir: string) => dir === '/synthetic-config/rules-on-demand' ? [{ kind: 'file', name: `${VERIFY}.md` }] : [],
+      read: async () => text,
+      stat: async (path: string) => ({ kind: 'file', size: text.length, realPath: path }),
+    },
+    ui: { log: async () => {} },
+    session: { id: async () => 'synthetic-session', messages: async () => [] },
+    store: { get: async (key: string) => store.get(key), set: async (key: string, value: unknown) => { store.set(key, value) } },
+  }
+  return (event: Input, next: () => Promise<Input>) => handlers.get('tool.call')!(host, { cwd: '/synthetic-project', ...event }, next)
+}
+
+it.each(['Bash', 'Agent'])('delivers verify guidance beside the actual %s result without refusing', async (tool) => {
+  const call = await deliveryFixture()
+  let executed = false
+  const result = await call({ tool, command: 'pnpm test', input: { command: 'pnpm test' } }, async () => {
+    executed = true
+    return { output: 'original result', context: ['prior context'] }
+  })
+  expect(executed, `${tool} must execute before guidance is delivered`).toBe(true)
+  expect(result.deny).toBeUndefined()
+  expect(result.output).toBe('original result')
+  expect(result.context).toEqual(['prior context', expect.stringContaining('Read the result.')])
+})
 
 const GATES = [
   'pnpm test', 'tsc --noEmit', 'eslint .', 'curl http://localhost:5174/x', 'node --test x.test.mjs',
@@ -105,8 +143,15 @@ function classify(rules: Rule[], tool: string, input: Input = {}) {
 it('classifies refusing and riding rules across the shipped family', async () => {
   const names = readdirSync(RULES_DIR).filter((name) => name.endsWith('-at-act.spec.json')).sort()
   const rules = await Promise.all(names.map((name) => load(name.replace('.spec.json', ''))))
-  expect(classify(rules, 'Bash', { command: 'pnpm test' })).toEqual({ refuses: [], rides: [VERIFY] })
-  expect(classify(rules, 'Bash', { command: 'git worktree list' })).toEqual({ refuses: [], rides: [] })
+  for (const command of GATES.filter((command) => command !== 'git merge topic')) {
+    expect(classify(rules, 'Bash', { command }), command).toEqual({ refuses: [], rides: [VERIFY] })
+  }
+  for (const command of ['git worktree list', 'git worktree prune']) {
+    expect(classify(rules, 'Bash', { command }), command).toEqual({ refuses: [], rides: [] })
+  }
+  for (const command of GOVERNED.slice(0, 5)) {
+    expect(classify(rules, 'Bash', { command }), command).toEqual({ refuses: [WORKTREE], rides: [] })
+  }
   expect(classify(rules, 'SendMessage', { to: 'a0123456789abcdef' })).toEqual({ refuses: ['wt-proportionate-verification-at-act'], rides: [] })
   const spawn = classify(rules, 'Agent')
   expect(spawn.rides).toEqual([VERIFY])
