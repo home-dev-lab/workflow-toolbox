@@ -35,7 +35,8 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
-import { closeMarkdownFence, markdownFenceTag, markdownScripts, MERMAID_FILE, MERMAID_PATH } from './lib/artifact-mermaid.mjs'
+import { closeMarkdownFence, markdownFenceTag, markdownScripts, MERMAID_FILE } from './lib/artifact-mermaid.mjs'
+import { artifactMermaidRouteIndex, artifactMermaidRouteMatches, readArtifactAsset } from './lib/host/artifact-assets.mjs'
 import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus, normalizeTailnetHost } from './lib/artifact-tailnet.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
@@ -460,16 +461,15 @@ class ArtifactService {
       })}\n`, 'application/json; charset=utf-8')
       return
     }
-    const segments = decodeRequestPath(request.url ?? '/')
-    if (segments === undefined) { send(response, method, 400, 'Bad Request\n'); return }
-    if (segments === null) { send(response, method, 403, 'Forbidden\n'); return }
+    const segments = this.requestSegments(request, response, method)
+    if (segments == null) return
     // The reserved segment is the server's at ANY depth: a Markdown page reached by a non-canonical path (trailing or
     // repeated slash) resolves its relative script URL one level off, and that URL must still land on the bundled
     // build, never on a root file of the same name.
-    const reserved = segments.indexOf(MERMAID_PATH.split('/')[1])
+    const reserved = artifactMermaidRouteIndex(segments)
     if (reserved !== -1) {
-      if (segments.length === reserved + 2 && segments[reserved + 1] === path.posix.basename(MERMAID_PATH)) {
-        send(response, method, 200, await readFile(MERMAID_FILE), 'text/javascript; charset=utf-8', { 'Content-Security-Policy': RAW_CSP })
+      if (artifactMermaidRouteMatches(segments, reserved)) {
+        send(response, method, 200, await readArtifactAsset(MERMAID_FILE), 'text/javascript; charset=utf-8', { 'Content-Security-Policy': RAW_CSP })
       } else send(response, method, 404, 'Not Found\n')
       return
     }
@@ -484,6 +484,13 @@ class ArtifactService {
     const target = this.requestTarget(rootRecord, segments.slice(1), response, method)
     if (target === null) return
     return this.serveTarget({ rootRecord, target, segments, response, method, scriptHost: normalizeTailnetHost(request.headers.host) })
+  }
+
+  requestSegments(request, response, method) {
+    const segments = decodeRequestPath(request.url ?? '/')
+    if (segments === undefined) { send(response, method, 400, 'Bad Request\n'); return undefined }
+    if (segments === null) { send(response, method, 403, 'Forbidden\n'); return null }
+    return segments
   }
 
   requestUrl(request, response, method) {

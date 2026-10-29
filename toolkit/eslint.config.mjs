@@ -14,6 +14,7 @@ const gitIgnores = eslintGitIgnores(repoRoot)
 const configRequire = createRequire(import.meta.url)
 const javascriptParser = createRequire(configRequire.resolve('eslint'))('espree')
 const VENDORED_YAML = 'plugin/bin/lib/vendor/yaml.mjs'
+const VENDORED_MERMAID = 'plugin/skills/artifact-server/assets/mermaid/**'
 // Non-source inventory policy lives beside the reason-bearing source exclusions.
 export const LINT_SCOPE_DATA = [
   { extensions: ['md', 'txt'], reason: 'Documentation and textual test inputs; .mjs.txt and .js.txt fixtures are inert input data, never executable JavaScript.' },
@@ -27,6 +28,7 @@ export const LINT_SCOPE_EXCLUSIONS = [
   { glob: 'toolkit/packages/smoke/wt-{smoke,calib}.js', reason: 'Generated from the smoke and calibration workflow TypeScript sources, which are linted.' },
   { glob: 'toolkit/packages/build/test/golden/wt-fixture-hello.js', reason: 'Generated golden output; golden.test.ts checks its rebuild from the linted hello workflow fixture.' },
   { glob: VENDORED_YAML, reason: 'Vendored byte-identity-checked upstream artifact; its generator is linted.' },
+  { glob: VENDORED_MERMAID, reason: 'Vendored upstream Mermaid browser bundle and its license/version metadata, not authored source.' },
   { glob: 'plugin/packs/*/probe/**', reason: 'Language-server navigation and diagnostic fixtures, not executed scripts; this toolchain has no parser for most of their languages.' },
   { glob: '**/*.sh', reason: 'Shell scripts: no shell linter is wired into this toolchain yet.' },
   { glob: '**/*.cmd', reason: 'Windows command scripts: no shell linter is wired into this toolchain yet.' },
@@ -125,6 +127,9 @@ export default tseslint.config(
       // Vendored, byte-identity-checked upstream artifact; lint its generator instead.
       VENDORED_YAML,
       `../${VENDORED_YAML}`,
+      // Third-party minified browser code and its adjacent metadata.
+      VENDORED_MERMAID,
+      `../${VENDORED_MERMAID}`,
       // Type stubs Claude Code generates (git-ignored) when it loads the plugin from a checkout.
       'plugin/.claude-plugin/types/**',
       '../plugin/.claude-plugin/types/**',
