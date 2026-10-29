@@ -157,7 +157,9 @@ export function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
   // Generated third-party YAML grammar literals are not host access (same exemption
   // as the generated observatory launcher); their source is byte-identity checked.
-  const generated = new Set([join(root, 'bin', 'wt-observe.mjs'), join(root, 'bin', 'lib', 'vendor', 'yaml.mjs')])
+  // The vendored Mermaid browser bundle likewise contains upstream grammar/path literals.
+  const generated = new Set([join(root, 'bin', 'wt-observe.mjs'), join(root, 'bin', 'lib', 'vendor', 'yaml.mjs'),
+    join(root, 'skills', 'artifact-server', 'assets', 'mermaid', 'mermaid.min.js')])
   const seenDirectories = new Set([root])
   const seenFiles = new Set()
   const excluded = (path, directory) => {
