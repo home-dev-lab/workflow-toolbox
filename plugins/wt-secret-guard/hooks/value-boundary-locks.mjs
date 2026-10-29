@@ -3,7 +3,7 @@ import { classifyOutbound } from './outbound-tools.js';
 import { classifyOutbound as baseClassify } from './fixtures/base-outbound-tools.frozen.mjs';
 import { rows, objectRows } from './fixtures/value-boundary-rows.mjs';
 import { contextualMatches } from './detector.js';
-import { blankReferences, discoverCandidates, referenceProof, valueExtent } from './value-boundary.js';
+import { blankReferences, discoverCandidates, referenceProof, valueExtent, WIDE_REFERENCE } from './value-boundary.js';
 
 const findings = async (content, classify = classifyOutbound) => (await classify({}, { tool: 'Write', content })).findings;
 const groupOf = (id) => id.match(/^(?:AR|AF|CTL|SEED|[A-Z]|7)/)[0];
@@ -12,7 +12,7 @@ export function* variants(source = rows) {
   for (const [id, , content] of source.filter((row) => row[1] !== 'X')) {
     yield [id, content];
     for (const ending of ['\n', '\r\n', '\r']) for (const header of ['', '[s]\n']) {
-      for (const indent of ['  ', '\t', '\u00a0', '\f', '\v']) for (const gap of ['\n', '\n# gap\n']) {
+      for (const indent of ['  ', '\t', '\u00a0', '\f', '\v', '\u0085', '\u001c', '\u001d', '\u001e', '\u001f', '\u2028', '\u2029']) for (const gap of ['\n', '\n# gap\n']) {
         for (const quoted of [false, true]) for (const tail of ['', ', Q7m9Ab12']) {
           const reference = quoted ? '"${VARIANT}"' : '${VARIANT}';
           const next = `${header}${content}${gap}${indent}${reference}${tail}`.replace(/\r?\n/g, ending);
@@ -96,48 +96,87 @@ function* differentialCases() {
 function occurrenceProofs(key, text) {
   const candidates = discoverCandidates(text);
   const direct = candidates.filter((item) => item.base).map((item) => ({
-    kind: item.kind, value: item.finding.value, proof: valueExtent(text, item, candidates),
+    kind: item.kind, value: item.finding.value, keyStart: item.keyStart, proof: valueExtent(text, item, candidates),
   }));
   const prefix = `${key}: `;
   for (const item of contextualMatches(prefix + blankReferences(text))) {
+    // Frozen key-path deduplication compares the blanked value with raw-mapped values.
     if (direct.some((entry) => entry.value === item.value)) continue;
-    const shifted = Object.fromEntries(['keyStart', 'valueStart', 'captureStart', 'captureEnd'].map((name) => [name, item[name] - prefix.length]));
-    const proof = item.keyStart < prefix.length
-      ? { text: item.valueStart === prefix.length && referenceProof(text, 'decoded') ? text : '', mode: 'decoded' }
-      : valueExtent(text, { ...item, ...shifted, base: true }, candidates);
-    direct.push({ kind: item.kind, value: text, proof });
+    const occurrence = direct.find((entry) => entry.kind === item.kind && entry.keyStart === item.keyStart - prefix.length);
+    if (occurrence) direct.push({ kind: item.kind, value: text, duplicateOf: occurrence, proof: occurrence.proof });
+    else if (item.keyStart < prefix.length && item.valueStart === prefix.length) {
+      direct.push({ kind: item.kind, value: text, proof: { start: 0, end: text.length, text, mode: 'decoded' } });
+    }
   }
   return direct;
 }
 
-function justifyFlip(event, before, id) {
+function referenceControl(event, evidence) {
+  const [key, text] = Object.entries(event).find(([name]) => name !== 'tool');
+  const ranges = [...text.matchAll(WIDE_REFERENCE)].filter((match) => referenceProof(match[0])
+    && evidence.some(({ proof }) => match.index >= proof.start && match.index + match[0].length <= proof.end));
+  let control = text;
+  for (const match of ranges.reverse()) control = control.slice(0, match.index) + 'x' + control.slice(match.index + match[0].length);
+  assert.ok(ranges.length, 'flip control replaced no proven reference');
+  return { ...event, [key]: control };
+}
+
+async function justifyFlip(event, before, id) {
   const [key, text] = Object.entries(event).find(([name]) => name !== 'tool');
   const evidence = occurrenceProofs(key, text);
   for (const item of before) {
     const occurrences = evidence.filter((entry) => entry.kind === item.kind && entry.value === item.value);
     assert.ok(occurrences.length, `independent base finding cancelled: ${id}`);
-    for (const entry of occurrences) assert.ok(referenceProof(entry.proof.text, entry.proof.mode), `unproven base occurrence cancelled: ${id}`);
+    for (const entry of occurrences) {
+      assert.ok(referenceProof(entry.proof.text, entry.proof.mode), `unproven base occurrence cancelled: ${id}`);
+      if (entry.duplicateOf) assert.ok(before.some((direct) => direct.kind === entry.duplicateOf.kind && direct.value === entry.duplicateOf.value), `whole-field finding lacks direct occurrence: ${id}`);
+    }
   }
+  assert.equal((await baseClassify({}, referenceControl(event, evidence))).findings.length, 0, `reference-replaced control still refused: ${id}`);
   return evidence.length;
+}
+
+async function recordFlip(counts, reasons, event, before, id, planted) {
+  if (id.startsWith('D13 ')) counts.d13 += 1;
+  try { counts.proofs += await justifyFlip(event, before, id); }
+  catch (error) {
+    counts.unjustified += 1;
+    if (planted) counts.credentialUnjustified += 1;
+    else counts.policyUnjustified += 1;
+    reasons.set(id, error.message.split('\n')[0]);
+    return;
+  }
+  if (planted) counts.justified += 1;
+  else counts.policy += 1;
+}
+
+async function measureDifferential() {
+  const counts = { variants: 0, credentials: 0, justified: 0, unjustified: 0, credentialUnjustified: 0, policy: 0, policyUnjustified: 0, proofs: 0, d13: 0 };
+  const reasons = new Map();
+  for (const [id, event] of differentialCases()) {
+    const planted = JSON.stringify(event).includes('Q7m9Ab12') || JSON.stringify(event).includes('ghp_' + 'A'.repeat(36));
+    const before = (await baseClassify({}, event)).findings;
+    counts.variants += 1;
+    if (planted) counts.credentials += 1;
+    if (!before.length || (await classifyOutbound({}, event)).findings.length) continue;
+    await recordFlip(counts, reasons, event, before, id, planted);
+  }
+  for (const [id, reason] of reasons) console.log(`VB UNJUSTIFIED ${id}: ${reason}`);
+  return counts;
 }
 
 async function differentialLock(f) {
   await f.test('VB frozen base credential differential and occurrence proofs', () => f.freshVault(async () => {
-    const required = new Set([...rows, ...objectRows].filter((row) => row[1] === 'R').map((row) => row[0]));
-    const flips = [];
-    let count = 0; let credentials = 0; let exempted = 0; let proofs = 0;
-    for (const [id, event] of differentialCases()) {
-      const planted = required.has(id) || JSON.stringify(event).includes('Q7m9Ab12');
-      const before = (await baseClassify({}, event)).findings;
-      if (planted) credentials += 1;
-      if (before.length && !(await classifyOutbound({}, event)).findings.length) {
-        if (planted) flips.push(id);
-        else { proofs += justifyFlip(event, before, id); exempted += 1; }
-      }
-      count += 1;
-    }
-    console.log(`VB DIFFERENTIAL=${count} CREDENTIAL_BEARING=${credentials} CREDENTIAL_FLIPS=${flips.length} JUSTIFIED_FLIPS=${exempted} OCCURRENCE_PROOFS=${proofs}`);
-    assert.equal(flips.length, 0, `credential-bearing base refusals became written: ${[...new Set(flips)].join('|')}`);
+    const c = await measureDifferential();
+    console.log(`VB DIFFERENTIAL=${c.variants} CREDENTIAL_BEARING=${c.credentials} CONTROL_JUSTIFIED_CREDENTIAL_FLIPS=${c.justified} UNJUSTIFIED_CREDENTIAL_FLIPS=${c.credentialUnjustified} NO_CREDENTIAL_JUSTIFIED_FLIPS=${c.policy} NO_CREDENTIAL_UNJUSTIFIED_FLIPS=${c.policyUnjustified} TOTAL_FLIPS=${c.justified + c.policy + c.unjustified} OCCURRENCE_PROOFS=${c.proofs} D13_FLIPS=${c.d13}`);
+    assert.equal(c.unjustified, 0, 'base refusal flipped without occurrence proof and accepted control');
+    assert.equal(c.d13, 0, 'INI two-statement policy flipped across line endings');
+  }));
+  await f.test('VB flip control rejects independently refused bytes', () => f.freshVault(async () => {
+    const event = { tool: 'Write', content: 'password="${HOME}"\ntoken=Q7m9Ab12' };
+    const before = (await baseClassify({}, event)).findings.filter((item) => item.value === '${HOME}');
+    assert.ok(before.length, 'missing reference occurrence control');
+    await assert.rejects(justifyFlip(event, before, 'control'), /reference-replaced control still refused/);
   }));
 }
 
@@ -193,7 +232,6 @@ async function continuationLocks(f) {
     ['form feed', '[s]\npassword="${HOME}"\n\fQ7m9Ab12\n'],
     ['vertical tab', '[s]\npassword="${HOME}"\n\vQ7m9Ab12\n'],
     ['short reference', '[s]\npassword="${A}"\n  Q7m9Ab12'],
-    ['outside extent tail', 'db:\n  password: "${DB_PASSWORD}"\n  user: bob\n\n  ${VARIANT}, Q7m9Ab12'],
   ]) await f.test(`VB credential continuation ${name}`, () => f.freshVault(async () => {
     assert.ok((await findings(text, baseClassify)).length, 'base must refuse control');
     assert.ok((await findings(text)).length, `${name} credential escaped refusal`);
@@ -201,6 +239,44 @@ async function continuationLocks(f) {
   await f.test('VB short JSON references project only the key prefix', () => f.freshVault(async () => {
     assert.equal((await findings('{"password":"${A}","token":"${B}"}')).length, 0, 'short reference fallback included key syntax');
   }));
+}
+
+async function roundThreeLocks(f) {
+  for (const code of [0x85, 0x1c, 0x1d, 0x1e, 0x1f, 0x2028, 0x2029]) {
+    await f.test(`VB parser union indentation U+${code.toString(16).toUpperCase()}`, () => f.freshVault(async () => {
+      const text = `[s]\npassword="\${HOME}"\n${String.fromCodePoint(code)}Q7m9Ab12\n`;
+      assert.ok((await findings(text)).length, `parser whitespace U+${code.toString(16)} hid credential continuation`);
+    }));
+  }
+  for (const [name, ending] of [['LF', '\n'], ['CRLF', '\r\n'], ['CR', '\r']]) {
+    await f.test(`VB section header ending ${name}`, () => f.freshVault(async () => {
+      assert.ok((await findings(`[s]${ending}password="\${A}"; token="\${B}"${ending}`)).length, `${name} section header lost INI same-line value`);
+    }));
+  }
+  await independentEvidenceLocks(f);
+}
+
+async function independentEvidenceLocks(f) {
+  const texts = [
+    ['N2 tail', 'db:\n  password: "${DB_PASSWORD}"\n  user: bob\n\n  ${VARIANT}, Q7m9Ab12'],
+    ['INI sibling', '[s]\npassword="${HOME}"\nuser=Q7m9Ab12'],
+  ];
+  for (const [name, text] of texts) {
+    await f.test(`VB unheld ${name} has accepted mechanical control`, () => f.freshVault(async () => {
+      const before = await findings(text, baseClassify);
+      assert.ok(before.length, 'frozen base must refuse incidental duplicate');
+      assert.equal((await findings(text)).length, 0, 'unheld bare tail was treated as independent evidence');
+      await justifyFlip({ tool: 'Write', content: text }, before, name);
+    }));
+    await f.test(`VB held ${name} refuses`, () => f.freshVault(async () => {
+      f.tokenize('file', 'Q7m9Ab12');
+      assert.ok((await findings(text)).some((item) => item.secret === 'Q7m9Ab12'), 'held independent tail evidence lost');
+    }));
+    await f.test(`VB detector ${name} refuses`, () => f.freshVault(async () => {
+      const credential = 'ghp_' + 'A'.repeat(36);
+      assert.ok((await findings(text.replace('Q7m9Ab12', credential))).some((item) => item.value === credential), 'recognisable independent tail evidence lost');
+    }));
+  }
 }
 
 async function sequence(f, content, later, refused = true) {
@@ -236,5 +312,5 @@ async function provenanceLocks(f) {
 }
 
 export async function runValueBoundaryLocks(fixture) {
-  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock, continuationLocks, provenanceLocks]) await run(fixture);
+  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock, continuationLocks, provenanceLocks, roundThreeLocks]) await run(fixture);
 }

@@ -6,6 +6,8 @@ const REFERENCE_SOURCE = '(?:\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|secret:(?:env):[A-Z
 const REFERENCE_AT = new RegExp(`^${REFERENCE_SOURCE}`, 'i');
 const REFERENCE_ALL = new RegExp(REFERENCE_SOURCE, 'gi');
 const CONTEXTUAL = new Set(['assignment', 'op-output', 'key-value', 'environment-dump']);
+// Union of JS \s (including U+2028/U+2029) and Python str.isspace/splitlines.
+const LEADING_WHITESPACE = /^[\s\u0085\u001c-\u001f]*/u;
 export const isContextual = (kind) => CONTEXTUAL.has(kind);
 export const blankReferences = (value) => value.replace(WIDE_REFERENCE, (reference) => ' '.repeat(reference.length));
 
@@ -49,10 +51,10 @@ function scanCharacter(text, at, state) {
 }
 
 function lineContext(text, item) {
-  const start = text.lastIndexOf('\n', item.keyStart - 1) + 1;
+  const start = Math.max(text.lastIndexOf('\n', item.keyStart - 1), text.lastIndexOf('\r', item.keyStart - 1)) + 1;
   const prefix = text.slice(0, start);
-  const header = /(?:^|\n)[ \t]*\[[^\]\n]+\][ \t]*\r?(?:\n|$)/.test(prefix);
-  const indent = text.slice(start).split('\n', 1)[0].match(/^\s*/u)[0].length;
+  const header = /(?:^|[\r\n])[ \t]*\[[^\]\r\n]+\][ \t]*(?:\r\n|[\r\n]|$)/.test(prefix);
+  const indent = text.slice(start).split(/[\r\n]/, 1)[0].match(LEADING_WHITESPACE)[0].length;
   const colon = text.slice(item.keyStart, item.valueStart).includes(':');
   return { header, indent, deeper: header || colon || Boolean(quoteAt(text, item.valueStart)) };
 }
@@ -64,8 +66,8 @@ function nextDeeper(text, at, indent) {
     const newline = text.indexOf('\n', cursor);
     const end = newline < 0 ? text.length : newline;
     const line = text.slice(cursor, end);
-    if (/^\s*(?:[#;][^\n]*)?$/.test(line)) { skipped.push([cursor, end]); cursor = end + 1; continue; }
-    const width = line.match(/^\s*/u)[0].length;
+    const width = line.match(LEADING_WHITESPACE)[0].length;
+    if (/^(?:[#;][^\n]*)?$/.test(line.slice(width))) { skipped.push([cursor, end]); cursor = end + 1; continue; }
     return width > indent ? { cursor, skipped } : null;
   }
   return null;
