@@ -1,6 +1,7 @@
 // Functional core: recursively mask values without performing host I/O.
 import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
+import { base64Utf8 } from './outbound-tools.js';
 import { confirmationKeyCollision, redactConfirmationCodes } from './owner-release.js';
 import { GENERIC_KINDS, isIssuedToken, knownTokens, knownValueOccurrences, replacementFor, tokenize } from './token-vault.js';
 
@@ -37,6 +38,7 @@ function replaceKnown(text, command, includeOptional, substituted, vaultOccurren
     ...findOptional(text, includeOptional, options),
   ];
   for (const detection of found) for (const [from, to] of occurrences(text, detection.value)) spans.push({ from, to, detection });
+  encodedSpans(text, command, includeOptional, eligible, detectionOptions, spans);
   clipIssuedTokens(text, spans);
   if (!spans.length) return { value: text, changed: false };
   spans.sort((left, right) => left.from - right.from || right.to - left.to);
@@ -46,6 +48,29 @@ function replaceKnown(text, command, includeOptional, substituted, vaultOccurren
 
 function findOptional(text, includeOptional, options) {
   return includeOptional ? optionalDetections(text, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }) : [];
+}
+
+function encodedSpans(text, command, includeOptional, eligible, detectionOptions, spans) {
+  // Match held encodings even inside a larger key, without treating surrounding bytes as base64.
+  for (const [token, entry] of knownTokens()) {
+    if (entry.ephemeral || entry.value.length > text.length || !eligible({ ...entry, token })) continue;
+    for (const [from, to] of occurrences(text, base64Utf8(entry.value))) spans.push({ from, to, token });
+  }
+  for (const match of text.matchAll(/[A-Za-z0-9+/]{4,}={0,2}/g)) {
+    const decoded = decodedBase64(match[0]);
+    if (decoded === null) continue;
+    const found = [...detections(decoded, command, undefined, detectionOptions), ...findOptional(decoded, includeOptional, config())];
+    for (const detection of found) spans.push({ from: match.index, to: match.index + match[0].length, detection: { ...detection, secret: detection.secret ?? detection.value } });
+  }
+}
+
+function decodedBase64(text) {
+  try {
+    const bytes = Uint8Array.from(atob(text), (character) => character.charCodeAt(0));
+    const decoded = new TextDecoder().decode(bytes);
+    // Reject malformed UTF-8 and noncanonical encodings rather than guessing at their text.
+    return base64Utf8(decoded).replace(/=+$/, '') === text.replace(/=+$/, '') ? decoded : null;
+  } catch { return null; }
 }
 
 function activateOptional(activeCategories, includeOptional, options) {
@@ -135,21 +160,37 @@ export function scrub(value, command, includeOptional = true, substituted = new 
     const result = value.map((item) => { const next = scrub(item, command, includeOptional, substituted, detectionOptions); changed ||= next.changed; return next.value; });
     return { value: result, changed };
   }
-  if (value && typeof value === 'object') {
-    let changed = false;
-    const result = {};
-    // defineProperty, not assignment: `result['__proto__'] = …` sets the prototype and drops the field.
-    for (const [key, item] of Object.entries(value)) { const next = scrubField(result, key, item, command, includeOptional, substituted, detectionOptions); changed ||= next.changed; }
-    return { value: result, changed };
-  }
+  if (value && typeof value === 'object') return scrubObject(value, command, includeOptional, substituted, detectionOptions);
   return { value, changed: false };
+}
+
+function scrubObject(value, command, includeOptional, substituted, detectionOptions) {
+  let changed = false;
+  const entries = Object.entries(value);
+  const result = { value: {}, keys: new Set(entries.map(([key]) => key)) };
+  for (const [key, item] of entries) { const next = scrubField(result, key, item, command, includeOptional, substituted, detectionOptions); changed ||= next.changed; }
+  return { value: result.value, changed };
 }
 
 function scrubField(result, key, item, command, includeOptional, substituted, detectionOptions) {
   const next = scrub(item, command, includeOptional, substituted, detectionOptions);
-  const safeKey = redactConfirmationCodes(key);
-  Object.defineProperty(result, safeKey, { value: next.value, enumerable: true, writable: true, configurable: true });
+  const cleanKey = (text) => scrubString(text, command, includeOptional, substituted, detectionOptions).value;
+  const safeKey = availableKey(result, key, cleanKey(key), cleanKey);
+  // defineProperty, not assignment: `result['__proto__'] = …` sets the prototype and drops the field.
+  Object.defineProperty(result.value, safeKey, { value: next.value, enumerable: true, writable: true, configurable: true });
   return { changed: next.changed || safeKey !== key };
+}
+
+function availableKey(result, original, scrubbed, cleanKey) {
+  let candidate = scrubbed;
+  let suffix = 2;
+  // In entry order, suffix later collisions with #2, #3, ...; reserve original keys so clean
+  // fields keep their spelling. Scrub each candidate too: joining a suffix can recreate a held value.
+  while (Object.hasOwn(result.value, candidate) || (candidate !== original && result.keys.has(candidate))) {
+    candidate = cleanKey(`${scrubbed}#${suffix}`);
+    suffix += 1;
+  }
+  return candidate;
 }
 
 // One pass scrubs the fields of an object in order, so a value a LATER field revealed (a concealed JSON

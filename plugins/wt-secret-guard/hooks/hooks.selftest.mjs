@@ -5002,4 +5002,98 @@ await test('linear trailing backslash differential', async () => {
   for (const value of ['\\'.repeat(10000), '\\'.repeat(10000) + 'x', 'x' + '\\'.repeat(10000), 'x\\\n', 'x\\\r\n']) compare(value);
   console.log(`DIFFERENTIAL backslash cases=${cases}`);
 });
+const structuredKeyResult = (output) => mcp($, { tool: 'mcp__fixture__structured', query: 'clean control' }, async () => output);
+const heldKeyFixture = 'fake-held-value-0000';
+const encodedKeyFixture = (value) => Buffer.from(value).toString('base64');
+for (const [shape, build, raw, held] of [
+  ['top level', (key) => ({ [key]: 'top' }), heldKeyFixture, true],
+  ['nested', (key) => ({ outer: { inner: { [key]: 'nested' } } }), heldKeyFixture, true],
+  ['array object', (key) => ({ rows: [{ deep: [{ [key]: 'array' }] }] }), heldKeyFixture, true],
+  ['detector credential', (key) => ({ [key]: 'detected' }), aws, false],
+  ['base64 held', (key) => ({ [encodedKeyFixture(key)]: 'encoded' }), heldKeyFixture, true],
+  ['base64 detector', (key) => ({ [encodedKeyFixture(key)]: 'encoded detector' }), aws, false],
+]) {
+  await test(`structured tool result key ${shape} is scrubbed`, () => freshVault(async () => {
+    if (held) tokenize('fixture', raw);
+    const returned = await structuredKeyResult(build(raw));
+    const serialized = JSON.stringify(returned);
+    assert.equal(serialized.includes(raw), false, `${shape} key leaked raw fixture`);
+    assert.equal(serialized.includes(encodedKeyFixture(raw)), false, `${shape} key leaked base64 fixture`);
+    assert.match(serialized, /secret:[a-z-]+#[a-f0-9]{6}/, 'key did not become a token');
+  }));
+}
+await test('structured tool result key changed flag includes key-only rewrites', () => freshVault(async () => {
+  const { scrub } = await import('./scrub.js');
+  tokenize('fixture', heldKeyFixture);
+  assert.equal(scrub({ [heldKeyFixture]: 7 }, '').changed, true, 'key-only rewrite did not set changed');
+}));
+await test('structured tool result key collisions preserve every value and reserve clean keys', () => freshVault(async () => {
+  const token = tokenize('fixture', heldKeyFixture);
+  const fields = { [heldKeyFixture]: 'raw field', [token]: 'token field', [`${token}#2`]: 'reserved field', [encodedKeyFixture(heldKeyFixture)]: 'encoded field' };
+  const returned = await structuredKeyResult({ result: fields });
+  assert.equal(JSON.stringify(returned).includes(heldKeyFixture), false, 'colliding key leaked raw fixture');
+  assert.deepEqual(Object.values(returned.result), Object.values(fields), 'colliding keys dropped or reordered a field');
+  assert.deepEqual(Object.keys(returned.result), [`${token}#3`, token, `${token}#2`, `${token}#4`]);
+}));
+await test('structured tool result key collision suffix is scrubbed and converges', () => freshVault(async () => {
+  const { scrubSettled } = await import('./scrub.js');
+  const token = tokenize('fixture', heldKeyFixture);
+  const sensitiveSuffix = `${token}#2`;
+  tokenize('fixture', sensitiveSuffix);
+  const returned = await structuredKeyResult({ result: { [token]: 'first', [heldKeyFixture]: 'second' } });
+  assert.equal(JSON.stringify(returned).includes(heldKeyFixture), false, 'suffix collision leaked original fixture');
+  assert.equal(JSON.stringify(returned).includes(sensitiveSuffix), false, 'generated suffix became a held-value leak');
+  assert.deepEqual(Object.values(returned.result), ['first', 'second']);
+  assert.deepEqual(scrubSettled(returned, ''), { value: returned, changed: false }, 'collision output did not converge');
+}));
+await test('structured tool result key __proto__ remains own enumerable data', () => freshVault(async () => {
+  tokenize('fixture', heldKeyFixture);
+  const fields = JSON.parse('{"__proto__":"own field"}');
+  fields[heldKeyFixture] = 'sensitive sibling';
+  const returned = await structuredKeyResult({ result: fields });
+  assert.equal(Object.getPrototypeOf(returned.result), Object.prototype);
+  assert.equal(Object.getOwnPropertyDescriptor(returned.result, '__proto__')?.enumerable, true);
+  assert.equal(returned.result.__proto__, 'own field');
+  assert.equal(JSON.stringify(returned).includes(heldKeyFixture), false, 'proto sibling key leaked raw fixture');
+}));
+await test('structured tool result key clean control preserves order text and unicode', () => freshVault(async () => {
+  const { scrub } = await import('./scrub.js');
+  const fields = { '10': 'ten', '2': 'two', clean: 'control', 'é': 'NFC', 'é': 'NFD', 'row\r\nnext': 'CRLF', 'row\nnext': 'LF' };
+  const returned = await structuredKeyResult(fields);
+  assert.deepEqual(returned, fields);
+  assert.deepEqual(Object.keys(returned), Object.keys(fields));
+  assert.equal(scrub(fields, '').changed, false);
+}));
+await test('structured tool result key settled output is idempotent', () => freshVault(async () => {
+  const { scrubSettled } = await import('./scrub.js');
+  tokenize('fixture', heldKeyFixture);
+  const returned = await structuredKeyResult({ result: { [heldKeyFixture]: { [encodedKeyFixture(heldKeyFixture)]: 'clean' } } });
+  assert.equal(JSON.stringify(returned).includes(heldKeyFixture), false, 'settled key leaked raw fixture');
+  assert.deepEqual(scrubSettled(returned, ''), { value: returned, changed: false }, 'settled keys changed on a second pass');
+}));
+await test('structured tool result key later discovery scrubs earlier encoded keys', () => freshVault(async () => {
+  const raw = 'fake-later-discovery-0000';
+  const returned = await structuredKeyResult({ result: { [encodedKeyFixture(raw)]: 'earlier', later: `password: ${raw}` } });
+  assert.equal(JSON.stringify(returned).includes(encodedKeyFixture(raw)), false, 'earlier encoded key survived later discovery');
+  assert.equal(JSON.stringify(returned).includes(raw), false);
+}));
+await test('structured tool result key base64 protection shares the value pass', () => freshVault(async () => {
+  tokenize('fixture', heldKeyFixture);
+  const returned = await structuredKeyResult({ result: { clean: encodedKeyFixture(heldKeyFixture) } });
+  assert.equal(JSON.stringify(returned).includes(encodedKeyFixture(heldKeyFixture)), false, 'shared value pass leaked base64 fixture');
+}));
+await test('structured tool result key unicode held and encoded forms are scrubbed', () => freshVault(async () => {
+  const raw = 'fake-é-held-0000';
+  tokenize('fixture', raw);
+  const returned = await structuredKeyResult({ result: { [raw]: 1, [encodedKeyFixture(raw)]: 2 } });
+  assert.equal(JSON.stringify(returned).includes(raw), false, 'unicode key leaked raw fixture');
+  assert.equal(JSON.stringify(returned).includes(encodedKeyFixture(raw)), false, 'unicode key leaked base64 fixture');
+  assert.deepEqual(Object.values(returned.result), [1, 2]);
+}));
+await test('structured tool result key embedded base64 held form is scrubbed', () => freshVault(async () => {
+  tokenize('fixture', heldKeyFixture);
+  const encoded = encodedKeyFixture(heldKeyFixture);
+  const returned = await structuredKeyResult({ result: { [`prefix${encoded}suffix`]: 'clean' } });
+  assert.equal(JSON.stringify(returned).includes(encoded), false, 'embedded key leaked base64 fixture');
+}));
 process.exit(failures ? 1 : 0);
