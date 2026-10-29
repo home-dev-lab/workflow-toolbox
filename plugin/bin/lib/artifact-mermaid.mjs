@@ -8,15 +8,22 @@ const INIT_HASH = createHash('sha256').update(MERMAID_INIT).digest('base64')
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 
+// A closing fence uses the opening character, is at least as long, and carries nothing after it.
+function closesFence(match, marker) {
+  return Boolean(match) && match[1][0] === marker[0] && match[1].length >= marker.length && match[2].trim() === ''
+}
+
+// A backtick fence whose info string contains a backtick is not a fence (CommonMark).
+function opensFence(match) {
+  return Boolean(match) && !(match[1][0] === '`' && match[2].includes('`'))
+}
+
 // CommonMark fences: a block closes only on the same character, at least as long, with nothing after it, so a
 // Mermaid example quoted inside a longer or tilde fence stays text. Returns null when the line is not a boundary.
 export function markdownFenceTag(line, fence) {
   const match = FENCE.exec(line)
-  if (fence.open) {
-    if (!match || match[1][0] !== fence.marker[0] || match[1].length < fence.marker.length || match[2].trim() !== '') return null
-    return closeMarkdownFence(fence)
-  }
-  if (!match || (match[1][0] === '`' && match[2].includes('`'))) return null
+  if (fence.open) return closesFence(match, fence.marker) ? closeMarkdownFence(fence) : null
+  if (!opensFence(match)) return null
   fence.open = true
   fence.marker = match[1]
   fence.mermaid = line === '```mermaid'
