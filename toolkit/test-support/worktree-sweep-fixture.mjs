@@ -53,6 +53,9 @@ export function repository(f, name = 'clean') {
   writeFileSync(join(dir, '.gitignore'), '.lane/\nignored\nnode_modules/\n')
   git(dir, f.env, 'add', '.')
   git(dir, f.env, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture')
+  // Model a fetched/pushed commit without contacting a network. Tests for local-only
+  // work explicitly remove or leave this ref behind before creating new commits.
+  git(dir, f.env, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
   return dir
 }
 

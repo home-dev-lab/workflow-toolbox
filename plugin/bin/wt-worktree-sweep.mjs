@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
 import { resolveSweepProject } from './lib/worktree-sweep/git.mjs'
 import { scanProject } from './lib/worktree-sweep/scan.mjs'
 import { reportMode, summaryLine, writeReport } from './lib/worktree-sweep/report.mjs'
@@ -24,7 +25,7 @@ function observationClock(env) {
 }
 
 export function sweepMain(argv = process.argv.slice(2), env = process.env) {
-  if (argv.includes('--help') || argv.includes('-h')) { process.stdout.write(HELP); return }
+  handleHelpFlag(argv, HELP, { valueFlags: ['--mode', '--project', '--out'], booleanFlags: [] })
   const options = argumentsFor(argv)
   reportMode(options.mode, env)
   if (options.verb !== 'run') throw new Error(`worktree sweep: ${options.verb} is not available in this report-only version`)

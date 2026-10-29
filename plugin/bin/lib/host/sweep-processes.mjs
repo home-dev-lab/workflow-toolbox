@@ -48,13 +48,18 @@ function excludedProcess(owner, links, descriptors, uid, result) {
   return false
 }
 
+function mappedReferences(value) {
+  // Kernel maps escapes newlines as \012; a literal backslash spelling is ambiguous.
+  return [...new Set([value, value.replaceAll('\\012', '\n')])].map(reference => canonicalReference(reference))
+}
+
 function appendPaths(procfs, pid, cwd, result) {
   const maps = observe(() => procfs.readMaps(pid, 'utf8'))
   const argv = observe(() => procfs.readCommandLine(pid, 'utf8'))
   if (maps.error || argv.error) { result.status = 'unknown'; return }
   for (const line of maps.value.split('\n')) {
     const match = line.match(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\/.*)$/)
-    if (match) result.references.push(canonicalReference(match[1]))
+    if (match) result.references.push(...mappedReferences(match[1]))
   }
   for (const token of argv.value.split('\0').filter(Boolean)) {
     const value = token.startsWith('--') && token.includes('=') ? token.slice(token.indexOf('=') + 1) : token
@@ -75,7 +80,7 @@ function inspectReferences(links, options) {
     if (checked.unknown) unknown = true
     if (checked.path) references.push(checked.path)
   }
-  return { references, unknown, excluded: excluded && !unknown }
+  return { references, unknown, excluded: excluded && !unknown && references.length === 0 }
 }
 
 function inspectProcess(procfs, pid, options, result) {
@@ -88,7 +93,7 @@ function inspectProcess(procfs, pid, options, result) {
   if ([...links.map(([link]) => link.error), descriptors.error].some(gone)) return
   if (descriptors.error || links.some(([link]) => link.error)) { result.status = 'unknown'; return }
   const checked = inspectReferences([...links, ...descriptorLinks(procfs, pid, descriptors)], options)
-  if (checked.excluded) { result.mismatchExcluded++; return }
+  if (checked.excluded) result.mismatchExcluded++
   if (checked.unknown) result.status = 'unknown'
   result.references.push(...checked.references)
   appendPaths(procfs, pid, links[0][0].value, result)

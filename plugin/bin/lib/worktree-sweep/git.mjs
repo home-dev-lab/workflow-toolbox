@@ -75,6 +75,28 @@ function branchFor(file, options) {
   return readGit(file, ['symbolic-ref', '--short', 'HEAD'], options).stdout?.trim() || '(detached)'
 }
 
+const BASE_REFS = new Set(['refs/heads/develop', 'refs/heads/main', 'refs/heads/master'])
+
+function headPreserved(file, options) {
+  const own = readGit(file, ['symbolic-ref', '-q', 'HEAD'], options)
+  if (own.error || ![0, 1].includes(own.status)) return false
+  const refs = readGit(file, ['for-each-ref', '--contains=HEAD', '--format=%(refname) %(symref)',
+    'refs/remotes/', ...BASE_REFS], options)
+  if (gitFailed(refs)) return false
+  // Neither this worktree's own branch nor a symbolic alias proves an
+  // independent preserving ref. --contains tests full commit ancestry.
+  return refs.stdout.split('\n').some(line => {
+    const [ref, symbolic] = line.trim().split(' ')
+    return !symbolic && ref !== own.stdout.trim() && (ref.startsWith('refs/remotes/') || BASE_REFS.has(ref))
+  })
+}
+
+export function gitIndexLock(file, options) {
+  if (!existsSync(path.join(file, '.git'))) return null
+  const dir = readGit(file, ['rev-parse', '--absolute-git-dir'], options)
+  return gitFailed(dir) || !dir.stdout?.trim() ? null : path.join(dir.stdout.trim(), 'index.lock')
+}
+
 export function gitVerdict(file, options) {
   // Status can execute clean/process filters, or recurse into independently
   // configured submodules. Preflight attributes/index using non-executing git
@@ -89,7 +111,9 @@ export function gitVerdict(file, options) {
   if (dir.status !== 0 || !dir.stdout?.trim()) return { reason: 'git-status-failed', branch }
   const busy = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'BISECT_LOG']
     .some(name => existsSync(path.join(dir.stdout.trim(), name)))
-  return { branch, ...(busy ? { reason: 'operation-in-progress' } : {}) }
+  if (busy) return { branch, reason: 'operation-in-progress' }
+  if (!headPreserved(file, options)) return { branch, reason: 'commits not preserved elsewhere' }
+  return { branch }
 }
 
 export function reachableObjects(repositories, options) {

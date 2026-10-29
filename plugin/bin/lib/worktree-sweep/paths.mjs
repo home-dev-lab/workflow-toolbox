@@ -1,10 +1,72 @@
 // Read-only project inventory. Never follow an entry or interior symlink or mount.
-import { lstatSync, readdirSync, realpathSync } from '../host/worktree-sweep-io.mjs'
+import { existsSync, lstatSync, readdirSync, realpathSync } from '../host/worktree-sweep-io.mjs'
 import path from 'node:path'
 import { pathContains, platformCanonicalPath, sweepMounts } from '../host/sweep-evidence.mjs'
 import { readGit } from './git.mjs'
 
 const readFailure = error => error.code ?? error.message
+
+function registryFlag(field, name) {
+  return field === name || field.startsWith(`${name} `)
+}
+
+function registryPaths(platform) {
+  // A mocked process reader can be Linux while fixture files still live on NTFS.
+  return platform === 'win32' || path === path.win32 ? path.win32 : path.posix
+}
+
+function directRegistryChild(root, file, platform) {
+  const paths = registryPaths(platform)
+  const flavour = paths === path.win32 ? 'win32' : platform
+  const source = platformCanonicalPath(paths.resolve(root), flavour)
+  const target = platformCanonicalPath(paths.resolve(file), flavour)
+  const parent = paths.dirname(target)
+  return pathContains(source, target, flavour) && pathContains(source, parent, flavour) && pathContains(parent, source, flavour)
+}
+
+function parseRegistry(stdout, platform) {
+  const records = []
+  let current = null
+  for (const field of stdout.split('\0')) {
+    if (field.startsWith('worktree ')) {
+      current = { path: field.slice(9), locked: false, prunable: false }
+      if (!registryPaths(platform).isAbsolute(current.path)) throw new Error('invalid worktree path')
+      records.push(current)
+    } else if (current && registryFlag(field, 'locked')) current.locked = true
+    else if (current && registryFlag(field, 'prunable')) current.prunable = true
+    else if (!field) current = null
+  }
+  if (!records.length) throw new Error('empty worktree registry')
+  return records
+}
+
+function mergeRegistration(records, record, platform) {
+  const paths = registryPaths(platform)
+  const name = paths.basename(paths.resolve(record.path))
+  const previous = records.get(name)
+  records.set(name, { ...record, locked: record.locked || previous?.locked, prunable: record.prunable || previous?.prunable })
+}
+
+function worktreeRegistry(project, boundary, options) {
+  const records = new Map()
+  const outside = new Set()
+  let unknown = false
+  const repositories = [project, ...boundary.names.map(name => path.join(boundary.source, name))
+    .filter(file => entryBoundary(file, boundary).allowed)]
+  for (const repo of repositories.filter(file => existsSync(path.join(file, '.git')))) {
+    try {
+      const result = readGit(repo, ['worktree', 'list', '--porcelain', '-z'], options)
+      if (result.status !== 0 || result.error) throw new Error('worktree registry unavailable')
+      for (const record of parseRegistry(result.stdout, options.platform)) {
+        if (!directRegistryChild(boundary.source, record.path, options.platform)) {
+          outside.add(record.path); continue
+        }
+        mergeRegistration(records, record, options.platform)
+      }
+    } catch { unknown = true }
+  }
+  return { records, unknown, outside: [...outside] }
+}
 
 export function sourceBoundary(project, options) {
   const source = path.join(project, '.claude', 'worktrees')
@@ -17,7 +79,9 @@ export function sourceBoundary(project, options) {
     if (mounts.status !== 'known') return { source, reason: mounts.reason }
     const crosses = mounts.mounts.some(mount => mount !== project && pathContains(project, mount) && pathContains(mount, source))
     if (crosses) return { source, reason: 'source-mount-boundary' }
-    return { source, device: stat.dev, mounts: mounts.mounts, names: readdirSync(source).sort() }
+    const boundary = { source, device: stat.dev, mounts: mounts.mounts, names: readdirSync(source).sort() }
+    const registry = worktreeRegistry(project, boundary, options)
+    return { ...boundary, registry, names: [...new Set([...boundary.names, ...registry.records.keys()])].sort() }
   } catch (error) { return { source, reason: `source-unavailable: ${readFailure(error)}` } }
 }
 
@@ -59,7 +123,7 @@ export function inventoryTree(root, supplied) {
         const file = path.join(dir, name)
         const stat = lstatSync(file, { bigint: true })
         if (stat.dev !== device || mounts.includes(file)) throw new Error('interior-mount')
-        if (name !== 'index.lock') recordNode(file, stat, inventory)
+        if (file !== options.indexLock || !stat.isFile()) recordNode(file, stat, inventory)
       }
     }
     return inventory
@@ -67,7 +131,7 @@ export function inventoryTree(root, supplied) {
 }
 
 export function outsideSweep(project, source, options) {
-  const paths = new Set()
+  const paths = new Set(options.registry?.outside)
   const unreadable = []
   for (const suffix of ['.claude/scripts/.worktrees', 'worktrees', '.claude/reports', '.claude/archives']) {
     const dir = path.join(project, suffix)

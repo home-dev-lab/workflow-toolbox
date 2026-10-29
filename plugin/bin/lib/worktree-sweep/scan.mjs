@@ -5,7 +5,7 @@ import { createProcfs } from '../host/procfs.mjs'
 import { scanIdleWorktree } from '../host/lane-worktree-scan.mjs'
 import { pathContains } from '../host/sweep-evidence.mjs'
 import { hostNamespaceEvidence, recordedProcessPresence, scanSweepProcesses } from '../host/sweep-processes.mjs'
-import { archiveLimit, baseProven, gitVerdict, reachableObjects } from './git.mjs'
+import { archiveLimit, baseProven, gitIndexLock, gitVerdict, reachableObjects } from './git.mjs'
 import { entryBoundary, inventoryTree, outsideSweep, sourceBoundary } from './paths.mjs'
 
 const UNKNOWN_PROCESS = 'unknown-process'
@@ -33,7 +33,7 @@ function quietReason(file, inventory, options) {
     return stat
   }
   const idle = scanIdleWorktree(file, { maxEntries: 200000, readStat, readTargetStat: readStat,
-    readDirectory: (dir, args) => readdirSync(dir, args).filter(entry => entry.name !== 'index.lock') })
+    readDirectory: (dir, args) => readdirSync(dir, args).filter(entry => !(entry.isFile() && path.join(dir, entry.name) === options.indexLock)) })
   if (idle.status !== 'known' || inventory.reason) return UNKNOWN_PROCESS
   if (BigInt(options.now) * 1_000_000n - latestNs < 72n * 3600_000_000_000n) return 'recent'
   return null
@@ -57,17 +57,33 @@ function candidate(file, inventory, options) {
   if (!git && !baseProven(file, inventory, options.objects, options)) return { reason: 'base-unproven' }
   const status = git ? gitVerdict(file, options) : {}
   if (status.reason) return status
+  if (options.registryUnknown) return { ...status, reason: 'worktree-registry-unavailable' }
   if (inventory.reason || archiveLimit(file, inventory, options)) return { ...status, reason: 'cannot-archive' }
   return { ...status, reason: liveness(file, inventory, options) }
+}
+
+function entryMeasurements(inventory, options) {
+  return { bytes: inventory.reason ? null : inventory.bytes,
+    ageHours: inventory.reason ? null : Math.max(0, Number(BigInt(options.now) * 1_000_000n - inventory.latestNs) / 3600_000_000_000) }
+}
+
+function registrationAbsence(file, registration) {
+  if (!registration) return null
+  if (!existsSync(file)) return registration.prunable ? 'registered-prunable' : 'registered-missing'
+  return registration.prunable ? 'registered-prunable' : null
 }
 
 function scanEntry(name, boundary, options) {
   const file = path.join(boundary.source, name)
   const entry = { name, path: file, verdict: 'KEEP', bytes: null, ageHours: null }
+  const registration = boundary.registry.records.get(name)
+  const absence = registrationAbsence(file, registration)
+  if (absence) return { ...entry, registration, reason: absence }
   if (!entryBoundary(file, boundary).allowed) return { ...entry, reason: 'not-an-entry' }
-  const inventory = inventoryTree(file, { ...boundary, deadline: options.deadline, clock: options.clock })
-  const verdict = candidate(file, inventory, options)
-  return { ...entry, bytes: inventory.reason ? null : inventory.bytes, ageHours: inventory.reason ? null : Math.max(0, Number(BigInt(options.now) * 1_000_000n - inventory.latestNs) / 3600_000_000_000),
+  const context = { ...options, indexLock: gitIndexLock(file, options), registryUnknown: boundary.registry.unknown }
+  const inventory = inventoryTree(file, { ...boundary, indexLock: context.indexLock, deadline: options.deadline, clock: options.clock })
+  const verdict = registration?.locked ? { reason: 'locked' } : candidate(file, inventory, context)
+  return { ...entry, ...entryMeasurements(inventory, options), ...(registration ? { registration } : {}),
     ...verdict, verdict: verdict.reason ? 'KEEP' : 'ELIGIBLE (report only)', reason: verdict.reason ?? 'eligible' }
 }
 
@@ -91,7 +107,7 @@ export function scanProject(options) {
   const project = path.resolve(options.project)
   const boundary = sourceBoundary(project, config)
   const report = { schemaVersion: 1, mode: 'report', project, source: boundary.source, entries: [], reason: boundary.reason ?? null,
-    outsideSweep: outsideSweep(project, boundary.source, config) }
+    outsideSweep: outsideSweep(project, boundary.source, { ...config, registry: boundary.registry }) }
   if (boundary.reason) return report
   const context = scanOptions(config, boundary)
   const entries = boundary.names.map(name => scanEntry(name, boundary, context))

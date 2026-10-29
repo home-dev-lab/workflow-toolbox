@@ -13,6 +13,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
+  inspect directories named `index.lock`, retain verified holders despite unrelated device
+  mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
+  Direct background-worker apply refusal is now regression-tested on a populated project.
 - Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
 - Retain every artifact-server health responder until proven exited, coalesce unknown process observations, and carry self-read birth evidence across monitor handoffs.
 - Bind artifact-server attachments to identity-bracketed health observations, permanently retire exited instances, and use recorded birth identity for CLI stop/restart confirmation.

@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
 import { chmodSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 // @ts-expect-error runtime module
@@ -70,10 +70,145 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
     writeFileSync(join(f.source, 'copy.base', 'tracked'), 'committed\n')
     expect(sweep!.scanProject(f.options).entries.find((e: { name: string }) => e.name === 'copy.base')).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
   })
-  it('clean, old entries with proven fixture liveness are ELIGIBLE (report only)', () => {
-    const f = setup(); repository(f)
-    expect(entry(f)).toMatchObject({ verdict: 'ELIGIBLE (report only)', reason: 'eligible' })
-  })
+   it('clean standalone entries without another preserving ref are KEEP', () => {
+     const f = setup(); const dir = repository(f)
+     git(dir, f.env, 'update-ref', '-d', 'refs/remotes/origin/main')
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'commits not preserved elsewhere' })
+   })
+   it('clean, old entries preserved by a remote-tracking ref are ELIGIBLE (report only)', () => {
+     const f = setup(); repository(f)
+     expect(entry(f)).toMatchObject({ verdict: 'ELIGIBLE (report only)', reason: 'eligible' })
+   })
+   it.each(['branch', 'detached'])('local-only %s commits are KEEP even with an older remote ref', kind => {
+     const f = setup(); const dir = repository(f)
+     if (kind === 'detached') git(dir, f.env, 'checkout', '--detach', '-q')
+     writeFileSync(join(dir, 'tracked'), 'local-only commit\n')
+     git(dir, f.env, 'add', 'tracked')
+     git(dir, f.env, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'local only')
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'commits not preserved elsewhere' })
+   })
+   it('a detached HEAD reachable from a base branch is preserved', () => {
+     const f = setup(); const dir = repository(f)
+     git(dir, f.env, 'branch', 'develop')
+     git(dir, f.env, 'checkout', '--detach', '-q')
+     git(dir, f.env, 'update-ref', '-d', 'refs/remotes/origin/main')
+     expect(entry(f)).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
+   })
+   it('a preserving ref may contain HEAD as an ancestor rather than its tip', () => {
+     const f = setup(); const dir = repository(f); const head = git(dir, f.env, 'rev-parse', 'HEAD').trim()
+     writeFileSync(join(dir, 'tracked'), 'descendant\n'); git(dir, f.env, 'add', 'tracked')
+     git(dir, f.env, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'descendant')
+     git(dir, f.env, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+     git(dir, f.env, 'reset', '--hard', head)
+     expect(entry(f)).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
+   })
+   it('failed preserving-ref enumeration is KEEP', () => {
+     const f = setup(); repository(f)
+     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => args.includes('for-each-ref')
+       ? { status: 1, stdout: '' } : spawnSync(cmd, args, options)
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'commits not preserved elsewhere' })
+   })
+   it('an index.lock directory in a base snapshot cannot hide unpreserved bytes', () => {
+     const f = setup(); repository(f); const base = join(f.source, 'copy.base')
+     mkdirSync(join(base, 'index.lock'), { recursive: true })
+     writeFileSync(join(base, 'tracked'), 'committed\n')
+     writeFileSync(join(base, 'index.lock', 'unique-work'), 'not preserved\n')
+     const before = fingerprint(base)
+     expect(sweep!.scanProject(f.options).entries.find((e: { name: string }) => e.name === 'copy.base'))
+       .toMatchObject({ verdict: 'KEEP', reason: 'base-unproven' })
+     expect(fingerprint(base)).toEqual(before)
+   })
+   it.each(['index.lock', 'ignored/index.lock', '.git/index.lock'])('a directory named %s is included in recency inspection', suffix => {
+     const f = setup(); const dir = repository(f)
+     mkdirSync(join(dir, suffix), { recursive: true })
+     const file = join(dir, suffix, 'unique-work'); writeFileSync(file, 'keep\n')
+     utimesSync(file, f.now / 1000, f.now / 1000)
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: suffix === 'index.lock' ? 'uncommitted' : 'recent' })
+   })
+   it('only the regular Git index lock is ignored, not an ignored namesake file', () => {
+     const f = setup(); const dir = repository(f)
+     const lock = join(dir, '.git', 'index.lock'); writeFileSync(lock, 'git lock')
+     utimesSync(lock, f.now / 1000, f.now / 1000)
+     expect(entry(f)).toMatchObject({ verdict: 'ELIGIBLE (report only)' })
+     mkdirSync(join(dir, 'ignored')); const namesake = join(dir, 'ignored', 'index.lock')
+     writeFileSync(namesake, 'owner bytes'); utimesSync(namesake, f.now / 1000, f.now / 1000)
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'recent' })
+   })
+   it('the second idle observation includes index.lock directories changed after inventory', () => {
+     const f = setup(); const dir = repository(f)
+     mkdirSync(join(dir, 'ignored', 'index.lock'), { recursive: true })
+     const file = join(dir, 'ignored', 'index.lock', 'work'); writeFileSync(file, 'owner bytes')
+     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+       if (args.includes('status')) utimesSync(file, f.now / 1000, f.now / 1000)
+       return spawnSync(cmd, args, options)
+     }
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'recent' })
+   })
+   it('locked registered worktrees are KEEP and registration does not alter project bytes', () => {
+     const f = setup(); const main = repository(f, 'main'); const dir = join(f.source, 'locked linked')
+     git(main, f.env, 'worktree', 'add', '-qb', 'linked', dir)
+     git(main, f.env, 'worktree', 'lock', '--reason', 'owner lease', dir)
+     const before = fingerprint(f.project)
+     expect(sweep!.scanProject(f.options).entries.find((e: { path: string }) => e.path === dir))
+       .toMatchObject({ verdict: 'KEEP', reason: 'locked' })
+     expect(fingerprint(f.project)).toEqual(before)
+   })
+   it.skipIf(process.platform === 'win32').each([false, true])('missing registered worktrees remain visible (locked=%s)', locked => {
+     const f = setup(); const main = repository(f, 'main'); const dir = join(f.source, 'missing\nlinked')
+     git(main, f.env, 'worktree', 'add', '-qb', 'missing', dir)
+     if (locked) git(main, f.env, 'worktree', 'lock', dir)
+     rmSync(dir, { recursive: true })
+     expect(sweep!.scanProject(f.options).entries.find((e: { path: string }) => e.path === dir))
+       .toMatchObject({ verdict: 'KEEP', reason: locked ? 'registered-missing' : 'registered-prunable' })
+   })
+   it('an unreadable worktree registry cannot produce eligibility', () => {
+     const f = setup(); repository(f)
+     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => args.includes('worktree')
+       ? { status: 1, stdout: '' } : spawnSync(cmd, args, options)
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'worktree-registry-unavailable' })
+   })
+   it('a prunable registration is KEEP even if a directory still occupies its path', () => {
+     const f = setup(); const dir = repository(f)
+     const registered = git(dir, f.env, 'rev-parse', '--show-toplevel').trim()
+     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+       const result = spawnSync(cmd, args, options)
+       if (args.includes('worktree')) result.stdout = result.stdout.replace(`worktree ${registered}\0`, `worktree ${registered}\0prunable stale registration\0`)
+       return result
+     }
+     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'registered-prunable' })
+   })
+   it('registry paths outside the direct-child scope are counted outside the sweep, never made entries', () => {
+     const f = setup(); const main = repository(f, 'main')
+     git(main, f.env, 'worktree', 'add', '-qb', 'outside', join(f.root, 'outside'))
+     git(main, f.env, 'worktree', 'add', '-qb', 'nested', join(main, 'nested'))
+     const before = fingerprint(f.root)
+     const report = sweep!.scanProject(f.options)
+     expect(report.entries.map((row: { name: string }) => row.name)).toEqual(['main'])
+     const normalized = (file: string) => process.platform === 'win32' ? resolve(file).toLowerCase() : resolve(file)
+     expect(report.outsideSweep.count).toBe(2)
+     expect(report.outsideSweep.paths.map(normalized).sort()).toEqual([join(main, 'nested'), join(f.root, 'outside')].map(normalized).sort())
+     expect(fingerprint(f.root)).toEqual(before)
+   })
+   it.skipIf(process.platform === 'win32').each(['win32', 'darwin'])('registry path spelling preserves locked and missing records (%s)', platform => {
+     const f = setup(); const main = repository(f, 'main'); const locked = join(f.source, 'locked'); const missing = join(f.source, 'missing')
+     git(main, f.env, 'worktree', 'add', '-qb', 'locked', locked); git(main, f.env, 'worktree', 'lock', locked)
+     git(main, f.env, 'worktree', 'add', '-qb', 'missing', missing); rmSync(missing, { recursive: true })
+     const prefix = platform === 'win32' ? f.source.replaceAll('/', '\\') : f.source.toUpperCase()
+     f.options.platform = platform; f.options.pid = 42; f.options.cwd = f.project
+     f.options.lsofRun = () => ({ status: 0, stdout: `p42\nfcwd\nn${f.project}\n` })
+     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+       const result = spawnSync(cmd, args, options)
+       if (args.includes('worktree')) {
+         result.stdout = result.stdout.replaceAll(f.source, prefix)
+         if (platform === 'win32') result.stdout = result.stdout.replaceAll(`${prefix}/`, `${prefix}\\`)
+       }
+       return result
+     }
+     const before = fingerprint(f.project); const report = sweep!.scanProject(f.options)
+     expect(report.entries.find((row: { name: string }) => row.name === 'locked')).toMatchObject({ verdict: 'KEEP', reason: 'locked' })
+     expect(report.entries.find((row: { name: string }) => row.name === 'missing')).toMatchObject({ verdict: 'KEEP', reason: 'registered-prunable' })
+     expect(fingerprint(f.project)).toEqual(before)
+   })
   it('G13 direct symlinks and mounted children are not entries; ancestor mounts refuse the source', () => {
     const f = setup(); repository(f); symlinkSync(f.root, join(f.source, 'link'))
     f.options.mounts = [join(f.source, 'clean')]
@@ -128,7 +263,7 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
     execFileSync('mkfifo', [join(dir, 'ignored')])
     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'cannot-archive' })
   })
-  it('D3 all outside-sweep sentinels and a node_modules symlink remain byte-identical', () => {
+   it('D3 all outside-sweep sentinels and a node_modules symlink remain byte-identical', () => {
     const f = setup(); const dir = repository(f)
     for (const suffix of ['.claude/scripts/.worktrees/W', 'worktrees/W', '.claude/reports/X', '.claude/archives/X']) {
       mkdirSync(join(f.project, suffix), { recursive: true }); writeFileSync(join(f.project, suffix, 'sentinel'), suffix)
@@ -136,8 +271,17 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
     mkdirSync(join(dir, 'node_modules')); symlinkSync(f.root, join(dir, 'node_modules', 'outside'))
     const before = fingerprint(f.project)
     sweep!.scanProject(f.options)
-    expect(fingerprint(f.project)).toEqual(before)
-  })
+     expect(fingerprint(f.project)).toEqual(before)
+   })
+   it.skipIf(process.platform === 'win32')('G20 a read-only entry is inspected without chmod or metadata changes', () => {
+     const f = setup(); const dir = repository(f)
+     chmodSync(dir, 0o555)
+     try {
+       const before = fingerprint(f.project)
+       sweep!.scanProject(f.options)
+       expect(fingerprint(f.project)).toEqual(before)
+     } finally { chmodSync(dir, 0o755) }
+   })
   it('sweep tests use injected procfs; only the designated host diagnostic reads the real host', () => {
     const dir = new URL('.', import.meta.url)
     for (const name of readdirSync(dir).filter(name => /^worktree-sweep-.*\.test\.ts$/.test(name) && name !== 'worktree-sweep-host.test.ts')) {

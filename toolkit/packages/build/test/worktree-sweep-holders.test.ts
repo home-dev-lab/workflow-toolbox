@@ -71,6 +71,28 @@ function setup() {
     f.options.procfs = { ...f.options.procfs, statWorkingDirectory: magic, statRootDirectory: magic, statExecutable: magic }
     expect(sweep!.scanProject(f.options)).toMatchObject({ entries: [{ verdict: 'ELIGIBLE (report only)' }], summary: { mismatchExcluded: 1 } })
   })
+  it.each(['cwd', 'fd', 'maps'])('a verified %s holder survives another-device mismatch', kind => {
+    const f = setup(); const dev = lstatSync(f.source, { bigint: true }).dev
+    if (kind === 'cwd') { rmSync(join(f.pid, 'cwd')); symlinkSync(f.dir, join(f.pid, 'cwd')) }
+    if (kind === 'fd') symlinkSync(join(f.dir, 'tracked'), join(f.pid, 'fd', '4'))
+    if (kind === 'maps') writeFileSync(join(f.pid, 'maps'), `0040-0050 r--p 0000 00:00 1 ${join(f.dir, 'tracked')}\n`)
+    f.options.procfs = { ...f.options.procfs, statExecutable: () => ({ dev: dev + 1n, ino: 0n }) }
+    expect(sweep!.scanProject(f.options).entries[0]).toMatchObject({ verdict: 'KEEP', reason: 'live' })
+    expect(host!.scanSweepProcesses({ ...f.options, sourceDevice: dev }).references).toContain(kind === 'cwd' ? f.dir : join(f.dir, 'tracked'))
+  })
+  it('a mapped holder survives when every magic link mismatches another device', () => {
+    const f = setup(); const dev = lstatSync(f.source, { bigint: true }).dev
+    writeFileSync(join(f.pid, 'maps'), `0040-0050 r--p 0000 00:00 1 ${join(f.dir, 'tracked')}\n`)
+    f.options.statPath = () => ({ dev: dev + 2n, ino: 1n })
+    const magic = () => ({ dev: dev + 1n, ino: 3n })
+    f.options.procfs = { ...f.options.procfs, statWorkingDirectory: magic, statRootDirectory: magic, statExecutable: magic }
+    expect(sweep!.scanProject(f.options)).toMatchObject({ entries: [{ verdict: 'KEEP', reason: 'live' }], summary: { mismatchExcluded: 1 } })
+  })
+  it('kernel-escaped newlines in mapped worktree paths still identify a holder', () => {
+    const f = setup(); const dir = repository(f, 'mapped\nentry')
+    writeFileSync(join(f.pid, 'maps'), `0040-0050 r--p 0000 00:00 1 ${join(dir, 'tracked').replaceAll('\n', '\\012')}\n`)
+    expect(sweep!.scanProject(f.options).entries.find((row: { path: string }) => row.path === dir)).toMatchObject({ verdict: 'KEEP', reason: 'live' })
+  })
   it('G16 a namespace name and visible members do not prove host membership', () => {
     const f = setup()
     expect(host!.hostNamespaceEvidence(f.options)).toMatchObject({ status: 'unknown', reason: 'not in the host PID namespace' })

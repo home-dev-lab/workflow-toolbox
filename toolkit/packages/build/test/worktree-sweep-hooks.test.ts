@@ -1,9 +1,9 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime module
-import { fixture, fingerprint, sweepModule } from '../../../test-support/worktree-sweep-fixture.mjs'
+import { fixture, fingerprint, repository, sweepModule } from '../../../test-support/worktree-sweep-fixture.mjs'
 const url = sweepModule('bin/lib/worktree-sweep/trigger.mjs')
 const hooks = await import(/* @vite-ignore */ url).catch(() => null)
 const workerUrl = sweepModule('bin/lib/worktree-sweep/worker.mjs')
@@ -45,10 +45,18 @@ function setup() { const f = fixture(execFileSync(process.platform === 'win32' ?
     expect(spawn).not.toHaveBeenCalled()
   })
   it('G26 the complete background report worker preserves the project too', () => {
-    const f = setup(); const before = fingerprint(f.project)
+    const f = setup(); repository(f); const before = fingerprint(f.project)
     worker!.reportWorker(f.project, f.root, f.env)
     expect(fingerprint(f.project)).toEqual(before)
     expect(state!.lockHeld(f.root)).toBe(false)
+    expect(JSON.parse(readFileSync(join(f.root, 'last.json'), 'utf8'))).toMatchObject({ mode: 'report', entries: [{ name: 'clean', verdict: 'KEEP' }] })
+  })
+  it('the direct worker refuses apply before producing any report or claim', () => {
+    const f = setup(); repository(f); const before = fingerprint(f.project)
+    expect(() => worker!.reportWorker(f.project, f.root, { ...f.env, WT_WORKTREE_SWEEP_MODE: 'apply' })).toThrow('apply is not available')
+    expect(existsSync(join(f.root, 'last.json'))).toBe(false)
+    expect(state!.lockHeld(f.root)).toBe(false)
+    expect(fingerprint(f.project)).toEqual(before)
   })
   it('an existing external claim cannot be stolen by another report worker', () => {
     const f = setup(); const release = state!.claimState(f.project, f.root, f.procfs)
