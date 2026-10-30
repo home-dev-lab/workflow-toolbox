@@ -176,325 +176,384 @@ afterEach(() => {
   target = undefined
 })
 
-describe('shipped at-act moves', () => {
-  it.each(MOVED_BLOCKS)('moves %s block to %s at act: %s', (core, companion, block) => {
-    const normalize = (text: string) => text.replace(/\s+/g, ' ').trim()
-    expect(normalize(readFileSync(join(ROOT, 'plugin/rules', `${core}.md`), 'utf8')), `${core} moved block remains static`).not.toContain(normalize(block))
-    expect(normalize(readFileSync(join(ROOT, 'plugin/rules', `${companion}-at-act.md`), 'utf8')), `${companion} moved block missing`).toContain(normalize(block))
-  })
+const readRuleFile = (file: string) => readFileSync(join(ROOT, 'plugin/rules', file), 'utf8')
+const normalizeText = (text: string) => text.replace(/\s+/g, ' ').trim()
+const ruleSpec = (name: string) => JSON.parse(readRuleFile(`${name}-at-act.spec.json`))
 
-  it.each([
-    ['wt-proportionate-verification', 'Agent', {}],
-    ['wt-proportionate-verification', 'Task', {}],
-    ['wt-proportionate-verification', 'Workflow', {}],
-    ['wt-proportionate-verification', 'Skill', { skill: 'second-opinion' }],
-    ['wt-proportionate-verification', 'Skill', { skill: 'independent-analysis' }],
-    ['wt-sdlc', 'Edit', { file_path: 'src/example.ts' }],
-    ['wt-verify-by-ground-truth', 'Edit', { file_path: 'src/example.ts' }],
-  ] as const)('serves %s before %s with %j', (name, tool, input) => {
-    expect(triggersFor(name).some((trigger) => trigger.kind === 'tool'
-      && trigger['before-first-act'] === true && new RegExp(trigger.tool ?? '').test(tool)
-      && (trigger.unconditional || new RegExp(trigger['input-regex'] ?? '$a').test(JSON.stringify(input)))), `${name} before ${tool}`).toBe(true)
+function checkMovedBlock(core: string, companion: string, block: string) {
+  expect(normalizeText(readRuleFile(`${core}.md`)), `${core} moved block remains static`).not.toContain(normalizeText(block))
+  expect(normalizeText(readRuleFile(`${companion}-at-act.md`)), `${companion} moved block missing`).toContain(normalizeText(block))
+}
+
+const SERVED_BEFORE_TOOL = [
+  ['wt-proportionate-verification', 'Agent', {}],
+  ['wt-proportionate-verification', 'Task', {}],
+  ['wt-proportionate-verification', 'Workflow', {}],
+  ['wt-proportionate-verification', 'Skill', { skill: 'second-opinion' }],
+  ['wt-proportionate-verification', 'Skill', { skill: 'independent-analysis' }],
+  ['wt-sdlc', 'Edit', { file_path: 'src/example.ts' }],
+  ['wt-verify-by-ground-truth', 'Edit', { file_path: 'src/example.ts' }],
+] as const
+
+function triggerServesToolBeforeAct(trigger: Trigger, tool: string, input: unknown): boolean {
+  return trigger.kind === 'tool'
+    && trigger['before-first-act'] === true && new RegExp(trigger.tool ?? '').test(tool)
+    && Boolean(trigger.unconditional || new RegExp(trigger['input-regex'] ?? '$a').test(JSON.stringify(input)))
+}
+
+function checkServedBeforeTool(name: typeof ACT_RULES[number], tool: string, input: unknown) {
+  expect(triggersFor(name).some((trigger) => triggerServesToolBeforeAct(trigger, tool, input)), `${name} before ${tool}`).toBe(true)
+}
+
+const STATIC_ANCHORS = {
+  'wt-proportionate-verification': ['Collect verdicts in parallel and in isolation', 'arbiter resolves the disagreement', 'never an autonomous verdict'],
+  'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason'],
+  'wt-verify-by-ground-truth': ['claims a property against the body under it in the same pass'],
+  'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
+  'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
+}
+
+function checkStaticAnchors() {
+  // Static anchors that keep a moved duty in force where its companion's trigger does not fire.
+  const flat = (name: string) => readRuleFile(`${name}.md`).replace(/\s+/g, ' ')
+  for (const [name, anchors] of Object.entries(STATIC_ANCHORS)) {
+    for (const anchor of anchors) expect(flat(name), `${name} anchor: ${anchor}`).toContain(anchor)
+  }
+}
+
+const GENERATED_LINE_PREFIXES = ['The act-bound half', 'Its act-bound half']
+const GENERATED_LINES = new Set([
+  'served on demand where an engine is installed.',
+  'where an engine is installed.',
+  'demand where an engine is installed.',
+  'on demand where an engine is installed.',
+  'engine is installed.',
+  '## At-act companion',
+])
+const generatedLine = (line: string) => GENERATED_LINE_PREFIXES.some((prefix) => line.startsWith(prefix))
+  || GENERATED_LINES.has(line)
+  || /^<!-- embedded-copy:mutation-red-proof:(?:start|end) -->$/.test(line)
+
+function checkHistoricalSplit() {
+  for (const name of RULES) {
+    const core = nonBlank(join(ROOT, 'plugin/rules', `${name}.md`)).filter((line) => !generatedLine(line))
+    const actPath = join(ROOT, 'plugin/rules', `${name}-at-act.md`)
+    const act = existsSync(actPath) ? nonBlank(actPath).slice(1).filter((line) => !generatedLine(line)) : []
+    const lock = SPLIT_LOCKS[name]
+    expect(core.length + act.length, `${name} line count`).toBe(lock.lines)
+    expect(digest([...core, ...act].sort()), `${name} lossless multiset`).toBe(lock.union)
+    expect(digest(core), `${name} core order`).toBe(lock.core)
+    expect(digest(act), `${name} act order`).toBe(lock.act)
+  }
+}
+
+function checkTriggersBeforeOwnCall() {
+  const afterTheActReasons = new Set<string>()
+  for (const name of ACT_RULES) {
+    for (const [index, trigger] of triggersFor(name).entries()) {
+      const identity = `${name}:${index}`
+      const reason = rideAlongReason(name, trigger)
+      if (reason) afterTheActReasons.add(reason)
+      expect(
+        trigger['before-first-act'],
+        `${identity}: ${reason ?? 'This duty governs the call itself.'}`,
+      ).toBe(reason === undefined)
+    }
+  }
+  expect(afterTheActReasons.size).toBe(2)
+}
+
+type Rewording = { original?: string, replacement?: string, reason: string }
+function applyRewording(name: string, change: Rewording, paragraphHashes: string[]) {
+  expect(change.reason, `${name} rewording reason`).not.toBe('')
+  expect(change.original ?? change.replacement, `${name} rewording names a paragraph`).toBeDefined()
+  if (change.replacement) {
+    const replacement = paragraphHashes.indexOf(change.replacement)
+    expect(replacement, `${name} reviewed replacement`).toBeGreaterThanOrEqual(0)
+    paragraphHashes.splice(replacement, 1)
+  }
+  if (change.original) paragraphHashes.push(change.original)
+}
+
+function checkHistoricalParagraphs() {
+  for (const name of RULES) {
+    const core = paragraphs(join(ROOT, 'plugin/rules', `${name}.md`), /^(?:(?:The|Its) act-bound half|## At-act companion)/)
+    const actPath = join(ROOT, 'plugin/rules', `${name}-at-act.md`)
+    const act = existsSync(actPath) ? paragraphs(actPath, /$a/) : []
+    const paragraphHashes = [...core, ...act].map((paragraph) => digest([paragraph]))
+    const lock = ORIGINAL_RULE_FIXTURE[name]
+    for (const change of INTENDED_REWORDINGS[name] ?? []) applyRewording(name, change, paragraphHashes)
+    expect(paragraphHashes, `${name} paragraph count`).toHaveLength(lock.count)
+    expect(digest(paragraphHashes.sort()), `${name} whole-paragraph multiset`).toBe(lock.union)
+  }
+}
+
+function checkInventoriedOrders() {
+  const staticRules = ['wt-memory-hygiene', 'wt-delegation-ladder', 'wt-verify-by-ground-truth']
+    .map((name) => readRuleFile(`${name}.md`)).join('\n')
+  for (const phrase of [
+    'Rationale/field cases are not kept beside a rule, and no pointer leads to them',
+    "Floor of ladder ≠ cheapest model — it's code",
+    'Symptom vanish right after your change = CORRELATION',
+    'Read the platform\'s own documentation FIRST, and QUOTE',
+  ]) expect(staticRules, phrase).toContain(phrase)
+}
+
+const AT_ACT_BODY_RULES = [
+  'wt-delegation-addressing', 'wt-delegation-routing', 'wt-distributed-twins',
+  'wt-memory-hygiene', 'wt-memory-maintenance', 'wt-reporting-monitor',
+  'wt-workflows-as-reasoning', ...ACT_RULES,
+]
+
+function checkAtActBody(name: string) {
+  const body = readRuleFile(`${name}-at-act.md`)
+  const spec = ruleSpec(name) as { 'on-demand': { triggers: Trigger[] } }
+  expect(body.length, name).toBeLessThan(9500)
+  expect(spec['on-demand'].triggers.length, name).toBeGreaterThan(0)
+  expect(spec['on-demand'].triggers.every((trigger) => typeof trigger['before-first-act'] === 'boolean'), name).toBe(true)
+  expect(spec['on-demand'].triggers.some((trigger) => trigger['before-first-act'] === true), name).toBe(true)
+  for (const trigger of spec['on-demand'].triggers) {
+    const reason = rideAlongReason(name, trigger)
+    if (reason) expect(trigger['before-first-act'], `${name}: ${reason}`).toBe(false)
+  }
+}
+
+const CORE_CLAUSES = [
+  ['wt-concurrent-sessions-worktree', 'before the\nfirst edit'],
+  ['wt-delegation-ladder', 'A fence justified by a live condition carries its expiry'],
+  ['wt-proportionate-verification', '2. Method diversity'],
+  ['wt-sdlc', 'Never claim a check passed unless it ran'],
+  ['wt-task-tracking', 'Tracker unreachable? Buffer task state'],
+  ['wt-verify-by-ground-truth', 'same capture path'],
+] satisfies Array<[string, string]>
+
+function checkCoreClauses() {
+  const readRule = (name: string, atAct = false) => readRuleFile(`${name}${atAct ? '-at-act' : ''}.md`)
+  for (const [name, clause] of CORE_CLAUSES) {
+    expect(readRule(name), `${name} CORE`).toContain(clause)
+    if ((ACT_RULES as readonly string[]).includes(name)) expect(readRule(name, true), `${name} ACT`).not.toContain(clause)
+  }
+}
+
+const UNCONDITIONAL_DUTIES = {
+  'wt-verify-by-ground-truth': ['ANY surprise', 'first occurrence, mid-flow, off-task', 'Shipping anything requires an explicit CROSS-PLATFORM verdict', 'silently returning a plausible value'],
+  'wt-workflows-as-reasoning': ['ANY multi-agent fan-out', 'many fresh-context agents OR a Workflow'],
+  'wt-step-back-architectural': ['ANYTHING distributed', 'SOURCE at a named revision', 'never an installed copy'],
+  // Card 1874342400453773073 review: the counting trigger opens a step-back that may keep a route still narrowing the problem.
+  'wt-delegation-ladder': ['two failed attempts', 'one repeated diagnosis', '~15–20 min', 'IMPLEMENTATION', 'REVIEW separately', 'the current route included while its attempts still narrow the problem'],
+  'wt-delegation-routing-at-act': ['two failed attempts at same', 'the current route included while its attempts still narrow the problem', 'never to the owner'],
+  'wt-task-tracking': ['Periodically sweep the whole Blocked list', 'without waiting for a closure', 'no `Depends-on:` line'],
+  'wt-memory-hygiene': ['every disk fact is reachable AND every index/hub reference resolves', 'deliberate', 'operative principle and the invariant', 'no narrative, incident stories'],
+  'wt-answer-first-reporting': ["nothing hands control back", "watcher's emission to an idle session", 'watcher IS the engine'],
+}
+
+function checkUnconditionalDuties() {
+  for (const [name, duties] of Object.entries(UNCONDITIONAL_DUTIES)) {
+    for (const duty of duties) expect(readRuleFile(`${name}.md`), `${name}: ${duty}`).toContain(duty)
+  }
+  const triggers = ruleSpec('wt-workflows-as-reasoning')['on-demand'].triggers as Trigger[]
+  for (const tool of ['Workflow', 'Agent', 'Task']) {
+    expect(triggers.some((trigger) => trigger.kind === 'tool' && trigger['before-first-act'] && new RegExp(trigger.tool ?? '').test(tool)), tool).toBe(true)
+  }
+  expect(readRuleFile('wt-workflows-as-reasoning-at-act.md')).toContain('give COMPLETE listings')
+  expect(readRuleFile('wt-task-tracking-at-act.md')).toContain('The dependency-start check covers one direction only')
+}
+
+function checkOriginalReferences() {
+  expect(readRuleFile('wt-verify-by-ground-truth.md')).toContain('Same family as control readable in both outcomes')
+  expect(readRuleFile('wt-proportionate-verification.md')).toContain('Its lock proven red the same way as any other fix.')
+}
+
+function checkNarrowTriggers() {
+  const trackerTool = triggersFor('wt-task-tracking').find((trigger) => trigger.kind === 'tool')!
+  expect(new RegExp(trackerTool.tool ?? '').test('mcp__github__get_pull_request')).toBe(false)
+  expect(new RegExp(trackerTool.tool ?? '').test('mcp__planka__update_card')).toBe(true)
+  expect(matchesBash('wt-delegation-ladder', 'cat .lane/brief.md')).toBe(false)
+  expect(matchesBash('wt-delegation-ladder', 'cat > .lane/brief.md')).toBe(true)
+  expect(matchesBash('wt-concurrent-sessions-worktree', 'git merge-base main HEAD')).toBe(false)
+  expect(matchesBash('wt-verify-by-ground-truth', 'git merge-base main HEAD')).toBe(false)
+}
+
+function checkHeredocLimit() {
+  const heredoc = "git commit -m \"$(cat <<'EOF'\nsummary\npnpm test\nEOF\n)\""
+  expect(ACT_RULES.some((name) => matchesBash(name, heredoc))).toBe(true)
+  expect(readRuleFile('README.md')).toContain('This quote handling is line-local')
+}
+
+function checkCommandHeadPattern() {
+  for (const name of ACT_RULES) {
+    for (const trigger of triggersFor(name).filter((candidate) => candidate.kind === 'bash')) {
+      expect(trigger.flags, `${name} uses multiline command heads`).toContain('m')
+      expect(trigger.regex, `${name} uses COMMAND_HEAD`).toMatch(new RegExp(`^${COMMAND_HEAD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    }
+  }
+}
+
+const POSITIVE_COMMANDS: Array<[typeof ACT_RULES[number], string]> = [
+  ['wt-concurrent-sessions-worktree', 'git -C .claude/worktrees/p1 reset --hard tip'],
+  ['wt-concurrent-sessions-worktree', 'cd x && git -C y merge branch'],
+  ['wt-concurrent-sessions-worktree', 'git --git-dir=.git merge branch'],
+  ['wt-concurrent-sessions-worktree', 'git --no-pager pull'],
+  ['wt-concurrent-sessions-worktree', 'git -c color.ui=false worktree add next'],
+  ['wt-concurrent-sessions-worktree', 'gh pr merge 123'],
+  ['wt-verify-by-ground-truth', '(pnpm test)'],
+  ['wt-verify-by-ground-truth', 'env FOO=1 pnpm test'],
+  ['wt-verify-by-ground-truth', 'env -u DEBUG pnpm test'],
+  ['wt-verify-by-ground-truth', 'CI=1 pnpm test'],
+  ['wt-verify-by-ground-truth', 'timeout 600 pnpm test'],
+  ['wt-verify-by-ground-truth', 'timeout -s KILL 600 pnpm test'],
+  ['wt-verify-by-ground-truth', 'nice pnpm test'],
+  ['wt-verify-by-ground-truth', 'time pnpm test'],
+  ['wt-verify-by-ground-truth', 'nohup pnpm test &'],
+  ['wt-verify-by-ground-truth', 'setsid pnpm test'],
+  ['wt-verify-by-ground-truth', 'sudo -u build pnpm test'],
+  ['wt-verify-by-ground-truth', "bash -c 'pnpm test'"],
+  ['wt-verify-by-ground-truth', 'sh -c "pnpm test"'],
+  ['wt-verify-by-ground-truth', "nohup bash -c 'cd toolkit && pnpm test > log 2>&1; echo EXIT=$? >> log' &"],
+  ['wt-verify-by-ground-truth', 'if ready; then pnpm test; fi'],
+  ['wt-verify-by-ground-truth', 'for pkg in a; do pnpm test; done'],
+  ['wt-verify-by-ground-truth', '{ pnpm test; }'],
+  ['wt-verify-by-ground-truth', '! pnpm test'],
+  ['wt-verify-by-ground-truth', 'printf ready & pnpm test'],
+  ['wt-verify-by-ground-truth', 'printf ready\npnpm test'],
+  ['wt-verify-by-ground-truth', 'npx vitest run'],
+  ['wt-verify-by-ground-truth', 'pnpm vitest run'],
+  ['wt-verify-by-ground-truth', 'pnpm exec vitest run'],
+  ['wt-verify-by-ground-truth', 'pnpm -C toolkit test'],
+  ['wt-verify-by-ground-truth', 'pnpm --dir toolkit test'],
+  ['wt-verify-by-ground-truth', 'pnpm -F pkg test'],
+  ['wt-verify-by-ground-truth', 'pnpm --filter=pkg test'],
+  ['wt-verify-by-ground-truth', 'pnpm -r test'],
+  ['wt-verify-by-ground-truth', 'pnpm --silent test'],
+  ['wt-verify-by-ground-truth', 'pnpm --filter @scope/pkg run test'],
+  ['wt-verify-by-ground-truth', 'npm --prefix toolkit test'],
+  ['wt-verify-by-ground-truth', 'npm run test'],
+  ['wt-verify-by-ground-truth', 'yarn test'],
+  ['wt-verify-by-ground-truth', 'bun test'],
+  ['wt-verify-by-ground-truth', 'node --test'],
+  ['wt-verify-by-ground-truth', 'make test'],
+  ['wt-verify-by-ground-truth', 'jest'],
+  ['wt-verify-by-ground-truth', 'vitest run'],
+  ['wt-verify-by-ground-truth', 'pytest'],
+  ['wt-verify-by-ground-truth', 'go test ./...'],
+  ['wt-verify-by-ground-truth', 'cargo test'],
+  ['wt-verify-by-ground-truth', 'tsc --noEmit'],
+  ['wt-verify-by-ground-truth', 'mypy src'],
+  ['wt-verify-by-ground-truth', 'ruff check .'],
+  ['wt-verify-by-ground-truth', 'eslint .'],
+  ['wt-verify-by-ground-truth', 'cargo clippy'],
+  ['wt-verify-by-ground-truth', 'ps aux'],
+  ['wt-verify-by-ground-truth', 'curl -s http://127.0.0.1:5174/'],
+  ['wt-verify-by-ground-truth', 'node ../plugin/bin/wt-observe.mjs start'],
+  ['wt-task-tracking', 'gh issue close 123'],
+  ['wt-task-tracking', 'gh project item-list 1'],
+  ['wt-task-tracking', 'jira issue view PROJ-1'],
+  ['wt-delegation-ladder', "cat > .lane/brief.md <<'EOF'"],
+]
+
+function checkCommandCorpus() {
+  for (const [name, command] of POSITIVE_COMMANDS) expect(matchesBash(name, command), `${name}: ${command}`).toBe(true)
+
+  const sharedCorpus: Array<[string, typeof RULES[number][]]> = [
+    ['cd x && git -C y merge branch', ['wt-concurrent-sessions-worktree', 'wt-verify-by-ground-truth']],
+    ['setsid nohup pnpm test', ['wt-verify-by-ground-truth']],
+    ["cat > .lane/brief.md <<'EOF'", ['wt-delegation-ladder', 'wt-proportionate-verification', 'wt-sdlc']],
+    ['gh issue close 123', ['wt-task-tracking']],
+  ]
+  for (const [command, expected] of sharedCorpus) {
+    for (const name of ACT_RULES) expect(matchesBash(name, command), `${name}: ${command}`).toBe(expected.includes(name))
+  }
+
+  for (const command of ['cat toolkit/packages/build/src/x.ts', 'ls some/test/', 'curl https://example.test/latest', 'git diff --check', 'git commit -m "fix; pnpm test flake"', "grep '&& git merge'"]) {
+    expect(ACT_RULES.some((name) => matchesBash(name, command)), command).toBe(false)
+  }
+}
+
+function checkBriefPathTrigger() {
+  const delegation = triggersFor('wt-delegation-ladder')
+  const briefPath = delegation.find((trigger) => trigger.kind === 'path')
+  const briefRegex = () => new RegExp(briefPath?.regex ?? '')
+  expect(briefPath?.tool).toBe('^(?:Write|Edit|MultiEdit)$')
+  expect(briefRegex().test('.lane/brief.md')).toBe(true)
+  expect(briefRegex().test('plans/briefs/executor.md')).toBe(true)
+  expect(briefRegex().test('plans/briefs/task.md')).toBe(true)
+  expect(briefRegex().test('debrief.md')).toBe(false)
+  expect(briefRegex().test('briefing-notes.md')).toBe(false)
+  expect(briefRegex().test('README.md')).toBe(false)
+  expect(delegation).not.toContainEqual(expect.objectContaining({ kind: 'tool', tool: '^Skill$' }))
+
+  expect(JSON.stringify(triggersFor('wt-task-tracking'))).not.toMatch(/board-list|planka-tool/)
+}
+
+function checkCommandHeadsAndCorpus() {
+  checkCommandHeadPattern()
+  checkCommandCorpus()
+  checkBriefPathTrigger()
+}
+
+function checkAdoptsBothHalves() {
+  target = mkdtempSync(join(tmpdir(), 'wt-rule-splits-'))
+  const env = sealedPluginCliEnv(join(target, 'env'), { CLAUDE_PLUGIN_ROOT: join(ROOT, 'plugin') })
+  const install = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--install', '--dir', target], {
+    encoding: 'utf8',
+    env,
   })
+  expect(install.status, install.stderr).toBe(0)
+
+  for (const name of ACT_RULES) {
+    const atAct = `${name}-at-act.md`
+    expect(existsSync(join(target, `${name}.md`)), `${name} core`).toBe(true)
+    expect(existsSync(join(target, atAct)), `${name} at-act`).toBe(true)
+    expect(install.stdout).toContain(`${atAct}: WROTE`)
+
+    const spec = ruleSpec(name) as { 'on-demand'?: { triggers?: unknown[] } }
+    expect(spec['on-demand']?.triggers?.length, `${name} trigger spec`).toBeGreaterThan(0)
+  }
+
+  const check = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--check', '--dir', target], {
+    encoding: 'utf8',
+    env,
+  })
+  expect(check.status, check.stderr).toBe(0)
+  for (const name of ACT_RULES) expect(check.stdout).toContain(`${name}-at-act.md: UP-TO-DATE`)
+}
+
+describe('shipped at-act moves', () => {
+  it.each(MOVED_BLOCKS)('moves %s block to %s at act: %s', checkMovedBlock)
+
+  it.each(SERVED_BEFORE_TOOL)('serves %s before %s with %j', checkServedBeforeTool)
 
   it('does not serve proportionate verification for a diagnostic diff', () => {
     expect(matchesBash('wt-proportionate-verification', 'git diff --check')).toBe(false)
   })
 
-  it('keeps a static anchor for every moved duty', () => {
-    // Static anchors that keep a moved duty in force where its companion's trigger does not fire.
-    const flat = (name: string) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8').replace(/\s+/g, ' ')
-    for (const [name, anchors] of Object.entries({
-      'wt-proportionate-verification': ['Collect verdicts in parallel and in isolation', 'arbiter resolves the disagreement', 'never an autonomous verdict'],
-      'wt-sdlc': ['Every brief carries the e2e in its definition of done', 'says `e2e not run` with a reason'],
-      'wt-verify-by-ground-truth': ['claims a property against the body under it in the same pass'],
-      'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
-      'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
-    })) for (const anchor of anchors) expect(flat(name), `${name} anchor: ${anchor}`).toContain(anchor)
-  })
+  it('keeps a static anchor for every moved duty', checkStaticAnchors)
 })
 
 describe('shipped split rules', () => {
-  it.skip('locks the historical R3 split (superseded by the operative-order inventory)', () => {
-    for (const name of RULES) {
-      const generated = (line: string) => line.startsWith('The act-bound half')
-        || line.startsWith('Its act-bound half')
-        || line === 'served on demand where an engine is installed.'
-        || line === 'where an engine is installed.'
-        || line === 'demand where an engine is installed.'
-        || line === 'on demand where an engine is installed.'
-        || line === 'engine is installed.'
-        || line === '## At-act companion'
-        || /^<!-- embedded-copy:mutation-red-proof:(?:start|end) -->$/.test(line)
-      const core = nonBlank(join(ROOT, 'plugin/rules', `${name}.md`)).filter((line) => !generated(line))
-      const actPath = join(ROOT, 'plugin/rules', `${name}-at-act.md`)
-      const act = existsSync(actPath) ? nonBlank(actPath).slice(1).filter((line) => !generated(line)) : []
-      const lock = SPLIT_LOCKS[name]
-      expect(core.length + act.length, `${name} line count`).toBe(lock.lines)
-      expect(digest([...core, ...act].sort()), `${name} lossless multiset`).toBe(lock.union)
-      expect(digest(core), `${name} core order`).toBe(lock.core)
-      expect(digest(act), `${name} act order`).toBe(lock.act)
-    }
-  })
+  it.skip('locks the historical R3 split (superseded by the operative-order inventory)', checkHistoricalSplit)
 
-  it('serves every trigger that governs its own call before that call', () => {
-    const afterTheActReasons = new Set<string>()
-    for (const name of ACT_RULES) {
-      for (const [index, trigger] of triggersFor(name).entries()) {
-        const identity = `${name}:${index}`
-        const reason = rideAlongReason(name, trigger)
-        if (reason) afterTheActReasons.add(reason)
-        expect(
-          trigger['before-first-act'],
-          `${identity}: ${reason ?? 'This duty governs the call itself.'}`,
-        ).toBe(reason === undefined)
-      }
-    }
-    expect(afterTheActReasons.size).toBe(2)
-  })
+  it('serves every trigger that governs its own call before that call', checkTriggersBeforeOwnCall)
 
-  it.skip('keeps historical whole paragraphs (replaced by directive-level checks)', () => {
-    for (const name of RULES) {
-      const core = paragraphs(join(ROOT, 'plugin/rules', `${name}.md`), /^(?:(?:The|Its) act-bound half|## At-act companion)/)
-      const actPath = join(ROOT, 'plugin/rules', `${name}-at-act.md`)
-      const act = existsSync(actPath) ? paragraphs(actPath, /$a/) : []
-      const paragraphHashes = [...core, ...act].map((paragraph) => digest([paragraph]))
-      const lock = ORIGINAL_RULE_FIXTURE[name]
-      for (const change of INTENDED_REWORDINGS[name] ?? []) {
-        expect(change.reason, `${name} rewording reason`).not.toBe('')
-        expect(change.original ?? change.replacement, `${name} rewording names a paragraph`).toBeDefined()
-        if (change.replacement) {
-          const replacement = paragraphHashes.indexOf(change.replacement)
-          expect(replacement, `${name} reviewed replacement`).toBeGreaterThanOrEqual(0)
-          paragraphHashes.splice(replacement, 1)
-        }
-        if (change.original) paragraphHashes.push(change.original)
-      }
-      expect(paragraphHashes, `${name} paragraph count`).toHaveLength(lock.count)
-      expect(digest(paragraphHashes.sort()), `${name} whole-paragraph multiset`).toBe(lock.union)
-    }
-  })
+  it.skip('keeps historical whole paragraphs (replaced by directive-level checks)', checkHistoricalParagraphs)
 
-  it('retains every inventoried order, including the private-rule static anchors', () => {
-    const staticRules = ['wt-memory-hygiene', 'wt-delegation-ladder', 'wt-verify-by-ground-truth']
-      .map((name) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8')).join('\n')
-    for (const phrase of [
-      'Rationale/field cases are not kept beside a rule, and no pointer leads to them',
-      "Floor of ladder ≠ cheapest model — it's code",
-      'Symptom vanish right after your change = CORRELATION',
-      'Read the platform\'s own documentation FIRST, and QUOTE',
-    ]) expect(staticRules, phrase).toContain(phrase)
-  })
+  it('retains every inventoried order, including the private-rule static anchors', checkInventoriedOrders)
 
   it('keeps every at-act body within the fallback slot and registers its pre-act triggers', () => {
-    const rulesDir = join(ROOT, 'plugin/rules')
-    for (const name of [
-      'wt-delegation-addressing', 'wt-delegation-routing', 'wt-distributed-twins',
-      'wt-memory-hygiene', 'wt-memory-maintenance', 'wt-reporting-monitor',
-      'wt-workflows-as-reasoning', ...ACT_RULES,
-    ]) {
-      const body = readFileSync(join(rulesDir, `${name}-at-act.md`), 'utf8')
-      const spec = JSON.parse(readFileSync(join(rulesDir, `${name}-at-act.spec.json`), 'utf8')) as {
-        'on-demand': { triggers: Trigger[] }
-      }
-      expect(body.length, name).toBeLessThan(9500)
-      expect(spec['on-demand'].triggers.length, name).toBeGreaterThan(0)
-      expect(spec['on-demand'].triggers.every((trigger) => typeof trigger['before-first-act'] === 'boolean'), name).toBe(true)
-      expect(spec['on-demand'].triggers.some((trigger) => trigger['before-first-act'] === true), name).toBe(true)
-      for (const trigger of spec['on-demand'].triggers) {
-        const reason = rideAlongReason(name, trigger)
-        if (reason) expect(trigger['before-first-act'], `${name}: ${reason}`).toBe(false)
-      }
-    }
+    for (const name of AT_ACT_BODY_RULES) checkAtActBody(name)
   })
 
-  it('keeps decision-time and unavailable-service obligations in CORE', () => {
-    const readRule = (name: string, atAct = false) => readFileSync(join(ROOT, 'plugin/rules', `${name}${atAct ? '-at-act' : ''}.md`), 'utf8')
-    for (const [name, clause] of [
-      ['wt-concurrent-sessions-worktree', 'before the\nfirst edit'],
-      ['wt-delegation-ladder', 'A fence justified by a live condition carries its expiry'],
-      ['wt-proportionate-verification', '2. Method diversity'],
-      ['wt-sdlc', 'Never claim a check passed unless it ran'],
-      ['wt-task-tracking', 'Tracker unreachable? Buffer task state'],
-      ['wt-verify-by-ground-truth', 'same capture path'],
-    ] satisfies Array<[string, string]>) {
-      expect(readRule(name), `${name} CORE`).toContain(clause)
-      if ((ACT_RULES as readonly string[]).includes(name)) expect(readRule(name, true), `${name} ACT`).not.toContain(clause)
-    }
-  })
+  it('keeps decision-time and unavailable-service obligations in CORE', checkCoreClauses)
 
-  it('makes unconditional duties available without an act trigger and serves fan-out details on either route', () => {
-    const staticRule = (name: string) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8')
-    for (const [name, duties] of Object.entries({
-      'wt-verify-by-ground-truth': ['ANY surprise', 'first occurrence, mid-flow, off-task', 'Shipping anything requires an explicit CROSS-PLATFORM verdict', 'silently returning a plausible value'],
-      'wt-workflows-as-reasoning': ['ANY multi-agent fan-out', 'many fresh-context agents OR a Workflow'],
-      'wt-step-back-architectural': ['ANYTHING distributed', 'SOURCE at a named revision', 'never an installed copy'],
-      // Card 1874342400453773073 review: the counting trigger opens a step-back that may keep a route still narrowing the problem.
-      'wt-delegation-ladder': ['two failed attempts', 'one repeated diagnosis', '~15–20 min', 'IMPLEMENTATION', 'REVIEW separately', 'the current route included while its attempts still narrow the problem'],
-      'wt-delegation-routing-at-act': ['two failed attempts at same', 'the current route included while its attempts still narrow the problem', 'never to the owner'],
-      'wt-task-tracking': ['Periodically sweep the whole Blocked list', 'without waiting for a closure', 'no `Depends-on:` line'],
-      'wt-memory-hygiene': ['every disk fact is reachable AND every index/hub reference resolves', 'deliberate', 'operative principle and the invariant', 'no narrative, incident stories'],
-      'wt-answer-first-reporting': ["nothing hands control back", "watcher's emission to an idle session", 'watcher IS the engine'],
-    })) for (const duty of duties) expect(staticRule(name), `${name}: ${duty}`).toContain(duty)
+  it('makes unconditional duties available without an act trigger and serves fan-out details on either route', checkUnconditionalDuties)
 
-    const triggers = JSON.parse(readFileSync(join(ROOT, 'plugin/rules/wt-workflows-as-reasoning-at-act.spec.json'), 'utf8'))['on-demand'].triggers as Trigger[]
-    for (const tool of ['Workflow', 'Agent', 'Task']) {
-      expect(triggers.some((trigger) => trigger.kind === 'tool' && trigger['before-first-act'] && new RegExp(trigger.tool ?? '').test(tool)), tool).toBe(true)
-    }
-    expect(readFileSync(join(ROOT, 'plugin/rules/wt-workflows-as-reasoning-at-act.md'), 'utf8'))
-      .toContain('give COMPLETE listings')
-    expect(readFileSync(join(ROOT, 'plugin/rules/wt-task-tracking-at-act.md'), 'utf8'))
-      .toContain('The dependency-start check covers one direction only')
-  })
+  it('restores the original in-file control and red-proof references', checkOriginalReferences)
 
-  it('restores the original in-file control and red-proof references', () => {
-    expect(readFileSync(join(ROOT, 'plugin/rules/wt-verify-by-ground-truth.md'), 'utf8'))
-      .toContain('Same family as control readable in both outcomes')
-    expect(readFileSync(join(ROOT, 'plugin/rules/wt-proportionate-verification.md'), 'utf8'))
-      .toContain('Its lock proven red the same way as any other fix.')
-  })
+  it('limits tracker, brief-write, and merge triggers to acts governed by their rules', checkNarrowTriggers)
 
-  it('limits tracker, brief-write, and merge triggers to acts governed by their rules', () => {
-    const trackerTool = triggersFor('wt-task-tracking').find((trigger) => trigger.kind === 'tool')!
-    expect(new RegExp(trackerTool.tool ?? '').test('mcp__github__get_pull_request')).toBe(false)
-    expect(new RegExp(trackerTool.tool ?? '').test('mcp__planka__update_card')).toBe(true)
-    expect(matchesBash('wt-delegation-ladder', 'cat .lane/brief.md')).toBe(false)
-    expect(matchesBash('wt-delegation-ladder', 'cat > .lane/brief.md')).toBe(true)
-    expect(matchesBash('wt-concurrent-sessions-worktree', 'git merge-base main HEAD')).toBe(false)
-    expect(matchesBash('wt-verify-by-ground-truth', 'git merge-base main HEAD')).toBe(false)
-  })
+  it('documents the multiline quoted-text limit without claiming shell-parser precision', checkHeredocLimit)
 
-  it('documents the multiline quoted-text limit without claiming shell-parser precision', () => {
-    const heredoc = "git commit -m \"$(cat <<'EOF'\nsummary\npnpm test\nEOF\n)\""
-    expect(ACT_RULES.some((name) => matchesBash(name, heredoc))).toBe(true)
-    expect(readFileSync(join(ROOT, 'plugin/rules/README.md'), 'utf8'))
-      .toContain('This quote handling is line-local')
-  })
+  it('uses one command-head pattern and matches the shared repository command corpus without quoted-text false positives', checkCommandHeadsAndCorpus)
 
-  it('uses one command-head pattern and matches the shared repository command corpus without quoted-text false positives', () => {
-    for (const name of ACT_RULES) {
-      for (const trigger of triggersFor(name).filter((candidate) => candidate.kind === 'bash')) {
-        expect(trigger.flags, `${name} uses multiline command heads`).toContain('m')
-        expect(trigger.regex, `${name} uses COMMAND_HEAD`).toMatch(new RegExp(`^${COMMAND_HEAD.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
-      }
-    }
-
-    const positives: Array<[typeof ACT_RULES[number], string]> = [
-      ['wt-concurrent-sessions-worktree', 'git -C .claude/worktrees/p1 reset --hard tip'],
-      ['wt-concurrent-sessions-worktree', 'cd x && git -C y merge branch'],
-      ['wt-concurrent-sessions-worktree', 'git --git-dir=.git merge branch'],
-      ['wt-concurrent-sessions-worktree', 'git --no-pager pull'],
-      ['wt-concurrent-sessions-worktree', 'git -c color.ui=false worktree add next'],
-      ['wt-concurrent-sessions-worktree', 'gh pr merge 123'],
-      ['wt-verify-by-ground-truth', '(pnpm test)'],
-      ['wt-verify-by-ground-truth', 'env FOO=1 pnpm test'],
-      ['wt-verify-by-ground-truth', 'env -u DEBUG pnpm test'],
-      ['wt-verify-by-ground-truth', 'CI=1 pnpm test'],
-      ['wt-verify-by-ground-truth', 'timeout 600 pnpm test'],
-      ['wt-verify-by-ground-truth', 'timeout -s KILL 600 pnpm test'],
-      ['wt-verify-by-ground-truth', 'nice pnpm test'],
-      ['wt-verify-by-ground-truth', 'time pnpm test'],
-      ['wt-verify-by-ground-truth', 'nohup pnpm test &'],
-      ['wt-verify-by-ground-truth', 'setsid pnpm test'],
-      ['wt-verify-by-ground-truth', 'sudo -u build pnpm test'],
-      ['wt-verify-by-ground-truth', "bash -c 'pnpm test'"],
-      ['wt-verify-by-ground-truth', 'sh -c "pnpm test"'],
-      ['wt-verify-by-ground-truth', "nohup bash -c 'cd toolkit && pnpm test > log 2>&1; echo EXIT=$? >> log' &"],
-      ['wt-verify-by-ground-truth', 'if ready; then pnpm test; fi'],
-      ['wt-verify-by-ground-truth', 'for pkg in a; do pnpm test; done'],
-      ['wt-verify-by-ground-truth', '{ pnpm test; }'],
-      ['wt-verify-by-ground-truth', '! pnpm test'],
-      ['wt-verify-by-ground-truth', 'printf ready & pnpm test'],
-      ['wt-verify-by-ground-truth', 'printf ready\npnpm test'],
-      ['wt-verify-by-ground-truth', 'npx vitest run'],
-      ['wt-verify-by-ground-truth', 'pnpm vitest run'],
-      ['wt-verify-by-ground-truth', 'pnpm exec vitest run'],
-      ['wt-verify-by-ground-truth', 'pnpm -C toolkit test'],
-      ['wt-verify-by-ground-truth', 'pnpm --dir toolkit test'],
-      ['wt-verify-by-ground-truth', 'pnpm -F pkg test'],
-      ['wt-verify-by-ground-truth', 'pnpm --filter=pkg test'],
-      ['wt-verify-by-ground-truth', 'pnpm -r test'],
-      ['wt-verify-by-ground-truth', 'pnpm --silent test'],
-      ['wt-verify-by-ground-truth', 'pnpm --filter @scope/pkg run test'],
-      ['wt-verify-by-ground-truth', 'npm --prefix toolkit test'],
-      ['wt-verify-by-ground-truth', 'npm run test'],
-      ['wt-verify-by-ground-truth', 'yarn test'],
-      ['wt-verify-by-ground-truth', 'bun test'],
-      ['wt-verify-by-ground-truth', 'node --test'],
-      ['wt-verify-by-ground-truth', 'make test'],
-      ['wt-verify-by-ground-truth', 'jest'],
-      ['wt-verify-by-ground-truth', 'vitest run'],
-      ['wt-verify-by-ground-truth', 'pytest'],
-      ['wt-verify-by-ground-truth', 'go test ./...'],
-      ['wt-verify-by-ground-truth', 'cargo test'],
-      ['wt-verify-by-ground-truth', 'tsc --noEmit'],
-      ['wt-verify-by-ground-truth', 'mypy src'],
-      ['wt-verify-by-ground-truth', 'ruff check .'],
-      ['wt-verify-by-ground-truth', 'eslint .'],
-      ['wt-verify-by-ground-truth', 'cargo clippy'],
-      ['wt-verify-by-ground-truth', 'ps aux'],
-      ['wt-verify-by-ground-truth', 'curl -s http://127.0.0.1:5174/'],
-      ['wt-verify-by-ground-truth', 'node ../plugin/bin/wt-observe.mjs start'],
-      ['wt-task-tracking', 'gh issue close 123'],
-      ['wt-task-tracking', 'gh project item-list 1'],
-      ['wt-task-tracking', 'jira issue view PROJ-1'],
-      ['wt-delegation-ladder', "cat > .lane/brief.md <<'EOF'"],
-    ]
-    for (const [name, command] of positives) expect(matchesBash(name, command), `${name}: ${command}`).toBe(true)
-
-    const sharedCorpus: Array<[string, typeof RULES[number][]]> = [
-      ['cd x && git -C y merge branch', ['wt-concurrent-sessions-worktree', 'wt-verify-by-ground-truth']],
-      ['setsid nohup pnpm test', ['wt-verify-by-ground-truth']],
-      ["cat > .lane/brief.md <<'EOF'", ['wt-delegation-ladder', 'wt-proportionate-verification', 'wt-sdlc']],
-      ['gh issue close 123', ['wt-task-tracking']],
-    ]
-    for (const [command, expected] of sharedCorpus) {
-      for (const name of ACT_RULES) expect(matchesBash(name, command), `${name}: ${command}`).toBe(expected.includes(name))
-    }
-
-    for (const command of ['cat toolkit/packages/build/src/x.ts', 'ls some/test/', 'curl https://example.test/latest', 'git diff --check', 'git commit -m "fix; pnpm test flake"', "grep '&& git merge'"]) {
-      expect(ACT_RULES.some((name) => matchesBash(name, command)), command).toBe(false)
-    }
-
-    const delegation = triggersFor('wt-delegation-ladder')
-    const briefPath = delegation.find((trigger) => trigger.kind === 'path')
-    expect(briefPath?.tool).toBe('^(?:Write|Edit|MultiEdit)$')
-    expect(new RegExp(briefPath?.regex ?? '').test('.lane/brief.md')).toBe(true)
-    expect(new RegExp(briefPath?.regex ?? '').test('plans/briefs/executor.md')).toBe(true)
-    expect(new RegExp(briefPath?.regex ?? '').test('plans/briefs/task.md')).toBe(true)
-    expect(new RegExp(briefPath?.regex ?? '').test('debrief.md')).toBe(false)
-    expect(new RegExp(briefPath?.regex ?? '').test('briefing-notes.md')).toBe(false)
-    expect(new RegExp(briefPath?.regex ?? '').test('README.md')).toBe(false)
-    expect(delegation).not.toContainEqual(expect.objectContaining({ kind: 'tool', tool: '^Skill$' }))
-
-    expect(JSON.stringify(triggersFor('wt-task-tracking'))).not.toMatch(/board-list|planka-tool/)
-  })
-
-  it('ships machine-triggered at-act halves and adopts both halves statically', () => {
-    target = mkdtempSync(join(tmpdir(), 'wt-rule-splits-'))
-    const env = sealedPluginCliEnv(join(target, 'env'), { CLAUDE_PLUGIN_ROOT: join(ROOT, 'plugin') })
-    const install = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--install', '--dir', target], {
-      encoding: 'utf8',
-      env,
-    })
-    expect(install.status, install.stderr).toBe(0)
-
-    for (const name of ACT_RULES) {
-      const atAct = `${name}-at-act.md`
-      const specPath = join(ROOT, 'plugin/rules', `${name}-at-act.spec.json`)
-      expect(existsSync(join(target, `${name}.md`)), `${name} core`).toBe(true)
-      expect(existsSync(join(target, atAct)), `${name} at-act`).toBe(true)
-      expect(install.stdout).toContain(`${atAct}: WROTE`)
-
-      const spec = JSON.parse(readFileSync(specPath, 'utf8')) as { 'on-demand'?: { triggers?: unknown[] } }
-      expect(spec['on-demand']?.triggers?.length, `${name} trigger spec`).toBeGreaterThan(0)
-    }
-
-    const check = spawnSync(process.execPath, [SCRIPT, '--set', 'rules', '--check', '--dir', target], {
-      encoding: 'utf8',
-      env,
-    })
-    expect(check.status, check.stderr).toBe(0)
-    for (const name of ACT_RULES) expect(check.stdout).toContain(`${name}-at-act.md: UP-TO-DATE`)
-  })
+  it('ships machine-triggered at-act halves and adopts both halves statically', checkAdoptsBothHalves)
 })
