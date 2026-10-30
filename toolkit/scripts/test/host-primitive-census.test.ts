@@ -83,6 +83,18 @@ describe('raw host primitive quality ratchet', () => {
     expect(checkHostPrimitives(root, new Map())).toMatchObject({ count: 0, perimeterFiles: 0, exceeded: false })
   })
 
+  it('exempts only the vendored Mermaid bundle while counting neighboring authored source', () => {
+    const root = fixturePlugin()
+    const assets = join(root, 'skills', 'artifact-server', 'assets', 'mermaid')
+    mkdirSync(assets, { recursive: true })
+    writeFileSync(join(assets, 'mermaid.min.js'), 'process.kill(1)\n')
+    const file = 'skills/artifact-server/helper.mjs'
+    writeFileSync(join(root, file), 'process.kill(2)\n')
+
+    expect(sourceFiles(root)).toEqual([join(root, file)])
+    expectUndeclared(root, file, ['process.kill'])
+  })
+
 })
 
 describe('host declaration path identity', () => {
