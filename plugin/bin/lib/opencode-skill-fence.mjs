@@ -64,11 +64,14 @@ function prepareUsageLaunch(sandbox, usageOptions, usageReceipt) {
   if (usageReceipt) usageOptions.launch = recordOpencodeLaunch(sandbox, usageOptions)
 }
 
+// Owning a lane's declared level also owns its inherited scheduling context.
+const suiteContextNames = (names) => names.includes('WT_SUITE_LOCK_PRIORITY') ? [...names, 'WT_SUITE_LOCK_CONTEXT'] : names
+
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform, extraNames = []) {
   const modelIndex = args.indexOf('--model')
   const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
   const { sandboxPaths, readonlyCwd, usageReceipt, usageReader, ...rest } = options
-  const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
+  const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...suiteContextNames(extraNames), ...modelNames], platform) }
   // A bridge that dies mid-run reports on the same stream as the lane's own stderr (its run log).
   const diagnostics = Array.isArray(rest.stdio) ? rest.stdio[2] : undefined
   const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform, readonlyCwd, diagnostics })
