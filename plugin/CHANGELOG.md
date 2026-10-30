@@ -17,6 +17,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
   Direct background-worker apply refusal is now regression-tested on a populated project.
+- Adopt now installs new at-act rules in on-demand directories with their trigger head and stamp, and repairs existing headless managed copies with a head-only write that preserves their bodies.
+- The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
+- Added regression tests for the secret guard's streaming mask; no behaviour change.
+### Added
+
+- Artifact-server HTML can opt into scripts and browser annotation tools with a first-content `<!-- wt-artifact-server: interactive -->` marker within 256 bytes. Existing raw, rich, and annotatable policies are unchanged. Markdown `mermaid` fences render escaped diagram source with a reserved local Mermaid asset and a hash-pinned initializer; Markdown without diagrams remains script-free. Mermaid 11.17.2 asset placeholders include installation instructions for network-restricted checkouts.
+
+### Fixed
+
+- The memory index probe warns within the final 15% of its applied byte ceiling, alongside the existing line-headroom notice, without changing findings or exit codes.
+- Admission runner and supervisor now use one-way module dependencies, preserving detached-process cleanup and existing admission results without a circular import.
+- Admission on Linux installs a child subreaper before executing policy, then kills and reaps detached descendants, including double-forked daemons, before returning. Cleanup survives Node-supervisor death and needs neither pidfds nor unrelated procfs records. Unavailable containment (including macOS and Windows) refuses before policy execution; abnormal containment-owner exit reports an explicit unknown.
+- The admission containment owner now ignores interrupt, terminate, hangup and quit signals so it cannot be stopped before its contained descendants are cleaned up, and its shutdown steps are time-bounded so a stuck child cannot hang admission.
+- `wt-tsls` CPU budgets now warn only: stopping an over-budget server is disabled until a later version. Individual or combined tsserver usage above 100% of one core for 120 sampled seconds produces one stderr warning with the measured excess and duration, then sampling continues without signalling processes or delaying the client's normal disconnect. Samples run every five seconds using Linux user/system ticks or macOS `ps` CPU time, pinned to the backend's spawn-time identity; polling ends on backend exit. Brief unavailable measurements pause evidence, gaps longer than 15 seconds reset it, and proven idle recovery resets sustained evidence while sibling replacement preserves accepted combined-CPU history. Unsupported platforms and failed measurements explicitly report an unavailable, unenforced budget instead of idle CPU. The existing native-watch bound remains active.
 - Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
 - Retain every artifact-server health responder until proven exited, coalesce unknown process observations, and carry self-read birth evidence across monitor handoffs.
 - Bind artifact-server attachments to identity-bracketed health observations, permanently retire exited instances, and use recorded birth identity for CLI stop/restart confirmation.

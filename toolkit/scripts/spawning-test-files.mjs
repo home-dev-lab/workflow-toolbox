@@ -23,6 +23,7 @@ export const spawningTestFiles = [
   'packages/build/test/actionability-bounded-refresh.test.ts',
   'packages/build/test/actionability-gate.test.ts',
   'packages/build/test/actionability-planka-producer.test.ts',
+  'packages/build/test/admission-containment.test.ts',
   'packages/build/test/admission-descriptor-output.test.ts',
   'packages/build/test/admission-snapshot.test.ts',
   'packages/build/test/adopt-agents-overlap.test.ts',
@@ -211,6 +212,8 @@ export const spawningTestFiles = [
   'packages/build/test/suite-lock-static.test.ts',
   'packages/build/test/suite-lock.test.ts',
   'packages/build/test/test-orphan-reaper.test.ts',
+  'packages/build/test/ts-language-server-cpu-r2.test.ts',
+  'packages/build/test/ts-language-server-cpu.test.ts',
   'packages/build/test/ts-language-server-launcher.test.ts',
   'packages/build/test/ts-language-server-watches.test.ts',
   'packages/build/test/unquoted-tool-glob-guard-hook.test.ts',
@@ -272,6 +275,27 @@ function moduleName(node) {
   return undefined
 }
 
+function collectNamedImportBindings(bindings, direct) {
+  for (const element of bindings.elements) {
+    if (PROCESS_FUNCTIONS.has(element.propertyName?.text ?? element.name.text)) direct.add(element.name.text)
+  }
+}
+
+function collectClauseBindings(clause, direct, namespaces) {
+  if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+    collectNamedImportBindings(clause.namedBindings, direct)
+  } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+    namespaces.add(clause.namedBindings.name.text)
+  }
+}
+
+function collectImportedBindings(node, direct, namespaces) {
+  if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && CHILD_PROCESS_MODULES.has(node.moduleSpecifier.text)) {
+    const clause = node.importClause
+    collectClauseBindings(clause, direct, namespaces)
+  }
+}
+
 function collectBindings(sourceFile) {
   const direct = new Set()
   const namespaces = new Set()
@@ -285,16 +309,7 @@ function collectBindings(sourceFile) {
   }
 
   const visit = (node) => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && CHILD_PROCESS_MODULES.has(node.moduleSpecifier.text)) {
-      const clause = node.importClause
-      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
-        for (const element of clause.namedBindings.elements) {
-          if (PROCESS_FUNCTIONS.has(element.propertyName?.text ?? element.name.text)) direct.add(element.name.text)
-        }
-      } else if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
-        namespaces.add(clause.namedBindings.name.text)
-      }
-    }
+    collectImportedBindings(node, direct, namespaces)
     if (ts.isVariableDeclaration(node) && node.initializer) {
       let initializer = node.initializer
       if (ts.isAwaitExpression(initializer)) initializer = initializer.expression
