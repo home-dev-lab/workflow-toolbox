@@ -71,6 +71,61 @@ this server. Never construct or hand over such a mount-root link. Root-relative 
 Markdown, such as `[other](/report.md)`, also target the domain root under a path mount because the
 server cannot infer the proxy-owned prefix; artifact authors must use document-relative links.
 
+## Adding diagrams
+
+Use `interactive` for a trusted HTML report you authored that needs both page scripts and
+browser page/annotation tools. Put `<!-- wt-artifact-server: interactive -->` on its first line,
+entirely within the first 256 bytes. For anything you did not author, keep raw mode. Interactive
+mode has no sandbox: it permits inline and same-origin scripts, including **any file served by
+the server**, while blocking connections, forms, objects, base changes, and framing.
+
+This copy-ready command writes an HTML example with one inline Mermaid bundle, one initializer,
+and a diagram. Set `CLAUDE_PLUGIN_ROOT` to the installed plugin directory in a normal shell.
+The pinned bundle and its MIT license live under `skills/artifact-server/assets/mermaid/`;
+if that directory contains placeholders, follow its `VERSION` instructions first.
+
+```bash
+node --input-type=module <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+const bundle = readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT,
+  'skills/artifact-server/assets/mermaid/mermaid.min.js'), 'utf8')
+writeFileSync('diagram.html', `<!-- wt-artifact-server: interactive -->
+<!doctype html><html><head><meta charset="utf-8"><title>Report diagram</title></head><body>
+<pre class="mermaid">flowchart LR
+  Draft --> Review --> Published
+</pre>
+<script>${bundle.replace(/<\/script/gi, '<\\/script')}</script>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'strict' });</script>
+</body></html>`)
+NODE
+```
+
+For Markdown, use an info string of exactly `mermaid`:
+
+````markdown
+# Report diagram
+
+The review flow:
+
+```mermaid
+flowchart LR
+  Draft --> Review --> Published
+```
+````
+
+The server escapes the diagram source, loads its own pinned Mermaid build (never a CDN), and
+uses strict Mermaid security with the neutral theme. Only Markdown with a Mermaid fence enables
+scripts: the policy admits same-origin scripts (`'self'`) and the fixed initializer's hash, and
+the page carries no other script, because rendered Markdown escapes HTML. The script URL is
+relative, so it works directly and behind a path-mounted proxy such as `tailscale serve`
+under `/artifacts`. The path segment `__wt-artifact-server` belongs to the server at any depth:
+a root file or folder of that name is never served. A Mermaid example quoted inside a longer or
+`~~~` fence stays text. Other Markdown remains script-free.
+
+`'self'` spans every registered root on the origin: an interactive HTML page can load a script
+from another root. Mark a page interactive only when you trust every root served beside it.
+
 ## Lifecycle
 
 The default port is stable for the OS user in the 48000-48999 range. Set the
@@ -167,7 +222,7 @@ the tailnet.
   file; an extension can be lost on rename, while a sibling policy file can drift away. Rich mode
   narrows blast radius but does not make the artifact trusted: opening it still runs unreviewed code
   the owner chose to open. Raw SVG and unknown content retain the no-script sandbox; generated
-  Markdown and indexes use a strict no-script CSP.
+  Markdown without Mermaid fences and indexes use a strict no-script CSP.
 - For HTML documents the owner reviews and annotates in Orca, put
   `<!-- wt-artifact-server: annotatable -->` before any non-whitespace content. Like the rich
   marker, it is case-insensitive and must fit entirely within the first 256 bytes. Annotatable
