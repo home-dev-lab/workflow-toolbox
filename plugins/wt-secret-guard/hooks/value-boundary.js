@@ -1,15 +1,14 @@
-// Outbound-only writer-value boundaries. Detector captures remain the inbound contract.
+// A cancellation is a narrow literal spelling; discovery stays the frozen detector's.
 import { contextualMatches, DISTINCT_VALUE_FLOOR } from './detector.js';
 
 export const WIDE_REFERENCE = /(?:op:\/\/[^\s"']+|secret:(?:env|file|1p):[^\s"']+|\$\{[A-Za-z_][A-Za-z0-9_]*\}|secret:[a-z-]+#[a-f0-9]{6})/gi;
-const REFERENCE_SOURCE = '(?:\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}|secret:(?:env):[A-Za-z_][A-Za-z0-9_]*|(?:secret:(?:file|1p):|op://)[^\\s"\'`,;#()\\[\\]{}<>]+|secret:[a-z-]+#[a-f0-9]{6})(?![A-Za-z0-9_])';
-const REFERENCE_AT = new RegExp(`^${REFERENCE_SOURCE}`, 'i');
-const REFERENCE_ALL = new RegExp(REFERENCE_SOURCE, 'gi');
+const STRICT = /^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|secret:(?:env):[A-Za-z_][A-Za-z0-9_]*|(?:secret:(?:file|1p):|op:\/\/)[^\s"'`,;#()\[\]{}<>]+|secret:[a-z-]+#[a-f0-9]{6})$/i;
+const RESIDUE_REFERENCE = new RegExp(`${STRICT.source.slice(1, -1)}(?![A-Za-z0-9_])`, 'gi');
 const CONTEXTUAL = new Set(['assignment', 'op-output', 'key-value', 'environment-dump']);
-// Union of JS \s (including U+2028/U+2029) and Python str.isspace/splitlines.
-const LEADING_WHITESPACE = /^[\s\u0085\u001c-\u001f]*/u;
+const SPACE = /^[\s\u0085\u001c-\u001f]*/u;
 export const isContextual = (kind) => CONTEXTUAL.has(kind);
 export const blankReferences = (value) => value.replace(WIDE_REFERENCE, (reference) => ' '.repeat(reference.length));
+export const referenceProof = (value) => STRICT.test(value);
 
 function passCandidates(text, candidate, base) {
   return contextualMatches(candidate).map((item) => {
@@ -34,158 +33,125 @@ function quoteAt(text, at) {
   return text.startsWith(text[at].repeat(3), at) ? text[at].repeat(3) : text[at];
 }
 
-function scanCharacter(text, at, state) {
-  if (state.quote) {
-    if (text[at] === '\\' && state.quote[0] !== "'") return at + 2;
-    if (text.startsWith(state.quote, at)) { const length = state.quote.length; state.quote = ''; return at + length; }
-    return at + 1;
+function prefixState(text, end) {
+  const state = { quote: '', depth: 0 };
+  const brackets = [];
+  for (let at = 0; at < end; at += 1) {
+    at = prefixCharacter(text, at, state, brackets);
   }
+  return state;
+}
+
+function prefixCharacter(text, at, state, brackets) {
+  if (text[at] === '\\' && state.quote !== "'") return at + 1;
+  if (state.quote) return quotedCharacter(text, at, state);
+  const reference = text.slice(at).match(new RegExp(`^(?:${WIDE_REFERENCE.source})`, 'i'));
+  if (reference) return at + reference[0].length - 1;
   const quote = quoteAt(text, at);
-  if (quote) { state.quote = quote; return at + quote.length; }
-  // References contain braces that are not writer brackets.
-  const reference = text.slice(at).match(REFERENCE_AT);
-  if (reference) return at + reference[0].length;
-  if ('([{'.includes(text[at])) state.depth += 1;
-  if (')]}'.includes(text[at])) state.depth = Math.max(0, state.depth - 1);
-  return at + 1;
+  if (quote) { state.quote = quote; return at + quote.length - 1; }
+  updateBrackets(text[at], brackets);
+  state.depth = brackets.length;
+  return at;
 }
 
-function lineContext(text, item) {
-  const start = Math.max(text.lastIndexOf('\n', item.keyStart - 1), text.lastIndexOf('\r', item.keyStart - 1)) + 1;
-  const prefix = text.slice(0, start);
-  const header = /(?:^|[\r\n])[ \t]*\[[^\]\r\n]+\][ \t]*(?:\r\n|[\r\n]|$)/.test(prefix);
-  const indent = text.slice(start).split(/[\r\n]/, 1)[0].match(LEADING_WHITESPACE)[0].length;
-  const colon = text.slice(item.keyStart, item.valueStart).includes(':');
-  return { header, colon, indent, deeper: header || colon || Boolean(quoteAt(text, item.valueStart)) };
+function updateBrackets(character, brackets) {
+  if ('([{'.includes(character)) brackets.push(character);
+  const closing = ')]}'.indexOf(character);
+  if (closing >= 0 && brackets.at(-1) === '([{'[closing]) brackets.pop();
 }
 
-function lineAt(text, at) {
-  const offset = text.slice(at).search(/[\r\n]/);
-  const end = offset < 0 ? text.length : at + offset;
-  const ending = text.slice(end).match(/^(?:\r\n|[\r\n])/)?.[0] ?? '';
-  return { end, next: end + ending.length, ending };
+function quotedCharacter(text, at, state) {
+  if (!text.startsWith(state.quote, at)) return at;
+  const next = at + state.quote.length - 1;
+  state.quote = '';
+  return next;
 }
 
-function nextDeeper(text, at, indent) {
-  let cursor = at;
-  const skipped = [];
-  while (cursor < text.length) {
-    const { end, next } = lineAt(text, cursor);
-    const line = text.slice(cursor, end);
-    const width = line.match(LEADING_WHITESPACE)[0].length;
-    // Blank lines remain literal proof whitespace; comment-like bytes are never erased.
-    if (!line.slice(width) || /^[#;]/.test(line.slice(width))) {
-      if (line.slice(width)) skipped.push([cursor, end]);
-      cursor = next;
-      continue;
+function literalParts(text, item) {
+  const start = text.lastIndexOf('\n', item.keyStart - 1) + 1;
+  const end = text.indexOf('\n', item.keyStart);
+  const stop = end < 0 ? text.length : end;
+  const line = text.slice(start, stop);
+  const raw = text.slice(item.keyStart, stop);
+  const match = raw.match(/^("[A-Za-z_][\w.-]*"|[A-Za-z_][\w.-]*)[ \t]*([=:])[ \t]*(.*)$/);
+  if (!match) return null;
+  return { start, stop, line, match, ...tailParts(match[3]) };
+}
+
+function tailParts(tail) {
+  const quote = /^["']/.test(tail) ? tail[0] : '';
+  const close = quote ? tail.indexOf(quote, 1) : -1;
+  const reference = quote ? tail.slice(1, close < 0 ? undefined : close) : tail.match(/^\$\{[^}]*\}|^[^,}\s]+/)?.[0] ?? '';
+  const residue = tail.slice(reference.length + (quote ? 2 : 0));
+  return { quote, close, reference, residue };
+}
+
+function nextLineSafe(text, parts) {
+  const next = text.slice(parts.stop + 1).split('\n').find((line) => line.slice(line.match(SPACE)[0].length));
+  // Also retain shallow sibling refusals: no writer grammar is inferred beyond this line.
+  return next === undefined;
+}
+
+export function routeSMatch(text, item) {
+  const parts = literalParts(text, item);
+  if (!parts) return false;
+  const state = prefixState(text, item.keyStart);
+  const checks = routeChecks(text, parts, state);
+  return allChecks(checks);
+}
+
+function validShape(parts) {
+  return (!parts.quote || parts.close > 0) && (!parts.match[1].startsWith('"') || (parts.match[2] === ':' && parts.quote === '"'));
+}
+
+function routeChecks(text, parts, state) {
+  return {
+    shape: validShape(parts),
+    reference: STRICT.test(parts.reference),
+    terminator: /^(?:[,}]*)$/.test(parts.residue),
+    deeper: nextLineSafe(text, parts),
+    literal: !state.quote,
+    bracket: !state.depth,
+    backslash: !/\\$/.test(parts.line) && !/\\\n$/.test(text.slice(0, parts.start)),
+    line: !/[\r\u0085\u2028\u2029]/u.test(parts.line),
+    eof: parts.stop < text.length || !parts.residue,
+  };
+}
+
+function allChecks(checks) {
+  return checks.shape && checks.reference && checks.terminator && checks.deeper
+    && checks.literal && checks.bracket && checks.backslash && checks.line && checks.eof;
+}
+
+export function boundaryFindings(text) {
+  const found = [];
+  for (const item of discoverCandidates(text)) {
+    if (routeSMatch(text, item)) continue;
+    if (item.base) {
+      found.push(item.finding);
+      if ([...item.finding.value.matchAll(WIDE_REFERENCE)].length) found.push(...rawFindings(text, item));
     }
-    return width > indent || skipped.length ? { cursor, skipped, joins: width > indent } : null;
+    else found.push(...rawFindings(text, item));
   }
-  return null;
-}
-
-function nextKeyBoundary(text, at, item, candidates, context, state) {
-  if (context.header || state.quote || !';,'.includes(text[at])) return false;
-  const next = candidates.find((candidate) => candidate.keyStart > at && candidate.keyStart !== item.keyStart
-    && /^[ \t]*$/.test(text.slice(at + 1, candidate.keyStart)));
-  return Boolean(next);
-}
-
-function continuesLine(text, at, state, context) {
-  // Shell retains CR as a word byte, unlike the universal-newline writer forms.
-  const shellCR = text[at] === '\r' && !context.header && !context.colon;
-  if (shellCR) state.modelled = false;
-  return state.quote || state.depth || text[at - 1] === '\\' || shellCR;
-}
-
-export function valueExtent(text, item, candidates = []) {
-  const context = lineContext(text, item);
-  const state = { quote: '', depth: 0, modelled: true };
-  const skipped = [];
-  let at = item.valueStart;
-  while (at < text.length) {
-    if (nextKeyBoundary(text, at, item, candidates, context, state)) break;
-    if (!/[\r\n]/.test(text[at])) { at = scanCharacter(text, at, state); continue; }
-    const line = lineAt(text, at);
-    if (continuesLine(text, at, state, context)) { at = line.next; continue; }
-    const next = context.deeper ? nextDeeper(text, line.next, context.indent) : null;
-    if (!next) break;
-    skipped.push(...next.skipped);
-    at = next.cursor;
-    if (!next.joins) break;
+  for (const element of xmlElements(text)) {
+    if (!referenceProof(element.text)) found.push(...residueFindings(element.text, 'xml-element', element.start));
   }
-  // Project out only the recognised key prefix, retaining the full writer end.
-  // Differential controls remove the key through this end, including continuations.
-  return finishedExtent(text, item, at, skipped, state.modelled);
+  return found;
 }
 
-function finishedExtent(text, item, at, skipped, modelled) {
-  const start = item.valueStart;
-  const end = Math.max(at, item.base ? item.captureEnd : at);
-  const content = text.slice(start, end);
-  // A detector capture can include only the CR half of a closing CRLF.
-  const closingLF = text[end - 1] === '\r' && text[end] === '\n' ? '\n' : '';
-  const endings = new Set((content + closingLF).match(/\r\n|[\r\n]/g));
-  // A proof never licenses bytes skipped by the scanner or mixed writer line forms.
-  return { start, end, text: content, skipped, modelled: modelled && skipped.length === 0 && endings.size <= 1 };
-}
-
-function proofItem(text, mode) {
-  const quote = mode === 'decoded' || mode === 'xml' ? '' : quoteAt(text, 0);
-  const reference = text.slice(quote.length).match(REFERENCE_AT)?.[0];
-  if (!reference) return 0;
-  const end = quote.length + reference.length;
-  return !quote || text.startsWith(quote, end) ? end + quote.length : 0;
-}
-
-function proofSeparator(text, quotedJoin) {
-  const plain = text.match(/^\s*[,;]?\s*/)[0];
-  if (plain.length) return plain.length;
-  if (quotedJoin && /^["']/.test(text)) return 0;
-  return -1;
-}
-
-function proofTail(text, mode) {
-  return !text.trim() || (mode !== 'xml' && /^\s*[,;]\s*$/.test(text));
-}
-
-function itemSeparator(text, mode, quoted) {
-  if (mode === 'xml') return text.match(/^\s+/)?.[0].length ?? -1;
-  const plus = quoted ? text.match(/^\s*\+\s*(?=["'])/)?.[0] : undefined;
-  return plus?.length ?? proofSeparator(text, quoted);
-}
-
-function proofText(value, mode) {
-  const text = mode === 'xml' ? value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1') : value;
-  if (mode === 'xml' && /[<&]/.test(text)) return null;
-  return text.trim();
-}
-
-export function referenceProof(value, mode = 'extent') {
-  let text = proofText(value, mode);
-  if (text === null) return false;
-  if (mode === 'extent') text = text.replace(/^[([{]+\s*/, '');
-  let items = 0;
-  while (text) {
-    const quoted = /^["']/.test(text);
-    const length = proofItem(text, mode);
-    if (!length) return false;
-    items += 1;
-    text = text.slice(length);
-    if (mode === 'extent') text = text.replace(/^\s*[)\]}]+\s*/, '');
-    if (proofTail(text, mode)) return true;
-    const sep = itemSeparator(text, mode, quoted);
-    if (sep < 0) return false;
-    text = text.slice(sep);
-  }
-  return items > 0;
+function rawFindings(text, item) {
+  const value = text.slice(item.valueStart);
+  // Frozen discovery accepts a bare reference terminated by CRLF. Do not promote
+  // its raw-only candidate into a new finding merely because Route S rejects CR.
+  if (referenceProof(value.trim().replace(/^(["'])(.*)\1$/s, '$2'))) return [];
+  return residueFindings(value, item.kind, item.valueStart);
 }
 
 export function residueFindings(text, kind, index = 0) {
-  const residue = text.replace(REFERENCE_ALL, (reference) => ' '.repeat(reference.length));
+  const residue = text.replace(RESIDUE_REFERENCE, (reference) => ' '.repeat(reference.length));
   const runs = [...residue.matchAll(/[^\s"'`,;()\[\]{}<>]+/g)].filter((match) => match[0].length >= DISTINCT_VALUE_FLOOR);
   if (runs.length) return runs.map((match) => ({ kind, value: match[0], index: index + match.index }));
-  return [{ kind, value: text.trim(), index }];
+  return text.trim() && !referenceProof(text.trim()) ? [{ kind, value: text.trim(), index }] : [];
 }
 
 export function xmlElements(text) {
@@ -196,31 +162,7 @@ export function xmlElements(text) {
     const closing = new RegExp(`</${match[1]}\\s*>`, 'g');
     closing.lastIndex = start;
     const close = closing.exec(text);
-    found.push({ start, end: close?.index ?? text.length, text: text.slice(start, close?.index ?? text.length) });
-  }
-  return found;
-}
-
-function occurrenceFindings(text, item, extent) {
-  if (!extent.modelled && referenceProof(extent.text)) {
-    // Unknown syntax has no credential residue to select. Retain the whole occurrence
-    // as evidence, never a bare reference spelling that would poison the held vault.
-    return [{ kind: item.kind, value: text.slice(item.keyStart, extent.end), index: item.keyStart }];
-  }
-  const genuine = item.base && !referenceProof(item.finding.value);
-  return genuine ? [item.finding] : residueFindings(extent.text, item.kind, extent.start);
-}
-
-export function boundaryFindings(text) {
-  const candidates = discoverCandidates(text);
-  const found = [];
-  for (const item of candidates) {
-    const extent = valueExtent(text, item, candidates);
-    if (extent.modelled && referenceProof(extent.text)) continue;
-    found.push(...occurrenceFindings(text, item, extent));
-  }
-  for (const element of xmlElements(text)) {
-    if (!referenceProof(element.text, 'xml')) found.push(...residueFindings(element.text, 'xml-element', element.start));
+    found.push({ start, text: text.slice(start, close?.index ?? text.length) });
   }
   return found;
 }

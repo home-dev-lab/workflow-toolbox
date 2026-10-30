@@ -38,9 +38,8 @@ export function base64Utf8(value) {
 function pushDetectedFindings(found, value, key, path, options) {
   const candidate = withoutReferences(value);
   const baseDirect = detections(candidate);
-  // Only fully modelled writer-value proofs cancel contextual occurrences; skipped bytes fail closed.
-  // Independent detector evidence survives.
-  // An unheld bare tail is not independent evidence; occurrence-removal controls lock that distinction.
+  // Only exact Route S spellings cancel frozen contextual findings.
+  // Independent detector evidence survives; raw-only matches never add findings.
   const direct = baseDirect.filter((item) => !isContextual(item.kind)).map((item) => {
     const start = candidate.indexOf(item.value);
     return start < 0 ? { ...item, path } : { ...item, value: value.slice(start, start + item.value.length), path, index: start };
