@@ -2149,10 +2149,10 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
   })
   it('the worker env carries the declared level over an ambient one, else defaults to P2', () => {
     const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
-    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P0' })
+    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P0' })
     expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
-    expect(laneWorkerEnv(ambient, null)).toEqual(ambient)
-    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' })
+    expect(laneWorkerEnv(ambient, null)).toEqual({ ...ambient, WT_SUITE_LOCK_CONTEXT: 'lane' })
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: 'P2' })
   })
 })
 

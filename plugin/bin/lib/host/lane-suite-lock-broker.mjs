@@ -102,7 +102,7 @@ export function laneSuiteLockMaxHoldSeconds(env = process.env) {
 }
 
 function hostLockOptions(env, priority) {
-  const hostEnv = { ...env }
+  const hostEnv = { ...env, WT_SUITE_LOCK_CONTEXT: 'lane' }
   const declared = laneSuiteLockPriority({ priority }, hostEnv)
   if (declared === 'release') throw new Error('release priority is not available to a lane broker')
   return { env: hostEnv, priority: declared }

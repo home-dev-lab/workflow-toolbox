@@ -124,7 +124,7 @@ function laneLockPriority(value) {
  * child, whose env filter would otherwise drop it. A declaration wins over the ambient level, else P2.
  */
 export function laneWorkerEnv(env, lockPriority) {
-  return { ...env, WT_SUITE_LOCK_PRIORITY: laneSuiteLockPriority({ priority: lockPriority ?? undefined }, env) }
+  return { ...env, WT_SUITE_LOCK_CONTEXT: 'lane', WT_SUITE_LOCK_PRIORITY: laneSuiteLockPriority({ priority: lockPriority ?? undefined }, env) }
 }
 
 // The worker argv that carries a declared --lock-priority to the detached worker; nothing when none was declared.
