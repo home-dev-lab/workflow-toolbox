@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+- Adopt now installs new at-act rules in on-demand directories with their trigger head and stamp, and repairs existing headless managed copies with a head-only write that preserves their bodies.
+- The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
+- Added regression tests for the secret guard's streaming mask; no behaviour change.
 ### Added
 
 - Artifact-server HTML can opt into scripts and browser annotation tools with a first-content `<!-- wt-artifact-server: interactive -->` marker within 256 bytes. Existing raw, rich, and annotatable policies are unchanged. Markdown `mermaid` fences render escaped diagram source with a reserved local Mermaid asset and a hash-pinned initializer; Markdown without diagrams remains script-free. Mermaid 11.17.2 asset placeholders include installation instructions for network-restricted checkouts.
