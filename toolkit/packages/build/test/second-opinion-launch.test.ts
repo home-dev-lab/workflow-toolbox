@@ -279,3 +279,64 @@ writeFileSync(${JSON.stringify(f.out)}, 'done\\nEXIT=0\\n')`)
   expect(readFileSync(`${f.out}.launch.stdout.log`, 'utf8')).toBe('startup stdout\n')
   expect(readFileSync(`${f.out}.launch.log`, 'utf8')).toBe('startup stderr\n')
 })
+
+it.each([
+  ['C:\\work tree\\', '"C:\\work tree\\\\"'],
+  ['C:\\work\\', '"C:\\work\\\\"'],
+  ['C:\\work tree\\\\', '"C:\\work tree\\\\\\\\"'],
+  ['C:\\work\\\\', '"C:\\work\\\\\\\\"'],
+] as const)('Windows legacy argument quoting preserves trailing backslashes in %j', (repo, argument) => {
+  const block = readFileSync(skillPath, 'utf8').match(/```powershell\r?\n([\s\S]*?)```/)?.[1]
+  const escape = block?.match(/ForEach-Object \{ '"' \+ \(\$_ -replace '([^']+)', '([^']+)'\) \+ '"' \}/)
+  expect(escape, 'Windows legacy arguments must double trailing backslashes before quoting').toBeTruthy()
+  const [, pattern = '', replacement = ''] = escape ?? []
+  expect(`"${repo.replace(new RegExp(pattern), replacement)}"`).toBe(argument)
+  expect(block).toContain("(Get-Variable PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue) -notin @('Standard', 'Windows')")
+})
+
+it.skipIf(process.platform !== 'win32')('the documented Windows launch preserves a repository trailing separator', async () => {
+  const f = stub(`import { writeFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+writeFileSync(args[args.indexOf('--out') + 1], JSON.stringify(args) + '\\nEXIT=0\\n')`)
+  f.repo += '\\'
+  const result = await documentedLaunch(f)
+  expect(JSON.parse(result.out!.split('\n')[0]!), result.diagnostics).toEqual([
+    '--request', f.request, '--out', f.out, '--effort', 'low', '--route', 'astra', '--repo', f.repo,
+  ])
+})
+
+it('the Windows detacher returns while its child runs when the PID record cannot be written', async () => {
+  const f = fixture()
+  const source = readFileSync(skillPath, 'utf8').match(/\$detach = @'\r?\n([\s\S]*?)\r?\n'@/)?.[1]
+  expect(source).toBeTruthy()
+  const bootstrap = `${f.out}.launch.mjs`
+  writeFileSync(bootstrap, `import { existsSync, writeFileSync } from 'node:fs'
+import { setTimeout } from 'node:timers/promises'
+writeFileSync(${JSON.stringify(`${f.out}.child.pid`)}, String(process.pid))
+writeFileSync(${JSON.stringify(`${f.out}.ready`)}, 'ready')
+while (!existsSync(${JSON.stringify(`${f.out}.release`)})) await setTimeout(10)`)
+  mkdirSync(`${f.out}.launch.pid`)
+  const shellTimeoutMs = process.platform === 'win32' ? 60_000 : 10_000
+  try {
+    const started = performance.now()
+    const result = await runShell(f, process.execPath, ['--input-type=module', '-e', source, '--', bootstrap, '--out', f.out], {
+      env: f.env, shellTimeoutMs,
+    })
+    const elapsedMs = performance.now() - started
+    expect(result.error, launchDiagnostics(f)).toBeNull()
+    expect(result.status, launchDiagnostics(f)).toBe(1)
+    expect(elapsedMs, launchDiagnostics(f)).toBeLessThan(shellTimeoutMs)
+    const deadline = performance.now() + (process.platform === 'win32' ? 120_000 : 15_000)
+    while (!existsSync(`${f.out}.ready`) && performance.now() < deadline) await delay(20)
+    expect(existsSync(`${f.out}.ready`), launchDiagnostics(f)).toBe(true)
+    const pid = Number(readFileSync(`${f.out}.child.pid`, 'utf8'))
+    expect(() => process.kill(pid, 0)).not.toThrow()
+    expect(existsSync(`${f.out}.release`)).toBe(false)
+    const log = readFileSync(`${f.out}.launch.log`, 'utf8')
+    expect(log).toMatch(/EISDIR|EACCES|EPERM/)
+    expect(log).toContain('.launch.pid')
+  } finally {
+    rmSync(`${f.out}.launch.pid`, { recursive: true, force: true })
+    writeFileSync(`${f.out}.release`, 'release')
+  }
+})

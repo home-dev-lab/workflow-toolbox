@@ -203,9 +203,9 @@ try {
   const child = spawn(process.execPath, [bootstrap, ...args], {
     detached: true, windowsHide: true, stdio: ['ignore', ...fds],
   })
+  child.unref()
   child.once('error', (error) => { appendFileSync(log, String(error) + '\n'); process.exitCode = 1 })
   if (child.pid) writeFileSync(out + '.launch.pid', String(child.pid))
-  child.unref()
 } catch (error) {
   appendFileSync(log, String(error) + '\n')
   process.exitCode = 1
@@ -215,6 +215,9 @@ try {
 '@
 try {
   $node = (Get-Command node -CommandType Application -ErrorAction Stop).Source
+  if ((Get-Variable PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue) -notin @('Standard', 'Windows')) {
+    $launchArgs = @($launchArgs | ForEach-Object { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' })
+  }
   & $node --input-type=module -e $detach -- @launchArgs
   if ($LASTEXITCODE -ne 0) { throw "Detached node launcher exited with code $LASTEXITCODE" }
 } catch {
