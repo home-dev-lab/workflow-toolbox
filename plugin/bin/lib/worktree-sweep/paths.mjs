@@ -95,7 +95,8 @@ export function entryBoundary(file, boundary) {
 
 function recordNode(file, stat, inventory) {
   if (stat.mtimeNs > inventory.latestNs) inventory.latestNs = stat.mtimeNs
-  if (stat.ctimeNs > inventory.latestNs) inventory.latestNs = stat.ctimeNs
+  // Another worktree can change a shared inode's link count without writing it.
+  if (stat.ctimeNs > inventory.latestNs && !(stat.isFile() && stat.nlink > 1n)) inventory.latestNs = stat.ctimeNs
   if (stat.isSymbolicLink()) return
   if (stat.isDirectory()) { inventory.stack.push(file); return }
   if (!stat.isFile()) { inventory.special = true; return }

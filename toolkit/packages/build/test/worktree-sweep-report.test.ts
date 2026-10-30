@@ -1,8 +1,8 @@
 import { execFileSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process'
-import { chmodSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, truncateSync, utimesSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime module
 import { fixture, fingerprint, git, repository, sweepModule } from '../../../test-support/worktree-sweep-fixture.mjs'
 const moduleUrl = sweepModule('bin/lib/worktree-sweep/scan.mjs')
@@ -355,4 +355,84 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
       expect(() => execFileSync(process.execPath, [cli, 'run', '--out', out], { env: f.env, stdio: 'pipe' })).toThrow()
     }
     expect(readFileSync(target, 'utf8')).toBe('sentinel'); expect(fingerprint(f.project)).toEqual(before)
-  })
+   })
+
+const quietMs = 72 * 3600_000
+type SweepRow = { name: string; reason: string; verdict: string; bytes: number | null; ageHours: number | null }
+const row = (report: { entries: SweepRow[] }, name: string) => report.entries.find(entry => entry.name === name)!
+
+it.each([false, true])('B1 shared-file ctime is quiet, with a readable control (real write=%s)', async realWrite => {
+  const f = setup()
+  const linked = repository(f, 'linked'); const control = repository(f, 'control')
+  for (const dir of [linked, control]) {
+    mkdirSync(join(dir, 'node_modules', '.pnpm', 'pkg'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', '.pnpm', 'pkg', 'index.js'), 'x\n')
+  }
+  const file = join(linked, 'node_modules', '.pnpm', 'pkg', 'index.js')
+  const before = lstatSync(file, { bigint: true }); const created = Date.now()
+  // Wait for the observation cutoff to pass before causing the real link-count change.
+  await vi.waitUntil(() => Date.now() > created + 1000, { timeout: 5000 })
+  linkSync(file, join(f.root, 'store-link'))
+  const after = lstatSync(file, { bigint: true })
+  expect(after.nlink).toBeGreaterThan(1n)
+  expect(after.ctimeNs).toBeGreaterThan(before.ctimeNs)
+  expect(after.mtimeNs).toBe(before.mtimeNs)
+  const options = { ...f.options, now: created + quietMs + 1000 }
+  const report = sweep!.scanProject(options)
+  expect(row(report, 'control').reason, 'single-link control must be quiet').toBe('eligible')
+  expect(row(report, 'linked').reason, 'a hard-link ctime bump is not worktree activity').toBe('eligible')
+  if (!realWrite) return
+  writeFileSync(file, 'real write\n')
+  expect(lstatSync(file, { bigint: true }).mtimeNs).toBeGreaterThan(after.mtimeNs)
+  const written = sweep!.scanProject(options)
+  expect(row(written, 'control').reason, 'control must stay quiet after the shared-file write').toBe('eligible')
+  expect(row(written, 'linked')).toMatchObject({ verdict: 'KEEP', reason: 'recent' })
+})
+
+it('B2 every entry receives a fresh inventory budget regardless of its position', () => {
+  const f = setup()
+  const names = Array.from({ length: 14 }, (_, i) => `a${String(i + 1).padStart(2, '0')}`)
+  for (const name of names) repository(f, name)
+  let calls = 0
+  sweep!.scanProject({ ...f.options, clock: () => { calls++; return 0 } })
+  const perEntry = Math.ceil(calls / names.length)
+  const stepMs = Math.floor(48000 / perEntry)
+  let time = 0
+  const report = sweep!.scanProject({ ...f.options, clock: () => { time += stepMs; return time } })
+  const reasons = names.map(name => row(report, name).reason)
+  expect(reasons, `reasons by position: ${reasons.join(', ')}`).toEqual(names.map(() => 'eligible'))
+})
+
+it('B2 global exhaustion lists every remaining entry as KEEP scan-deadline', () => {
+  const f = setup()
+  const names = ['a-first', 'b-later', 'c-last'] as const
+  const first = repository(f, names[0]); repository(f, names[1]); repository(f, names[2])
+  mkdirSync(join(f.source, 'd-plain')); mkdirSync(join(f.source, 'e-snapshot.base'))
+  let time = 0
+  const examined: string[] = []
+  const gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+    if (args.includes('status')) { examined.push(args[args.indexOf('-C') + 1]!); time = 1001 }
+    return spawnSync(cmd, args, options)
+  }
+  const report = sweep!.scanProject({ ...f.options, gitRun, clock: () => time, scanBudgetMs: 1000 })
+  expect(row(report, names[0]).reason).toBe('eligible')
+  expect(report.entries.slice(1).map((entry: SweepRow) => [entry.name, entry.verdict, entry.reason, entry.bytes, entry.ageHours]))
+    .toEqual([...names.slice(1), 'd-plain', 'e-snapshot.base'].map(name => [name, 'KEEP', 'scan-deadline', null, null]))
+  expect(examined, 'expired entries must not run per-entry Git status').toEqual([first])
+})
+
+it('B2 an entry exceeding its own budget is cannot-archive and the next entry still runs', () => {
+  const f = setup(); const slow = repository(f, 'a-slow'); repository(f, 'b-fast')
+  let time = 0; let armed = false; let charged = false
+  const clock = () => {
+    if (armed && !charged) { time += 120001; charged = true }
+    return time
+  }
+  const gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+    if (args.includes('--absolute-git-dir') && args[args.indexOf('-C') + 1] === slow) armed = true
+    return spawnSync(cmd, args, options)
+  }
+  const report = sweep!.scanProject({ ...f.options, clock, gitRun })
+  expect(row(report, 'a-slow')).toMatchObject({ verdict: 'KEEP', reason: 'cannot-archive' })
+  expect(row(report, 'b-fast').reason).toBe('eligible')
+})

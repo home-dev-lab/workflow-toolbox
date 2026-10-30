@@ -9,6 +9,8 @@ import { archiveLimit, baseProven, gitIndexLock, gitVerdict, reachableObjects } 
 import { entryBoundary, inventoryTree, outsideSweep, sourceBoundary } from './paths.mjs'
 
 const UNKNOWN_PROCESS = 'unknown-process'
+const ENTRY_INVENTORY_BUDGET_MS = 120_000
+const SCAN_BUDGET_MS = 30 * 60_000
 
 function recordedLane(file, options) {
   const record = path.join(file, '.lane', 'pid')
@@ -24,12 +26,12 @@ function recordedLane(file, options) {
 
 function quietReason(file, inventory, options) {
   // Reuse the complete, bigint idle scan as a second bounded filesystem observation.
-  // Its legacy mtime-only result is supplemented by inventory's ctime, including git internals.
+  // Supplement mtime with ctime, except for regular files shared through hard links.
   let latestNs = inventory.latestNs
   const readStat = (name, args) => {
     const stat = lstatSync(name, args)
     if (stat.mtimeNs > latestNs) latestNs = stat.mtimeNs
-    if (stat.ctimeNs > latestNs) latestNs = stat.ctimeNs
+    if (stat.ctimeNs > latestNs && !(stat.isFile() && stat.nlink > 1n)) latestNs = stat.ctimeNs
     return stat
   }
   const idle = scanIdleWorktree(file, { maxEntries: 200000, readStat, readTargetStat: readStat,
@@ -77,6 +79,7 @@ function scanEntry(name, boundary, options) {
   const file = path.join(boundary.source, name)
   const entry = { name, path: file, verdict: 'KEEP', bytes: null, ageHours: null }
   const registration = boundary.registry.records.get(name)
+  if (options.scanExpired) return { ...entry, ...(registration ? { registration } : {}), reason: 'scan-deadline' }
   const absence = registrationAbsence(file, registration)
   if (absence) return { ...entry, registration, reason: absence }
   if (!entryBoundary(file, boundary).allowed) return { ...entry, reason: 'not-an-entry' }
@@ -97,12 +100,24 @@ function scanOptions(options, boundary) {
   return { ...options, procfs, namespace, holders, objects, budget: { bytes: 0 } }
 }
 
+function scanEntries(boundary, options) {
+  let scanExpired = false
+  return boundary.names.map(name => {
+    const started = options.clock()
+    // Latch the global stop: even a wall-clock rollback cannot resume the sweep.
+    scanExpired ||= started > options.scanDeadline
+    return scanEntry(name, boundary, { ...options, scanExpired, deadline: started + options.entryBudgetMs })
+  })
+}
+
 export function scanProject(options) {
   const clock = options.clock ?? Date.now
   // The same injected view must be used for mount boundaries and holder reads.
   // Changing that view never supplies a positive host attestation.
-  const config = { platform: sweepPlatform(), now: clock(), ...options, clock, deadline: clock() + 600000,
+  const config = { platform: sweepPlatform(), now: clock(), entryBudgetMs: ENTRY_INVENTORY_BUDGET_MS,
+    scanBudgetMs: SCAN_BUDGET_MS, ...options, clock,
     procfs: options.procfs ?? createProcfs({ root: options.env?.WT_SWEEP_PROC_ROOT }) }
+  config.scanDeadline = clock() + config.scanBudgetMs
   if (!Number.isSafeInteger(config.now)) throw new Error('worktree sweep: invalid observation clock')
   const project = path.resolve(options.project)
   const boundary = sourceBoundary(project, config)
@@ -110,7 +125,7 @@ export function scanProject(options) {
     outsideSweep: outsideSweep(project, boundary.source, { ...config, registry: boundary.registry }) }
   if (boundary.reason) return report
   const context = scanOptions(config, boundary)
-  const entries = boundary.names.map(name => scanEntry(name, boundary, context))
+  const entries = scanEntries(boundary, context)
   const counts = Object.fromEntries([...new Set(entries.map(entry => entry.reason))].map(reason => [reason, entries.filter(entry => entry.reason === reason).length]))
   return { ...report, entries, summary: { entries: entries.length, counts, moved: 0, purged: 0,
     nonDumpable: context.holders.nonDumpable, foreignUnreadable: context.holders.foreignUnreadable,
