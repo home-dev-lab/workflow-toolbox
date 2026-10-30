@@ -21,8 +21,8 @@ const TOOLKIT_ROOT = resolve(import.meta.dirname, '../..')
 const PLUGIN_ROOT = resolve(TOOLKIT_ROOT, '../plugin')
 const temporaryDirectories: string[] = []
 
-function fixturePlugin(): string {
-  const root = mkdtempSync(join(tmpdir(), 'host-primitive-census-'))
+function fixturePlugin(temporaryRoot = tmpdir()): string {
+  const root = realpathSync(mkdtempSync(join(temporaryRoot, 'host-primitive-census-')))
   temporaryDirectories.push(root)
   mkdirSync(join(root, 'bin', 'lib', 'host'), { recursive: true })
   return root
@@ -83,8 +83,12 @@ describe('raw host primitive quality ratchet', () => {
     expect(checkHostPrimitives(root, new Map())).toMatchObject({ count: 0, perimeterFiles: 0, exceeded: false })
   })
 
-  it('exempts only the vendored Mermaid bundle while counting neighboring authored source', () => {
-    const root = fixturePlugin()
+  it.for([false, true])('exempts only the vendored Mermaid bundle while counting neighboring authored source (symlinked temp: %s)', (symlinkedTemp, context) => {
+    const temporaryRoot = tmpdir()
+    const holder = symlinkedTemp && fixturePlugin()
+    const linkedRoot = holder ? join(holder, 'linked-temp') : temporaryRoot
+    if (holder) fixtureLink(context, holder, linkedRoot, 'dir')
+    const root = fixturePlugin(linkedRoot)
     const assets = join(root, 'skills', 'artifact-server', 'assets', 'mermaid')
     mkdirSync(assets, { recursive: true })
     writeFileSync(join(assets, 'mermaid.min.js'), 'process.kill(1)\n')
