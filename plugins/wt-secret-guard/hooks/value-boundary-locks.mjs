@@ -123,7 +123,7 @@ function removalRange(text, entry) {
 }
 
 function removeOccurrences(text, evidence) {
-  const ranges = evidence.filter((entry) => referenceProof(entry.proof.text, entry.proof.mode))
+  const ranges = evidence.filter((entry) => entry.proof.modelled !== false && referenceProof(entry.proof.text, entry.proof.mode))
     .map((entry) => removalRange(text, entry)).sort((a, b) => a[0] - b[0]);
   assert.ok(ranges.length, 'flip control removed no proven occurrence');
   const merged = [];
@@ -148,6 +148,7 @@ async function justifyFlip(event, before, id) {
     const occurrences = evidence.filter((entry) => entry.kind === item.kind && entry.value === item.value);
     assert.ok(occurrences.length, `independent base finding cancelled: ${id}`);
     for (const entry of occurrences) {
+      assert.notEqual(entry.proof.modelled, false, `unmodelled base occurrence cancelled: ${id}`);
       assert.ok(referenceProof(entry.proof.text, entry.proof.mode), `unproven base occurrence cancelled: ${id}`);
       if (entry.duplicateOf) assert.ok(before.some((direct) => direct.kind === entry.duplicateOf.kind && direct.value === entry.duplicateOf.value), `whole-field finding lacks direct occurrence: ${id}`);
     }
@@ -317,6 +318,57 @@ async function removalControlLocks(f) {
   });
 }
 
+async function roundFiveLocks(f) {
+  for (const [name, text] of [
+    ['YAML semicolon continuation', 'password: (${HOME}),\n  ;Q7m9Ab12\n  ${OTHER}\n'],
+    ['YAML mixed comment endings', 'password: "${HOME}"\n# gap\rconnection: postgres://bob:Q7m9Ab12@db/app\rnote:\n  ${OTHER}\n'],
+    ['INI mixed comment endings', '[s]\npassword="${HOME}"\n# gap\rurl=postgres://bob:Q7m9Ab12@db/app\rnote=ok\n  ${OTHER}\n'],
+  ]) await f.test(`VB fail closed ${name}`, () => f.freshVault(async () => {
+    assert.ok((await findings(text, baseClassify)).length, 'frozen review control must refuse');
+    assert.ok((await findings(text)).length, `${name} skipped bytes cancelled frozen refusal`);
+  }));
+  await f.test('VB scanner sibling agreement LF CRLF CR', () => f.freshVault(async () => {
+    for (const ending of ['\n', '\r\n', '\r']) {
+      const text = `[s]${ending}password="\${HOME}"${ending}user=Q7m9Ab12`;
+      assert.equal((await findings(text)).length, 0, `scanner sibling verdict disagrees for ${JSON.stringify(ending)}`);
+      const candidate = discoverCandidates(text).find((item) => item.base);
+      const extent = valueExtent(text, candidate, discoverCandidates(text));
+      assert.equal(extent.text.includes('user='), false, 'scanner consumed sibling line');
+    }
+  }));
+  await skippedByteLock(f);
+  await uncertainGrammarLocks(f);
+}
+
+async function uncertainGrammarLocks(f) {
+  for (const [name, text] of [
+    ['mixed reference line endings', '[s]\npassword="${HOME}"\r\n  ${OTHER}\n  ${NEXT}\r'],
+    ['shell CR line ending', 'API_KEY="${HOME}"\r${OTHER}'],
+  ]) await f.test(`VB fail closed ${name} without holding references`, () => f.freshVault(async () => {
+    assert.ok((await findings(text, baseClassify)).length, 'frozen uncertain grammar control must refuse');
+    const result = await findings(text);
+    assert.ok(result.length, `${name} cancelled frozen refusal`);
+    assert.ok(result.every((item) => !referenceProof(item.value)), 'uncertain grammar held a reference-only value');
+  }));
+}
+
+async function skippedByteLock(f) {
+  await f.test('VB skipped-byte extents never cancel frozen occurrences', () => f.freshVault(async () => {
+    let skipped = 0;
+    for (const [, text] of variants()) {
+      const candidates = discoverCandidates(text);
+      for (const item of candidates.filter((entry) => entry.base)) {
+        const extent = valueExtent(text, item, candidates);
+        if (extent.text === text.slice(extent.start, extent.end) && !extent.skipped?.length && extent.modelled !== false) continue;
+        skipped += 1;
+        assert.ok((await findings(text)).length, 'skipped-byte extent cancelled frozen occurrence');
+      }
+    }
+    assert.ok(skipped > 0, 'skipped-byte property covered no skipped extents');
+    console.log(`VB SKIPPED_BYTE_EXTENTS=${skipped}`);
+  }));
+}
+
 async function sequence(f, content, later, refused = true) {
   const event = typeof content === 'string' ? { tool: 'Write', content } : { tool: 'mcp__fixture__send', ...content };
   const initial = (await classifyOutbound({}, event)).findings;
@@ -350,5 +402,5 @@ async function provenanceLocks(f) {
 }
 
 export async function runValueBoundaryLocks(fixture) {
-  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock, continuationLocks, provenanceLocks, roundThreeLocks, removalControlLocks]) await run(fixture);
+  for (const run of [probeLocks, containmentLock, findingLocks, differentialLock, sequentialLock, entryPointLock, grammarLock, commentLineLock, continuationLocks, provenanceLocks, roundThreeLocks, removalControlLocks, roundFiveLocks]) await run(fixture);
 }

@@ -56,19 +56,30 @@ function lineContext(text, item) {
   const header = /(?:^|[\r\n])[ \t]*\[[^\]\r\n]+\][ \t]*(?:\r\n|[\r\n]|$)/.test(prefix);
   const indent = text.slice(start).split(/[\r\n]/, 1)[0].match(LEADING_WHITESPACE)[0].length;
   const colon = text.slice(item.keyStart, item.valueStart).includes(':');
-  return { header, indent, deeper: header || colon || Boolean(quoteAt(text, item.valueStart)) };
+  return { header, colon, indent, deeper: header || colon || Boolean(quoteAt(text, item.valueStart)) };
+}
+
+function lineAt(text, at) {
+  const offset = text.slice(at).search(/[\r\n]/);
+  const end = offset < 0 ? text.length : at + offset;
+  const ending = text.slice(end).match(/^(?:\r\n|[\r\n])/)?.[0] ?? '';
+  return { end, next: end + ending.length, ending };
 }
 
 function nextDeeper(text, at, indent) {
   let cursor = at;
   const skipped = [];
   while (cursor < text.length) {
-    const newline = text.indexOf('\n', cursor);
-    const end = newline < 0 ? text.length : newline;
+    const { end, next } = lineAt(text, cursor);
     const line = text.slice(cursor, end);
     const width = line.match(LEADING_WHITESPACE)[0].length;
-    if (/^(?:[#;][^\n]*)?$/.test(line.slice(width))) { skipped.push([cursor, end]); cursor = end + 1; continue; }
-    return width > indent ? { cursor, skipped } : null;
+    // Blank lines remain literal proof whitespace; comment-like bytes are never erased.
+    if (!line.slice(width) || /^[#;]/.test(line.slice(width))) {
+      if (line.slice(width)) skipped.push([cursor, end]);
+      cursor = next;
+      continue;
+    }
+    return width > indent || skipped.length ? { cursor, skipped, joins: width > indent } : null;
   }
   return null;
 }
@@ -80,31 +91,43 @@ function nextKeyBoundary(text, at, item, candidates, context, state) {
   return Boolean(next);
 }
 
+function continuesLine(text, at, state, context) {
+  // Shell retains CR as a word byte, unlike the universal-newline writer forms.
+  const shellCR = text[at] === '\r' && !context.header && !context.colon;
+  if (shellCR) state.modelled = false;
+  return state.quote || state.depth || text[at - 1] === '\\' || shellCR;
+}
+
 export function valueExtent(text, item, candidates = []) {
   const context = lineContext(text, item);
-  const state = { quote: '', depth: 0 };
+  const state = { quote: '', depth: 0, modelled: true };
   const skipped = [];
   let at = item.valueStart;
   while (at < text.length) {
     if (nextKeyBoundary(text, at, item, candidates, context, state)) break;
-    if (text[at] !== '\n') { at = scanCharacter(text, at, state); continue; }
-    if (state.quote || state.depth || text[at - 1] === '\\') { at += 1; continue; }
-    const next = context.deeper ? nextDeeper(text, at + 1, context.indent) : null;
+    if (!/[\r\n]/.test(text[at])) { at = scanCharacter(text, at, state); continue; }
+    const line = lineAt(text, at);
+    if (continuesLine(text, at, state, context)) { at = line.next; continue; }
+    const next = context.deeper ? nextDeeper(text, line.next, context.indent) : null;
     if (!next) break;
     skipped.push(...next.skipped);
     at = next.cursor;
+    if (!next.joins) break;
   }
   // Project out only the recognised key prefix, retaining the full writer end.
   // Differential controls remove the key through this end, including continuations.
-  return finishedExtent(text, item, at, skipped);
+  return finishedExtent(text, item, at, skipped, state.modelled);
 }
 
-function finishedExtent(text, item, at, skipped) {
+function finishedExtent(text, item, at, skipped, modelled) {
   const start = item.valueStart;
   const end = Math.max(at, item.base ? item.captureEnd : at);
-  let content = text.slice(start, end);
-  for (const [from, to] of skipped.reverse()) content = content.slice(0, from - start) + ' '.repeat(to - from) + content.slice(to - start);
-  return { start, end, text: content };
+  const content = text.slice(start, end);
+  // A detector capture can include only the CR half of a closing CRLF.
+  const closingLF = text[end - 1] === '\r' && text[end] === '\n' ? '\n' : '';
+  const endings = new Set((content + closingLF).match(/\r\n|[\r\n]/g));
+  // A proof never licenses bytes skipped by the scanner or mixed writer line forms.
+  return { start, end, text: content, skipped, modelled: modelled && skipped.length === 0 && endings.size <= 1 };
 }
 
 function proofItem(text, mode) {
@@ -178,14 +201,23 @@ export function xmlElements(text) {
   return found;
 }
 
+function occurrenceFindings(text, item, extent) {
+  if (!extent.modelled && referenceProof(extent.text)) {
+    // Unknown syntax has no credential residue to select. Retain the whole occurrence
+    // as evidence, never a bare reference spelling that would poison the held vault.
+    return [{ kind: item.kind, value: text.slice(item.keyStart, extent.end), index: item.keyStart }];
+  }
+  const genuine = item.base && !referenceProof(item.finding.value);
+  return genuine ? [item.finding] : residueFindings(extent.text, item.kind, extent.start);
+}
+
 export function boundaryFindings(text) {
   const candidates = discoverCandidates(text);
   const found = [];
   for (const item of candidates) {
     const extent = valueExtent(text, item, candidates);
-    if (referenceProof(extent.text)) continue;
-    const genuine = item.base && !referenceProof(item.finding.value);
-    found.push(...(genuine ? [item.finding] : residueFindings(extent.text, item.kind, extent.start)));
+    if (extent.modelled && referenceProof(extent.text)) continue;
+    found.push(...occurrenceFindings(text, item, extent));
   }
   for (const element of xmlElements(text)) {
     if (!referenceProof(element.text, 'xml')) found.push(...residueFindings(element.text, 'xml-element', element.start));
