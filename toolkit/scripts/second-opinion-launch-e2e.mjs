@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
-import { cleanupLaunch, launchDiagnostics, runShell, waitForLaunch } from './second-opinion-launch-lifecycle.mjs'
+import { cleanupLaunch, launchDiagnostics, launchFailureDiagnostics, runShell, waitForLaunch } from './second-opinion-launch-lifecycle.mjs'
 
 export { cleanupLaunch } from './second-opinion-launch-lifecycle.mjs'
 export const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../plugin')
@@ -57,15 +57,19 @@ function launchCommand(f, options, windows) {
   return windows ? command : `${command}\nprintf '%s\\n' "$!" > ${shellWord(`${f.out}.launch.pid`, false)}`
 }
 
+function assertShellLaunch(f, result) {
+  if (result.error !== null) assert.equal(result.error, null, `launch shell failed; ${launchFailureDiagnostics(f)}`)
+  if (result.status !== 0) assert.equal(result.status, 0, `launch shell failed; ${launchFailureDiagnostics(f)}`)
+}
+
 export async function documentedLaunch(f, options = {}) {
   const windows = process.platform === 'win32'
   const command = launchCommand(f, options, windows)
   const shell = windows ? 'powershell.exe' : '/bin/bash'
   const args = windows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command]
-  const result = await runShell(f, shell, args, { env: { ...f.env, ...options.env },
+  const result = await runShell(f, shell, args, { env: { ...f.env, ...options.env }, command,
     shellTimeoutMs: options.shellTimeoutMs ?? (windows ? 60_000 : 10_000) })
-  assert.equal(result.error, null, `launch shell failed; ${launchDiagnostics(f)}`)
-  assert.equal(result.status, 0, `launch shell failed; ${launchDiagnostics(f)}`)
+  assertShellLaunch(f, result)
   await waitForLaunch(f, options.completionTimeoutMs ?? (windows ? 120_000 : 10_000))
   return { out: existsSync(f.out) ? readFileSync(f.out, 'utf8') : null,
     log: existsSync(`${f.out}.launch.log`) ? readFileSync(`${f.out}.launch.log`, 'utf8') : null,
