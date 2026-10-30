@@ -8,6 +8,8 @@ export const refusingImportPolicy = `import { writeFileSync } from 'node:fs';
   writeFileSync(new URL('./policy-imported', import.meta.url), 'yes');
   export default () => 'policy refuses';`
 
+export const admittingImportPolicy = refusingImportPolicy.replace("=> 'policy refuses'", '=> null')
+
 // Re-export the real containment module and override only its host factory.
 // Keep the native fork: this simulates the platform gate, not the filesystem or OS.
 export function containmentHostOverride(platform: string) {

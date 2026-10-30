@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedSecondOpinionSdk } from './helpers/sealed-second-opinion-provider.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
-import { admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
+import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const CLI = process.env.WT_SECOND_OPINION_TEST_CLI ?? join(ROOT, 'plugin/bin/wt-second-opinion.mjs')
@@ -490,6 +490,18 @@ it.each(['native', 'darwin', 'win32'])('platform containment contract: %s', plat
   expect(readFileSync(f.out, 'utf8')).toBe(`REFUSED: WT_SECOND_OPINION_ADMISSION: ${cause}\nEXIT=3\n`)
   expect(existsSync(f.marker)).toBe(false)
   expect(existsSync(join(f.root, 'policy-imported'))).toBe(host === 'linux')
+})
+
+it.each(['darwin', 'win32'])('platform containment contract: %s refuses even an admitting policy before import', platform => {
+  const f = fixture(admittingImportPolicy)
+  f.platform = platform
+  const result = launch(f, f.module)
+  const refusal = `WT_SECOND_OPINION_ADMISSION: ${platformRefusal(platform)}`
+  expect(result.status, result.stderr).toBe(3)
+  expect(result.stderr).toContain(`wt-second-opinion: ${refusal}\n`)
+  expect(readFileSync(f.out, 'utf8')).toBe(`REFUSED: ${refusal}\nEXIT=3\n`)
+  expect(existsSync(f.marker)).toBe(false)
+  expect(existsSync(join(f.root, 'policy-imported'))).toBe(false)
 })
 
 describe('second-opinion worker containment', () => {

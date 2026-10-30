@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { sealedSecondOpinionSdk } from './helpers/sealed-second-opinion-provider.js'
-import { admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
+import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_SNAPSHOT_TEST_PLUGIN ?? join(ROOT, 'plugin')
@@ -15,6 +15,8 @@ const kinds = ['second-opinion', 'opencode-envelope', 'opencode-verify'] as cons
 type Kind = typeof kinds[number]
 // Post-admission paths require policy execution, unavailable on unsupported hosts.
 const policyIt = it.skipIf(admissionTestPlatform !== 'linux')
+// Combine guards directly: skipIf is not part of Vitest's typed chainable API.
+const posixPolicyIt = it.skipIf(admissionTestPlatform !== 'linux' || process.platform === 'win32')
 afterEach(() => {
   for (const root of roots.splice(0)) {
     restoreScratch(root)
@@ -362,7 +364,7 @@ policyIt.each(kinds)('rewrites both canonical and caller-spelled repository path
   }
 })
 
-policyIt.skipIf(process.platform === 'win32').each(kinds)('removes the active %s snapshot on SIGTERM', kind => {
+posixPolicyIt.each(kinds)('removes the active %s snapshot on SIGTERM', kind => {
   const f = fixture(kind); settings(f)
   writeFileSync(f.input, 'signal-model')
   writeFileSync(join(f.root, 'tasks.json'), JSON.stringify([{ id: 'signal', prompt: 'signal-model' }]))
@@ -402,7 +404,7 @@ policyIt.each(kinds)('rewrites repository paths and preserves filesystem-proven 
   }
 })
 
-policyIt.skipIf(process.platform === 'win32').each(kinds)('denies post-admission writes to repo and requests before launching %s', kind => {
+posixPolicyIt.each(kinds)('denies post-admission writes to repo and requests before launching %s', kind => {
   const f = fixture(kind)
   writeFileSync(join(f.root, 'probe-readonly'), 'yes')
   const result = launch(f, f.module)
@@ -564,7 +566,7 @@ policyIt.each(kinds)('rewrites angle-bracket paths but preserves comma sibling f
   }
 })
 
-policyIt.skipIf(process.platform === 'win32')('cleans the verifier snapshot after two SIGTERMs while its child ignores termination', () => {
+posixPolicyIt('cleans the verifier snapshot after two SIGTERMs while its child ignores termination', () => {
   const f = fixture('opencode-verify')
   writeFileSync(f.input, 'repeat-termination')
   const result = launch(f, f.module)
@@ -574,7 +576,7 @@ policyIt.skipIf(process.platform === 'win32')('cleans the verifier snapshot afte
   expect(result.signal, result.stdout + result.stderr).toBeNull()
 })
 
-policyIt.skipIf(process.platform === 'win32')('cleans the verifier snapshot on SIGQUIT', () => {
+posixPolicyIt('cleans the verifier snapshot on SIGQUIT', () => {
   const f = fixture('opencode-verify')
   writeFileSync(f.input, 'quit-model')
   const result = launch(f, f.module)
@@ -756,6 +758,15 @@ describe.each(kinds)('platform containment contract for %s', kind => {
     } else expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${cause}\n`)
     expect(existsSync(f.marker)).toBe(false)
     expect(existsSync(join(f.root, 'policy-imported'))).toBe(host === 'linux')
+    expect(existsSync(readFileSync(join(f.root, 'snapshot-root'), 'utf8'))).toBe(false)
+  })
+  it.each(['darwin', 'win32'])('host=%s refuses an admitting option and removes its snapshot', platform => {
+    const f = fixture(kind)
+    f.platform = platform
+    writeFileSync(f.module, admittingImportPolicy)
+    settings(f)
+    expectRefused(f, `${f.variable}: ${platformRefusal(platform)}`)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(false)
     expect(existsSync(readFileSync(join(f.root, 'snapshot-root'), 'utf8'))).toBe(false)
   })
 })
