@@ -13,6 +13,8 @@
 //      index, following direct links AND, transitively, any `[[slug]]`
 //      hub-member references inside a linked fiche's own body;
 //   3. the gaps, named: "N fiches on disk, M reachable, K invisible; D dangling".
+// Countdown notices name the applied line or byte ceiling when approaching
+// it; each is suppressed past its own ceiling and never changes the exit code.
 //
 // Point 3 is the actual deliverable. Line-counting alone cannot distinguish
 // a COMPRESSED index (fiches still reachable through a hub) from an
@@ -45,6 +47,9 @@ const HELP = `wt-memory-index-check — make a silent memory-index truncation ce
 Reports the index's entry-line count against a threshold, how many fiches on disk are
 REACHABLE from the index (direct links + transitive hub-member references), and names the
 gap: "N fiches on disk, M reachable, K invisible; D dangling".
+Countdown notices warn near the applied line and byte ceilings without flagging:
+line headroom <= max(10, round(threshold * 15%)), byte headroom <= size threshold * 15%.
+Each notice is suppressed once its own ceiling is exceeded.
 
 Usage:
   wt-memory-index-check.mjs --store <dir> [--threshold 200] [--size-threshold 25000] [--hub-max 45]

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_SNAPSHOT_TEST_PLUGIN ?? join(ROOT, 'plugin')
@@ -12,6 +13,8 @@ const roots: string[] = []
 // These stubs are unconditional: a broken or removed admission call cannot reach a real model.
 const modes = ['fan-out', 'generated', 'reduce', 'verifier'] as const
 type Mode = typeof modes[number]
+// Requires an executed policy: unsupported containment hosts refuse before import.
+const policyIt = it.skipIf(admissionTestPlatform !== 'linux')
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function networkSeal(root: string) {
@@ -87,7 +90,7 @@ function fixture(mode: Mode, source = 'export default () => null', alternate = f
   const variable = mode === 'verifier' ? 'WT_OPENCODE_VERIFY_ADMISSION' : 'WT_OPENCODE_ENVELOPE_ADMISSION'
   const cliName = mode === 'verifier' ? 'wt-opencode-verify.mjs' : 'wt-opencode-envelope.mjs'
   return { root, repo, module, out, variable, cli: join(PLUGIN, 'bin', cliName), mode,
-    ...networkSeal(root), ...modeInput(root, mode, alternate) }
+    platform: process.env.WT_ADMISSION_TEST_PLATFORM, ...networkSeal(root), ...modeInput(root, mode, alternate) }
 }
 type Fixture = ReturnType<typeof fixture>
 
@@ -100,17 +103,17 @@ function launch(f: Fixture, admission: string | undefined, timeout = '5000', dir
     TMPDIR: join(f.root, 'temp'), TMP: join(f.root, 'temp'), TEMP: join(f.root, 'temp'),
   })
   const preload = join(f.root, 'cleanup-preload.mjs')
-  return spawnSync(process.execPath, [...(existsSync(preload) ? ['--import', pathToFileURL(preload).href] : []), '--loader', pathToFileURL(f.loader).href, f.cli, ...f.args, '--dir', dir], {
+  return spawnSync(process.execPath, [...(existsSync(preload) ? ['--import', pathToFileURL(preload).href] : []), '--loader', pathToFileURL(f.loader).href, ...containmentLoader(f.root, f.platform), f.cli, ...f.args, '--dir', dir], {
     cwd: f.root, env, encoding: 'utf8', input: 'first rendered task', timeout: 15_000, killSignal: 'SIGKILL',
   })
 }
 
-function refusal(f: Fixture, cause: string, admission = f.module, timeout = '5000') {
+function refusal(f: Fixture, cause: string, admission = f.module, timeout = '5000', executesPolicy = true) {
   const result = launch(f, admission, timeout)
   expect(result.status, result.stderr).toBe(3)
   expect(result.stdout.trimEnd().split(/\r?\n/)).toHaveLength(1)
   expect(result.stdout).toContain(`OPENCODE_REFUSED: ${f.variable}: `)
-  expect(result.stdout).toContain(cause)
+  expect(result.stdout).toContain(executesPolicy ? policyCause(cause) : cause)
   expect(existsSync(f.marker)).toBe(false)
   expect(existsSync(f.out) ? readdirSync(f.out).filter(name => name.endsWith('.answer.txt')) : []).toEqual([])
   expect(readdirSync(f.repo).filter(name => name.startsWith('.oc-verify-'))).toEqual([])
@@ -132,7 +135,7 @@ function admissionLocks(mode: Mode) {
   it('keeps policy stdout out of the one-line refusal protocol', () => {
     refusal(fixture(mode, 'console.log("policy import output"); export default () => { console.log("policy call output"); return "policy refuses" }'), 'policy refuses')
   })
-  it('admits only after seeing every rendered prompt at absolute launch paths', () => {
+  policyIt('admits only after seeing every rendered prompt at absolute launch paths', () => {
     const f = fixture(mode, recordingPolicy)
     const result = launch(f, f.module)
     expect(result.status, result.stderr).toBe(0)
@@ -169,10 +172,10 @@ function failureLocks(mode: Mode) {
   ])('fails closed for %s', (_name, source, cause) => { refusal(fixture(mode, source), cause) })
   it.each(['', './relative.mjs', 'missing'])('fails closed for invalid module path %s', (value) => {
     const f = fixture(mode)
-    refusal(f, value === 'missing' ? 'module failed' : 'absolute ES module path', value === 'missing' ? join(f.root, 'missing.mjs') : value)
+    refusal(f, value === 'missing' ? 'module failed' : 'absolute ES module path', value === 'missing' ? join(f.root, 'missing.mjs') : value, '5000', value === 'missing')
   })
   it.each(['0', '-1', '1.5', 'NaN', '2147483648', ''])('fails closed for invalid timeout %s', timeout => {
-    refusal(fixture(mode), 'must be a positive integer no greater than 2147483647', undefined, timeout)
+    refusal(fixture(mode), 'must be a positive integer no greater than 2147483647', undefined, timeout, false)
   })
   it.each([
     'export default () => new Promise(() => {})',
@@ -188,7 +191,7 @@ describe.each(modes)('opencode admission: %s', mode => {
   failureLocks(mode)
 })
 
-it.each(['generated', 'reduce', 'verifier'] as const)('admits the alternate %s input after rendering it', mode => {
+policyIt.each(['generated', 'reduce', 'verifier'] as const)('admits the alternate %s input after rendering it', mode => {
   const f = fixture(mode, recordingPolicy, true)
   const result = launch(f, f.module)
   expect(result.status, result.stderr).toBe(0)
@@ -198,7 +201,7 @@ it.each(['generated', 'reduce', 'verifier'] as const)('admits the alternate %s i
   expect(JSON.parse(readFileSync(join(f.root, 'seen.json'), 'utf8')).prompts.sort()).toEqual([...f.prompts].sort())
 })
 
-it('shows every fan-out prompt even when task ids have colliding filename spellings', () => {
+policyIt('shows every fan-out prompt even when task ids have colliding filename spellings', () => {
   const f = fixture('fan-out', recordingPolicy)
   writeFileSync(join(f.root, 'input.json'), JSON.stringify(f.prompts.map((prompt, index) => ({ id: index ? 'a?b' : 'a/b', prompt }))))
   const result = launch(f, f.module)
@@ -209,7 +212,7 @@ it('shows every fan-out prompt even when task ids have colliding filename spelli
   expect(JSON.parse(readFileSync(join(f.root, 'seen.json'), 'utf8')).prompts.sort()).toEqual([...f.prompts].sort())
 })
 
-it.each(['fan-out', 'verifier'] as const)('keeps the admitted task unchanged for the one %s retry', mode => {
+policyIt.each(['fan-out', 'verifier'] as const)('keeps the admitted task unchanged for the one %s retry', mode => {
   const f = fixture(mode, recordingPolicy)
   if (mode === 'fan-out') f.args.push('--concurrency', '1')
   writeFileSync(join(f.root, 'retry'), 'yes')
@@ -229,7 +232,7 @@ it.each(modes)('refuses a %s request changed between admission and its first lau
   refusal(fixture(mode, source), 'request changed after admission')
 })
 
-it.each(modes)('refuses a changed %s request before the rate-limit fallback retry', mode => {
+policyIt.each(modes)('refuses a changed %s request before the rate-limit fallback retry', mode => {
   const f = fixture(mode, recordingPolicy)
   if (mode !== 'verifier') f.args.push('--concurrency', '1')
   writeFileSync(join(f.root, 'retry'), 'yes')
@@ -264,6 +267,13 @@ it.each(modes)('honors platform-native symlink/.. resolution before %s policy an
     return
   }
   // Keep Node warnings visible, but include the refusal protocol on stdout too.
+  if (admissionTestPlatform !== 'linux') {
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${platformRefusal(admissionTestPlatform)}\n`)
+    expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
+    expect(existsSync(f.marker)).toBe(false)
+    return
+  }
   expect(result.status, result.stdout + result.stderr).toBe(0)
   const seen = JSON.parse(readFileSync(join(f.root, 'seen.json'), 'utf8'))
   const calls = readFileSync(f.marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
@@ -272,7 +282,7 @@ it.each(modes)('honors platform-native symlink/.. resolution before %s policy an
   expect(calls.every(call => call.args[call.args.indexOf('--dir') + 1] === seen.repo)).toBe(true)
 })
 
-it('isolates concurrent envelope invocations sharing the output directory and task ids', () => {
+policyIt('isolates concurrent envelope invocations sharing the output directory and task ids', () => {
   const f = fixture('fan-out', recordingPolicy)
   f.args.push('--concurrency', '1')
   const other = join(f.root, 'other-input.json')
@@ -291,7 +301,7 @@ it('isolates concurrent envelope invocations sharing the output directory and ta
   expect(calls.map(call => call.task)).toEqual(f.prompts)
 })
 
-it('removes the readonly verifier run as a whole without unlinking the protected task first', () => {
+policyIt('removes the readonly verifier run as a whole without unlinking the protected task first', () => {
   const f = fixture('verifier', recordingPolicy.replace('return null;', 'return "policy refuses";'))
   writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import fs from 'node:fs';
     const remove = fs.rmSync;
@@ -429,7 +439,11 @@ describe.each(['fan-out', 'generated', 'reduce'] as const)('envelope output life
 it.each([false, true])('removes output writability probes after successful execution with admission=%s', configured => {
   const f = fixture('fan-out')
   const result = launch(f, configured ? f.module : undefined)
-  expect(result.status, result.stdout + result.stderr).toBe(0)
+  if (configured && admissionTestPlatform !== 'linux') {
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${platformRefusal(admissionTestPlatform)}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+  } else expect(result.status, result.stdout + result.stderr).toBe(0)
   expect(readdirSync(f.out).filter(name => name.startsWith('.write-probe-')), 'output writability probes must be removed').toEqual([])
 })
 
@@ -548,19 +562,25 @@ function assertDrainedRefusal(f: Fixture, hang: boolean) {
   }
 }
 
-it.each([false, true])('drains running siblings and descendants on integrity refusal, timeout=%s', hang => {
+policyIt.each([false, true])('drains running siblings and descendants on integrity refusal, timeout=%s', hang => {
   const f = parallelFixture(hang)
   try { assertDrainedRefusal(f, hang) } finally { stopRecordedChildren(f) }
 })
 
-it('does not launch siblings after an immediate first-task integrity refusal', () => {
+policyIt('does not launch siblings after an immediate first-task integrity refusal', () => {
   const source = recordingPolicy.replace('return null;', `const file = join(request, readdirSync(request)[0]); chmodSync(file, 0o600); writeFileSync(file, 'changed after admission'); return null;`)
   const f = fixture('fan-out', source)
   writeFileSync(join(f.root, 'cleanup-preload.mjs'), `import cp from 'node:child_process';
     import { writeFileSync } from 'node:fs';
     import { syncBuiltinESMExports } from 'node:module';
     const spawn = cp.spawn;
-    cp.spawn = (...args) => { writeFileSync(${JSON.stringify(f.marker)}, 'spawned'); return spawn(...args); };
+    cp.spawn = (...args) => {
+      // Count sealed model-launch attempts, not admission's local cleanup helper.
+      if (args[0] === process.execPath && args[1]?.[0] === ${JSON.stringify(join(f.root, 'fake-opencode.mjs'))}) {
+        writeFileSync(${JSON.stringify(f.marker)}, 'spawned');
+      }
+      return spawn(...args);
+    };
     syncBuiltinESMExports();`)
   const result = launch(f, f.module)
   expect(result.status, result.stdout + result.stderr).toBe(3)
@@ -568,7 +588,7 @@ it('does not launch siblings after an immediate first-task integrity refusal', (
   expect(existsSync(f.marker), 'siblings must not launch after a synchronous integrity refusal').toBe(false)
 })
 
-it('does not retry a rate-limited running sibling after another task refuses', () => {
+policyIt('does not retry a rate-limited running sibling after another task refuses', () => {
   const f = parallelFixture(false)
   const binary = join(f.root, 'fake-opencode.mjs')
   writeFileSync(binary, readFileSync(binary, 'utf8').replace(
@@ -631,7 +651,7 @@ function orderedFailureFixture(firstFailure: 'refusal' | 'write') {
   return f
 }
 
-it.each(['refusal', 'write'] as const)('preserves the first %s failure when an earlier lane fails later', firstFailure => {
+policyIt.each(['refusal', 'write'] as const)('preserves the first %s failure when an earlier lane fails later', firstFailure => {
   const f = orderedFailureFixture(firstFailure)
   const result = launch(f, f.module)
   expect(readFileSync(join(f.root, 'late-write'), 'utf8'), 'the earlier lane must fail only after the first pool abort').toBe('EISDIR')
@@ -672,7 +692,7 @@ function streamFailureFixture(event: 'close' | 'error') {
   return f
 }
 
-it.each(['close', 'error'] as const)('preserves a published refusal when a sibling %s callback cannot write its stream', event => {
+policyIt.each(['close', 'error'] as const)('preserves a published refusal when a sibling %s callback cannot write its stream', event => {
   const f = streamFailureFixture(event)
   const result = launch(f, f.module)
   console.info(`stream-failure ${event}: exit=${result.status}\n${result.stdout.trimEnd()}`)
@@ -684,7 +704,7 @@ it.each(['close', 'error'] as const)('preserves a published refusal when a sibli
   expect(result.stderr).not.toContain('ENOENT')
 })
 
-it('preserves an ordinary error published before a later integrity refusal', () => {
+policyIt('preserves an ordinary error published before a later integrity refusal', () => {
   const f = orderedFailureFixture('write')
   const preload = join(f.root, 'cleanup-preload.mjs')
   writeFileSync(preload, readFileSync(preload, 'utf8') + `
@@ -704,4 +724,27 @@ it('preserves an ordinary error published before a later integrity refusal', () 
   expect(result.stdout).toContain('OPENCODE_ERROR: unexpected failure:')
   expect(result.stdout).toContain('task-1.answer.txt')
   expect(result.stdout).not.toContain('OPENCODE_REFUSED:')
+})
+
+describe.each(modes)('platform containment contract for %s', mode => {
+  it.each(['native', 'darwin', 'win32'])('host=%s', platform => {
+    const f = fixture(mode, refusingImportPolicy)
+    f.platform = platform
+    const host = platform === 'native' ? process.platform : platform
+    const result = launch(f, f.module)
+    const cause = host === 'linux' ? 'policy refuses' : platformRefusal(host)
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${cause}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(host === 'linux')
+  })
+  it.each(['darwin', 'win32'])('host=%s refuses even an admitting policy before import', platform => {
+    const f = fixture(mode, admittingImportPolicy)
+    f.platform = platform
+    const result = launch(f, f.module)
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${platformRefusal(platform)}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(false)
+  })
 })
