@@ -28,7 +28,13 @@ const RULES_DIR = fileURLToPath(new URL('../../../../plugin/rules/', import.meta
 const VERIFY = 'wt-verify-by-ground-truth-at-act'
 const WORKTREE = 'wt-concurrent-sessions-worktree-at-act'
 const DELEGATION = ['wt-delegation-ladder-at-act', 'wt-delegation-routing-at-act', 'wt-delegation-addressing-at-act']
-const CHANGED = [VERIFY, WORKTREE, ...DELEGATION]
+const CHANGED = [VERIFY, WORKTREE, ...DELEGATION, 'wt-proportionate-verification-at-act']
+const MESSAGE_RULES = readdirSync(RULES_DIR).filter((file) => {
+  if (!file.endsWith('-at-act.spec.json')) return false
+  const spec = JSON.parse(readFileSync(join(RULES_DIR, file), 'utf8')) as { 'on-demand': Spec }
+  return spec['on-demand'].triggers.some((trigger) => trigger.kind === 'tool'
+    && typeof trigger.tool === 'string' && new RegExp(trigger.tool).test('SendMessage'))
+}).map((file) => file.replace('.spec.json', ''))
 const load = async (name: string) => parseRuntimeRule(name, frontmatter(await readSpec(join(RULES_DIR, `${name}.spec.json`))) + 'body\n')
 const matching = (rule: Rule, tool: string, input: Input = {}) => rule.triggers.filter((trigger) => triggerMatches(
   trigger, { channel: 'tool', tool, input, command: input.command, path: input.file_path ?? '' },
@@ -97,8 +103,21 @@ it('verify rides alongside Agent but still refuses source edits', async () => {
 const NAMED = [
   'alice', 'team[workers]', 'mainline', 'Main', 'main-2', 'team-leader', 'parent',
   'a', 'a0123456789abcde', 'a0123456789abcdef0', 'a0123456789abcdeF',
-  'a0123456789abcdef-worker', 'a0123456789abcdef [worker]',
+  'worker-a0123456789abcdef', 'a0123456789abcdef-worker', 'a0123456789abcdef [worker]',
 ]
+it.each(MESSAGE_RULES)('every SendMessage at-act rule excludes only exact raw ids: %s', async (name) => {
+  const rule = await load(name)
+  for (const to of ['a0123456789abcdef', 'a0000000000000000', 'affffffffffffffff']) {
+    expect(matching(rule, 'SendMessage', { to, message: 'progress' }), `${name}: ${to}`).toEqual([])
+  }
+  for (const to of NAMED) {
+    expect(matching(rule, 'SendMessage', { to, message: 'progress' }).length, `${name}: ${to}`).toBeGreaterThan(0)
+  }
+  for (const to of ['main', 'team-lead', 'main [worker]', 'team-lead  [worker]']) {
+    expect(matching(rule, 'SendMessage', { to }), `${name}: ${to}`).toEqual([])
+  }
+})
+
 it.each(DELEGATION)('delegation retains named recipients and excludes exact raw ids: %s', async (name) => {
   const rule = await load(name)
   for (const tool of ['Agent', 'Workflow']) expect(refuses(rule, tool), `${name}: ${tool}`).toBe(true)
@@ -152,7 +171,7 @@ it('classifies refusing and riding rules across the shipped family', async () =>
   for (const command of GOVERNED.slice(0, 5)) {
     expect(classify(rules, 'Bash', { command }), command).toEqual({ refuses: [WORKTREE], rides: [] })
   }
-  expect(classify(rules, 'SendMessage', { to: 'a0123456789abcdef' })).toEqual({ refuses: ['wt-proportionate-verification-at-act'], rides: [] })
+  expect(classify(rules, 'SendMessage', { to: 'a0123456789abcdef' })).toEqual({ refuses: [], rides: [] })
   const spawn = classify(rules, 'Agent')
   expect(spawn.rides).toEqual([VERIFY])
   expect(spawn.refuses).toEqual(expect.arrayContaining([WORKTREE, ...DELEGATION]))
