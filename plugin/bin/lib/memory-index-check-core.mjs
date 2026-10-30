@@ -135,77 +135,99 @@ export function checkStore(storeDir, opts = {}) {
   // ABOVE the observation on purpose — a threshold set below a real, working
   // size would fire on a healthy store, and a check that refuses correct work is
   // worse than no check: it gets switched off, taking its real case with it.
-  // The consequence is deliberate and worth naming: this flags a store that has
-  // CROSSED the ceiling, it does not warn one approaching it. Pass a lower
-  // --size-threshold to get margin.
+  // Crossing the applied ceiling flags the store; the final 15% of byte
+  // headroom emits a notice only. Pass a lower --size-threshold to place
+  // both the ceiling and its warning band below the default.
   const sizeThreshold = opts.sizeThreshold ?? 25000;
   const indexFile = opts.indexFile ?? 'MEMORY.md';
   const hubMax = opts.hubMax ?? 45;
+  validateStoreDirectory(storeDir);
+  const indexPath = join(storeDir, indexFile);
+  const state = { storeDir, threshold, sizeThreshold, indexFile, hubMax, indexPath };
+  if (!existsSync(indexPath)) return missingIndexReport(state);
+  return checkIndexedStore(state);
+}
 
+function validateStoreDirectory(storeDir) {
   let storeStat;
   try {
     storeStat = statSync(storeDir);
   } catch {
     throw new Error(`store dir not found: ${storeDir}`);
   }
-  if (!storeStat.isDirectory()) {
-    throw new Error(`store path is not a directory: ${storeDir}`);
-  }
+  if (!storeStat.isDirectory()) throw new Error(`store path is not a directory: ${storeDir}`);
+}
 
-  const indexPath = join(storeDir, indexFile);
+// A project without an index convention has nothing to check, never a block.
+function missingIndexReport(state) {
+  return {
+    store: state.storeDir,
+    hasIndex: false,
+    indexFile: state.indexFile,
+    threshold: state.threshold,
+    sizeThreshold: state.sizeThreshold,
+    entryLines: 0,
+    indexBytes: 0,
+    overThreshold: false,
+    overSizeThreshold: false,
+    diskFiches: 0,
+    reachableFiches: 0,
+    unreachableFiches: [],
+    unreadableFiches: [],
+    indexEntries: [],
+    retractedFiches: [],
+    danglingRefs: [],
+    unresolvedCrossRefs: [],
+    archivedRefs: [],
+    staleIndexPointers: [],
+    brokenRetractions: [],
+    hubMax: state.hubMax,
+    hubCount: 0,
+    hubCountMismatches: [],
+    largestHub: null,
+    inWarningBand: false,
+    notices: [],
+    flagged: false,
+    reasons: [],
+  };
+}
 
-  // A store with no index at all is a project that keeps none — silent,
-  // never a block an adopter of this project's own hygiene convention
-  // cannot satisfy.
-  if (!existsSync(indexPath)) {
-    return {
-      store: storeDir,
-      hasIndex: false,
-      indexFile,
-      threshold,
-      sizeThreshold,
-      entryLines: 0,
-      indexBytes: 0,
-      overThreshold: false,
-      overSizeThreshold: false,
-      diskFiches: 0,
-      reachableFiches: 0,
-      unreachableFiches: [],
-      unreadableFiches: [],
-      indexEntries: [],
-      retractedFiches: [],
-      danglingRefs: [],
-      unresolvedCrossRefs: [],
-      archivedRefs: [],
-      staleIndexPointers: [],
-      brokenRetractions: [],
-      hubMax,
-      hubCount: 0,
-      hubCountMismatches: [],
-      largestHub: null,
-      inWarningBand: false,
-      notices: [],
-      flagged: false,
-      reasons: [],
-    };
-  }
+// Keep the synchronous phase order explicit: index, graph, closure, retractions,
+// hub sizes, reasons, notices, report. Helpers share only this private state.
+function checkIndexedStore(state) {
+  readIndex(state);
+  prepareResolvers(state);
+  collectDirectLinks(state);
+  initializeReachability(state);
+  while (state.queue.length > 0) expandNextFiche(state);
+  measureEntryExposure(state);
+  measureRetractions(state);
+  state.largestHub = largestHub(state.hubMemberCounts);
+  state.reasons = collectReasons(state);
+  const { inWarningBand, notices } = indexWarningBands(state);
+  state.inWarningBand = inWarningBand;
+  state.notices = notices;
+  appendInformationalNotices(state);
+  return indexedReport(state);
+}
 
+function readIndex(state) {
+  const { indexPath, threshold, sizeThreshold } = state;
   const indexText = readFileSync(indexPath, 'utf8');
-  const indexBytes = statSync(indexPath).size;
-  const indexLines = indexText.split('\n');
-  const indexEntries = [];
-  for (let i = 0; i < indexLines.length; i++) {
-    const match = ENTRY_LINE_RE.exec(indexLines[i].trim());
+  state.indexBytes = statSync(indexPath).size;
+  state.indexLines = indexText.split('\n');
+  state.indexEntries = [];
+  for (let i = 0; i < state.indexLines.length; i++) {
+    const match = ENTRY_LINE_RE.exec(state.indexLines[i].trim());
     if (!match) continue;
-    indexEntries.push({ line: i + 1, target: match[1] });
+    state.indexEntries.push({ line: i + 1, target: match[1] });
   }
-  const entryLineCount = indexLines.filter((line) => ENTRY_LINE_RE.test(line.trim())).length;
-  const overThreshold = entryLineCount > threshold;
-  const overSizeThreshold = indexBytes > sizeThreshold;
+  state.entryLineCount = state.indexLines.filter((line) => ENTRY_LINE_RE.test(line.trim())).length;
+  state.overThreshold = state.entryLineCount > threshold;
+  state.overSizeThreshold = state.indexBytes > sizeThreshold;
+}
 
-  // Live-store membership is *.md files directly inside storeDir, excluding
-  // the index. Subdirectories (including archive/) stay out of this set; a
-  // link may resolve against the store root without making its target live.
+function liveFiches(storeDir, indexPath) {
   const diskFiches = new Set();
   for (const entry of readdirSync(storeDir, { withFileTypes: true })) {
     if (entry.isDirectory()) continue;
@@ -213,73 +235,54 @@ export function checkStore(storeDir, opts = {}) {
     if (entry.name === basename(indexPath)) continue;
     diskFiches.add(entry.name);
   }
+  return diskFiches;
+}
 
-  // A `[[slug]]` names a fiche by its DECLARED identity, which a store may keep in
-  // frontmatter (`name: <slug>`) rather than in the filename. Both conventions are
-  // legitimate and one store can carry both at once, so a resolver that only tries
-  // the filename reports CORRECT links as dangling — and the confident repair is to
-  // rewrite a working link into the other convention. Measured on one store: a
-  // `[[bash-parallel-shared-cwd-v2]]` pointing at `bash-parallel-shared-cwd.md`,
-  // whose frontmatter declares exactly that name.
-  //
-  // The name index is built LAZILY, on the first slug the filename lookup misses, so
-  // a store following the filename convention never pays for it. It is read from the
-  // WHOLE file: a windowed read can cut a `name:` value mid-string, and a truncated
-  // identifier is indistinguishable from a wrong one — it simply fails to match.
+// Filename convention first; frontmatter name lookup is lazy and reads whole
+// files so a late or truncated declared identity cannot silently disappear.
+function slugResolver(diskFiches, storeDir) {
   let nameIndex = null;
-  const buildNameIndex = () => {
-    const index = new Map();
-    for (const file of diskFiches) {
-      let body;
-      try {
-        body = readFileSync(join(storeDir, file), 'utf8');
-      } catch {
-        continue; // unreadable is reported elsewhere; it must not break resolution
-      }
-      const fm = parseFrontmatter(body);
-      if (!fm.ok || typeof fm.data.name !== 'string') continue;
-      if (!index.has(fm.data.name)) index.set(fm.data.name, file);
-    }
-    return index;
-  };
-
-  /** The real filename a `[[slug]]` resolves to, or null. Filename stem first (the
-   *  common case, and free), then the declared frontmatter name. */
-  const resolveSlug = (slug) => {
+  return (slug) => {
     const byFilename = `${slug}.md`;
     if (diskFiches.has(byFilename)) return byFilename;
-    if (nameIndex === null) nameIndex = buildNameIndex();
+    if (nameIndex === null) nameIndex = buildNameIndex(diskFiches, storeDir);
     return nameIndex.get(slug) ?? null;
   };
+}
 
-  // Archived fiches are NOT live-store members — they stay out of the
-  // reachability graph above, and that is correct. But they still EXIST, and
-  // the hygiene convention says inbound `[[links]]` are deliberately not
-  // rewritten when a fiche is archived, because "archived links resolve on
-  // demand". A checker that cannot see the archive therefore reports a link
-  // that resolves perfectly as unresolved — and, since archiving is the very
-  // mechanism the convention prescribes, that count only ever grows. A line
-  // showing a permanently-nonzero number nobody can act on is a line people
-  // stop reading, which is how a checker loses the cases that matter.
-  //
-  // ⚠ The two link kinds are NOT the same finding, and collapsing them would
-  // trade a false positive for a false negative:
-  //   - a link in a BODY to an archived fiche is CORRECT by the convention;
-  //   - a link in the INDEX to an archived fiche is a real defect the same
-  //     convention names — archiving requires dropping the pointer, and a
-  //     targeted deletion aimed at the index succeeds while deleting nothing
-  //     when the pointer actually lives in a hub body.
-  const archivedFiches = new Set();
+function buildNameIndex(diskFiches, storeDir) {
+  const index = new Map();
+  for (const file of diskFiches) {
+    let body;
+    try {
+      body = readFileSync(join(storeDir, file), 'utf8');
+    } catch {
+      continue;
+    }
+    const fm = parseFrontmatter(body);
+    if (!fm.ok || typeof fm.data.name !== 'string') continue;
+    if (!index.has(fm.data.name)) index.set(fm.data.name, file);
+  }
+  return index;
+}
+
+// Archive membership never makes a fiche live. Body references into archive/
+// are valid; index references into it are stale pointers, a separate finding.
+function archivedFiches(storeDir) {
+  const files = new Set();
   const archiveDir = join(storeDir, 'archive');
   if (existsSync(archiveDir)) {
     for (const entry of readdirSync(archiveDir, { withFileTypes: true })) {
       if (entry.isDirectory()) continue;
       if (!entry.name.endsWith('.md')) continue;
-      archivedFiches.add(entry.name);
+      files.add(entry.name);
     }
   }
+  return files;
+}
 
-  const resolveStoreLink = (target) => {
+function storeLinkResolver(storeDir) {
+  return (target) => {
     if (isAbsolute(target)) return null;
     const path = resolve(storeDir, target);
     const pathFromStore = relative(storeDir, path);
@@ -288,299 +291,273 @@ export function checkStore(storeDir, opts = {}) {
     }
     return existsSync(path) ? pathFromStore : null;
   };
-  const resolveArchivedLink = (target) => {
-    if (archivedFiches.has(target)) return join('archive', target);
+}
+
+function archivedLinkResolver(files, resolveStoreLink) {
+  return (target) => {
+    if (files.has(target)) return join('archive', target);
     const resolved = resolveStoreLink(target);
     return resolved !== null && (resolved === 'archive' || resolved.startsWith(`archive${sep}`)) ? resolved : null;
   };
+}
 
-  // Direct links: every `(*.md)` target named anywhere in the index file.
-  const directLinks = new Set();
-  const resolvedDirectLinks = new Map();
-  const danglingRefs = [];
-  const unresolvedCrossRefs = [];
-  const archivedRefs = [];
-  const staleIndexPointers = [];
-  const brokenRetractions = [];
-  for (const line of indexLines) {
+function prepareResolvers(state) {
+  state.diskFiches = liveFiches(state.storeDir, state.indexPath);
+  state.resolveSlug = slugResolver(state.diskFiches, state.storeDir);
+  const files = archivedFiches(state.storeDir);
+  state.resolveStoreLink = storeLinkResolver(state.storeDir);
+  state.resolveArchivedLink = archivedLinkResolver(files, state.resolveStoreLink);
+}
+
+function collectDirectLinks(state) {
+  state.directLinks = new Set();
+  state.resolvedDirectLinks = new Map();
+  state.danglingRefs = [];
+  state.unresolvedCrossRefs = [];
+  state.archivedRefs = [];
+  state.staleIndexPointers = [];
+  state.brokenRetractions = [];
+  for (const line of state.indexLines) {
     LINK_RE.lastIndex = 0;
     let match;
     while ((match = LINK_RE.exec(line))) {
-      // An index pointer at an archived fiche is not dangling — the file is
-      // right there — but it IS the pointer the archiving step was supposed
-      // to drop. Naming it as its own class is what makes it actionable;
-      // folding it into "dangling" would send a reader hunting a missing file
-      // that exists, and folding it into "resolved" would hide a real defect.
-      if (resolveArchivedLink(match[1]) !== null) {
-        staleIndexPointers.push({ from: indexFile, target: match[1] });
+      if (state.resolveArchivedLink(match[1]) !== null) {
+        state.staleIndexPointers.push({ from: state.indexFile, target: match[1] });
         continue;
       }
-      const resolved = resolveStoreLink(match[1]);
+      const resolved = state.resolveStoreLink(match[1]);
       if (resolved !== null) {
-        directLinks.add(resolved);
-        resolvedDirectLinks.set(match[1], resolved);
-      } else danglingRefs.push({ from: indexFile, target: match[1] });
+        state.directLinks.add(resolved);
+        state.resolvedDirectLinks.set(match[1], resolved);
+      } else state.danglingRefs.push({ from: state.indexFile, target: match[1] });
     }
   }
+}
 
-  // BFS closure: a directly-linked fiche that is itself a hub lists its
-  // members as `[[slug]]` in its own body; follow those transitively so a
-  // hub-of-hubs still resolves. Depth is unbounded — nothing in the card's
-  // design caps hub nesting, and capping it would just move the silent
-  // ceiling one layer down instead of removing it.
-  const reachable = new Set();
-  const queue = [];
+function initializeReachability(state) {
+  state.reachable = new Set();
+  state.queue = [];
   const queued = new Set();
-  const unreadableFiches = new Set();
-  for (const file of directLinks) {
+  state.unreadableFiches = new Set();
+  for (const file of state.directLinks) {
     if (!queued.has(file)) {
       queued.add(file);
-      if (diskFiches.has(file)) reachable.add(file);
-      queue.push(file);
+      if (state.diskFiches.has(file)) state.reachable.add(file);
+      state.queue.push(file);
     }
   }
-  // Per-entry exposure counts member-shaped references for every readable
-  // fiche. Hub sizing separately applies the structural ratio below; the
-  // ratio answers whether hub-only checks apply, not whether members exist.
-  const entryMemberCounts = new Map(); // file -> distinct resolved member count
-  // Hub sizing: a hub buys index headroom by pushing facts one hop down,
-  // it does not remove the ceiling — it RELOCATES it.
-  const hubMemberCounts = new Map(); // file -> distinct resolved member count
-  const hubCountMismatches = [];
-  let structuralHubCount = 0;
-  let hubsWithDeclaredCount = 0;
+  state.entryMemberCounts = new Map();
+  state.hubMemberCounts = new Map();
+  state.hubCountMismatches = [];
+  state.structuralHubCount = 0;
+  state.hubsWithDeclaredCount = 0;
+}
 
-  while (queue.length > 0) {
-    const current = queue.shift();
-    let body;
-    try {
-      body = readFileSync(join(storeDir, current), 'utf8');
-    } catch {
-      unreadableFiches.add(current);
-      continue; // linked but unreadable — treated as not further expandable, not a crash
-    }
-    // Reachability: any `[[slug]]` occurrence ANYWHERE in the body, prose
-    // included — deliberately broad, this is what lets a hub-of-hubs (or a
-    // narrative fiche that simply mentions a neighbour) still resolve.
-    const bodyLinks = new Set();
-    HUBLINK_RE.lastIndex = 0;
-    let match;
-    while ((match = HUBLINK_RE.exec(body))) {
-      const candidate = resolveSlug(match[1]);
-      if (candidate === null) continue;
-      bodyLinks.add(candidate);
-      if (!reachable.has(candidate)) {
-        reachable.add(candidate);
-        queue.push(candidate);
-      }
-    }
-    // Hub classification: STRUCTURE, not "has a link" — see
-    // HUB_MEMBER_LINE_RATIO above for why "any [[link]] present" is the
-    // wrong test.
-    const bodyLines = body.split('\n');
-    const nonBlankLineCount = bodyLines.filter((l) => l.trim().length > 0).length;
-    let memberLineCount = 0;
-    const memberLineSlugs = new Set();
-    const memberSlugs = new Set();
-    const unresolvedMemberLineRefs = [];
-    for (const line of bodyLines) {
-      const m = MEMBER_LINE_RE.exec(line.trim());
-      if (!m) continue;
-      memberLineCount++;
-      const resolved = resolveSlug(m[1]);
-      const candidate = resolved ?? `${m[1]}.md`;
-      memberLineSlugs.add(candidate);
-      if (resolved !== null) memberSlugs.add(candidate);
-      // A body link into the archive RESOLVES — the convention says so
-      // explicitly and tells stores not to rewrite these. Counted as its own
-      // class so the distinction stays visible without ever reading as a fault.
-      else if (resolveArchivedLink(candidate) !== null) archivedRefs.push({ from: current, target: candidate });
-      else unresolvedMemberLineRefs.push({ from: current, target: candidate });
-    }
-    entryMemberCounts.set(current, memberSlugs.size);
-    const declaredCount = readDeclaredMemberCount(body);
-    if (declaredCount !== null && declaredCount !== memberLineSlugs.size) {
-      hubCountMismatches.push({ file: current, declared: declaredCount, actual: memberLineSlugs.size });
-    }
-    const isStructuralHub =
-      memberLineCount > 0 && nonBlankLineCount > 0 && memberLineCount / nonBlankLineCount >= HUB_MEMBER_LINE_RATIO;
-    if (isStructuralHub) {
-      structuralHubCount++;
-      if (declaredCount !== null) hubsWithDeclaredCount++;
-      for (const ref of unresolvedMemberLineRefs) danglingRefs.push(ref);
-      hubMemberCounts.set(current, memberSlugs.size);
-    } else {
-      for (const ref of unresolvedMemberLineRefs) unresolvedCrossRefs.push(ref);
+function expandNextFiche(state) {
+  const current = state.queue.shift();
+  let body;
+  try {
+    body = readFileSync(join(state.storeDir, current), 'utf8');
+  } catch {
+    state.unreadableFiches.add(current);
+    return;
+  }
+  followBodyLinks(state, body);
+  classifyFiche(state, current, body);
+}
+
+// Reachability is transitive and accepts references anywhere in the body,
+// including prose; hub classification below deliberately remains narrower.
+function followBodyLinks(state, body) {
+  const bodyLinks = new Set();
+  HUBLINK_RE.lastIndex = 0;
+  let match;
+  while ((match = HUBLINK_RE.exec(body))) {
+    const candidate = state.resolveSlug(match[1]);
+    if (candidate === null) continue;
+    bodyLinks.add(candidate);
+    if (!state.reachable.has(candidate)) {
+      state.reachable.add(candidate);
+      state.queue.push(candidate);
     }
   }
+}
 
-  const rawUnreachableFiches = [...diskFiches].filter((f) => !reachable.has(f)).sort();
-  // Per-entry exposure is deliberately one hop and member-shaped. The
-  // transitive graph above answers whole-store reachability; using it here
-  // makes nearly every cross-referenced entry appear to front the whole store.
-  const perEntryCounts = indexEntries.map(({ line, target }) =>
-    measureEntryMembers(target, resolvedDirectLinks.get(target) ?? target, line, diskFiches, entryMemberCounts, unreadableFiches),
+function memberReferences(state, bodyLines, current) {
+  let memberLineCount = 0;
+  const memberLineSlugs = new Set();
+  const memberSlugs = new Set();
+  const unresolvedMemberLineRefs = [];
+  for (const line of bodyLines) {
+    const m = MEMBER_LINE_RE.exec(line.trim());
+    if (!m) continue;
+    memberLineCount++;
+    const resolved = state.resolveSlug(m[1]);
+    const candidate = resolved ?? `${m[1]}.md`;
+    memberLineSlugs.add(candidate);
+    if (resolved !== null) memberSlugs.add(candidate);
+    else if (state.resolveArchivedLink(candidate) !== null) state.archivedRefs.push({ from: current, target: candidate });
+    else unresolvedMemberLineRefs.push({ from: current, target: candidate });
+  }
+  return { memberLineCount, memberLineSlugs, memberSlugs, unresolvedMemberLineRefs };
+}
+
+function classifyFiche(state, current, body) {
+  const bodyLines = body.split('\n');
+  const nonBlankLineCount = bodyLines.filter((l) => l.trim().length > 0).length;
+  const { memberLineCount, memberLineSlugs, memberSlugs, unresolvedMemberLineRefs } = memberReferences(state, bodyLines, current);
+  state.entryMemberCounts.set(current, memberSlugs.size);
+  const declaredCount = readDeclaredMemberCount(body);
+  if (declaredCount !== null && declaredCount !== memberLineSlugs.size) {
+    state.hubCountMismatches.push({ file: current, declared: declaredCount, actual: memberLineSlugs.size });
+  }
+  const isStructuralHub =
+    memberLineCount > 0 && nonBlankLineCount > 0 && memberLineCount / nonBlankLineCount >= HUB_MEMBER_LINE_RATIO;
+  if (isStructuralHub) {
+    state.structuralHubCount++;
+    if (declaredCount !== null) state.hubsWithDeclaredCount++;
+    for (const ref of unresolvedMemberLineRefs) state.danglingRefs.push(ref);
+    state.hubMemberCounts.set(current, memberSlugs.size);
+  } else {
+    for (const ref of unresolvedMemberLineRefs) state.unresolvedCrossRefs.push(ref);
+  }
+}
+
+// Exposure counts are one hop and member-shaped, independently of whether a
+// fiche's structure qualifies it as a hub. Whole-store reachability is BFS.
+function measureEntryExposure(state) {
+  state.rawUnreachableFiches = [...state.diskFiches].filter((f) => !state.reachable.has(f)).sort();
+  state.perEntryCounts = state.indexEntries.map(({ line, target }) =>
+    measureEntryMembers(target, state.resolvedDirectLinks.get(target) ?? target, line, state.diskFiches, state.entryMemberCounts, state.unreadableFiches),
   );
+}
 
-  // Whole-note retractions are detected only by the convention's top-of-note
-  // blockquote shape. Keyword presence elsewhere in the body stays out of
-  // scope so section-level retractions inside live notes do not fire.
-  //
-  // A deliberate de-indexing is exactly what wt-memory-hygiene.md calls
-  // intentional: "a retraction kept only so old references still resolve —
-  // fine, reads intentional; else an orphan to place, merge, or archive."
-  // Before this pass, `unreachableFiches` counted every unreachable fiche
-  // with no exemption, so the two on this store were flagged EVERY session —
-  // exactly the "always-red gate gets ignored" failure the rule itself warns
-  // about. The exemption is narrow on purpose: only a WELL-FORMED retraction
-  // block (`readRetractionForwardTarget` returns non-null) whose forward
-  // pointer actually RESOLVES earns it — a retracted fiche with a broken
-  // pointer gets no exemption and stays counted as unreachable, on top of
-  // the brokenRetractions finding it already produces below. Trading one
-  // false positive (the intentional retraction) for a hole (an unverified
-  // retraction claim) would be the wrong trade.
+// Only a whole-note, well-formed retraction with a resolving forward pointer
+// exempts an unreachable fiche. Broken pointers remain findings and orphans.
+function measureRetractions(state) {
   const retractedResolving = new Set();
-  for (const file of diskFiches) {
+  for (const file of state.diskFiches) {
     let body;
     try {
-      body = readFileSync(join(storeDir, file), 'utf8');
+      body = readFileSync(join(state.storeDir, file), 'utf8');
     } catch {
       continue;
     }
     const target = readRetractionForwardTarget(body);
     if (target === null) continue;
-    if (retractionTargetResolves(storeDir, target)) {
+    if (retractionTargetResolves(state.storeDir, target)) {
       retractedResolving.add(file);
       continue;
     }
-    brokenRetractions.push({ from: file, target });
+    state.brokenRetractions.push({ from: file, target });
   }
+  state.retractedFiches = state.rawUnreachableFiches.filter((f) => retractedResolving.has(f)).sort();
+  state.unreachableFiches = state.rawUnreachableFiches.filter((f) => !retractedResolving.has(f));
+}
 
-  // Only an unreachable fiche's retraction status matters here — a fiche
-  // that IS reachable (still linked from the index or a hub) needs no
-  // exemption in the first place, so this never widens the exemption beyond
-  // the de-indexed case the rule actually describes.
-  const retractedFiches = rawUnreachableFiches.filter((f) => retractedResolving.has(f)).sort();
-  const unreachableFiches = rawUnreachableFiches.filter((f) => !retractedResolving.has(f));
-
-  // Largest hub, for reporting even when nothing is over hubMax — this is
-  // what makes the relocated ceiling visible before it becomes a problem,
-  // the same reasoning the warning band applies to the index itself.
-  let largestHub = null;
+function largestHub(hubMemberCounts) {
+  let largest = null;
   for (const [file, members] of hubMemberCounts) {
-    if (!largestHub || members > largestHub.members) largestHub = { file, members };
+    if (!largest || members > largest.members) largest = { file, members };
   }
+  return largest;
+}
 
+function collectReasons(state) {
   const reasons = [];
-  if (overThreshold) {
-    reasons.push(`index has ${entryLineCount} entry line(s), over threshold ${threshold}`);
-  }
-  if (overSizeThreshold) {
-    reasons.push(`index is ${indexBytes} byte(s), over threshold ${sizeThreshold}`);
-  }
-  if (unreachableFiches.length > 0) {
-    reasons.push(
-      `${unreachableFiches.length} fiche(s) on disk are reachable from the index by no path (hub or direct)`,
-    );
-  }
-  if (unreadableFiches.size > 0) {
-    reasons.push(
-      `could not fully read ${unreadableFiches.size} reachable fiche(s); reachability was verified only where those files could be read`,
-    );
-  }
-  for (const { from, target } of danglingRefs) {
-    reasons.push(`dangling reference from ${from} to ${target}`);
-  }
-  for (const { from, target } of brokenRetractions) {
-    reasons.push(`retraction forward pointer from ${from} to ${target} does not resolve`);
-  }
-  for (const { from, target } of staleIndexPointers) {
-    reasons.push(
-      `${from} still points at ${target}, which has been archived — drop the pointer (it may live in a hub body, not the index)`,
-    );
-  }
-  for (const [file, members] of hubMemberCounts) {
-    if (members > hubMax) {
-      reasons.push(`hub ${file} has ${members} member(s), over hubMax ${hubMax}`);
-    }
-  }
-  for (const { file, declared, actual } of hubCountMismatches) {
-    reasons.push(`hub ${file} declared ${declared} member(s); actual ${actual}`);
-  }
+  if (state.overThreshold) reasons.push(`index has ${state.entryLineCount} entry line(s), over threshold ${state.threshold}`);
+  if (state.overSizeThreshold) reasons.push(`index is ${state.indexBytes} byte(s), over threshold ${state.sizeThreshold}`);
+  appendReachabilityReasons(state, reasons);
+  appendHubReasons(state, reasons);
+  return reasons;
+}
 
-  // The warning band: a countdown toward the threshold, never a flag. The
-  // probe as originally shipped only fires once the index is ALREADY over
-  // the limit — by which point the tail is already invisible to every
-  // session loading it. This gives a reader a heads-up while there is
-  // still time to act, without turning a healthy store noisy: it never
-  // fires once overThreshold is already true (that case has its own,
-  // stronger signal), and it never changes `flagged` or the exit code.
+function appendReachabilityReasons(state, reasons) {
+  if (state.unreachableFiches.length > 0) {
+    reasons.push(`${state.unreachableFiches.length} fiche(s) on disk are reachable from the index by no path (hub or direct)`);
+  }
+  if (state.unreadableFiches.size > 0) {
+    reasons.push(`could not fully read ${state.unreadableFiches.size} reachable fiche(s); reachability was verified only where those files could be read`);
+  }
+  for (const { from, target } of state.danglingRefs) reasons.push(`dangling reference from ${from} to ${target}`);
+  for (const { from, target } of state.brokenRetractions) reasons.push(`retraction forward pointer from ${from} to ${target} does not resolve`);
+  for (const { from, target } of state.staleIndexPointers) {
+    reasons.push(`${from} still points at ${target}, which has been archived — drop the pointer (it may live in a hub body, not the index)`);
+  }
+}
+
+function appendHubReasons(state, reasons) {
+  for (const [file, members] of state.hubMemberCounts) {
+    if (members > state.hubMax) reasons.push(`hub ${file} has ${members} member(s), over hubMax ${state.hubMax}`);
+  }
+  for (const { file, declared, actual } of state.hubCountMismatches) reasons.push(`hub ${file} declared ${declared} member(s); actual ${actual}`);
+}
+
+// Each ceiling gets its own countdown notice, suppressed once that ceiling
+// is crossed. A band never contributes a reason or changes the exit code.
+function indexWarningBands({ entryLineCount, threshold, indexBytes, sizeThreshold, overThreshold, overSizeThreshold }) {
   const headroom = threshold - entryLineCount;
   const bandWidth = Math.max(10, Math.round(threshold * 0.15));
-  const inWarningBand = !overThreshold && headroom <= bandWidth;
+  const inLineBand = !overThreshold && headroom <= bandWidth;
   const notices = [];
-  if (inWarningBand) {
+  if (inLineBand) {
     notices.push(`index headroom: ${headroom} line(s) before the threshold of ${threshold}`);
   }
+  const byteHeadroom = sizeThreshold - indexBytes;
+  const inByteBand = !overSizeThreshold && byteHeadroom <= sizeThreshold * 0.15;
+  if (inByteBand) {
+    notices.push(`index byte headroom: ${byteHeadroom} byte(s) before the size threshold of ${sizeThreshold} (${indexBytes} byte(s) used)`);
+  }
+  return { inWarningBand: inLineBand || inByteBand, notices };
+}
+
+function appendInformationalNotices(state) {
+  const { notices, unresolvedCrossRefs, archivedRefs, structuralHubCount, hubsWithDeclaredCount, retractedFiches } = state;
   if (unresolvedCrossRefs.length > 0) {
-    notices.push(
-      `informational only: ${unresolvedCrossRefs.length} unresolved cross-reference(s) in non-hub bodies; see unresolvedCrossRefs for per-item detail`,
-    );
+    notices.push(`informational only: ${unresolvedCrossRefs.length} unresolved cross-reference(s) in non-hub bodies; see unresolvedCrossRefs for per-item detail`);
   }
   if (archivedRefs.length > 0) {
-    notices.push(
-      `${archivedRefs.length} reference(s) resolve in archive/ — correct by the hygiene convention, which does not rewrite inbound links when a fiche is archived; no action`,
-    );
+    notices.push(`${archivedRefs.length} reference(s) resolve in archive/ — correct by the hygiene convention, which does not rewrite inbound links when a fiche is archived; no action`);
   }
   if (structuralHubCount > 0 && hubsWithDeclaredCount === 0) {
-    notices.push(
-      'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
-    );
+    notices.push('declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified');
   }
-  // A count that only ever reads "0 unreachable" loses the ability to say
-  // what it exempted — its silence becomes indistinguishable from "nothing
-  // to report" again, the exact failure this exemption exists to close.
-  // Only printed when it applies (empty case reads exactly as before).
   if (retractedFiches.length > 0) {
-    notices.push(
-      `${retractedFiches.length} fiche(s) excluded from unreachable — a deliberate retraction whose forward pointer resolves (see wt-memory-hygiene.md); not a defect`,
-    );
+    notices.push(`${retractedFiches.length} fiche(s) excluded from unreachable — a deliberate retraction whose forward pointer resolves (see wt-memory-hygiene.md); not a defect`);
   }
+}
 
+function indexedReport(state) {
   return {
-    store: storeDir,
+    store: state.storeDir,
     hasIndex: true,
     scopeNote: SCOPE_NOTE,
-    indexFile,
-    threshold,
-    sizeThreshold,
-    entryLines: entryLineCount,
-    indexBytes,
-    overThreshold,
-    overSizeThreshold,
-    diskFiches: diskFiches.size,
-    reachableFiches: reachable.size,
-    unreachableFiches,
-    unreadableFiches: [...unreadableFiches].sort(),
-    indexEntries: perEntryCounts,
-    retractedFiches,
-    danglingRefs,
-    unresolvedCrossRefs,
-    archivedRefs,
-    staleIndexPointers,
-    brokenRetractions,
-    hubMax,
-    hubCount: hubMemberCounts.size,
-    hubCountMismatches,
-    largestHub,
-    inWarningBand,
-    notices,
-    // Every flagging condition (over-threshold, an unreachable fiche, an
-    // oversized hub) already pushed its own line into `reasons` above —
-    // flagged is exactly "did anything push a reason", not a re-derivation
-    // of the same three conditions a second way that could drift from it.
-    flagged: reasons.length > 0,
-    reasons,
+    indexFile: state.indexFile,
+    threshold: state.threshold,
+    sizeThreshold: state.sizeThreshold,
+    entryLines: state.entryLineCount,
+    indexBytes: state.indexBytes,
+    overThreshold: state.overThreshold,
+    overSizeThreshold: state.overSizeThreshold,
+    diskFiches: state.diskFiches.size,
+    reachableFiches: state.reachable.size,
+    unreachableFiches: state.unreachableFiches,
+    unreadableFiches: [...state.unreadableFiches].sort(),
+    indexEntries: state.perEntryCounts,
+    retractedFiches: state.retractedFiches,
+    danglingRefs: state.danglingRefs,
+    unresolvedCrossRefs: state.unresolvedCrossRefs,
+    archivedRefs: state.archivedRefs,
+    staleIndexPointers: state.staleIndexPointers,
+    brokenRetractions: state.brokenRetractions,
+    hubMax: state.hubMax,
+    hubCount: state.hubMemberCounts.size,
+    hubCountMismatches: state.hubCountMismatches,
+    largestHub: state.largestHub,
+    inWarningBand: state.inWarningBand,
+    notices: state.notices,
+    flagged: state.reasons.length > 0,
+    reasons: state.reasons,
   };
 }
 
