@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -18,7 +18,8 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 function git(root: string, ...args: string[]) {
   return execFileSync('git', args, {
-    cwd: root, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    // HOME is the fixture's temporary parent, so no global git config (signing, hooks) reaches the fixture.
+    cwd: root, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HOME: dirname(root), GIT_OPTIONAL_LOCKS: '0' },
   })
 }
 
