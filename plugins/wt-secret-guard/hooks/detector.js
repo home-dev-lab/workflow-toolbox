@@ -393,6 +393,27 @@ function concealedJsonDetections(text) {
 /** The pattern kinds, in order. The V34 union property enumerates every one of them. */
 export const PATTERN_KINDS = patterns.map(([kind]) => kind);
 
+// Metadata-only view of the same contextual matches and exemptions. detections() stays unchanged.
+export function contextualMatches(text) {
+  const allowed = allowedRanges(text);
+  const concealed = concealedJsonDetections(text);
+  const context = { text, concealed, command: '', options: {}, allowed };
+  const found = [];
+  for (const [kind, expression] of patterns.slice(-4)) {
+    expression.lastIndex = 0;
+    for (let match; (match = expression.exec(text));) {
+      const value = capturedValue(match);
+      if (!keepPatternMatch(kind, match, value, context)) continue;
+      const captureStart = match.index + match[0].lastIndexOf(value);
+      const delimiter = kind === 'assignment' || kind === 'environment-dump' ? '=' : ':';
+      let valueStart = match.index + match[0].indexOf(delimiter) + 1;
+      while (/[ \t]/.test(text[valueStart] ?? '')) valueStart += 1;
+      found.push({ kind, keyStart: match.index, valueStart, captureStart, captureEnd: captureStart + value.length, value });
+    }
+  }
+  return found;
+}
+
 function keepPatternMatch(kind, match, value, { text, concealed, command, options, allowed }) {
   const duplicatesConcealed = concealed.some((item) => item.value.includes(value) || value.includes(item.value));
   const sourceSyntax = kind === 'assignment' && sourceAssignment(text, match);

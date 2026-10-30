@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { monitorTsserverWatches } from './ts-watch-count.mjs'
+import { monitorTsserverCpu } from './ts-cpu-watchdog.mjs'
 
 export function tsProcessOptions(options) {
   const env = options.env ?? process.env
   const preload = fileURLToPath(new URL('./ts-watch-preload.mjs', import.meta.url))
-  return { ...options, env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}`.trim() } }
+  return { ...options, detached: process.platform !== 'win32', env: { ...env, NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}`.trim() } }
 }
 
 export function spawnTsProcess(command, args, options) {
@@ -13,5 +14,6 @@ export function spawnTsProcess(command, args, options) {
   if (!args[0]?.endsWith('cli.mjs')) return spawn(command, args, options)
   const child = spawn(command, args, tsProcessOptions(options))
   child.once('spawn', () => monitorTsserverWatches(child, process.stderr))
+  child.once('spawn', () => monitorTsserverCpu(child, process.stderr))
   return child
 }
