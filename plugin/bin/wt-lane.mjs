@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
 import { applyLanePriority } from './lib/host/lane-priority.mjs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
 import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, suiteLockCli, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
@@ -25,6 +26,7 @@ import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-s
 import { laneBoundLine, unattendedMaxSeconds, validateLaneTiming } from './lib/lane-deadline-core.mjs'
 import { createLaneDeadline } from './lib/host/lane-deadline-worker.mjs'
 import { appendLaneReceipt } from './lib/host/lane-diagnostics.mjs'
+import { withLaneLaunchAdmission } from './lib/host/lane-launch-admission.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
@@ -592,6 +594,57 @@ export function reportWorkerReturnedBeforeSpawn({ dir, runId, log, exitCode }) {
   appendLaunchFailure(log, reason)
 }
 
+export { launchLane as main }
+
+async function launchLane({ argv = process.argv.slice(2), admissionOptions = {} } = {}) {
+  if (argv[0] === '--worker') return invokeLaneMain(argv)
+  const parsed = parse(argv)
+  if (parsed.help || parsed.error) return invokeLaneMain(argv)
+  return withLaneLaunchAdmission((admission) => launchAndObserve(argv, parsed, admission), admissionOptions)
+}
+
+async function invokeLaneMain(argv) {
+  // The injected argv is an in-process test/API seam; normal CLI launches keep their
+  // process argv object. Admission serialises invocations before a synthetic argv is set.
+  if (isInvokedDirectly(import.meta.url) && argv.length === process.argv.length - 2 && argv.every((arg, index) => arg === process.argv[index + 2])) return main()
+  const previous = process.argv
+  process.argv = [previous[0], fileURLToPath(import.meta.url), ...argv]
+  try { return await main() } finally { process.argv = previous }
+}
+
+async function launchAndObserve(argv, opts, admission) {
+  const before = readCurrentSupervision(opts.dir)?.runId
+  const readOwnState = () => {
+    const state = readCurrentSupervision(opts.dir)
+    const id = state?.runId
+    if (typeof id !== 'string' || id === before) return null
+    const owned = opts.runId ? id === opts.runId : id.startsWith(`${process.pid}-`)
+    return owned ? state : null
+  }
+  try {
+    const code = await invokeLaneMain(argv)
+    const state = readOwnState()
+    if (state?.workerPid) admission.trackWorker(state.workerPid, () => admissionWorkerIsCurrent(state))
+    if (code !== 0) return code
+    if (!state?.workerPid) throw new Error('wt-lane: worker launch returned without a new supervision record')
+    await admission.waitUntilVisible(
+      () => readOwnState()?.childPid,
+      () => ['exited', 'launch-failed'].includes(readOwnState()?.state),
+    )
+    return code
+  } finally {
+    const state = readOwnState()
+    if (state?.workerPid) admission.trackWorker(state.workerPid, () => admissionWorkerIsCurrent(state))
+  }
+}
+
+function admissionWorkerIsCurrent(state) {
+  const actual = inspectProcess(state.workerPid, { recordedArgv: state.workerArgv, captureCwd: Boolean(state.workerCwd) })
+  const expected = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime,
+    startTimeApproximate: state.workerStartTimeApproximate, image: state.workerImage, cwd: state.workerCwd }
+  return sameIdentity(expected, actual) && (hostAdapter.platform === 'win32' || actual.groupId === state.workerPid)
+}
+
 async function main() {
   const worker = process.argv[2] === '--worker'
   const opts = parse(process.argv.slice(worker ? 3 : 2))
@@ -1031,6 +1084,6 @@ async function integrationMain() {
 }
 
 if (isInvokedDirectly(import.meta.url)) {
-  const entrypoint = process.argv[2] === 'integrate' ? integrationMain : main
+  const entrypoint = process.argv[2] === 'integrate' ? integrationMain : launchLane
   entrypoint().then((code) => { process.exitCode = code }).catch((error) => { process.stderr.write(`wt-lane: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })
 }

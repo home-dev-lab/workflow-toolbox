@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawn as nativeSpawn, spawnSync as nativeSpawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
@@ -29,6 +29,14 @@ function join(...segments: string[]): string {
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
+const FIXTURE_LAUNCHER = join(ROOT, 'toolkit/packages/build/test/fixtures/launcher-counter/wt-lane.mjs')
+function fixtureInvocation(args: unknown[]): unknown[] {
+  const [command, argv, ...rest] = args
+  if (command !== process.execPath || !Array.isArray(argv) || argv[0] !== LAUNCHER) return args
+  return [command, [FIXTURE_LAUNCHER, ...argv.slice(1)], ...rest]
+}
+const spawn = new Proxy(nativeSpawn, { apply: (fn, receiver, args) => Reflect.apply(fn, receiver, fixtureInvocation(args)) })
+const spawnSync = new Proxy(nativeSpawnSync, { apply: (fn, receiver, args) => Reflect.apply(fn, receiver, fixtureInvocation(args)) })
 const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
 const WATCHER = process.env.WT_LANE_WATCH_BINARY ?? join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
 const FAKE_OPENCODE = join(ROOT, 'toolkit/packages/build/test/fixtures/fake-opencode.mjs')
