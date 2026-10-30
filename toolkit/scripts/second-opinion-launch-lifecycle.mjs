@@ -5,6 +5,12 @@ import { closeSync, existsSync, openSync, readFileSync, statSync } from 'node:fs
 import { setTimeout as delay } from 'node:timers/promises'
 
 const POLL_MS = 20
+const DIAGNOSTIC_LIMIT = 4_000
+const WINDOWS_PROBE_ARGS = ['-NoProfile', '-NonInteractive', '-Command', [
+  "Write-Output ('PSVersionTable.PSVersion=' + $PSVersionTable.PSVersion.ToString())",
+  "Write-Output ('PSNativeCommandArgumentPassing=' + (Get-Variable PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue))",
+  "Write-Output ('node.Source=' + (Get-Command node -ErrorAction Stop).Source)",
+].join('; ')]
 
 function fileState(path) {
   try { return `exists=true bytes=${statSync(path).size}` } catch (error) {
@@ -23,10 +29,49 @@ export function launchDiagnostics(f) {
     `elapsedMs=${Math.round(performance.now() - (f.started ?? performance.now()))}`].join(' ')
 }
 
+function cappedContents(text) {
+  return text.length > DIAGNOSTIC_LIMIT ? `[truncated; last ${DIAGNOSTIC_LIMIT} characters]\n${text.slice(-DIAGNOSTIC_LIMIT)}` : text
+}
+
+function logContents(path) {
+  try { return cappedContents(readFileSync(path, 'utf8')) } catch (error) {
+    return error.code === 'ENOENT' ? 'absent' : `unreadable: ${error.code ?? error.message}`
+  }
+}
+
+function probeStatus(result) {
+  return `status=${result.status} signal=${result.signal ?? 'none'} error=${result.error?.code ?? result.error?.message ?? 'none'}`
+}
+
+function windowsProbe(f, run) {
+  try {
+    const result = run('powershell.exe', WINDOWS_PROBE_ARGS, {
+      cwd: f.repo, env: f.launchEnv ?? f.env, encoding: 'utf8', timeout: 3_000, maxBuffer: 16_000, windowsHide: true,
+    })
+    return `${probeStatus(result)}\nstdout:\n${cappedContents(result.stdout ?? '')}\nstderr:\n${cappedContents(result.stderr ?? '')}`
+  } catch (error) {
+    return `failed: ${error.code ?? error.message}`
+  }
+}
+
+// Expensive evidence is collected only after the caller has observed a failure.
+export function launchFailureDiagnostics(f, { platform = process.platform, run = spawnSync } = {}) {
+  const step = f.launch ?? {}
+  const logs = ['launch.log', 'shell.stderr.log', 'shell.stdout.log', 'launch.stdout.log']
+    .map((suffix) => `${suffix} contents:\n${logContents(`${f.out}.${suffix}`)}`)
+  return [launchDiagnostics(f), ...logs,
+    `shellSpawn=${JSON.stringify({ program: step.shell ?? null, argv: step.args ?? [] })}`,
+    `command:\n${step.command ?? 'not-recorded'}`,
+    `process.execPath=${JSON.stringify(process.execPath)} process.version=${process.version}`,
+    ...(platform === 'win32' ? [`windowsProbe:\n${windowsProbe(f, run)}`] : []),
+  ].join('\n')
+}
+
 // Use real files, never pipes: shell exit must not wait for a descendant's pipe EOF.
-export async function runShell(f, shell, args, { env, shellTimeoutMs }) {
+export async function runShell(f, shell, args, { env, shellTimeoutMs, command }) {
   f.started = performance.now()
-  f.launch = { shell }
+  f.launch = { shell, args: [...args], command }
+  f.launchEnv = env
   const stdout = openSync(`${f.out}.shell.stdout.log`, 'a')
   const stderr = openSync(`${f.out}.shell.stderr.log`, 'a')
   try {
@@ -69,7 +114,7 @@ export async function waitForLaunch(f, timeoutMs) {
   const deadline = performance.now() + timeoutMs
   let state
   while (!(state = completed(f.out)) && performance.now() < deadline) await delay(POLL_MS)
-  assert.ok(state, `launch completion timed out; ${launchDiagnostics(f)}`)
+  if (!state) assert.ok(state, `launch completion timed out; ${launchFailureDiagnostics(f)}`)
   return state
 }
 

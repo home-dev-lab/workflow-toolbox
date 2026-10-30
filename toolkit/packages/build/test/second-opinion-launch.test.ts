@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error executable .mjs test companion
 import { cleanupLaunch, documentedLaunch, launchFixture, pluginRoot, skillPath } from '../../../scripts/second-opinion-launch-e2e.mjs'
 // @ts-expect-error executable .mjs test companion
-import { completed, launchDiagnostics, runShell, terminatePid, waitForLaunch } from '../../../scripts/second-opinion-launch-lifecycle.mjs'
+import { completed, launchDiagnostics, launchFailureDiagnostics, runShell, terminatePid, waitForLaunch } from '../../../scripts/second-opinion-launch-lifecycle.mjs'
 
 // Cover shell startup, cold-child completion, and the ready/release cleanup regression.
 vi.setConfig({ testTimeout: process.platform === 'win32' ? 240_000 : 60_000,
@@ -35,6 +35,97 @@ function stub(source: string) {
 function shell(f: ReturnType<typeof fixture>, source: string, shellTimeoutMs = 10_000) {
   return runShell(f, process.execPath, ['--input-type=module', '-e', source], { env: f.env, shellTimeoutMs })
 }
+
+it.skipIf(process.platform !== 'linux')('a failed documented shell includes labelled stderr contents and launch evidence', async () => {
+  const f = fixture()
+  const skill = join(f.root, 'failing-skill.md')
+  const command = "printf '%s\\n' 'diagnostic stdout marker'\nprintf '%s\\n' 'diagnostic stderr marker' >&2\nexit 1\n"
+  writeFileSync(skill, '```bash\n' + command + '```\n')
+  writeFileSync(`${f.out}.launch.log`, 'launch failure marker\n')
+  writeFileSync(`${f.out}.launch.stdout.log`, 'child stdout marker\n')
+  const message = await documentedLaunch(f, { skill }).then(() => '', (error: Error) => error.message)
+  expect(message).toContain('launch shell failed; shell=/bin/bash')
+  expect(message).toContain('shell.stderr.log contents:\ndiagnostic stderr marker\n')
+  expect(message).toContain('shell.stdout.log contents:\ndiagnostic stdout marker\n')
+  expect(message).toContain('launch.log contents:\nlaunch failure marker\n')
+  expect(message).toContain('launch.stdout.log contents:\nchild stdout marker\n')
+  expect(message).toContain(`shellSpawn=${JSON.stringify({ program: '/bin/bash', argv: f.launch.args })}`)
+  expect(message).toContain(`command:\n${command}\nprintf`)
+  expect(message).toContain(`process.execPath=${JSON.stringify(process.execPath)} process.version=${process.version}`)
+  expect(message).toContain('out(exists=false bytes=0) launchLog(exists=true bytes=22)')
+  expect(message).not.toContain('windowsProbe:')
+  if (process.env.WT_LAUNCH_DIAGNOSTIC_SAMPLE === '1') console.log(message)
+})
+
+it('failure evidence caps every log tail and distinguishes absent and unreadable files', () => {
+  const f = fixture()
+  for (const suffix of ['launch.log', 'shell.stderr.log', 'shell.stdout.log', 'launch.stdout.log']) {
+    writeFileSync(`${f.out}.${suffix}`, 'discarded prefix' + 'x'.repeat(4_000))
+  }
+  const message = launchFailureDiagnostics(f)
+  expect(message.match(/\[truncated; last 4000 characters\]\nx{4000}/g)).toHaveLength(4)
+  expect(message).not.toContain('discarded prefix')
+  rmSync(`${f.out}.launch.log`)
+  rmSync(`${f.out}.shell.stderr.log`)
+  mkdirSync(`${f.out}.shell.stderr.log`)
+  const missing = launchFailureDiagnostics(f)
+  expect(missing).toContain('launch.log contents:\nabsent')
+  expect(missing).toMatch(/shell.stderr.log contents:\nunreadable: (EISDIR|EACCES|EPERM)/)
+})
+
+it('the Windows failure probe is bounded, labelled, and uses the launch environment', () => {
+  const f = fixture()
+  f.launchEnv = { ...f.env, DIAGNOSTIC_ENV: 'launch override' }
+  const run = vi.fn((program: string, argv: string[]) => {
+    expect(program).toBe('powershell.exe')
+    expect(argv[3]).toContain('$PSVersionTable.PSVersion')
+    expect(argv[3]).toContain('Get-Variable PSNativeCommandArgumentPassing')
+    expect(argv[3]).toContain('(Get-Command node -ErrorAction Stop).Source')
+    return { status: 0, stdout: 'PSVersionTable.PSVersion=5.1\nPSNativeCommandArgumentPassing=\nnode.Source=node.exe\n' }
+  })
+  const message = launchFailureDiagnostics(f, { platform: 'win32', run })
+  expect(run).toHaveBeenCalledOnce()
+  expect(run).toHaveBeenCalledWith('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', expect.any(String)], {
+    cwd: f.repo, env: f.launchEnv, encoding: 'utf8', timeout: 3_000, maxBuffer: 16_000, windowsHide: true,
+  })
+  expect(message).toContain('windowsProbe:\nstatus=0 signal=none error=none\nstdout:\nPSVersionTable.PSVersion=5.1')
+  expect(message).toContain('PSNativeCommandArgumentPassing=\nnode.Source=node.exe')
+})
+
+it('a failed Windows probe remains diagnostic text and is never run on Linux', () => {
+  const f = fixture()
+  const run = vi.fn(() => ({ status: null, error: { code: 'ETIMEDOUT' }, stdout: '', stderr: 'probe stderr' }))
+  expect(launchFailureDiagnostics(f, { platform: 'linux', run })).not.toContain('windowsProbe:')
+  expect(run).not.toHaveBeenCalled()
+  expect(launchFailureDiagnostics(f, { platform: 'win32', run })).toContain('error=ETIMEDOUT\nstdout:\n\nstderr:\nprobe stderr')
+  const throwing = () => { throw new Error('probe unavailable') }
+  expect(launchFailureDiagnostics(f, { platform: 'win32', run: throwing })).toContain('windowsProbe:\nfailed: probe unavailable')
+})
+
+it('successful completion polling does not collect failure evidence', async () => {
+  const f = fixture()
+  writeFileSync(f.out, 'done\nEXIT=0\n')
+  Object.defineProperty(f, 'launch', { configurable: true, get() { throw new Error('failure diagnostics were evaluated') } })
+  expect(await waitForLaunch(f, 100)).toBe('out')
+  // Cleanup uses the lightweight summary, so remove the diagnostic tripwire first.
+  Object.defineProperty(f, 'launch', { value: undefined })
+})
+
+it('a successful documented launch never reads failure-only command evidence', async () => {
+  const f = fixture()
+  Object.defineProperty(f, 'launch', { configurable: true, set(step: object) {
+    Object.defineProperty(step, 'command', { get() { throw new Error('failure evidence was read on success') } })
+    Object.defineProperty(f, 'launch', { configurable: true, writable: true, value: step })
+  } })
+  const result = await documentedLaunch(f, { env: { WT_PLUGIN_ROOT: pluginRoot } })
+  expect(result.out, result.diagnostics).toBe('REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n')
+})
+
+it('completion timeout includes the same labelled failure evidence', async () => {
+  const f = fixture()
+  writeFileSync(`${f.out}.shell.stderr.log`, 'completion stderr marker\n')
+  await expect(waitForLaunch(f, 1)).rejects.toThrow('shell.stderr.log contents:\ncompletion stderr marker\n')
+})
 
 it('the documented launch preserves a missing CLI startup error beside --out', async () => {
   const f = fixture()
