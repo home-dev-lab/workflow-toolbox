@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
-import { admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
+import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_SNAPSHOT_TEST_PLUGIN ?? join(ROOT, 'plugin')
@@ -737,5 +737,14 @@ describe.each(modes)('platform containment contract for %s', mode => {
     expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${cause}\n`)
     expect(existsSync(f.marker)).toBe(false)
     expect(existsSync(join(f.root, 'policy-imported'))).toBe(host === 'linux')
+  })
+  it.each(['darwin', 'win32'])('host=%s refuses even an admitting policy before import', platform => {
+    const f = fixture(mode, admittingImportPolicy)
+    f.platform = platform
+    const result = launch(f, f.module)
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${platformRefusal(platform)}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(false)
   })
 })
