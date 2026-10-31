@@ -2183,50 +2183,106 @@ describe('wt-lane --lock-priority reaches the processes the launcher starts', ()
   }, 60_000)
 })
 
-describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose dependencies are not installed (a sandboxed lane cannot install them)', () => {
-  const SPAWNED = 'echo spawned > "$PWD/spawned"'
-  const LOCK = 'lockfileVersion: 9.0\nimporters: {}\n'
-  const spawned = (f: ReturnType<typeof fixture>) => { waitForFile(join(f.dir, 'spawned')); return existsSync(join(f.dir, 'spawned')) }
-  const pnpmProject = (dir: string, installed: string | null) => {
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'pnpm-lock.yaml'), LOCK)
-    if (installed !== null) { mkdirSync(join(dir, 'node_modules', '.pnpm'), { recursive: true }); writeFileSync(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), installed) }
-  }
-  const refusedFor = (result: ReturnType<typeof run>, dir: string, command: string) => {
-    expect(result.status, result.stderr).toBe(1)
-    expect(result.stderr).toContain(`wt-lane: Refused: dependencies of ${dir} are not installed`)
-    expect(result.stderr).toContain('a lane cannot install them inside its sandbox')
-    expect(result.stderr).toContain(`Run on the host first: (cd ${dir} && ${command})`)
-  }
+const SPAWNED = 'echo spawned > "$PWD/spawned"'
+const LOCK = 'lockfileVersion: 9.0\nimporters: {}\n'
+const spawned = (f: ReturnType<typeof fixture>) => { waitForFile(join(f.dir, 'spawned')); return existsSync(join(f.dir, 'spawned')) }
+const notSpawned = (f: ReturnType<typeof fixture>) => expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+function pnpmProject(dir: string, installed: string | null) {
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'pnpm-lock.yaml'), LOCK)
+  if (installed !== null) { mkdirSync(join(dir, 'node_modules', '.pnpm'), { recursive: true }); writeFileSync(join(dir, 'node_modules', '.pnpm', 'lock.yaml'), installed) }
+}
+function lockedProject(f: ReturnType<typeof fixture>, name: string, lockfile: string, modules: string | null) {
+  const dir = join(f.dir, name)
+  mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, lockfile), '')
+  if (modules !== null) mkdirSync(join(dir, 'node_modules', ...modules.split('/').filter(Boolean)), { recursive: true })
+  return dir
+}
+function refusedFor(result: ReturnType<typeof run>, dir: string, command: string) {
+  expect(result.status, result.stderr).toBe(1)
+  expect(result.stderr).toContain(`wt-lane: Refused: dependencies of ${dir} are not installed`)
+  expect(result.stderr).toContain('a lane cannot install them inside its sandbox')
+  expect(result.stderr).toContain(`Run on the host first: (cd ${dir} && ${command})`)
+  expect(result.stderr).toContain('--allow-missing-install')
+}
 
+function registerPnpmRefusals() {
   it('refuses a pnpm project with no install, naming the directory and the exact command, and spawns nothing', () => {
     const f = fixture(SPAWNED)
     pnpmProject(join(f.dir, 'toolkit'), null)
     const result = run(f)
-    refusedFor(result, join(f.dir, 'toolkit'), 'pnpm install --offline --frozen-lockfile')
+    refusedFor(result, join(f.dir, 'toolkit'), 'pnpm install --frozen-lockfile')
     expect(result.stderr).toContain('node_modules/.pnpm/lock.yaml is missing')
-    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+    notSpawned(f)
   })
   it('refuses a pnpm install made from another lockfile', () => {
     const f = fixture(SPAWNED)
     pnpmProject(join(f.dir, 'toolkit'), 'lockfileVersion: 9.0\nimporters: { old: {} }\n')
     const result = run(f)
-    refusedFor(result, join(f.dir, 'toolkit'), 'pnpm install --offline --frozen-lockfile')
+    refusedFor(result, join(f.dir, 'toolkit'), 'pnpm install --frozen-lockfile')
     expect(result.stderr).toContain('node_modules/.pnpm/lock.yaml differs from pnpm-lock.yaml')
-    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+    notSpawned(f)
   })
   it('refuses the lane directory itself when it is the pnpm project', () => {
     const f = fixture(SPAWNED)
     pnpmProject(f.dir, null)
-    refusedFor(run(f), f.dir, 'pnpm install --offline --frozen-lockfile')
+    refusedFor(run(f), f.dir, 'pnpm install --frozen-lockfile')
   })
+  it('refuses a pnpm project whose node_modules exists but is empty', () => {
+    const f = fixture(SPAWNED)
+    const dir = lockedProject(f, 'toolkit', 'pnpm-lock.yaml', '')
+    refusedFor(run(f), dir, 'pnpm install --frozen-lockfile')
+    notSpawned(f)
+  })
+  it('still refuses a CRLF lockfile whose content differs from the installed copy', () => {
+    const f = fixture(SPAWNED)
+    const dir = join(f.dir, 'toolkit')
+    pnpmProject(dir, LOCK)
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\r\nimporters: { other: {} }\r\n')
+    refusedFor(run(f), dir, 'pnpm install --frozen-lockfile')
+  })
+}
+
+function registerOtherManagerRefusals() {
   it('refuses an npm project with no install and names npm ci', () => {
     const f = fixture(SPAWNED)
     mkdirSync(join(f.dir, 'app')); writeFileSync(join(f.dir, 'app', 'package-lock.json'), '{}\n')
     const result = run(f)
-    refusedFor(result, join(f.dir, 'app'), 'npm ci --offline')
+    refusedFor(result, join(f.dir, 'app'), 'npm ci')
     expect(result.stderr).toContain('node_modules/.package-lock.json is missing')
   })
+  it.each([
+    ['yarn.lock', 'yarn install --frozen-lockfile'],
+    ['bun.lock', 'bun install --frozen-lockfile'],
+    ['bun.lockb', 'bun install --frozen-lockfile'],
+  ])('refuses a %s project with no node_modules, naming its command, and spawns nothing', (lockfile, command) => {
+    const f = fixture(SPAWNED)
+    const dir = lockedProject(f, 'app', lockfile, null)
+    const result = run(f)
+    refusedFor(result, dir, command)
+    expect(result.stderr).toContain('node_modules is missing or empty')
+    notSpawned(f)
+  })
+  it('refuses a yarn project whose node_modules is empty', () => {
+    const f = fixture(SPAWNED)
+    const dir = lockedProject(f, 'app', 'yarn.lock', '')
+    refusedFor(run(f), dir, 'yarn install --frozen-lockfile')
+  })
+  it.each([
+    ['yarn.lock', 'yarn install --frozen-lockfile'],
+    ['bun.lock', 'bun install --frozen-lockfile'],
+  ])('refuses a %s project whose node_modules holds only dot entries', (lockfile, command) => {
+    const f = fixture(SPAWNED)
+    const dir = lockedProject(f, 'app', lockfile, '.cache')
+    writeFileSync(join(dir, 'node_modules', '.DS_Store'), '')
+    const result = run(f)
+    refusedFor(result, dir, command)
+    expect(result.stderr).toContain('node_modules is missing or empty')
+    notSpawned(f)
+  })
+}
+
+function registerLaunchesPastCheck() {
   it('launches when every lockfile has its matching install, and ignores hidden and node_modules directories', () => {
     const f = fixture(SPAWNED)
     pnpmProject(join(f.dir, 'toolkit'), LOCK)
@@ -2246,12 +2302,37 @@ describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose 
     expect(result.status, result.stderr).toBe(0)
     expect(spawned(f)).toBe(true)
   })
-  it('still refuses a CRLF lockfile whose content differs from the installed copy', () => {
+}
+
+function registerLaunchesPastOtherManagers() {
+  it('launches when a yarn or bun project has a non-empty node_modules', () => {
     const f = fixture(SPAWNED)
-    const dir = join(f.dir, 'toolkit')
-    pnpmProject(dir, LOCK)
-    writeFileSync(join(dir, 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\r\nimporters: { other: {} }\r\n')
-    refusedFor(run(f), dir, 'pnpm install --offline --frozen-lockfile')
+    lockedProject(f, 'y', 'yarn.lock', 'dep'); lockedProject(f, 'b', 'bun.lock', 'dep')
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it.each(['.pnp.cjs', '.pnp.js'])('launches a yarn Plug\'n\'Play project (%s, no node_modules)', (pnp) => {
+    const f = fixture(SPAWNED)
+    const dir = lockedProject(f, 'app', 'yarn.lock', null)
+    writeFileSync(join(dir, pnp), '')
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it('does not scan a node_modules directory of another case as a project', () => {
+    const f = fixture(SPAWNED)
+    pnpmProject(join(f.dir, 'NODE_MODULES'), null)
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it('does not refuse a repository with no lockfile at all', () => {
+    const f = fixture(SPAWNED)
+    mkdirSync(join(f.dir, 'app')); writeFileSync(join(f.dir, 'app', 'package.json'), '{}\n')
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
   })
   it('launches past a missing install under --allow-missing-install', () => {
     const f = fixture(SPAWNED)
@@ -2260,12 +2341,19 @@ describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose 
     expect(result.status, result.stderr).toBe(0)
     expect(spawned(f)).toBe(true)
   })
+}
+
+describe.skipIf(process.platform === 'win32')('wt-lane refuses a worktree whose dependencies are not installed (a sandboxed lane cannot install them)', () => {
+  registerPnpmRefusals()
+  registerOtherManagerRefusals()
+  registerLaunchesPastCheck()
+  registerLaunchesPastOtherManagers()
   it('refuses --owner pilot without a token at launch with exit 2 and spawns nothing', () => {
     const f = fixture(SPAWNED)
     const result = run(f, ['--owner', 'pilot'])
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('--owner pilot requires --owner-token <token>')
-    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+    notSpawned(f)
   })
 })
 
