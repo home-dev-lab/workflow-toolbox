@@ -68,6 +68,14 @@ it('the sealed launch environment keeps both inputs of a bare command lookup', (
   }
 })
 
+it('the documented Windows block resolves exactly one node when PATH holds several', () => {
+  // A runner with two node.exe on PATH makes Get-Command return both; `& $node` then calls
+  // their joined paths as one command name and fails with "is not recognized".
+  const block = readFileSync(skillPath, 'utf8')
+  expect(block).toMatch(/\$node = \(Get-Command node -CommandType Application -ErrorAction Stop \| Select-Object -First 1\)\.Source/)
+  expect(block).not.toMatch(/\$node = \(Get-Command node[^|\n]*\)\.Source/)
+})
+
 it('failure evidence caps every log tail and distinguishes absent and unreadable files', () => {
   const f = fixture()
   for (const suffix of ['launch.log', 'shell.stderr.log', 'shell.stdout.log', 'launch.stdout.log']) {

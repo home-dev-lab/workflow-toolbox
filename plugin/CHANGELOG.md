@@ -14,7 +14,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows. On Windows the documented launch starts the answer process through a short Node detacher with file-backed output and records its process id beside the answer.
+- Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows. On Windows the documented launch starts the answer process through a short Node detacher with file-backed output and records its process id beside the answer. When PATH holds several `node` executables, it uses the first one, as a bare `node` command would.
 - The memory index probe warns within the final 15% of its applied byte ceiling, alongside the existing line-headroom notice, without changing findings or exit codes.
 - Admission runner and supervisor now use one-way module dependencies, preserving detached-process cleanup and existing admission results without a circular import.
 - Admission on Linux installs a child subreaper before executing policy, then kills and reaps detached descendants, including double-forked daemons, before returning. Cleanup survives Node-supervisor death and needs neither pidfds nor unrelated procfs records. Unavailable containment (including macOS and Windows) refuses before policy execution; abnormal containment-owner exit reports an explicit unknown.
