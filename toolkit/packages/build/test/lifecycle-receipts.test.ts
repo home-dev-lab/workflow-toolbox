@@ -54,8 +54,8 @@ describe('launchProcessWithOutput', () => {
       if (closed.length === 1) throw Object.assign(new Error('EIO: close failed'), { code: 'EIO' })
     })
     const program = missing ? join(dir, missing) : process.execPath
-    const launch = launchProcessWithOutput(program, ['-e', ''], { stdoutPath, stderrPath }).then(() => 'resolved', (error: Error & { code?: string }) => error.code)
-    const outcome = await Promise.race([launch, new Promise((resolve) => setTimeout(() => resolve('unsettled'), 5_000))])
+    // An unsettled promise fails this test through its own timeout below; no fixed wait is needed.
+    const outcome = await launchProcessWithOutput(program, ['-e', ''], { stdoutPath, stderrPath }).then(() => 'resolved', (error: Error & { code?: string }) => error.code)
     expect(outcome).toBe(expected)
     expect(closed).toHaveLength(2)
   }, 15_000)
