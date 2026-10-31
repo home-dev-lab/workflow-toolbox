@@ -121,7 +121,18 @@ function busyMessage(file) {
   return `wt-lane: admission lock busy or owner unmeasured: ${file} (${holder}); wait for the owning launch to finish, then retry the same wt-lane command; if ${subject}, remove ${file}, then retry${guard}`
 }
 
-export async function acquireLaneAdmissionLock(file, { clock = performance.now.bind(performance), waitMs = 120_000, pollMs = 25 } = {}) {
+// Runs after the claim was published or the wait failed: a leftover staging link is reported,
+// never thrown, so it can neither take a published claim from its caller nor mask the wait's
+// own error. The link holds no claim; only the lock file itself does.
+function removeStage(stage, warn) {
+  try { rmSync(stage, { force: true }) } catch (error) {
+    warn(`wt-lane: could not remove admission staging link ${stage} (${error.code ?? error.message}); it holds no claim and may be removed by hand`)
+  }
+}
+
+const warnToStderr = (line) => process.stderr.write(`${line}\n`)
+
+export async function acquireLaneAdmissionLock(file, { clock = performance.now.bind(performance), waitMs = 120_000, pollMs = 25, warn = warnToStderr } = {}) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   // Own runtime start is available without an external process reader. A live self-only
   // identity is never judged reused from a later native identity in a different format.
@@ -135,7 +146,7 @@ export async function acquireLaneAdmissionLock(file, { clock = performance.now.b
       if (clock() >= deadline) throw new Error(busyMessage(file))
       await delay(pollMs)
     }
-  } finally { rmSync(stage, { force: true }) }
+  } finally { removeStage(stage, warn) }
 }
 
 export function releaseLaneLaunchAdmission(claim) {

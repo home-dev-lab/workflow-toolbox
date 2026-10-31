@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import fs, { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 const roots: string[] = []
 const fixture = fileURLToPath(new URL('./fixtures/lane-admission-e2e.mjs', import.meta.url))
@@ -376,6 +377,59 @@ it.each([false, true])('an acquisition timeout names the lock file, its owner pi
   expect(String(error)).not.toContain('wt-lane launcher')
   if (guard) expect(String(error)).toContain(`reclaim guard ${lockPath}.reclaim is present`)
   expect(readFileSync(lockPath, 'utf8')).toBe(owner)
+})
+
+// The default counter's pgrep ignores SIGTERM and never answers within its bound: admission must
+// report the count as unmeasured, admit, and release the claim, instead of holding it indefinitely.
+it.skipIf(process.platform === 'win32')('a hung default counter degrades to NOT MEASURED and releases the claim', async () => {
+  const { root, lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  writeFileSync(join(root, 'pgrep'), "#!/bin/sh\ntrap '' TERM\nsleep 8\ntrue\n")
+  chmodSync(join(root, 'pgrep'), 0o755)
+  const messages: string[] = []
+  const previousPath = process.env.PATH
+  process.env.PATH = `${root}:${previousPath}`
+  try {
+    const code = await withLaneLaunchAdmission(async (lease: { waitUntilVisible: (readPid: () => null, terminal: () => boolean) => Promise<void> }) => {
+      await lease.waitUntilVisible(() => null, () => true)
+      return 0
+    }, { lockPath, platform: 'linux', warn: (line: string) => messages.push(line) })
+    expect(code).toBe(0)
+  } finally { process.env.PATH = previousPath }
+  expect(messages).toEqual(['wt-lane: lane count NOT MEASURED: pgrep did not answer in time for "opencode" and was stopped'])
+  expect(existsSync(lockPath)).toBe(false)
+}, 60_000)
+
+// Removing the staging link fails (EIO) after the claim was or was not published. A published claim
+// still reaches the caller and is released; a failed wait keeps its own error. Both report the link.
+it.each([
+  ['a published claim', false],
+  ['a busy lock', true],
+] as const)('a staging-link removal failure never loses %s', async (_label, busy) => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  const owner = JSON.stringify({ pid: process.pid, startIdentity: 'self:another-runtime', token: 'held' })
+  if (busy) writeFileSync(lockPath, owner)
+  const messages: string[] = []
+  const realRm = fs.rmSync
+  vi.spyOn(fs, 'rmSync').mockImplementation((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+    if (String(path).endsWith('.claim')) throw Object.assign(new Error('EIO: unlink failed'), { code: 'EIO' })
+    realRm(path, options)
+  })
+  syncBuiltinESMExports()
+  let outcome: unknown
+  try {
+    outcome = await withLaneLaunchAdmission(() => 0, { lockPath, waitMs: 0, counter: () => ({ state: 'ok', count: 0, pids: [] }),
+      warn: (line: string) => messages.push(line) }).catch((caught: Error) => caught.message)
+  } finally { vi.restoreAllMocks(); syncBuiltinESMExports() }
+  if (busy) {
+    expect(String(outcome)).toContain('admission lock busy or owner unmeasured')
+    expect(readFileSync(lockPath, 'utf8')).toBe(owner)
+  } else {
+    expect(outcome).toBe(0)
+    expect(existsSync(lockPath)).toBe(false)
+  }
+  expect(messages).toEqual([expect.stringMatching(/^wt-lane: could not remove admission staging link .+\.claim \(EIO\)/)])
 })
 
 it('a visibility timeout cleans its worker once even when the launcher tracks it again afterwards', async () => {

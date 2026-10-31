@@ -28,6 +28,11 @@ export function readLaunchOutput(fd) {
   return buffer.toString('utf8', 0, offset)
 }
 
+// Attempts every close whatever an earlier one does, then throws the first failure.
 export function closeLaunchOutputs(fds) {
-  for (const fd of fds) fs.closeSync(fd)
+  let failure = null
+  for (const fd of fds) {
+    try { fs.closeSync(fd) } catch (error) { failure ??= error }
+  }
+  if (failure) throw failure
 }
