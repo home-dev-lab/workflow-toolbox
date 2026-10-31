@@ -245,9 +245,10 @@ function endpointsFromBaseURL(provider, baseURL) {
 // global files (bound read-only) and OPENCODE_CONFIG when it lies outside every writable bind. The
 // project config and `.opencode` live in the writable worktree, so trusting them would let one lane
 // widen the next lane's egress; OpenCode may still honour them, and a host they name is then
-// refused by the proxy (fail closed). OPENCODE_CONFIG_CONTENT never reaches a lane (the environment
-// allow-list strips OPENCODE_CONFIG_*). A file that exists but does not parse is named in the
-// launch line: it can only make the allow-list SMALLER, never larger.
+// refused by the proxy (fail closed). The environment allow-list strips inherited OPENCODE_CONFIG_*
+// channels; only the fence's constant OPENCODE_CONFIG_CONTENT reaches a lane. It restores project
+// CLAUDE.md instructions and names no provider or host, so it cannot widen egress. A file that exists
+// but does not parse is named in the launch line: it can only make the allow-list SMALLER, never larger.
 function opencodeModelNetwork({ configDir, model, authFile, configFile, trustedRead }) {
   const files = [...OPENCODE_GLOBAL_CONFIGS.map((name) => path.join(configDir, name)), ...(configFile ? [configFile] : [])]
   const unreadable = files.filter((file) => trustedRead(file) !== null && parseJsonc(trustedRead(file)) === null)
