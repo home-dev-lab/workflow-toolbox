@@ -13,7 +13,9 @@ import { withLaneLaunchAdmission } from '../../../../../plugin/bin/lib/host/lane
 const root = process.argv[3] ?? mkdtempSync(join(tmpdir(), 'lane-admission-e2e-'))
 const lockPath = join(root, 'launch-admission.lock')
 
-async function foreignRecord() {
+// sameRunId: the retry names the foreign record's run id explicitly (--run-id), so only the
+// spawned-worker check can tell that record is not this invocation's.
+async function foreignRecord(sameRunId = false) {
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { cwd: root, detached: true, stdio: 'ignore' })
   try {
     await once(child, 'spawn')
@@ -34,12 +36,12 @@ async function foreignRecord() {
       return { state: 'ok', count: 0, pids: [] }
     }
     const code = await main({ argv: ['--dir', root, '--brief', join(root, 'brief.md'), '--model', 'openai/gpt-6.1-sol',
-      '--allow-no-git', '--allow-missing-install', '--min-available-mib', '0'], admissionOptions: {
+      '--allow-no-git', '--allow-missing-install', '--min-available-mib', '0', ...(sameRunId ? ['--run-id', runId] : [])], admissionOptions: {
       lockPath, counter, stopWorker: (pid) => { calls.push(pid); return { status: 'ended' } },
     } })
     assert.equal(code, 1)
     assert.deepEqual(calls, [], 'a refused launcher must not terminate a newer foreign run')
-    console.log('foreign startup record: original worker left untouched')
+    console.log(sameRunId ? 'foreign record under the same explicit run id: zero stop calls' : 'foreign startup record: original worker left untouched')
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited
@@ -51,6 +53,8 @@ async function foreignRecord() {
 try {
   if (process.argv[2] === 'foreign-record') {
     await foreignRecord()
+  } else if (process.argv[2] === 'foreign-same-run-id') {
+    await foreignRecord(true)
   } else if (process.argv[2] === 'hold') {
     await withLaneLaunchAdmission(async () => {
       console.log('holding')

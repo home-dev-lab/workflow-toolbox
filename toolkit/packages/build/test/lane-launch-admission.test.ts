@@ -309,3 +309,90 @@ it.skipIf(process.platform === 'win32')('reclaims the claim after an uncatchable
     expect(existsSync(lockPath)).toBe(false)
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL') }
 })
+
+type Lease = { trackWorker: (pid: number, verify?: () => boolean) => void, waitUntilVisible: (readPid: () => number | null) => Promise<void> }
+// Worker 40 runs a counted preflight probe 41; its real lane spawn is 50, wrapped 50 -> 51 -> 52.
+const PREFLIGHT_TREE = { processes: [{ pid: 41, ppid: 40 }, { pid: 50, ppid: 40 }, { pid: 51, ppid: 50 }, { pid: 52, ppid: 51 }] }
+
+it.each([
+  ['a counted preflight probe while no lane spawn is recorded', null, [41], false],
+  ['a counted preflight probe beside a recorded lane spawn', 50, [41], false],
+  ['a counted descendant of the recorded lane spawn', 50, [41, 52], true],
+] as const)('visibility from %s (childPid=%s, counted=%j) releases=%s', async (_label, childPid, pids, released) => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  let now = 0
+  const admission = withLaneLaunchAdmission(async (lease: Lease) => {
+    lease.trackWorker(40, () => false)
+    await lease.waitUntilVisible(() => childPid)
+    return 0
+  }, { lockPath, counter: () => ({ state: 'ok', count: 15, pids: [...pids] }), readProcesses: () => PREFLIGHT_TREE,
+    clock: () => now++, visibilityMs: 2, pollMs: 0, workerFinished: () => false, warn: () => {} })
+  if (released) expect(await admission).toBe(0)
+  else await expect(admission).rejects.toThrow('new lane was not visible')
+  expect(existsSync(lockPath)).toBe(false)
+})
+
+it.skipIf(process.platform !== 'linux')('never tracks or stops a worker it did not spawn, even under the same explicit run id', () => {
+  const { root } = setup()
+  const result = spawnSync(process.execPath, [fixture, 'foreign-same-run-id', root], { encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  expect(result.stdout).toContain('foreign record under the same explicit run id: zero stop calls')
+})
+
+it.each([
+  [{ status: 'ended' }, true, 'worker cleanup: ended (force-stop of worker pid 2147483600 accepted; its exit was not observed)'],
+  [{ status: 'unavailable', reason: 'EPERM' }, true, 'worker cleanup: NOT CONFIRMED: EPERM'],
+  [{ status: 'ended' }, false, 'worker cleanup: NOT CONFIRMED: identity changed or not measured'],
+] as const)('a visibility timeout states the observed cleanup outcome (%j, verified=%s)', async (result, verified, expected) => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  const calls: number[] = []
+  let now = 0
+  const error = await withLaneLaunchAdmission(async (lease: Lease) => {
+    lease.trackWorker(2147483600, () => verified)
+    await lease.waitUntilVisible(() => null)
+    return 0
+  }, { lockPath, counter: () => ({ state: 'ok', count: 15, pids: [] }), clock: () => now++, visibilityMs: 2, pollMs: 0,
+    workerFinished: () => false, warn: () => {}, stopWorker: (pid: number) => { calls.push(pid); return result } }).catch((caught: Error) => caught)
+  expect(String(error)).toContain(expected)
+  expect(String(error)).not.toContain('stopping its worker')
+  expect(calls).toEqual(verified ? [2147483600] : [])
+})
+
+it.each([false, true])('an acquisition timeout names the lock file, its owner pid and the manual remedy (reclaim guard=%s)', async (guard) => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  const owner = JSON.stringify({ pid: process.pid, startIdentity: 'self:another-runtime', token: 'held' })
+  writeFileSync(lockPath, owner)
+  if (guard) {
+    mkdirSync(`${lockPath}.reclaim`)
+    writeFileSync(join(`${lockPath}.reclaim`, 'held'), owner)
+  }
+  const error = await withLaneLaunchAdmission(() => 0, { lockPath, waitMs: 0 }).catch((caught: Error) => caught)
+  expect(String(error)).toContain(`admission lock busy or owner unmeasured: ${lockPath} (owner pid ${process.pid})`)
+  // Other scripts may hold this lock too: the remedy is keyed on the claim's process, never on its kind.
+  expect(String(error)).toContain(`if pid ${process.pid} is not running or is not the process that wrote this claim (pid reused), remove ${lockPath}, then retry`)
+  expect(String(error)).not.toContain('wt-lane launcher')
+  if (guard) expect(String(error)).toContain(`reclaim guard ${lockPath}.reclaim is present`)
+  expect(readFileSync(lockPath, 'utf8')).toBe(owner)
+})
+
+it('a visibility timeout cleans its worker once even when the launcher tracks it again afterwards', async () => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  const calls: number[] = []
+  const messages: string[] = []
+  let now = 0
+  const error = await withLaneLaunchAdmission(async (lease: Lease) => {
+    lease.trackWorker(2147483600, () => true)
+    // launchAndObserve's finally tracks the record's worker again after a throw.
+    try { await lease.waitUntilVisible(() => null) } finally { lease.trackWorker(2147483600, () => true) }
+    return 0
+  }, { lockPath, counter: () => ({ state: 'ok', count: 15, pids: [] }), clock: () => now++, visibilityMs: 2, pollMs: 0,
+    workerFinished: () => false, warn: (line: string) => messages.push(line),
+    stopWorker: (pid: number) => { calls.push(pid); return { status: 'ended' } } }).catch((caught: Error) => caught)
+  expect(String(error)).toContain('worker cleanup: ended (force-stop of worker pid 2147483600 accepted')
+  expect(calls).toEqual([2147483600])
+  expect(messages).toEqual([])
+})

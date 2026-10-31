@@ -108,6 +108,19 @@ function tryClaim(file, stage, owner) {
   } catch (error) { removeOwnFile(file, owner); throw error }
 }
 
+// No age-based reclaim: a live, unprovable owner (a `self:` identity whose PID was reused) is
+// left in place, so the timeout names the file, its owner pid and the manual remedy. Any script
+// may hold this lock, so the remedy is keyed on the claim's own process, never on its kind.
+function busyMessage(file) {
+  const pid = readOwner(file)?.pid
+  const holder = Number.isSafeInteger(pid) ? `owner pid ${pid}` : 'no readable owner pid'
+  const subject = Number.isSafeInteger(pid)
+    ? `pid ${pid} is not running or is not the process that wrote this claim (pid reused)`
+    : 'the process that wrote this claim is no longer running'
+  const guard = guardExists(file) ? `; reclaim guard ${file}.reclaim is present: remove it too under the same condition` : ''
+  return `wt-lane: admission lock busy or owner unmeasured: ${file} (${holder}); wait for the owning launch to finish, then retry the same wt-lane command; if ${subject}, remove ${file}, then retry${guard}`
+}
+
 export async function acquireLaneAdmissionLock(file, { clock = performance.now.bind(performance), waitMs = 120_000, pollMs = 25 } = {}) {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   // Own runtime start is available without an external process reader. A live self-only
@@ -119,7 +132,7 @@ export async function acquireLaneAdmissionLock(file, { clock = performance.now.b
   try {
     for (;;) {
       if (tryClaim(file, stage, owner)) return { file, owner }
-      if (clock() >= deadline) throw new Error('wt-lane: admission lock busy or owner unmeasured; wait for the owning launch to finish, then retry the same wt-lane command')
+      if (clock() >= deadline) throw new Error(busyMessage(file))
       await delay(pollMs)
     }
   } finally { rmSync(stage, { force: true }) }
