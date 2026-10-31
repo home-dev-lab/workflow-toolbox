@@ -107,7 +107,7 @@ function launchRecoveryCondition(reason) {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml, package-lock.json, yarn.lock or bun.lock/bun.lockb has no matching install (pnpm and npm: the install marker; yarn and bun: a non-empty node_modules); --allow-missing-install skips that check (a docs-only lane, or one that must install inside its sandbox).\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--no-gate-section <reason>] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--idle-window 1200] [--idle-timeout 0] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git] [--allow-missing-install] [--priority low|normal] [--lock-priority P0|P1|P2]\n       --lock-priority sets the suite-lock level of every gate the lane queues through its host broker (default: ambient WT_SUITE_LOCK_PRIORITY, else P1).\n       Unattended maximum: (max-extensions + 1) x (timeout + decision-grace) seconds; 22800 s (6 h 20 min) at defaults, plus startup and termination overhead. EXPERIMENTAL: idle enforcement is off unless --idle-timeout is positive.\n       --owner pilot requires --owner-token. The launch refuses a lane dir (or an immediate subdirectory) whose pnpm-lock.yaml, package-lock.json, yarn.lock or bun.lock/bun.lockb has no matching install (pnpm and npm: the install marker; yarn and bun: a node_modules holding a non-dot entry, or for yarn a Plug\'n\'Play .pnp.cjs/.pnp.js); --allow-missing-install skips that check (a docs-only lane, or one that must install inside its sandbox).\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]' + `\n       Gate-section exemptions: ${GATE_SECTION_EXEMPTIONS}.`
 }
 
 // The suite-lock level a lane's host broker queues its gates at. Release stays reserved to the main session.
@@ -394,7 +394,8 @@ function shellPath(value) {
 // suite lock meanwhile). The launch therefore refuses a project whose lockfile has no matching install,
 // for the lane dir and each immediate non-hidden subdirectory. pnpm writes a byte copy of the lockfile
 // to node_modules/.pnpm/lock.yaml at install; npm writes node_modules/.package-lock.json. Yarn and bun
-// leave no marker: a non-empty node_modules is the test. Pure fs, inlined for the same reason as HARDENED_GIT_CONFIG above.
+// leave no marker: a node_modules holding at least one package entry (a name without a leading dot) is the test,
+// and Yarn Plug'n'Play (yarn.lock beside .pnp.cjs or .pnp.js) installs no node_modules at all. Pure fs, inlined for the same reason as HARDENED_GIT_CONFIG above.
 // A Windows checkout with core.autocrlf writes pnpm-lock.yaml with CRLF while pnpm's own copy stays LF:
 // line ends are the only difference ignored.
 function lineEndsLf(bytes) {
@@ -402,11 +403,11 @@ function lineEndsLf(bytes) {
 }
 
 // Lockfile kinds in precedence order; the first one present in a directory decides. pnpm and npm record a
-// marker at install, so their check is exact; yarn and bun leave none, so a non-empty node_modules is the proof.
+// marker at install, so their checks test that marker, not that each package is usable; yarn and bun leave none, so a node_modules holding a package entry is the proof.
 const INSTALL_KINDS = [
   { lockfiles: ['pnpm-lock.yaml'], command: 'pnpm install --frozen-lockfile', problem: pnpmInstallProblem },
   { lockfiles: ['package-lock.json'], command: 'npm ci', problem: npmInstallProblem },
-  { lockfiles: ['yarn.lock'], command: 'yarn install --frozen-lockfile', problem: nodeModulesProblem },
+  { lockfiles: ['yarn.lock'], command: 'yarn install --frozen-lockfile', problem: yarnInstallProblem },
   { lockfiles: ['bun.lock', 'bun.lockb'], command: 'bun install --frozen-lockfile', problem: nodeModulesProblem },
 ]
 
@@ -421,10 +422,15 @@ function npmInstallProblem(fs, candidate) {
   return fs.existsSync(path.join(candidate, 'node_modules', '.package-lock.json')) ? null : 'node_modules/.package-lock.json is missing'
 }
 
+function yarnInstallProblem(fs, candidate) {
+  const pnp = ['.pnp.cjs', '.pnp.js'].some((name) => fs.existsSync(path.join(candidate, name)))
+  return pnp ? null : nodeModulesProblem(fs, candidate)
+}
+
 function nodeModulesProblem(fs, candidate) {
   let entries = []
   try { entries = fs.readdirSync(path.join(candidate, 'node_modules')) } catch { /* absent counts as empty */ }
-  return entries.length > 0 ? null : 'node_modules is missing or empty'
+  return entries.some((name) => !name.startsWith('.')) ? null : 'node_modules is missing or empty'
 }
 
 function installProblemOf(fs, candidate) {
@@ -436,7 +442,7 @@ function installProblemOf(fs, candidate) {
 export function missingInstallRefusal(dir, fs = { existsSync, readdirSync, readFileSync }) {
   let entries = []
   try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { /* the lane dir is checked elsewhere */ }
-  const candidates = [dir, ...entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules').map((entry) => path.join(dir, entry.name)).sort()]
+  const candidates = [dir, ...entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && entry.name.toLowerCase() !== 'node_modules').map((entry) => path.join(dir, entry.name)).sort()]
   for (const candidate of candidates) {
     const found = installProblemOf(fs, candidate)
     if (found) return `Refused: dependencies of ${candidate} are not installed (${found.problem}); a lane cannot install them inside its sandbox. Run on the host first: (cd ${shellPath(candidate)} && ${found.command}), or pass --allow-missing-install for a lane that needs no dependencies or must install inside its sandbox.`

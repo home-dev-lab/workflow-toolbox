@@ -2268,6 +2268,18 @@ function registerOtherManagerRefusals() {
     const dir = lockedProject(f, 'app', 'yarn.lock', '')
     refusedFor(run(f), dir, 'yarn install --frozen-lockfile')
   })
+  it.each([
+    ['yarn.lock', 'yarn install --frozen-lockfile'],
+    ['bun.lock', 'bun install --frozen-lockfile'],
+  ])('refuses a %s project whose node_modules holds only dot entries', (lockfile, command) => {
+    const f = fixture(SPAWNED)
+    const dir = lockedProject(f, 'app', lockfile, '.cache')
+    writeFileSync(join(dir, 'node_modules', '.DS_Store'), '')
+    const result = run(f)
+    refusedFor(result, dir, command)
+    expect(result.stderr).toContain('node_modules is missing or empty')
+    notSpawned(f)
+  })
 }
 
 function registerLaunchesPastCheck() {
@@ -2296,6 +2308,21 @@ function registerLaunchesPastOtherManagers() {
   it('launches when a yarn or bun project has a non-empty node_modules', () => {
     const f = fixture(SPAWNED)
     lockedProject(f, 'y', 'yarn.lock', 'dep'); lockedProject(f, 'b', 'bun.lock', 'dep')
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it.each(['.pnp.cjs', '.pnp.js'])('launches a yarn Plug\'n\'Play project (%s, no node_modules)', (pnp) => {
+    const f = fixture(SPAWNED)
+    const dir = lockedProject(f, 'app', 'yarn.lock', null)
+    writeFileSync(join(dir, pnp), '')
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    expect(spawned(f)).toBe(true)
+  })
+  it('does not scan a node_modules directory of another case as a project', () => {
+    const f = fixture(SPAWNED)
+    pnpmProject(join(f.dir, 'NODE_MODULES'), null)
     const result = run(f)
     expect(result.status, result.stderr).toBe(0)
     expect(spawned(f)).toBe(true)
