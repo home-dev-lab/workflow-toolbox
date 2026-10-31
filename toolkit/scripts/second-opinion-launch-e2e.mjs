@@ -25,8 +25,9 @@ export function launchFixture() {
   }))
   const request = join(root, 'request.md')
   writeFileSync(request, 'A model must never be called for this consent-refusal check.')
-  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: home, USERPROFILE: home,
-    CLAUDE_CONFIG_DIR: config, WT_PLUGIN_ROOT: plugin, CLAUDE_PLUGIN_ROOT: plugin }
+  // Seal the profile, never the OS: PowerShell resolves the documented bare `node` through PATH and PATHEXT.
+  const env = { PATH: process.env.PATH, PATHEXT: process.env.PATHEXT, SystemRoot: process.env.SystemRoot,
+    HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: config, WT_PLUGIN_ROOT: plugin, CLAUDE_PLUGIN_ROOT: plugin }
   return { root, config, repo, plugin, request, out: join(root, 'answer.log'), env }
 }
 
