@@ -38,6 +38,27 @@ describe('launchProcessWithOutput', () => {
     vi.spyOn(fs, 'readSync').mockImplementation(() => { throw failure })
     await expect(launchProcessWithOutput(process.execPath, ['-e', "process.stdout.write('pid=1\\n')"], { stdoutPath, stderrPath })).rejects.toThrow('EIO')
   }, 15_000)
+
+  // The first descriptor's close fails (it is still released, as close(2) does on EIO): the second
+  // must still be closed and the promise must settle, on the spawn-failure path and on a normal exit.
+  it.each([
+    ['a spawn failure', 'missing-launcher', 'ENOENT'],
+    ['a normal exit', null, 'EIO'],
+  ] as const)('settles and closes both descriptors when the first close fails after %s', async (_label, missing, expected) => {
+    const { dir, stdoutPath, stderrPath } = outputDir()
+    const realClose = fs.closeSync
+    const closed: number[] = []
+    vi.spyOn(fs, 'closeSync').mockImplementation((fd: number) => {
+      realClose(fd)
+      closed.push(fd)
+      if (closed.length === 1) throw Object.assign(new Error('EIO: close failed'), { code: 'EIO' })
+    })
+    const program = missing ? join(dir, missing) : process.execPath
+    const launch = launchProcessWithOutput(program, ['-e', ''], { stdoutPath, stderrPath }).then(() => 'resolved', (error: Error & { code?: string }) => error.code)
+    const outcome = await Promise.race([launch, new Promise((resolve) => setTimeout(() => resolve('unsettled'), 5_000))])
+    expect(outcome).toBe(expected)
+    expect(closed).toHaveLength(2)
+  }, 15_000)
 })
 
 describe('waitForLaneReceipt', () => {

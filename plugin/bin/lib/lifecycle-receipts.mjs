@@ -15,15 +15,18 @@ export function launchProcessWithOutput(program, args, options) {
   const [stdoutFd, stderrFd] = openLaunchOutputs(stdoutPath, stderrPath)
   return new Promise((resolve, reject) => {
     let closed = false
+    // Returns the close failure instead of throwing it, so no path can skip settling. Both
+    // descriptors are attempted whatever the first close does (closeLaunchOutputs).
     const closeOutput = () => {
-      if (closed) return
+      if (closed) return null
       closed = true
-      closeLaunchOutputs([stdoutFd, stderrFd])
+      try { closeLaunchOutputs([stdoutFd, stderrFd]); return null } catch (error) { return error }
     }
     let child
     try {
       child = spawn(program, args, { ...spawnOptions, shell: false, stdio: ['ignore', stdoutFd, stderrFd] })
     } catch (error) {
+      // The spawn failure is the cause; a close failure beside it is secondary.
       closeOutput()
       reject(error)
       return
@@ -33,14 +36,17 @@ export function launchProcessWithOutput(program, args, options) {
     // forever. After 'error' already closed the descriptors, their numbers may name other files.
     child.once('close', (code, signal) => {
       if (closed) return
+      let output
       try {
-        const output = { code: signal ? 124 : (code ?? 1), stdout: readLaunchOutput(stdoutFd), stderr: readLaunchOutput(stderrFd) }
-        closeOutput()
-        resolve(output)
+        output = { code: signal ? 124 : (code ?? 1), stdout: readLaunchOutput(stdoutFd), stderr: readLaunchOutput(stderrFd) }
       } catch (error) {
-        reject(error)
         closeOutput()
+        reject(error)
+        return
       }
+      const closeError = closeOutput()
+      if (closeError) reject(closeError)
+      else resolve(output)
     })
   })
 }
