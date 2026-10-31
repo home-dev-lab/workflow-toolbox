@@ -160,8 +160,8 @@ async function verifiesDiscoverySpawnIdentity() {
     })
     const spawnOptions = (spawnFn.mock.calls[0] as unknown as [string, string[], { cwd?: string, env?: NodeJS.ProcessEnv }])[2]
     expect(spawnOptions.cwd).toBe(dir)
-    expect(spawnOptions.env).toEqual(discoveryOptions?.env)
-    expect(spawnOptions.env).toMatchObject({ OPENCODE_TEST_MARKER: 'same', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' })
+    expect(spawnOptions.env).toEqual({ ...discoveryOptions?.env, OPENCODE_CONFIG_CONTENT: '{"instructions":["CLAUDE.md"]}' })
+    expect(spawnOptions.env).toMatchObject({ OPENCODE_TEST_MARKER: 'same', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true' })
     expect(spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG')
   } finally {
     rmSync(dir, { recursive: true, force: true })
