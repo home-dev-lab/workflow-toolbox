@@ -94,8 +94,11 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const env = process.env
+// Native realpath expands Windows 8.3 short names; the JS one keeps them. Fall back where native fails.
 function canonical(value) {
-  try { return path.isAbsolute(value) ? fs.realpathSync(value) : null } catch { return null }
+  if (typeof value !== 'string' || !path.isAbsolute(value)) return null
+  try { return fs.realpathSync.native(value) } catch { /* try the JS resolver */ }
+  try { return fs.realpathSync(value) } catch { return null }
 }
 function withinProject(owner, here) {
   if (!here || !owner) return false
