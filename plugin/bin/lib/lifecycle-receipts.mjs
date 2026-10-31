@@ -1,6 +1,6 @@
 // Owns child-process receipts and process-group cleanup; it must not know lifecycle phases or state.
 import { spawn } from 'node:child_process'
-import fs from 'node:fs'
+import { closeLaunchOutputs, openLaunchOutputs, readLaunchOutput } from './host/launch-output-files.mjs'
 export function launchProcess(program, args, options) {
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, { ...options, shell: false })
@@ -8,24 +8,17 @@ export function launchProcess(program, args, options) {
     child.once('close', (code, signal) => resolve(signal ? 124 : (code ?? 1)))
   })
 }
+// Output files are opened and read back by host/launch-output-files.mjs, through their descriptors.
 export function launchProcessWithOutput(program, args, options) {
   const { stdoutPath, stderrPath, ...spawnOptions } = options
   if (!stdoutPath || !stderrPath) throw new Error('launch output paths are required')
-  const stdoutFd = fs.openSync(stdoutPath, 'wx', 0o600)
-  let stderrFd
-  try {
-    stderrFd = fs.openSync(stderrPath, 'wx', 0o600)
-  } catch (error) {
-    fs.closeSync(stdoutFd)
-    throw error
-  }
+  const [stdoutFd, stderrFd] = openLaunchOutputs(stdoutPath, stderrPath)
   return new Promise((resolve, reject) => {
     let closed = false
     const closeOutput = () => {
       if (closed) return
       closed = true
-      fs.closeSync(stdoutFd)
-      fs.closeSync(stderrFd)
+      closeLaunchOutputs([stdoutFd, stderrFd])
     }
     let child
     try {
@@ -36,9 +29,18 @@ export function launchProcessWithOutput(program, args, options) {
       return
     }
     child.once('error', (error) => { closeOutput(); reject(error) })
+    // Every path settles the promise: a throw escaping this handler would leave the caller awaiting
+    // forever. After 'error' already closed the descriptors, their numbers may name other files.
     child.once('close', (code, signal) => {
-      closeOutput()
-      resolve({ code: signal ? 124 : (code ?? 1), stdout: fs.readFileSync(stdoutPath, 'utf8'), stderr: fs.readFileSync(stderrPath, 'utf8') })
+      if (closed) return
+      try {
+        const output = { code: signal ? 124 : (code ?? 1), stdout: readLaunchOutput(stdoutFd), stderr: readLaunchOutput(stderrFd) }
+        closeOutput()
+        resolve(output)
+      } catch (error) {
+        reject(error)
+        closeOutput()
+      }
     })
   })
 }
