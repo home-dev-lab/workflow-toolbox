@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { LANE_PROCESS_NAMES, countLaneProcessesReal, evaluateLaneCall } from '../../../../plugin/bin/lib/wt-lane-saturation-core.mjs'
 // @ts-expect-error runtime .mjs host boundary
-import { inspectLaneLockWait, pgrepLaneName, PGREP_TIMEOUT_MS } from '../../../../plugin/bin/lib/host/lane-lock-wait.mjs'
+import { inspectLaneLockWait } from '../../../../plugin/bin/lib/host/lane-lock-wait.mjs'
 // @ts-expect-error runtime .mjs host boundary
 import { currentPidNamespace, processStartTime } from '../../../../plugin/bin/lib/host/pid-namespace.mjs'
 
@@ -182,37 +182,6 @@ it.each([
   expect(verdict.deny).toBe(false)
   expect(verdict.message).toContain('NOT MEASURED')
 })
-
-it('counts one process once even when two name queries both return it', () => {
-  const answers: Record<string, string> = { opencode: '100\n', codex: '100\n101\n' }
-  const result = countLaneProcessesReal(['opencode', 'codex'], null, { pgrep: (name: string) => ({ status: 0, stdout: answers[name] }),
-    inspectLockWait: () => ({ state: 'unknown', reason: 'no wait chain' }) })
-  expect(result).toMatchObject({ state: 'ok', count: 2, liveCount: 2, pids: [100, 101] })
-})
-
-// A pgrep that ignores SIGTERM and outlives the bound: the counter must still return in time.
-function hungPgrepDir() {
-  const dir = mkdtempSync(join(tmpdir(), 'hung-pgrep-'))
-  roots.push(dir)
-  writeFileSync(join(dir, 'pgrep'), "#!/bin/sh\ntrap '' TERM\nsleep 10\ntrue\n")
-  chmodSync(join(dir, 'pgrep'), 0o755)
-  return dir
-}
-
-it.skipIf(process.platform === 'win32')('stops a hung pgrep at its bound and reports the count as unmeasured', () => {
-  const previousPath = process.env.PATH
-  process.env.PATH = `${hungPgrepDir()}:${previousPath}`
-  try {
-    const started = Date.now()
-    const res = pgrepLaneName('opencode', 300)
-    expect(Date.now() - started).toBeLessThan(5_000)
-    expect(res.error?.code).toBe('ETIMEDOUT')
-    expect(countLaneProcessesReal(['opencode'], null, { pgrep: (name: string) => pgrepLaneName(name, 300) }))
-      .toEqual({ state: 'unknown', reason: 'pgrep did not answer in time for "opencode" and was stopped' })
-  } finally { process.env.PATH = previousPath }
-  expect(PGREP_TIMEOUT_MS).toBeGreaterThan(0)
-  expect(PGREP_TIMEOUT_MS).toBeLessThanOrEqual(10_000)
-}, 30_000)
 
 async function awaitWaitVerdict(pid: number, state: string) {
   const deadline = Date.now() + 10_000

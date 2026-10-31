@@ -1,6 +1,6 @@
 // Owns child-process receipts and process-group cleanup; it must not know lifecycle phases or state.
 import { spawn } from 'node:child_process'
-import { closeLaunchOutputs, openLaunchOutputs, readLaunchOutput } from './host/launch-output-files.mjs'
+import fs from 'node:fs'
 export function launchProcess(program, args, options) {
   return new Promise((resolve, reject) => {
     const child = spawn(program, args, { ...options, shell: false })
@@ -8,45 +8,37 @@ export function launchProcess(program, args, options) {
     child.once('close', (code, signal) => resolve(signal ? 124 : (code ?? 1)))
   })
 }
-// Output files are opened and read back by host/launch-output-files.mjs, through their descriptors.
 export function launchProcessWithOutput(program, args, options) {
   const { stdoutPath, stderrPath, ...spawnOptions } = options
   if (!stdoutPath || !stderrPath) throw new Error('launch output paths are required')
-  const [stdoutFd, stderrFd] = openLaunchOutputs(stdoutPath, stderrPath)
+  const stdoutFd = fs.openSync(stdoutPath, 'wx', 0o600)
+  let stderrFd
+  try {
+    stderrFd = fs.openSync(stderrPath, 'wx', 0o600)
+  } catch (error) {
+    fs.closeSync(stdoutFd)
+    throw error
+  }
   return new Promise((resolve, reject) => {
     let closed = false
-    // Returns the close failure instead of throwing it, so no path can skip settling. Both
-    // descriptors are attempted whatever the first close does (closeLaunchOutputs).
     const closeOutput = () => {
-      if (closed) return null
+      if (closed) return
       closed = true
-      try { closeLaunchOutputs([stdoutFd, stderrFd]); return null } catch (error) { return error }
+      fs.closeSync(stdoutFd)
+      fs.closeSync(stderrFd)
     }
     let child
     try {
       child = spawn(program, args, { ...spawnOptions, shell: false, stdio: ['ignore', stdoutFd, stderrFd] })
     } catch (error) {
-      // The spawn failure is the cause; a close failure beside it is secondary.
       closeOutput()
       reject(error)
       return
     }
     child.once('error', (error) => { closeOutput(); reject(error) })
-    // Every path settles the promise: a throw escaping this handler would leave the caller awaiting
-    // forever. After 'error' already closed the descriptors, their numbers may name other files.
     child.once('close', (code, signal) => {
-      if (closed) return
-      let output
-      try {
-        output = { code: signal ? 124 : (code ?? 1), stdout: readLaunchOutput(stdoutFd), stderr: readLaunchOutput(stderrFd) }
-      } catch (error) {
-        closeOutput()
-        reject(error)
-        return
-      }
-      const closeError = closeOutput()
-      if (closeError) reject(closeError)
-      else resolve(output)
+      closeOutput()
+      resolve({ code: signal ? 124 : (code ?? 1), stdout: fs.readFileSync(stdoutPath, 'utf8'), stderr: fs.readFileSync(stderrPath, 'utf8') })
     })
   })
 }
