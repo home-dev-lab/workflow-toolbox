@@ -14,6 +14,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- `wt-lane.mjs` now also refuses a launch whose directory (or an immediate subdirectory) declares `yarn.lock`, `bun.lock` or `bun.lockb` with a missing or empty `node_modules`, as it already did for `pnpm-lock.yaml` and `package-lock.json`. Every refusal names the host command to run from that directory without `--offline` (`pnpm install --frozen-lockfile`, `npm ci`, `yarn install --frozen-lockfile`, `bun install --frozen-lockfile`) and the `--allow-missing-install` override, so a sandboxed lane no longer retries a registry install while holding the suite lock.
 - The memory index probe warns within the final 15% of its applied byte ceiling, alongside the existing line-headroom notice, without changing findings or exit codes.
 - Admission runner and supervisor now use one-way module dependencies, preserving detached-process cleanup and existing admission results without a circular import.
 - Admission on Linux installs a child subreaper before executing policy, then kills and reaps detached descendants, including double-forked daemons, before returning. Cleanup survives Node-supervisor death and needs neither pidfds nor unrelated procfs records. Unavailable containment (including macOS and Windows) refuses before policy execution; abnormal containment-owner exit reports an explicit unknown.
