@@ -57,6 +57,17 @@ it.skipIf(process.platform !== 'linux')('a failed documented shell includes labe
   if (process.env.WT_LAUNCH_DIAGNOSTIC_SAMPLE === '1') console.log(message)
 })
 
+it('the sealed launch environment keeps both inputs of a bare command lookup', () => {
+  // PowerShell finds `node` as node.exe only through PATH and PATHEXT; without PATHEXT the
+  // documented Windows block fails with "The term 'node' is not recognized".
+  vi.stubEnv('PATHEXT', '.COM;.EXE')
+  try {
+    expect(fixture().env).toMatchObject({ PATH: process.env.PATH, PATHEXT: '.COM;.EXE' })
+  } finally {
+    vi.unstubAllEnvs()
+  }
+})
+
 it('failure evidence caps every log tail and distinguishes absent and unreadable files', () => {
   const f = fixture()
   for (const suffix of ['launch.log', 'shell.stderr.log', 'shell.stdout.log', 'launch.stdout.log']) {
