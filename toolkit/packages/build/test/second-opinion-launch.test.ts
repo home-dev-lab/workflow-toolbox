@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
 // @ts-expect-error executable .mjs test companion
-import { cleanupLaunch, documentedLaunch, launchFixture, pluginRoot, skillPath } from '../../../scripts/second-opinion-launch-e2e.mjs'
+import { cleanupLaunch, documentedLaunch, launchFixture, outEvidence, pluginRoot, skillPath, windowsShortPath } from '../../../scripts/second-opinion-launch-e2e.mjs'
 // @ts-expect-error executable .mjs test companion
 import { completed, launchDiagnostics, launchFailureDiagnostics, runShell, terminatePid, waitForLaunch } from '../../../scripts/second-opinion-launch-lifecycle.mjs'
 
@@ -11,6 +11,7 @@ import { completed, launchDiagnostics, launchFailureDiagnostics, runShell, termi
 vi.setConfig({ testTimeout: process.platform === 'win32' ? 240_000 : 60_000,
   hookTimeout: process.platform === 'win32' ? 45_000 : 20_000 })
 
+const REFUSAL = 'REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n'
 const fixtures: ReturnType<typeof launchFixture>[] = []
 afterEach(async () => {
   for (const f of fixtures.splice(0)) {
@@ -121,6 +122,15 @@ it('a failed Windows probe remains diagnostic text and is never run on Linux', (
   expect(launchFailureDiagnostics(f, { platform: 'win32', run: throwing })).toContain('windowsProbe:\nfailed: probe unavailable')
 })
 
+it('a launch that completed through its log carries that log when --out is wrong', () => {
+  // waitForLaunch accepts an error in launch.log as completion, so only the --out assertion sees the failure.
+  const f = fixture()
+  writeFileSync(`${f.out}.launch.log`, 'Error: wrong installation selected\n')
+  expect(outEvidence(f, { out: null, diagnostics: 'summary' }, REFUSAL))
+    .toContain('launch.log contents:\nError: wrong installation selected\n')
+  expect(outEvidence(f, { out: REFUSAL, diagnostics: 'summary' }, REFUSAL)).toBe('summary')
+})
+
 it('successful completion polling does not collect failure evidence', async () => {
   const f = fixture()
   writeFileSync(f.out, 'done\nEXIT=0\n')
@@ -137,7 +147,7 @@ it('a successful documented launch never reads failure-only command evidence', a
     Object.defineProperty(f, 'launch', { configurable: true, writable: true, value: step })
   } })
   const result = await documentedLaunch(f, { env: { WT_PLUGIN_ROOT: pluginRoot } })
-  expect(result.out, result.diagnostics).toBe('REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n')
+  expect(result.out, outEvidence(f, result, REFUSAL)).toBe(REFUSAL)
 })
 
 it('completion timeout includes the same labelled failure evidence', async () => {
@@ -168,7 +178,7 @@ it.each([
 it('the documented launch runs the real CLI with a sealed no-consent profile', async () => {
   const f = fixture()
   const result = await documentedLaunch(f, { env: { WT_PLUGIN_ROOT: pluginRoot } })
-  expect(result.out, result.diagnostics).toBe('REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n')
+  expect(result.out, outEvidence(f, result, REFUSAL)).toBe(REFUSAL)
 })
 
 it.skipIf(process.platform !== 'linux')('the documented launch captures a missing node executable', async () => {
@@ -207,7 +217,7 @@ it('loaded skill text resolves an updated registry after its old plugin root is 
   rmSync(f.plugin, { recursive: true })
   registry(f, [{ scope: 'user', installPath: pluginRoot }])
   const result = await documentedLaunch(f, { skill: loaded, env: { WT_PLUGIN_ROOT: undefined } })
-  expect(result.out, result.diagnostics).toBe('REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n')
+  expect(result.out, outEvidence(f, result, REFUSAL)).toBe(REFUSAL)
 })
 
 it.each(['project', 'local'])('the current %s installation ranks above user and unrelated project entries', async (scope) => {
@@ -218,7 +228,20 @@ it.each(['project', 'local'])('the current %s installation ranks above user and 
     { scope, projectPath: f.root, installPath: pluginRoot },
   ])
   const result = await documentedLaunch(f, { env: { WT_PLUGIN_ROOT: undefined } })
-  expect(result.out, result.diagnostics).toBe('REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n')
+  expect(result.out, outEvidence(f, result, REFUSAL)).toBe(REFUSAL)
+})
+
+it.skipIf(process.platform !== 'win32')('a project entry spelled with 8.3 short names applies to its long-named working directory', async (ctx) => {
+  // PowerShell starts a child in the long spelling of its cwd; a registry or a runner TEMP can hold the 8.3 one.
+  const f = fixture()
+  const short = windowsShortPath(f.root)
+  if (short === f.root) ctx.skip('this volume generates no 8.3 short names')
+  registry(f, [
+    { scope: 'user', installPath: f.plugin },
+    { scope: 'project', projectPath: short, installPath: pluginRoot },
+  ])
+  const result = await documentedLaunch(f, { env: { WT_PLUGIN_ROOT: undefined } })
+  expect(result.out, outEvidence(f, result, REFUSAL)).toBe(REFUSAL)
 })
 
 it('a broken selected installation refuses with diagnostics rather than falling back', async () => {

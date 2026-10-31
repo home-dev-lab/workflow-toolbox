@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Execute the skill's copyable launch blocks using only temporary profiles and a consent refusal.
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -77,6 +78,21 @@ export async function documentedLaunch(f, options = {}) {
     diagnostics: launchDiagnostics(f) }
 }
 
+// The 8.3 spelling of an existing Windows directory; equal to the input where the volume has no short names.
+export function windowsShortPath(directory, run = spawnSync) {
+  const result = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:WT_LONG_PATH).ShortPath'], {
+    env: { ...process.env, WT_LONG_PATH: directory }, encoding: 'utf8', timeout: 30_000, windowsHide: true })
+  const detail = `status=${result.status} error=${result.error?.code ?? 'none'} stderr=${result.stderr ?? ''}`
+  assert.ok(result.status === 0 && result.stdout?.trim(), `8.3 short-name lookup failed: ${detail}`)
+  return result.stdout.trim()
+}
+
+// A launch that completed through its log never throws: a wrong --out still needs the full evidence.
+export function outEvidence(f, result, expected) {
+  return result.out === expected ? result.diagnostics : launchFailureDiagnostics(f)
+}
+
 function updatedInstallation(f) {
   const loaded = join(f.root, 'loaded-skill.md')
   writeFileSync(loaded, readFileSync(skillPath, 'utf8'))
@@ -100,7 +116,8 @@ export async function runLaunchE2e() {
     console.log(`missing CLI: --out absent; launch log: ${failed.log.split(/\r?\n/).find((line) => /Error.*(module|MODULE_NOT_FOUND)/.test(line))?.replaceAll(missing.root, '<temporary>')}`)
     const loaded = updatedInstallation(real)
     const refused = await documentedLaunch(real, { skill: loaded, env: { WT_PLUGIN_ROOT: undefined } })
-    assert.match(refused.out ?? '', /^REFUSED: Astra requires active GPT lane consent\.\nEXIT=1\n$/, refused.diagnostics)
+    const refusal = 'REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n'
+    assert.equal(refused.out, refusal, outEvidence(real, refused, refusal))
     console.log('updated registry: loaded skill survived removal of its old plugin root')
     console.log(`real CLI first line: ${refused.out.split(/\r?\n/)[0]}`)
     console.log(`real CLI last line: ${refused.out.trimEnd().split(/\r?\n/).at(-1)}`)
