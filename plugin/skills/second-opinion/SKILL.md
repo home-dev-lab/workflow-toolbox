@@ -214,7 +214,7 @@ try {
 }
 '@
 try {
-  $node = (Get-Command node -CommandType Application -ErrorAction Stop).Source
+  $node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
   if ((Get-Variable PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue) -notin @('Standard', 'Windows')) {
     $launchArgs = @($launchArgs | ForEach-Object { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' })
   }
