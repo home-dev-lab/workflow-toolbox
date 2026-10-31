@@ -67,55 +67,8 @@ decorrelate the session's own model-family biases.
 Run from the repository the question concerns. Use absolute paths for the
 request and output files.
 
-`WT_SECOND_OPINION_ADMISSION` optionally names an absolute ES module path whose
-default `admit({ repo, request, env })` receives the canonical absolute paths and
-launch environment, returning `null` to admit or a non-empty string to refuse.
-Import and admission are awaited before any model or sandbox starts with a
-10,000 ms deadline (`WT_SECOND_OPINION_ADMISSION_TIMEOUT_MS` overrides it with a
-positive integer up to 2147483647); synchronous policy code must not block the
-event loop. Invalid configuration, module failures and timeouts refuse with
-stderr and `REFUSED: ...` followed by `EXIT=3` in the output file; an output
-naming the request itself is refused before admission without modifying it.
-
-When the environment variable is **undefined**, the CLI falls back to
-`pluginConfigs["workflow-toolbox@…"].options.second_opinion_admission` in the
-profile's `settings.json` (`CLAUDE_CONFIG_DIR`, otherwise `$HOME/.claude`, with
-the OS home directory as the final home fallback). A defined environment value
-wins, including an empty value, which refuses rather than disabling admission.
-An absent option leaves execution unconfigured. An absent settings file does so
-only inside a natively resolved, existing profile directory; a missing or
-undecidable profile (including dangling links at any depth) refuses. Unreadable or
-invalid JSON, conflicting values across plugin entries, and non-string values
-refuse with the settings file and a repair remedy. Resolution happens once per
-invocation; timeout overrides remain environment-only. Profile directories use
-native filesystem resolution, preserving symlink/`..` semantics. Settings must
-have an object root and object configuration containers; malformed containers refuse.
-
-With admission configured, the CLI copies the repository into a private per-run
-temporary snapshot, excludes `.git` files and directories at **every level**, and
-reads the caller's request once. Absolute canonical and caller-spelled repository
-paths in the rendered prompt are rewritten on path-component boundaries before
-admission; relative paths stay relative and resolve against the snapshot cwd.
-Every remaining occurrence of a live repository spelling refuses, regardless of
-surrounding formatting, unless native filesystem lookup proves it is part of a
-longer existing sibling path outside the repository. Those sibling paths stay
-unchanged, including spaces or parentheses. A sibling symlink back into the
-repository refuses instead of producing a corrupted snapshot path.
-The reviewer runs with that snapshot as its cwd and receives those scanned prompt
-bytes. Before scanning, files become read-only (0444) and directories become
-non-writable (0555) on POSIX; the outer run container stays owner-only (0500).
-Windows applies file read-only attributes, but its
-directories remain writable. Runtime scratch has a separate writable per-run
-directory; output artifacts keep their configured locations outside the snapshot.
-A same-user process can restore write permissions; this is not a read sandbox.
-Git history and metadata are unavailable in this mode. Escaping symlinks
-(including absolute links back into the original repo), all unresolved symlinks, sockets, FIFOs and
-devices refuse. Snapshot copying is outside the policy deadline and can be slow
-for large trees. Success, refusal, errors and handled termination clean up the
-snapshot; SIGKILL can leave a temporary code copy. With neither configuration
-source present, the CLI uses its existing live-directory behavior. Snapshot signal
-handlers remain installed through cleanup for repeated SIGINT/SIGTERM and, on
-POSIX, SIGHUP/SIGQUIT; SIGKILL remains uncatchable.
+For admission configuration, refusal handling, and snapshot isolation, read
+[references/admission.md](references/admission.md) before launching.
 
 ### Resolve the current installation on every launch
 
@@ -141,8 +94,11 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const env = process.env
+// Native realpath expands Windows 8.3 short names; the JS one keeps them. Fall back where native fails.
 function canonical(value) {
-  try { return path.isAbsolute(value) ? fs.realpathSync(value) : null } catch { return null }
+  if (typeof value !== 'string' || !path.isAbsolute(value)) return null
+  try { return fs.realpathSync.native(value) } catch { /* try the JS resolver */ }
+  try { return fs.realpathSync(value) } catch { return null }
 }
 function withinProject(owner, here) {
   if (!here || !owner) return false
@@ -223,9 +179,12 @@ you need reviewed; never rely on a named directory to carry them.
 
 ### Windows (PowerShell)
 
-Save the same bootstrap as `<out-file>.launch.mjs`. `Start-Process` requires
-distinct redirection paths: stderr is `<out-file>.launch.log`, stdout is
-`<out-file>.launch.stdout.log`. Read both on failure. Its own launch exceptions
+Save the same bootstrap as `<out-file>.launch.mjs`. The short-lived Node launcher
+below gives the detached child ignored stdin and file-backed stdout/stderr, then
+unrefs it before returning to PowerShell. It does not use PowerShell-managed
+stream redirection or inherit the caller's pipes. Stderr is
+`<out-file>.launch.log`, stdout is `<out-file>.launch.stdout.log`; read both on
+failure. `<out-file>.launch.pid` records the child PID. Launch exceptions
 (including a missing `node`) are also written to the stderr launch log.
 
 ```powershell
@@ -233,12 +192,37 @@ $request = <request-file>
 $out = <out-file>
 $repo = <repository>
 $launchArgs = @("${out}.launch.mjs", '--request', $request, '--out', $out,
-  '--effort', '<low|medium|high>', '--route', '<auto|astra|opus>', '--repo', $repo) |
-  ForEach-Object { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' }
+  '--effort', '<low|medium|high>', '--route', '<auto|astra|opus>', '--repo', $repo)
+$detach = @'
+import { spawn } from 'node:child_process'
+import { appendFileSync, closeSync, openSync, writeFileSync } from 'node:fs'
+const [bootstrap, ...args] = process.argv.slice(1)
+const out = args[args.indexOf('--out') + 1]
+const log = out + '.launch.log'
+const fds = []
 try {
-  Start-Process -FilePath node -ArgumentList $launchArgs -WindowStyle Hidden `
-    -RedirectStandardError "${out}.launch.log" `
-    -RedirectStandardOutput "${out}.launch.stdout.log" -ErrorAction Stop
+  fds.push(openSync(out + '.launch.stdout.log', 'a'))
+  fds.push(openSync(log, 'a'))
+  const child = spawn(process.execPath, [bootstrap, ...args], {
+    detached: true, windowsHide: true, stdio: ['ignore', ...fds],
+  })
+  child.unref()
+  child.once('error', (error) => { appendFileSync(log, String(error) + '\n'); process.exitCode = 1 })
+  if (child.pid) writeFileSync(out + '.launch.pid', String(child.pid))
+} catch (error) {
+  appendFileSync(log, String(error) + '\n')
+  process.exitCode = 1
+} finally {
+  for (const fd of fds) closeSync(fd)
+}
+'@
+try {
+  $node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+  if ((Get-Variable PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue) -notin @('Standard', 'Windows')) {
+    $launchArgs = @($launchArgs | ForEach-Object { '"' + ($_ -replace '(\\+)$', '$1$1') + '"' })
+  }
+  & $node --input-type=module -e $detach -- @launchArgs
+  if ($LASTEXITCODE -ne 0) { throw "Detached node launcher exited with code $LASTEXITCODE" }
 } catch {
   [IO.File]::AppendAllText("${out}.launch.log", ($_ | Out-String))
   throw
