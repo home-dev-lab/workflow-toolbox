@@ -74,8 +74,64 @@ try {
       }
     }
     console.log('signal registration failure: claim and partial handlers released')
-  } else if (process.argv[2] === 'foreign-record') {
+  } else if (process.argv[2] === 'foreign-record' || process.argv[2] === 'foreign-same-run-id') {
     await import('./fixtures/lane-admission-e2e.mjs')
+  } else if (process.argv[2] === 'preflight-probe') {
+    const { withLaneLaunchAdmission } = await import(new URL('bin/lib/host/lane-launch-admission.mjs', plugin))
+    const tree = { processes: [{ pid: 41, ppid: 40 }, { pid: 50, ppid: 40 }, { pid: 51, ppid: 50 }, { pid: 52, ppid: 51 }] }
+    const admit = (childPid, pids) => {
+      let now = 0
+      return withLaneLaunchAdmission(async (lease) => {
+        lease.trackWorker(40, () => false)
+        await lease.waitUntilVisible(() => childPid)
+        return 0
+      }, { lockPath, counter: () => ({ state: 'ok', count: 15, pids }), readProcesses: () => tree,
+        clock: () => now++, visibilityMs: 2, pollMs: 0, workerFinished: () => false, warn: () => {} })
+    }
+    await assert.rejects(admit(null, [41]), /new lane was not visible/, 'a counted preflight probe under the worker must not release admission before the lane spawn is recorded')
+    await assert.rejects(admit(50, [41]), /new lane was not visible/, 'a counted preflight probe beside a recorded lane spawn must not release admission')
+    assert.equal(await admit(50, [41, 52]), 0, 'a counted descendant of the recorded lane spawn must release admission')
+    console.log('preflight probe: worker descendants never release; the recorded spawn family does')
+  } else if (process.argv[2] === 'timeout-cleanup') {
+    const { withLaneLaunchAdmission } = await import(new URL('bin/lib/host/lane-launch-admission.mjs', plugin))
+    const timeout = (result, verified) => {
+      let now = 0
+      return withLaneLaunchAdmission(async (lease) => {
+        lease.trackWorker(2147483600, () => verified)
+        await lease.waitUntilVisible(() => null)
+        return 0
+      }, { lockPath, counter: () => ({ state: 'ok', count: 15, pids: [] }), clock: () => now++, visibilityMs: 2, pollMs: 0,
+        workerFinished: () => false, warn: () => {}, stopWorker: () => result })
+    }
+    await assert.rejects(timeout({ status: 'unavailable', reason: 'EPERM' }, true), /worker cleanup: NOT CONFIRMED: EPERM/, 'a failed force-stop must be stated as NOT CONFIRMED with its reason')
+    await assert.rejects(timeout({ status: 'ended' }, false), /worker cleanup: NOT CONFIRMED: identity changed or not measured/, 'an unverified worker must be stated as NOT CONFIRMED')
+    await assert.rejects(timeout({ status: 'ended' }, true), /worker cleanup: ended \(force-stop of worker pid 2147483600 accepted; its exit was not observed\)/, 'an accepted force-stop must be stated as such')
+    console.log('visibility timeout: the error states the observed cleanup outcome')
+  } else if (process.argv[2] === 'single-cleanup') {
+    const { withLaneLaunchAdmission } = await import(new URL('bin/lib/host/lane-launch-admission.mjs', plugin))
+    const calls = []
+    const messages = []
+    let now = 0
+    const error = await withLaneLaunchAdmission(async (lease) => {
+      lease.trackWorker(2147483600, () => true)
+      try { await lease.waitUntilVisible(() => null) } finally { lease.trackWorker(2147483600, () => true) }
+      return 0
+    }, { lockPath, counter: () => ({ state: 'ok', count: 15, pids: [] }), clock: () => now++, visibilityMs: 2, pollMs: 0,
+      workerFinished: () => false, warn: (line) => messages.push(line),
+      stopWorker: (pid) => { calls.push(pid); return { status: 'ended' } } }).catch((caught) => caught)
+    assert.match(String(error), /worker cleanup: ended \(force-stop of worker pid 2147483600 accepted/)
+    assert.deepEqual(calls, [2147483600], 'a timed-out worker must be stopped exactly once, even when tracked again afterwards')
+    assert.deepEqual(messages, [], 'no second cleanup outcome may be printed after the timeout reported its own')
+    console.log('single cleanup: one stop per launch, one printed outcome')
+  } else if (process.argv[2] === 'busy-remedy') {
+    const { writeFileSync } = await import('node:fs')
+    const { withLaneLaunchAdmission } = await import(new URL('bin/lib/host/lane-launch-admission.mjs', plugin))
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startIdentity: 'self:another-runtime', token: 'held' }))
+    const error = await withLaneLaunchAdmission(() => 0, { lockPath, waitMs: 0 }).catch((caught) => caught)
+    assert.ok(String(error).includes(`${lockPath} (owner pid ${process.pid})`), `the busy error must name the lock file and its owner pid: ${error}`)
+    assert.ok(String(error).includes(`if pid ${process.pid} is not running or is not the process that wrote this claim (pid reused), remove ${lockPath}, then retry`), `the busy error must key the manual remedy on the claim's process: ${error}`)
+    assert.ok(!String(error).includes('wt-lane launcher'), `the busy error must not key the remedy on the process kind: ${error}`)
+    console.log('busy lock: path, owner pid and manual remedy named')
   } else if (process.argv[2] === 'neutral-home') {
     const { laneLaunchAdmissionLockPath } = await import(new URL('bin/lib/host/lane-launch-admission.mjs', plugin))
     const before = laneLaunchAdmissionLockPath({ platform: 'linux', env: {} })

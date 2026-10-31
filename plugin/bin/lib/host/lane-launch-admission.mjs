@@ -4,7 +4,16 @@
 // Linux: ~/.local/state/wt-lane-host/launch-admission.lock; macOS: ~/Library/Application
 // Support/wt-lane-host/launch-admission.lock; Windows: %LOCALAPPDATA%/wt-lane-host/launch-admission.lock.
 // No flock dependency: the create-exclusive file claim carries PID plus birth identity.
-// Unknown-count policy: warn-and-admit under the mutex, with one NOT MEASURED line.
+// Visibility: the reservation is released only once the worker has recorded its REAL lane spawn
+// (childPid) and the counter sees that pid or a descendant of it (a sandbox wrapper). The worker's
+// own preflight probes (`opencode --version`, `opencode debug skill`) are counted names too, so a
+// counted descendant of the worker alone never proves the lane is running.
+// Unknown-count policy: warn-and-admit under the mutex, with one NOT MEASURED line. A broken or
+// missing counter must not block every lane (the saturation hook's policy). Windows has no counter
+// here: every launch there prints `lane count NOT MEASURED` and the cap is NOT enforced.
+// Residual: a launcher killed with SIGKILL after spawning its detached worker and before that lane
+// is counted cannot release or record its reservation; the next launcher reclaims the dead claim and
+// may admit one lane above the cap (at most one extra lane per launcher killed in that window).
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { countLaneProcessesReal, LANE_PROCESS_NAMES } from '../wt-lane-saturation-core.mjs'
@@ -33,10 +42,19 @@ function admissionLease(options, initial) {
     warned = true
   }
   if (initial.state === 'unknown') warnUnknown(initial)
+  // One cleanup per launch: once it ran, tracking the same launch's worker again (the launcher's
+  // finally does after a timeout throw) arms nothing, so no second stop and no second outcome.
+  let cleaned = false
+  const cleanup = () => {
+    if (cleaned || !workerPid || visible) return 'no uncounted worker tracked by this launch; nothing stopped'
+    cleaned = true
+    return stopUncountedWorker(workerPid, verifyWorker, options)
+  }
   return {
-    trackWorker(pid, verify = () => false) { workerPid = pid; verifyWorker = verify },
+    trackWorker(pid, verify = () => false) { if (!cleaned) { workerPid = pid; verifyWorker = verify } },
     abort() {
-      if (workerPid && !visible) { const pid = workerPid; workerPid = null; stopUncountedWorker(pid, verifyWorker, options) }
+      const outcome = cleanup()
+      if (outcome.startsWith('NOT CONFIRMED')) options.warn(`wt-lane: admission worker cleanup ${outcome}`)
     },
     async waitUntilVisible(readPid, readTerminal = () => false) {
       if (initial.state === 'unknown') { visible = true; return }
@@ -44,25 +62,24 @@ function admissionLease(options, initial) {
       for (;;) {
         const live = options.counter(LANE_PROCESS_NAMES)
         if (live.state === 'unknown') { warnUnknown(live); visible = true; return }
-        const pid = readPid()
-        if (countedLaunch(live.pids, pid, workerPid, options.readProcesses)) { visible = true; return }
+        if (countedLaunch(live.pids, readPid(), options.readProcesses)) { visible = true; return }
         // A completed worker cannot later launch an uncounted lane. Very short commands
         // may finish between polls; retaining their reservation would serve no purpose.
         if (readTerminal() || (workerPid && options.workerFinished(workerPid))) { visible = true; return }
-        if (options.clock() >= deadline) throw new Error(`wt-lane: new lane was not visible to the counter within ${options.visibilityMs}ms; stopping its worker; retry the same wt-lane command after checking its launch log`)
+        if (options.clock() >= deadline) throw new Error(`wt-lane: new lane was not visible to the counter within ${options.visibilityMs}ms; worker cleanup: ${cleanup()}; retry the same wt-lane command after checking its launch log`)
         await delay(options.pollMs)
       }
     },
   }
 }
 
+// Returns the cleanup outcome actually observed. `ended` means the platform accepted the
+// force-stop (a group SIGKILL or taskkill /F); the worker's exit itself is not observed here.
 function stopUncountedWorker(pid, verifyWorker, options) {
-  if (!verifyWorker()) {
-    options.warn('wt-lane: admission worker cleanup NOT CONFIRMED: identity changed or not measured')
-    return
-  }
+  if (!verifyWorker()) return 'NOT CONFIRMED: identity changed or not measured'
   const result = options.stopWorker(pid)
-  if (result.status !== 'ended') options.warn(`wt-lane: admission worker cleanup NOT CONFIRMED: ${result.reason ?? result.status}`)
+  if (result.status !== 'ended') return `NOT CONFIRMED: ${result.reason ?? result.status}`
+  return `ended (force-stop of worker pid ${pid} accepted; its exit was not observed)`
 }
 
 function workerFinished(pid) {
@@ -70,10 +87,12 @@ function workerFinished(pid) {
   return hostAdapter.platform === 'win32' || hostAdapter.readProcessGroupLiveness(pid).status === 'gone'
 }
 
-function countedLaunch(pids, childPid, workerPid, readProcesses) {
-  if (childPid && pids.includes(childPid)) return true
-  if (!workerPid) return false
-  const family = new Set([workerPid])
+// Only the worker's recorded lane spawn (childPid) proves visibility: the counted pid itself, or a
+// counted process descending from it (the bwrap wrapper case). Never a descendant of the worker alone.
+function countedLaunch(pids, childPid, readProcesses) {
+  if (!childPid) return false
+  if (pids.includes(childPid)) return true
+  const family = new Set([childPid])
   const rows = readProcesses().processes ?? []
   let previousSize
   do {

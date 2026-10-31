@@ -21,7 +21,7 @@ import { hostAdapter } from './lib/host/adapter.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } from './lib/host/lane-host-dir.mjs'
 import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'
-import { appendLaunchFailure, awaitChildSpawn, spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
+import { appendLaunchFailure, awaitChildSpawn, spawnWithLaneLogStderr as spawnWorkerWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
 import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
 import { laneBoundLine, unattendedMaxSeconds, validateLaneTiming } from './lib/lane-deadline-core.mjs'
 import { createLaneDeadline } from './lib/host/lane-deadline-worker.mjs'
@@ -612,15 +612,29 @@ async function invokeLaneMain(argv) {
   try { return await main() } finally { process.argv = previous }
 }
 
+// In-process seam carrying the pid of the detached worker that main spawns (its only
+// spawnWithLaneLogStderr call) out to the admission. It is a module-level wrapper so main's
+// own text stays unchanged; admission serialises launchAndObserve, so one observer at a time.
+let workerSpawnObserver = null
+function spawnWithLaneLogStderr(log, start) {
+  const child = spawnWorkerWithLaneLogStderr(log, start)
+  workerSpawnObserver?.(child.pid)
+  return child
+}
+
 async function launchAndObserve(argv, opts, admission) {
   const before = readCurrentSupervision(opts.dir)?.runId
+  // Only a record naming the worker THIS invocation spawned is ours: a matching explicit
+  // --run-id published by another invocation is never tracked, so it is never stopped.
+  let spawnedPid = null
   const readOwnState = () => {
     const state = readCurrentSupervision(opts.dir)
     const id = state?.runId
-    if (typeof id !== 'string' || id === before) return null
+    if (!spawnedPid || typeof id !== 'string' || id === before) return null
     const owned = opts.runId ? id === opts.runId : id.startsWith(`${process.pid}-`)
-    return owned ? state : null
+    return owned && state.workerPid === spawnedPid ? state : null
   }
+  workerSpawnObserver = (pid) => { spawnedPid = pid }
   try {
     const code = await invokeLaneMain(argv)
     const state = readOwnState()
@@ -633,6 +647,7 @@ async function launchAndObserve(argv, opts, admission) {
     )
     return code
   } finally {
+    workerSpawnObserver = null
     const state = readOwnState()
     if (state?.workerPid) admission.trackWorker(state.workerPid, () => admissionWorkerIsCurrent(state))
   }
@@ -640,6 +655,8 @@ async function launchAndObserve(argv, opts, admission) {
 
 function admissionWorkerIsCurrent(state) {
   const actual = inspectProcess(state.workerPid, { recordedArgv: state.workerArgv, captureCwd: Boolean(state.workerCwd) })
+  // A gone or zombie worker reads as null: never a match, decided here rather than inside sameIdentity.
+  if (!actual) return false
   const expected = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime,
     startTimeApproximate: state.workerStartTimeApproximate, image: state.workerImage, cwd: state.workerCwd }
   return sameIdentity(expected, actual) && (hostAdapter.platform === 'win32' || actual.groupId === state.workerPid)
