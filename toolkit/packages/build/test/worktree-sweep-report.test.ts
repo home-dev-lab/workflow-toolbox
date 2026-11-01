@@ -371,7 +371,8 @@ it.each([false, true])('B1 shared-file ctime is quiet, with a readable control (
   const file = join(linked, 'node_modules', '.pnpm', 'pkg', 'index.js')
   const before = lstatSync(file, { bigint: true }); const created = Date.now()
   // Wait for the observation cutoff to pass before causing the real link-count change.
-  await vi.waitUntil(() => Date.now() > created + 1000, { timeout: 5000 })
+  // The generous deadline tolerates contention; the cutoff still ends the wait immediately.
+  await vi.waitUntil(() => Date.now() > created + 1000, { timeout: 30_000 })
   linkSync(file, join(f.root, 'store-link'))
   const after = lstatSync(file, { bigint: true })
   expect(after.nlink).toBeGreaterThan(1n)
@@ -387,7 +388,7 @@ it.each([false, true])('B1 shared-file ctime is quiet, with a readable control (
   const written = sweep!.scanProject(options)
   expect(row(written, 'control').reason, 'control must stay quiet after the shared-file write').toBe('eligible')
   expect(row(written, 'linked')).toMatchObject({ verdict: 'KEEP', reason: 'recent' })
-})
+}, 60_000)
 
 it('B2 every entry receives a fresh inventory budget regardless of its position', () => {
   const f = setup()
