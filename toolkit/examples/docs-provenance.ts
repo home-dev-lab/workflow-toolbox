@@ -176,6 +176,21 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'PILOT-RUNNER documents retained-worktree marker expiry, fail-closed board checks, and guarded removal.',
   },
   {
+    script: 'plugin/bin/wt-worktree-sweep.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The Unreleased changelog announces report-only sweeps; CLI --help describes invocation, but no operator guide documents the command yet.',
+  },
+  {
+    script: 'plugin/bin/wt-worktree-sweep-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The Unreleased changelog announces report-only session hooks, but no operator guide documents the session summary and throttled background report yet.',
+  },
+  {
+    script: 'plugin/bin/wt-worktree-sweep-tick-hook.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The Unreleased changelog announces report-only prompt hooks, but no operator guide documents the silent throttled background report yet.',
+  },
+  {
     script: 'plugin/bin/wt-run-cost.mjs',
     status: 'mapped',
     reason: 'PILOT-RUNNER documents archived cost collection, unknown handling, and complete-only route aggregation.',
