@@ -6,12 +6,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { sealedSecondOpinionSdk } from './helpers/sealed-second-opinion-provider.js'
+import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const PLUGIN = process.env.WT_ADMISSION_SNAPSHOT_TEST_PLUGIN ?? join(ROOT, 'plugin')
 const roots: string[] = []
 const kinds = ['second-opinion', 'opencode-envelope', 'opencode-verify'] as const
 type Kind = typeof kinds[number]
+// Post-admission paths require policy execution, unavailable on unsupported hosts.
+const policyIt = it.skipIf(admissionTestPlatform !== 'linux')
+// Combine guards directly: skipIf is not part of Vitest's typed chainable API.
+const posixPolicyIt = it.skipIf(admissionTestPlatform !== 'linux' || process.platform === 'win32')
 afterEach(() => {
   for (const root of roots.splice(0)) {
     restoreScratch(root)
@@ -158,7 +163,7 @@ function fixture(kind: Kind, policy = 'return null') {
   const args = kind === 'second-opinion' ? ['--repo', repo, '--request', input, '--out', join(root, 'out.log'), '--route', 'opus']
     : kind === 'opencode-verify' ? ['--dir', repo, '--id', 'snapshot', '--task-file', input]
       : [tasks, '--dir', repo]
-  return { root, repo, config, module, variable, option, input, args, kind, ...seal(root) }
+  return { root, repo, config, module, variable, option, input, args, kind, platform: process.env.WT_ADMISSION_TEST_PLATFORM, ...seal(root) }
 }
 type Fixture = ReturnType<typeof fixture>
 
@@ -169,7 +174,7 @@ function settings(f: Fixture, value: unknown = f.module, other?: unknown) {
 }
 
 function launch(f: Fixture, admission?: string, cwd = f.root, overrides: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, join(PLUGIN, 'bin', `wt-${f.kind}.mjs`), ...f.args], {
+  return spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, ...containmentLoader(f.root, f.platform), join(PLUGIN, 'bin', `wt-${f.kind}.mjs`), ...f.args], {
     cwd, encoding: 'utf8', timeout: 15000,
     env: sealedPluginCliEnv(f.root, {
       NODE_NO_WARNINGS: '1',
@@ -195,7 +200,7 @@ function expectRefused(f: Fixture, cause: string, admission?: string, overrides:
 }
 
 function admittingOptionLock(kind: Kind) {
-  it('uses an admitting plugin option and removes its snapshot after all launches', () => {
+  policyIt('uses an admitting plugin option and removes its snapshot after all launches', () => {
     const f = fixture(kind); settings(f)
     expect(launch(f).status).toBe(0)
     expect(existsSync(join(f.root, 'seen.json')), 'the configured admitting policy must run before launch').toBe(true)
@@ -213,7 +218,7 @@ function admittingOptionLock(kind: Kind) {
 function optionLocks(kind: Kind) {
   it('uses a refusing plugin option with every admission variable unset', () => {
     const f = fixture(kind, 'return "synthetic policy refuses"'); settings(f)
-    expectRefused(f, 'synthetic policy refuses')
+    expectRefused(f, policyCause('synthetic policy refuses'))
   })
   admittingOptionLock(kind)
   it.each(['malformed', 'conflicting', 'non-string', 'unreadable', 'dangling'])('refuses %s settings instead of dropping admission', failure => {
@@ -235,7 +240,7 @@ function optionLocks(kind: Kind) {
     const f = fixture(kind); settings(f)
     expectRefused(f, 'absolute ES module path', '')
   })
-  it('lets a defined environment module win even over malformed settings', () => {
+  policyIt('lets a defined environment module win even over malformed settings', () => {
     const f = fixture(kind)
     writeFileSync(join(f.config, 'settings.json'), '{')
     expect(launch(f, f.module).status).toBe(0)
@@ -244,7 +249,7 @@ function optionLocks(kind: Kind) {
 }
 
 function snapshotLocks(kind: Kind) {
-  it('isolates a post-admission caller write and rewrites paths before scanning', () => {
+  policyIt('isolates a post-admission caller write and rewrites paths before scanning', () => {
     const f = fixture(kind); settings(f); writeFileSync(join(f.root, 'race'), 'yes')
     expect(launch(f, f.module).status).toBe(0)
     expect(existsSync(join(f.repo, 'late-private.txt'))).toBe(true)
@@ -257,7 +262,7 @@ function snapshotLocks(kind: Kind) {
       expect(seen.prompts).toContain(call.task)
     }
   })
-  it('excludes git files and directories at every level', () => {
+  policyIt('excludes git files and directories at every level', () => {
     const f = fixture(kind); settings(f)
     mkdirSync(join(f.repo, '.git')); writeFileSync(join(f.repo, '.git', 'secret'), 'not for review')
     mkdirSync(join(f.repo, 'nested')); writeFileSync(join(f.repo, 'nested', '.git'), 'gitdir: live')
@@ -276,7 +281,7 @@ function snapshotLocks(kind: Kind) {
 function cleanupLocks(kind: Kind) {
   it.skipIf(process.platform === 'win32')('cleans the snapshot when a pending policy is interrupted', () => {
     const f = fixture(kind, `process.kill(Number(process.env.WT_TEST_ADMISSION_CALLER_PID), 'SIGTERM'); return new Promise(() => {})`)
-    expectRefused(f, 'interrupted during admission', f.module)
+    expectRefused(f, policyCause('interrupted during admission'), f.module)
   })
   it('removes a partial snapshot when copying fails and never uses the live directory', () => {
     const f = fixture(kind); settings(f); writeFileSync(join(f.root, 'copy-mode'), 'fail')
@@ -288,7 +293,7 @@ function cleanupLocks(kind: Kind) {
     expect(spawnSync('mkfifo', [join(f.repo, 'pipe')]).status).toBe(0)
     expectRefused(f, 'unsupported snapshot entry', f.module)
   })
-  it.each(['refusal', 'model-error'])('cleans its snapshot after %s', failure => {
+  policyIt.each(['refusal', 'model-error'])('cleans its snapshot after %s', failure => {
     const f = fixture(kind, failure === 'refusal' ? 'return "synthetic refusal"' : 'return null'); settings(f)
     if (failure === 'model-error') {
       writeFileSync(f.input, 'model-error')
@@ -320,7 +325,7 @@ describe.each(kinds)('strict admission and snapshot: %s', kind => {
   cleanupLocks(kind)
 })
 
-it('keeps the shared envelope snapshot until a running task settles after another task refuses', () => {
+policyIt('keeps the shared envelope snapshot until a running task settles after another task refuses', () => {
   // Trusted policies can restore a write bit. The digest check must still catch that change.
   const f = fixture('opencode-envelope', `const files = fs.readdirSync(request).sort(); fs.chmodSync(request + '/' + files[1], 0o600); fs.writeFileSync(request + '/' + files[1], 'changed after admission'); return null`)
   settings(f)
@@ -343,7 +348,7 @@ it('keeps shared envelope snapshot prompts inside the run area when request prep
   expect(existsSync(readFileSync(join(f.root, 'snapshot-root'), 'utf8'))).toBe(false)
 })
 
-it.each(kinds)('rewrites both canonical and caller-spelled repository paths for %s', kind => {
+policyIt.each(kinds)('rewrites both canonical and caller-spelled repository paths for %s', kind => {
   const f = fixture(kind); settings(f)
   const alias = join(f.root, 'repo-alias')
   symlinkSync(f.repo, alias, process.platform === 'win32' ? 'junction' : 'dir')
@@ -359,7 +364,7 @@ it.each(kinds)('rewrites both canonical and caller-spelled repository paths for 
   }
 })
 
-it.skipIf(process.platform === 'win32').each(kinds)('removes the active %s snapshot on SIGTERM', kind => {
+posixPolicyIt.each(kinds)('removes the active %s snapshot on SIGTERM', kind => {
   const f = fixture(kind); settings(f)
   writeFileSync(f.input, 'signal-model')
   writeFileSync(join(f.root, 'tasks.json'), JSON.stringify([{ id: 'signal', prompt: 'signal-model' }]))
@@ -373,7 +378,7 @@ it.skipIf(process.platform === 'win32').each(kinds)('removes the active %s snaps
   expect(existsSync(dirname(seen.repo))).toBe(false)
 })
 
-it.each(kinds)('keeps relative paths and punctuation unchanged for %s', kind => {
+policyIt.each(kinds)('keeps relative paths and punctuation unchanged for %s', kind => {
   const f = fixture(kind)
   f.args[f.args.indexOf(kind === 'second-opinion' ? '--repo' : '--dir') + 1] = '.'
   const prompt = 'Review this repository. Read ./source.txt'
@@ -386,7 +391,7 @@ it.each(kinds)('keeps relative paths and punctuation unchanged for %s', kind => 
   }
 })
 
-it.each(kinds)('rewrites repository paths and preserves filesystem-proven outside siblings for %s', kind => {
+policyIt.each(kinds)('rewrites repository paths and preserves filesystem-proven outside siblings for %s', kind => {
   const f = fixture(kind)
   siblingFile(f, '-other'); siblingFile(f, 'sitory')
   const prompt = `Read ${f.repo}/source.txt; leave ${f.repo}-other ${f.repo}sitory ./src alone`
@@ -399,7 +404,7 @@ it.each(kinds)('rewrites repository paths and preserves filesystem-proven outsid
   }
 })
 
-it.skipIf(process.platform === 'win32').each(kinds)('denies post-admission writes to repo and requests before launching %s', kind => {
+posixPolicyIt.each(kinds)('denies post-admission writes to repo and requests before launching %s', kind => {
   const f = fixture(kind)
   writeFileSync(join(f.root, 'probe-readonly'), 'yes')
   const result = launch(f, f.module)
@@ -445,6 +450,13 @@ it.each(kinds)('honors native symlink/.. resolution before rewriting the absolut
     return
   }
   const result = launch(f, f.module)
+  if (admissionTestPlatform !== 'linux') {
+    expect(result.status, result.stdout + result.stderr).toBe(3)
+    expect(result.stdout + result.stderr).toContain(`${f.variable}: ${platformRefusal(admissionTestPlatform)}`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
+    return
+  }
   expect(result.status, result.stdout + result.stderr).toBe(0)
   for (const call of calls(f)) {
     expect(call.task).toContain(`${call.cwd}/source.txt`)
@@ -460,7 +472,7 @@ it('keeps relative paths unchanged even when a helper caller supplies a relative
   finally { snapshot.dispose() }
 })
 
-it.each(kinds)('keeps component boundaries with a trailing-separator caller alias for %s', kind => {
+policyIt.each(kinds)('keeps component boundaries with a trailing-separator caller alias for %s', kind => {
   const f = fixture(kind)
   const alias = join(f.root, 'repo-alias')
   symlinkSync(f.repo, alias, process.platform === 'win32' ? 'junction' : 'dir')
@@ -526,7 +538,7 @@ describe.each(kinds)('strict profile regressions: %s', kind => {
     mkdirSync(f.config, { recursive: true }); settings(f)
     const spelling = `${join(f.root, 'profile-link')}${sep}..`
     expect(realpathSync.native(spelling)).toBe(selected)
-    expectRefused(f, 'synthetic profile refuses', undefined, { CLAUDE_CONFIG_DIR: undefined, [variable]: spelling })
+    expectRefused(f, policyCause('synthetic profile refuses'), undefined, { CLAUDE_CONFIG_DIR: undefined, [variable]: spelling })
   })
 
   it.each([
@@ -541,7 +553,7 @@ describe.each(kinds)('strict profile regressions: %s', kind => {
   })
 })
 
-it.each(kinds)('rewrites angle-bracket paths but preserves comma sibling filenames for %s', kind => {
+policyIt.each(kinds)('rewrites angle-bracket paths but preserves comma sibling filenames for %s', kind => {
   const f = fixture(kind)
   siblingFile(f, ',archive')
   const prompt = `Read <${f.repo}/source.txt> (${f.repo}/source.txt) [${f.repo}/source.txt] "${f.repo}"; leave ${f.repo},archive/source.txt alone`
@@ -554,7 +566,7 @@ it.each(kinds)('rewrites angle-bracket paths but preserves comma sibling filenam
   }
 })
 
-it.skipIf(process.platform === 'win32')('cleans the verifier snapshot after two SIGTERMs while its child ignores termination', () => {
+posixPolicyIt('cleans the verifier snapshot after two SIGTERMs while its child ignores termination', () => {
   const f = fixture('opencode-verify')
   writeFileSync(f.input, 'repeat-termination')
   const result = launch(f, f.module)
@@ -564,7 +576,7 @@ it.skipIf(process.platform === 'win32')('cleans the verifier snapshot after two 
   expect(result.signal, result.stdout + result.stderr).toBeNull()
 })
 
-it.skipIf(process.platform === 'win32')('cleans the verifier snapshot on SIGQUIT', () => {
+posixPolicyIt('cleans the verifier snapshot on SIGQUIT', () => {
   const f = fixture('opencode-verify')
   writeFileSync(f.input, 'quit-model')
   const result = launch(f, f.module)
@@ -578,7 +590,7 @@ it.skipIf(process.platform === 'win32')('cleans the verifier snapshot on SIGQUIT
 
 it.skipIf(process.platform === 'win32').each(kinds)('interrupts pending %s admission on SIGQUIT', kind => {
   const f = fixture(kind, `process.kill(Number(process.env.WT_TEST_ADMISSION_CALLER_PID), 'SIGQUIT'); return new Promise(() => {})`)
-  expectRefused(f, 'interrupted during admission', f.module)
+  expectRefused(f, policyCause('interrupted during admission'), f.module)
 })
 
 const profileCases = ['final-dangling', 'intermediate-HOME', 'intermediate-CLAUDE_CONFIG_DIR', 'loop', 'unreadable-parent', 'absent-in-real-directory'] as const
@@ -610,7 +622,7 @@ describe.each(kinds)('positive profile absence proof: %s', kind => {
   })
 })
 
-it.each(kinds)('preserves quoted sibling paths while rewriting repository components for %s', kind => {
+policyIt.each(kinds)('preserves quoted sibling paths while rewriting repository components for %s', kind => {
   const f = fixture(kind)
   siblingFile(f, ' archive'); siblingFile(f, ')archive')
   const siblings = `"${f.repo} archive/source.txt" "${f.repo})archive/source.txt" '${f.repo} archive/source.txt' \`${f.repo})archive/source.txt\``
@@ -642,6 +654,13 @@ it('validates or rejects the second-opinion repository after platform-native sym
     expect(result.stdout + result.stderr).toContain('--repo is not a directory:')
     expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
     expect(existsSync(f.marker)).toBe(false)
+    return
+  }
+  if (admissionTestPlatform !== 'linux') {
+    expect(result.status, result.stderr).toBe(3)
+    expect(result.stderr).toContain(`WT_SECOND_OPINION_ADMISSION: ${platformRefusal(admissionTestPlatform)}`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'seen.json'))).toBe(false)
     return
   }
   expect(result.status, result.stdout + result.stderr).toBe(0)
@@ -702,7 +721,7 @@ it.each(kinds)('rewrites or refuses a bold live repository path before launching
   expect(existsSync(readFileSync(join(f.root, 'snapshot-root'), 'utf8'))).toBe(false)
 })
 
-it.each(kinds)('preserves an existing escaped-quote sibling path for %s', kind => {
+policyIt.each(kinds)('preserves an existing escaped-quote sibling path for %s', kind => {
   const f = fixture(kind)
   siblingFile(f, ' archive')
   const sibling = `\\"${f.repo} archive/source.txt\\"`
@@ -721,6 +740,35 @@ it.each(kinds)('preserves an existing escaped-quote sibling path for %s', kind =
   writeFileSync(f.input, `Read ${f.repo}_nonexistent`)
   writeFileSync(join(f.root, 'tasks.json'), JSON.stringify([{ id: 'missing', prompt: `Read ${f.repo}_nonexistent` }]))
   expectRefused(f, 'live repository path left unrewritten at offset', f.module)
+})
+
+describe.each(kinds)('platform containment contract for %s', kind => {
+  it.each(['native', 'darwin', 'win32'])('host=%s', platform => {
+    const f = fixture(kind)
+    f.platform = platform
+    writeFileSync(f.module, refusingImportPolicy)
+    settings(f)
+    const host = platform === 'native' ? process.platform : platform
+    const result = launch(f)
+    const cause = host === 'linux' ? 'policy refuses' : platformRefusal(host)
+    expect(result.status, result.stdout + result.stderr).toBe(3)
+    if (kind === 'second-opinion') {
+      expect(readFileSync(join(f.root, 'out.log'), 'utf8')).toBe(`REFUSED: ${f.variable}: ${cause}\nEXIT=3\n`)
+      expect(result.stderr).toContain(`wt-second-opinion: ${f.variable}: ${cause}\n`)
+    } else expect(result.stdout).toBe(`OPENCODE_REFUSED: ${f.variable}: ${cause}\n`)
+    expect(existsSync(f.marker)).toBe(false)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(host === 'linux')
+    expect(existsSync(readFileSync(join(f.root, 'snapshot-root'), 'utf8'))).toBe(false)
+  })
+  it.each(['darwin', 'win32'])('host=%s refuses an admitting option and removes its snapshot', platform => {
+    const f = fixture(kind)
+    f.platform = platform
+    writeFileSync(f.module, admittingImportPolicy)
+    settings(f)
+    expectRefused(f, `${f.variable}: ${platformRefusal(platform)}`)
+    expect(existsSync(join(f.root, 'policy-imported'))).toBe(false)
+    expect(existsSync(readFileSync(join(f.root, 'snapshot-root'), 'utf8'))).toBe(false)
+  })
 })
 
 it.each(kinds)('refuses when the profile disappears after native resolution for %s', kind => {

@@ -6,10 +6,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedSecondOpinionSdk } from './helpers/sealed-second-opinion-provider.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+import { admittingImportPolicy, admissionTestPlatform, containmentLoader, platformRefusal, policyCause, refusingImportPolicy } from './helpers/admission-platform.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..')
 const CLI = process.env.WT_SECOND_OPINION_TEST_CLI ?? join(ROOT, 'plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
+// These cases require policy execution or an admitted model; unsupported hosts
+// refuse before import and cannot reach their signal/snapshot assertions.
+const policyIt = it.skipIf(admissionTestPlatform !== 'linux')
 function executionEnvironment(repo: string, env: Record<string, string>) {
   const scratch = join(dirname(repo), 'runtime')
   return { ...env, TMPDIR: scratch, TMP: scratch, TEMP: scratch }
@@ -54,7 +58,7 @@ function fixture(source = 'export default () => null', temporaryRoot = tmpdir())
     if (url.endsWith('/lib/second-opinion-core.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(stub)} };
     return next(url, context);
   }`)
-  return { root, repo, request, module, marker, out, loader }
+  return { root, repo, request, module, marker, out, loader, platform: process.env.WT_ADMISSION_TEST_PLATFORM }
 }
 
 // Only deadline tests use 100 ms: normal admission includes worker startup,
@@ -67,20 +71,21 @@ function launch(f: ReturnType<typeof fixture>, admission: string | undefined, re
   if (admission !== undefined) env.WT_SECOND_OPINION_ADMISSION = admission
   const args = ['--request', relative ? './request.md' : f.request, '--out', f.out]
   if (!omitRepo) args.push('--repo', relative ? '.' : f.repo)
-  return spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, CLI, ...args, ...extra], {
+  return spawnSync(process.execPath, ['--loader', pathToFileURL(f.loader).href, ...containmentLoader(f.root, f.platform), CLI, ...args, ...extra], {
     cwd: f.repo, env, encoding: 'utf8', timeout, killSignal: 'SIGKILL',
   })
 }
 
-function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string, admissionTimeout = 5000) {
+function expectRefusal(f: ReturnType<typeof fixture>, admission: string, cause: string, admissionTimeout = 5000, executesPolicy = true) {
   const result = launch(f, admission, false, false, [], 10_000, admissionTimeout)
   expect(result.status).toBe(3)
   expect(existsSync(f.marker)).toBe(false)
   expect(result.stderr).toContain('WT_SECOND_OPINION_ADMISSION')
-  expect(result.stderr).toContain(cause)
+  const expectedCause = executesPolicy ? policyCause(cause) : cause
+  expect(result.stderr).toContain(expectedCause)
   const output = readFileSync(f.out, 'utf8')
   expect(output).toContain('REFUSED: WT_SECOND_OPINION_ADMISSION')
-  expect(output).toContain(cause)
+  expect(output).toContain(expectedCause)
   expect(output.endsWith('\nEXIT=3\n')).toBe(true)
 }
 
@@ -99,7 +104,7 @@ function useRealCore(f: ReturnType<typeof fixture>) {
 }
 
 describe('second-opinion fixture canonicalization', () => {
-  it('canonicalizes fixture paths beneath a symlinked temporary directory', () => {
+  policyIt('canonicalizes fixture paths beneath a symlinked temporary directory', () => {
     const parent = realpathSync(mkdtempSync(join(tmpdir(), 'admission-parent-')))
     roots.push(parent)
     const target = join(parent, 'target')
@@ -139,7 +144,7 @@ const snapshotExecutionScratchLock = () => {
 }
 
 describe('second-opinion CLI admission', () => {
-  it('admits a valid policy with delayed import rather than testing worker startup speed', () => {
+  policyIt('admits a valid policy with delayed import rather than testing worker startup speed', () => {
     const f = fixture('await new Promise(resolve => setTimeout(resolve, 250)); export default () => null')
     const result = launch(f, f.module)
     expect(result.status, result.stderr).toBe(0)
@@ -151,9 +156,9 @@ describe('second-opinion CLI admission', () => {
     expectRefusal(f, f.module, 'policy refuses this repository')
   })
 
-  it('admits with snapshot paths and separate execution scratch', snapshotExecutionScratchLock)
+  policyIt('admits with snapshot paths and separate execution scratch', snapshotExecutionScratchLock)
 
-  it.each([false, true])('passes launch paths and env for relative args (omit repo=%s)', (omitRepo) => {
+  policyIt.each([false, true])('passes launch paths and env for relative args (omit repo=%s)', (omitRepo) => {
     const f = fixture(`import { writeFileSync } from 'node:fs';
       export default async (input) => { writeFileSync(new URL('./input.json', import.meta.url), JSON.stringify(input)); return null }`)
     const result = launch(f, f.module, true, omitRepo)
@@ -316,7 +321,7 @@ describe('second-opinion admission round 3 publication', () => {
     expect(existsSync(f.marker)).toBe(false)
   })
 
-  it.each(['module import', 'policy call'])('publishes pending before a synchronous hang in %s', (kind) => {
+  policyIt.each(['module import', 'policy call'])('publishes pending before a synchronous hang in %s', (kind) => {
     const source = kind === 'module import' ? 'while (true) {} ; export default () => null' : 'export default () => { while (true) {} }'
     const f = fixture(source)
     writeFileSync(f.out, 'OLD\nEXIT=0\n')
@@ -399,7 +404,7 @@ describe('second-opinion admission configuration', () => {
     ['missing', 'missing.mjs', 'failed'],
   ])('fails closed for a %s module path', (name, value, cause) => {
     const f = fixture()
-    expectRefusal(f, name === 'missing' ? join(f.root, value) : value, cause)
+    expectRefusal(f, name === 'missing' ? join(f.root, value) : value, cause, 5000, name === 'missing')
   })
 
   it('does not import an unconfigured throwing module', () => {
@@ -410,7 +415,8 @@ describe('second-opinion admission configuration', () => {
     expect(readFileSync(f.out, 'utf8')).toBe('STUB LAUNCH\nEXIT=0\n')
     rmSync(f.marker)
     expectRefusal(f, f.module, 'must not import')
-    expect(readFileSync(join(f.root, 'touched'), 'utf8')).toBe('imported')
+    if (admissionTestPlatform === 'linux') expect(readFileSync(join(f.root, 'touched'), 'utf8')).toBe('imported')
+    else expect(existsSync(join(f.root, 'touched'))).toBe(false)
   })
 })
 
@@ -456,7 +462,7 @@ describe('second-opinion admission file identity', () => {
     expect(existsSync(f.marker)).toBe(false)
   })
 
-  it('passes identical canonical repo and request paths to admission and dispatch', () => {
+  policyIt('passes identical canonical repo and request paths to admission and dispatch', () => {
     const f = fixture(`import { writeFileSync } from 'node:fs';
       export default (input) => { writeFileSync(new URL('./input.json', import.meta.url), JSON.stringify(input)); return null }`)
     const canonicalRepo = f.repo
@@ -471,6 +477,31 @@ describe('second-opinion admission file identity', () => {
     expect(input.repo).not.toBe(canonicalRepo)
     expect(input.request).not.toBe(canonicalRequest)
   })
+})
+
+it.each(['native', 'darwin', 'win32'])('platform containment contract: %s', platform => {
+  const f = fixture(refusingImportPolicy)
+  f.platform = platform
+  const host = platform === 'native' ? process.platform : platform
+  const result = launch(f, f.module)
+  const cause = host === 'linux' ? 'policy refuses' : platformRefusal(host)
+  expect(result.status, result.stderr).toBe(3)
+  expect(result.stderr).toContain(`wt-second-opinion: WT_SECOND_OPINION_ADMISSION: ${cause}\n`)
+  expect(readFileSync(f.out, 'utf8')).toBe(`REFUSED: WT_SECOND_OPINION_ADMISSION: ${cause}\nEXIT=3\n`)
+  expect(existsSync(f.marker)).toBe(false)
+  expect(existsSync(join(f.root, 'policy-imported'))).toBe(host === 'linux')
+})
+
+it.each(['darwin', 'win32'])('platform containment contract: %s refuses even an admitting policy before import', platform => {
+  const f = fixture(admittingImportPolicy)
+  f.platform = platform
+  const result = launch(f, f.module)
+  const refusal = `WT_SECOND_OPINION_ADMISSION: ${platformRefusal(platform)}`
+  expect(result.status, result.stderr).toBe(3)
+  expect(result.stderr).toContain(`wt-second-opinion: ${refusal}\n`)
+  expect(readFileSync(f.out, 'utf8')).toBe(`REFUSED: ${refusal}\nEXIT=3\n`)
+  expect(existsSync(f.marker)).toBe(false)
+  expect(existsSync(join(f.root, 'policy-imported'))).toBe(false)
 })
 
 describe('second-opinion worker containment', () => {
