@@ -536,6 +536,26 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
   }
 }
 
+function syntheticPayloadFor(hookPath: string, sandbox: Sandbox): unknown {
+  switch (basename(hookPath)) {
+    case 'wt-worktree-sweep-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+      }
+    case 'wt-worktree-sweep-tick-hook.mjs':
+      return {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+        prompt: 'ordinary prompt',
+      }
+    default:
+      return payloadFor(hookPath, sandbox)
+  }
+}
+
 function runHook(hookPath: string, payload: unknown, sandbox: Sandbox): HookRun {
   const input = payload === null ? undefined : `${JSON.stringify(payload)}\n`
   const res = spawnSync(process.execPath, [hookPath], {
@@ -562,6 +582,69 @@ function sourceUsesFailOpenTrace(hookPath: string): boolean {
   return source.includes('runFailOpenHook(') || source.includes('runFailOpenHookAsync(') || source.includes('FAILED OPEN')
 }
 
+function assertHooksLoad(hookPaths: string[]): void {
+  for (const hookPath of hookPaths) {
+    const sandbox = makeSandbox(basename(hookPath, '.mjs'))
+    try {
+      const result = runHook(hookPath, syntheticPayloadFor(hookPath, sandbox), sandbox)
+
+      expect(result.error, `${basename(hookPath)} should not hang or fail to spawn`).toBeUndefined()
+      expect(result.status, `${basename(hookPath)} exited via signal`).not.toBeNull()
+      expect(
+        hasUncaughtExceptionStack(result.stderr),
+        `${basename(hookPath)} crashed with stderr:\n${result.stderr}`,
+      ).toBe(false)
+    } finally {
+      cleanupSandbox(sandbox)
+    }
+  }
+}
+
+function assertHealthyDeny(): void {
+  const hookPath = join(REPO_ROOT, 'plugin/bin/wt-outbound-guard-hook.mjs')
+  const sandbox = makeSandbox('deny-case')
+
+  try {
+    const result = runHook(
+      hookPath,
+      {
+        hook_event_name: 'SubagentStop',
+        session_id: 'selftest-session',
+        agent_id: 'agent-silent-1',
+        agent_type: 'general',
+      },
+      sandbox,
+    )
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('OUTBOUND CHECK')
+    expect(hasUncaughtExceptionStack(result.stderr)).toBe(false)
+  } finally {
+    cleanupSandbox(sandbox)
+  }
+}
+
+function assertFailOpenTrace(hookPaths: string[]): void {
+  for (const hookPath of hookPaths.filter(sourceUsesFailOpenTrace)) {
+    const sandbox = makeSandbox(`fail-open-${basename(hookPath, '.mjs')}`)
+    sandbox.env.WT_FAIL_OPEN_TRACE_SELF_TEST = basename(hookPath)
+
+    try {
+      const result = runHook(hookPath, syntheticPayloadFor(hookPath, sandbox), sandbox)
+
+      expect(result.error, `${basename(hookPath)} should still spawn under forced fail-open self-test`).toBeUndefined()
+      expect(result.status, `${basename(hookPath)} exited via signal under forced fail-open self-test`).not.toBeNull()
+      expect(result.status, `${basename(hookPath)} should fail open under forced fail-open self-test`).toBe(0)
+      expect(result.stderr, `${basename(hookPath)} should trace its forced fail-open path`).toContain(
+        `${basename(hookPath)}: FAILED OPEN - forced fail-open self-test for ${basename(hookPath)}`,
+      )
+      expect(hasUncaughtExceptionStack(result.stderr)).toBe(false)
+    } finally {
+      cleanupSandbox(sandbox)
+    }
+  }
+}
+
 describe('plugin hook crash safety', () => {
   const hookPaths = discoverHookPaths()
 
@@ -584,30 +667,14 @@ describe('plugin hook crash safety', () => {
     }
   })
 
-  it('every discovered hook loads and runs without an uncaught exception stack trace on stderr', () => {
-    for (const hookPath of hookPaths) {
-      const sandbox = makeSandbox(basename(hookPath, '.mjs'))
-      try {
-        const result = runHook(hookPath, payloadFor(hookPath, sandbox), sandbox)
-
-        expect(result.error, `${basename(hookPath)} should not hang or fail to spawn`).toBeUndefined()
-        expect(result.status, `${basename(hookPath)} exited via signal`).not.toBeNull()
-        expect(
-          hasUncaughtExceptionStack(result.stderr),
-          `${basename(hookPath)} crashed with stderr:\n${result.stderr}`,
-        ).toBe(false)
-      } finally {
-        cleanupSandbox(sandbox)
-      }
-    }
-  }, 60_000)
+  it('every discovered hook loads and runs without an uncaught exception stack trace on stderr', () => assertHooksLoad(hookPaths), 60_000)
 
   it('healthy decline stays green: a hook that decides the event is irrelevant remains silent and non-crashing', () => {
     const hookPath = join(REPO_ROOT, 'plugin/bin/wt-spawn-shape-guard-hook.mjs')
     const sandbox = makeSandbox('decline-case')
 
     try {
-      const result = runHook(hookPath, payloadFor(hookPath, sandbox), sandbox)
+      const result = runHook(hookPath, syntheticPayloadFor(hookPath, sandbox), sandbox)
 
       expect(result.status).toBe(0)
       expect(result.stdout).toBe('')
@@ -617,48 +684,7 @@ describe('plugin hook crash safety', () => {
     }
   })
 
-  it('healthy deny stays green: a hook may exit non-zero to block without being classified as a crash', () => {
-    const hookPath = join(REPO_ROOT, 'plugin/bin/wt-outbound-guard-hook.mjs')
-    const sandbox = makeSandbox('deny-case')
+  it('healthy deny stays green: a hook may exit non-zero to block without being classified as a crash', assertHealthyDeny)
 
-    try {
-      const result = runHook(
-        hookPath,
-        {
-          hook_event_name: 'SubagentStop',
-          session_id: 'selftest-session',
-          agent_id: 'agent-silent-1',
-          agent_type: 'general',
-        },
-        sandbox,
-      )
-
-      expect(result.status).toBe(2)
-      expect(result.stderr).toContain('OUTBOUND CHECK')
-      expect(hasUncaughtExceptionStack(result.stderr)).toBe(false)
-    } finally {
-      cleanupSandbox(sandbox)
-    }
-  })
-
-  it('a fail-open hook whose own wiring breaks leaves one trace instead of looking healthy-quiet', () => {
-    for (const hookPath of hookPaths.filter(sourceUsesFailOpenTrace)) {
-      const sandbox = makeSandbox(`fail-open-${basename(hookPath, '.mjs')}`)
-      sandbox.env.WT_FAIL_OPEN_TRACE_SELF_TEST = basename(hookPath)
-
-      try {
-        const result = runHook(hookPath, payloadFor(hookPath, sandbox), sandbox)
-
-        expect(result.error, `${basename(hookPath)} should still spawn under forced fail-open self-test`).toBeUndefined()
-        expect(result.status, `${basename(hookPath)} exited via signal under forced fail-open self-test`).not.toBeNull()
-        expect(result.status, `${basename(hookPath)} should fail open under forced fail-open self-test`).toBe(0)
-        expect(result.stderr, `${basename(hookPath)} should trace its forced fail-open path`).toContain(
-          `${basename(hookPath)}: FAILED OPEN - forced fail-open self-test for ${basename(hookPath)}`,
-        )
-        expect(hasUncaughtExceptionStack(result.stderr)).toBe(false)
-      } finally {
-        cleanupSandbox(sandbox)
-      }
-    }
-  })
+  it('a fail-open hook whose own wiring breaks leaves one trace instead of looking healthy-quiet', () => assertFailOpenTrace(hookPaths))
 })

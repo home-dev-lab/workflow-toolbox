@@ -214,5 +214,14 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
   },
+  {
+    files: ['plugin/bin/lib/worktree-sweep/**/*.mjs', '../plugin/bin/lib/worktree-sweep/**/*.mjs',
+      'plugin/bin/lib/host/sweep-*.mjs', '../plugin/bin/lib/host/sweep-*.mjs',
+      'plugin/bin/wt-worktree-sweep*.mjs', '../plugin/bin/wt-worktree-sweep*.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+    },
+  },
   { ...gitIgnores },
 )

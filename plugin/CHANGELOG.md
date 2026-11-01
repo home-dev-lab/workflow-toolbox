@@ -5,6 +5,18 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Read-only worktree sweep with ordered KEEP reasons, conservative liveness verdicts,
+  an explicit JSON output, and throttled report-only session/prompt hooks. Reports
+  never archive, move, purge or delete worktrees; apply remains unavailable.
+
+### Fixed
+
+- Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
+  inspect directories named `index.lock`, retain verified holders despite unrelated device
+  mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
+  Direct background-worker apply refusal is now regression-tested on a populated project.
 - Adopt now installs new at-act rules in on-demand directories with their trigger head and stamp, and repairs existing headless managed copies with a head-only write that preserves their bodies.
 - The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
 - Added regression tests for the secret guard's streaming mask; no behaviour change.
