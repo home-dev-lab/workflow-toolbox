@@ -61,7 +61,7 @@ import { homedir } from 'node:os'
 import { readQuotaCache, writeQuotaCacheAtomic, quotaCachePathFor } from './lib/quota-cache.mjs'
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
-import { hasCompleteWindows, REQUIRED_WINDOW_KEYS, WATCHED_WINDOW_KEYS } from './lib/quota-window-completeness.mjs'
+import { hasCompleteWindows, incompleteWindowKeys, isUnexposedWindow, REQUIRED_WINDOW_KEYS, WATCHED_WINDOW_KEYS } from './lib/quota-window-completeness.mjs'
 import { classifyQuotaDrop } from './lib/quota-drop.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { effectiveModel, fetchProxyUsage, normalizeProxyUsage, resolveRoute } from './lib/quota-route.mjs'
@@ -71,7 +71,7 @@ const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
 const DEFAULT_TIMEOUT_SECONDS = 60
 
-const HELP = `wt-quota-watch — poll the account's five-hour and seven-day usage windows and emit
+const HELP = `wt-quota-watch — poll the account's seven-day and optional five-hour usage windows and emit
 only on threshold crossing (80/90/95 default, ascending) and on RESET. Meant to be armed as a
 persistent Monitor. Model-token cost: zero, it is a script.
 
@@ -329,6 +329,15 @@ function clearWindowState(state, windowKey) {
   state.lastPct.delete(windowKey)
   state.lastResetsAt.delete(windowKey)
   state.fired.delete(windowKey)
+}
+
+// Observe absence before any health, baseline, account-change or reset branch can end a poll.
+// Invalid measurements are not absence; the raw completeness policy keeps them degraded.
+function observeWindows(state, source) {
+  for (const { key } of WINDOWS) {
+    if (isUnexposedWindow(source?.[key])) clearWindowState(state, key)
+  }
+  return extractWindows(source)
 }
 
 function formatDurationMs(ms) {
@@ -686,10 +695,9 @@ while (true) {
     // probe for EVERY reading was rejected for the same reason.
     const cachedReading = await readAccountCache(state)
     if (cachedReading && cachedReading.fresh) {
-      const cachedWindows = extractWindows(cachedReading.data)
       // FINDING 2 fix: completeness, not mere non-emptiness — see hasCompleteWindows.
-      if (hasCompleteWindows(cachedWindows)) {
-        windows = cachedWindows
+      if (hasCompleteWindows(cachedReading.data, REQUIRED_WINDOW_KEYS)) {
+        windows = observeWindows(state, cachedReading.data)
         sourceData = cachedReading.data
         viaCache = true
       }
@@ -769,7 +777,7 @@ while (true) {
         continue
       }
 
-      const liveWindows = extractWindows(parsed)
+      const liveWindows = observeWindows(state, parsed)
 
       // ⚠ THIS CHECK MUST PRECEDE the completeness gate below, and the ordering is the whole
       // point. An account with NO subscription quota (usage-billed / pay-per-token) has no
@@ -796,11 +804,11 @@ while (true) {
 
       // Optional windows cannot compensate for missing required usage. Keep diagnostics
       // aligned with completeness so an absent optional window is never reported as invalid.
-      if (!hasCompleteWindows(liveWindows)) {
+      if (!hasCompleteWindows(parsed, REQUIRED_WINDOW_KEYS)) {
         state.consecutiveFailures += 1
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
-          const missing = REQUIRED_WINDOW_KEYS.filter((key) => !(key in liveWindows))
+          const missing = incompleteWindowKeys(parsed, REQUIRED_WINDOW_KEYS)
           flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missing.join(',')}) (reported once)`)
         }
         maybeWriteDegradedReminder(state)
@@ -908,12 +916,7 @@ while (true) {
 
     for (const { key, label } of WINDOWS) {
       const windowData = windows[key]
-      if (!windowData) {
-        // An optional window can disappear when the account no longer exposes it.
-        // Clear its event state silently; never fabricate a zero or print a status for it.
-        clearWindowState(state, key)
-        continue
-      }
+      if (!windowData) continue
 
       let firedForWindow = state.fired.get(key)
       if (!firedForWindow) {
