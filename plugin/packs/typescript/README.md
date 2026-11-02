@@ -70,14 +70,42 @@ The language servers are not vendored. Install a backend separately with:
 npm i -g typescript-language-server typescript
 ```
 
-### CPU budget
+### Priority and idle lifetime
+
+The executable lowers its own priority before creating any backend: nice 19 on POSIX, mapped by
+Node's `PRIORITY_LOW` to the idle priority class on Windows. Ordinary child creation inherits this
+priority, including the native backend and Node's tsserver children. Failure to set or read back
+the priority is reported on stderr as **unknown**. Low priority is not a CPU-percentage cap: an
+otherwise idle machine may still run indexing at full speed. Linux inheritance is tested with real
+processes; macOS and Windows still need real-host measurements.
+
+The first backend starts for the `initialize` request, which needs the selected backend's actual
+capabilities. The wrapper cannot distinguish an automatic host handshake from a navigation tool
+call on that wire. It does not invent a capability response to defer initialization further.
+
+After 60 seconds without a request in flight, the wrapper sends `shutdown`, then `exit`, leaving
+the client's connection open. Client or server requests prevent retirement until answered;
+diagnostics and file notifications do not extend the deadline. `WT_TSLS_IDLE_MS` can set a whole
+number of milliseconds from 1,000 to 3,600,000; invalid values retain 60,000. A five-second shutdown
+grace is followed by TERM to the owned backend child and, one second later, KILL if it has not
+closed. This timeout path does not signal a host-wide process group; descendant cleanup for an
+uncooperative backend remains unverified.
+
+While asleep, file notifications update saved document text without starting a server. Consequently
+background diagnostics pause too. The next request starts the same selected backend, reinitializes
+it, and replays configuration and current open documents before that request. Incremental edits use
+UTF-16 positions; closed documents are omitted. Requests and notifications arriving during restart
+keep their order. Accepted dynamic registrations are released when retiring their backend. Internal
+initialize/shutdown replies stay off the client's wire. An asleep `shutdown` is answered locally.
+
+### CPU budget (observational)
 
 On POSIX hosts, the Node backend runs in its own process group. Its launcher samples every direct
 `tsserver.js` / `_tsserver.js` child every five seconds, independently of the server's event loop.
 100% means one CPU core, regardless of the host's core count. More than 100% for 120 consecutive
-sampled seconds stops the backend group with `SIGKILL`, covering the transport and its servers
-together. Allow up to two sampling intervals around that window, plus OS scheduling latency.
-Initial indexing and long requests share this budget; there is no additional startup grace.
+sampled seconds produces one warning, for an individual server or their combined family. Sampling
+continues; this CPU watchdog never sends a signal. Idle retirement is a separate protocol lifecycle,
+not a CPU-budget stop. Initial indexing and long requests share the observational budget.
 
 Linux reads cumulative user/system CPU ticks from `/proc`, using `/usr/bin/getconf CLK_TCK` for
 their unit. macOS reads cumulative CPU time and process birth/group identity with `/bin/ps` in
@@ -85,10 +113,9 @@ the C locale. Windows and other platforms report **unavailable**; the CPU budget
 there. Unreadable or malformed OS measurements also report unavailable, never zero CPU, and
 break the evidence of consecutive over-budget time.
 
-Before stopping, the launcher rechecks the backend's birth identity, the offending server and
-the dedicated process group. Diagnostics go to stderr; stdout remains LSP protocol bytes.
-Reopen the client's LSP connection after a budget stop. The launcher does not replay an existing
-connection into a replacement server.
+The launcher pins the backend's birth identity before sampling. Diagnostics go to stderr; stdout
+remains LSP protocol bytes. The initialize-response observer detaches after the handshake rather
+than continuing to parse backend output for a response that has already arrived.
 
 ### Navigation
 
