@@ -44,3 +44,12 @@ test('invalid containers and empty readings remain incomplete', () => {
     assert.equal(hasCompleteWindows(windows), false)
   }
 })
+
+test('every supplied malformed window is incomplete, including optional measurements', () => {
+  for (const key of WATCHED_WINDOW_KEYS) {
+    for (const value of ['invalid', [], {}, { pct: 'unavailable' }, { pct: NaN }, { pct: Infinity }, { pct: -Infinity }, { pct: false }]) {
+      assert.equal(hasCompleteWindows({ five_hour: { pct: 10 }, seven_day: { pct: 38 }, [key]: value }), false,
+        `a supplied malformed ${key} must not count as complete`)
+    }
+  }
+})
