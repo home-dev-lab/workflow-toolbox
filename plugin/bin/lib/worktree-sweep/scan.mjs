@@ -6,7 +6,7 @@ import { scanIdleWorktree } from '../host/lane-worktree-scan.mjs'
 import { pathContains } from '../host/sweep-evidence.mjs'
 import { hostNamespaceEvidence, recordedProcessPresence, scanSweepProcesses } from '../host/sweep-processes.mjs'
 import { archiveLimit, baseProven, gitIndexLock, gitVerdict, reachableObjects } from './git.mjs'
-import { entryBoundary, inventoryTree, outsideSweep, sourceBoundary } from './paths.mjs'
+import { entryBoundary, inventoryTree, isIndexLock, outsideSweep, sourceBoundary } from './paths.mjs'
 
 const UNKNOWN_PROCESS = 'unknown-process'
 const ENTRY_INVENTORY_BUDGET_MS = 120_000
@@ -35,7 +35,7 @@ function quietReason(file, inventory, options) {
     return stat
   }
   const idle = scanIdleWorktree(file, { maxEntries: 200000, readStat, readTargetStat: readStat,
-    readDirectory: (dir, args) => readdirSync(dir, args).filter(entry => !(entry.isFile() && path.join(dir, entry.name) === options.indexLock)) })
+    readDirectory: (dir, args) => readdirSync(dir, args).filter(entry => !isIndexLock(path.join(dir, entry.name), entry, options.indexLock)) })
   if (idle.status !== 'known' || inventory.reason) return UNKNOWN_PROCESS
   if (BigInt(options.now) * 1_000_000n - latestNs < 72n * 3600_000_000_000n) return 'recent'
   return null

@@ -44,7 +44,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Worktree sweep reports now name unavailable mount-boundary discovery on macOS and
   Windows instead of treating an empty mount list as verified. Cross-platform sweep
   fixtures use an actual isolated Git config file, and hook crash-safety checks wait
-  for detached report workers to exit before removing their sandboxes.
+  for detached report workers to exit before removing their sandboxes. Windows path
+  spelling is normalized when identifying Git index locks, merging registrations,
+  and counting outside-sweep entries. Explicit report outputs reject occupied paths,
+  including dangling symlinks, before opening them. Prunable-state fixtures also
+  cover alternate Windows path spellings without relying on exact-string rewrites.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
