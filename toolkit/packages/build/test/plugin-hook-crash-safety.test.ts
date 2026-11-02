@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -556,9 +556,41 @@ function syntheticPayloadFor(hookPath: string, sandbox: Sandbox): unknown {
   }
 }
 
+// Production sweep hooks intentionally unref their worker. This test-only supervisor
+// observes its real close event before allowing the Windows sandbox to be removed.
+// A worker that never exits times out the hook run; no retry can hide that leak.
+const SWEEP_HOOK_RUNNER = `
+  import childProcess from 'node:child_process'
+  import { syncBuiltinESMExports } from 'node:module'
+  import { pathToFileURL } from 'node:url'
+  const spawn = childProcess.spawn
+  const completions = []
+  childProcess.spawn = (...args) => {
+    const child = spawn(...args)
+    const unref = child.unref.bind(child)
+    child.unref = () => { unref(); child.ref() }
+    completions.push(new Promise(resolve => {
+      child.once('error', error => resolve({ error }))
+      child.once('close', (code, signal) => resolve({ code, signal }))
+    }))
+    return child
+  }
+  syncBuiltinESMExports()
+  await import(pathToFileURL(process.argv[1]).href)
+  if (process.env.WT_SWEEP_WORKER_RELEASE) {
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(process.env.WT_SWEEP_WORKER_RELEASE, 'released')
+  }
+  for (const result of await Promise.all(completions)) {
+    if (result.error || result.code !== 0) throw new Error('sweep worker failed: ' + JSON.stringify(result))
+  }
+`
+
 function runHook(hookPath: string, payload: unknown, sandbox: Sandbox): HookRun {
   const input = payload === null ? undefined : `${JSON.stringify(payload)}\n`
-  const res = spawnSync(process.execPath, [hookPath], {
+  const args = ['wt-worktree-sweep-hook.mjs', 'wt-worktree-sweep-tick-hook.mjs'].includes(basename(hookPath))
+    ? ['--input-type=module', '-e', SWEEP_HOOK_RUNNER, hookPath] : [hookPath]
+  const res = spawnSync(process.execPath, args, {
     cwd: sandbox.projectDir,
     env: basename(hookPath) === 'wt-rule-convention-guard-hook.mjs'
       ? sealRuleNarrative(sandbox.root, sandbox.env) : sandbox.env,
@@ -645,6 +677,32 @@ function assertFailOpenTrace(hookPaths: string[]): void {
   }
 }
 
+async function assertSweepWorkerExited(file: string): Promise<void> {
+  const sandbox = makeSandbox('sweep-worker-exit')
+  const marker = join(sandbox.root, 'worker-exited')
+  const release = join(sandbox.root, 'worker-release')
+  const preload = `if (process.argv[1]?.endsWith('worker.mjs')) {
+    const { existsSync, writeFileSync } = await import('node:fs')
+    while (!existsSync(process.env.WT_SWEEP_WORKER_RELEASE)) await new Promise(resolve => setTimeout(resolve, 20))
+    process.on('exit', () => writeFileSync(process.env.WT_SWEEP_WORKER_EXIT, 'exited'))
+  }`
+  sandbox.env.WT_SWEEP_WORKER_EXIT = marker
+  sandbox.env.WT_SWEEP_WORKER_RELEASE = release
+  sandbox.env.NODE_OPTIONS = `${sandbox.env.NODE_OPTIONS ?? ''} --import=data:text/javascript;base64,${Buffer.from(preload).toString('base64')}`
+  try {
+    const hookPath = join(REPO_ROOT, 'plugin/bin', file)
+    const result = runHook(hookPath, syntheticPayloadFor(hookPath, sandbox), sandbox)
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+    expect(existsSync(marker), 'detached sweep worker must exit before sandbox cleanup').toBe(true)
+  } finally {
+    // A red run also lets the observed worker finish, rather than deleting under it.
+    writeFileSync(release, 'released')
+    await vi.waitUntil(() => existsSync(marker), { timeout: 15_000 })
+    cleanupSandbox(sandbox)
+  }
+}
+
 describe('plugin hook crash safety', () => {
   const hookPaths = discoverHookPaths()
 
@@ -668,6 +726,8 @@ describe('plugin hook crash safety', () => {
   })
 
   it('every discovered hook loads and runs without an uncaught exception stack trace on stderr', () => assertHooksLoad(hookPaths), 60_000)
+
+  it.each(['wt-worktree-sweep-hook.mjs', 'wt-worktree-sweep-tick-hook.mjs'])('%s cleanup observes the detached worker exit', assertSweepWorkerExited)
 
   it('healthy decline stays green: a hook that decides the event is irrelevant remains silent and non-crashing', () => {
     const hookPath = join(REPO_ROOT, 'plugin/bin/wt-spawn-shape-guard-hook.mjs')
