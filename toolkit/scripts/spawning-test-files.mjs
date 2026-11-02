@@ -96,6 +96,7 @@ export const spawningTestFiles = [
   'packages/build/test/lane-exit-notices.test.ts',
   'packages/build/test/lane-gate-section.test.ts',
   'packages/build/test/lane-host-state.test.ts',
+  'packages/build/test/lane-launch-admission.test.ts',
   'packages/build/test/lane-postdiff-check-cli.test.ts',
   'packages/build/test/lane-probe.test.ts',
   'packages/build/test/lane-queue-deadline.test.ts',
