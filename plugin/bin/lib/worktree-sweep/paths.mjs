@@ -40,9 +40,11 @@ function parseRegistry(stdout, platform) {
   return records
 }
 
-function mergeRegistration(records, record, platform) {
+function mergeRegistration(records, record, platform, names) {
   const paths = registryPaths(platform)
-  const name = paths.basename(paths.resolve(record.path))
+  const basename = paths.basename(paths.resolve(record.path))
+  const canonical = value => paths === path.win32 ? value.toLowerCase() : value
+  const name = [...names, ...records.keys()].find(candidate => canonical(candidate) === canonical(basename)) ?? basename
   const previous = records.get(name)
   records.set(name, { ...record, locked: record.locked || previous?.locked, prunable: record.prunable || previous?.prunable })
 }
@@ -61,7 +63,7 @@ function worktreeRegistry(project, boundary, options) {
         if (!directRegistryChild(boundary.source, record.path, options.platform)) {
           outside.add(record.path); continue
         }
-        mergeRegistration(records, record, options.platform)
+        mergeRegistration(records, record, options.platform, boundary.names)
       }
     } catch { unknown = true }
   }
@@ -110,6 +112,13 @@ function scanExceeded(visited, options) {
   return visited > options.maxNodes || options.clock() > options.deadline
 }
 
+export function isIndexLock(file, node, indexLock) {
+  if (!node.isFile() || !indexLock) return false
+  // Git and native directory reads can disagree on Windows drive-letter case.
+  const canonical = value => path === path.win32 ? path.resolve(value).toLowerCase() : path.resolve(value)
+  return canonical(file) === canonical(indexLock)
+}
+
 export function inventoryTree(root, supplied) {
   const options = { clock: Date.now, maxNodes: 200000, ...supplied }
   const { device, mounts } = options
@@ -124,7 +133,7 @@ export function inventoryTree(root, supplied) {
         const file = path.join(dir, name)
         const stat = lstatSync(file, { bigint: true })
         if (stat.dev !== device || mounts.includes(file)) throw new Error('interior-mount')
-        if (file !== options.indexLock || !stat.isFile()) recordNode(file, stat, inventory)
+        if (!isIndexLock(file, stat, options.indexLock)) recordNode(file, stat, inventory)
       }
     }
     return inventory
@@ -133,6 +142,7 @@ export function inventoryTree(root, supplied) {
 
 export function outsideSweep(project, source, options) {
   const paths = new Set(options.registry?.outside)
+  const platform = registryPaths(options.platform) === path.win32 ? 'win32' : options.platform
   const unreadable = []
   for (const suffix of ['.claude/scripts/.worktrees', 'worktrees', '.claude/reports', '.claude/archives']) {
     const dir = path.join(project, suffix)
@@ -144,7 +154,7 @@ export function outsideSweep(project, source, options) {
   if (worktrees.status === 0) {
     for (const record of worktrees.stdout.split('\0').filter(value => value.startsWith('worktree '))) {
       const file = record.slice(9)
-      if (!pathContains(source, file, options.platform)) paths.add(file)
+      if (!pathContains(source, file, platform)) paths.add(file)
     }
   }
   return { count: paths.size, paths: [...paths].sort(), unreadable }

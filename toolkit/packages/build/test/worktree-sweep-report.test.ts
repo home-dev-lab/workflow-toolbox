@@ -174,13 +174,17 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
        ? { status: 1, stdout: '' } : spawnSync(cmd, args, options)
      expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'worktree-registry-unavailable' })
    })
-   it('a prunable registration is KEEP even if a directory still occupies its path', () => {
-     const f = setup(); const dir = repository(f)
-     const registered = git(dir, f.env, 'rev-parse', '--show-toplevel').trim()
-     f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
-       const result = spawnSync(cmd, args, options)
-       if (args.includes('worktree')) result.stdout = result.stdout.replace(`worktree ${registered}\0`, `worktree ${registered}\0prunable stale registration\0`)
-       return result
+    it.each(['native', 'win32'])('a prunable registration is KEEP even if a directory still occupies its path (%s)', platform => {
+      const f = setup(); const dir = repository(f)
+      const registered = git(dir, f.env, 'rev-parse', '--show-toplevel').trim()
+      const registryPath = platform === 'win32' ? registered.replaceAll('/', '\\') : registered
+      if (platform === 'win32') { f.options.platform = platform; f.options.mounts = [] }
+      f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
+        const result = spawnSync(cmd, args, options)
+        // Fabricate the single standalone registration directly: separate Git
+        // commands need not print the same drive-letter case or separators.
+        if (args.includes('worktree')) result.stdout = `worktree ${registryPath}\0prunable stale registration\0\0`
+        return result
      }
      expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'registered-prunable' })
    })
