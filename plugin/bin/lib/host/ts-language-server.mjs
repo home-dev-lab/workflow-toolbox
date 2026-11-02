@@ -349,7 +349,12 @@ function connectTsStreams(child, result, replay, streams, state) {
   const { input, output, stderr } = streams
   state.started = true
   child.stdin.on('error', (error) => { if (error.code !== 'EPIPE') stderr.write(`wt-tsls: ${error.message}\n`) })
-  child.stdout.on('data', observeTsAnswer(result, state))
+  const observe = observeTsAnswer(result, state)
+  const onAnswer = (chunk) => {
+    observe(chunk)
+    if (state.answered) child.stdout.off('data', onAnswer)
+  }
+  child.stdout.on('data', onAnswer)
   child.stdout.pipe(output, { end: false })
   child.stderr.pipe(stderr, { end: false })
   const handoff = () => {
