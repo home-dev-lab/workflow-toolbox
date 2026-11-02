@@ -14,6 +14,13 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.options).entries[0] }
 
   it('ships a report-only scanner', () => { expect(sweep, 'report-only scanner must ship').not.toBeNull() })
+  it('fixture Git config is a readable regular file, isolated from host configuration', () => {
+    const f = setup()
+    expect(lstatSync(f.env.GIT_CONFIG_GLOBAL).isFile(), 'Git global config must be a regular file').toBe(true)
+    expect(readFileSync(f.env.GIT_CONFIG_GLOBAL, 'utf8')).toBe('')
+    expect(f.env.GIT_CONFIG_NOSYSTEM).toBe('1')
+    expect(git(f.project, f.env, 'config', '--global', '--list')).toBe('')
+  })
   it('G1 tracked edits are KEEP uncommitted with path, branch, bytes, age and count', () => {
     const f = setup(); const dir = repository(f)
     writeFileSync(join(dir, 'tracked'), 'local change\n')
@@ -194,7 +201,7 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
      git(main, f.env, 'worktree', 'add', '-qb', 'locked', locked); git(main, f.env, 'worktree', 'lock', locked)
      git(main, f.env, 'worktree', 'add', '-qb', 'missing', missing); rmSync(missing, { recursive: true })
      const prefix = platform === 'win32' ? f.source.replaceAll('/', '\\') : f.source.toUpperCase()
-     f.options.platform = platform; f.options.pid = 42; f.options.cwd = f.project
+      f.options.platform = platform; f.options.mounts = []; f.options.pid = 42; f.options.cwd = f.project
      f.options.lsofRun = () => ({ status: 0, stdout: `p42\nfcwd\nn${f.project}\n` })
      f.options.gitRun = (cmd: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => {
        const result = spawnSync(cmd, args, options)
@@ -223,14 +230,25 @@ function entry(f: ReturnType<typeof fixture>) { return sweep!.scanProject(f.opti
     rmSync(f.source, { recursive: true }); symlinkSync(f.root, f.source)
     expect(sweep!.scanProject(f.options).reason).toBe('source-not-canonical')
   })
-  it('D3 the real CLI uses injected mountinfo before planning any entry', () => {
+   it('D3 the real CLI reports its platform boundary before planning any entry', () => {
     const f = setup(); repository(f); const before = fingerprint(f.project)
     writeFileSync(join(f.procRoot, 'self', 'mountinfo'), '')
     const out = join(f.root, 'boundary.json')
     execFileSync(process.execPath, [cli, 'run', '--mode', 'report', '--out', out], { env: f.env })
-    expect(JSON.parse(readFileSync(out, 'utf8')).reason).toContain('mountinfo root witness unavailable')
-    expect(fingerprint(f.project)).toEqual(before)
-  })
+     const report = JSON.parse(readFileSync(out, 'utf8'))
+     const expected = process.platform === 'linux' ? 'mountinfo root witness unavailable' : `mount boundary unavailable on ${process.platform}`
+     expect(report.reason).toContain(expected)
+     expect(report.entries).toEqual([])
+     expect(fingerprint(f.project)).toEqual(before)
+   })
+   it.each(['darwin', 'win32'])('D3 %s refuses an unavailable mount boundary before planning entries', platform => {
+     const f = setup(); repository(f); const before = fingerprint(f.project)
+     writeFileSync(join(f.procRoot, 'self', 'mountinfo'), '')
+     const report = sweep!.scanProject({ ...f.options, platform })
+     expect(report.reason, 'unsupported mount discovery must not claim a known empty boundary').toBe(`mount boundary unavailable on ${platform}`)
+     expect(report.entries).toEqual([])
+     expect(fingerprint(f.project)).toEqual(before)
+   })
   it('G16 namespace uncertainty never produces eligibility', () => {
     const f = setup(); repository(f); f.options.hostNamespace = { status: 'unknown' }
     expect(entry(f)).toMatchObject({ verdict: 'KEEP', reason: 'liveness unknown: not in the host PID namespace' })

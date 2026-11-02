@@ -103,15 +103,15 @@ function setup() {
   })
   it('G22 Windows has no holder source', () => {
     const f = setup()
-    expect(sweep!.scanProject({ ...f.options, platform: 'win32' }).entries[0]).toMatchObject({ verdict: 'KEEP', reason: 'holders unknown on Windows' })
+    expect(sweep!.scanProject({ ...f.options, mounts: [], platform: 'win32' }).entries[0]).toMatchObject({ verdict: 'KEEP', reason: 'holders unknown on Windows' })
   })
   it('G22 Darwin requires successful lsof and an own-cwd witness', () => {
     const f = setup()
     for (const result of [{ status: 1, stdout: '' }, { status: 0, stdout: 'p42\nfcwd\nn/elsewhere\n' }]) {
-      expect(sweep!.scanProject({ ...f.options, platform: 'darwin', lsofRun: () => result }).entries[0]).toMatchObject({ verdict: 'KEEP', reason: 'lsof missing or own-cwd witness unavailable' })
+      expect(sweep!.scanProject({ ...f.options, mounts: [], platform: 'darwin', lsofRun: () => result }).entries[0]).toMatchObject({ verdict: 'KEEP', reason: 'lsof missing or own-cwd witness unavailable' })
     }
     expect(host!.scanSweepProcesses({ ...f.options, platform: 'darwin', pid: 42, cwd: f.project,
       lsofRun: () => ({ status: 0, stdout: `p42\nfcwd\nn${f.project}\n` }) }).status).toBe('known')
-    expect(sweep!.scanProject({ ...f.options, platform: 'darwin', pid: 42, cwd: f.project,
+    expect(sweep!.scanProject({ ...f.options, mounts: [], platform: 'darwin', pid: 42, cwd: f.project,
       lsofRun: () => ({ status: 0, stdout: `p42\nfcwd\nn${f.project}\n` }) }).entries[0].verdict).toBe('ELIGIBLE (report only)')
   })

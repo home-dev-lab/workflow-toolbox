@@ -16,8 +16,8 @@ export function pathContains(root, target, platform = process.platform) {
 }
 
 export function sweepMounts({ procfs = createProcfs(), platform = process.platform } = {}) {
-  // The planner cross-checks device boundaries; junctions are rejected by lstat.
-  if (platform !== 'linux') return { status: 'known', mounts: [] }
+  // Device checks alone cannot prove the absence of same-device mount boundaries.
+  if (platform !== 'linux') return { status: 'unknown', reason: `mount boundary unavailable on ${platform}` }
   try {
     const mounts = procfs.readMountInfo('utf8').trim().split('\n').filter(Boolean).map(line => {
       const fields = line.split(' ')
