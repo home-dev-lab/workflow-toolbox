@@ -13,6 +13,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The quota watcher no longer goes blind on a plan with no five-hour window: a probe stating the five-hour window absent is a usable reading, the seven-day window is watched (crossings, resets, shared cache), the arming line says the five-hour window is not part of the plan, and the watcher follows that window leaving or rejoining the plan without a restart. Only `five_hour: null` states that absence: the bundled probe keeps a window the usage endpoint omitted omitted, and an omitted key or any empty window object (live or cached) still degrades as a missing window, without clearing that window's threshold or reset history.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
