@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'node:test'
-import { WATCHED_WINDOW_KEYS } from '../../../../plugin/bin/lib/quota-window-completeness.mjs'
+import { hasCompleteWindows, WATCHED_WINDOW_KEYS } from '../../../../plugin/bin/lib/quota-window-completeness.mjs'
 
 const WATCH = process.env.WT_QUOTA_WATCH_TEST_SCRIPT || fileURLToPath(new URL('../../../../plugin/bin/wt-quota-watch.mjs', import.meta.url))
 const ACCOUNT_KEY = 'token-fixture123fixture123'
@@ -106,9 +106,34 @@ test('a malformed optional cache window falls through to live measurement', () =
   assert.match(result.stdout, /QUOTA WATCH DEGRADED/)
 })
 
+// A reading the completeness gate rejects is not an observation: required-window history
+// survives it, so recovery neither repeats a crossing nor loses a reset.
+const rejectedSevenDay = [['null', { seven_day: null }], ['missing key', {}],
+  ['null percentage', { seven_day: { pct: null, pctRaw: null, resets_at: null } }]]
+for (const [variant, rejected] of rejectedSevenDay) {
+  test(`a rejected live reading (seven_day ${variant}) does not repeat a threshold crossing`, () => {
+    const result = runPolls([{ seven_day: { pct: 79 } }, { seven_day: { pct: 81 } }, rejected, { seven_day: { pct: 81 } }])
+    const crossings = result.stdout.split('\n').filter(line => line.includes('crossed the 80% threshold'))
+    assert.equal(crossings.length, 1, `exactly one 80% crossing expected:\n${result.stdout}`)
+    assert.match(crossings[0], /^QUOTA 7d: 81% — crossed the 80% threshold/)
+    assert.match(result.stdout, /QUOTA WATCH DEGRADED: probe output INVALID \(missing window\(s\): seven_day\)/)
+  })
+  test(`a rejected live reading (seven_day ${variant}) keeps the next seven-day reset`, () => {
+    const result = runPolls([{ seven_day: { pct: 79 } }, { seven_day: { pct: 81 } }, rejected, { seven_day: { pct: 4 } }])
+    assert.match(result.stdout, /^QUOTA RESET 7d: 4% \(was 81%\) — new window, capacity available$/m,
+      `the reset after a rejected reading must be reported:\n${result.stdout}`)
+  })
+}
+
+function assertRejectedUnchanged(index, snapshots, context) {
+  assert.ok(index > 0, `${context}: the family never rejects its baseline reading`)
+  assert.deepEqual(snapshots[index], snapshots[index - 1], `${context}: rejected poll ${index} must not mutate event state`)
+}
+
 function assertAbsentState(readings, snapshots, context) {
   assert.equal(snapshots.length, readings.length, context)
   for (const [index, reading] of readings.entries()) {
+    if (!hasCompleteWindows(reading)) { assertRejectedUnchanged(index, snapshots, context); continue }
     for (const key of WATCHED_WINDOW_KEYS) {
       if (reading[key] != null && reading[key].pct !== null) continue
       for (const [map, keys] of Object.entries(snapshots[index])) {
