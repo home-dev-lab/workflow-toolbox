@@ -331,8 +331,9 @@ function clearWindowState(state, windowKey) {
   state.fired.delete(windowKey)
 }
 
-// Observe absence before any health, baseline, account-change or reset branch can end a poll.
-// Invalid measurements are not absence; the raw completeness policy keeps them degraded.
+// Observe an ACCEPTED reading's absent optional windows before any baseline, account-change
+// or reset branch can end the poll. Call only after hasCompleteWindows accepted the reading:
+// a rejected reading is not an observation and must leave every window's state untouched.
 function observeWindows(state, source) {
   for (const { key } of WINDOWS) {
     if (isUnexposedWindow(source?.[key])) clearWindowState(state, key)
@@ -777,8 +778,6 @@ while (true) {
         continue
       }
 
-      const liveWindows = observeWindows(state, parsed)
-
       // ⚠ THIS CHECK MUST PRECEDE the completeness gate below, and the ordering is the whole
       // point. An account with NO subscription quota (usage-billed / pay-per-token) has no
       // five-hour or seven-day window at all, so it looks EXACTLY like a malformed probe:
@@ -823,7 +822,9 @@ while (true) {
       // window. Best-effort — a cache write failure must never take the watcher down.
       await refillLoginCache(parsed)
 
-      windows = liveWindows
+      // Observed only once accepted, like the cache path: a rejected reading measured nothing,
+      // so it must not erase the history a later crossing or reset is judged against.
+      windows = observeWindows(state, parsed)
       sourceData = parsed
     }
 
