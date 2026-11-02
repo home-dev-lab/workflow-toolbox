@@ -13,6 +13,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Quota watch accepts fresh seven-day usage when the optional five-hour window is
+  absent or null, keeps seven-day threshold and reset notifications active, and still
+  requires a usable seven-day percentage before treating a reading as healthy.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
