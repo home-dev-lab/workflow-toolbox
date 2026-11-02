@@ -857,8 +857,11 @@ Its stdout is one compact JSON object:
 `{configDir, quota_model, five_hour, seven_day, weekly_scoped}`. Branch on
 `quota_model`, not on an absent percentage: `'subscription'` means the account has real quota
 windows; `'none'` means a usage-billed account with no five-hour/seven-day window at all.
-`five_hour` is `null` only when the endpoint states the plan has no five-hour window, and is
-omitted when the endpoint said nothing about it; the watcher treats only `null` as absence.
+The watcher watches each window on its own: every window carrying a numeric `pct` is watched,
+and the arming line names them (`| watching 7d`). A window without one (omitted, `null`, or no
+numeric `pct`) is reported once per run as not reported by the probe and keeps its threshold and
+reset history; it is never read as absent from the plan, since an omitted window can also mean
+its reset passed. Only a reading with no numeric window at all is `DEGRADED`.
 
 ## Companion app — Workflow Observatory
 

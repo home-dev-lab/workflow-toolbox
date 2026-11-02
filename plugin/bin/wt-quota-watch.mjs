@@ -2,8 +2,8 @@
 // Quota watcher for the Monitor tool (persistent: true), shipped as a plugin monitor.
 //
 // WHAT IT WATCHES: the account's five-hour and seven-day usage windows, via a
-// PROBE script; a plan with no five-hour window is watched on the seven-day one.
-// A probe is BUNDLED (`wt-quota-probe.mjs`, same directory); a user probe at `<configDir>/scripts/quota-usage.mjs` takes precedence when it
+// PROBE script. Each window is watched on its own: one the probe does not report is said once,
+// in words, keeps its history, and never blinds the other. A probe is BUNDLED (`wt-quota-probe.mjs`, same directory); a user probe at `<configDir>/scripts/quota-usage.mjs` takes precedence when it
 // exists, and `--probe` overrides both.
 //
 // WHY BUNDLING IT IS THE RIGHT CALL, AND WHAT IT COSTS. An earlier version of
@@ -61,7 +61,7 @@ import { homedir } from 'node:os'
 import { readQuotaCache, writeQuotaCacheAtomic, quotaCachePathFor } from './lib/quota-cache.mjs'
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
-import { missingWindows, planWindowChanges, windowsAbsentFromPlan, windowsInWords } from './lib/quota-window-completeness.mjs'
+import { isUsableReading, missingWindows, windowsInWords } from './lib/quota-window-completeness.mjs'
 import { classifyQuotaDrop } from './lib/quota-drop.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { effectiveModel, fetchProxyUsage, normalizeProxyUsage, resolveRoute } from './lib/quota-route.mjs'
@@ -297,11 +297,10 @@ function extractWindows(source) {
   return windows
 }
 
-// FINDING 2 fix (cross-family review, 2026-07-31): missingWindows (imported above)
-// requires EVERY window this watcher tracks to be present, or stated absent from the plan by
-// the probe, before a reading — cached or freshly probed — counts as usable. A partial
-// reading (some non-empty subset) used to be accepted as success; see
-// lib/quota-window-completeness.mjs for the full rationale.
+// Each window is watched on its own (card 1899394115301279304, round 3): a reading is usable when it
+// carries at least one window with a numeric percentage (isUsableReading, imported above). A window it
+// does not carry is named in words once per run and keeps its history; it is never silently dropped
+// (FINDING 2, cross-family review, 2026-07-31). See lib/quota-window-completeness.mjs for the rationale.
 
 function readAccountFingerprint(configDir) {
   try {
@@ -397,26 +396,42 @@ function initialStateLine(windows, thresholds) {
   return `QUOTA STATUS: ${parts.join(' | ')}`
 }
 
-// A window the probe states is not part of the plan is watched as ABSENT, never as missing (see
-// lib/quota-window-completeness.mjs). The reader learns it in words, at arming and at each change.
+// A window the probe does not report is NOT absent: no source can say a plan lacks a window, and the
+// host documents omission as also meaning "its reset passed" (see lib/quota-window-completeness.mjs).
+// The reader learns in words which windows are watched, once per window and run.
 const isAre = (keys) => (keys.length > 1 ? 'are' : 'is')
-function planAbsenceNote(absent, keys = absent, how = 'not') {
-  if (keys.length === 0) return null
-  const watched = WINDOWS.filter(({ key }) => !absent.includes(key)).map(({ label }) => label)
-  return `${windowsInWords(keys)} ${isAre(keys)} ${how} part of this plan — watching ${watched.join(',')} only`
+
+/** The keys of the windows this reading carries, in WINDOWS order. */
+function reportedKeys(windows) {
+  return WINDOWS.filter(({ key }) => key in windows).map(({ key }) => key)
 }
 
-/** A window that left the plan stops being watched; one that came back is baselined, not "crossed". */
-function notePlanChanges(state, absent, windows, thresholds) {
-  const { left, returned } = planWindowChanges(state.absentFromPlan, absent)
-  state.absentFromPlan = absent
-  for (const key of left) clearWindowState(state, key)
-  if (left.length > 0) writeLine(`QUOTA WATCH: ${planAbsenceNote(absent, left, 'no longer')}`)
-  if (returned.length === 0) return
-  const back = Object.fromEntries(returned.map((key) => [key, windows[key]]))
+/** "5h,7d": the labels of the windows this reading carries. */
+function watchedLabels(windows) {
+  return WINDOWS.filter(({ key }) => key in windows).map(({ label }) => label).join(',')
+}
+
+/** A window the probe did not report is said ONCE per run; its crossing and reset history is kept. */
+function noteUnreportedWindows(state, windows) {
+  const fresh = missingWindows(windows).filter((key) => !state.unreportedSignaled.has(key))
+  if (fresh.length === 0) return
+  for (const key of fresh) state.unreportedSignaled.add(key)
+  writeLine(`QUOTA WATCH: ${windowsInWords(fresh)} ${isAre(fresh)} not reported by the probe — not watched until ${fresh.length > 1 ? 'they are' : 'it is'}; watching ${watchedLabels(windows)} (reported once)`)
+}
+
+/** A window with no history (never reported this run, or since an account change) is baselined, never "crossed". */
+function noteNewlyReportedWindows(state, windows, thresholds) {
+  const fresh = reportedKeys(windows).filter((key) => !state.lastPct.has(key))
+  if (fresh.length === 0) return
+  const back = Object.fromEntries(fresh.map((key) => [key, windows[key]]))
   setBaseline(state, back, thresholds)
   const status = initialStateLine(back, thresholds)?.replace(/^QUOTA STATUS: /, '')
-  writeLine(`QUOTA WATCH: ${windowsInWords(returned)} ${isAre(returned)} part of this plan again — now watching ${returned.length > 1 ? 'them' : 'it'}${status ? ` | ${status}` : ''}`)
+  writeLine(`QUOTA WATCH: ${windowsInWords(fresh)} ${isAre(fresh)} now reported by the probe — watching ${watchedLabels(windows)}${status ? ` | ${status}` : ''}`)
+}
+
+/** After an account change, a window this reading does not carry keeps no history from the old account. */
+function forgetUnreportedWindows(state, windows) {
+  for (const key of missingWindows(windows)) clearWindowState(state, key)
 }
 
 // TEST SEAM — never set outside the test suite; unset in every real deployment.
@@ -516,7 +531,8 @@ const state = {
   fingerprint: null,
   accountKey: null,
   hasReading: false,
-  absentFromPlan: [],
+  reported: [],
+  unreportedSignaled: new Set(),
   consecutiveFailures: 0,
   degradedElapsedMs: 0,
   nextDegradedReminderMs: DEGRADED_REMINDER_STEPS_MS[0],
@@ -686,7 +702,6 @@ while (true) {
     }
 
     let windows = {}
-    let absent = []
     let sourceData = null
     let viaCache = false
 
@@ -716,11 +731,10 @@ while (true) {
     const cachedReading = await readAccountCache(state)
     if (cachedReading && cachedReading.fresh) {
       const cachedWindows = extractWindows(cachedReading.data)
-      const cachedAbsent = windowsAbsentFromPlan(cachedReading.data)
-      // FINDING 2 fix: completeness, not mere non-emptiness — see missingWindows.
-      if (missingWindows(cachedWindows, cachedAbsent).length === 0) {
+      // FINDING 2 fix: a cached reading must carry every window the previous reading carried, so a
+      // partial cache written by another process never blinds a window the live probe still reports.
+      if (isUsableReading(cachedWindows, state.reported)) {
         windows = cachedWindows
-        absent = cachedAbsent
         sourceData = cachedReading.data
         viaCache = true
       }
@@ -825,18 +839,13 @@ while (true) {
         process.exit(0)
       }
 
-      // FINDING 2 fix, extended to this door too (not cited by the review, but the SAME
-      // defect shape: a probe returning only ONE window used to be accepted as success,
-      // silently dropping the other — see missingWindows above). A malformed/legacy
-      // probe script is a realistic way for this to happen. A window the probe STATES is not
-      // part of the plan (a plan with no five-hour limit) is not missing.
-      const liveAbsent = windowsAbsentFromPlan(parsed)
-      const missing = missingWindows(liveWindows, liveAbsent)
-      if (missing.length > 0) {
+      // A reading with NO numeric window is a failed probe: DEGRADED, with backoff. A reading with
+      // at least one is usable; the windows it lacks are named below, once, and keep their history.
+      if (!isUsableReading(liveWindows)) {
         state.consecutiveFailures += 1
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
-          flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missing.join(',')}) (reported once)`)
+          flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missingWindows(liveWindows).join(',')}) (reported once)`)
         }
         maybeWriteDegradedReminder(state)
         const backoffMs = computeBackoffMs(poll, state.consecutiveFailures)
@@ -851,7 +860,6 @@ while (true) {
       await refillLoginCache(parsed)
 
       windows = liveWindows
-      absent = liveAbsent
       sourceData = parsed
     }
 
@@ -874,37 +882,43 @@ while (true) {
 
     if (!state.hasReading) {
       const status = initialStateLine(windows, thresholds)?.replace(/^QUOTA STATUS: /, '')
-      const line = [planAbsenceNote(absent), status].filter(Boolean).join(' | ')
       setBaseline(state, windows, thresholds)
-      state.absentFromPlan = absent
+      state.reported = reportedKeys(windows)
       state.fingerprint = readAccountFingerprint(sourceData?.configDir)
       state.accountKey = probeAccountKey(sourceData)
       state.hasReading = true
       // ONE line, not two: the arming confirmation and the first reading are the same event from
       // the reader's side. `line` can legitimately be empty (nothing worth reporting yet), in
       // which case the arming line still goes out alone — the reader must always learn it armed.
+      // The arming line names the windows watched; a window not reported follows on its own line.
       if (armedPending) {
         armedPending = false
-        writeLine(line ? `${ARMED_LINE} | ${line}` : ARMED_LINE)
-      } else if (line) {
-        writeLine(`QUOTA STATUS: ${line}`)
+        writeLine([ARMED_LINE, `watching ${watchedLabels(windows)}`, status].filter(Boolean).join(' | '))
+      } else if (status) {
+        writeLine(`QUOTA STATUS: ${status}`)
       }
+      noteUnreportedWindows(state, windows)
       await sleep(poll * 1000)
       continue
     }
 
-    notePlanChanges(state, absent, windows, thresholds)
+    noteUnreportedWindows(state, windows)
 
     const currentFingerprint = readAccountFingerprint(sourceData?.configDir)
     const previousFingerprint = state.fingerprint
     if (accountChanged(state, sourceData, currentFingerprint)) {
       // Four hex chars kept: signals the change while limiting residual correlation.
       writeLine(`QUOTA ACCOUNT CHANGED: ${previousFingerprint?.slice(0, 4) ?? '?'} -> ${currentFingerprint?.slice(0, 4) ?? '?'}`)
+      forgetUnreportedWindows(state, windows)
       setBaseline(state, windows, thresholds)
+      state.reported = reportedKeys(windows)
       state.fingerprint = currentFingerprint
       await sleep(poll * 1000)
       continue
     }
+
+    noteNewlyReportedWindows(state, windows, thresholds)
+    state.reported = reportedKeys(windows)
 
     const drops = []
     for (const { key, label } of WINDOWS) {
@@ -949,11 +963,8 @@ while (true) {
     for (const { key, label } of WINDOWS) {
       const windowData = windows[key]
       if (!windowData) {
-        // Only a window the probe STATED absent (literal null) may lose its crossing and reset
-        // history. missingWindows() gates both the cache and live-probe paths above, so no other
-        // window should reach here; if one ever does, its history is kept — an unusable reading
-        // must never re-arm thresholds already crossed or forget a reset time. Never fabricated.
-        if (absent.includes(key)) clearWindowState(state, key)
+        // A window this reading does not carry keeps its crossing and reset history: an unusable
+        // reading must never re-arm thresholds already crossed or forget a reset time. Never fabricated.
         continue
       }
 

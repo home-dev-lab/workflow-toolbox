@@ -95,18 +95,12 @@ try {
   // Anything reading this file should branch on `quota_model`, never on the presence of a pct.
   const hasWindow = (w) => Number.isFinite(w?.utilization) || Boolean(w?.resets_at)
   const quotaModel = hasWindow(d.five_hour) || hasWindow(d.seven_day) ? 'subscription' : 'none'
-  // The five-hour window is the one a plan may lack, and the endpoint's own shape is projected
-  // FAITHFULLY so a consumer can tell "the plan has no such window" from "the reading lost it":
-  // an explicit `five_hour: null` stays `null` (stated absence), an omitted key stays omitted (the
-  // endpoint said nothing — the watcher reports it missing). Folding both into `{pct: null}` made a
-  // silently dropped window read as plan absence (cross-family review, 2026-11-02).
-  const fiveHour = !Object.hasOwn(d, 'five_hour') ? {} : { five_hour: d.five_hour === null ? null : fmtWindow(d.five_hour) }
   console.log(
     JSON.stringify({
       configDir,
       accountKey,
       quota_model: quotaModel,
-      ...fiveHour,
+      five_hour: fmtWindow(d.five_hour),
       seven_day: sevenDay,
       weekly_scoped: scoped,
     }),
