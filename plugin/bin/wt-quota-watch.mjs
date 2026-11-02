@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Quota watcher for the Monitor tool (persistent: true), shipped as a plugin monitor.
 //
-// WHAT IT WATCHES: the account's five-hour and seven-day usage windows, via a
+// WHAT IT WATCHES: the account's seven-day and available five-hour usage windows, via a
 // PROBE script. A probe is BUNDLED (`wt-quota-probe.mjs`, same directory); a
 // user probe at `<configDir>/scripts/quota-usage.mjs` takes precedence when it
 // exists, and `--probe` overrides both.
@@ -61,7 +61,7 @@ import { homedir } from 'node:os'
 import { readQuotaCache, writeQuotaCacheAtomic, quotaCachePathFor } from './lib/quota-cache.mjs'
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
-import { hasCompleteWindows } from './lib/quota-window-completeness.mjs'
+import { hasCompleteWindows, incompleteWindowKeys, isUnexposedWindow, REQUIRED_WINDOW_KEYS, WATCHED_WINDOW_KEYS } from './lib/quota-window-completeness.mjs'
 import { classifyQuotaDrop } from './lib/quota-drop.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { effectiveModel, fetchProxyUsage, normalizeProxyUsage, resolveRoute } from './lib/quota-route.mjs'
@@ -71,7 +71,7 @@ const DEFAULT_THRESHOLDS = '80,90,95'
 const DEFAULT_POLL_SECONDS = 300
 const DEFAULT_TIMEOUT_SECONDS = 60
 
-const HELP = `wt-quota-watch — poll the account's five-hour and seven-day usage windows and emit
+const HELP = `wt-quota-watch — poll the account's seven-day and optional five-hour usage windows and emit
 only on threshold crossing (80/90/95 default, ascending) and on RESET. Meant to be armed as a
 persistent Monitor. Model-token cost: zero, it is a script.
 
@@ -118,10 +118,8 @@ function accountChanged(state, data, currentFingerprint) {
   state.accountKey = key
   return changed
 }
-const WINDOWS = [
-  { key: 'five_hour', label: '5h' },
-  { key: 'seven_day', label: '7d' },
-]
+const WINDOW_LABELS = { five_hour: '5h', seven_day: '7d' }
+const WINDOWS = WATCHED_WINDOW_KEYS.map((key) => ({ key, label: WINDOW_LABELS[key] }))
 
 function writeLine(line) {
   process.stdout.write(`${line}\n`)
@@ -297,10 +295,8 @@ function extractWindows(source) {
   return windows
 }
 
-// FINDING 2 fix (cross-family review, 2026-07-31): hasCompleteWindows (imported above)
-// requires EVERY window this watcher tracks to be present before a reading — cached or
-// freshly probed — counts as usable. A partial reading (some non-empty subset) used to be
-// accepted as success; see lib/quota-window-completeness.mjs for the full rationale.
+// Cached and live readings share the required-window policy: seven-day usage establishes
+// health; absent five-hour data is ignored without fabricating a percentage or an event.
 
 function readAccountFingerprint(configDir) {
   try {
@@ -333,6 +329,16 @@ function clearWindowState(state, windowKey) {
   state.lastPct.delete(windowKey)
   state.lastResetsAt.delete(windowKey)
   state.fired.delete(windowKey)
+}
+
+// Observe an ACCEPTED reading's absent optional windows before any baseline, account-change
+// or reset branch can end the poll. Call only after hasCompleteWindows accepted the reading:
+// a rejected reading is not an observation and must leave every window's state untouched.
+function observeWindows(state, source) {
+  for (const { key } of WINDOWS) {
+    if (isUnexposedWindow(source?.[key])) clearWindowState(state, key)
+  }
+  return extractWindows(source)
 }
 
 function formatDurationMs(ms) {
@@ -690,10 +696,9 @@ while (true) {
     // probe for EVERY reading was rejected for the same reason.
     const cachedReading = await readAccountCache(state)
     if (cachedReading && cachedReading.fresh) {
-      const cachedWindows = extractWindows(cachedReading.data)
       // FINDING 2 fix: completeness, not mere non-emptiness — see hasCompleteWindows.
-      if (hasCompleteWindows(cachedWindows)) {
-        windows = cachedWindows
+      if (hasCompleteWindows(cachedReading.data, REQUIRED_WINDOW_KEYS)) {
+        windows = observeWindows(state, cachedReading.data)
         sourceData = cachedReading.data
         viaCache = true
       }
@@ -773,12 +778,10 @@ while (true) {
         continue
       }
 
-      const liveWindows = extractWindows(parsed)
-
       // ⚠ THIS CHECK MUST PRECEDE the completeness gate below, and the ordering is the whole
       // point. An account with NO subscription quota (usage-billed / pay-per-token) has no
       // five-hour or seven-day window at all, so it looks EXACTLY like a malformed probe:
-      // "missing window(s): five_hour,seven_day". Placed after the gate, this branch is
+      // "missing window(s): seven_day". Placed after the gate, this branch is
       // unreachable and the watcher instead reports a healthy account as a broken probe,
       // then polls forever — measured, before this line existed.
       //
@@ -791,23 +794,20 @@ while (true) {
       if (parsed?.quota_model === 'none') {
         writeLine(
           'QUOTA WATCH STOPPING: this account has no subscription quota (usage-billed), so there ' +
-            'is no five-hour or seven-day window to watch. Nothing is wrong — there is simply ' +
+            'is no subscription window to watch. Nothing is wrong — there is simply ' +
             'nothing to report, and a watcher that kept polling would look armed while watching ' +
             'nothing.',
         )
         process.exit(0)
       }
 
-      // FINDING 2 fix, extended to this door too (not cited by the review, but the SAME
-      // defect shape: a probe returning only ONE window used to be accepted as success,
-      // silently dropping the other — see hasCompleteWindows above). A malformed/legacy
-      // probe script is a realistic way for this to happen even though the shipped probes
-      // always return both windows together from one API response.
-      if (!hasCompleteWindows(liveWindows)) {
+      // Optional windows cannot compensate for missing required usage. Keep diagnostics
+      // aligned with completeness so an absent optional window is never reported as invalid.
+      if (!hasCompleteWindows(parsed, REQUIRED_WINDOW_KEYS)) {
         state.consecutiveFailures += 1
         if (!state.probeKoSignaled) {
           state.probeKoSignaled = true
-          const missing = WINDOWS.filter(({ key }) => !(key in liveWindows)).map(({ key }) => key)
+          const missing = incompleteWindowKeys(parsed, REQUIRED_WINDOW_KEYS)
           flushArmed(); writeLine(`QUOTA WATCH DEGRADED: probe output INVALID (missing window(s): ${missing.join(',')}) (reported once)`)
         }
         maybeWriteDegradedReminder(state)
@@ -822,7 +822,9 @@ while (true) {
       // window. Best-effort — a cache write failure must never take the watcher down.
       await refillLoginCache(parsed)
 
-      windows = liveWindows
+      // Observed only once accepted, like the cache path: a rejected reading measured nothing,
+      // so it must not erase the history a later crossing or reset is judged against.
+      windows = observeWindows(state, parsed)
       sourceData = parsed
     }
 
@@ -915,15 +917,7 @@ while (true) {
 
     for (const { key, label } of WINDOWS) {
       const windowData = windows[key]
-      if (!windowData) {
-        // Defensive only: with hasCompleteWindows() gating both the cache and live-probe
-        // paths above, `windows` always covers every WINDOWS key by the time we reach
-        // here — this branch should be unreachable in normal operation. Kept as a
-        // fail-safe (never a fabricated reading) rather than an assertion that would
-        // crash the watcher on a future change to the gating logic above.
-        clearWindowState(state, key)
-        continue
-      }
+      if (!windowData) continue
 
       let firedForWindow = state.fired.get(key)
       if (!firedForWindow) {
