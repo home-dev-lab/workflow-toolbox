@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import fs, { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import fs, { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -61,8 +61,7 @@ it('T2 serialises concurrent admissions at 15 until the first child is counted',
   const launch = async (lease: { waitUntilVisible: (readPid: () => number) => Promise<void> }) => {
     launches += 1
     await setImmediate()
-    visible = true
-    await lease.waitUntilVisible(() => 42)
+    await lease.waitUntilVisible(() => { visible = true; return 42 })
     return 0
   }
   const options = { lockPath, counter, warn: () => {}, pollMs: 1 }
@@ -72,7 +71,7 @@ it('T2 serialises concurrent admissions at 15 until the first child is counted',
   expect(existsSync(lockPath)).toBe(false)
 })
 
-it.each(PLATFORMS)('T3 explicitly warns and admits an unknown count on %s', async (platform) => {
+it.each(['pgrep unavailable', 'malformed pid', 'counter timed out'])('T3 explicitly warns and admits an unknown count: %s', async (reason) => {
   const { lockPath } = setup()
   const { withLaneLaunchAdmission } = await load()
   const messages: string[] = []
@@ -81,10 +80,10 @@ it.each(PLATFORMS)('T3 explicitly warns and admits an unknown count on %s', asyn
     launched = true
     await lease.waitUntilVisible(() => null)
     return 0
-  }, { lockPath, platform, counter: () => ({ state: 'unknown', reason: 'pgrep unavailable' }), warn: (line: string) => messages.push(line) })
+  }, { lockPath, counter: () => ({ state: 'unknown', reason }), warn: (line: string) => messages.push(line) })
   expect(code).toBe(0)
   expect(launched).toBe(true)
-  expect(messages).toEqual(['wt-lane: lane count NOT MEASURED: pgrep unavailable'])
+  expect(messages).toEqual([`wt-lane: lane count NOT MEASURED: ${reason}`])
   expect(existsSync(lockPath)).toBe(false)
 })
 
@@ -296,6 +295,26 @@ it('warns if measurement becomes unknown while waiting for child visibility', as
   expect(messages).toEqual(['wt-lane: lane count NOT MEASURED: counter disappeared'])
 })
 
+it('reads a visibility measurement state only once before admitting its unknown evidence', async () => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  let calls = 0
+  let stateReads = 0
+  let now = 0
+  const messages: string[] = []
+  const unknown = { get state() { return ++stateReads === 1 ? 'unknown' : 'ok' }, reason: 'counter unavailable' }
+  const result = await withLaneLaunchAdmission(async (lease: Lease) => {
+    lease.trackWorker(40, () => true)
+    await lease.waitUntilVisible(() => null)
+    return 0
+  }, { lockPath, counter: () => ++calls === 1 ? { state: 'ok', count: 0, pids: [] } : unknown,
+    clock: () => now++, visibilityMs: 2, pollMs: 0, workerFinished: () => false, stopWorker: () => ({ status: 'ended' }),
+    warn: (line: string) => messages.push(line) }).catch(String)
+  expect(result, 'a visibility observation must not reread its counter state').toBe(0)
+  expect(stateReads).toBe(1)
+  expect(messages).toEqual(['wt-lane: lane count NOT MEASURED: counter unavailable'])
+})
+
 it.skipIf(process.platform === 'win32')('reclaims the claim after an uncatchable launcher crash', async () => {
   const { root, lockPath } = setup()
   const { withLaneLaunchAdmission } = await load()
@@ -361,7 +380,7 @@ it.each([
   expect(calls).toEqual(verified ? [2147483600] : [])
 })
 
-it.each([false, true])('an acquisition timeout names the lock file, its owner pid and the manual remedy (reclaim guard=%s)', async (guard) => {
+it.each([false, true])('an acquisition timeout names the live owner without suggesting deletion (reclaim guard=%s)', async (guard) => {
   const { lockPath } = setup()
   const { withLaneLaunchAdmission } = await load()
   const owner = JSON.stringify({ pid: process.pid, startIdentity: 'self:another-runtime', token: 'held' })
@@ -373,7 +392,7 @@ it.each([false, true])('an acquisition timeout names the lock file, its owner pi
   const error = await withLaneLaunchAdmission(() => 0, { lockPath, waitMs: 0 }).catch((caught: Error) => caught)
   expect(String(error)).toContain(`admission lock busy or owner unmeasured: ${lockPath} (owner pid ${process.pid})`)
   // Other scripts may hold this lock too: the remedy is keyed on the claim's process, never on its kind.
-  expect(String(error)).toContain(`if pid ${process.pid} is not running or is not the process that wrote this claim (pid reused), remove ${lockPath}, then retry`)
+  expect(String(error)).not.toContain(`remove ${lockPath}`)
   expect(String(error)).not.toContain('wt-lane launcher')
   if (guard) expect(String(error)).toContain(`reclaim guard ${lockPath}.reclaim is present`)
   expect(readFileSync(lockPath, 'utf8')).toBe(owner)
@@ -413,7 +432,7 @@ it.each([
   const messages: string[] = []
   const realRm = fs.rmSync
   vi.spyOn(fs, 'rmSync').mockImplementation((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
-    if (String(path).endsWith('.claim')) throw Object.assign(new Error('EIO: unlink failed'), { code: 'EIO' })
+    if (/\.claim(?:\.held)?$/.test(String(path))) throw Object.assign(new Error('EIO: unlink failed'), { code: 'EIO' })
     realRm(path, options)
   })
   syncBuiltinESMExports()
@@ -429,7 +448,12 @@ it.each([
     expect(outcome).toBe(0)
     expect(existsSync(lockPath)).toBe(false)
   }
-  expect(messages).toEqual([expect.stringMatching(/^wt-lane: could not remove admission staging link .+\.claim \(EIO\)/)])
+  expect(messages).toEqual([expect.stringMatching(/^wt-lane: could not remove admission staging link .+\.claim\.held \(EIO\)/)])
+  if (busy) {
+    const { releaseLaneLaunchAdmission } = await load()
+    releaseLaneLaunchAdmission({ file: lockPath, owner: JSON.parse(owner) })
+  }
+  expect(await withLaneLaunchAdmission(() => 0, { lockPath, waitMs: 0, counter: () => ({ state: 'ok', count: 0, pids: [] }) }), 'a failed unlink must not strand the next admission').toBe(0)
 })
 
 it('a visibility timeout cleans its worker once even when the launcher tracks it again afterwards', async () => {
@@ -449,4 +473,188 @@ it('a visibility timeout cleans its worker once even when the launcher tracks it
   expect(String(error)).toContain('worker cleanup: ended (force-stop of worker pid 2147483600 accepted')
   expect(calls).toEqual([2147483600])
   expect(messages).toEqual([])
+})
+
+it('admits healthy bounded worker startup beyond the old ninety-second deadline', async () => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  let now = 0
+  let reads = 0
+  const stopped: number[] = []
+  const result = await withLaneLaunchAdmission(async (lease: Lease) => {
+    lease.trackWorker(40, () => true)
+    await lease.waitUntilVisible(() => { now = 700_000; return ++reads === 1 ? null : 42 })
+    return 0
+  }, { lockPath, counter: () => ({ state: 'ok', count: 0, pids: [42] }), clock: () => now, pollMs: 0,
+    workerFinished: () => false, stopWorker: (pid: number) => { stopped.push(pid); return { status: 'ended' } } }).catch(String)
+  expect(result, 'a healthy bounded startup must be admitted').toBe(0)
+  expect(stopped).toEqual([])
+})
+
+it.each(['unavailable', 'throws'])('warns and admits when ancestry snapshot %s instead of killing its worker', async (failure) => {
+  const { lockPath } = setup()
+  const { withLaneLaunchAdmission } = await load()
+  const messages: string[] = []
+  const stopped: number[] = []
+  let now = 0
+  const result = await withLaneLaunchAdmission(async (lease: Lease) => {
+    lease.trackWorker(40, () => true)
+    await lease.waitUntilVisible(() => 41)
+    return 0
+  }, { lockPath, counter: () => ({ state: 'ok', count: 0, pids: [42] }), readProcesses: () => {
+    if (failure === 'throws') throw Error('snapshot unavailable')
+    return { supported: false, reason: 'snapshot unavailable' }
+  }, clock: () => now++, visibilityMs: 2, pollMs: 0, workerFinished: () => false,
+  warn: (line: string) => messages.push(line), stopWorker: (pid: number) => { stopped.push(pid); return { status: 'ended' } } }).catch(String)
+  expect(result, 'unmeasured ancestry must admit').toBe(0)
+  expect(messages).toEqual(['wt-lane: lane count NOT MEASURED: snapshot unavailable'])
+  expect(stopped, 'measurement failure must not stop the admitted worker').toEqual([])
+})
+
+it('names the live holder once to a long waiter, never suggesting deletion, and keeps waiting', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const holder = await acquireLaneAdmissionLock(lockPath)
+  const messages: string[] = []
+  let now = 0
+  const pending = acquireLaneAdmissionLock(lockPath, { clock: () => (now += 10_000), pollMs: 1, warn: (line: string) => messages.push(line) })
+  for (let turn = 0; turn < 500 && now < 200_000; turn++) await new Promise((resolve) => setTimeout(resolve, 1))
+  releaseLaneLaunchAdmission(holder)
+  const next = await pending
+  releaseLaneLaunchAdmission(next)
+  expect(messages, 'an indefinite wait must say once who it waits on').toEqual([
+    expect.stringContaining(`still waiting for admission lock ${lockPath} (owner pid ${process.pid})`),
+  ])
+  expect(messages.join('\n')).not.toMatch(/remove/i)
+})
+
+it('waits through a burst without the arbitrary default two-minute refusal', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const first = await acquireLaneAdmissionLock(lockPath)
+  let now = 0
+  const pending = acquireLaneAdmissionLock(lockPath, { clock: () => { now += 130_000; return now }, pollMs: 1 })
+    .catch((error: Error) => error)
+  await setImmediate()
+  releaseLaneLaunchAdmission(first)
+  const next = await pending
+  expect(next, 'under-cap waiters must survive a long predecessor').not.toBeInstanceOf(Error)
+  if (!(next instanceof Error)) releaseLaneLaunchAdmission(next)
+})
+
+it('admits visible queue predecessors before younger faster pollers', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  const holder = await acquireLaneAdmissionLock(lockPath)
+  const order: string[] = []
+  const first = acquireLaneAdmissionLock(lockPath, { pollMs: 20 }).then((claim: unknown) => {
+    order.push('first'); releaseLaneLaunchAdmission(claim)
+  })
+  const second = acquireLaneAdmissionLock(lockPath, { pollMs: 0 }).then((claim: unknown) => {
+    order.push('second'); releaseLaneLaunchAdmission(claim)
+  })
+  releaseLaneLaunchAdmission(holder)
+  await Promise.all([first, second])
+  expect(order, 'polling speed must not bypass a visible predecessor').toEqual(['first', 'second'])
+})
+
+it('uses the same default cap as the saturation hook over the whole under-cap family', async () => {
+  const { lockPath } = setup()
+  const { LANE_LAUNCH_CAP, withLaneLaunchAdmission } = await load()
+  // @ts-expect-error runtime module
+  const { DEFAULT_MAX, evaluateLaneCall } = await import('../../../../plugin/bin/lib/wt-lane-saturation-core.mjs')
+  expect(LANE_LAUNCH_CAP, 'shared default must retain the sixteen-lane ceiling').toBe(16)
+  expect(DEFAULT_MAX, 'hook and launch cap must agree').toBe(LANE_LAUNCH_CAP)
+  for (let count = 0; count < LANE_LAUNCH_CAP; count++) {
+    const counter = () => ({ state: 'ok', count, pids: [] })
+    expect(await withLaneLaunchAdmission(() => 0, { lockPath, counter })).toBe(0)
+    expect(evaluateLaneCall({ tool_input: { command: 'node wt-lane.mjs --dir .' } }, { env: {}, countLaneProcesses: counter }).silent).toBe(true)
+  }
+})
+
+it('backs out a new link when a reclaim guard appears immediately after publication', async () => {
+  const { lockPath } = setup()
+  const { acquireLaneAdmissionLock } = await load()
+  const realLink = fs.linkSync
+  vi.spyOn(fs, 'linkSync').mockImplementation((...args: Parameters<typeof fs.linkSync>) => {
+    realLink(...args)
+    mkdirSync(`${lockPath}.reclaim`)
+    writeFileSync(join(`${lockPath}.reclaim`, 'live'), JSON.stringify({ pid: process.pid, token: 'live' }))
+  })
+  syncBuiltinESMExports()
+  try {
+    await expect(acquireLaneAdmissionLock(lockPath, { waitMs: 0 })).rejects.toThrow('admission lock')
+    expect(existsSync(lockPath)).toBe(false)
+  } finally { vi.restoreAllMocks(); syncBuiltinESMExports() }
+})
+
+function contender(root: string) {
+  const child = spawn(process.execPath, [fileURLToPath(new URL('./fixtures/lane-admission-contender.mjs', import.meta.url)), root], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
+  const events: string[] = []
+  child.on('message', (message) => { events.push(String(message)) })
+  const started = new Promise<void>((resolve) => child.on('message', (message) => { if (message === 'started') resolve() }))
+  const entered = new Promise<void>((resolve) => child.on('message', (message) => { if (message === 'entered') resolve() }))
+  const exited = once(child, 'exit')
+  return { child, events, started, entered, exited }
+}
+
+it('two real launchers competing for one lock never both admit the sixteenth lane', async () => {
+  const { root } = setup()
+  writeFileSync(join(root, 'count.json'), JSON.stringify({ state: 'ok', count: 15, pids: [] }))
+  const first = contender(root)
+  await first.entered
+  const second = contender(root)
+  try {
+    await second.started
+    // No visibility is published until a different process has really begun competing.
+    first.child.send('visible')
+    second.child.send('visible')
+    const results = await Promise.all([first.exited, second.exited])
+    expect(results.map(([code]) => code).sort(), 'two real processes must never both admit the sixteenth lane').toEqual([0, 1])
+    expect(second.events).not.toContain('entered')
+  } finally {
+    for (const item of [first, second]) if (item.child.exitCode === null && item.child.signalCode === null) item.child.kill('SIGKILL')
+    await Promise.all([first.exited, second.exited])
+  }
+})
+
+it.skipIf(process.platform === 'win32')('reaps a killed waiter claim without breaking its live holder', async () => {
+  const { root, lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  writeFileSync(join(root, 'count.json'), JSON.stringify({ state: 'ok', count: 0, pids: [] }))
+  const holder = await acquireLaneAdmissionLock(lockPath)
+  const waiter = contender(root)
+  try {
+    await waiter.started
+    waiter.child.kill('SIGKILL'); await waiter.exited
+    expect(readdirSync(root).filter((name) => name.endsWith('.claim'))).toHaveLength(1)
+    await expect(acquireLaneAdmissionLock(lockPath, { waitMs: 0 })).rejects.toThrow('admission lock')
+    expect(readFileSync(lockPath, 'utf8')).toContain(holder.owner.token)
+    expect(readdirSync(root).filter((name) => name.endsWith('.claim')), 'dead waiter claim must be recovered automatically').toHaveLength(0)
+  } finally { releaseLaneLaunchAdmission(holder); if (waiter.child.exitCode === null && waiter.child.signalCode === null) waiter.child.kill('SIGKILL') }
+})
+
+it.skipIf(process.platform !== 'linux')('preserves a stopped live owner until it resumes and releases its own lock', async () => {
+  const { root, lockPath } = setup()
+  const { acquireLaneAdmissionLock, releaseLaneLaunchAdmission } = await load()
+  writeFileSync(join(root, 'count.json'), JSON.stringify({ state: 'ok', count: 0, pids: [] }))
+  const holder = contender(root)
+  try {
+    await holder.entered
+    const before = readFileSync(lockPath, 'utf8')
+    holder.child.kill('SIGSTOP')
+    const deadline = Date.now() + 5_000
+    const stopped = () => /\) T /.test(readFileSync(`/proc/${holder.child.pid}/stat`, 'utf8'))
+    while (!stopped() && Date.now() < deadline) await setImmediate()
+    expect(stopped()).toBe(true)
+    await expect(acquireLaneAdmissionLock(lockPath, { waitMs: 0 })).rejects.toThrow('admission lock')
+    expect(readFileSync(lockPath, 'utf8')).toBe(before)
+    holder.child.kill('SIGCONT'); holder.child.send('visible')
+    expect((await holder.exited)[0]).toBe(0)
+    const next = await acquireLaneAdmissionLock(lockPath)
+    releaseLaneLaunchAdmission(next)
+  } finally {
+    if (holder.child.exitCode === null && holder.child.signalCode === null) { holder.child.kill('SIGCONT'); holder.child.kill('SIGKILL') }
+    await holder.exited
+  }
 })

@@ -13,6 +13,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- Lane launch admission now uses FIFO waiting without a default burst deadline, recovers dead
+  waiters' staging claims, and never suggests removing a live admission lock; a launch still
+  waiting after 30 seconds names the lock holder once instead of waiting silently. Worker visibility
+  allows bounded startup under load and admits with a warning when ancestry cannot be measured.
+  Failed launcher exits are refused by the lifecycle with their original diagnostics; success PID
+  output follows admission. Queued termination is handled before publishing success, including
+  when the count is unmeasured. The launch and
+  saturation-hook defaults now share a cap of 16, and process counts use the lock owner's OS user.
+  macOS process snapshots force the C locale and report unparseable rows as unmeasured.
+  Atomic launch admission covers `wt-lane` only; envelope and second-opinion launches do not
+  reserve slots under its mutex. Other exact-name opencode/codex processes are still counted.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.

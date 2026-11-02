@@ -1,10 +1,9 @@
 import { stripNonCommandText } from './command-invocation.mjs'
 import { inspectLaneLockWait, pgrepLaneName } from './host/lane-lock-wait.mjs'
 
-/** The bound is a NAMED parameter, never a buried constant: the 8-16 wall is empirical and
- *  moves with the subscribed plan. The default is the LOW end deliberately — being warned
- *  slightly early costs a line of text; being warned too late costs the batch. */
-export const DEFAULT_MAX = 8
+/** Shared default for hook and wt-lane admission. The hook's explicit environment override
+ *  changes its advisory/deny bound; wt-lane retains this hard launch ceiling. */
+export const DEFAULT_MAX = 16
 /** Process names that ARE a lane call. Matched by exact process name (see below). */
 export const LANE_PROCESS_NAMES = ['opencode', 'codex']
 /** Substrings that mean the command is trying to USE the lane, as opposed to merely
