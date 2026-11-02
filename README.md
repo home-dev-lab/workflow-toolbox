@@ -857,6 +857,8 @@ Its stdout is one compact JSON object:
 `{configDir, quota_model, five_hour, seven_day, weekly_scoped}`. Branch on
 `quota_model`, not on an absent percentage: `'subscription'` means the account has real quota
 windows; `'none'` means a usage-billed account with no five-hour/seven-day window at all.
+`five_hour` is `null` only when the endpoint states the plan has no five-hour window, and is
+omitted when the endpoint said nothing about it; the watcher treats only `null` as absence.
 
 ## Companion app — Workflow Observatory
 
