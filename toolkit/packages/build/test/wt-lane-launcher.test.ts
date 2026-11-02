@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawn as nativeSpawn, spawnSync as nativeSpawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
@@ -29,6 +29,14 @@ function join(...segments: string[]): string {
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
+const FIXTURE_LAUNCHER = join(ROOT, 'toolkit/packages/build/test/fixtures/launcher-counter/wt-lane.mjs')
+function fixtureInvocation(args: unknown[]): unknown[] {
+  const [command, argv, ...rest] = args
+  if (command !== process.execPath || !Array.isArray(argv) || argv[0] !== LAUNCHER) return args
+  return [command, [FIXTURE_LAUNCHER, ...argv.slice(1)], ...rest]
+}
+const spawn = new Proxy(nativeSpawn, { apply: (fn, receiver, args) => Reflect.apply(fn, receiver, fixtureInvocation(args)) })
+const spawnSync = new Proxy(nativeSpawnSync, { apply: (fn, receiver, args) => Reflect.apply(fn, receiver, fixtureInvocation(args)) })
 const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
 const WATCHER = process.env.WT_LANE_WATCH_BINARY ?? join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
 const FAKE_OPENCODE = join(ROOT, 'toolkit/packages/build/test/fixtures/fake-opencode.mjs')
@@ -2413,4 +2421,57 @@ describe.skipIf(process.platform === 'win32')('wt-lane low priority', () => {
     expect(existsSync(join(f.dir, 'nice'))).toBe(false)
   })
   registerBriefMessageCase(ok, readLog)
+})
+
+// Launch admission observed through the real launcher path (main -> launchAndObserve -> admission).
+const ADMISSION_PROBE = join(ROOT, 'toolkit/packages/build/test/fixtures/launcher-counter/admission-probe.mjs')
+type AdmissionProbe = { code: number | null, error: string | null, stops: number[], warnings: string[] }
+function admissionProbe(f: ReturnType<typeof fixture>, extra: string[], env: NodeJS.ProcessEnv = {}) {
+  const result = nativeSpawnSync(process.execPath, [ADMISSION_PROBE, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: { ...f.env, ...env } })
+  const line = result.stdout.split('\n').find((entry) => entry.startsWith('ADMISSION-PROBE '))
+  return { result, probe: line ? JSON.parse(line.slice('ADMISSION-PROBE '.length)) as AdmissionProbe : null }
+}
+function killRecordedOpencode(f: ReturnType<typeof fixture>) {
+  try { process.kill(Number(readFileSync(join(f.dir, 'opencode.pid'), 'utf8')), 'SIGKILL') } catch {}
+}
+
+describe.skipIf(process.platform !== 'linux')('wt-lane launch admission through the launcher', () => {
+  it('a visibility timeout stops its spawned worker once and reports only that outcome', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const { result, probe } = admissionProbe(f, [])
+    try {
+      expect(probe, result.stderr).not.toBeNull()
+      expect(probe!.error).toMatch(/new lane was not visible to the counter within 1500ms; worker cleanup: ended \(force-stop of worker pid \d+ accepted/)
+      const worker = Number(/worker pid (\d+)/.exec(probe!.error!)![1])
+      expect(probe!.stops).toEqual([worker])
+      expect(probe!.warnings.filter((line) => line.includes('NOT CONFIRMED'))).toEqual([])
+    } finally { killRecordedOpencode(f) }
+  }, 30_000)
+
+  it('never tracks a still-running foreign worker that rewrote the record under the same run id after this launch spawned', async () => {
+    const f = fixture('true')
+    const runId = '424242-1'
+    const foreign = nativeSpawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { detached: true, stdio: 'ignore' })
+    spawnedChildren.push(foreign)
+    await new Promise((resolve) => foreign.once('spawn', resolve))
+    const identity = inspectStartedProcess(inspectProcess, foreign.pid).identity
+    expect(identity).toBeTruthy()
+    const paths = supervisionPaths(f.dir, runId)
+    const prepared = join(f.root, 'prepared')
+    mkdirSync(prepared)
+    writeFileSync(join(prepared, 'record.json'), JSON.stringify({ version: 1, runId, state: 'running', owner: 'session', workerPid: foreign.pid,
+      workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: null, childArgv: null, childStartTime: null,
+      worktree: f.dir, timeoutAt: new Date(Date.now() + 60_000).toISOString(), timeoutSeconds: 60 }))
+    writeFileSync(join(prepared, 'pointer.json'), JSON.stringify({ runId }))
+    // The launcher's first opencode preflight runs after its current-lane check and before its worker spawn:
+    // the foreign worker publishes its record and pointer there, so this launch's exclusive write hits EEXIST.
+    const opencode = join(f.root, 'bin', 'opencode')
+    writeFileSync(opencode, `#!/bin/sh\nif [ -f ${JSON.stringify(join(prepared, 'record.json'))} ]; then\n  mkdir -p ${JSON.stringify(paths.dir)}\n  mv ${JSON.stringify(join(prepared, 'record.json'))} ${JSON.stringify(paths.record)}\n  mv ${JSON.stringify(join(prepared, 'pointer.json'))} ${JSON.stringify(paths.pointer)}\nfi\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_OPENCODE)} opencode "$@"\n`)
+    const { result, probe } = admissionProbe(f, ['--run-id', runId], { WT_ADMISSION_PROBE_STOP: 'record' })
+    expect(probe, result.stderr).not.toBeNull()
+    // Control readable in both outcomes: this launch did spawn its worker and was refused at the record write.
+    expect(result.stderr).toContain(`Refused: supervision record ${paths.record} already exists`)
+    expect(probe!.code).toBe(1)
+    expect(probe!.stops).toEqual([])
+  }, 30_000)
 })
