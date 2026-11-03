@@ -108,15 +108,26 @@ async function readAccountCache(state) {
     // A cache key selects a file, not the account currently logged in. Require a fingerprint
     // recorded with the reading, stable across the cache read; unknown identity probes live.
     if (!fingerprint || cached?.data.accountFingerprint !== fingerprint || readAccountFingerprint(CONFIG_DIR) !== fingerprint) return null
-    return cached
+    // The reading belongs to the identity compared around the read: never a later, separate read.
+    return { ...cached, fingerprint }
   } catch { return null /* unsafe key or cache error: continue with a live probe */ }
 }
 
-async function refillLoginCache(data) {
+/** Stamp a live login reading with the identity read on BOTH sides of the probe (null when unknown). */
+async function refillLoginCache(data, boundFingerprint) {
   if (probeAccountKey(data) !== 'login') return
   try {
-    await writeQuotaCacheAtomic(quotaCachePathFor(CONFIG_DIR, 'login'), { ...data, accountFingerprint: readAccountFingerprint(CONFIG_DIR) }, CONFIG_DIR, 'login')
+    await writeQuotaCacheAtomic(quotaCachePathFor(CONFIG_DIR, 'login'), { ...data, accountFingerprint: boundFingerprint }, CONFIG_DIR, 'login')
   } catch { /* best effort: cache errors must never stop live monitoring */ }
+}
+
+/**
+ * The identity a live reading is attributed to. The login identity is read before the probe and
+ * again after it; the caller discards the reading when the two differ. A probe that declares another
+ * config dir (or none) keeps that dir's identity, read once, as before.
+ */
+function liveReadingFingerprint(sourceData, boundFingerprint) {
+  return sourceData?.configDir === CONFIG_DIR ? boundFingerprint : readAccountFingerprint(sourceData?.configDir)
 }
 
 function accountChanged(state, data, currentFingerprint) {
@@ -390,13 +401,22 @@ function baselineWindow(state, windowKey, pct, thresholds, resetsAt = null) {
   state.fired.set(windowKey, firedForWindow)
 }
 
+/**
+ * A later deadline proves a completed reset only when the previous one is a finite time that has
+ * already passed. A deadline corrected or extended before it elapsed proves nothing: that reading
+ * goes through the drop classifier, which calls a drop before the deadline "reset unverified".
+ */
+function deadlineAdvancedPastReset(previousMs, currentMs, nowMs) {
+  return Number.isFinite(previousMs) && Number.isFinite(currentMs) && previousMs <= nowMs && currentMs > previousMs
+}
+
 /** Handle only this window's reset/drop; the caller still evaluates every other window. */
 function noteWindowTransition(state, window, windowData, thresholds, continuity) {
   const previousPct = state.lastPct.get(window.key)
   const previousResetsAt = state.lastResetsAt.get(window.key) ?? null
   const previousMs = resetsAtToMs(previousResetsAt)
   const currentMs = resetsAtToMs(windowData.resetsAt)
-  if (continuity && previousMs !== null && currentMs !== null && currentMs > previousMs) {
+  if (continuity && deadlineAdvancedPastReset(previousMs, currentMs, Date.now())) {
     writeLine(`QUOTA RESET ${window.label}: ${windowData.pct}% (was ${previousPct}%) — reset deadline advanced; new window, thresholds re-armed`)
     state.fired.set(window.key, new Set())
     return false
@@ -742,6 +762,7 @@ while (true) {
     let windows = {}
     let sourceData = null
     let viaCache = false
+    let readingFingerprint = null
 
     // Cache-first: a reading already on disk (ours from a previous poll, another
     // watcher's, or the per-turn hook's) is used as-is when it is fresh enough BY THIS
@@ -775,12 +796,15 @@ while (true) {
         windows = cachedWindows
         sourceData = cachedReading.data
         viaCache = true
+        readingFingerprint = cachedReading.fingerprint
       }
       // A fresh-but-unusable (partial or foreign-shaped) cache is NOT trusted as a
       // reading — falls through to a live probe just like a cold cache would.
     }
 
     if (!viaCache) {
+      // Read BEFORE the probe: a login switch while the request runs must not stamp A's reading as B's.
+      const fingerprintBeforeProbe = readAccountFingerprint(CONFIG_DIR)
       const { stdout: rawJson, stderr: probeStderr, spawnError, timedOut } = await runProbe(probe.path, timeout * 1000)
 
       if (timedOut) {
@@ -882,13 +906,23 @@ while (true) {
         continue
       }
 
+      // The login identity changed while the probe ran (or became readable/unreadable): the reading
+      // belongs to no known account. It is neither cached nor baselined; the next poll probes again.
+      // The race INSIDE the probe (its credentials read vs its request) is not visible from here.
+      if (readAccountFingerprint(CONFIG_DIR) !== fingerprintBeforeProbe) {
+        flushArmed(); writeLine('QUOTA WATCH: the login account changed while the probe ran — reading discarded, probing again next poll')
+        await sleep(readingPollMs())
+        continue
+      }
+
       // Live probe succeeded: refill the shared cache so the per-turn hook and any other
       // watcher can use this reading instead of hitting the endpoint again inside the TTL
       // window. Best-effort — a cache write failure must never take the watcher down.
-      await refillLoginCache(parsed)
+      await refillLoginCache(parsed, fingerprintBeforeProbe)
 
       windows = liveWindows
       sourceData = parsed
+      readingFingerprint = liveReadingFingerprint(parsed, fingerprintBeforeProbe)
     }
 
     // Probe-health state describes the PROBE, so ONLY a successful LIVE probe clears it.
@@ -916,7 +950,7 @@ while (true) {
       const status = initialStateLine(windows, thresholds)?.replace(/^QUOTA STATUS: /, '')
       setBaseline(state, windows, thresholds)
       state.reported = reportedKeys(windows)
-      state.fingerprint = readAccountFingerprint(sourceData?.configDir)
+      state.fingerprint = readingFingerprint
       state.accountKey = probeAccountKey(sourceData)
       state.hasReading = true
       // ONE line, not two: the arming confirmation and the first reading are the same event from
@@ -937,7 +971,7 @@ while (true) {
 
     noteUnreportedWindows(state, windows)
 
-    const currentFingerprint = readAccountFingerprint(sourceData?.configDir)
+    const currentFingerprint = readingFingerprint
     const previousFingerprint = state.fingerprint
     if (accountChanged(state, sourceData, currentFingerprint)) {
       // Four hex chars kept: signals the change while limiting residual correlation.
