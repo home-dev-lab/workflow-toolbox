@@ -1,5 +1,3 @@
-const LIMIT = 16 * 1024 * 1024
-
 export function tsFrame(message) {
   const body = JSON.stringify(message)
   return Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
@@ -14,7 +12,7 @@ function frameLength(buffer) {
   const lengths = buffer.subarray(0, end).toString('latin1').split('\r\n').filter(line => /^Content-Length:/i.test(line))
   if (lengths.length !== 1 || !/^Content-Length:\s*\d+\s*$/i.test(lengths[0])) throw new Error('malformed LSP header')
   const length = Number(lengths[0].split(':')[1])
-  if (!Number.isSafeInteger(length) || length > LIMIT) throw new Error('LSP frame exceeds the size limit')
+  if (!Number.isSafeInteger(length)) throw new Error('LSP frame exceeds the size limit')
   return { end, length, total: end + 4 + length }
 }
 
