@@ -13,6 +13,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- External lanes default `pnpm_config_verify_deps_before_run=false` through the worker and sandboxed child environment, preserving explicit caller overrides. Launches warn when a brief names only the ineffective `npm_config_verify_deps_before_run` spelling, with the exact pnpm variable to use.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.

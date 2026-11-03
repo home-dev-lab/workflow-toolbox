@@ -2156,15 +2156,25 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
     if (value?.toLowerCase() === 'release') expect(error).toContain('release is reserved to the main session')
   })
   it('the worker env carries the declared level over an ambient one, and is the ambient env without the flag', () => {
-    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2' }
-    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P0' })
+    const ambient = { PATH: '/bin', WT_SUITE_LOCK_PRIORITY: 'P2', pnpm_config_verify_deps_before_run: 'false' }
+    expect(laneWorkerEnv(ambient, 'P0')).toEqual({ ...ambient, WT_SUITE_LOCK_PRIORITY: 'P0' })
     expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
     expect(laneWorkerEnv(ambient, null)).toEqual(ambient)
-    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin' })
+    expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false' })
   })
 })
 
 describe('wt-lane --lock-priority reaches the processes the launcher starts', () => {
+  it.each([undefined, 'true', 'false', ''])('passes pnpm dependency verification through every child env filter (%j)', (value) => {
+    const f = fixture('pnpm-verify-deps-env')
+    delete f.env.pnpm_config_verify_deps_before_run
+    if (value !== undefined) f.env.pnpm_config_verify_deps_before_run = value
+    const res = run(f, ['--timeout', '1'])
+    expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'pnpm-verify-deps-env'), 'utf8')).toBe(value ?? 'false')
+  })
+
   it.each([[['--lock-priority', 'p0'], undefined, 'P0'], [[], undefined, 'unset'], [[], 'P2', 'unset']] as const)('the opencode child env carries the declared level on every platform (%j, ambient %s -> %s), so a gate with no host broker queues at it', (extra, ambient, expected) => {
     const f = fixture('lock-priority-env')
     // Without the flag an ambient level stays filtered out of the child, as before this flag existed.
@@ -2182,6 +2192,7 @@ describe('wt-lane --lock-priority reaches the processes the launcher starts', ()
       const state = JSON.parse(readFileSync(status, 'utf8'))
       try {
         const declared = readFileSync(`/proc/${state.workerPid}/environ`, 'utf8').split('\0').find((entry) => entry.startsWith('WT_SUITE_LOCK_PRIORITY='))
+        expect(readFileSync(`/proc/${state.workerPid}/environ`, 'utf8').split('\0')).toContain('pnpm_config_verify_deps_before_run=false')
         expect(declared, `worker env for ${JSON.stringify(extra)}`).toBe(expected)
       } finally {
         const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }

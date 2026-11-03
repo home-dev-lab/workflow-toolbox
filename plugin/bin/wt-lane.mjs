@@ -43,7 +43,7 @@ const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
 const PLATFORM = process.platform
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, legacySupervision, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter, suiteLockCli: suiteLockCli() }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv: laneOpencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, legacySupervision, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter, suiteLockCli: suiteLockCli() }
 }
 
 async function loadIntegrationModule() {
@@ -61,6 +61,7 @@ export const BRIEF_GATE_RUNNABLES = Object.freeze([
 const PNPM_RUN_FORM = /\bpnpm run (?!exec\b)/g
 const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
 const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
+const PNPM_VERIFY_DEPS_ENV = 'pnpm_config_verify_deps_before_run'
 
 function isRunnableGateLine(line) {
   const folded = line.replace(/\s+/g, ' ').replace(PNPM_RUN_FORM, 'pnpm ')
@@ -97,7 +98,11 @@ function launchBriefRefusal(briefEvidence, opts) {
   if (briefEvidence.ageMs > opts.maxBriefAge * 1000 && !opts.acknowledgeStaleBrief) {
     return { code: 1, message: `wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.` }
   }
-  const refusal = briefGateSectionRefusal(briefEvidence.bytes.toString('utf8'), opts)
+  const text = briefEvidence.bytes.toString('utf8')
+  if (/\bnpm_config_verify_deps_before_run\b/.test(text) && !/\bpnpm_config_verify_deps_before_run\b/.test(text)) {
+    process.stderr.write('wt-lane: Warning: pnpm 11 ignores npm_config_verify_deps_before_run; use pnpm_config_verify_deps_before_run=false in the brief (warn-only probation).\n')
+  }
+  const refusal = briefGateSectionRefusal(text, opts)
   return refusal ? { code: 2, message: refusal } : null
 }
 
@@ -122,17 +127,24 @@ function laneLockPriority(value) {
 /**
  * An env carrying a declared --lock-priority. Used twice: for the worker, which hands its env to the host-side
  * suite-lock broker (lane-sandbox.mjs, the broker bridge, which reads WT_SUITE_LOCK_PRIORITY); and for the opencode
- * child, whose env filter would otherwise drop it. Without the flag the env is returned unchanged, so the ambient
- * level (else P1) applies as before.
+ * child, whose env filter would otherwise drop it. Without the flag the ambient lock priority is retained, so its
+ * level (else P1) applies as before. Dependency verification defaults off so pnpm cannot recreate an offline
+ * lane's install before running a gate.
  */
 export function laneWorkerEnv(env, lockPriority) {
-  return lockPriority ? { ...env, WT_SUITE_LOCK_PRIORITY: lockPriority } : env
+  const workerEnv = { ...env, [PNPM_VERIFY_DEPS_ENV]: env[PNPM_VERIFY_DEPS_ENV] ?? 'false' }
+  return lockPriority ? { ...workerEnv, WT_SUITE_LOCK_PRIORITY: lockPriority } : workerEnv
+}
+
+// Preserve only this caller-owned pnpm choice across the model environment filter; the default stays in laneWorkerEnv.
+function laneOpencodeChildEnv(env, model) {
+  return { ...opencodeChildEnv(env, model), [PNPM_VERIFY_DEPS_ENV]: env[PNPM_VERIFY_DEPS_ENV] }
 }
 
 // The worker argv that carries a declared --lock-priority to the detached worker; nothing when none was declared.
 const laneLockPriorityArgs = (lockPriority) => lockPriority ? ['--lock-priority', lockPriority] : []
-// WT_SUITE_LOCK_PRIORITY is a name the launcher owns on the opencode child only when declared: an ambient value stays filtered.
-const laneLockPriorityEnvNames = (lockPriority) => lockPriority ? ['WT_SUITE_LOCK_PRIORITY'] : []
+// The pnpm choice always passes the child filter; WT_SUITE_LOCK_PRIORITY passes only when declared.
+const laneLockPriorityEnvNames = (lockPriority) => [PNPM_VERIFY_DEPS_ENV, ...(lockPriority ? ['WT_SUITE_LOCK_PRIORITY'] : [])]
 
 // The option values parse() checks after reading argv, in the order it always checked them; normalises
 // --lock-priority in place. Returns the first refusal, or null.
