@@ -106,7 +106,7 @@ member pinned while that leader still verified. A surviving pinned member reserv
 an absent leader alone does not prove ownership. An empty group is skipped. A reused identity,
 unreadable identity or unpinned surviving group is diagnosed as **ownership unknown** and skipped.
 The final identity check and signal are separate OS operations, leaving a narrow check/delivery race.
-macOS has no Linux `/proc` ownership check: group signalling is skipped with **ownership unknown**.
+macOS has no Linux `/proc` ownership check: group signalling is skipped with **ownership unknown**, but TERM and KILL still reach the backend leader through its ChildProcess.
 Local pipe teardown bounds
 replacement startup even if close never arrives. Windows can signal only the owned child handle;
 descendant cleanup there remains unknown because Node supplies no dependency-free Job Object API.

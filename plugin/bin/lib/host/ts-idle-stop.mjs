@@ -64,7 +64,9 @@ function signalOwnedGroup(state, backend, signal) {
   const ownership = tsGroupOwnership(state, backend)
   if (ownership === 'empty') return
   if (ownership !== 'ours') {
-    state.streams.stderr.write('wt-tsls: backend group ownership unknown; skipping signal; descendant cleanup unknown\n')
+    // Our direct, unreaped ChildProcess cannot be a reused pid, so the leader is always safe to signal.
+    state.streams.stderr.write('wt-tsls: backend group ownership unknown; signalling the leader only; descendant cleanup unknown\n')
+    backend.child.kill(signal)
     return
   }
   ;(state.options.killGroup ?? process.kill)(-backend.child.pid, signal)
