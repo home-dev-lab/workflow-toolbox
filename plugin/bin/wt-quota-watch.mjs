@@ -62,7 +62,7 @@ import { readQuotaCache, writeQuotaCacheAtomic, quotaCachePathFor } from './lib/
 import { computeBackoffMs } from './lib/quota-backoff.mjs'
 import { computeWatcherCacheToleranceMs } from './lib/quota-cache-tolerance.mjs'
 import { isUsableReading, missingWindows, windowsInWords } from './lib/quota-window-completeness.mjs'
-import { classifyQuotaDrop } from './lib/quota-drop.mjs'
+import { classifyQuotaDrop, resetsAtToMs } from './lib/quota-drop.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { effectiveModel, fetchProxyUsage, normalizeProxyUsage, resolveRoute } from './lib/quota-route.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
@@ -100,15 +100,22 @@ function probeAccountKey(data) {
 
 async function readAccountCache(state) {
   if (!state.hasReading || state.accountKey === null) return null
+  // A refreshed partial cache must not postpone discovery of an unreported window forever.
+  if (state.liveMissing && Date.now() - state.lastLiveAt >= WATCHER_CACHE_TOLERANCE_MS) return null
   try {
-    return await readQuotaCache(quotaCachePathFor(CONFIG_DIR, state.accountKey), WATCHER_CACHE_TOLERANCE_MS, CONFIG_DIR, state.accountKey)
+    const fingerprint = readAccountFingerprint(CONFIG_DIR)
+    const cached = await readQuotaCache(quotaCachePathFor(CONFIG_DIR, state.accountKey), WATCHER_CACHE_TOLERANCE_MS, CONFIG_DIR, state.accountKey)
+    // A cache key selects a file, not the account currently logged in. Require a fingerprint
+    // recorded with the reading, stable across the cache read; unknown identity probes live.
+    if (!fingerprint || cached?.data.accountFingerprint !== fingerprint || readAccountFingerprint(CONFIG_DIR) !== fingerprint) return null
+    return cached
   } catch { return null /* unsafe key or cache error: continue with a live probe */ }
 }
 
 async function refillLoginCache(data) {
   if (probeAccountKey(data) !== 'login') return
   try {
-    await writeQuotaCacheAtomic(quotaCachePathFor(CONFIG_DIR, 'login'), data, CONFIG_DIR, 'login')
+    await writeQuotaCacheAtomic(quotaCachePathFor(CONFIG_DIR, 'login'), { ...data, accountFingerprint: readAccountFingerprint(CONFIG_DIR) }, CONFIG_DIR, 'login')
   } catch { /* best effort: cache errors must never stop live monitoring */ }
 }
 
@@ -297,7 +304,7 @@ function extractWindows(source) {
   return windows
 }
 
-// Each window is watched on its own (card 1899394115301279304, round 3): a reading is usable when it
+// Each window is watched on its own: a reading is usable when it
 // carries at least one window with a numeric percentage (isUsableReading, imported above). A window it
 // does not carry is named in words once per run and keeps its history; it is never silently dropped
 // (FINDING 2, cross-family review, 2026-07-31). See lib/quota-window-completeness.mjs for the rationale.
@@ -381,6 +388,35 @@ function baselineWindow(state, windowKey, pct, thresholds, resetsAt = null) {
     if (pct >= threshold) firedForWindow.add(threshold)
   }
   state.fired.set(windowKey, firedForWindow)
+}
+
+/** Handle only this window's reset/drop; the caller still evaluates every other window. */
+function noteWindowTransition(state, window, windowData, thresholds, continuity) {
+  const previousPct = state.lastPct.get(window.key)
+  const previousResetsAt = state.lastResetsAt.get(window.key) ?? null
+  const previousMs = resetsAtToMs(previousResetsAt)
+  const currentMs = resetsAtToMs(windowData.resetsAt)
+  if (continuity && previousMs !== null && currentMs !== null && currentMs > previousMs) {
+    writeLine(`QUOTA RESET ${window.label}: ${windowData.pct}% (was ${previousPct}%) — reset deadline advanced; new window, thresholds re-armed`)
+    state.fired.set(window.key, new Set())
+    return false
+  }
+  if (!(windowData.pct < previousPct)) return false
+  if (!continuity) {
+    writeLine(`QUOTA DROP ${window.label}: ${windowData.pct}% (was ${previousPct}%) — cause undetermined (reset or account change)`)
+  } else {
+    const verdict = previousResetsAt === null
+      ? { kind: 'reset', detail: `${windowData.pct}% (was ${previousPct}%) — new window, capacity available` }
+      : classifyQuotaDrop({ nowMs: Date.now(), previousResetsAt, currentResetsAt: windowData.resetsAt, previousPct, currentPct: windowData.pct, continuity: 'account fingerprint unchanged' })
+    writeLine(`QUOTA ${verdict.kind === 'reset' ? 'RESET' : 'DROP'} ${window.label}: ${verdict.detail}`)
+  }
+  baselineWindow(state, window.key, windowData.pct, thresholds, windowData.resetsAt)
+  return true
+}
+
+/** Partial readings recheck live within the cache tolerance even with an hourly configured poll. */
+function readingPollMs() {
+  return state.liveMissing ? Math.min(poll * 1000, WATCHER_CACHE_TOLERANCE_MS) : poll * 1000
 }
 
 function initialStateLine(windows, thresholds) {
@@ -532,6 +568,8 @@ const state = {
   accountKey: null,
   hasReading: false,
   reported: [],
+  lastLiveAt: 0,
+  liveMissing: false,
   unreportedSignaled: new Set(),
   consecutiveFailures: 0,
   degradedElapsedMs: 0,
@@ -731,7 +769,7 @@ while (true) {
     const cachedReading = await readAccountCache(state)
     if (cachedReading && cachedReading.fresh) {
       const cachedWindows = extractWindows(cachedReading.data)
-      // FINDING 2 fix: a cached reading must carry every window the previous reading carried, so a
+      // A cached reading must carry every window any live reading of this account carried, so a
       // partial cache written by another process never blinds a window the live probe still reports.
       if (isUsableReading(cachedWindows, state.reported)) {
         windows = cachedWindows
@@ -816,19 +854,9 @@ while (true) {
 
       const liveWindows = extractWindows(parsed)
 
-      // ⚠ THIS CHECK MUST PRECEDE the completeness gate below, and the ordering is the whole
-      // point. An account with NO subscription quota (usage-billed / pay-per-token) has no
-      // five-hour or seven-day window at all, so it looks EXACTLY like a malformed probe:
-      // "missing window(s): five_hour,seven_day". Placed after the gate, this branch is
-      // unreachable and the watcher instead reports a healthy account as a broken probe,
-      // then polls forever — measured, before this line existed.
-      //
-      // Two states, identical shape, opposite meanings: "cannot measure" and "nothing to
-      // measure". Only the probe can tell them apart, which is why the decision is made on
-      // the explicit `quota_model` it states, never inferred from an absent percentage.
-      //
-      // Stopping (rather than idling quietly) is deliberate: a watcher that stays armed while
-      // watching nothing has silence indistinguishable from "quota is fine".
+      // Honor a custom probe's explicit no-subscription declaration before validating windows.
+      // The bundled endpoint has no known discriminator and emits 'unknown' for empty data;
+      // missing percentages alone can never justify stopping.
       if (parsed?.quota_model === 'none') {
         writeLine(
           'QUOTA WATCH STOPPING: this account has no subscription quota (usage-billed), so there ' +
@@ -874,10 +902,14 @@ while (true) {
     //      endpoint was rate-limiting it, sustaining the 429 it was backing off from.
     // A cache hit says nothing about whether the endpoint recovered; only a live probe does.
     if (!viaCache) {
+      const recovered = state.probeKoSignaled || state.probeTimeoutSignaled
       state.probeKoSignaled = false
       state.probeTimeoutSignaled = false
       state.consecutiveFailures = 0
       resetDegradedVisibility(state)
+      state.lastLiveAt = Date.now()
+      state.liveMissing = missingWindows(windows).length > 0
+      if (recovered && state.hasReading) writeLine(`${ARMED_LINE} | watching ${watchedLabels(windows)}`)
     }
 
     if (!state.hasReading) {
@@ -894,11 +926,12 @@ while (true) {
       if (armedPending) {
         armedPending = false
         writeLine([ARMED_LINE, `watching ${watchedLabels(windows)}`, status].filter(Boolean).join(' | '))
-      } else if (status) {
-        writeLine(`QUOTA STATUS: ${status}`)
+      } else {
+        writeLine(`${ARMED_LINE} | watching ${watchedLabels(windows)}`)
+        if (status) writeLine(`QUOTA STATUS: ${status}`)
       }
       noteUnreportedWindows(state, windows)
-      await sleep(poll * 1000)
+      await sleep(readingPollMs())
       continue
     }
 
@@ -913,52 +946,12 @@ while (true) {
       setBaseline(state, windows, thresholds)
       state.reported = reportedKeys(windows)
       state.fingerprint = currentFingerprint
-      await sleep(poll * 1000)
+      await sleep(readingPollMs())
       continue
     }
 
     noteNewlyReportedWindows(state, windows, thresholds)
-    state.reported = reportedKeys(windows)
-
-    const drops = []
-    for (const { key, label } of WINDOWS) {
-      const windowData = windows[key]
-      const previousPct = state.lastPct.get(key)
-      if (!windowData || previousPct === undefined) continue
-      if (windowData.pct < previousPct) {
-        drops.push({ key, label, currentPct: windowData.pct, previousPct, resetLocal: windowData.resetLocal, resetsAt: windowData.resetsAt ?? null })
-      }
-    }
-
-    if (drops.length > 0 && (previousFingerprint === null || currentFingerprint === null)) {
-      for (const drop of drops) {
-        writeLine(`QUOTA DROP ${drop.label}: ${drop.currentPct}% (was ${drop.previousPct}%) — cause undetermined (reset or account change)`)
-      }
-      setBaseline(state, windows, thresholds)
-      if (currentFingerprint !== null) state.fingerprint = currentFingerprint
-      await sleep(poll * 1000)
-      continue
-    }
-
-    if (drops.length > 0) {
-      for (const drop of drops) {
-        // Same account (fingerprint unchanged) — still not a reset if the window's own reset time
-        // has not come yet; a reset time the probe never reported leaves the old verdict in place.
-        const previousResetsAt = state.lastResetsAt.get(drop.key) ?? null
-        const verdict = previousResetsAt === null
-          ? { kind: 'reset', detail: `${drop.currentPct}% (was ${drop.previousPct}%) — new window, capacity available` }
-          : classifyQuotaDrop({ nowMs: Date.now(), previousResetsAt, currentResetsAt: drop.resetsAt, previousPct: drop.previousPct, currentPct: drop.currentPct , continuity: 'account fingerprint unchanged' })
-        writeLine(`QUOTA ${verdict.kind === 'reset' ? 'RESET' : 'DROP'} ${drop.label}: ${verdict.detail}`)
-        baselineWindow(state, drop.key, drop.currentPct, thresholds, drop.resetsAt)
-      }
-      for (const { key } of WINDOWS) {
-        if (!windows[key] || drops.some((drop) => drop.key === key)) continue
-        state.lastPct.set(key, windows[key].pct)
-      }
-      state.fingerprint = currentFingerprint
-      await sleep(poll * 1000)
-      continue
-    }
+    if (!viaCache) state.reported = [...new Set([...state.reported, ...reportedKeys(windows)])]
 
     for (const { key, label } of WINDOWS) {
       const windowData = windows[key]
@@ -967,6 +960,7 @@ while (true) {
         // reading must never re-arm thresholds already crossed or forget a reset time. Never fabricated.
         continue
       }
+      if (noteWindowTransition(state, { key, label }, windowData, thresholds, previousFingerprint !== null && currentFingerprint !== null)) continue
 
       let firedForWindow = state.fired.get(key)
       if (!firedForWindow) {
@@ -982,10 +976,11 @@ while (true) {
       }
 
       state.lastPct.set(key, windowData.pct)
+      state.lastResetsAt.set(key, windowData.resetsAt)
     }
 
     state.fingerprint = currentFingerprint
-    await sleep(poll * 1000)
+    await sleep(readingPollMs())
   } catch (error) {
     if (error === TEST_COMPLETE) break
     // ⚠ Without this net, a single unexpected probe output (`null`, a missing
