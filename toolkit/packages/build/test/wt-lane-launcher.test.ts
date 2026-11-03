@@ -4,7 +4,7 @@ import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpath
 import { getPriority, tmpdir } from 'node:os'
 import { dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
 import { laneSandboxContext, noteInsideLaneSandbox, skipInsideLaneSandbox } from '../../../test-support/lane-sandbox-context.js'
@@ -2138,6 +2138,17 @@ describe('wt-lane --priority and the removed --attach', () => {
 
 describe('wt-lane --lock-priority carries the card suite-lock level to the lane host broker', () => {
   const base = ['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']
+  it('leaves an absent ambient priority absent and silently resolves the child default', () => {
+    const warning = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const ambient = { PATH: '/bin' }
+    try {
+      const env = laneWorkerEnv(ambient, null)
+      expect(Object.hasOwn(ambient, 'WT_SUITE_LOCK_PRIORITY')).toBe(false)
+      expect(env.WT_SUITE_LOCK_PRIORITY).toBe('P2')
+      expect(env.WT_SUITE_LOCK_PRIORITY).not.toBe('undefined')
+      expect(warning).not.toHaveBeenCalled()
+    } finally { warning.mockRestore() }
+  })
   it('accepts P0, P1 and P2 in any case, normalised to upper case; absent declares nothing', () => {
     expect(parse(base).lockPriority, 'no flag: the host resolves ambient WT_SUITE_LOCK_PRIORITY, else P2').toBeNull()
     expect([['P0'], ['p1'], ['p2']].map(([value]) => parse([...base, '--lock-priority', value!]).lockPriority)).toEqual(['P0', 'P1', 'P2'])

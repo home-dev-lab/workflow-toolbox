@@ -12,8 +12,8 @@ function lanePriorityContext(options, env) {
   return options.lane === true || env.WT_SUITE_LOCK_CONTEXT === 'lane' || broker
 }
 
-function ambientPriority(raw, lane, fallback) {
-  if (raw === undefined && !lane) return fallback
+function ambientPriority(raw, lane, fallback, present) {
+  if (raw === undefined && (!lane || !present)) return fallback
   const value = typeof raw === 'string' ? raw.toUpperCase() : ''
   if (['P0', 'P1', 'P2'].includes(value)) return value
   process.stderr.write(`wt-suite-lock: invalid WT_SUITE_LOCK_PRIORITY ${JSON.stringify(displayArgv([raw]))}; using ${fallback}\n`)
@@ -25,7 +25,7 @@ export function suiteLockPriority(options = {}, env = process.env) {
   // The non-lane static mutex historically uses FIFO at P1, even for declared levels.
   if (options.staticSemaphore && !lane) return 'P1'
   if (options.priority !== undefined) return parseSuiteLockPriority(options.priority)
-  return ambientPriority(env.WT_SUITE_LOCK_PRIORITY, lane, lane ? 'P2' : 'P1')
+  return ambientPriority(env.WT_SUITE_LOCK_PRIORITY, lane, lane ? 'P2' : 'P1', Object.hasOwn(env, 'WT_SUITE_LOCK_PRIORITY'))
 }
 
 // Host boundaries declare context; all selection stays in the common resolver.
