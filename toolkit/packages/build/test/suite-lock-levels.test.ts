@@ -537,6 +537,17 @@ describe('lane priority without a sandbox broker', () => {
   })
 })
 
+function registerIsolatedPriorityEnvTest() {
+  it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
+    vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
+    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
+    const env = envFor(temp())
+    expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
+    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
+    expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
+  })
+}
+
 describe('declaration and isolated environments', () => {
   it('ordinary non-lane acquisition still defaults to P1', async () => {
     const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root) })
@@ -573,14 +584,7 @@ describe('declaration and isolated environments', () => {
     const result = cli(root, ['run', '--priority', 'release', '--', process.execPath, '-e', 'process.stdout.write(process.env.WT_SUITE_LOCK_PRIORITY || "unset")'])
     expect(result.status).toBe(0); expect(result.stdout).toBe('unset')
   })
-  it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
-    vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
-    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
-    const env = envFor(temp())
-    expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
-    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
-    expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
-  })
+  registerIsolatedPriorityEnvTest()
 })
 
 describe('light class holder warning timer', () => {
