@@ -33,19 +33,48 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const win = (pct: number, resetsAt = FUTURE) => ({ pct, resets_at: resetsAt, reset_local: 'Fri 06/11 04:00' })
+const win = (pct: number, resetsAt: string | number = FUTURE) => ({ pct, resets_at: resetsAt, reset_local: 'Fri 06/11 04:00' })
 
 interface Step { cache?: Record<string, unknown> | null, uuid?: string, advanceMs?: number }
-interface RunOptions { cycles?: number, accountKey?: string | null, fingerprint?: boolean, steps?: Step[], poll?: number }
+/** Switch the login identity once, at an exact point of the watcher's own cache check. */
+interface IdentitySwitch { when: 'during-cache-read' | 'after-cache-check', uuid: string }
+interface RunOptions { cycles?: number, accountKey?: string | null, fingerprint?: boolean, steps?: Step[], poll?: number, identitySwitch?: IdentitySwitch }
 const fingerprint = (uuid: string) => createHash('sha256').update(uuid).digest('hex').slice(0, 8)
 
+/**
+ * Preload fragment (needs `fs`, `fsp`, `cache`, `identity`, `writeIdentity` in scope).
+ * 'during-cache-read': the login changes while the cache file read is awaited.
+ * 'after-cache-check': the login changes right after the first identity read that follows that cache read.
+ */
+function identitySwitchPreload(identitySwitch: IdentitySwitch | undefined) {
+  if (!identitySwitch) return ''
+  return `const identitySwitch = ${JSON.stringify(identitySwitch)};
+let armed = false, switched = false;
+const readFile = fsp.readFile, readFileSync = fs.readFileSync;
+fsp.readFile = async function(path, ...args) {
+  const result = await readFile.call(this, path, ...args);
+  if (path === cache && !switched) {
+    if (identitySwitch.when === 'during-cache-read') { switched = true; writeIdentity(identitySwitch.uuid) } else armed = true;
+  }
+  return result;
+};
+fs.readFileSync = function(path, ...args) {
+  const result = readFileSync.call(this, path, ...args);
+  if (armed && path === identity) { armed = false; switched = true; writeIdentity(identitySwitch.uuid) }
+  return result;
+};\n`
+}
+
 /** Change real cache/identity files at the watcher's own sleep boundary, without wall-clock races. */
-function sequencePreload(root: string, accountKey: string | null, steps: Step[]) {
+function sequencePreload(root: string, accountKey: string | null, steps: Step[], identitySwitch?: IdentitySwitch) {
   const preload = join(root, 'steps.mjs')
   writeFileSync(preload, `import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 const root = ${JSON.stringify(root)}, steps = ${JSON.stringify(steps)};
 const cache = root + ${JSON.stringify(accountKey && accountKey !== 'login' ? `/.quota-cache.${accountKey}.json` : '/.quota-cache.json')};
+const identity = root + '/.claude.json';
+const writeIdentity = (uuid) => fs.writeFileSync(identity, JSON.stringify({ oauthAccount: { accountUuid: uuid } }));
 const append = fs.appendFileSync, now = Date.now();
 let cycle = 0, offset = 0;
 Date.now = () => now + offset;
@@ -54,16 +83,19 @@ fs.appendFileSync = function(path, ...args) {
   if (path !== root + '/sleeps') return result;
   const step = steps[cycle++] || {};
   offset += step.advanceMs || 0;
-  if (step.uuid) fs.writeFileSync(root + '/.claude.json', JSON.stringify({ oauthAccount: { accountUuid: step.uuid } }));
+  if (step.uuid) writeIdentity(step.uuid);
   if (step.cache === null) fs.rmSync(cache, { force: true });
   else if (step.cache) fs.writeFileSync(cache, JSON.stringify({ at: Date.now(), data: { configDir: root, accountKey: ${JSON.stringify(accountKey ?? 'login')}, ...step.cache } }));
   return result;
 };
-syncBuiltinESMExports();\n`)
+${identitySwitchPreload(identitySwitch)}syncBuiltinESMExports();\n`)
   return `--import=${pathToFileURL(preload).href}`
 }
 
-/** Probe printing payloads[n] on its n-th call (the last one repeats), in an isolated config dir. */
+/**
+ * Probe printing payloads[n] on its n-th call (the last one repeats), in an isolated config dir.
+ * A payload's `__uuid` makes the probe switch the login identity while it runs, before it answers.
+ */
 function runSequence(payloads: Array<Record<string, unknown>>, options: RunOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-quota-plan-'))
   roots.push(root)
@@ -75,14 +107,16 @@ function runSequence(payloads: Array<Record<string, unknown>>, options: RunOptio
 let n = 0; try { n = Number(readFileSync(${JSON.stringify(counter)}, 'utf8')) } catch {}
 writeFileSync(${JSON.stringify(counter)}, String(n + 1));
 const all = ${JSON.stringify(payloads)};
-console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...${JSON.stringify(identity)}, ...all[Math.min(n, all.length - 1)] }));\n`)
+const { __uuid, ...payload } = all[Math.min(n, all.length - 1)];
+if (__uuid) writeFileSync(process.env.CLAUDE_CONFIG_DIR + '/.claude.json', JSON.stringify({ oauthAccount: { accountUuid: __uuid } }));
+console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...${JSON.stringify(identity)}, ...payload }));\n`)
   if (options.fingerprint) writeFileSync(join(root, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'uuid-fixture' } }))
   const res = spawnSync(process.execPath, [WATCH, '--probe', probe, '--poll', String(options.poll ?? 5), '--timeout', '3'], {
     encoding: 'utf8',
     timeout: 20_000,
     env: {
        ...process.env,
-       NODE_OPTIONS: sequencePreload(root, accountKey, options.steps ?? []),
+       NODE_OPTIONS: sequencePreload(root, accountKey, options.steps ?? [], options.identitySwitch),
       ANTHROPIC_BASE_URL: '',
       ANTHROPIC_AUTH_TOKEN: '',
       WT_SESSION_ROLE: '',
@@ -368,6 +402,81 @@ describe('reset deadlines across unreported intervals', () => {
     ], { fingerprint: true })
     expect(res.stdout).toContain('QUOTA DROP 5h: 74% (was 75%) — reset unverified: before the reported reset time')
     expect(res.stdout).not.toContain('QUOTA RESET 5h: 74%')
+  })
+})
+
+// Astra round 4: a deadline that moves later BEFORE the previous one elapsed is a correction or an
+// extension, not a completed reset; only an elapsed, finite previous deadline proves the window turned.
+describe('a deadline advance is a reset only once the previous deadline has passed', () => {
+  const LATER = new Date(Date.parse(FUTURE) + 3_600_000).toISOString()
+
+  it('85@T -> 86@T+1h -> 86@T+1h before T: no RESET and no repeated 80% crossing', () => {
+    const res = runSequence([
+      { five_hour: win(85), seven_day: win(40) },
+      { five_hour: win(86, LATER), seven_day: win(40) },
+      { five_hour: win(86, LATER), seven_day: win(40) },
+    ], { fingerprint: true })
+    expect(res.stdout).not.toMatch(/QUOTA (RESET|DROP) 5h/)
+    expect(res.stdout).not.toContain('crossed the 80% threshold')
+  })
+
+  it('85@future -> 4@later-future stays the unverified DROP', () => {
+    const res = runSequence([
+      { five_hour: win(85), seven_day: win(40) },
+      { five_hour: win(4, LATER), seven_day: win(40) },
+    ], { fingerprint: true })
+    expect(res.stdout).toContain('QUOTA DROP 5h: 4% (was 85%) — reset unverified: before the reported reset time')
+    expect(res.stdout).not.toContain('QUOTA RESET 5h')
+  })
+
+  for (const previous of [-1e308, '-1e308', '1e309']) {
+    it(`a previous deadline ${String(previous)} that is no finite time never counts as advanced`, () => {
+      const res = runSequence([
+        { five_hour: win(85, previous), seven_day: win(40) },
+        { five_hour: win(86), seven_day: win(40) },
+      ], { fingerprint: true })
+      expect(res.stdout).not.toMatch(/QUOTA (RESET|DROP) 5h/)
+      expect(res.stdout).not.toContain('crossed the 80% threshold')
+    })
+  }
+})
+
+// Astra round 4: the identity that stamps and baselines a reading must be the one read around it.
+describe('a reading is bound to the login identity read around it', () => {
+  const SWITCH_DURING_PROBE = { __uuid: 'uuid-other-account', seven_day: win(85, PAST) }
+
+  it('a login switch while the live probe runs writes no cache and baselines nothing', () => {
+    const res = runSequence([SWITCH_DURING_PROBE], { accountKey: 'login', fingerprint: true, cycles: 1 })
+    expect(existsSync(join(res.root, '.quota-cache.json'))).toBe(false)
+    expect(armedLine(res.stdout)).not.toContain('watching')
+    expect(res.stdout).toContain('QUOTA WATCH: the login account changed while the probe ran — reading discarded, probing again next poll')
+  })
+
+  it('a reading taken across a login switch never becomes the new account\'s baseline (no false RESET)', () => {
+    const res = runSequence([SWITCH_DURING_PROBE, { seven_day: win(4) }], {
+      accountKey: 'login', fingerprint: true, cycles: 2, steps: [{ cache: null }],
+    })
+    expect(res.count).toBe(2)
+    expect(res.stdout).not.toMatch(/QUOTA (RESET|DROP)/)
+  })
+
+  it('a switch right after the cache check never baselines the cached reading under the new account', () => {
+    const res = runSequence([{ seven_day: win(85, PAST) }, { seven_day: win(4) }], {
+      accountKey: 'login', fingerprint: true, cycles: 3, identitySwitch: { when: 'after-cache-check', uuid: 'uuid-other-account' },
+    })
+    expect(res.count).toBe(2)
+    expect(countOf(res.stdout, 'QUOTA ACCOUNT CHANGED:')).toBe(1)
+    expect(res.stdout).not.toMatch(/QUOTA (RESET|DROP)/)
+  })
+
+  it('a switch during the awaited cache read rejects the cache and probes live', () => {
+    const res = runSequence([{ seven_day: win(40) }, { seven_day: win(41) }], {
+      accountKey: 'login', fingerprint: true, cycles: 2,
+      steps: [{ cache: { accountFingerprint: fingerprint('uuid-fixture'), seven_day: win(99) } }],
+      identitySwitch: { when: 'during-cache-read', uuid: 'uuid-other-account' },
+    })
+    expect(res.count).toBe(2)
+    expect(res.stdout).not.toContain('99%')
   })
 })
 
