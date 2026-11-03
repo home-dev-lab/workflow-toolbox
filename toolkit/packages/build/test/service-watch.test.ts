@@ -20,6 +20,7 @@
 // process would see them across successive polls.
 
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, utimesSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1062,6 +1063,7 @@ function runWatcher(
   opts: { maxCycles?: number; sleepLogPath?: string; extraEnv?: Record<string, string> },
   safetyTimeoutMs = 10_000,
 ): Promise<{ stdout: string }> {
+  writeFileSync(join(cfg, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'quota-fixture-account' } }))
   return new Promise((resolve, reject) => {
     const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CONFIG_DIR: cfg, ...opts.extraEnv }
     if (opts.maxCycles !== undefined) env.WT_QUOTA_WATCH_TEST_MAX_CYCLES = String(opts.maxCycles)
@@ -1135,6 +1137,7 @@ const completeCache = JSON.stringify({
   at: Date.now(),
   data: {
     configDir: cfg,
+    accountFingerprint: ${JSON.stringify(createHash('sha256').update('quota-fixture-account').digest('hex').slice(0, 8))},
     five_hour: { pct: 99, reset_local: '12:00' },
     seven_day: { pct: 5, reset_local: 'sam. 01/08 00:00' },
   },

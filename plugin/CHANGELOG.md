@@ -13,7 +13,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
-- The quota watcher watches each window on its own: a reading that lacks one window (on a plan with no five-hour limit, for example) no longer makes it blind on the other. Every window with a numeric percentage is watched (crossings, resets, shared cache) and the arming line names them; a window without one is reported once per run as not reported by the probe and keeps its threshold and reset history. Only a reading with no numeric window at all still degrades.
+- The quota watcher watches each numeric window independently, names unreported windows once, and preserves their history. Partial live readings cannot weaken later cache requirements or postpone live rechecks beyond the cache tolerance; login caches require the current account fingerprint. Drops baseline only their own window, advancing reset deadlines on the same verified account re-arm thresholds even when usage rises, and recovery names the watched windows. Empty bundled-probe responses degrade with backoff instead of claiming no subscription and stopping; repeated readings emit each crossing once.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
