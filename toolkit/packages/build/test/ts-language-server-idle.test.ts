@@ -44,7 +44,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
     const backend = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null,
       stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn<(signal?: string) => boolean>(() => true) })
     const sent = messages(backend.stdin)
-    const close = () => { backend.exitCode = 0; backend.emit('exit', 0, null); backend.emit('close', 0, null) }
+    const close = (code: number | null = 0, signal: string | null = null) => { backend.exitCode = code; backend.emit('exit', code, signal); backend.emit('close', code, signal) }
     return { backend, sent, close, answer: (id: string | number, result: unknown = null) => backend.stdout.write(frame({ id, result })) }
   }
   const start = vi.fn(() => { const run = child(); children.push(run); return run.backend })
@@ -598,11 +598,21 @@ it('supervises SIGHUP through the same bounded stop path', async () => {
 
 it('skips KILL when backend group ownership no longer matches', async () => {
   let ownership = 'ours'
-  const run = fixture({ groupOwnership: () => ownership }); run.initialize()
+  const killGroup = vi.fn()
+  const run = fixture({ groupOwnership: () => ownership, killGroup }); run.initialize()
   await vi.advanceTimersByTimeAsync(1100)
   ownership = 'unknown'
   await vi.advanceTimersByTimeAsync(1000)
-  expect(run.children[0]!.backend.kill, 'a mismatched birth identity must never receive KILL').not.toHaveBeenCalledWith('SIGKILL')
+  expect(killGroup, 'a mismatched birth identity must never receive a group KILL').not.toHaveBeenCalledWith(-123, 'SIGKILL')
+})
+
+it('still reaches an uncooperative leader through the child when ownership is unknown (darwin)', async () => {
+  const killGroup = vi.fn()
+  const run = fixture({ platform: 'darwin', groupOwnership: () => 'unknown', killGroup }); run.initialize()
+  await vi.advanceTimersByTimeAsync(1100)
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(run.children[0]!.backend.kill.mock.calls.map(call => call[0]), 'leader must get TERM then KILL through the ChildProcess').toEqual(['SIGTERM', 'SIGKILL'])
+  expect(killGroup, 'an unverified group must never be signalled').not.toHaveBeenCalled()
 })
 
 it('signals a surviving owned group after normal backend close', async () => {
@@ -618,18 +628,23 @@ it('signals a surviving owned group after normal backend close', async () => {
 it('reports unknown ownership without signalling an unverified group', () => {
   const stderr = new PassThrough(); let text = ''
   stderr.on('data', chunk => { text += chunk.toString() })
-  const killGroup = vi.fn()
-  stop.signalTsBackend({ options: { groupOwnership: () => 'unknown', killGroup }, streams: { stderr } }, { child: { pid: 123 } }, 'SIGKILL')
-  expect(killGroup, 'unknown ownership must suppress the signal').not.toHaveBeenCalled()
+  const killGroup = vi.fn(), kill = vi.fn()
+  stop.signalTsBackend({ options: { groupOwnership: () => 'unknown', killGroup }, streams: { stderr } }, { child: { pid: 123, kill } }, 'SIGKILL')
+  expect(killGroup, 'unknown ownership must suppress the group signal').not.toHaveBeenCalled()
+  expect(kill, 'the leader is still signalled through its ChildProcess').toHaveBeenCalledExactlyOnceWith('SIGKILL')
   expect(text).toContain('unknown')
 })
 
-it('preserves unexpected close status while cleaning surviving descendants', async () => {
+it.each([
+  { name: 'exit code', code: 3 as number | null, signal: null as string | null },
+  { name: 'signal', code: null, signal: 'SIGSEGV' },
+])('preserves unexpected close status ($name) while cleaning surviving descendants', async ({ code, signal }) => {
   const run = fixture({ groupOwnership: () => 'ours' }); run.initialize()
-  run.children[0]!.close(); await vi.advanceTimersByTimeAsync(0)
-  expect(run.exit).not.toHaveBeenCalled()
+  run.children[0]!.close(code, signal); await vi.advanceTimersByTimeAsync(0)
+  expect(run.exit).not.toHaveBeenCalled(); expect(run.exitSignal).not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(1000)
-  expect(run.exit, 'unexpected close must finish after bounded group cleanup').toHaveBeenCalledExactlyOnceWith(0)
+  if (signal) expect(run.exitSignal, 'the saved signal must surface, not the forced completion').toHaveBeenCalledExactlyOnceWith(signal)
+  else expect(run.exit, 'the saved exit code must surface, not the forced completion').toHaveBeenCalledExactlyOnceWith(code)
   expect(run.children[0]!.sent.some(m => m.method === 'shutdown')).toBe(false)
 })
 
