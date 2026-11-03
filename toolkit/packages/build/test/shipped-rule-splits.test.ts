@@ -310,11 +310,9 @@ function checkAtActBody(name: string) {
   const spec = ruleSpec(name) as { 'on-demand': { triggers: Trigger[] } }
   expect(body.length, name).toBeLessThan(9500)
   expect(spec['on-demand'].triggers.length, name).toBeGreaterThan(0)
-  expect(spec['on-demand'].triggers.every((trigger) => typeof trigger['before-first-act'] === 'boolean'), name).toBe(true)
-  expect(spec['on-demand'].triggers.some((trigger) => trigger['before-first-act'] === true), name).toBe(true)
-  for (const trigger of spec['on-demand'].triggers) {
+  for (const [index, trigger] of spec['on-demand'].triggers.entries()) {
     const reason = rideAlongReason(name, trigger)
-    if (reason) expect(trigger['before-first-act'], `${name}: ${reason}`).toBe(false)
+    expect(trigger['before-first-act'], `${name}:${index}: ${reason ?? 'This duty governs the call itself.'}`).toBe(reason === undefined)
   }
 }
 
@@ -539,9 +537,7 @@ describe('shipped split rules', () => {
 
   it('retains every inventoried order, including the private-rule static anchors', checkInventoriedOrders)
 
-  it('keeps every at-act body within the fallback slot and registers its pre-act triggers', () => {
-    for (const name of AT_ACT_BODY_RULES) checkAtActBody(name)
-  })
+  it.each(AT_ACT_BODY_RULES)('keeps %s within the fallback slot and registers every pre-act trigger', checkAtActBody)
 
   it('keeps decision-time and unavailable-service obligations in CORE', checkCoreClauses)
 

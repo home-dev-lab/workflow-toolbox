@@ -137,7 +137,14 @@ const GOVERNED = [
   'git reset --hard HEAD', 'git rebase main', 'git merge topic', 'git pull', 'gh pr merge 123',
   'git -c color.ui=false worktree add ../x', String.raw`git -C C:\x worktree add ../x`,
 ]
-it.each(['git worktree list', 'git worktree prune', 'git worktree list --porcelain', String.raw`git -C C:\x worktree list`])(
+it.each(['git worktree "add" ../x', "git worktree 'remove' x", String.raw`git worktree \move a b`])(
+  'worktree mutations retain quoted and escaped subcommands: %s', async (command) => {
+    const rule = await load(WORKTREE)
+    expect(refuses(rule, 'Bash', { command }), command).toBe(true)
+  },
+)
+
+it.each(['git worktree list', 'git worktree prune', 'git worktree "list"', "git worktree 'prune'", 'git worktree list --porcelain', String.raw`git -C C:\x worktree list`])(
   'worktree reads do not trigger isolation: %s', async (command) => {
     const rule = await load(WORKTREE)
     for (const act of GOVERNED) expect(refuses(rule, 'Bash', { command: act }), act).toBe(true)
