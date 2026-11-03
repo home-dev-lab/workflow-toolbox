@@ -73,29 +73,44 @@ npm i -g typescript-language-server typescript
 ### Priority and idle lifetime
 
 The executable lowers its own priority before creating any backend: nice 19 on POSIX, mapped by
-Node's `PRIORITY_LOW` to the idle priority class on Windows. Ordinary child creation inherits this
-priority, including the native backend and Node's tsserver children. Failure to set or read back
-the priority is reported on stderr as **unknown**. Low priority is not a CPU-percentage cap: an
-otherwise idle machine may still run indexing at full speed. Linux inheritance is tested with real
-processes; macOS and Windows still need real-host measurements.
+Node's `PRIORITY_LOW` to the idle priority class on Windows. On Linux nice is per thread: the wrapper
+lowers and checks its existing threads before spawn; ordinary new threads and children inherit it.
+Linux CFS nice weights compete within the same CPU-controller cgroup (and scheduler session/autogroup
+where enabled), not against other cgroups. WSL2 nice does not set Windows host process priorities.
+The launcher probes an existing `systemd-run --user --scope` with `CPUWeight=1` on Linux, using it
+only after a successful probe, without installing a dependency. Unavailable user managers or tools
+are diagnosed as **low-weight scope unavailable**; nice remains the fallback. A scope weight is
+relative to sibling cgroups, not a host-wide CPU cap. Failure to set or read back nice is reported
+as **unknown**. An otherwise idle machine may still run indexing at full speed. Linux inheritance
+and forced tree shutdown are tested with real processes; macOS and Windows need real-host measurements.
 
 The first backend starts for the `initialize` request, which needs the selected backend's actual
 capabilities. The wrapper cannot distinguish an automatic host handshake from a navigation tool
 call on that wire. It does not invent a capability response to defer initialization further.
 
-After 60 seconds without a request in flight, the wrapper sends `shutdown`, then `exit`, leaving
-the client's connection open. Client or server requests prevent retirement until answered;
-diagnostics and file notifications do not extend the deadline. `WT_TSLS_IDLE_MS` can set a whole
+After 60 seconds without a client-originated request, the wrapper sends `shutdown`, then `exit`,
+leaving the client's connection open. Unanswered requests in either direction receive at most one
+additional idle interval: the absolute ceiling is 120 seconds after the last client request at the
+default setting. Pending client requests then receive a cancellation error. Server requests, their
+client replies, diagnostics and file notifications do not reset that deadline. `WT_TSLS_IDLE_MS` can set a whole
 number of milliseconds from 1,000 to 3,600,000; invalid values retain 60,000. A five-second shutdown
-grace is followed by TERM to the owned backend child and, one second later, KILL if it has not
-closed. This timeout path does not signal a host-wide process group; descendant cleanup for an
-uncooperative backend remains unverified.
+grace is followed by TERM to the backend's isolated POSIX process group and, one second later,
+KILL to that group, including descendants holding inherited pipes open. Local pipe teardown bounds
+replacement startup even if close never arrives. Windows can signal only the owned child handle;
+descendant cleanup there remains unknown because Node supplies no dependency-free Job Object API.
+Initialization also has a two-idle-interval deadline. Wrapper TERM/INT and client EOF supervise
+shutdown rather than leaving a replacement running.
 
 While asleep, file notifications update saved document text without starting a server. Consequently
 background diagnostics pause too. The next request starts the same selected backend, reinitializes
 it, and replays configuration and current open documents before that request. Incremental edits use
 UTF-16 positions; closed documents are omitted. Requests and notifications arriving during restart
-keep their order. Accepted dynamic registrations are released when retiring their backend. Internal
+keep their order, including workspace-folder changes and cancellation. Replacement capabilities
+must match the original handshake, including position encoding, or the wrapper fails the queued
+requests and disconnects. Edits use line-indexed pieces, materializing text only for replay;
+CR, LF and CRLF boundaries clamp characters before line endings. Document frames after the initial
+handshake do not share its small initialization budget. Accepted dynamic registrations have
+generation-specific IDs and are released when retiring their backend. Internal
 initialize/shutdown replies stay off the client's wire. An asleep `shutdown` is answered locally.
 
 ### CPU budget (observational)

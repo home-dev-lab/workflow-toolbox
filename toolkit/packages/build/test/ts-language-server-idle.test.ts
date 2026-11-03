@@ -9,6 +9,7 @@ const root = process.env.WT_TSLS_IDLE_TEST_ROOT ?? fileURLToPath(new URL('../../
 const moduleUrl = (name: string) => pathToFileURL(join(root, `bin/lib/host/${name}.mjs`)).href
 const managed = await import(moduleUrl('ts-idle-session'))
 const priority = await import(moduleUrl('ts-priority'))
+const sessionState = await import(moduleUrl('ts-session-state'))
 const frame = (value: object) => {
   const body = JSON.stringify({ jsonrpc: '2.0', ...value })
   return Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
@@ -40,13 +41,15 @@ function fixture() {
   const children: ReturnType<typeof child>[] = []
   function child() {
     const backend = Object.assign(new EventEmitter(), { pid: 123, exitCode: null as number | null,
-      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(() => true) })
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn<(signal?: string) => boolean>(() => true) })
     const sent = messages(backend.stdin)
     const close = () => { backend.exitCode = 0; backend.emit('exit', 0, null); backend.emit('close', 0, null) }
     return { backend, sent, close, answer: (id: string | number, result: unknown = null) => backend.stdout.write(frame({ id, result })) }
   }
   const start = vi.fn(() => { const run = child(); children.push(run); return run.backend })
   managed.runTsIdleSession({ input, output, stderr, exit, exitSignal, idleMs: 1000, stopMs: 100,
+    signalSource: new EventEmitter(),
+    killGroup: (_pid: number, signal: string) => children.at(-1)!.backend.kill(signal),
     select: () => ({ status: 'launch', backend: 'typescript-language-server', command: '/fake', args: [] }), start })
   const send = (message: object) => input.write(frame(message))
   const spawn = () => children.at(-1)!.backend.emit('spawn')
@@ -55,12 +58,255 @@ function fixture() {
     spawn(); children[0]!.answer(1, { capabilities: { hoverProvider: true } }); send({ method: 'initialized', params: {} })
   }
   disposals.push(() => { for (const run of children) { run.close(); for (const s of [run.backend.stdin, run.backend.stdout, run.backend.stderr]) s.destroy() }; input.destroy(); output.destroy(); stderr.destroy() })
-  return { input, output, children, start, received, exit, send, spawn, initialize }
+  return { input, output, stderr, children, start, received, exit, exitSignal, send, spawn, initialize }
 }
+
+it('routes server replies and exit during replacement initialization', async () => {
+  const run = fixture(); run.initialize(); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  const second = run.children[1]!
+  second.backend.stdout.write(frame({ id: 'config', method: 'workspace/configuration', params: {} }))
+  run.send({ id: run.received.at(-1)!.id!, result: [] })
+  expect(second.sent.at(-1), 'replacement initialize must receive client replies immediately').toMatchObject({ id: 'config', result: [] })
+  run.send({ method: 'exit' })
+  expect(second.sent.at(-1)?.method, 'exit must bypass replacement initialize').toBe('exit')
+})
+
+it('bounds unanswered requests and ignores server traffic for the idle deadline', async () => {
+  const run = fixture(); run.initialize()
+  run.send({ id: 2, method: 'workspace/symbol', params: {} })
+  await vi.advanceTimersByTimeAsync(999)
+  run.children[0]!.backend.stdout.write(frame({ id: 'config', method: 'workspace/configuration', params: {} }))
+  run.send({ id: run.received.at(-1)!.id!, result: [] })
+  await vi.advanceTimersByTimeAsync(1001)
+  expect(run.children[0]!.sent.some(m => m.method === 'shutdown'), 'unanswered requests must have a finite retirement ceiling').toBe(true)
+  expect(run.received).toContainEqual(expect.objectContaining({ id: 2, error: expect.objectContaining({ code: -32800 }) }))
+})
+
+it('does not reset the no-client-request deadline for a server request reply', async () => {
+  const run = fixture(); run.initialize(); await vi.advanceTimersByTimeAsync(900)
+  run.children[0]!.backend.stdout.write(frame({ id: 'config', method: 'workspace/configuration', params: {} }))
+  run.send({ id: run.received.at(-1)!.id!, result: [] })
+  await vi.advanceTimersByTimeAsync(100)
+  expect(run.children[0]!.sent.at(-1)?.method, 'server request replies must not reset the client-origin deadline').toBe('shutdown')
+})
+
+it('retains the actual arrival deadline when a queued request is replayed', async () => {
+  const run = fixture(); run.initialize(); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  await vi.advanceTimersByTimeAsync(500)
+  run.children[1]!.answer(1, { capabilities: { hoverProvider: true } }); run.children[1]!.answer(2)
+  await vi.advanceTimersByTimeAsync(500)
+  expect(run.children[1]!.sent.at(-1)?.method, 'replaying a request must not pretend it just arrived').toBe('shutdown')
+})
+
+it('rejects changed replacement capabilities before replaying requests', async () => {
+  const run = fixture(); run.initialize(); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  run.children[1]!.answer(1, { capabilities: { hoverProvider: true, positionEncoding: 'utf-8' } })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(run.exit, 'changed position encoding must fail closed').toHaveBeenCalledWith(1)
+  expect(run.children[1]!.sent.some(m => m.id === 2)).toBe(false)
+})
+
+it('answers shutdown during retirement without a replacement', async () => {
+  const run = fixture(); run.initialize(); await vi.advanceTimersByTimeAsync(1000)
+  run.send({ id: 9, method: 'shutdown' })
+  expect(run.received.at(-1), 'shutdown must be answered locally during retirement').toMatchObject({ id: 9, result: null })
+  run.children[0]!.close()
+  expect(run.start).toHaveBeenCalledTimes(1)
+})
+
+it('forwards final progress output while stopping', async () => {
+  const run = fixture(); run.initialize(); await vi.advanceTimersByTimeAsync(1000)
+  run.children[0]!.backend.stdout.write(frame({ method: '$/progress', params: { token: 'work', value: { kind: 'end' } } }))
+  expect(run.received.at(-1), 'retirement must preserve final progress').toMatchObject({ method: '$/progress' })
+})
+
+it('does not replay after client EOF during replacement initialization', async () => {
+  const run = fixture(); run.initialize(); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  const write = PassThrough.prototype.write
+  let afterEnd = 0
+  vi.spyOn(PassThrough.prototype, 'write').mockImplementation(function (this: PassThrough, ...args: Parameters<typeof write>) {
+    if (this.writableEnded) { afterEnd++; return false }
+    return Reflect.apply(write, this, args)
+  })
+  run.input.end(); await vi.advanceTimersByTimeAsync(0)
+  run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(run.children[1]!.sent.some(m => m.method === 'initialized'), 'EOF must prevent replay to an ended backend input').toBe(false)
+  expect(afterEnd, 'EOF must prevent all writes to ended backend streams').toBe(0)
+})
+
+it.each([{ text: 'a\rb', character: 0, line: 1, expected: 'a\rXb' }, { text: 'a\r\nb', character: 99, line: 0, expected: 'aX\r\nb' }, { text: 'a\n', character: 0, line: 1, expected: 'a\nX' }])('replays edits with correct line endings: $expected', async ({ text, character, line, expected }) => {
+  const run = fixture(); run.initialize()
+  run.send({ method: 'textDocument/didOpen', params: { textDocument: { uri: 'file:///a.ts', text, version: 1 } } })
+  const position = { line, character }
+  run.send({ method: 'textDocument/didChange', params: { textDocument: { uri: 'file:///a.ts', version: 2 }, contentChanges: [{ range: { start: position, end: position }, text: 'X' }] } })
+  await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn(); run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
+  expect(run.children[1]!.sent.find(m => m.method === 'textDocument/didOpen')!.params).toMatchObject({ textDocument: { text: expected } })
+})
+
+it('freezes workspace folders before queued requests and preserves rootUri fallback', async () => {
+  const run = fixture(); run.initialize(); await vi.advanceTimersByTimeAsync(1000)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} })
+  run.send({ method: 'workspace/didChangeWorkspaceFolders', params: { event: { removed: [], added: [{ uri: 'file:///extra', name: 'extra' }] } } })
+  run.children[0]!.answer(run.children[0]!.sent.find(m => m.method === 'shutdown')!.id!); run.children[0]!.close(); await vi.advanceTimersByTimeAsync(0); run.spawn()
+  expect(run.children[1]!.sent[0]!.params?.workspaceFolders, 'folder changes must not overtake queued requests').toBeUndefined()
+  run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
+  expect(run.children[1]!.sent.map(m => m.method)).toEqual(['initialize', 'initialized', 'workspace/symbol', 'workspace/didChangeWorkspaceFolders'])
+})
+
+it('resumes client input when a backpressured backend is retired', async () => {
+  const run = fixture(); run.initialize()
+  const write = PassThrough.prototype.write
+  const blocked = vi.spyOn(PassThrough.prototype, 'write').mockImplementation(function (this: PassThrough, ...args: Parameters<typeof write>) {
+    const result = Reflect.apply(write, this, args)
+    return this !== run.input && args[0].toString().includes('blocked') ? false : result
+  })
+  run.send({ method: 'blocked' })
+  expect(run.input.isPaused()).toBe(true)
+  blocked.mockRestore()
+  await vi.advanceTimersByTimeAsync(2100)
+  expect(run.input.isPaused(), 'closed backends must release client backpressure').toBe(false)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} })
+  expect(run.start).toHaveBeenCalledTimes(2)
+})
+
+it('namespaces dynamic registrations so late cleanup cannot remove a replacement registration', async () => {
+  const run = fixture(); run.initialize()
+  const registration = { id: 'same', method: 'workspace/didChangeWatchedFiles' }
+  run.children[0]!.backend.stdout.write(frame({ id: 'r1', method: 'client/registerCapability', params: { registrations: [registration] } }))
+  const old = (run.received.at(-1)!.params!.registrations as Array<{ id: string }>)[0]!.id
+  run.send({ id: run.received.at(-1)!.id!, result: null }); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  run.children[1]!.backend.stdout.write(frame({ id: 'r2', method: 'client/registerCapability', params: { registrations: [registration] } }))
+  const next = (run.received.at(-1)!.params!.registrations as Array<{ id: string }>)[0]!.id
+  expect(next, 'registration ids must be unique across backend generations').not.toBe(old)
+})
+
+it('never routes a stale server-request reply into a new generation with the same backend id', async () => {
+  const run = fixture(); run.initialize()
+  run.children[0]!.backend.stdout.write(frame({ id: 'same', method: 'workspace/configuration', params: {} }))
+  const oldId = run.received.at(-1)!.id!
+  await vi.advanceTimersByTimeAsync(2000)
+  const shutdown = run.children[0]!.sent.find(m => m.method === 'shutdown')!
+  run.children[0]!.answer(shutdown.id!); run.children[0]!.close(); await vi.advanceTimersByTimeAsync(0)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  run.children[1]!.backend.stdout.write(frame({ id: 'same', method: 'workspace/configuration', params: {} }))
+  const newId = run.received.at(-1)!.id!
+  expect(newId).not.toBe(oldId)
+  run.send({ id: oldId, result: ['stale'] })
+  expect(run.children[1]!.sent.some(m => m.id === 'same'), 'stale replies must not satisfy a new server request').toBe(false)
+  run.send({ id: newId, result: ['current'] })
+  expect(run.children[1]!.sent.at(-1)).toMatchObject({ id: 'same', result: ['current'] })
+})
+
+it('accepts a didOpen larger than the initialization frame budget', () => {
+  const run = fixture(); run.initialize()
+  run.send({ method: 'textDocument/didOpen', params: { textDocument: { uri: 'file:///big.ts', text: 'x'.repeat(17 * 1024 * 1024), version: 1 } } })
+  expect(run.children[0]!.sent.at(-1)?.method, 'large document notifications must reach the backend').toBe('textDocument/didOpen')
+})
+
+it('copies fragmented initialize responses only linearly', () => {
+  const run = fixture()
+  run.send({ id: 1, method: 'initialize', params: {} }); run.spawn()
+  const bytes = frame({ id: 1, result: { capabilities: {}, serverInfo: { name: 'x'.repeat(256 * 1024) } } })
+  let copied = 0
+  const concat = Buffer.concat
+  vi.spyOn(Buffer, 'concat').mockImplementation((list, size) => {
+    copied += size ?? list.reduce((sum, item) => sum + item.length, 0)
+    return concat(list, size)
+  })
+  for (let i = 0; i < bytes.length; i += 1024) run.children[0]!.backend.stdout.write(bytes.subarray(i, i + 1024))
+  expect(copied, 'initialize observer copying must be linear').toBeLessThan(bytes.length * 6)
+})
+
+it('does not copy untouched document text once per incremental edit', () => {
+  const state = { documents: new Map() }
+  const uri = 'file:///large.ts'
+  sessionState.rememberTsState(state, { method: 'textDocument/didOpen', params: { textDocument: { uri, text: 'short\n' + 'x'.repeat(1024 * 1024), version: 1 } } })
+  const slice = String.prototype.slice
+  let copied = 0
+  vi.spyOn(String.prototype, 'slice').mockImplementation(function (this: string, start, end) {
+    const result = Reflect.apply(slice, this, [start, end]); copied += result.length; return result
+  })
+  for (let i = 0; i < 20; i++) sessionState.rememberTsState(state, { method: 'textDocument/didChange', params: { textDocument: { uri, version: i + 2 }, contentChanges: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, text: 'a' }] } })
+  expect(copied, 'edits must not copy the untouched megabyte tail').toBeLessThan(1024 * 1024)
+})
+
+it('retains rootUri as an initial workspace folder when workspaceFolders is null', () => {
+  const state = { documents: new Map(), initialize: { params: { rootUri: 'file:///root', workspaceFolders: null as unknown } } }
+  sessionState.rememberTsState(state, { method: 'workspace/didChangeWorkspaceFolders', params: { event: { removed: [], added: [{ uri: 'file:///extra', name: 'extra' }] } } })
+  expect(state.initialize.params.workspaceFolders, 'null workspaceFolders must not discard rootUri').toEqual([{ uri: 'file:///root', name: 'root' }, { uri: 'file:///extra', name: 'extra' }])
+})
+
+it('bounds initialization when a replacement never answers', async () => {
+  const run = fixture(); run.initialize(); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(run.exit, 'an unanswered initialize must have a finite lifetime').toHaveBeenCalledWith(1)
+})
+
+it('keeps the initialization ceiling armed across server requests and client replies', async () => {
+  const run = fixture(); run.initialize(); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  run.children[1]!.backend.stdout.write(frame({ id: 'config', method: 'workspace/configuration', params: {} }))
+  run.send({ id: run.received.at(-1)!.id!, result: [] })
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(run.exit, 'init server traffic must not cancel the initialization ceiling').toHaveBeenCalledWith(1)
+})
+
+it('applies successive multi-line piece edits exactly before replay', () => {
+  const state = { documents: new Map() }, uri = 'file:///a.ts'
+  sessionState.rememberTsState(state, { method: 'textDocument/didOpen', params: { textDocument: { uri, text: 'one\r\ntwo\rthree\nfour', version: 1 } } })
+  const changes = [
+    { range: { start: { line: 0, character: 1 }, end: { line: 1, character: 2 } }, text: 'A\nB' },
+    { range: { start: { line: 1, character: 1 }, end: { line: 2, character: 3 } }, text: '😀' },
+  ]
+  sessionState.rememberTsState(state, { method: 'textDocument/didChange', params: { textDocument: { uri, version: 2 }, contentChanges: changes } })
+  expect(sessionState.tsReplayState(state)[1].params.textDocument.text).toBe('oA\nB😀ee\nfour')
+})
+
+it('clears the EOF deadline immediately before backend close', async () => {
+  const run = fixture(), scheduled = vi.spyOn(globalThis, 'setTimeout')
+  run.initialize()
+  const idle = scheduled.mock.results.at(-1)!.value
+  const clear = vi.spyOn(globalThis, 'clearTimeout')
+  run.input.end(); await vi.advanceTimersByTimeAsync(0)
+  expect(clear, 'EOF must cancel the actual scheduled idle timer').toHaveBeenCalledWith(idle)
+})
+
+it('consumes cleanup replies after the replacement is active', async () => {
+  const run = fixture(); run.initialize()
+  run.children[0]!.backend.stdout.write(frame({ id: 'r', method: 'client/registerCapability', params: { registrations: [{ id: 'watch', method: 'workspace/didChangeWatchedFiles' }] } }))
+  run.send({ id: run.received.at(-1)!.id!, result: null }); await sleepBackend(run)
+  const cleanup = run.received.find(m => m.method === 'client/unregisterCapability')!
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn(); run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
+  let diagnostic = ''
+  run.stderr.on('data', chunk => { diagnostic += chunk.toString() })
+  run.send({ id: cleanup.id!, error: { code: -1, message: 'refused' } })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(run.children[1]!.sent.some(m => m.id === cleanup.id), 'cleanup replies must never leak into a replacement').toBe(false)
+  expect(diagnostic, 'cleanup failures must be consumed and diagnosed').toContain('client refused idle capability cleanup')
+})
+
+it('replays didSave text and ordered cancellation during restart', async () => {
+  const run = fixture(); run.initialize()
+  run.send({ method: 'textDocument/didOpen', params: { textDocument: { uri: 'file:///a.ts', text: 'old', version: 1 } } })
+  run.send({ method: 'textDocument/didSave', params: { textDocument: { uri: 'file:///a.ts' }, text: 'saved' } })
+  await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} })
+  run.send({ method: '$/cancelRequest', params: { id: 2 } }); run.spawn(); run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
+  expect(run.children[1]!.sent[2]!.params).toMatchObject({ textDocument: { text: 'saved' } })
+  expect(run.children[1]!.sent.slice(-2).map(m => m.method)).toEqual(['workspace/symbol', '$/cancelRequest'])
+})
 
 it('sets and verifies the lowest priority before descendants can inherit it', () => {
   const set = vi.fn(), get = vi.fn(() => 19)
-  expect(priority.lowerTsPriority({ set, get, stderr: new PassThrough() })).toEqual({ status: 'lowered', priority: 19 })
+  expect(priority.lowerTsPriority({ set, get, threads: () => [], stderr: new PassThrough() })).toEqual({ status: 'lowered', priority: 19 })
   expect(set).toHaveBeenCalledExactlyOnceWith(0, 19)
   expect(get).toHaveBeenCalledExactlyOnceWith(0)
 })
@@ -73,7 +319,8 @@ it('lowers a real wrapper process and its subsequently spawned backend', () => {
     console.log(JSON.stringify({ parent: getPriority(), child: Number(child.stdout.trim()), status: child.status, calls }));`
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 30_000 })
   expect(result.status, result.stderr).toBe(0)
-  expect(JSON.parse(result.stdout)).toEqual({ parent: 19, child: 19, status: 0, calls: 1 })
+  expect(JSON.parse(result.stdout)).toMatchObject({ parent: 19, child: 19, status: 0 })
+  expect(JSON.parse(result.stdout).calls).toBeGreaterThanOrEqual(1)
 })
 
 it('applies lowest priority in the shipped executable before receiving requests', () => {
@@ -146,17 +393,17 @@ it('wakes only on a request and replays current documents/configuration before h
   expect(run.received[1]!.result).toEqual({ contents: 'const x: 42' })
 })
 
-it('never idles across an unanswered client or server request', async () => {
+it('allows one idle interval of grace for unanswered requests', async () => {
   const run = fixture(); run.initialize()
   run.send({ id: 2, method: 'textDocument/definition', params: {} })
-  await vi.advanceTimersByTimeAsync(2000)
+  await vi.advanceTimersByTimeAsync(1500)
   expect(run.children[0]!.sent.some(m => m.method === 'shutdown')).toBe(false)
   run.children[0]!.answer(2)
   run.children[0]!.backend.stdout.write(frame({ id: 'config', method: 'workspace/configuration', params: {} }))
-  await vi.advanceTimersByTimeAsync(2000)
+  await vi.advanceTimersByTimeAsync(499)
   expect(run.children[0]!.sent.some(m => m.method === 'shutdown')).toBe(false)
-  run.send({ id: 'config', result: [] })
-  await vi.advanceTimersByTimeAsync(1000)
+  run.send({ id: run.received.at(-1)!.id!, result: [] })
+  await vi.advanceTimersByTimeAsync(1)
   expect(run.children[0]!.sent.at(-1)?.method).toBe('shutdown')
 })
 
@@ -197,7 +444,7 @@ it('preserves notification order while a replacement initializes', async () => {
   run.send({ id: 2, method: 'textDocument/hover', params: {} })
   run.send({ method: 'textDocument/didChange', params: { textDocument: { uri: 'file:///workspace/a.ts', version: 2 }, contentChanges: [{ text: 'after' }] } })
   run.send({ id: 3, method: 'textDocument/hover', params: {} })
-  run.spawn(); run.children[1]!.answer(1, { capabilities: {} })
+  run.spawn(); run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
   const sent = run.children[1]!.sent
   expect(sent.map(m => m.method)).toEqual(['initialize', 'initialized', 'textDocument/didOpen', 'textDocument/hover', 'textDocument/didChange', 'textDocument/hover'])
   expect(sent.filter(m => m.method === 'textDocument/hover').map(m => m.id)).toEqual([2, 3])
@@ -210,7 +457,7 @@ it('does not replay closed documents and retains UTF-16 incremental edits', asyn
   run.send({ method: 'textDocument/didChange', params: { textDocument: { uri: 'file:///workspace/a.ts', version: 2 }, contentChanges: [{ range: { start: { line: 0, character: 2 }, end: { line: 1, character: 4 } }, text: 'saved' }] } })
   run.send({ method: 'textDocument/didClose', params: { textDocument: { uri: 'file:///workspace/b.ts' } } })
   await sleepBackend(run)
-  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn(); run.children[1]!.answer(1, { capabilities: {} })
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn(); run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
   const opened = run.children[1]!.sent.filter(m => m.method === 'textDocument/didOpen')
   expect(opened).toHaveLength(1)
   expect(opened[0]!.params).toMatchObject({ textDocument: { uri: 'file:///workspace/a.ts', version: 2, text: '😀saved' } })
@@ -239,11 +486,11 @@ it('does not let diagnostic output or file notifications extend the no-request d
 it('unregisters accepted dynamic capabilities before discarding their backend', async () => {
   const run = fixture(); run.initialize()
   run.children[0]!.backend.stdout.write(frame({ id: 'register', method: 'client/registerCapability', params: { registrations: [{ id: 'watch-old', method: 'workspace/didChangeWatchedFiles', registerOptions: { watchers: [] } }] } }))
-  run.send({ id: 'register', result: null })
+  run.send({ id: run.received.at(-1)!.id!, result: null })
   await vi.advanceTimersByTimeAsync(1000)
   const unregister = run.received.find(m => m.method === 'client/unregisterCapability')
   expect(unregister, 'retired backend must release its client-side registrations').toBeDefined()
-  expect(unregister!.params).toEqual({ unregisterations: [{ id: 'watch-old', method: 'workspace/didChangeWatchedFiles' }] })
+  expect(unregister!.params).toEqual({ unregisterations: [{ id: expect.stringContaining('-1-watch-old'), method: 'workspace/didChangeWatchedFiles' }] })
   const sent = run.children[0]!.sent.length
   run.send({ id: unregister!.id!, result: null })
   expect(run.children[0]!.sent).toHaveLength(sent)
@@ -277,7 +524,7 @@ it('forwards fragmented diagnostic payloads with linear copying after initialize
 
 it('rejects oversized protocol frames before allocating their bodies or spawning', async () => {
   const run = fixture()
-  run.input.write(Buffer.from('Content-Length: 999999999\r\n\r\n'))
+  run.input.write(Buffer.from('Content-Length: 9999999999999999999\r\n\r\n'))
   await vi.advanceTimersByTimeAsync(0)
   expect(run.exit).toHaveBeenCalledExactlyOnceWith(1)
   expect(run.start).not.toHaveBeenCalled()
@@ -304,6 +551,6 @@ it('keeps supervising its retiring backend when the client sends exit', async ()
   await vi.advanceTimersByTimeAsync(1000)
   run.send({ method: 'exit' }); await vi.advanceTimersByTimeAsync(0)
   expect(run.exit, 'client exit must wait for backend close').not.toHaveBeenCalled()
-  run.children[0]!.close(); await vi.advanceTimersByTimeAsync(0)
+  await vi.advanceTimersByTimeAsync(1100)
   expect(run.exit).toHaveBeenCalledExactlyOnceWith(0)
 })
