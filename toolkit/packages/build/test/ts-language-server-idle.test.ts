@@ -10,6 +10,7 @@ const moduleUrl = (name: string) => pathToFileURL(join(root, `bin/lib/host/${nam
 const managed = await import(moduleUrl('ts-idle-session'))
 const priority = await import(moduleUrl('ts-priority'))
 const sessionState = await import(moduleUrl('ts-session-state'))
+const stop = await import(moduleUrl('ts-idle-stop'))
 const frame = (value: object) => {
   const body = JSON.stringify({ jsonrpc: '2.0', ...value })
   return Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
@@ -34,7 +35,7 @@ function messages(stream: PassThrough) {
 const disposals: Array<() => void> = []
 afterEach(() => { for (const dispose of disposals.splice(0)) dispose(); vi.restoreAllMocks(); vi.useRealTimers() })
 
-function fixture() {
+function fixture(overrides: Record<string, unknown> = {}) {
   vi.useFakeTimers()
   const input = new PassThrough(), output = new PassThrough(), stderr = new PassThrough()
   const received = messages(output), exit = vi.fn(), exitSignal = vi.fn()
@@ -47,10 +48,13 @@ function fixture() {
     return { backend, sent, close, answer: (id: string | number, result: unknown = null) => backend.stdout.write(frame({ id, result })) }
   }
   const start = vi.fn(() => { const run = child(); children.push(run); return run.backend })
+  const signals = new EventEmitter()
   managed.runTsIdleSession({ input, output, stderr, exit, exitSignal, idleMs: 1000, stopMs: 100,
-    signalSource: new EventEmitter(),
+    platform: 'linux',
+    signalSource: signals,
+    groupOwnership: (backend: { child: { exitCode: number | null } }) => backend.child.exitCode === null ? 'ours' : 'empty',
     killGroup: (_pid: number, signal: string) => children.at(-1)!.backend.kill(signal),
-    select: () => ({ status: 'launch', backend: 'typescript-language-server', command: '/fake', args: [] }), start })
+    select: () => ({ status: 'launch', backend: 'typescript-language-server', command: '/fake', args: [] }), start, ...overrides })
   const send = (message: object) => input.write(frame(message))
   const spawn = () => children.at(-1)!.backend.emit('spawn')
   const initialize = () => {
@@ -58,7 +62,7 @@ function fixture() {
     spawn(); children[0]!.answer(1, { capabilities: { hoverProvider: true } }); send({ method: 'initialized', params: {} })
   }
   disposals.push(() => { for (const run of children) { run.close(); for (const s of [run.backend.stdin, run.backend.stdout, run.backend.stderr]) s.destroy() }; input.destroy(); output.destroy(); stderr.destroy() })
-  return { input, output, stderr, children, start, received, exit, exitSignal, send, spawn, initialize }
+  return { input, output, stderr, children, start, received, exit, exitSignal, send, spawn, initialize, signals }
 }
 
 it('routes server replies and exit during replacement initialization', async () => {
@@ -91,13 +95,15 @@ it('does not reset the no-client-request deadline for a server request reply', a
   expect(run.children[0]!.sent.at(-1)?.method, 'server request replies must not reset the client-origin deadline').toBe('shutdown')
 })
 
-it('retains the actual arrival deadline when a queued request is replayed', async () => {
+it('starts the request deadline when forwarded to the ready replacement', async () => {
   const run = fixture(); run.initialize(); await sleepBackend(run)
   run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
   await vi.advanceTimersByTimeAsync(500)
   run.children[1]!.answer(1, { capabilities: { hoverProvider: true } }); run.children[1]!.answer(2)
   await vi.advanceTimersByTimeAsync(500)
-  expect(run.children[1]!.sent.at(-1)?.method, 'replaying a request must not pretend it just arrived').toBe('shutdown')
+  expect(run.children[1]!.sent.some(m => m.method === 'shutdown'), 'replacement overhead must not consume the request clock').toBe(false)
+  await vi.advanceTimersByTimeAsync(500)
+  expect(run.children[1]!.sent.at(-1)?.method).toBe('shutdown')
 })
 
 it('rejects changed replacement capabilities before replaying requests', async () => {
@@ -553,4 +559,147 @@ it('keeps supervising its retiring backend when the client sends exit', async ()
   expect(run.exit, 'client exit must wait for backend close').not.toHaveBeenCalled()
   await vi.advanceTimersByTimeAsync(1100)
   expect(run.exit).toHaveBeenCalledExactlyOnceWith(0)
+})
+
+it('bounds an unanswered client shutdown by two idle intervals', async () => {
+  const run = fixture(); run.initialize()
+  run.send({ id: 7, method: 'shutdown' })
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(run.received, 'shutdown must retain the unanswered-request ceiling').toContainEqual(expect.objectContaining({ id: 7, error: expect.objectContaining({ code: -32800 }) }))
+})
+
+it('cleans up a late registration success after retirement and replacement', async () => {
+  const run = fixture(); run.initialize()
+  run.children[0]!.backend.stdout.write(frame({ id: 'late', method: 'client/registerCapability', params: { registrations: [{ id: 'watch', method: 'workspace/didChangeWatchedFiles' }] } }))
+  const pending = run.received.at(-1)!
+  await vi.advanceTimersByTimeAsync(2000)
+  run.children[0]!.close(); await vi.advanceTimersByTimeAsync(0)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
+  run.send({ id: pending.id!, result: null })
+  expect(run.received.at(-1), 'late accepted registrations must be unregistered').toMatchObject({ method: 'client/unregisterCapability', params: { unregisterations: pending.params!.registrations } })
+  expect(run.children[1]!.sent.some(m => m.id === 'late')).toBe(false)
+})
+
+it.each(['textDocument/didClose', 'textDocument/didChange'])('drops stale diagnostics during retirement after %s', async method => {
+  const run = fixture(); run.initialize()
+  await vi.advanceTimersByTimeAsync(1000)
+  run.send({ method, params: { textDocument: { uri: 'file:///a.ts' }, contentChanges: [{ text: 'new' }] } })
+  run.children[0]!.backend.stdout.write(frame({ method: 'textDocument/publishDiagnostics', params: { uri: 'file:///a.ts', diagnostics: [{ message: 'stale' }] } }))
+  expect(run.received.some(m => m.method === 'textDocument/publishDiagnostics'), 'stopping backends must not publish diagnostics').toBe(false)
+})
+
+it('supervises SIGHUP through the same bounded stop path', async () => {
+  const run = fixture(); run.initialize()
+  run.signals.emit('SIGHUP')
+  await vi.advanceTimersByTimeAsync(1100)
+  expect(run.exitSignal, 'SIGHUP must supervise backend termination').toHaveBeenCalledWith('SIGHUP')
+})
+
+it('skips KILL when backend group ownership no longer matches', async () => {
+  let ownership = 'ours'
+  const run = fixture({ groupOwnership: () => ownership }); run.initialize()
+  await vi.advanceTimersByTimeAsync(1100)
+  ownership = 'unknown'
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(run.children[0]!.backend.kill, 'a mismatched birth identity must never receive KILL').not.toHaveBeenCalledWith('SIGKILL')
+})
+
+it('signals a surviving owned group after normal backend close', async () => {
+  const run = fixture({ groupOwnership: () => 'ours' }); run.initialize()
+  await vi.advanceTimersByTimeAsync(1000)
+  run.children[0]!.close()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(run.children[0]!.backend.kill, 'normal close must TERM surviving owned descendants').toHaveBeenCalledWith('SIGTERM')
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(run.children[0]!.backend.kill).toHaveBeenCalledWith('SIGKILL')
+})
+
+it('reports unknown ownership without signalling an unverified group', () => {
+  const stderr = new PassThrough(); let text = ''
+  stderr.on('data', chunk => { text += chunk.toString() })
+  const killGroup = vi.fn()
+  stop.signalTsBackend({ options: { groupOwnership: () => 'unknown', killGroup }, streams: { stderr } }, { child: { pid: 123 } }, 'SIGKILL')
+  expect(killGroup, 'unknown ownership must suppress the signal').not.toHaveBeenCalled()
+  expect(text).toContain('unknown')
+})
+
+it('preserves unexpected close status while cleaning surviving descendants', async () => {
+  const run = fixture({ groupOwnership: () => 'ours' }); run.initialize()
+  run.children[0]!.close(); await vi.advanceTimersByTimeAsync(0)
+  expect(run.exit).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(run.exit, 'unexpected close must finish after bounded group cleanup').toHaveBeenCalledExactlyOnceWith(0)
+  expect(run.children[0]!.sent.some(m => m.method === 'shutdown')).toBe(false)
+})
+
+it('allows the full unanswered ceiling after slow replacement initialization', async () => {
+  const run = fixture(); run.initialize(); await sleepBackend(run)
+  run.send({ id: 2, method: 'workspace/symbol', params: {} }); run.spawn()
+  await vi.advanceTimersByTimeAsync(1900)
+  run.children[1]!.answer(1, { capabilities: { hoverProvider: true } })
+  await vi.advanceTimersByTimeAsync(1999)
+  expect(run.children[1]!.sent.some(m => m.method === 'shutdown'), 'queued requests need two full idle intervals after forwarding').toBe(false)
+  await vi.advanceTimersByTimeAsync(1)
+  expect(run.received).toContainEqual(expect.objectContaining({ id: 2, error: expect.objectContaining({ code: -32800 }) }))
+})
+
+it('bounds retired server request IDs and diagnoses unanswered registrations', async () => {
+  const run = fixture(); run.initialize(); let diagnostic = ''
+  run.stderr.on('data', chunk => { diagnostic += chunk.toString() })
+  run.children[0]!.backend.stdout.write(frame({ id: 'lost', method: 'client/registerCapability', params: { registrations: [{ id: 'watch', method: 'workspace/didChangeWatchedFiles' }] } }))
+  const id = run.received.at(-1)!.id!
+  await vi.advanceTimersByTimeAsync(4000)
+  expect(diagnostic, 'unanswered retired registrations must have a stated bound').toContain('retired registration response deadline expired')
+  run.send({ id, result: null })
+  expect(run.received.some(m => m.method === 'client/unregisterCapability')).toBe(false)
+})
+
+it('preserves a rootPath-only workspace when adding folders', () => {
+  const state = { documents: new Map(), initialize: { params: { rootPath: '/root', workspaceFolders: null as unknown } } }
+  sessionState.rememberTsState(state, { method: 'workspace/didChangeWorkspaceFolders', params: { event: { removed: [], added: [{ uri: 'file:///extra', name: 'extra' }] } } })
+  expect(state.initialize.params.workspaceFolders, 'rootPath fallback must retain the original root').toEqual([{ uri: pathToFileURL('/root').href, name: 'root' }, { uri: 'file:///extra', name: 'extra' }])
+})
+
+function editState(text: string) {
+  const state = { documents: new Map<string, { lines: unknown[] }>() }, uri = 'file:///edit.ts'
+  sessionState.rememberTsState(state, { method: 'textDocument/didOpen', params: { textDocument: { uri, text, version: 1 } } })
+  const edit = (start: { line: number; character: number }, end: typeof start, text: string) => {
+    sessionState.rememberTsState(state, { method: 'textDocument/didChange', params: { textDocument: { uri, version: 2 }, contentChanges: [{ range: { start, end }, text }] } })
+  }
+  return { state, edit, text: () => sessionState.tsReplayState(state)[1].params.textDocument.text as string, count: () => state.documents.get(uri)!.lines.length }
+}
+
+it('normalizes the reviewer CR insertion sequence before the next edit', () => {
+  const run = editState('a\nb')
+  run.edit({ line: 0, character: 1 }, { line: 0, character: 1 }, '\r')
+  run.edit({ line: 1, character: 0 }, { line: 1, character: 0 }, 'X')
+  expect(run.text(), 'CRLF formed across an edit boundary must remain one ending').toBe('a\r\nXb')
+})
+
+function randomPosition(text: string, random: () => number) {
+  const lines = text.split(/\r\n|\r|\n/), line = random() % lines.length
+  const character = random() % (lines[line]!.length + 1)
+  const endings = [...text.matchAll(/\r\n|\r|\n/g)]
+  const offset = line ? endings[line - 1]!.index! + endings[line - 1]![0].length : 0
+  return { position: { line, character }, offset: offset + character }
+}
+
+it('matches a flat UTF-16 oracle for seeded CR LF CRLF incremental edits', () => {
+  const seed = 0x43a912ef; let value = seed
+  const random = () => { value = (Math.imul(value, 1664525) + 1013904223) >>> 0; return value }
+  const tokens = ['a', 'xy', '😀', '\r', '\n', '\r\n', '']
+  const text = () => Array.from({ length: random() % 12 }, () => tokens[random() % tokens.length]).join('')
+  for (let sample = 0; sample < 600; sample++) {
+    let oracle = text(); const run = editState(oracle)
+    for (let step = 0; step < 8; step++) {
+      const points = [randomPosition(oracle, random), randomPosition(oracle, random)].sort((a, b) => a.offset - b.offset)
+      const [start, end] = points, insertion = text()
+      run.edit(start!.position, end!.position, insertion)
+      oracle = oracle.slice(0, start!.offset) + insertion + oracle.slice(end!.offset)
+      const context = `seed=${seed} sample=${sample} step=${step}`
+      expect(run.text(), context).toBe(oracle)
+      expect(run.count(), context).toBe(oracle.split(/\r\n|\r|\n/).length)
+    }
+  }
 })
