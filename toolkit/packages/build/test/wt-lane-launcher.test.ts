@@ -13,7 +13,7 @@ import { LaneSandboxRefusal, trustedSystemExecutable } from '../../../../plugin/
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
-import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, laneWorkerEnv, parse } from '../../../../plugin/bin/wt-lane.mjs'
+import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, laneOpencodeChildEnv, laneWorkerEnv, parse } from '../../../../plugin/bin/wt-lane.mjs'
 // @ts-expect-error ESM runtime module
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
@@ -2161,6 +2161,15 @@ describe('wt-lane --lock-priority carries the card suite-lock level to the lane 
     expect(ambient.WT_SUITE_LOCK_PRIORITY, 'the launcher env itself is not mutated').toBe('P2')
     expect(laneWorkerEnv(ambient, null)).toEqual(ambient)
     expect(laneWorkerEnv({ PATH: '/bin' }, null)).toEqual({ PATH: '/bin', pnpm_config_verify_deps_before_run: 'false' })
+  })
+})
+
+describe('wt-lane pnpm dependency verification spellings', () => {
+  it.each(['pnpm_config_verify_deps_before_run', 'PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN'])('the model child env keeps a caller %s and gains no other spelling', (name) => {
+    const caller = { PATH: '/bin', [name]: 'true' }
+    const child = laneWorkerEnv(laneOpencodeChildEnv(caller, 'openai/example'), null)
+    expect(child[name]).toBe('true')
+    expect(Object.keys(child).filter((key) => key.toLowerCase() === 'pnpm_config_verify_deps_before_run')).toEqual([name])
   })
 })
 

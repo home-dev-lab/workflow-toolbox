@@ -126,6 +126,7 @@ describe('lane pnpm dependency verification', () => {
     const env = { PATH: 'tools', npm_config_verify_deps_before_run: 'false' }
     expect(laneWorkerEnv(env, null).pnpm_config_verify_deps_before_run).toBe('false')
     expect(env).not.toHaveProperty('pnpm_config_verify_deps_before_run')
+    expect(laneWorkerEnv({ PATH: 'tools' }, null)).toEqual({ PATH: 'tools', pnpm_config_verify_deps_before_run: 'false' })
   })
 
   it.each(['true', 'false', ''])('preserves explicit caller value %j in the worker environment', (value) => {
@@ -133,8 +134,14 @@ describe('lane pnpm dependency verification', () => {
     expect(laneWorkerEnv(env, 'P0')).toMatchObject({ ...env, WT_SUITE_LOCK_PRIORITY: 'P0' })
   })
 
+  it.each([['pnpm_config_verify_deps_before_run'], ['PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN']])('adds no default beside a caller %s', (name) => {
+    for (const value of ['true', '']) expect(laneWorkerEnv({ PATH: 'tools', [name]: value }, null)).toEqual({ PATH: 'tools', [name]: value })
+  })
+
   it.each([
     ['export npm_config_verify_deps_before_run=false', true],
+    ['export NPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false', true],
+    ['export npm_config_verify_deps_before_run=false\nexport PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false', false],
     ['`npm_config_verify_deps_before_run` is disabled.', true],
     ['export pnpm_config_verify_deps_before_run=false', false],
     ['npm_config_verify_deps_before_run=false\npnpm_config_verify_deps_before_run=true', false],

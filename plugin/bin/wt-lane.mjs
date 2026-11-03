@@ -62,6 +62,11 @@ const PNPM_RUN_FORM = /\bpnpm run (?!exec\b)/g
 const GATE_SECTION_EXEMPTIONS = '--owner pilot; --role critic|review|refutation; --no-gate-section <reason> (read-only work; reason recorded in the run log)'
 const BRIEF_VALUE_OPTIONS = { '--brief-receipt': 'briefReceipt', '--no-gate-section': 'noGateSectionReason' }
 const PNPM_VERIFY_DEPS_ENV = 'pnpm_config_verify_deps_before_run'
+// The spellings pnpm reads on Linux; the launcher honours exactly these, in the environment and in a brief.
+const PNPM_VERIFY_DEPS_SPELLINGS = Object.freeze([PNPM_VERIFY_DEPS_ENV, PNPM_VERIFY_DEPS_ENV.toUpperCase()])
+const NPM_VERIFY_DEPS_BRIEF = /\b(?:npm_config_verify_deps_before_run|NPM_CONFIG_VERIFY_DEPS_BEFORE_RUN)\b/
+const PNPM_VERIFY_DEPS_BRIEF = /\b(?:pnpm_config_verify_deps_before_run|PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN)\b/
+const callerVerifyDeps = (env) => PNPM_VERIFY_DEPS_SPELLINGS.filter((name) => env[name] !== undefined).map((name) => [name, env[name]])
 
 function isRunnableGateLine(line) {
   const folded = line.replace(/\s+/g, ' ').replace(PNPM_RUN_FORM, 'pnpm ')
@@ -99,7 +104,7 @@ function launchBriefRefusal(briefEvidence, opts) {
     return { code: 1, message: `wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.` }
   }
   const text = briefEvidence.bytes.toString('utf8')
-  if (/\bnpm_config_verify_deps_before_run\b/.test(text) && !/\bpnpm_config_verify_deps_before_run\b/.test(text)) {
+  if (NPM_VERIFY_DEPS_BRIEF.test(text) && !PNPM_VERIFY_DEPS_BRIEF.test(text)) {
     process.stderr.write('wt-lane: Warning: pnpm 11 ignores npm_config_verify_deps_before_run; use pnpm_config_verify_deps_before_run=false in the brief (warn-only probation).\n')
   }
   const refusal = briefGateSectionRefusal(text, opts)
@@ -132,19 +137,19 @@ function laneLockPriority(value) {
  * lane's install before running a gate.
  */
 export function laneWorkerEnv(env, lockPriority) {
-  const workerEnv = { ...env, [PNPM_VERIFY_DEPS_ENV]: env[PNPM_VERIFY_DEPS_ENV] ?? 'false' }
+  const workerEnv = callerVerifyDeps(env).length ? { ...env } : { ...env, [PNPM_VERIFY_DEPS_ENV]: 'false' }
   return lockPriority ? { ...workerEnv, WT_SUITE_LOCK_PRIORITY: lockPriority } : workerEnv
 }
 
 // Preserve only this caller-owned pnpm choice across the model environment filter; the default stays in laneWorkerEnv.
-function laneOpencodeChildEnv(env, model) {
-  return { ...opencodeChildEnv(env, model), [PNPM_VERIFY_DEPS_ENV]: env[PNPM_VERIFY_DEPS_ENV] }
+export function laneOpencodeChildEnv(env, model) {
+  return { ...opencodeChildEnv(env, model), ...Object.fromEntries(callerVerifyDeps(env)) }
 }
 
 // The worker argv that carries a declared --lock-priority to the detached worker; nothing when none was declared.
 const laneLockPriorityArgs = (lockPriority) => lockPriority ? ['--lock-priority', lockPriority] : []
 // The pnpm choice always passes the child filter; WT_SUITE_LOCK_PRIORITY passes only when declared.
-const laneLockPriorityEnvNames = (lockPriority) => [PNPM_VERIFY_DEPS_ENV, ...(lockPriority ? ['WT_SUITE_LOCK_PRIORITY'] : [])]
+const laneLockPriorityEnvNames = (lockPriority) => [...PNPM_VERIFY_DEPS_SPELLINGS, ...(lockPriority ? ['WT_SUITE_LOCK_PRIORITY'] : [])]
 
 // The option values parse() checks after reading argv, in the order it always checked them; normalises
 // --lock-priority in place. Returns the first refusal, or null.
