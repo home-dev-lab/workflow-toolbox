@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { getPriority, tmpdir } from 'node:os'
 import { dirname, join as pathJoin } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { hermeticPath } from './helpers/hermetic-path.js'
@@ -379,14 +379,32 @@ function quotedExitReceiptCase() {
   expect(() => process.kill(childPid, 0)).not.toThrow()
 }
 
-function idleDefaultCase() {
+function knownIdleFixture() {
   const f = deadlineFixture('exec sleep 30')
+  const preload = join(f.root, 'known-idle-snapshot.mjs')
+  // Pin presence-only deadline evidence to this child, avoiding host-wide /proc churn.
+  // Preload the worker too: it is a separate process with its own adapter instance.
+  writeFileSync(preload, `import { hostAdapter } from ${JSON.stringify(pathToFileURL(join(ROOT, 'plugin/bin/lib/host/adapter.mjs')).href)}
+import { readCurrentSupervision } from ${JSON.stringify(pathToFileURL(join(ROOT, 'plugin/bin/lib/lane-supervisor-core.mjs')).href)}
+if (process.argv.includes('--worker')) hostAdapter.readProcessSnapshot = () => {
+  const state = readCurrentSupervision(${JSON.stringify(f.dir)})
+  if (hostAdapter.readProcessLiveness(state.childPid).status !== 'alive') throw new Error('known-idle fixture child exited')
+  return { supported: true, processes: [{ pid: state.childPid, ppid: process.pid }] }
+}
+`)
+  f.env.NODE_OPTIONS = `--import=${pathToFileURL(preload).href}`
+  return f
+}
+
+function idleDefaultCase() {
+  const f = knownIdleFixture()
   const { log, status } = launchDeadline(f, ['--timeout', '1.5', '--decision-grace', '0.5', '--idle-window', '0.5'])
   waitForContent(status, /"state": "(?:decision-needed|abandoned)"/)
   expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ defaultDecision: 'abandon', extensionCount: 0 })
   waitFor(log)
   expect(readFileSync(log, 'utf8')).toContain('LANE_NOT_EXTENDED reason=idle')
   expect(readFileSync(log, 'utf8')).not.toContain('LANE_EXTENDED')
+  expect(readFileSync(log, 'utf8')).not.toContain('LANE_IDLE_UNKNOWN')
   expect(readFileSync(log, 'utf8')).toMatch(/TERMINATION=timeout\nEXIT=126\n$/)
 }
 
