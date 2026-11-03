@@ -1,3 +1,5 @@
+import { pathToFileURL } from 'node:url'
+
 function linesOf(text) {
   const lines = []
   let start = 0, index = 0
@@ -49,7 +51,18 @@ function applyChange(lines, change) {
   last.length += lines[end.line].length - end.character
   last.ending = lines[end.line].ending
   // Avoid spreading arbitrarily many lines into a call's argument stack.
-  return lines.slice(0, start.line).concat(replacement, lines.slice(end.line + 1))
+  return normalizeEndings(lines.slice(0, start.line).concat(replacement, lines.slice(end.line + 1)))
+}
+
+function normalizeEndings(lines) {
+  const result = []
+  for (const line of lines) {
+    const previous = result.at(-1)
+    if (previous?.ending === '\r' && line.length === 0 && line.ending === '\n') {
+      result[result.length - 1] = { ...previous, ending: '\r\n' }
+    } else result.push(line)
+  }
+  return result
 }
 
 function changeDocument(document, params) {
@@ -71,7 +84,8 @@ function rememberDocument(documents, method, params) {
 }
 
 function updateWorkspaceFolders(state, params) {
-  const root = state.initialize.params.rootUri
+  const { rootUri, rootPath } = state.initialize.params
+  const root = rootUri ?? (rootPath ? pathToFileURL(rootPath).href : undefined)
   const fallback = root ? [{ uri: root, name: root.split('/').at(-1) || root }] : []
   const folders = new Map((state.initialize.params.workspaceFolders ?? fallback).map(folder => [folder.uri, folder]))
   for (const folder of params.event.removed) folders.delete(folder.uri)
