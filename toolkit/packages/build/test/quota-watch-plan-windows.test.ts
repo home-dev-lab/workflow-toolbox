@@ -38,7 +38,7 @@ const win = (pct: number, resetsAt: string | number = FUTURE) => ({ pct, resets_
 interface Step { cache?: Record<string, unknown> | null, uuid?: string, advanceMs?: number }
 /** Switch the login identity once, at an exact point of the watcher's own cache check. */
 interface IdentitySwitch { when: 'during-cache-read' | 'after-cache-check', uuid: string }
-interface RunOptions { cycles?: number, accountKey?: string | null, fingerprint?: boolean, steps?: Step[], poll?: number, identitySwitch?: IdentitySwitch }
+interface RunOptions { instrument?: boolean, cycles?: number, accountKey?: string | null, fingerprint?: boolean, steps?: Step[], poll?: number, identitySwitch?: IdentitySwitch }
 const fingerprint = (uuid: string) => createHash('sha256').update(uuid).digest('hex').slice(0, 8)
 
 /**
@@ -93,6 +93,24 @@ ${identitySwitchPreload(identitySwitch)}syncBuiltinESMExports();\n`)
 }
 
 /**
+ * A copy of the real watcher that records its event maps (keys AND values) at every sleep boundary.
+ * It rewrites only the sleep function's first line, so the poll logic under test is the shipped one.
+ */
+function instrumentedWatcher(root: string) {
+  const source = readFileSync(WATCH, 'utf8').replace(/from '(\.[^']+)'/g,
+    (_, specifier: string) => `from ${JSON.stringify(new URL(specifier, pathToFileURL(WATCH)).href)}`)
+  const hook = "async function sleep(ms) {\n  appendFileSync(process.env.WT_TEST_SNAPSHOTS, JSON.stringify(Object.fromEntries(['lastPct', 'lastResetsAt', 'fired'].map((key) => [key, [...state[key].entries()]])" +
+    "), (_key, value) => (value instanceof Set ? [...value] : value)) + '\\n')"
+  const instrumented = source.replace('async function sleep(ms) {', hook)
+  if (instrumented === source) throw new Error('the poll-boundary observation seam must be installed')
+  const script = join(root, 'watch-instrumented.mjs')
+  writeFileSync(script, instrumented)
+  return script
+}
+const watchScript = (root: string, options: RunOptions) => (options.instrument ? instrumentedWatcher(root) : WATCH)
+const readSnapshots = (root: string) => readFileSync(join(root, 'snapshots'), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+
+/**
  * Probe printing payloads[n] on its n-th call (the last one repeats), in an isolated config dir.
  * A payload's `__uuid` makes the probe switch the login identity while it runs, before it answers.
  */
@@ -111,7 +129,7 @@ const { __uuid, ...payload } = all[Math.min(n, all.length - 1)];
 if (__uuid) writeFileSync(process.env.CLAUDE_CONFIG_DIR + '/.claude.json', JSON.stringify({ oauthAccount: { accountUuid: __uuid } }));
 console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...${JSON.stringify(identity)}, ...payload }));\n`)
   if (options.fingerprint) writeFileSync(join(root, '.claude.json'), JSON.stringify({ oauthAccount: { accountUuid: 'uuid-fixture' } }))
-  const res = spawnSync(process.execPath, [WATCH, '--probe', probe, '--poll', String(options.poll ?? 5), '--timeout', '3'], {
+  const res = spawnSync(process.execPath, [watchScript(root, options), '--probe', probe, '--poll', String(options.poll ?? 5), '--timeout', '3'], {
     encoding: 'utf8',
     timeout: 20_000,
     env: {
@@ -123,6 +141,7 @@ console.log(JSON.stringify({ configDir: process.env.CLAUDE_CONFIG_DIR, ...${JSON
       CLAUDE_CODE_OAUTH_TOKEN: '',
       CLAUDE_CONFIG_DIR: root,
       WT_QUOTA_WATCH_TEST_SLEEP_LOG: join(root, 'sleeps'),
+      WT_TEST_SNAPSHOTS: join(root, 'snapshots'),
       WT_QUOTA_WATCH_TEST_MAX_CYCLES: String(options.cycles ?? payloads.length),
     },
   })
@@ -549,6 +568,109 @@ describe('the BUNDLED probe, against a usage endpoint without a five-hour window
       expect(armedLine(stdout)).toMatch(/ \| watching 7d$/)
       expect(stdout).toContain(FIVE_HOUR_NOT_REPORTED)
       expect(stdout).not.toContain('DEGRADED')
+    })
+  }
+})
+
+// Ported from the superseded duplicate card (1898619335): a reading the gate rejects is not an
+// observation. Here a rejected reading is one with NO numeric window; it must neither repeat a
+// crossing nor lose a reset, and must leave every event map exactly as it found it.
+const REJECTED_READINGS: Array<[string, Record<string, unknown>]> = [
+  ['seven_day null', { seven_day: null }],
+  ['missing key', {}],
+  ['seven_day null percentage', { seven_day: LOST_WINDOW }],
+]
+const DEGRADED_BOTH = /QUOTA WATCH DEGRADED: probe output INVALID \(missing window\(s\): five_hour,seven_day\)/
+
+describe('a rejected live reading never changes any window\'s state', () => {
+  for (const [variant, rejected] of REJECTED_READINGS) {
+    it(`(${variant}) does not repeat a threshold crossing`, () => {
+      const res = runSequence([{ seven_day: { pct: 79 } }, { seven_day: { pct: 81 } }, rejected, { seven_day: { pct: 81 } }], { fingerprint: true })
+      const crossings = res.stdout.split('\n').filter((line) => line.includes('crossed the 80% threshold'))
+      expect(crossings, `exactly one 80% crossing expected:\n${res.stdout}`).toHaveLength(1)
+      expect(crossings[0]).toMatch(/^QUOTA 7d: 81% — crossed the 80% threshold/)
+      expect(res.stdout).toMatch(DEGRADED_BOTH)
+    })
+
+    it(`(${variant}) keeps the next seven-day reset`, () => {
+      const res = runSequence([{ seven_day: { pct: 79 } }, { seven_day: { pct: 81 } }, rejected, { seven_day: { pct: 4 } }], { fingerprint: true })
+      expect(res.stdout, `the reset after a rejected reading must be reported:\n${res.stdout}`)
+        .toMatch(/^QUOTA RESET 7d: 4% \(was 81%\) — new window, capacity available$/m)
+    })
+
+    it(`(${variant}) leaves every event map unchanged, values as well as keys`, () => {
+      const res = runSequence([{ seven_day: { pct: 79 } }, { seven_day: { pct: 81 } }, rejected], { fingerprint: true, instrument: true })
+      const snapshots = readSnapshots(res.root)
+      expect(snapshots).toHaveLength(3)
+      expect(JSON.stringify(snapshots[1]), 'control: the armed baseline holds a 7d entry').toContain('81')
+      expect(snapshots[2]).toEqual(snapshots[1])
+    })
+  }
+
+  it('a reading discarded because the login changed while the probe ran leaves every event map unchanged', () => {
+    const res = runSequence([{ seven_day: win(40) }, { __uuid: 'uuid-other-account', seven_day: win(85, PAST) }], {
+      accountKey: 'login', fingerprint: true, cycles: 2, instrument: true, steps: [{ cache: null }],
+    })
+    expect(res.stdout).toContain('reading discarded, probing again next poll')
+    const snapshots = readSnapshots(res.root)
+    expect(snapshots).toHaveLength(2)
+    expect(JSON.stringify(snapshots[0]), 'control: the first poll baselined 7d at 40').toContain('40')
+    expect(snapshots[1]).toEqual(snapshots[0])
+  })
+})
+
+describe('a partial reading recovers from DEGRADED back to the normal poll', () => {
+  for (const [name, shape] of UNREPORTED_SHAPES) {
+    it(`five_hour ${name}: a live seven-day recovery resets the probe backoff`, () => {
+      const healthy = withFiveHour(shape, { seven_day: { pct: 96 } })
+      const res = runSequence([{}, healthy, healthy])
+      expect(res.sleeps, 'a live seven-day recovery must reset probe backoff').toEqual([10_000, 5_000, 5_000])
+      expect(countOf(res.stdout, 'QUOTA WATCH DEGRADED')).toBe(1)
+      expect(res.stdout).toContain('7d 96%')
+      expect(countOf(res.stdout, FIVE_HOUR_NOT_REPORTED)).toBe(1)
+    })
+
+    it(`five_hour ${name}: seven-day thresholds and a reset fire`, () => {
+      const res = runSequence([10, 81, 4, 96].map((pct) => withFiveHour(shape, { seven_day: { pct } })), { fingerprint: true })
+      expect(res.stdout).toContain('QUOTA 7d: 81% — crossed the 80% threshold')
+      expect(res.stdout).toMatch(/QUOTA RESET 7d: 4% \(was 81%\)/)
+      expect(res.stdout).toContain('QUOTA 7d: 96% — crossed the 95% threshold')
+      expect(res.stdout).not.toContain('DEGRADED')
+      expect(countOf(res.stdout, FIVE_HOUR_NOT_REPORTED)).toBe(1)
+    })
+  }
+})
+
+// Pins the CURRENT choice: a window that is present but malformed is treated exactly like a missing
+// one (said once to be "not reported by the probe"), next to a numeric window, live and cached.
+describe('one malformed window beside one numeric window', () => {
+  const MALFORMED: Array<[string, unknown]> = [['a string pct', { pct: 'unavailable', resets_at: FUTURE }], ['an empty object', {}], ['an array', []]]
+  for (const [name, shape] of MALFORMED) {
+    it(`live: five_hour as ${name} is watched as seven-day only, said once, never DEGRADED`, () => {
+      const res = runSequence([{ five_hour: shape, seven_day: win(70) }, { five_hour: shape, seven_day: win(91) }])
+      expect(armedLine(res.stdout)).toMatch(/ \| watching 7d$/)
+      expect(countOf(res.stdout, FIVE_HOUR_NOT_REPORTED)).toBe(1)
+      expect(res.stdout).toContain('QUOTA 7d: 91% — crossed the 90% threshold')
+      expect(res.stdout).not.toContain('DEGRADED')
+    })
+
+    it(`live: seven_day as ${name} is watched as five-hour only, said once, never DEGRADED`, () => {
+      const res = runSequence([{ five_hour: win(70), seven_day: shape }, { five_hour: win(91), seven_day: shape }])
+      expect(armedLine(res.stdout)).toMatch(/ \| watching 5h$/)
+      expect(countOf(res.stdout, SEVEN_DAY_NOT_REPORTED)).toBe(1)
+      expect(res.stdout).toContain('QUOTA 5h: 91% — crossed the 90% threshold')
+      expect(res.stdout).not.toContain('DEGRADED')
+    })
+
+    it(`cached: a cache whose five_hour is ${name} is refused after a two-window reading, and the watcher probes live`, async () => {
+      const res = await runWithSeededCache({ five_hour: win(10), seven_day: win(40) }, { five_hour: shape, seven_day: win(40) })
+      expect(res.count).toBe(2)
+    })
+
+    it(`cached: after a seven-day-only live reading, a cache whose five_hour is ${name} is used`, async () => {
+      const res = await runWithSeededCache({ five_hour: shape, seven_day: win(40) }, { five_hour: shape, seven_day: win(41) })
+      expect(res.count).toBe(1)
+      expect(res.stdout).not.toContain('DEGRADED')
     })
   }
 })
