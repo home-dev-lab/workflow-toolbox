@@ -454,6 +454,70 @@ describe('wt-arc-watch liveness integration', () => {
     // Windows worst 7533 ms on cross-os runs 36967768077/36971793287/36974201587; budget about 2.5x (was 12000 ms).
   }, 19_000)
 
+  // Sanitized from a real finished subagent transcript (Claude Code 2.1.312): after the final
+  // end_turn the harness appends a SubagentStop hook attachment, and other out-of-band records
+  // (cancelled hooks, api-request bookkeeping, system records, observer heartbeats) may follow.
+  const finalEndTurn = {
+    parentUuid: 'p-1', isSidechain: true, agentId: 'a0000000000000001', type: 'assistant',
+    uuid: 'u-assistant', timestamp: '2026-10-30T12:17:09.926Z',
+    message: { role: 'assistant', type: 'message', content: [{ type: 'text', text: 'Report delivered.' }], stop_reason: 'end_turn', stop_sequence: null },
+  }
+  const subagentStopAttachment = (uuid: string, type = 'hook_success') => ({
+    parentUuid: 'u-assistant', isSidechain: true, agentId: 'a0000000000000001', type: 'attachment', uuid,
+    timestamp: '2026-10-30T12:17:10.380Z',
+    attachment: { type, hookName: 'SubagentStop', hookEvent: 'SubagentStop', content: '', stdout: '{}\n', stderr: '', exitCode: 0, durationMs: 432 },
+  })
+
+  it('keeps a finished agent silent when harness-appended records trail its final end_turn', async () => {
+    const out = await runWatchScenario({
+      transcriptRecords: [
+        finalEndTurn,
+        subagentStopAttachment('u-att-1'),
+        subagentStopAttachment('u-att-2', 'hook_cancelled'),
+        { type: 'api-request', agentId: 'a0000000000000001', id: 'r-1', timestamp: '2026-10-30T12:17:10.500Z' },
+        { type: 'system', subtype: 'turn_duration', timestamp: '2026-10-30T12:17:10.600Z' },
+        { type: 'observer-ref', timestamp: '2026-10-30T12:17:11.000Z' },
+      ],
+      waitFor: null,
+    })
+    expect(out).toContain('ARC WATCH ARMED')
+    expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
+  }, 19_000)
+
+  it('still emits STALE when a user turn follows the end_turn, even behind trailing attachments', async () => {
+    // A Stop hook that blocks feeds the agent a meta user turn; an agent that never answers it is stuck.
+    const out = await runWatchScenario({
+      transcriptRecords: [
+        finalEndTurn,
+        subagentStopAttachment('u-att-1'),
+        { type: 'user', isMeta: true, timestamp: '2026-10-30T12:17:10.700Z', message: { role: 'user', content: 'Stop hook feedback' } },
+        subagentStopAttachment('u-att-3'),
+      ],
+    })
+    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+  }, 12_000)
+
+  it.each([
+    ['an empty object', {}],
+    ['null', null],
+    ['an untyped record that carries a user message', { message: { role: 'user', content: 'continue' } }],
+  ])('still emits STALE when %s trails the end_turn (malformed record, fail loud)', async (_label, malformed) => {
+    const out = await runWatchScenario({
+      transcriptRecords: [finalEndTurn, subagentStopAttachment('u-att-1'), malformed],
+    })
+    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+  }, 12_000)
+
+  it('still emits STALE when only attachments trail an assistant record that requested a tool', async () => {
+    const out = await runWatchScenario({
+      transcriptRecords: [
+        { ...finalEndTurn, message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }], stop_reason: 'tool_use' } },
+        subagentStopAttachment('u-att-1'),
+      ],
+    })
+    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
+  }, 12_000)
+
   it('a clean end_turn never silences an agent whose liveness file says its mission is not complete', async () => {
     // An agent that ends its turn waiting on a background task that never wakes it ends cleanly too;
     // its own declaration outranks the transcript's end_turn.
