@@ -29,7 +29,7 @@ function rememberGroupMembers(backend, leader) {
   for (const member of members) backend.members.set(member.pid, member.start)
 }
 
-export function readTsGroupOwnership(backend) {
+function readTsGroupOwnership(backend) {
   if (process.platform !== 'linux' || !backend.identity) return 'unknown'
   const pid = backend.child.pid, leader = processIdentity(pid)
   if (leader) return leader.start === backend.identity.start && leader.group === pid ? 'ours' : 'unknown'
@@ -45,7 +45,7 @@ function orphanedGroupOwnership(backend, pid) {
   return 'unknown'
 }
 
-export function tsGroupOwnership(state, backend) {
+function tsGroupOwnership(state, backend) {
   return (state.options.groupOwnership ?? readTsGroupOwnership)(backend)
 }
 

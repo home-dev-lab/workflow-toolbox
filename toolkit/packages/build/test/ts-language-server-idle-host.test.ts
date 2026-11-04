@@ -97,14 +97,19 @@ it.skipIf(process.platform !== 'linux').each(['normal', 'eof', 'hup'] as const)(
 })
 
 it.skipIf(process.platform !== 'linux')('verifies real Linux group birth identity and rejects a mismatched start time', () => {
-  const code = `import{spawn}from'node:child_process';import{captureTsGroup,readTsGroupOwnership}from ${JSON.stringify(url('ts-idle-stop'))};
+  const code = `import{spawn}from'node:child_process';import{captureTsGroup,signalTsBackend}from ${JSON.stringify(url('ts-idle-stop'))};
     const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});
-    child.once('spawn',()=>{try{const backend={child};captureTsGroup(backend);const ours=readTsGroupOwnership(backend);
-      backend.identity.start='0';console.log(JSON.stringify({ours,mismatch:readTsGroupOwnership(backend)}));}
-      finally{child.kill('SIGKILL')}});`
+    child.once('spawn',()=>{try{const backend={child};captureTsGroup(backend);
+      const run=()=>{const groupKills=[],leaderKills=[];child.kill=signal=>{leaderKills.push(signal);return true};
+        const state={options:{killGroup:(pid,signal)=>groupKills.push([pid,signal])},streams:{stderr:{write(){}}}};
+        signalTsBackend(state,backend,'SIGTERM');return{groupKills,leaderKills}};
+      const ours=run();backend.identity.start='0';console.log(JSON.stringify({ours,mismatch:run(),pid:child.pid}));}
+      finally{process.kill(child.pid,'SIGKILL')}});`
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', code], { encoding: 'utf8', timeout: 10_000 })
   expect(result.status, result.stderr).toBe(0)
-  expect(JSON.parse(result.stdout), 'real birth identity must distinguish owned and mismatched groups').toEqual({ ours: 'ours', mismatch: 'unknown' })
+  const proof = JSON.parse(result.stdout)
+  expect(proof.ours, 'a verified birth identity must signal the whole group').toEqual({ groupKills: [[-proof.pid, 'SIGTERM']], leaderKills: [] })
+  expect(proof.mismatch, 'a mismatched start time must signal only the leader').toEqual({ groupKills: [], leaderKills: ['SIGTERM'] })
 })
 
 function naturalEofBackend() {
