@@ -1,0 +1,6 @@
+Package: mermaid
+Version: 11.17.2
+Source: npm pack mermaid@11.17.2 --ignore-scripts (registry.npmjs.org)
+Tarball SHA256 (mermaid-11.17.2.tgz): 6ad2f42c3fc26bbf9e45cbb6d11898972573ea52b33a5f4ff51952899f950ffd
+SHA256 (dist/mermaid.min.js, served as mermaid.min.js): 581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8
+License: MIT (LICENSE beside this file, copied from the tarball)

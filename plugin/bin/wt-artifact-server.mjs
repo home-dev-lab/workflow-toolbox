@@ -35,6 +35,8 @@ import {
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { markdownTitle } from './lib/artifact-markdown-title.mjs'
+import { closeMarkdownFence, markdownFenceTag, markdownScripts, MERMAID_FILE } from './lib/artifact-mermaid.mjs'
+import { artifactMermaidRouteIndex, artifactMermaidRouteMatches, readArtifactAsset } from './lib/host/artifact-assets.mjs'
 import { createTailnetRetry, detectTailnetInWorker, formatTailnetStatus, normalizeTailnetHost } from './lib/artifact-tailnet.mjs'
 import { hostProcfs } from './lib/host/procfs.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
@@ -162,7 +164,7 @@ function renderMarkdown(source, fallback) {
   const output = []
   let paragraph = []
   let listOpen = false
-  let fenceOpen = false
+  const fence = { open: false, mermaid: false, hasMermaid: false }
   const flushParagraph = () => {
     if (paragraph.length > 0) output.push(`<p>${inlineMarkdown(paragraph.join(' '))}</p>`)
     paragraph = []
@@ -173,11 +175,12 @@ function renderMarkdown(source, fallback) {
   }
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex]
-    if (/^```/.test(line)) {
-      flushParagraph(); closeList(); output.push(fenceOpen ? '</code></pre>' : '<pre><code>'); fenceOpen = !fenceOpen
+    const fenceTag = markdownFenceTag(line, fence)
+    if (fenceTag !== null) {
+      flushParagraph(); closeList(); output.push(fenceTag)
       continue
     }
-    if (fenceOpen) { output.push(`${line}\n`); continue }
+    if (fence.open) { output.push(`${line}\n`); continue }
     const table = markdownTable({ line, lines, lineIndex }, () => { flushParagraph(); closeList() })
     if (table) {
       output.push(renderTable(table))
@@ -192,8 +195,8 @@ function renderMarkdown(source, fallback) {
     if (markdownListItem(line, { output, listOpen, flushParagraph, openList: () => { listOpen = true } })) continue
     if (line.trim() === '') { flushParagraph(); closeList() } else paragraph.push(line)
   }
-  flushParagraph(); closeList(); if (fenceOpen) output.push('</code></pre>')
-  return htmlPage(markdownTitle(source, fallback), output.join('\n'))
+  flushParagraph(); closeList(); if (fence.open) output.push(closeMarkdownFence(fence))
+  return { html: htmlPage(markdownTitle(source, fallback), output.join('\n')), hasMermaid: fence.hasMermaid }
 }
 
 function decodeRequestPath(rawUrl) {
@@ -229,16 +232,18 @@ const GENERATED_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsa
 const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
 const RICH_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 const ANNOTATABLE_CSP = "default-src 'none'; script-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+const INTERACTIVE_CSP = "default-src 'none'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
 const REGISTRATION_OWNERSHIP_MISS_LIMIT = 3
 
 function fileContentType(file) {
   return CONTENT_TYPES.get(path.extname(file).toLowerCase()) ?? 'application/octet-stream'
 }
 
+const HTML_MODE_CSP = new Map([['rich', RICH_CSP], ['annotatable', ANNOTATABLE_CSP], ['interactive', INTERACTIVE_CSP]])
+
 function htmlCsp(file) {
-  const mode = /^\s*<!--\s*wt-artifact-server:\s*(rich|annotatable)\s*-->/i.exec(file.toString('utf8', 0, 256))?.[1].toLowerCase()
-  if (mode === 'rich') return RICH_CSP
-  return mode === 'annotatable' ? ANNOTATABLE_CSP : RAW_CSP
+  const mode = /^\s*<!--\s*wt-artifact-server:\s*(rich|annotatable|interactive)\s*-->/i.exec(file.toString('utf8', 0, 256))?.[1].toLowerCase()
+  return HTML_MODE_CSP.get(mode) ?? RAW_CSP
 }
 
 async function directoryPage(root, target, urlSegments) {
@@ -456,9 +461,18 @@ class ArtifactService {
       })}\n`, 'application/json; charset=utf-8')
       return
     }
-    const segments = decodeRequestPath(request.url ?? '/')
-    if (segments === undefined) { send(response, method, 400, 'Bad Request\n'); return }
-    if (segments === null) { send(response, method, 403, 'Forbidden\n'); return }
+    const segments = this.requestSegments(request, response, method)
+    if (segments == null) return
+    // The reserved segment is the server's at ANY depth: a Markdown page reached by a non-canonical path (trailing or
+    // repeated slash) resolves its relative script URL one level off, and that URL must still land on the bundled
+    // build, never on a root file of the same name.
+    const reserved = artifactMermaidRouteIndex(segments)
+    if (reserved !== -1) {
+      if (artifactMermaidRouteMatches(segments, reserved)) {
+        send(response, method, 200, await readArtifactAsset(MERMAID_FILE), 'text/javascript; charset=utf-8', { 'Content-Security-Policy': RAW_CSP })
+      } else send(response, method, 404, 'Not Found\n')
+      return
+    }
     const roots = this.liveRoots()
     if (segments.length === 0) {
       const links = roots.map((root) => `<li><a href="${encodeURIComponent(root.name)}/">${escapeHtml(root.name)}/</a></li>`).join('')
@@ -469,7 +483,14 @@ class ArtifactService {
     if (!rootRecord) { send(response, method, 404, 'Not Found\n'); return }
     const target = this.requestTarget(rootRecord, segments.slice(1), response, method)
     if (target === null) return
-    return this.serveTarget({ rootRecord, target, segments, response, method })
+    return this.serveTarget({ rootRecord, target, segments, response, method, scriptHost: normalizeTailnetHost(request.headers.host) })
+  }
+
+  requestSegments(request, response, method) {
+    const segments = decodeRequestPath(request.url ?? '/')
+    if (segments === undefined) { send(response, method, 400, 'Bad Request\n'); return undefined }
+    if (segments === null) { send(response, method, 403, 'Forbidden\n'); return null }
+    return segments
   }
 
   requestUrl(request, response, method) {
@@ -493,7 +514,7 @@ class ArtifactService {
     return target
   }
 
-  async serveTarget({ rootRecord, target, segments, response, method }) {
+  async serveTarget({ rootRecord, target, segments, response, method, scriptHost }) {
     try {
       const info = await stat(target)
       if (info.isDirectory()) {
@@ -502,8 +523,10 @@ class ArtifactService {
       if (!info.isFile()) { send(response, method, 404, 'Not Found\n'); return }
       const extension = path.extname(target).toLowerCase()
       const file = await readFile(target)
-      if (extension === '.md') send(response, method, 200, renderMarkdown(file.toString('utf8'), path.basename(target)), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
-      else if (['.txt', '.log', '.json'].includes(extension)) send(response, method, 200, htmlPage(path.basename(target), `<pre>${escapeHtml(file.toString('utf8'))}</pre>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
+      if (extension === '.md') {
+        const rendered = markdownScripts(renderMarkdown(file.toString('utf8'), path.basename(target)), { host: scriptHost, depth: segments.length - 1, generatedCsp: GENERATED_CSP })
+        send(response, method, 200, rendered.html, 'text/html; charset=utf-8', { 'Content-Security-Policy': rendered.csp })
+      } else if (['.txt', '.log', '.json'].includes(extension)) send(response, method, 200, htmlPage(path.basename(target), `<pre>${escapeHtml(file.toString('utf8'))}</pre>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': htmlCsp(file) })
       else send(response, method, 200, file, fileContentType(target), { 'Content-Security-Policy': RAW_CSP })
     } catch { send(response, method, 500, 'Internal Server Error\n') }

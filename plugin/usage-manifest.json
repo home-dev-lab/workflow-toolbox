@@ -58,6 +58,7 @@
     "streamEventsNote": "workflow_phase / system.init consumed in the observatory server (not re-verified in this pass)"
   },
   "env": [
+    { "name": "WT_WORKTREE_SWEEP_MODE", "where": "plugin/bin/lib/worktree-sweep/report.mjs (report by default; auto reports; apply refused)" },
     { "name": "CLAUDE_CONFIG_DIR", "where": "plugin/bin/wt-observe.mjs:180" },
     { "name": "CLAUDE_PLUGIN_DATA", "where": "plugin/bin/lib/plugin-data-dir.mjs" },
     { "name": "CLAUDE_PLUGIN_ROOT", "where": "plugin/.claude-plugin/plugin.json (hook commands)" },

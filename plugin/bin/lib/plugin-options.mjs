@@ -23,6 +23,7 @@ const DEFINITIONS = Object.freeze({
   opencode_envelope_admission: { envKey: 'WT_OPENCODE_ENVELOPE_ADMISSION', type: 'string', defaultValue: null },
   opencode_verify_admission: { envKey: 'WT_OPENCODE_VERIFY_ADMISSION', type: 'string', defaultValue: null },
   lane_orphan_cleanup: { envKey: 'WT_LANE_ORPHAN_CLEANUP', type: 'string', defaultValue: 'observe' },
+  worktree_sweep_mode: { envKey: 'WT_WORKTREE_SWEEP_MODE', type: 'string', defaultValue: 'report' },
   lane_stall_minutes: { envKey: 'WT_LANE_STALL_MINUTES', type: 'number', defaultValue: 10 },
   release_branch: { envKey: 'WT_RELEASE_BRANCH', type: 'string', defaultValue: '' },
   grounding_sources: { envKey: null, type: 'string', defaultValue: null },
