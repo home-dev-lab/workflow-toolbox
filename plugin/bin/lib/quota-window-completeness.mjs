@@ -3,7 +3,7 @@
 // (which only observably behaves through end-to-end fixtures and, for the baseline-vs-steady-state
 // distinction, real process timing).
 //
-// EACH WINDOW IS WATCHED ON ITS OWN (card 1899394115301279304, round 3). A reading used to be judged
+// EACH WINDOW IS WATCHED ON ITS OWN (the per-window watch change). A reading used to be judged
 // WHOLE: one window without a numeric percentage made it DEGRADED, and the watcher watched nothing,
 // the window it did carry included. No source can say a window is absent from a plan: the rate-limit
 // headers omit a window the plan lacks, and the host documents omission as also meaning "its reset
