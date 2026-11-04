@@ -332,10 +332,16 @@ function lastRecordTimestampMs(sessionName, transcriptFile) {
   }
 }
 
-// Real normally-finished subagent transcripts end with an assistant `end_turn` record. A frozen
-// agent instead ends mid-turn (commonly `tool_use`), and killed/waiting agents have no terminal
-// assistant record. Trailing observer heartbeats are out-of-band and do not change that verdict.
+// Real normally-finished subagent transcripts end their LAST CONVERSATIONAL record (type `user` or
+// `assistant`) with an assistant `end_turn`. A frozen agent instead ends mid-turn (commonly
+// `tool_use`), and killed/waiting agents end on a user/tool turn. The harness appends out-of-band
+// records after a finished turn — SubagentStop hook `attachment` records (hook_success,
+// hook_cancelled, hook_system_message, prompt_snapshot), `observer-ref` heartbeats, `api-request*`
+// bookkeeping and `system` records — so every record that is not conversational is skipped rather
+// than enumerated: a list would reopen this false STALE with each new harness record type.
 // Any unreadable or malformed candidate fails toward the existing STALE alert.
+const CONVERSATIONAL_RECORD_TYPES = new Set(['user', 'assistant'])
+
 function transcriptEndedCleanly(name) {
   const slash = name.indexOf('/')
   if (slash < 0) return false
@@ -347,7 +353,9 @@ function transcriptEndedCleanly(name) {
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       let record
       try { record = JSON.parse(lines[i]) } catch { return false }
-      if (record?.type === 'observer-ref') continue
+      // A line that parses but is not a typed record ({}, null, an array) is malformed: fail loud.
+      if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.type !== 'string') return false
+      if (!CONVERSATIONAL_RECORD_TYPES.has(record.type)) continue
       return record?.type === 'assistant'
         && record?.message?.role === 'assistant'
         && record?.message?.stop_reason === 'end_turn'
@@ -401,11 +409,10 @@ function ownTranscriptIds(transcriptsMap) {
 
 function projectScopeLabel(record, transcriptIds) {
   if (record.agentIdSource === 'none') return ' (project unknown)'
-  const isLocal = record.agentIdSource === 'brief'
-    ? transcriptIds.brief.has(record.agentId)
-    : record.agentIdSource === 'name'
-      ? transcriptIds.name.has(record.agentId)
-      : transcriptIds.brief.has(record.agentId) || transcriptIds.name.has(record.agentId)
+  let isLocal
+  if (record.agentIdSource === 'brief') isLocal = transcriptIds.brief.has(record.agentId)
+  else if (record.agentIdSource === 'name') isLocal = transcriptIds.name.has(record.agentId)
+  else isLocal = transcriptIds.brief.has(record.agentId) || transcriptIds.name.has(record.agentId)
   return isLocal ? '' : ' (foreign to this project)'
 }
 
@@ -425,8 +432,7 @@ async function ownSessionHasDelegated() {
     // No subagents dir yet is the normal "hasn't delegated" case. Any other
     // error (permissions, a transient mount blip) must not block arming
     // behind a check that cannot be answered — fail toward coverage.
-    if (error?.code === 'ENOENT') return false
-    return true
+    return error?.code !== 'ENOENT'
   }
 }
 

@@ -22,6 +22,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The delegated-arc watch no longer reports a normally finished sub-agent as STALE when harness records (SubagentStop hook attachments, request bookkeeping, system records) follow its final end_turn; it now skips every non-conversational trailing record instead of only observer heartbeats.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
