@@ -23,6 +23,13 @@ describe('resetsAtToMs', () => {
     expect(resetsAtToMs('soon')).toBeNull()
     expect(resetsAtToMs({})).toBeNull()
   })
+  it('returns null when the milliseconds would not be a finite, valid date', () => {
+    for (const value of [-1e308, '-1e308', 1e308, '1e309', NaN, 1e16, '1e16']) expect(resetsAtToMs(value)).toBeNull()
+  })
+  it('an out-of-range reset time never makes the drop classifier throw', () => {
+    const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: 1e16, currentResetsAt: -1e308, previousPct: 42, currentPct: 32 })
+    expect(verdict.kind).toBe('undetermined')
+  })
 })
 
 describe('classifyQuotaDrop', () => {
