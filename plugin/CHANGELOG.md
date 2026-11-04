@@ -7,6 +7,15 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 
+- Independent analysis accepts an optional `maxVerifyClaims` positive-integer argument
+  to bound verification work. It prioritizes the most severe critiques and reports
+  every critique beyond the cap as not verified, with its reason and a count.
+  Omitting the argument keeps verification uncapped. A cap larger than the critique
+  count verifies everything.
+- Behaviour change: Independent analysis now validates its top-level arguments like the
+  other composition examples. An argument it does not recognise (for example
+  `verifierType`) used to be silently ignored; it now fails before any agent runs, with
+  an error naming the argument.
 - Read-only worktree sweep with ordered KEEP reasons, conservative liveness verdicts,
   an explicit JSON output, and throttled report-only session/prompt hooks. Reports
   never archive, move, purge or delete worktrees; apply remains unavailable.
