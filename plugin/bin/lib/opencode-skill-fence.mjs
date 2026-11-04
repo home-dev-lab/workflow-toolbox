@@ -24,15 +24,24 @@ export const SKILL_FENCE_CACHE_MAX_ENTRIES = 64
 const CACHE_LOCK_WAIT_MS = 30_000
 const CACHE_STORE_MARKER = '.workflow-toolbox-opencode-skill-fence-cache'
 const CACHE_STORE_MARKER_CONTENT = 'workflow-toolbox opencode skill-fence cache v1\n'
+const OPENCODE_CHILD_FENCE = Object.freeze({
+  OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true',
+  OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true',
+  OPENCODE_CONFIG_CONTENT: '{"instructions":["CLAUDE.md"]}',
+})
 
 // Measured 2026-09-13 with installed OpenCode 1.18.30: under --pure,
 // OPENCODE_CONFIG skills.paths exposes a materialised skill while
 // OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true excludes the external Claude skill.
+// OPENCODE_DISABLE_CLAUDE_CODE_PROMPT excludes user-level Claude instructions and
+// project CLAUDE.md discovery. spawnOpencode restores project CLAUDE.md through
+// config instructions after filtering inherited configuration channels.
 
 export function opencodeChildEnv(env = process.env, extraNames = [], platform) {
   const names = typeof extraNames === 'string' ? providerCredentialNames(extraNames) : extraNames
   const childEnv = platform === undefined ? externalModelEnv(env, names) : externalModelEnv(env, names, platform)
-  childEnv.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'true'
+  childEnv.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = OPENCODE_CHILD_FENCE.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS
+  childEnv.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT = OPENCODE_CHILD_FENCE.OPENCODE_DISABLE_CLAUDE_CODE_PROMPT
   // An inherited config can add arbitrary skill paths. Launchers may add their own
   // validated OPENCODE_CONFIG after this function returns, but never inherit one silently.
   for (const name of Object.keys(childEnv)) {
@@ -69,6 +78,7 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
   const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
   const { sandboxPaths, readonlyCwd, usageReceipt, usageReader, ...rest } = options
   const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
+  Object.assign(childOptions.env, OPENCODE_CHILD_FENCE)
   // A bridge that dies mid-run reports on the same stream as the lane's own stderr (its run log).
   const diagnostics = Array.isArray(rest.stdio) ? rest.stdio[2] : undefined
   const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform, readonlyCwd, diagnostics })

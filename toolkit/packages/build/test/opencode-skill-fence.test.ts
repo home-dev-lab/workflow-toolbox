@@ -14,6 +14,12 @@ import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFen
 isolateOpencodeAdmission()
 
 const FENCE_MODULE = new URL('../../../../plugin/bin/lib/opencode-skill-fence.mjs', import.meta.url).href
+const EXPECTED_CHILD_FENCE = {
+  OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true',
+  OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true',
+  OPENCODE_CONFIG_CONTENT: '{"instructions":["CLAUDE.md"]}',
+}
+type FenceSpawn = (bin: string, args: string[], options: { env: Record<string, string> }) => { status: number }
 
 const roots: string[] = []
 // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
@@ -106,10 +112,37 @@ async function waitForFile(file: string) {
   throw new Error(`timed out waiting for ${file}`)
 }
 
-describe('OpenCode Claude-skill fence', () => {
+function registerInstructionFenceCases() {
+  it.each([undefined, 'false', '', '0', 'true'])('forces the Claude prompt fence over inherited %s', (value) => {
+    expect(opencodeChildEnv({ OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: value }).OPENCODE_DISABLE_CLAUDE_CODE_PROMPT).toBe('true')
+  })
+
+  it.each([
+    {},
+    { OPENCODE_CONFIG_CONTENT: '{"instructions":["other.md"]}' },
+    { OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'false', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false', OPENCODE_CONFIG_CONTENT: '' },
+    { OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: '0' },
+  ])('enforces the instruction and skill fence over a caller env %j', (env) => {
+    const spawnFn = vi.fn<FenceSpawn>(() => ({ status: 0 }))
+    spawnOpencode(spawnFn, 'opencode', [], { env: { PATH: '/bin', ...env } })
+    expect(spawnFn.mock.calls[0]?.[2]).toEqual({ env: { PATH: '/bin', ...EXPECTED_CHILD_FENCE } })
+  })
+
+  it.each([{}, undefined])('enforces the instruction and skill fence without an env option %j', (options) => {
+    vi.stubEnv('OPENCODE_DISABLE_CLAUDE_CODE_PROMPT', 'false')
+    vi.stubEnv('OPENCODE_DISABLE_CLAUDE_CODE_SKILLS', '')
+    vi.stubEnv('OPENCODE_CONFIG_CONTENT', '{"instructions":["other.md"]}')
+    const spawnFn = vi.fn<FenceSpawn>(() => ({ status: 0 }))
+    spawnOpencode(spawnFn, 'opencode', [], options)
+    expect(spawnFn.mock.calls[0]?.[2]).toEqual({ env: { ...externalModelEnv(process.env), ...EXPECTED_CHILD_FENCE } })
+  })
+
+}
+
+function registerChildEnvironmentCases() {
   it('forces true after an inherited false value', () => {
     expect(opencodeChildEnv({ OPENCODE_CONFIG: '/unsafe.json', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false', KEEP: 'secret', PATH: '/bin', HOME: '/home/test' })).toEqual({
-      HOME: '/home/test', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin',
+      HOME: '/home/test', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true', PATH: '/bin',
     })
     expect(opencodeChildEnv({ OPENCODE_CONFIG: '/unsafe.json' })).not.toHaveProperty('OPENCODE_CONFIG')
   })
@@ -130,7 +163,7 @@ describe('OpenCode Claude-skill fence', () => {
     })
     const result = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { encoding: 'utf8', env: childEnv })
     expect(result.status).toBe(0)
-    expect(JSON.parse(result.stdout)).toMatchObject({ PATH: process.env.PATH, HOME: home, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' })
+    expect(JSON.parse(result.stdout)).toMatchObject({ PATH: process.env.PATH, HOME: home, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true' })
     expect(result.stdout).not.toContain('session credential')
     expect(result.stdout).not.toContain('api credential')
     expect(result.stdout).not.toContain('auth credential')
@@ -140,12 +173,15 @@ describe('OpenCode Claude-skill fence', () => {
     expect(result.stdout).not.toContain('owner-agent.sock')
   })
 
+}
+
+function registerExplicitEnvironmentCases() {
   it('allows an explicitly named lane variable without opening a prefix wildcard', () => {
     expect(opencodeChildEnv({ PATH: '/bin', LANE_DATABASE_URL: 'needed', LANE_OTHER_SECRET: 'blocked' }, ['LANE_DATABASE_URL'])).toEqual({
-      LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin',
+      LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true', PATH: '/bin',
     })
     expect(opencodeChildEnv({ PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_LANE_DATABASE_URL', WT_LANE_DATABASE_URL: 'needed' })).toEqual({
-      WT_LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_LANE_DATABASE_URL',
+      WT_LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true', PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_LANE_DATABASE_URL',
     })
   })
 
@@ -166,6 +202,9 @@ describe('OpenCode Claude-skill fence', () => {
     })
   })
 
+}
+
+function registerConfigurationEnvironmentCases() {
   it('does not let configured extras carry credentials into the child', () => {
     const env = {
       WT_EXTERNAL_MODEL_ENV_ALLOW: 'MYSQL_PWD,GIT_CONFIG_PARAMETERS',
@@ -185,52 +224,60 @@ describe('OpenCode Claude-skill fence', () => {
     }
     let observed: Record<string, string> | undefined
     spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env })
-    expect(observed).toEqual({ PATH: '/bin' })
+    expect(observed).toEqual({ PATH: '/bin', ...EXPECTED_CHILD_FENCE })
+    expect(observed?.OPENCODE_CONFIG_CONTENT).not.toBe(env.OPENCODE_CONFIG_CONTENT)
   })
 
-  it('drops credential-bearing values through the real launcher path', () => {
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const cases = [
-      {
-        env: {
-          OPENAI_API_KEY: 'selected',
-          GOOGLE_GENERATIVE_AI_API_KEY: 'unrelated',
-          OPENAI_BASE_URL: 'https://other:secret@api.example/v1',
-        },
-        expected: { OPENAI_API_KEY: 'selected' },
-      },
-      {
-        env: {
-          OPENAI_API_KEY: 'selected',
-          WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS',
-          OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer other-service-secret',
-        },
-        expected: { OPENAI_API_KEY: 'selected', WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS' },
-      },
-      // Review round 2: a numeric Authorization value and a userinfo holding a space reached the child.
-      {
-        env: { OPENAI_API_KEY: 'selected', CODEX_EXTRA: 'Authorization: 123456' },
-        expected: { OPENAI_API_KEY: 'selected' },
-      },
-      {
-        env: { OPENAI_API_KEY: 'selected', OPENAI_BASE_URL: 'https://u:other spaced@example.test/v1' },
-        expected: { OPENAI_API_KEY: 'selected' },
-      },
-    ]
+}
 
-    for (const { env, expected } of cases) {
-      let observed: Record<string, string> | undefined
-      spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env }, 'linux', ['OPENAI_API_KEY'])
-      expect(observed).toEqual(expected)
-    }
-    expect(error).toHaveBeenCalledWith(expect.stringContaining('OTEL_EXPORTER_OTLP_HEADERS'))
-    const printed = error.mock.calls.map((call) => String(call[0])).join('\n')
-    expect(printed).not.toContain('other-service-secret')
-    expect(printed).not.toContain('other:secret')
-    expect(printed).not.toContain('123456')
-    expect(printed).not.toContain('other spaced')
-  })
+function registerCredentialValueCases() {
+  it('drops credential-bearing values through the real launcher path', checkCredentialValues)
+}
 
+function checkCredentialValues() {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const cases = [
+    {
+      env: {
+        OPENAI_API_KEY: 'selected',
+        GOOGLE_GENERATIVE_AI_API_KEY: 'unrelated',
+        OPENAI_BASE_URL: 'https://other:secret@api.example/v1',
+      },
+      expected: { OPENAI_API_KEY: 'selected' },
+    },
+    {
+      env: {
+        OPENAI_API_KEY: 'selected',
+        WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS',
+        OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer other-service-secret',
+      },
+      expected: { OPENAI_API_KEY: 'selected', WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS' },
+    },
+    // Review round 2: a numeric Authorization value and a userinfo holding a space reached the child.
+    {
+      env: { OPENAI_API_KEY: 'selected', CODEX_EXTRA: 'Authorization: 123456' },
+      expected: { OPENAI_API_KEY: 'selected' },
+    },
+    {
+      env: { OPENAI_API_KEY: 'selected', OPENAI_BASE_URL: 'https://u:other spaced@example.test/v1' },
+      expected: { OPENAI_API_KEY: 'selected' },
+    },
+  ]
+
+  for (const { env, expected } of cases) {
+    let observed: Record<string, string> | undefined
+    spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env }, 'linux', ['OPENAI_API_KEY'])
+    expect(observed).toEqual({ ...expected, ...EXPECTED_CHILD_FENCE })
+  }
+  expect(error).toHaveBeenCalledWith(expect.stringContaining('OTEL_EXPORTER_OTLP_HEADERS'))
+  const printed = error.mock.calls.map((call) => String(call[0])).join('\n')
+  expect(printed).not.toContain('other-service-secret')
+  expect(printed).not.toContain('other:secret')
+  expect(printed).not.toContain('123456')
+  expect(printed).not.toContain('other spaced')
+}
+
+function registerProviderEnvironmentCases() {
   it('admits a configured harmless variable without admitting credentials or execution hooks', () => {
     expect(externalModelEnv({
       WT_EXTERNAL_MODEL_ENV_ALLOW: 'EDITOR,GITHUB_TOKEN,NODE_OPTIONS',
@@ -271,6 +318,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(warnings).toEqual([expect.stringContaining('using fallback environment names AZURE_API_KEY, AZURE_RESOURCE_NAME')])
   })
 
+}
+
+function registerExecutionEnvironmentCases() {
   it('does not let a configured execution hook mint an excluded credential', () => {
     const env = externalModelEnv({
       WT_EXTERNAL_MODEL_ENV_ALLOW: 'NODE_OPTIONS',
@@ -290,16 +340,19 @@ describe('OpenCode Claude-skill fence', () => {
 
   it('removes inherited OpenCode config case-insensitively on Windows', () => {
     expect(opencodeChildEnv({ PATH: 'C:\\bin', appdata: 'C:\\appdata', opencode_config: 'C:\\owner\\injected.json' }, [], 'win32')).toEqual({
-      PATH: 'C:\\bin', appdata: 'C:\\appdata', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true',
+      PATH: 'C:\\bin', appdata: 'C:\\appdata', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: 'true',
     })
   })
 
+}
+
+function registerEnvironmentRebuildCases() {
   it('rebuilds an already-filtered environment after it is mutated', () => {
     const filtered = externalModelEnv({ PATH: '/bin' })
     filtered.CLAUDE_CODE_OAUTH_TOKEN = 'late credential'
     let observed: Record<string, string> | undefined
     spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env: filtered })
-    expect(observed).toEqual({ PATH: '/bin' })
+    expect(observed).toEqual({ PATH: '/bin', ...EXPECTED_CHILD_FENCE })
   })
 
   it('matches canonical environment names case-insensitively only on Windows', () => {
@@ -328,6 +381,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(calls[0]?.[2]).toMatchObject({ cwd: '/lane', env })
   })
 
+}
+
+function registerRefusedDiscoveryCases() {
   it('refuses every discovered single-writer name with its reported location', () => {
     const stdout = JSON.stringify([
       { name: 'save-memory', location: '/one/SKILL.md' },
@@ -363,6 +419,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(effectiveSkillDiscoveryRefusal(result)).toBe('wt-lane: Refused: effective OpenCode skill discovery failed (spawnSync opencode ENOENT); refusing to launch.')
   })
 
+}
+
+function registerBinaryDiscoveryCases() {
   it('does not report a verified fence when bare-binary discovery itself fails', () => {
     const f = stub('honor')
     const discoveryError = Object.assign(new Error('simulated lookup I/O failure'), { code: 'EIO' })
@@ -397,6 +456,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(result).not.toHaveProperty('reason')
   })
 
+}
+
+function registerWindowsCommandCases() {
   it('quotes and cmd-spawns a resolved Windows command shim', () => {
     const f = stub('honor')
     const missing = Object.assign(new Error('not found'), { code: 'ENOENT' })
@@ -429,6 +491,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(result, result.reason).toMatchObject({ ok: true, allowOk: true, binary })
   })
 
+}
+
+function registerWindowsProcessorCases() {
   it('uses the configured Windows command processor for a zero-argument shim', () => {
     const previous = process.env.ComSpec
     process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe'
@@ -447,21 +512,24 @@ describe('OpenCode Claude-skill fence', () => {
     }
   })
 
-  function windowsShimFixture() {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'wt cmd argv ')); roots.push(root)
-    const script = path.join(root, 'x.mjs')
-    const bin = path.join(root, 'opencode.cmd')
-    const record = path.join(root, 'argv.json')
-    const expected = ['run', '--dir', path.join(root, 'lane %PATH% ^ caret'), '--model', 'provider/model']
-    writeFileSync(script, `import { writeFileSync } from 'node:fs'\nconst args = process.argv.slice(2)\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify(args))\nprocess.stdout.write('shim stdout:' + JSON.stringify(args) + '\\n')\nprocess.exitCode = 3\n`)
-    writeFileSync(bin, `@echo off\r\n@"${process.execPath}" "%~dp0x.mjs" %*\r\n@exit /b %errorlevel%\r\n`)
-    return { root, bin, record, expected }
-  }
+}
 
-  function spawnDetails(result: { status?: number | null, signal?: NodeJS.Signals | null, stdout?: unknown, stderr?: unknown }, elapsedMs: number) {
-    return `status=${String(result.status)} signal=${String(result.signal)} stdout=${JSON.stringify(String(result.stdout ?? ''))} stderr=${JSON.stringify(String(result.stderr ?? ''))} elapsed=${elapsedMs}ms`
-  }
+function windowsShimFixture() {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'wt cmd argv ')); roots.push(root)
+  const script = path.join(root, 'x.mjs')
+  const bin = path.join(root, 'opencode.cmd')
+  const record = path.join(root, 'argv.json')
+  const expected = ['run', '--dir', path.join(root, 'lane %PATH% ^ caret'), '--model', 'provider/model']
+  writeFileSync(script, `import { writeFileSync } from 'node:fs'\nconst args = process.argv.slice(2)\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify(args))\nprocess.stdout.write('shim stdout:' + JSON.stringify(args) + '\\n')\nprocess.exitCode = 3\n`)
+  writeFileSync(bin, `@echo off\r\n@"${process.execPath}" "%~dp0x.mjs" %*\r\n@exit /b %errorlevel%\r\n`)
+  return { root, bin, record, expected }
+}
 
+function spawnDetails(result: { status?: number | null, signal?: NodeJS.Signals | null, stdout?: unknown, stderr?: unknown }, elapsedMs: number) {
+  return `status=${String(result.status)} signal=${String(result.signal)} stdout=${JSON.stringify(String(result.stdout ?? ''))} stderr=${JSON.stringify(String(result.stderr ?? ''))} elapsed=${elapsedMs}ms`
+}
+
+function registerWindowsSyncOutputCases() {
   it.runIf(process.platform === 'win32')('passes stdout, argv, and exit /b 3 through spawnSync and a real Windows command shim', () => {
     const { bin, record, expected } = windowsShimFixture()
     const started = Date.now()
@@ -480,6 +548,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(source).toContain('return reapProcessFamily(pid)')
   })
 
+}
+
+function registerWindowsDetachedOutputCases() {
   it.runIf(process.platform === 'win32')('locks the Windows detached command-shim defect: exit survives but piped stdout is empty', async () => {
     const { bin, record, expected } = windowsShimFixture()
     const started = Date.now()
@@ -512,6 +583,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(elapsedMs, details).toBeLessThan(5_000)
   }, 10_000)
 
+}
+
+function registerWindowsDescriptorOutputCases() {
   it.runIf(process.platform === 'win32')('passes output and exit code through the launcher file-descriptor spawn shape', async () => {
     const { root, bin, record, expected } = windowsShimFixture()
     const output = path.join(root, 'child.log')
@@ -548,6 +622,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(JSON.parse(readFileSync(record, 'utf8')), details).toEqual(expected)
   }, 10_000)
 
+}
+
+function registerWindowsExecutableCases() {
   it('resolves a bare Windows executable through Path and PATHEXT', () => {
     const f = stub('honor')
     const calls: string[] = []
@@ -576,6 +653,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(result).toMatchObject({ ok: true, allowOk: true, binary })
   })
 
+}
+
+function registerCapabilityCacheCases() {
   it('refuses a binary that still lists the synthetic Claude skill', () => {
     const f = stub('ignore')
     expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: false, reason: expect.stringContaining('still listed') })
@@ -603,6 +683,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, allowOk: true, cached: false })
   })
 
+}
+
+function registerCachePruningCases() {
   it('retains only the newest 64 capability results when writing a cache miss', () => {
     const f = stub('honor')
     expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, cached: false })
@@ -625,6 +708,9 @@ describe('OpenCode Claude-skill fence', () => {
     expect(readFileSync(path.join(f.stateDir, 'keep.txt'), 'utf8')).toBe('not a fence cache entry')
   })
 
+}
+
+function registerCacheSerializationCases() {
   it('serializes cache-miss publication against pruning across processes', async () => {
     const f = stub('honor')
     const events = path.join(f.root, 'events')
@@ -649,6 +735,28 @@ describe('OpenCode Claude-skill fence', () => {
     expect(() => pruneOpencodeSkillFenceCache({ stateDir: f.stateDir })).toThrow(/refusing unowned/)
     expect(readFileSync(nested, 'utf8')).toBe('keep')
   })
+}
+
+describe('OpenCode Claude-skill fence', () => {
+  registerInstructionFenceCases()
+  registerChildEnvironmentCases()
+  registerExplicitEnvironmentCases()
+  registerConfigurationEnvironmentCases()
+  registerCredentialValueCases()
+  registerProviderEnvironmentCases()
+  registerExecutionEnvironmentCases()
+  registerEnvironmentRebuildCases()
+  registerRefusedDiscoveryCases()
+  registerBinaryDiscoveryCases()
+  registerWindowsCommandCases()
+  registerWindowsProcessorCases()
+  registerWindowsSyncOutputCases()
+  registerWindowsDetachedOutputCases()
+  registerWindowsDescriptorOutputCases()
+  registerWindowsExecutableCases()
+  registerCapabilityCacheCases()
+  registerCachePruningCases()
+  registerCacheSerializationCases()
 })
 
 // The Windows task-tree kill moved behind the host adapter: the envelope reaps through it, and the
