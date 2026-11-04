@@ -1,0 +1,47 @@
+import { createHash } from 'node:crypto'
+import { artifactMermaidScriptSource } from './host/artifact-assets.mjs'
+
+export { MERMAID_PATH } from './host/artifact-assets.mjs'
+export const MERMAID_FILE = new URL('../../skills/artifact-server/assets/mermaid/mermaid.min.js', import.meta.url)
+const MERMAID_INIT = "mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'strict' });"
+const INIT_HASH = createHash('sha256').update(MERMAID_INIT).digest('base64')
+
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+
+// A closing fence uses the opening character, is at least as long, and carries nothing after it.
+function closesFence(match, marker) {
+  return Boolean(match) && match[1][0] === marker[0] && match[1].length >= marker.length && match[2].trim() === ''
+}
+
+// A backtick fence whose info string contains a backtick is not a fence (CommonMark).
+function opensFence(match) {
+  return Boolean(match) && !(match[1][0] === '`' && match[2].includes('`'))
+}
+
+// CommonMark fences: a block closes only on the same character, at least as long, with nothing after it, so a
+// Mermaid example quoted inside a longer or tilde fence stays text. Returns null when the line is not a boundary.
+export function markdownFenceTag(line, fence) {
+  const match = FENCE.exec(line)
+  if (fence.open) return closesFence(match, fence.marker) ? closeMarkdownFence(fence) : null
+  if (!opensFence(match)) return null
+  fence.open = true
+  fence.marker = match[1]
+  fence.mermaid = line === '```mermaid'
+  fence.hasMermaid ||= fence.mermaid
+  return fence.mermaid ? '<pre class="mermaid">' : '<pre><code>'
+}
+
+export function closeMarkdownFence(fence) {
+  fence.open = false
+  return fence.mermaid ? '</pre>' : '</code></pre>'
+}
+
+export function markdownScripts({ html, hasMermaid }, { depth, generatedCsp }) {
+  if (!hasMermaid) return { html, csp: generatedCsp }
+  // 'self', not an exact host path: behind a path-mounted proxy (tailscale serve /artifacts) the browser sees a
+  // prefixed path an exact path never matches. Rendered Markdown escapes HTML, so only these two tags run.
+  const csp = `${generatedCsp}; script-src 'self' 'sha256-${INIT_HASH}'; connect-src 'none'; object-src 'none'; frame-ancestors 'none'`
+  const source = artifactMermaidScriptSource(depth)
+  const scripts = `<script src="${source}"></script><script>${MERMAID_INIT}</script>`
+  return { html: html.replace('</body></html>', () => `${scripts}</body></html>`), csp }
+}

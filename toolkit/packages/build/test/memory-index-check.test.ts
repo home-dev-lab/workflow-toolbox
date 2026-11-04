@@ -46,6 +46,14 @@ function fiche(dir: string, slug: string, body: string) {
   writeFileSync(join(dir, `${slug}.md`), body)
 }
 
+function indexWithBytes(bytes: number, entries = 1) {
+  const dir = makeStore()
+  fiche(dir, 'fact', 'A reachable fact.\n')
+  const links = '- [Fact](fact.md) — café\r\n'.repeat(entries)
+  writeFileSync(join(dir, 'MEMORY.md'), links + 'x'.repeat(bytes - Buffer.byteLength(links)))
+  return dir
+}
+
 function hubWithMembers(dir: string, slug: string, memberSlugs: string[], extraBody = '') {
   for (const memberSlug of memberSlugs) fiche(dir, memberSlug, `Body for ${memberSlug}.\n`)
   const memberLines = memberSlugs.map((memberSlug) => `- [[${memberSlug}]] — hook for ${memberSlug}`)
@@ -71,6 +79,7 @@ interface Report {
   unresolvedCrossRefs: Array<{ from: string; target: string }>
   brokenRetractions: Array<{ from: string; target: string }>
   hubCountMismatches: Array<{ file: string; declared: number; actual: number }>
+  inWarningBand: boolean
   notices: string[]
   flagged: boolean
   reasons: string[]
@@ -493,6 +502,92 @@ describe('memory-index-check-core: warning band (card follow-up — countdown be
   })
 })
 
+describe('memory-index-check-core: byte warning band usage', () => {
+  it('93% of the byte ceiling with few lines warns without flagging', () => {
+    const report = checkStore(indexWithBytes(930), { sizeThreshold: 1000 })
+    expect(report.entryLines).toBe(1)
+    expect(report.indexBytes).toBe(930)
+    expect(report.inWarningBand).toBe(true)
+    expect(report.notices).toEqual([
+      'index byte headroom: 70 byte(s) before the size threshold of 1000 (930 byte(s) used)',
+    ])
+    expect(report.flagged).toBe(false)
+    expect(report.reasons).toEqual([])
+  })
+
+  it('70% of the byte ceiling stays outside the band', () => {
+    const report = checkStore(indexWithBytes(700), { sizeThreshold: 1000 })
+    expect(report.inWarningBand).toBe(false)
+    expect(report.notices).toEqual([])
+    expect(report.flagged).toBe(false)
+    expect(report.reasons).toEqual([])
+  })
+
+})
+
+describe('memory-index-check-core: byte warning band boundaries', () => {
+  it.each([[850, true], [849, false], [1000, true]] as const)(
+    '%i bytes against a 1000-byte ceiling has byte band %s (inclusive boundary)',
+    (bytes, inBand) => {
+      const report = checkStore(indexWithBytes(bytes), { sizeThreshold: 1000 })
+      expect(report.inWarningBand).toBe(inBand)
+      expect(report.notices).toHaveLength(inBand ? 1 : 0)
+      expect(report.flagged).toBe(false)
+      expect(report.reasons).toEqual([])
+    },
+  )
+
+  it.each([[86, true], [85, false]] as const)('uses unrounded byte headroom at %i/101 bytes', (bytes, inBand) => {
+    const report = checkStore(indexWithBytes(bytes), { sizeThreshold: 101 })
+    expect(report.inWarningBand).toBe(inBand)
+    expect(report.notices).toHaveLength(inBand ? 1 : 0)
+  })
+
+})
+
+describe('memory-index-check-core: independent byte warning band', () => {
+  it('over the byte ceiling suppresses the byte notice and retains the existing reason', () => {
+    const report = checkStore(indexWithBytes(1001), { sizeThreshold: 1000 })
+    expect(report.inWarningBand).toBe(false)
+    expect(report.notices).toEqual([])
+    expect(report.overSizeThreshold).toBe(true)
+    expect(report.flagged).toBe(true)
+    expect(report.reasons).toEqual(['index is 1001 byte(s), over threshold 1000'])
+  })
+
+  it('inside both bands emits the unchanged line notice and a separate byte notice', () => {
+    const report = checkStore(indexWithBytes(930, 12), { threshold: 20, sizeThreshold: 1000 })
+    expect(report.inWarningBand).toBe(true)
+    expect(report.notices).toEqual([
+      'index headroom: 8 line(s) before the threshold of 20',
+      'index byte headroom: 70 byte(s) before the size threshold of 1000 (930 byte(s) used)',
+    ])
+    expect(report.flagged).toBe(false)
+    expect(report.reasons).toEqual([])
+  })
+
+  it('uses the applied default or custom lower byte ceiling', () => {
+    const dir = indexWithBytes(930)
+    expect(checkStore(dir).inWarningBand).toBe(false)
+    expect(checkStore(dir, { sizeThreshold: 1000 }).inWarningBand).toBe(true)
+    const defaultBand = checkStore(indexWithBytes(23250))
+    expect(defaultBand.inWarningBand).toBe(true)
+    expect(defaultBand.notices).toEqual([
+      'index byte headroom: 1750 byte(s) before the size threshold of 25000 (23250 byte(s) used)',
+    ])
+  })
+
+  it('keeps each band independent when the other ceiling is exceeded', () => {
+    const dir = indexWithBytes(930, 12)
+    expect(checkStore(dir, { threshold: 10, sizeThreshold: 1000 }).notices).toEqual([
+      'index byte headroom: 70 byte(s) before the size threshold of 1000 (930 byte(s) used)',
+    ])
+    expect(checkStore(dir, { threshold: 20, sizeThreshold: 900 }).notices).toEqual([
+      'index headroom: 8 line(s) before the threshold of 20',
+    ])
+  })
+})
+
 describe('memory-index-check-core: retractions (card #1833831689994896673)', () => {
   it('TEST-LOCK: retracted note, resolving link target → silent', () => {
     const dir = makeStore()
@@ -656,6 +751,22 @@ describe('memory-index-check-core: hub sizing (card follow-up — the ceiling re
       'declared-count cross-check inactive: hubs exist, but none declares member_count; silence here means not measured, not verified',
     ])
     expect(report.inWarningBand).toBe(false)
+  })
+})
+
+describe('wt-memory-index-check.mjs CLI: byte warning band', () => {
+  it('inside the byte band exits 0, prints byte usage and ceiling, and serializes the warning', () => {
+    const dir = indexWithBytes(930)
+    const { status, report } = runCli(dir, ['--size-threshold', '1000'])
+    expect(status).toBe(0)
+    expect(report.inWarningBand).toBe(true)
+    expect(report.flagged).toBe(false)
+    expect(report.reasons).toEqual([])
+    const notice = 'index byte headroom: 70 byte(s) before the size threshold of 1000 (930 byte(s) used)'
+    expect(report.notices).toEqual([notice])
+    const stdout = execFileSync('node', [CLI, '--store', dir, '--size-threshold', '1000'], { encoding: 'utf8' })
+    expect(stdout).toContain(notice)
+    expect(stdout).not.toContain('FLAG:')
   })
 })
 

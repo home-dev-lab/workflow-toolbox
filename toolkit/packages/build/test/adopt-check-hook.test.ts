@@ -34,7 +34,9 @@ function specHead() {
 }
 function specCopy(dir: string, script = INSTALL_RULES) {
   installInto(dir, script)
-  writeFileSync(join(dir, ACT), specHead() + readFileSync(join(dir, ACT), 'utf8'))
+  const file = join(dir, ACT)
+  const text = readFileSync(file, 'utf8')
+  if (!text.startsWith('---\n')) writeFileSync(file, specHead() + text)
   spawnSync(process.execPath, [script, '--set', 'rules', '--install', '--file', ACT, '--dir', dir], { encoding: 'utf8', env: sealedPluginCliEnv(dir) })
 }
 
@@ -71,14 +73,6 @@ function installInto(dir: string, script = INSTALL_RULES): void {
 
 function installOnDemand(dir: string, script = INSTALL_RULES): void {
   installInto(dir, script)
-  for (const file of readdirSync(dir).filter((name) => name.endsWith('.md'))) {
-    const target = join(dir, file)
-    const specFile = join(REPO_ROOT, 'plugin/rules', file.replace(/\.md$/, '.spec.json'))
-    const spec = file.endsWith('-at-act.md') && readdirSync(join(REPO_ROOT, 'plugin/rules')).includes(file.replace(/\.md$/, '.spec.json'))
-      ? JSON.parse(readFileSync(specFile, 'utf8')) : null
-    const head = spec ? frontmatter({ ...spec, triggers: spec['on-demand'].triggers, compliance: spec.compliance ?? spec['on-demand'].compliance }) : ON_DEMAND_FRONTMATTER
-    writeFileSync(target, head + readFileSync(target, 'utf8'))
-  }
 }
 
 const DESTRUCTIVE_REMEDY = /\brm\s+(?:-\S+\s+)*--?\s|\bremove (?:one|the misplaced) copy|\bremoving the misplaced/i

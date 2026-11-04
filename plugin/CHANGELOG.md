@@ -5,14 +5,46 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+
+- Independent analysis accepts an optional `maxVerifyClaims` positive-integer argument
+  to bound verification work. It prioritizes the most severe critiques and reports
+  every critique beyond the cap as not verified, with its reason and a count.
+  Omitting the argument keeps verification uncapped. A cap larger than the critique
+  count verifies everything.
+- Behaviour change: Independent analysis now validates its top-level arguments like the
+  other composition examples. An argument it does not recognise (for example
+  `verifierType`) used to be silently ignored; it now fails before any agent runs, with
+  an error naming the argument.
+- Read-only worktree sweep with ordered KEEP reasons, conservative liveness verdicts,
+  an explicit JSON output, and throttled report-only session/prompt hooks. Reports
+  never archive, move, purge or delete worktrees; apply remains unavailable.
+
 ### Fixed
 
 - Routine lane gates use one priority resolver across worker environments, brokers, direct/light leases and static package-script wrappers. Missing, empty or malformed lane priorities warn and default to P2; valid declarations retain P1 or P0, including without a broker and through gate-chain children. Ordinary callers keep their existing defaults, static FIFO and release behavior; sandboxed release remains refused.
+- Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
+  inspect directories named `index.lock`, retain verified holders despite unrelated device
+  mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
+  Direct background-worker apply refusal is now regression-tested on a populated project.
+- Adopt now installs new at-act rules in on-demand directories with their trigger head and stamp, and repairs existing headless managed copies with a head-only write that preserves their bodies.
+- The read-only agents `wt-reviewer`, `index-groomer`, `leaf-readonly` and `lean` now set `omitClaudeMd: true`, so their spawns no longer carry the project and user CLAUDE.md files in their prefix; they take everything they need from the delegation prompt.
+- Added regression tests for the secret guard's streaming mask; no behaviour change.
+### Added
+
+- Artifact-server HTML can opt into scripts and browser annotation tools with a first-content `<!-- wt-artifact-server: interactive -->` marker within 256 bytes. Existing raw, rich, and annotatable policies are unchanged. Markdown `mermaid` fences render escaped diagram source with a reserved local Mermaid asset and a hash-pinned initializer; Markdown without diagrams remains script-free. Mermaid 11.17.2 asset placeholders include installation instructions for network-restricted checkouts.
+
+### Fixed
+
+- Plugin-launched opencode children no longer load `~/.claude/CLAUDE.md` automatically (an `instructions` entry you add to your own opencode config still applies); project `CLAUDE.md` files are loaded through config `instructions`. Repositories with both `AGENTS.md` and `CLAUDE.md` now load both. Nested sub-directory `CLAUDE.md` files are no longer attached on file reads.
+- Every `wt-lane.mjs` launch, including script callers, now counts live opencode/codex lanes under a machine-shared admission lock and refuses at 16 before starting a worker. The exported `laneLaunchAdmissionLockPath()` names `~/.local/state/wt-lane-host/launch-admission.lock` on Linux, `~/Library/Application Support/wt-lane-host/launch-admission.lock` on macOS and `%LOCALAPPDATA%/wt-lane-host/launch-admission.lock` on Windows; other scripts may take the same lock with the exported admission helpers. The OS user's profile home keeps project-isolated `HOME` and per-worktree state overrides from splitting admission. The lock stays held until the worker has recorded its real lane spawn and the counter sees that process or a descendant of it (preflight `opencode` probes never count), or until its worker finishes; a visibility timeout force-stops only the worker this launch spawned, after verifying its identity, and its error states the cleanup outcome observed. An acquisition timeout names the lock file, its owner pid and the manual remedy. An unavailable count, including a `pgrep` that does not answer within 5 seconds (it is then killed, in the lane saturation hook too), explicitly warns `lane count NOT MEASURED` and admits under the lock, so a broken or hung counter never blocks every lane; a process returned under both lane names counts once. Failing to remove the lock's temporary staging link is reported and never loses a claim already taken; Windows has no counter, so there the cap is not enforced and every launch prints `NOT MEASURED`. A launcher killed with SIGKILL between its worker spawn and that lane being counted can let one extra lane past the cap. Because a launcher can now outlive a short lane, the SDK pilot lifecycle reads the launcher's output through the descriptors it opened rather than by path, so a lane whose worker removes the brief cleanup directory before its launcher exits no longer leaves the lifecycle waiting forever, and an unreadable launcher output, or a failure closing either output file, now fails the launch instead of hanging it, and both files are always closed or attempted.
+- Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows. On Windows the documented launch starts the answer process through a short Node detacher with file-backed output and records its process id beside the answer. When PATH holds several `node` executables, it uses the first one, as a bare `node` command would. A project or local installation now applies when its registered project path and the working directory spell the same Windows folder differently (an 8.3 short name such as `RUNNER~1` against its long name).
+- `wt-lane.mjs` now also refuses a launch whose directory (or an immediate subdirectory) declares `yarn.lock`, `bun.lock` or `bun.lockb` with a missing `node_modules` or one holding only dot entries (`.cache`, `.bin`, `.DS_Store`), as it already did for `pnpm-lock.yaml` and `package-lock.json`. Every refusal names the host command to run from that directory without `--offline` (`pnpm install --frozen-lockfile`, `npm ci`, `yarn install --frozen-lockfile`, `bun install --frozen-lockfile`) and the `--allow-missing-install` override, so a sandboxed lane no longer retries a registry install while holding the suite lock. A Yarn Plug'n'Play project (`yarn.lock` beside `.pnp.cjs` or `.pnp.js`) counts as installed, and a directory named `node_modules` in any letter case is never scanned as a project.
+- The memory index probe warns within the final 15% of its applied byte ceiling, alongside the existing line-headroom notice, without changing findings or exit codes.
 - Admission runner and supervisor now use one-way module dependencies, preserving detached-process cleanup and existing admission results without a circular import.
 - Admission on Linux installs a child subreaper before executing policy, then kills and reaps detached descendants, including double-forked daemons, before returning. Cleanup survives Node-supervisor death and needs neither pidfds nor unrelated procfs records. Unavailable containment (including macOS and Windows) refuses before policy execution; abnormal containment-owner exit reports an explicit unknown.
 - The admission containment owner now ignores interrupt, terminate, hangup and quit signals so it cannot be stopped before its contained descendants are cleaned up, and its shutdown steps are time-bounded so a stuck child cannot hang admission.
 - `wt-tsls` CPU budgets now warn only: stopping an over-budget server is disabled until a later version. Individual or combined tsserver usage above 100% of one core for 120 sampled seconds produces one stderr warning with the measured excess and duration, then sampling continues without signalling processes or delaying the client's normal disconnect. Samples run every five seconds using Linux user/system ticks or macOS `ps` CPU time, pinned to the backend's spawn-time identity; polling ends on backend exit. Brief unavailable measurements pause evidence, gaps longer than 15 seconds reset it, and proven idle recovery resets sustained evidence while sibling replacement preserves accepted combined-CPU history. Unsupported platforms and failed measurements explicitly report an unavailable, unenforced budget instead of idle CPU. The existing native-watch bound remains active.
-- Second-opinion detached launches resolve the current plugin at launch time, preserve startup diagnostics beside the answer, and check startup within a minute on Linux, macOS, and Windows.
 - Retain every artifact-server health responder until proven exited, coalesce unknown process observations, and carry self-read birth evidence across monitor handoffs.
 - Bind artifact-server attachments to identity-bracketed health observations, permanently retire exited instances, and use recorded birth identity for CLI stop/restart confirmation.
 - Retain unresolved artifact-server processes across monitor attachment changes, and require confirmed exit for every prior attachment before spawning a replacement.
