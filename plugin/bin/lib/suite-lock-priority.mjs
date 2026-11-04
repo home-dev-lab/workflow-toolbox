@@ -7,14 +7,30 @@ export function parseSuiteLockPriority(value) {
   throw new Error(`unknown suite lock priority: ${displayArgv([value])}`)
 }
 
-export function suiteLockPriority(options = {}, env = process.env) {
-  if (options.priority !== undefined) return parseSuiteLockPriority(options.priority)
-  const raw = env.WT_SUITE_LOCK_PRIORITY
-  if (raw === undefined) return 'P1'
+function lanePriorityContext(options, env) {
+  const broker = typeof env.WT_SUITE_LOCK_BROKER === 'string' && Boolean(env.WT_SUITE_LOCK_BROKER.trim())
+  return options.lane === true || env.WT_SUITE_LOCK_CONTEXT === 'lane' || broker
+}
+
+function ambientPriority(raw, lane, fallback, present) {
+  if (raw === undefined && (!lane || !present)) return fallback
   const value = typeof raw === 'string' ? raw.toUpperCase() : ''
   if (['P0', 'P1', 'P2'].includes(value)) return value
-  process.stderr.write(`wt-suite-lock: invalid WT_SUITE_LOCK_PRIORITY ${JSON.stringify(displayArgv([raw]))}; using P1\n`)
-  return 'P1'
+  process.stderr.write(`wt-suite-lock: invalid WT_SUITE_LOCK_PRIORITY ${JSON.stringify(displayArgv([raw]))}; using ${fallback}\n`)
+  return fallback
+}
+
+export function suiteLockPriority(options = {}, env = process.env) {
+  const lane = lanePriorityContext(options, env)
+  // The non-lane static mutex historically uses FIFO at P1, even for declared levels.
+  if (options.staticSemaphore && !lane) return 'P1'
+  if (options.priority !== undefined) return parseSuiteLockPriority(options.priority)
+  return ambientPriority(env.WT_SUITE_LOCK_PRIORITY, lane, lane ? 'P2' : 'P1', Object.hasOwn(env, 'WT_SUITE_LOCK_PRIORITY'))
+}
+
+// Host boundaries declare context; all selection stays in the common resolver.
+export function laneSuiteLockPriority(options = {}, env = process.env) {
+  return suiteLockPriority({ ...options, lane: true }, env)
 }
 
 export function suiteLockLongHoldSeconds(env = process.env) {

@@ -43,7 +43,7 @@ test('termination: launcher pre-signal clearing cannot disarm a failed terminati
   const calls = []
   let unavailable = true
   const consentModules = { terminateLane: () => { calls.push('signal'); if (unavailable) eio(); h.terminal.push([126]); return { killed: true } } }
-  const endGroup = new Function('clearDeadline', 'finish', 'process', 'consentModules', 'currentState', 'GRACE_MS', 'journal', 'child', 'writeState', `return (code, { writeReceipt = true, receiptLines = [], terminal = null } = {}) => {${body}\n}`)(() => { calls.push('clear'); h.clearBeforeSignal() }, () => {}, { removeAllListeners() {}, on() {} }, consentModules, {}, 0, () => {}, {}, () => {})
+  const endGroup = new Function('clearDeadline', 'finish', 'process', 'consentModules', 'currentState', 'GRACE_MS', 'journal', 'child', 'writeState', 'state', `return (code, { writeReceipt = true, receiptLines = [], terminal = null } = {}) => {${body}\n}`)(() => { calls.push('clear'); h.clearBeforeSignal() }, () => {}, { removeAllListeners() {}, on() {} }, consentModules, {}, 0, () => {}, {}, () => {}, { current: () => ({}), writeState: () => {} })
   h.opts.terminalHandler = endGroup
   await h.tick(3000)
   assert.equal(h.terminal.length, 0)
@@ -69,7 +69,7 @@ test('termination: launcher signals before journal and terminal state writes des
   const finishBody = /const finish = \(code, receiptLines = \[\]\) => \{([\s\S]*?)\n  \}/.exec(fs.readFileSync(file, 'utf8'))?.[1]
   assert.ok(finishBody, 'exercise the installed best-effort receipt writer')
   const finish = new Function('opts', 'appendFileSync', `let finished = false; return (code, receiptLines = []) => {${finishBody}\n}`)({ log: 'fixture.log' }, write('receipt'))
-  const endGroup = new Function('clearDeadline', 'finish', 'process', 'consentModules', 'currentState', 'GRACE_MS', 'journal', 'child', 'writeState', `return (code, { writeReceipt = true, receiptLines = [], terminal = null } = {}) => {${body}\n}`)(() => {}, finish, { removeAllListeners() {}, on() {} }, consentModules, state, 0, write('journal'), child, write('state'))
+  const endGroup = new Function('clearDeadline', 'finish', 'process', 'consentModules', 'currentState', 'GRACE_MS', 'journal', 'child', 'writeState', 'state', `return (code, { writeReceipt = true, receiptLines = [], terminal = null } = {}) => {${body}\n}`)(() => {}, finish, { removeAllListeners() {}, on() {} }, consentModules, state, 0, write('journal'), child, write('state'), { current: () => state, writeState: write('state') })
   assert.doesNotThrow(() => endGroup(126, { terminal: { state: 'abandoned' } }), 'launcher bookkeeping must be best-effort after signalling')
   assert.equal(calls[0], 'receipt')
   assert.equal(calls.filter((name) => name !== 'receipt')[0], 'kill', 'launcher must signal before journal or terminal-state writes')

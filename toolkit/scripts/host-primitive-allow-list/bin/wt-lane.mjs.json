@@ -12,10 +12,10 @@
   "readdirSync": 1,
   "readFileSync": 7,
   "writeFileSync": 8,
-  "appendFileSync": 7,
+  "appendFileSync": 6,
   "mkdirSync": 8,
   "renameSync": 3,
-  "rmSync": 12,
+  "rmSync": 11,
   "chmodSync": 1,
   "spawn": 2,
   "openSync": 1
