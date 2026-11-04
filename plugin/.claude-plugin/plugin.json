@@ -144,6 +144,13 @@
       "required": false,
       "description": "observe journals would-clean evidence without signaling; enforce terminates exact re-verified attributed lane orphans."
     },
+    "worktree_sweep_mode": {
+      "type": "string",
+      "title": "Worktree sweep mode",
+      "default": "report",
+      "required": false,
+      "description": "Read-only worktree inventory. report and auto report only; apply is unavailable while the deletion design remains open."
+    },
     "lane_stall_minutes": {
       "type": "number",
       "title": "Lane worktree stall threshold",
@@ -780,6 +787,9 @@
     ],
     "SessionStart": [
       {
+        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-worktree-sweep-hook.mjs\"", "timeout": 5 }]
+      },
+      {
         "hooks": [
           {
             "type": "command",
@@ -880,6 +890,9 @@
       }
     ],
     "UserPromptSubmit": [
+      {
+        "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-worktree-sweep-tick-hook.mjs\"", "timeout": 5 }]
+      },
       {
         "hooks": [
           {

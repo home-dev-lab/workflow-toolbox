@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isInvokedDirectly } from '../../plugin/bin/lib/host/entry-guard.mjs'
+import { cleanupLaunch, launchDiagnostics, launchFailureDiagnostics, runShell, waitForLaunch } from './second-opinion-launch-lifecycle.mjs'
 
+export { cleanupLaunch } from './second-opinion-launch-lifecycle.mjs'
 export const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../plugin')
 export const skillPath = process.env.WT_SECOND_OPINION_LAUNCH_SKILL ?? join(pluginRoot, 'skills/second-opinion/SKILL.md')
 
@@ -24,8 +26,9 @@ export function launchFixture() {
   }))
   const request = join(root, 'request.md')
   writeFileSync(request, 'A model must never be called for this consent-refusal check.')
-  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, HOME: home, USERPROFILE: home,
-    CLAUDE_CONFIG_DIR: config, WT_PLUGIN_ROOT: plugin, CLAUDE_PLUGIN_ROOT: plugin }
+  // Seal the profile, never the OS: PowerShell resolves the documented bare `node` through PATH and PATHEXT.
+  const env = { PATH: process.env.PATH, PATHEXT: process.env.PATHEXT, SystemRoot: process.env.SystemRoot,
+    HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: config, WT_PLUGIN_ROOT: plugin, CLAUDE_PLUGIN_ROOT: plugin }
   return { root, config, repo, plugin, request, out: join(root, 'answer.log'), env }
 }
 
@@ -37,21 +40,13 @@ function shellWord(value, windows) {
   return windows ? `'${value.replaceAll("'", "''")}'` : `'${value.replaceAll("'", "'\\''")}'`
 }
 
-function completed(out) {
-  if (existsSync(out) && /\nEXIT=\d+\r?\n?$/.test(readFileSync(out, 'utf8'))) return true
-  const log = `${out}.launch.log`
-  return existsSync(log) && /Error|not found|No such file|REFUSED:/.test(readFileSync(log, 'utf8'))
-}
-
-function waitForLaunch(out) {
-  const deadline = Date.now() + 5_000
-  while (!completed(out) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
-}
-
 function launchCommand(f, options, windows) {
   const text = readFileSync(options.skill ?? skillPath, 'utf8')
   const bootstrap = fence(text, 'javascript')
-  if (bootstrap) writeFileSync(`${f.out}.launch.mjs`, bootstrap)
+  if (bootstrap) {
+    const recordPid = `import { writeFileSync as recordFixturePid } from 'node:fs'\nrecordFixturePid(${JSON.stringify(`${f.out}.child.pid`)}, String(process.pid))\n`
+    writeFileSync(`${f.out}.launch.mjs`, recordPid + bootstrap)
+  }
   const platform = options.platform ?? process.platform
   const language = windows ? 'powershell' : platform === 'darwin' ? 'sh' : 'bash'
   let command = fence(text, language)
@@ -59,20 +54,43 @@ function launchCommand(f, options, windows) {
   for (const [token, value] of [['<request-file>', f.request], ['<out-file>', f.out], ['<repository>', f.repo]]) {
     command = command.replaceAll(token, shellWord(value, windows))
   }
-  return command.replaceAll('<low|medium|high>', 'low').replaceAll('<auto|astra|opus>', 'astra')
+  command = command.replaceAll('<low|medium|high>', 'low').replaceAll('<auto|astra|opus>', 'astra')
+  // Track even a cold node before its bootstrap has executed. The published POSIX blocks stay verbatim.
+  return windows ? command : `${command}\nprintf '%s\\n' "$!" > ${shellWord(`${f.out}.launch.pid`, false)}`
 }
 
-export function documentedLaunch(f, options = {}) {
+function assertShellLaunch(f, result) {
+  if (result.error !== null) assert.equal(result.error, null, `launch shell failed; ${launchFailureDiagnostics(f)}`)
+  if (result.status !== 0) assert.equal(result.status, 0, `launch shell failed; ${launchFailureDiagnostics(f)}`)
+}
+
+export async function documentedLaunch(f, options = {}) {
   const windows = process.platform === 'win32'
   const command = launchCommand(f, options, windows)
   const shell = windows ? 'powershell.exe' : '/bin/bash'
   const args = windows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command]
-  const result = spawnSync(shell, args, { cwd: f.repo, env: { ...f.env, ...options.env }, encoding: 'utf8', timeout: 10_000 })
-  assert.ifError(result.error)
-  assert.equal(result.status, 0, result.stderr)
-  waitForLaunch(f.out)
+  const result = await runShell(f, shell, args, { env: { ...f.env, ...options.env }, command,
+    shellTimeoutMs: options.shellTimeoutMs ?? (windows ? 60_000 : 10_000) })
+  assertShellLaunch(f, result)
+  await waitForLaunch(f, options.completionTimeoutMs ?? (windows ? 120_000 : 10_000))
   return { out: existsSync(f.out) ? readFileSync(f.out, 'utf8') : null,
-    log: existsSync(`${f.out}.launch.log`) ? readFileSync(`${f.out}.launch.log`, 'utf8') : null }
+    log: existsSync(`${f.out}.launch.log`) ? readFileSync(`${f.out}.launch.log`, 'utf8') : null,
+    diagnostics: launchDiagnostics(f) }
+}
+
+// The 8.3 spelling of an existing Windows directory; equal to the input where the volume has no short names.
+export function windowsShortPath(directory, run = spawnSync) {
+  const result = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:WT_LONG_PATH).ShortPath'], {
+    env: { ...process.env, WT_LONG_PATH: directory }, encoding: 'utf8', timeout: 30_000, windowsHide: true })
+  const detail = `status=${result.status} error=${result.error?.code ?? 'none'} stderr=${result.stderr ?? ''}`
+  assert.ok(result.status === 0 && result.stdout?.trim(), `8.3 short-name lookup failed: ${detail}`)
+  return result.stdout.trim()
+}
+
+// A launch that completed through its log never throws: a wrong --out still needs the full evidence.
+export function outEvidence(f, result, expected) {
+  return result.out === expected ? result.diagnostics : launchFailureDiagnostics(f)
 }
 
 function updatedInstallation(f) {
@@ -87,25 +105,29 @@ function updatedInstallation(f) {
   return loaded
 }
 
-export function runLaunchE2e() {
+export async function runLaunchE2e() {
   const missing = launchFixture()
   const real = launchFixture()
   try {
-    const failed = documentedLaunch(missing)
-    assert.equal(failed.out, null, 'missing CLI must not create --out')
-    assert.ok(failed.log, 'documented launch must preserve startup diagnostics beside --out')
+    const failed = await documentedLaunch(missing)
+    assert.equal(failed.out, null, `missing CLI must not create --out; ${failed.diagnostics}`)
+    assert.ok(failed.log, `documented launch must preserve startup diagnostics beside --out; ${failed.diagnostics}`)
     assert.match(failed.log, /MODULE_NOT_FOUND|Cannot find module/)
     console.log(`missing CLI: --out absent; launch log: ${failed.log.split(/\r?\n/).find((line) => /Error.*(module|MODULE_NOT_FOUND)/.test(line))?.replaceAll(missing.root, '<temporary>')}`)
     const loaded = updatedInstallation(real)
-    const refused = documentedLaunch(real, { skill: loaded, env: { WT_PLUGIN_ROOT: undefined } })
-    assert.match(refused.out ?? '', /^REFUSED: Astra requires active GPT lane consent\.\nEXIT=1\n$/)
+    const refused = await documentedLaunch(real, { skill: loaded, env: { WT_PLUGIN_ROOT: undefined } })
+    const refusal = 'REFUSED: Astra requires active GPT lane consent.\nEXIT=1\n'
+    assert.equal(refused.out, refusal, outEvidence(real, refused, refusal))
     console.log('updated registry: loaded skill survived removal of its old plugin root')
     console.log(`real CLI first line: ${refused.out.split(/\r?\n/)[0]}`)
     console.log(`real CLI last line: ${refused.out.trimEnd().split(/\r?\n/).at(-1)}`)
     console.log('E2E OK: startup failure captured; real CLI refused before any model call')
   } finally {
-    for (const f of [missing, real]) rmSync(f.root, { recursive: true, force: true })
+    for (const f of [missing, real]) {
+      await cleanupLaunch(f)
+      rmSync(f.root, { recursive: true, force: true })
+    }
   }
 }
 
-if (isInvokedDirectly(import.meta.url)) runLaunchE2e()
+if (isInvokedDirectly(import.meta.url)) await runLaunchE2e()

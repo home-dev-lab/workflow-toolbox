@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // wt-lane-saturation-hook.mjs — PreToolUse(Bash) advisory: an external executor lane is a
-// SHARED resource that nobody reserves, and every arc can see only its own calls.
+// SHARED resource. Real wt-lane launches now reserve startup under a host admission lock;
+// this hook still guards the textual path, where each arc sees only its own calls.
 //
 // The founding incident: two independent arcs of one session pulled on the same lane at
 // once — a wave orchestrator running a cross-family review, and an unrelated analysis
@@ -39,9 +40,10 @@
 // narrows the race window to roughly the time between two hook invocations rather than the
 // unbounded, unmeasured window that existed before this guard shipped, and a call that
 // slips through the race is still counted (and refused) by the NEXT call a few hundred
-// milliseconds later once its process is actually visible to pgrep. A real fix (a file
-// lock or reservation ticket) is exactly the "queue" the card weighed and rejected as
-// infrastructure with its own failure modes — not built here, named instead.
+// milliseconds later once its process is actually visible to pgrep. Real wt-lane.mjs
+// launches now close that race with a machine-shared admission lock held from the count
+// until the new opencode PID is counted, and a separate hard cap of 16. This textual
+// hook retains its advisory bound and check-then-act limitation for other commands.
 //
 // ⚠ IT WARNED, IT NEVER BLOCKED — RETIRED. Shipped advisory-only in 161dfa8 on the reasoning
 // that a new guard's precision must be measured before it is allowed to refuse anything.

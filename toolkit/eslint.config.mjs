@@ -198,6 +198,14 @@ export default tseslint.config(
     },
   },
   {
+    files: ['plugin/bin/lib/host/lane-admission-lock.mjs', 'plugin/bin/lib/host/lane-launch-admission.mjs',
+      '../plugin/bin/lib/host/lane-admission-lock.mjs', '../plugin/bin/lib/host/lane-launch-admission.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
+    },
+  },
+  {
     // Warn-first areas use the same ceilings; a follow-up sets their warning ratchets.
     // Espree enforces JavaScript parse errors (the TypeScript parser permits top-level return).
     files: newAreaQualityFiles,
@@ -212,6 +220,15 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-unused-expressions': 'warn',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    files: ['plugin/bin/lib/worktree-sweep/**/*.mjs', '../plugin/bin/lib/worktree-sweep/**/*.mjs',
+      'plugin/bin/lib/host/sweep-*.mjs', '../plugin/bin/lib/host/sweep-*.mjs',
+      'plugin/bin/wt-worktree-sweep*.mjs', '../plugin/bin/wt-worktree-sweep*.mjs'],
+    rules: {
+      complexity: ['error', 10],
+      'max-lines-per-function': ['error', { max: 40, skipBlankLines: true, skipComments: true }],
     },
   },
   { ...gitIgnores },

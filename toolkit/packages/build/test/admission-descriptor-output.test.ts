@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 import { registerAdmissionDetachCases } from './admission-detach-cases.js'
+import { containmentHostOverride } from './helpers/admission-platform.js'
 
 registerAdmissionDetachCases()
 
@@ -39,10 +40,7 @@ function networkSeal(root: string, marker: string, platform: string) {
     }`
   const loader = join(root, 'seal-loader.mjs')
   writeFileSync(loader, `export async function load(url, context, next) {
-    if (url.endsWith('/admission-containment.mjs')) {
-      const native = url + '?native';
-      return { format:'module', shortCircuit:true, source: 'export * from ' + JSON.stringify(native) + '; import { admissionContainmentHost as nativeHost } from ' + JSON.stringify(native) + '; export const admissionContainmentHost = () => ({...nativeHost(), platform: ' + JSON.stringify(${JSON.stringify(platform)}) + '});' };
-    }
+    ${containmentHostOverride(platform)}
     if (url.endsWith('/lib/opencode-skill-fence.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(fence)} };
     if (url.endsWith('/lib/resolved-binary.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(`export const resolvedBinary = () => ${JSON.stringify(binary)};`)} };
     if (url.endsWith('/lib/second-opinion-core.mjs')) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(secondOpinion)} };

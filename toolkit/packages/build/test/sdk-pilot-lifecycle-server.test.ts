@@ -57,6 +57,12 @@ const FIXTURE_LANE_TIMEOUT_SECONDS = 10
 const DESCENDANT_LANE_WAIT_MS: number | null = null
 const DESCENDANT_TEST_BUDGET_MS = 120_000
 const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url))
+// The real wt-lane launcher and worker behind an injected admission counter (the card's own
+// fixtures/launcher-counter/wt-lane.mjs, as wt-lane-launcher.test.ts uses). The shipped counter runs
+// `pgrep -x opencode`; these fake lanes are `#!/bin/sh` scripts, which macOS names after their
+// interpreter (comm `/bin/sh`), so it never counts them there and the launcher holds for its 90 s
+// visibility bound. It would also count real lanes running on the host. Admission has its own tests.
+const REAL_LAUNCHER_WITH_FIXTURE_COUNTER = fileURLToPath(new URL('./fixtures/launcher-counter/wt-lane.mjs', import.meta.url))
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
@@ -964,7 +970,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
 })
 
 function restartLaneLauncher() {
-    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const realLauncher = REAL_LAUNCHER_WITH_FIXTURE_COUNTER
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
 if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
@@ -1014,7 +1020,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
 
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.skipIf(realLaunchUnavailable)('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [requires POSIX and host user namespace]', async () => {
-    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const realLauncher = REAL_LAUNCHER_WITH_FIXTURE_COUNTER
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
     const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
@@ -1029,7 +1035,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   }, 15_000)
 
   it.skipIf(realLaunchUnavailable)('does not terminate a live real worker while its timeout evidence scan is still completing [requires POSIX SIGSTOP/SIGCONT and host user namespace]', async () => {
-    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const realLauncher = REAL_LAUNCHER_WITH_FIXTURE_COUNTER
     const fakeSource = '#!/bin/sh\nif [ "$1" = "--version" ]; then printf \'fixture-1\\n\'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf \'[{"name":"workflow-toolbox-allowed-sentinel"}]\\n\'; exit 0; fi\nif [ "$1" = "debug" ]; then printf \'[]\\n\'; exit 0; fi\nsleep 30\n'
     const helperSource = "const fs=require('fs');const path=require('path');const root=process.argv[1],pid=Number(process.argv[2]);const pointer=path.join(root,'.lane','supervision','current.json');const poll=setInterval(()=>{try{const run=JSON.parse(fs.readFileSync(pointer)).runId;const record=path.join(root,'.lane','supervision',run+'.json');const state=JSON.parse(fs.readFileSync(record));if(state.state==='running'&&Date.parse(state.timeoutAt)){clearInterval(poll);setTimeout(()=>{process.kill(pid,'SIGSTOP');setTimeout(()=>{try{process.kill(pid,'SIGCONT')}catch{}},1500)},Math.max(0,Date.parse(state.timeoutAt)-Date.now()-25))}}catch{}},10)"
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawn, spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+${JSON.stringify(hermeticPath([]))},CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); const worker=Number(/^pid=(\\d+)$/m.exec(result.stdout)?.[1]); const helper=spawn(process.execPath,['-e',${JSON.stringify(helperSource)},root,String(worker)],{detached:true,stdio:'ignore'}); helper.unref(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
