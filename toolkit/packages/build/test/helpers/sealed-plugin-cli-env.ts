@@ -33,6 +33,7 @@ export function sealedPluginCliEnv(
   return {
     ...withoutOpencodeAdmission(),
     WT_SUITE_LOCK_PRIORITY: undefined,
+    WT_SUITE_LOCK_CONTEXT: undefined,
     WT_SUITE_LOCK_LONG_HOLD_S: undefined,
     WT_SUITE_LOCK_LIGHT_HOLD_S: undefined,
     WT_SUITE_LOCK_OFFLOAD_COMMAND: undefined,
