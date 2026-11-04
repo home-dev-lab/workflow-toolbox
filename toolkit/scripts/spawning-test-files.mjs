@@ -167,6 +167,7 @@ export const spawningTestFiles = [
   'packages/build/test/quota-probe-token.test.ts',
   'packages/build/test/quota-watch-account-cache.test.ts',
   'packages/build/test/quota-watch-no-subscription.test.ts',
+  'packages/build/test/quota-watch-plan-windows.test.ts',
   'packages/build/test/quota-watch-route.test.ts',
   'packages/build/test/quota-watch-single-instance.test.ts',
   'packages/build/test/remedy-quote.test.ts',

@@ -22,6 +22,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 
+- The quota watcher watches each numeric window independently, names unreported windows once, and preserves their history. Partial live readings cannot weaken later cache requirements or postpone live rechecks beyond the cache tolerance; login caches require the current account fingerprint. Drops baseline only their own window, advancing reset deadlines on the same verified account re-arm thresholds even when usage rises, and recovery names the watched windows. A deadline that moves later before the previous one has passed is no longer announced as a reset: a drop before the deadline is still reported as "reset unverified", and a rise is checked against the thresholds as usual; a reset time too large to be a date counts as no reset time. A reading taken while the login account changed is discarded with a one-line notice and probed again on the next poll, instead of being cached or becoming the new account's starting point; a cached reading counts for the account checked around the cache read. Empty bundled-probe responses degrade with backoff instead of claiming no subscription and stopping; repeated readings emit each crossing once.
 - Report-only worktree sweeps require a preserving remote-tracking or separate base-branch ref,
   inspect directories named `index.lock`, retain verified holders despite unrelated device
   mismatches, and include locked and missing/prunable Git registrations in KEEP reports.
