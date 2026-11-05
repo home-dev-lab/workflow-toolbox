@@ -72,7 +72,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The opencode envelope reports the pool's first failure after draining running tasks, so a sibling's later output-write error cannot replace an integrity refusal or its exit-3 protocol. Successful output-writability probes are regression-tested for cleanup.
 
 ### Changed
-- wt-verify-by-ground-truth: the hosted-platform reasoning, the CI-job rule and the three high-impact questions move to the at-act half, served on gh/glab CI, API, merge, push, publish and release commands; the core keeps their one-line duties (about 1.5k fewer always-loaded characters)
+- wt-verify-by-ground-truth: the hosted-platform reasoning and the full three high-impact questions move to the at-act half, which is now also served after gh/glab CI, API, merge and release commands, git push, and npm/pnpm/yarn or changeset publish; the core keeps a one-line anchor for each moved duty (core 8,817 to 7,612 characters)
 
 ## [0.197.0] - 2026-10-26
 

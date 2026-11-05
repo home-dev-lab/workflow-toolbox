@@ -157,8 +157,6 @@ correctly read.`],
   ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `⚠ **Corollary, and it is what makes this expensive**: a correction built the same way inherits the
 same defect. It READS as progress, because each version fits more evidence than the last. Two wrong
 explanations in a row is the signature — stop building the third from the same material.`],
-  ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `**CI claim = the JOB that exercise behaviour.** Not RUN aggregate status. Run mix jobs from
-different OS. Top-level conclusion can read as INVERSE of deciding job. Descend to job list.`],
   ['wt-verify-by-ground-truth', 'wt-verify-by-ground-truth', `**High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
 published surface — answer all three:**
 1. Was the failure it prevent actually exercised? Not happy-path test written from same
@@ -233,9 +231,23 @@ const PLATFORM_AND_SHIPPING_ACTS = [
   'gh workflow run cross-os.yml --ref main',
   'gh api repos/owner/repo/actions/runs',
   'gh pr checks 12',
+  'gh pr status',
+  'gh pr view 12 --json statusCheckRollup',
   'gh pr merge 12 --squash',
   'gh release create v1.0.0',
+  'gh release edit v1.0.0 --draft=false',
   'glab ci status',
+  'glab api projects/1/pipelines',
+  'glab mr merge 3',
+  'glab release create v1.0.0',
+  'yarn publish',
+  'yarn npm publish',
+  'yarn workspace pkg publish',
+  'npm -w pkg publish',
+  'npm --workspace=pkg publish',
+  'pnpm --recursive publish',
+  'npx changeset publish',
+  'pnpm changeset publish',
   'git push origin card/x',
   'git -C repo push public HEAD',
   'pnpm publish',
@@ -246,10 +258,12 @@ const PLATFORM_AND_SHIPPING_NON_ACTS = [
   'gh issue close 123',
   'gh pr view 12',
   'gh auth status',
+  'gh pr checkout 12',
+  'gh release view v1.0.0',
   'git pull',
-  'git push-tags',
+  'git stash push',
   'npm install',
-  'pnpm publisher',
+  'changeset version',
 ] as const
 
 function checkServedBeforeTool(name: typeof ACT_RULES[number], tool: string, input: unknown) {
@@ -262,8 +276,10 @@ const STATIC_ANCHORS = {
   'wt-verify-by-ground-truth': [
     'claims a property against the body under it in the same pass',
     "Read the platform's own documentation FIRST, and QUOTE the reference in the claim.",
-    'any delivery claim says which three answers it can give',
-    'what can go wrong in the mechanism? — same prominence as result',
+    'say which of the three you can answer and which you cannot',
+    'A deferred check is not done until its own record names it.',
+    'stop building a third from the same material',
+    'CI claim = the JOB that exercise behaviour.',
   ],
   'wt-delegation-ladder': ['Name the expiry in the fence', 'where whatever satisfies it gets recorded'],
   'wt-task-tracking': ['or with a dependency not Done, is never proposed or started', 'where the tracker has no native dependency links'],
