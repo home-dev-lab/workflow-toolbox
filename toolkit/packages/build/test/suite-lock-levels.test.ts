@@ -516,7 +516,51 @@ describe('lane operator release boundary', () => {
   })
 })
 
+describe('lane priority without a sandbox broker', () => {
+  const laneLevels = [
+    { declared: null, ambient: undefined, level: 2 },
+    ...['P0', 'P1', 'P2'].flatMap((priority) => [
+      { declared: null, ambient: priority, level: Number(priority.slice(1)) },
+      { declared: priority, ambient: priority === 'P0' ? 'P2' : 'P0', level: Number(priority.slice(1)) },
+    ]),
+  ]
+  it.each(laneLevels.flatMap((entry) => [false, true].map((light) => ({ ...entry, light }))))('a lane without a broker acquires its effective level ($declared, ambient $ambient, light=$light)', async ({ declared, ambient, level, light }) => {
+    const { laneWorkerEnv } = await loadPluginModule('plugin/bin/wt-lane.mjs')
+    const root = temp()
+    const env = laneWorkerEnv(envFor(root, { WT_SUITE_LOCK_PRIORITY: ambient }), declared)
+    const lease = await lock.acquireSuiteLock({ env, light })
+    try {
+      expect(lease.broker).toBeUndefined()
+      expect(lease.holder.level, 'unsandboxed lane acquisition must use the host-resolved priority').toBe(level)
+      expect(lock.readSuiteLock({ root }).holder.level).toBe(level)
+    } finally { lock.releaseSuiteLock(lease) }
+  })
+})
+
+function registerIsolatedPriorityEnvTest() {
+  it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
+    vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
+    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
+    const env = envFor(temp())
+    expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
+    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
+    expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
+  })
+}
+
 describe('declaration and isolated environments', () => {
+  it('ordinary non-lane acquisition still defaults to P1', async () => {
+    const root = temp(); const lease = await lock.acquireSuiteLock({ root, env: envFor(root) })
+    try { expect(lease.holder.level).toBe(1) }
+    finally { lock.releaseSuiteLock(lease) }
+  })
+  it.each(['P0', 'P1', 'P2'])('non-sandbox --priority %s overrides an ambient level', (priority) => {
+    const root = temp()
+    const script = `process.stdout.write(require('fs').readFileSync(${JSON.stringify(join(root, 'lock.d', 'holder.json'))},'utf8'))`
+    const result = cli(root, ['run', '--priority', priority, '--', process.execPath, '-e', script], { WT_SUITE_LOCK_PRIORITY: priority === 'P0' ? 'P2' : 'P0' })
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(result.stdout).level).toBe(Number(priority.slice(1)))
+  })
   it('F6 explicit root retains P0 despite an ambient broker and never connects', async () => {
     const root = temp(); const connect = vi.spyOn(net, 'connect')
     const held = await lock.acquireSuiteLock({ root, env: envFor(root, { WT_SUITE_LOCK_BROKER: join(root, 'missing.sock') }), priority: 'P0' })
@@ -540,14 +584,7 @@ describe('declaration and isolated environments', () => {
     const result = cli(root, ['run', '--priority', 'release', '--', process.execPath, '-e', 'process.stdout.write(process.env.WT_SUITE_LOCK_PRIORITY || "unset")'])
     expect(result.status).toBe(0); expect(result.stdout).toBe('unset')
   })
-  it.each(['P0', 'invalid'])('C10 default helpers neutralise polluted priority %s and long-hold env', (priority) => {
-    vi.stubEnv('WT_SUITE_LOCK_PRIORITY', priority); vi.stubEnv('WT_SUITE_LOCK_LONG_HOLD_S', '0.001')
-    vi.stubEnv('WT_SUITE_LOCK_LIGHT_HOLD_S', '0.001')
-    const env = envFor(temp())
-    expect(env.WT_SUITE_LOCK_PRIORITY).toBeUndefined(); expect(env.WT_SUITE_LOCK_LONG_HOLD_S).toBeUndefined()
-    expect(env.WT_SUITE_LOCK_LIGHT_HOLD_S).toBeUndefined()
-    expect(sealedPluginCliEnv(temp(), { WT_SUITE_LOCK_PRIORITY: 'P2' }).WT_SUITE_LOCK_PRIORITY).toBe('P2')
-  })
+  registerIsolatedPriorityEnvTest()
 })
 
 describe('light class holder warning timer', () => {
