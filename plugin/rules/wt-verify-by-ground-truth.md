@@ -46,6 +46,9 @@ copy, uncommitted work gone.
 some way?** Cite file that decide premise, same sentence. Else write `unverified`, then check.
 Your OWN note = declaration, not verified fact. Note not exempt claim from grounding.
 
+**CI claim = the JOB that exercise behaviour.** Not RUN aggregate status. Run mix jobs from
+different OS. Top-level conclusion can read as INVERSE of deciding job. Descend to job list.
+
 **Suspicious UI state?** Triage DATA SOURCE first. Server payload vs client state vs sibling
 component with own fetch. One API read often show "bug" is other component unrelated data.
 
@@ -92,17 +95,18 @@ archaeology is the fallback, never the opening move.
 found. Fastest guard against explanation built from quote that say opposite of conclusion drawn
 from it.
 
-Why, the tell, the corollary, the CI-job rule: at-act half (first file edit; `gh`/`glab` CI, API,
-merge, release).
+Two wrong explanations in a row → stop building a third from the same material. Why, the tell,
+the corollary: at-act half (first file edit; test, CI, API, merge, push, publish, release commands).
 
 ## High-impact mechanisms require three answers
 
 **Shipping anything requires an explicit CROSS-PLATFORM verdict:** classify each dependency as throwing, degrading to a named `unknown`, or silently returning a plausible value.
 
-High impact or high risk (guard, money, security, data loss, availability, published surface):
-any delivery claim says which three answers it can give — failure exercised? real conditions or
-fixtures? what can go wrong in the mechanism? — same prominence as result. Full text: at-act half
-(first file edit; merge, push, publish, release).
+High impact or high risk (guard, safety mechanism, money, security, data loss, availability,
+published surface): say which of the three you can answer and which you cannot — failure
+exercised? real conditions or fixtures? what can go wrong in the mechanism? — same prominence as
+result. A deferred check is not done until its own record names it. Full text: at-act half (same
+acts as above).
 
 **Evidence must OUTLIVE the process that produced it.** Check run at execution time and not
 archived is not re-verifiable. Proof die with process. Later reader left with claim alone.

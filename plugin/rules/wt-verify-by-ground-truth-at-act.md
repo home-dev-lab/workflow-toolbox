@@ -118,9 +118,6 @@ correctly read.
 same defect. It READS as progress, because each version fits more evidence than the last. Two wrong
 explanations in a row is the signature — stop building the third from the same material.
 
-**CI claim = the JOB that exercise behaviour.** Not RUN aggregate status. Run mix jobs from
-different OS. Top-level conclusion can read as INVERSE of deciding job. Descend to job list.
-
 ## High-impact mechanisms — the three answers in full
 
 **High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
