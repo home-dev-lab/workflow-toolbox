@@ -92,6 +92,14 @@ jobs:
       - name: Install
         run: pnpm install
         timeout-minutes: 6
+      # The real-bubblewrap network cases of lane-sandbox.test.ts need a root-owned socat (the probe client
+      # and the host side of the lane egress bridge); without it they skip with a named reason. The
+      # ubuntu-26.04 image ships without socat, so install it here and keep those isolation cases running.
+      - name: Install socat for the lane sandbox network cases (Ubuntu)
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get install -y --no-install-recommends socat || { sudo apt-get update -q && sudo apt-get install -y --no-install-recommends socat; }
+        shell: bash
+        timeout-minutes: 5
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
       # streaming log is captured with tee; an explicit `shell: bash` runs `bash -eo pipefail` (the unspecified default is `bash -e`, whose pipeline exit is tee's), pwsh re-raises $LASTEXITCODE.
       # The macOS probe runs the suite in two halves so that one half's log survives a frozen runner.
@@ -107,6 +115,9 @@ jobs:
       - name: Test (Ubuntu shard ${{ matrix.shard }}/3)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         shell: bash
+        # socat was installed above: its absence here is a failure, never a skip.
+        env:
+          WT_LANE_SANDBOX_REQUIRE_SOCAT: '1'
         run: |
           mkdir -p ci-diagnostics
           pnpm test:shard --shard=${{ matrix.shard }}/3 --coverage \

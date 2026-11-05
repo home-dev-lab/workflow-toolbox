@@ -638,6 +638,24 @@ async function invokeLaneMain(argv) {
   try { return await main() } finally { process.argv = previous }
 }
 
+async function invokeLaneWithoutReceipt(argv) {
+  const stream = process.stdout
+  const descriptor = Object.getOwnPropertyDescriptor(stream, 'write')
+  const write = stream.write
+  stream.write = function (chunk, ...args) {
+    if (this === stream && args.length === 0 && typeof chunk === 'string' && /^pid=\d+\nrun=/.test(chunk)) return true
+    return Reflect.apply(write, this, [chunk, ...args])
+  }
+  try { return await invokeLaneMain(argv) } finally {
+    if (descriptor) Object.defineProperty(stream, 'write', descriptor)
+    else delete stream.write
+  }
+}
+
+function launchSignalCheckpoint() {
+  return new Promise((resolve) => setImmediate(() => setImmediate(resolve)))
+}
+
 // In-process seam carrying the pid of the detached worker that main spawns (its only
 // spawnWithLaneLogStderr call) out to the admission. It is a module-level wrapper so main's
 // own text stays unchanged; admission serialises launchAndObserve, so one observer at a time.
@@ -662,15 +680,17 @@ async function launchAndObserve(argv, opts, admission) {
   }
   workerSpawnObserver = (pid) => { spawnedPid = pid }
   try {
-    const code = await invokeLaneMain(argv)
+    const code = await invokeLaneWithoutReceipt(argv)
     const state = readOwnState()
     if (state?.workerPid) admission.trackWorker(state.workerPid, () => admissionWorkerIsCurrent(state))
+    await launchSignalCheckpoint()
     if (code !== 0) return code
     if (!state?.workerPid) throw new Error('wt-lane: worker launch returned without a new supervision record')
     await admission.waitUntilVisible(
       () => readOwnState()?.childPid,
       () => ['exited', 'launch-failed'].includes(readOwnState()?.state),
     )
+    process.stdout.write(`pid=${state.workerPid}\nrun=${state.runId}\nlog=${opts.log}\n`)
     return code
   } finally {
     workerSpawnObserver = null
