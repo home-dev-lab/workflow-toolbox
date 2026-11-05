@@ -218,6 +218,8 @@ export const spawningTestFiles = [
   'packages/build/test/test-orphan-reaper.test.ts',
   'packages/build/test/ts-language-server-cpu-r2.test.ts',
   'packages/build/test/ts-language-server-cpu.test.ts',
+  'packages/build/test/ts-language-server-idle-host.test.ts',
+  'packages/build/test/ts-language-server-idle.test.ts',
   'packages/build/test/ts-language-server-launcher.test.ts',
   'packages/build/test/ts-language-server-watches.test.ts',
   'packages/build/test/unquoted-tool-glob-guard-hook.test.ts',
